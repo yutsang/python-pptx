@@ -1,0 +1,16 @@
+{
+    "EMBEDDINGS_MODEL": "text-embedding-ada-002",
+    "CHAT_MODEL": "gpt-4o-mini",
+    "OPENAI_API_BASE": "",
+    "OPENAI_API_VERSION_COMPLETION": "2024-08-01-preview",
+    "OPENAI_API_VERSION_EMBEDDING": "2023-03-15",
+    "AZURE_AI_SEARCH_SERVICE_NAME": "",
+    "AZURE_AI_SEARCH_SERVICE_ENDPOINT": "",
+    "AZURE_AI_SEARCH_INDEX_NAME": "flow-chart-index",
+    "OPENAI_API_KEY": "",
+    "SEARCH_API_KEY": "",
+    "MAX_EMBEDDING_SEARCH_RESULT": 1,
+
+    "_comment": "System Prompt Instruction:"
+
+}

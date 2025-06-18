@@ -1,1 +1,14 @@
 *.pptx
+
+# library folder
+./ai_pptx
+/ai_pptx
+
+# Output
+final_report*
+
+# input
+.pdf 
+*.xlsx
+*.ipynb
+FDD.Draft Report.For AI solution purpose Only.pptx
