@@ -15,7 +15,7 @@ balance as at 30 September 2022 represetned CNY336.0k of upfront construction co
 balance as at 30 September 2022 687K of utilities paid on behalf of Zhejiang Jinhong Supply Chain Management Co., Ltd. 
 As indicated by management, the Target accrued 7.4% bad debt provision for utilities receivables aged within 1 year.
 
-### Other cyrrebt assets
+### Other current assets
 balance as at 30/09/2022 mainly represented CNY7.8M of deductible input VAT derived from Other current assets - Haining Wanpu.
 
 ## Non-current Assets
@@ -32,7 +32,7 @@ The land lots of Project Haining Wanpu were amortised using straight-line method
 
 ## Liabilities
 
-### Accoutns payable
+### Accounts payable
 balance as at 30 September 2022 mainly entailed accounts payable to珠海萬維物流發展有限公司 of CNY11.8M.
 
 ### Taxes payables
