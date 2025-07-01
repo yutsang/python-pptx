@@ -61,7 +61,7 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
     return response.choices[0].message.content
 
 # --- Excel and Data Processing ---
-def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
+def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes, convert_thousands=False):
     try:
         main_dir = Path(__file__).parent.parent
         file_path = main_dir / filename
@@ -74,7 +74,6 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         for sheet_name in xl.sheet_names:
             if sheet_name in reverse_mapping:
                 df = xl.parse(sheet_name)
-                # Ensure df is a DataFrame
                 if not isinstance(df, pd.DataFrame):
                     continue
                 empty_rows = df.index[df.isnull().all(axis=1)]
@@ -91,6 +90,10 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 entity_keywords = [f"{entity_name}{suffix}" for suffix in entity_suffixes]
                 combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
                 for data_frame in dataframes:
+                    # If convert_thousands and '000' in columns or first row, multiply numeric columns by 1000
+                    if convert_thousands and any("'000" in str(col) for col in data_frame.columns):
+                        for col in data_frame.select_dtypes(include='number').columns:
+                            data_frame[col] = data_frame[col] * 1000
                     mask = data_frame.apply(
                         lambda row: row.astype(str).str.contains(
                             combined_pattern, case=False, regex=True, na=False
@@ -107,7 +110,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         print("An error occurred while processing the Excel file:", e)
     return ""
 
-def find_financial_figures_with_context_check(filename, sheet_name, date_str):
+def find_financial_figures_with_context_check(filename, sheet_name, date_str, convert_thousands=False):
     try:
         file_path = Path(filename)
         xl = pd.ExcelFile(file_path)
@@ -127,7 +130,8 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str):
             print(f"Date '{date_str}' not recognized.")
             return {}
         date_column = date_column_map[date_str]
-        scale_factor = 1000
+        # If convert_thousands and '000' in columns or first row, multiply numeric columns by 1000
+        scale_factor = 1000 if (convert_thousands and any("'000" in str(col) for col in df.columns)) else 1
         financial_figure_map = {
             "Cash": "Cash at bank",
             "AR": "Accounts receivable",
@@ -147,7 +151,7 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str):
             if 'Description' in df.columns and date_column in df.columns:
                 value = df.loc[df['Description'].str.contains(desc, case=False, na=False), date_column].values
                 if value.size > 0:
-                    financial_figures[key] = float(value[0]) / scale_factor
+                    financial_figures[key] = float(value[0]) * scale_factor
         return financial_figures
     except Exception as e:
         print(f"An error occurred while processing the Excel file: {e}")
@@ -192,11 +196,11 @@ def load_ip(file, key=None):
     return {}
 
 # --- Pattern Filling and Main Processing ---
-def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', use_ai=True):
+def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', use_ai=True, convert_thousands=False):
     # Use test data if AI is not available
     if not use_ai or not AI_AVAILABLE:
         return generate_test_results(keys)
-    financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), '30/09/2022')
+    financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), '30/09/2022', convert_thousands=convert_thousands)
     system_prompt = """
         Role: system,
         Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
@@ -224,7 +228,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         openai_model = config_details['CHAT_MODEL']
         pattern = load_ip(pattern_file, key)
         mapping = {key: load_ip(mapping_file)}
-        excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers)
+        excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers, convert_thousands=convert_thousands)
         detect_zeros = "3. The figures in this table is already expressed in k, express the number in M (divide by 1000), rounded to 1 decimal place, if final figure less than 1M, express in K (no decimal places)." if detect_string_in_file(excel_tables, "'000") else ""
         user_query = f"""
         TASK: Select ONE pattern and complete it with actaul data
