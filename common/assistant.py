@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 from tqdm import tqdm
 from typing import Dict, List, Optional
+import numpy as np
+import openpyxl
 
 # AI-related imports (mocked if not available)
 try:
@@ -61,50 +63,57 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
     return response.choices[0].message.content
 
 # --- Excel and Data Processing ---
-def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes, convert_thousands=False):
+def find_dense_blocks(df, min_rows=2, min_cols=3, density_threshold=0.6):
+    blocks = []
+    nrows, ncols = df.shape
+    for row_start in range(nrows - min_rows + 1):
+        for col_start in range(ncols - min_cols + 1):
+            for row_end in range(row_start + min_rows, nrows + 1):
+                for col_end in range(col_start + min_cols, ncols + 1):
+                    block = df.iloc[row_start:row_end, col_start:col_end]
+                    total_cells = block.size
+                    non_empty_cells = block.notnull().values.sum()
+                    if total_cells > 0 and (non_empty_cells / total_cells) >= density_threshold:
+                        # Avoid duplicates
+                        if not any((row_start >= b[0] and row_end <= b[1] and col_start >= b[2] and col_end <= b[3]) for b in blocks):
+                            blocks.append((row_start, row_end, col_start, col_end))
+    return blocks
+
+def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
     try:
         main_dir = Path(__file__).parent.parent
         file_path = main_dir / filename
-        xl = pd.ExcelFile(file_path)
-        reverse_mapping = {}
-        for key, values in tab_name_mapping.items():
-            for value in values:
-                reverse_mapping[value] = key
+        wb = openpyxl.load_workbook(file_path, data_only=True)
         markdown_content = ""
-        for sheet_name in xl.sheet_names:
-            if sheet_name in reverse_mapping:
-                df = xl.parse(sheet_name)
-                if not isinstance(df, pd.DataFrame):
+        entity_keywords = [entity_name] + list(entity_suffixes)
+        entity_keywords = [kw.strip().lower() for kw in entity_keywords if kw.strip()]
+        for ws in wb.worksheets:
+            if ws.title not in tab_name_mapping:
+                continue
+            for tbl in ws._tables.values():
+                ref = tbl.ref
+                min_col, min_row, max_col, max_row = openpyxl.utils.range_boundaries(ref)
+                data = []
+                for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col, values_only=True):
+                    data.append(row)
+                if not data or len(data) < 2:
                     continue
-                empty_rows = df.index[df.isnull().all(axis=1)]
-                start_idx = 0
-                dataframes = []
-                for end_idx in empty_rows:
-                    if end_idx > start_idx:
-                        split_df = df.iloc[start_idx:end_idx]
-                        if not split_df.dropna(how='all').empty:
-                            dataframes.append(split_df)
-                        start_idx = end_idx + 1
-                if start_idx < len(df):
-                    dataframes.append(df.iloc[start_idx:])
-                entity_keywords = [f"{entity_name}{suffix}" for suffix in entity_suffixes]
-                combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
-                for data_frame in dataframes:
-                    # If convert_thousands and '000' in columns or first row, multiply numeric columns by 1000
-                    if convert_thousands and any("'000" in str(col) for col in data_frame.columns):
-                        for col in data_frame.select_dtypes(include='number').columns:
-                            data_frame[col] = data_frame[col] * 1000
-                    mask = data_frame.apply(
-                        lambda row: row.astype(str).str.contains(
-                            combined_pattern, case=False, regex=True, na=False
-                        ).any(),
-                        axis=1
-                    )
-                    if mask.any():
-                        markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
-                    if any(data_frame.apply(lambda row: row.astype(str).str.contains(keyword, case=False, na=False).any(), axis=1).any() for keyword in entity_keywords):
-                        markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False)
-                        markdown_content += "\n\n"
+                df = pd.DataFrame(data[1:], columns=data[0])
+                df = df.dropna(how='all').dropna(axis=1, how='all')
+                df = df.applymap(lambda x: str(x) if x is not None else "")  # Convert every cell to string
+                df = df.reset_index(drop=True)
+                # Flatten all cell values to a list of strings
+                all_cells = df.apply(lambda x: x.str.lower().strip(), axis=1).values.flatten().tolist()
+                # Check if any entity keyword appears in any cell
+                match_found = any(any(kw in cell for cell in all_cells) for kw in entity_keywords)
+                if match_found:
+                    print(f"[DEBUG] Table '{tbl.name}' in sheet '{ws.title}' included for entity keywords: {entity_keywords}")
+                    try:
+                        markdown_content += tabulate(df, headers='keys', tablefmt='pipe') + '\n\n'
+                    except Exception:
+                        markdown_content += df.to_markdown(index=False) + '\n\n'
+                else:
+                    print(f"[DEBUG] Table '{tbl.name}' in sheet '{ws.title}' skipped for entity keywords: {entity_keywords}")
         return markdown_content
     except Exception as e:
         print("An error occurred while processing the Excel file:", e)
@@ -228,7 +237,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         openai_model = config_details['CHAT_MODEL']
         pattern = load_ip(pattern_file, key)
         mapping = {key: load_ip(mapping_file)}
-        excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers, convert_thousands=convert_thousands)
+        excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers)
         detect_zeros = "3. The figures in this table is already expressed in k, express the number in M (divide by 1000), rounded to 1 decimal place, if final figure less than 1M, express in K (no decimal places)." if detect_string_in_file(excel_tables, "'000") else ""
         user_query = f"""
         TASK: Select ONE pattern and complete it with actaul data
