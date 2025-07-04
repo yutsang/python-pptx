@@ -78,6 +78,42 @@ if 'excel_tables' not in st.session_state:
 default_output_name = f"{entity}_{sheet_type}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx"
 output_file_name = st.sidebar.text_input("Output PPTX File Name", value=default_output_name)
 
+# --- Helper Functions ---
+def save_results_to_markdown(results, entity: str):
+    """Save AI-generated results back to the markdown file"""
+    try:
+        # Read existing markdown content
+        with open('utils/bs_content.md', 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Update each section with new content
+        for key, new_content in results.items():
+            # Get the heading name from name_mapping
+            heading = name_mapping.get(key, key)
+            if heading is None:
+                heading = key
+            
+            # Create the new section content
+            new_section = f'### {heading}\n{new_content.strip()}\n\n'
+            
+            # Find and replace the existing section
+            pattern = re.compile(r'(###\s+' + re.escape(heading) + r'.*?)(?=\n###|\Z)', re.DOTALL | re.IGNORECASE)
+            
+            if pattern.search(content):
+                # Replace existing section
+                content = pattern.sub(new_section, content)
+            else:
+                # Add new section at the end
+                content += '\n' + new_section
+        
+        # Write back to file
+        with open('utils/bs_content.md', 'w', encoding='utf-8') as f:
+            f.write(content)
+            
+    except Exception as e:
+        print(f"Error saving to markdown: {e}")
+        raise
+
 # --- Main Workflow ---
 if uploaded_file:
     # Save uploaded file to a temp location
@@ -211,9 +247,20 @@ if uploaded_file:
     st.subheader("Generate Report Text")
     if st.button("Generate Text (AI/Test)"):
         if use_ai:
-            # Show a spinner/progress bar while AI is running
-            with st.spinner("Generating text with AI, please wait..."):
-                # Run the assistant.process_keys logic and use second AI agent to review
+            # Create progress bar for AI processing
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Initialize progress tracking with more granular steps
+            total_steps = len(keys) * 4  # 4 steps per key: generation, data validation, pattern validation, final QA
+            current_step = 0
+            
+            try:
+                status_text.text("🚀 Initializing AI services and loading data...")
+                progress_bar.progress(0)
+                
+                # Step 1: Generate initial content
+                status_text.text("🤖 Generating initial content with AI...")
                 results = assistant.process_keys(
                     keys=keys,
                     entity_name=entity,
@@ -225,13 +272,117 @@ if uploaded_file:
                     use_ai=use_ai,
                     convert_thousands=convert_thousands
                 )
-                # Use second AI agent to review each result
+                
+                current_step += len(keys)
+                progress_bar.progress(current_step / total_steps)
+                
+                # Step 2: Data Accuracy Validation Agent
+                status_text.text("🔍 Running data accuracy validation...")
+                data_validation_agent = assistant.DataValidationAgent()
+                validation_issues = []
+                for i, key in enumerate(results):
+                    status_text.text(f"📊 Validating data accuracy for {key} ({i+1}/{len(keys)})...")
+                    try:
+                        validation_result = data_validation_agent.validate_financial_data(
+                            results[key], 
+                            excel_path, 
+                            entity, 
+                            key
+                        )
+                        if validation_result['needs_correction']:
+                            status_text.text(f"🔧 Correcting data accuracy issues for {key}...")
+                            results[key] = data_validation_agent.correct_financial_data(
+                                results[key], 
+                                validation_result['issues']
+                            )
+                            validation_issues.append(f"{key}: {len(validation_result['issues'])} issues fixed")
+                    except Exception as e:
+                        st.warning(f"⚠️ Data validation failed for {key}: {str(e)}")
+                    current_step += 1
+                    progress_bar.progress(current_step / total_steps)
+                
+                # Step 3: Pattern Validation Agent
+                status_text.text("📋 Running pattern compliance validation...")
+                pattern_validation_agent = assistant.PatternValidationAgent()
+                pattern_issues = []
+                for i, key in enumerate(results):
+                    status_text.text(f"📝 Validating pattern compliance for {key} ({i+1}/{len(keys)})...")
+                    try:
+                        pattern_result = pattern_validation_agent.validate_pattern_compliance(
+                            results[key], 
+                            key
+                        )
+                        if pattern_result['needs_correction']:
+                            status_text.text(f"🔧 Correcting pattern compliance for {key}...")
+                            results[key] = pattern_validation_agent.correct_pattern_compliance(
+                                results[key], 
+                                pattern_result['issues']
+                            )
+                            pattern_issues.append(f"{key}: {len(pattern_result['issues'])} issues fixed")
+                    except Exception as e:
+                        st.warning(f"⚠️ Pattern validation failed for {key}: {str(e)}")
+                    current_step += 1
+                    progress_bar.progress(current_step / total_steps)
+                
+                # Step 4: Final QA Review
+                status_text.text("✨ Performing final quality assurance review...")
                 qa_agent = assistant.QualityAssuranceAgent()
-                for key in results:
-                    qa_result = qa_agent.validate_content(results[key])
-                    if qa_result['score'] < 90:
-                        results[key] = qa_agent.auto_correct(results[key])
-                st.session_state['results'] = results
+                qa_issues = []
+                for i, key in enumerate(results):
+                    status_text.text(f"🎯 Final QA review for {key} ({i+1}/{len(keys)})...")
+                    try:
+                        qa_result = qa_agent.validate_content(results[key])
+                        if qa_result['score'] < 90:
+                            results[key] = qa_agent.auto_correct(results[key])
+                            qa_issues.append(f"{key}: QA score {qa_result['score']} improved")
+                    except Exception as e:
+                        st.warning(f"⚠️ QA review failed for {key}: {str(e)}")
+                    current_step += 1
+                    progress_bar.progress(current_step / total_steps)
+                
+                progress_bar.progress(1.0)
+                status_text.text("🎉 AI processing completed successfully!")
+                
+                # Show summary of issues fixed
+                if validation_issues or pattern_issues or qa_issues:
+                    with st.expander("📋 Quality Assurance Summary", expanded=True):
+                        if validation_issues:
+                            st.write("**Data Accuracy Issues Fixed:**")
+                            for issue in validation_issues:
+                                st.write(f"• {issue}")
+                        if pattern_issues:
+                            st.write("**Pattern Compliance Issues Fixed:**")
+                            for issue in pattern_issues:
+                                st.write(f"• {issue}")
+                        if qa_issues:
+                            st.write("**QA Improvements:**")
+                            for issue in qa_issues:
+                                st.write(f"• {issue}")
+                
+                st.success("✅ AI processing completed with comprehensive validation and corrections!")
+                
+                # Save updated content back to markdown file
+                try:
+                    status_text.text("💾 Saving updated content to markdown file...")
+                    save_results_to_markdown(results, entity)
+                    st.success("✅ Content saved to markdown file!")
+                except Exception as e:
+                    st.warning(f"⚠️ Could not save to markdown file: {str(e)}")
+                
+            except Exception as e:
+                st.error(f"❌ Error during AI processing: {str(e)}")
+                status_text.text("Processing failed")
+                # Show more detailed error information
+                with st.expander("🔍 Error Details"):
+                    st.code(str(e))
+            finally:
+                # Clear progress indicators after a delay
+                import time
+                time.sleep(3)
+                progress_bar.empty()
+                status_text.empty()
+            
+            st.session_state['results'] = results
         else:
             # Offline/test mode: split bs_content.md into sections for each mapped heading
             with open('utils/bs_content.md', 'r') as f:

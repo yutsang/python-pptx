@@ -4,12 +4,13 @@ import logging
 from pptx import Presentation
 from pptx.util import Pt, Inches
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN, MSO_VERTICAL_ANCHOR
+from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE, MSO_VERTICAL_ANCHOR
 from pptx.oxml.xmlchemy import OxmlElement
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 from datetime import datetime
 import re
+from pptx.oxml.ns import qn  # Required import for XML namespace handling
 
 logging.basicConfig(level=logging.INFO)
 
@@ -27,13 +28,26 @@ class PowerPointGenerator:
         self.prs = Presentation(template_path)
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
-        self.ROWS_PER_SECTION = self._calculate_max_rows()
+        self.ROWS_PER_SECTION = 30  # Use the same value for all sections
+        print(f"[DEBUG] ROWS_PER_SECTION: {self.ROWS_PER_SECTION}")
+        slide = self.prs.slides[0]
+        shape = next(s for s in slide.shapes if s.name == "textMainBullets")
+        print(f"[DEBUG] textMainBullets shape height: {shape.height}, LINE_HEIGHT: {self.LINE_HEIGHT}")
         self.CHARS_PER_ROW = 50
         self.BULLET_CHAR = '■ '
         self.DARK_BLUE = RGBColor(0, 50, 150)
         self.DARK_GREY = RGBColor(169, 169, 169)
         self.prev_layer1 = None
         self.prev_layer2 = None
+        self.log_template_shapes()  # Debug: print all shape names
+
+    def log_template_shapes(self):
+        print("=== Template Shape Audit ===")
+        for slide_idx, slide in enumerate(self.prs.slides):
+            print(f"Slide {slide_idx + 1} has {len(slide.shapes)} shapes:")
+            for shape in slide.shapes:
+                print(f"  - Name: '{shape.name}' | Type: {shape.shape_type}")
+        print("=== End Shape Audit ===")
 
     def _calculate_max_rows(self):
         slide = self.prs.slides[0]
@@ -46,21 +60,25 @@ class PowerPointGenerator:
         current_title = ""
         current_descs = []
         is_table = False
+
         for line in md_content.strip().split('\n'):
             stripped = line.strip()
+            
             if stripped.startswith('## '):
-                if current_title and current_descs:
+                if current_descs:
                     items.append(FinancialItem(
-                        current_type, current_title, current_descs, is_table=is_table
+                        current_type, current_title, current_descs, 
+                        is_table=is_table
                     ))
                 current_type = stripped[3:]
                 current_title = ""
                 current_descs = []
                 is_table = False
             elif stripped.startswith('### '):
-                if current_title and current_descs:
+                if current_descs:
                     items.append(FinancialItem(
-                        current_type, current_title, current_descs, is_table=is_table
+                        current_type, current_title, current_descs,
+                        is_table=is_table
                     ))
                 current_title = stripped[4:]
                 current_descs = []
@@ -69,13 +87,11 @@ class PowerPointGenerator:
                 is_table = True
                 current_descs.append("="*40)
             else:
-                if stripped != "":
+                if stripped:
                     current_descs.append(stripped)
-        if current_title and current_descs:
+
+        if current_descs:
             items.append(FinancialItem(current_type, current_title, current_descs, is_table=is_table))
-        print("[DEBUG] Parsed items:")
-        for item in items:
-            print(f"Section: {item.account_title}, Descriptions: {item.descriptions}")
         return items
 
     def _plan_content_distribution(self, items: List[FinancialItem]):
@@ -83,7 +99,10 @@ class PowerPointGenerator:
         content_queue = items.copy()
         slide_idx = 0
         while content_queue:
-            sections = ['c'] if slide_idx == 0 else ['b', 'c']
+            if slide_idx == 0:
+                sections = ['c']
+            else:
+                sections = ['b', 'c']
             for section in sections:
                 if not content_queue:
                     break
@@ -102,7 +121,6 @@ class PowerPointGenerator:
                             split_item, remaining_item = self._split_item(item, remaining_lines)
                             section_items.append(split_item)
                             if remaining_item and remaining_item.descriptions and remaining_item.descriptions[0]:
-                                # Ensure both continued flags for the continued item
                                 remaining_item.layer2_continued = True
                                 remaining_item.layer1_continued = True
                                 content_queue[0] = remaining_item
@@ -134,63 +152,86 @@ class PowerPointGenerator:
         shape = getattr(self, 'current_shape', None)
         chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
         lines = 0
-        # Layer 1 lines
         header = f"{item.accounting_type} (continued)" if item.layer1_continued else item.accounting_type
         header_lines = len(textwrap.wrap(header, width=chars_per_line))
         lines += header_lines
-        # Layer 2+3 lines (preserve line breaks)
         desc_lines = 0
         for desc in item.descriptions:
             for para in desc.split('\n'):
                 para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
                 desc_lines += para_lines
         lines += desc_lines
-        # Debug logging
-        print(f"[DEBUG] Section: {item.account_title}, Header lines: {header_lines}, Desc lines: {desc_lines}, Total: {lines}")
+        print(f"[DEBUG] _calculate_item_lines: Section: {item.account_title}, Header lines: {header_lines}, Desc lines: {desc_lines}, Total: {lines}")
         return lines
 
     def _split_item(self, item: FinancialItem, max_lines: int) -> tuple[FinancialItem, FinancialItem | None]:
+        # Split at paragraph boundaries (not mid-paragraph) whenever possible
         shape = getattr(self, 'current_shape', None)
         chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
         header = f"{self.BULLET_CHAR}{item.account_title} - "
-        desc_text = '\n'.join(item.descriptions)
-        desc_paras = desc_text.split('\n')
-        # Wrap each paragraph and count lines
-        wrapped_lines = []
-        for para in desc_paras:
-            wrapped_lines.extend(textwrap.wrap(para, width=chars_per_line) or [''])
-        header_lines = len(textwrap.wrap(header, width=chars_per_line))
-        available_lines = max_lines - header_lines
-        if available_lines <= 0 or len(wrapped_lines) <= available_lines:
+        desc_paras = item.descriptions
+        lines_used = 0
+        split_index = 0
+        # Try to fit as many whole paragraphs as possible
+        for i, para in enumerate(desc_paras):
+            para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
+            if lines_used + para_lines > max_lines:
+                break
+            lines_used += para_lines
+            split_index = i + 1
+        # If all paragraphs fit, no split needed
+        if split_index == len(desc_paras):
+            return (
+                FinancialItem(
+                    item.accounting_type,
+                    item.account_title,
+                    desc_paras,
+                    layer1_continued=item.layer1_continued,
+                    layer2_continued=item.layer2_continued,
+                    is_table=item.is_table
+                ),
+                None
+            )
+        # If no paragraph fits, split the first paragraph at line boundary
+        if split_index == 0:
+            para = desc_paras[0]
+            wrapped = textwrap.wrap(para, width=chars_per_line)
+            first_part = wrapped[:max_lines]
+            remaining_part = wrapped[max_lines:]
             split_item = FinancialItem(
                 item.accounting_type,
                 item.account_title,
-                item.descriptions,
+                [' '.join(first_part)],
                 layer1_continued=item.layer1_continued,
-                layer2_continued=item.layer2_continued
+                layer2_continued=item.layer2_continued,
+                is_table=item.is_table
             )
-            remaining_item = None
-        else:
-            first_part_lines = wrapped_lines[:available_lines]
-            remaining_part_lines = wrapped_lines[available_lines:]
-            # Reconstruct descriptions, preserving line breaks
-            first_part = '\n'.join(first_part_lines).strip()
-            remaining_part = '\n'.join(remaining_part_lines).strip()
-            split_item = FinancialItem(
-                item.accounting_type,
-                item.account_title,
-                [first_part] if first_part else [],
-                layer1_continued=item.layer1_continued,
-                layer2_continued=item.layer2_continued
-            )
-            # Set both continued flags for the continued item
             remaining_item = FinancialItem(
                 item.accounting_type,
                 item.account_title,
-                [remaining_part] if remaining_part else [],
+                [' '.join(remaining_part)] + desc_paras[1:],
                 layer1_continued=True,
-                layer2_continued=True
-            ) if remaining_part else None
+                layer2_continued=True,
+                is_table=item.is_table
+            ) if remaining_part or len(desc_paras) > 1 else None
+            return split_item, remaining_item
+        # Otherwise, split at paragraph boundary
+        split_item = FinancialItem(
+            item.accounting_type,
+            item.account_title,
+            desc_paras[:split_index],
+            layer1_continued=item.layer1_continued,
+            layer2_continued=item.layer2_continued,
+            is_table=item.is_table
+        )
+        remaining_item = FinancialItem(
+            item.accounting_type,
+            item.account_title,
+            desc_paras[split_index:],
+            layer1_continued=True,
+            layer2_continued=True,
+            is_table=item.is_table
+        ) if split_index < len(desc_paras) else None
         return split_item, remaining_item
 
     def _format_table_text(self, text: str) -> str:
@@ -246,20 +287,18 @@ class PowerPointGenerator:
         tf.word_wrap = True
         self.prev_layer1 = None  # Reset for each new section
         self.current_shape = shape  # For dynamic line calculation
-        prev_had_content = False
         prev_account_title = None
         prev_continued = False
-        for item in items:
-            # Insert empty row before a new Layer 1 if previous section had content
-            if (item.accounting_type != self.prev_layer1) and prev_had_content:
-                tf.add_paragraph()  # Empty paragraph
-            # Insert empty row between split (continued) parts of the same Layer 3 content
-            if (item.layer1_continued or item.layer2_continued) and prev_account_title == item.account_title and not prev_continued:
-                tf.add_paragraph()  # Empty paragraph
+        paragraph_count = 0  # Track paragraph index in the shape
+        for idx, item in enumerate(items):
+            is_first_part = not (item.layer1_continued or item.layer2_continued)
             # Layer 1 Header
             if (item.accounting_type != self.prev_layer1) or (self.prev_layer1 is None):
                 p = tf.add_paragraph()
                 self._apply_paragraph_formatting(p, is_layer2_3=False)
+                if paragraph_count > 0:
+                    try: p.space_before = Pt(3)
+                    except: pass
                 run = p.add_run()
                 cont_text = " (continued)" if item.layer1_continued else ""
                 run.text = f"{item.accounting_type}{cont_text}"
@@ -268,48 +307,57 @@ class PowerPointGenerator:
                 run.font.name = 'Arial'
                 run.font.color.rgb = self.DARK_BLUE
                 self.prev_layer1 = item.accounting_type
-                prev_had_content = False
-            # Handle taxes payables table
-            if 'taxes payables' in item.account_title.lower():
-                self._create_taxes_table(shape, item)
-                prev_had_content = True
-            else:
-                # Insert empty row at the start of a continued section
-                if item.layer1_continued or item.layer2_continued:
-                    tf.add_paragraph()  # Empty paragraph
-                # For each line in descriptions, add a new paragraph if not empty
-                for idx, desc in enumerate(item.descriptions):
-                    lines = [line for line in desc.split('\n') if line.strip() != ""]
-                    for line_idx, para in enumerate(lines):
+                paragraph_count += 1
+            # Treat all items the same (no special handling for taxes payables)
+            for para_idx, desc in enumerate(item.descriptions):
+                # Split on '\n' and add an empty row between each part
+                desc_parts = desc.split('\n')
+                for part_idx, part in enumerate(desc_parts):
+                    if is_first_part and para_idx == 0 and part_idx == 0:
+                        # Main bullet with heading
                         p = tf.add_paragraph()
                         self._apply_paragraph_formatting(p, is_layer2_3=True)
-                        if line_idx == 0:
-                            # First line: show bullet, title, and text
-                            bullet_run = p.add_run()
-                            bullet_run.text = self.BULLET_CHAR
-                            bullet_run.font.color.rgb = self.DARK_GREY
-                            bullet_run.font.name = 'Arial'
-                            bullet_run.font.size = Pt(9)
-                            title_run = p.add_run()
-                            # Only add (continued) if this is a continued section and this is the first line
-                            cont_text = " (continued)" if (item.layer2_continued or item.layer1_continued) and idx == 0 else ""
-                            title_run.text = f"{item.account_title}{cont_text}"
-                            title_run.font.bold = True
-                            title_run.font.name = 'Arial'
-                            title_run.font.size = Pt(9)
-                            desc_run = p.add_run()
-                            desc_run.text = f" - {para}"
-                            desc_run.font.bold = False
-                            desc_run.font.name = 'Arial'
-                            desc_run.font.size = Pt(9)
-                        else:
-                            # Continued lines: just the text, no bullet or title
-                            desc_run = p.add_run()
-                            desc_run.text = para
-                            desc_run.font.bold = False
-                            desc_run.font.name = 'Arial'
-                            desc_run.font.size = Pt(9)
-                prev_had_content = True
+                        if paragraph_count > 0:
+                            try: p.space_before = Pt(3)
+                            except: pass
+                        bullet_run = p.add_run()
+                        bullet_run.text = self.BULLET_CHAR
+                        bullet_run.font.color.rgb = self.DARK_GREY
+                        bullet_run.font.name = 'Arial'
+                        bullet_run.font.size = Pt(9)
+                        title_run = p.add_run()
+                        cont_text = " (continued)" if item.layer2_continued else ""
+                        title_run.text = f"{item.account_title}{cont_text}"
+                        title_run.font.bold = True
+                        title_run.font.name = 'Arial'
+                        title_run.font.size = Pt(9)
+                        desc_run = p.add_run()
+                        desc_run.text = f" - {part}"
+                        desc_run.font.bold = False
+                        desc_run.font.name = 'Arial'
+                        desc_run.font.size = Pt(9)
+                        paragraph_count += 1
+                    else:
+                        # Continuation: visually subordinate (indented, no bullet)
+                        p = tf.add_paragraph()
+                        self._apply_paragraph_formatting(p, is_layer2_3=True)
+                        if paragraph_count > 0:
+                            try: p.space_before = Pt(3)
+                            except: pass
+                        try: p.left_indent = Inches(0.4)
+                        except: pass
+                        try: p.first_line_indent = Inches(-0.19)
+                        except: pass
+                        cont_run = p.add_run()
+                        cont_run.text = part
+                        cont_run.font.bold = False
+                        cont_run.font.name = 'Arial'
+                        cont_run.font.size = Pt(9)
+                        paragraph_count += 1
+                    # Add an empty row between split parts (but not after the last)
+                    if part_idx < len(desc_parts) - 1:
+                        tf.add_paragraph()
+                        paragraph_count += 1
             prev_account_title = item.account_title
             prev_continued = item.layer1_continued or item.layer2_continued
         self.current_shape = None
@@ -384,6 +432,8 @@ class PowerPointGenerator:
 
     def generate_full_report(self, md_content: str, summary_md: str, output_path: str):
         print("[DEBUG] Entered generate_full_report")
+        print(f"[DEBUG] ROWS_PER_SECTION: {self.ROWS_PER_SECTION}")
+        print(f"[DEBUG] md_content preview: {md_content[:200]!r}")
         try:
             print("[DEBUG] Parsing markdown...")
             items = self.parse_markdown(md_content)
@@ -391,6 +441,9 @@ class PowerPointGenerator:
             print("[DEBUG] Planning content distribution...")
             distribution = self._plan_content_distribution(items)
             print(f"[DEBUG] Planned distribution for {len(distribution)} slide sections.")
+            for slide_idx, section, section_items in distribution:
+                total_lines = sum(self._calculate_item_lines(item) for item in section_items)
+                print(f"[DEBUG] Slide {slide_idx} section {section}: {len(section_items)} items, {total_lines} lines")
             self._validate_content_placement(distribution)
             print("[DEBUG] Content placement validated.")
             summary_text = self.parse_summary_markdown(summary_md)
@@ -435,6 +488,7 @@ class PowerPointGenerator:
                 logging.info(f"Removing unused slides: {[idx+1 for idx in unused_slides]}")
                 self._remove_slides(unused_slides)
             print(f"[DEBUG] Saving presentation to {output_path}")
+            print(f"[DEBUG] Current working directory: {os.getcwd()}")
             self.prs.save(output_path)
             print(f"[DEBUG] Successfully generated PowerPoint with {len(self.prs.slides)} slides and summary content")
         except Exception as e:
@@ -443,23 +497,8 @@ class PowerPointGenerator:
             raise
 
     def _apply_paragraph_formatting(self, paragraph, is_layer2_3=False):
-        """Version-safe paragraph formatting with layer-specific settings"""
+        # Only use legacy assignments, never .paragraph_format
         try:
-            # Modern versions (>=0.6.18) with paragraph_format
-            pf = paragraph.paragraph_format
-            if is_layer2_3:
-                pf.left_indent = Inches(0.21)
-                pf.first_line_indent = Inches(-0.19)  # Hanging indent
-                pf.space_before = Pt(0)
-            else:
-                pf.left_indent = Inches(0.3)
-                pf.first_line_indent = Inches(-0.3)
-                pf.space_before = Pt(0)
-            pf.space_after = Pt(0)
-            pf.line_spacing = 1.0
-            pf.alignment = PP_ALIGN.LEFT
-        except AttributeError:
-            # Legacy version handling
             if is_layer2_3:
                 try: paragraph.left_indent = Inches(0.21)
                 except: pass
@@ -480,6 +519,8 @@ class PowerPointGenerator:
             except: pass
             try: paragraph.alignment = PP_ALIGN.LEFT
             except: self._handle_legacy_alignment(paragraph)
+        except Exception as e:
+            print(f"[ERROR] _apply_paragraph_formatting failed: {e} (type: {type(paragraph)})")
 
     def _handle_legacy_alignment(self, paragraph):
         """XML-based left alignment for legacy versions"""
@@ -495,9 +536,7 @@ class PowerPointGenerator:
             logging.warning(f"Legacy alignment failed: {str(e)}")
 
     def _create_taxes_table(self, shape, item):
-        """Formats taxes payables content as a structured table"""
         tf = shape.text_frame
-        
         # Header
         p = tf.add_paragraph()
         self._apply_paragraph_formatting(p, is_layer2_3=True)
@@ -507,21 +546,19 @@ class PowerPointGenerator:
         header_run.font.bold = True
         header_run.font.name = 'Arial'
         header_run.font.size = Pt(9)
-
         # Process table content
         content = ' '.join(item.descriptions)
         current_category = None
-        
         for line in content.split('\n'):
             line = line.strip()
             if not line or '===' in line:
                 continue
-            
             if 'Tax:' in line or 'Payable:' in line:
                 current_category = line.replace(':', '')
                 p = tf.add_paragraph()
                 self._apply_paragraph_formatting(p, is_layer2_3=True)
-                p.paragraph_format.left_indent = Inches(0.4)
+                try: p.left_indent = Inches(0.4)
+                except: pass
                 run = p.add_run()
                 run.text = f"• {current_category}"
                 run.font.name = 'Arial'
@@ -530,7 +567,8 @@ class PowerPointGenerator:
             elif line.startswith('- '):
                 p = tf.add_paragraph()
                 self._apply_paragraph_formatting(p, is_layer2_3=True)
-                p.paragraph_format.left_indent = Inches(0.6)
+                try: p.left_indent = Inches(0.6)
+                except: pass
                 run = p.add_run()
                 run.text = f"◦ {line[2:]}"
                 run.font.name = 'Arial'
@@ -553,7 +591,7 @@ class PowerPointGenerator:
         run.font.color.rgb = RGBColor(255, 255, 255)
         # Set LEFT alignment
         try:
-            p.paragraph_format.alignment = PP_ALIGN.LEFT
+            p.alignment = PP_ALIGN.LEFT
         except AttributeError:
             try:
                 p.alignment = PP_ALIGN.LEFT
@@ -595,9 +633,6 @@ class PowerPointGenerator:
 
     def _populate_bullet_content(self, shape, item, bullet_lines):
         tf = shape.text_frame
-        # No tf.clear() here to avoid erasing previous content in the section
-        # Only add paragraphs as needed
-        # Layer 2 header
         p = tf.add_paragraph()
         self._apply_paragraph_formatting(p, is_layer2_3=True)
         bullet_run = p.add_run()
@@ -611,12 +646,13 @@ class PowerPointGenerator:
         title_run.font.bold = True
         title_run.font.name = 'Arial'
         title_run.font.size = Pt(9)
-        # Bullet items
         for line in bullet_lines:
             p = tf.add_paragraph()
             self._apply_paragraph_formatting(p, is_layer2_3=True)
-            p.paragraph_format.left_indent = Inches(0.4)
-            p.paragraph_format.first_line_indent = Inches(-0.19)
+            try: p.left_indent = Inches(0.4)
+            except: pass
+            try: p.first_line_indent = Inches(-0.19)
+            except: pass
             run = p.add_run()
             clean_line = line.lstrip('- ').strip() if isinstance(line, str) else line[1].lstrip('- ').strip()
             run.text = f"• {clean_line}"
@@ -625,15 +661,36 @@ class PowerPointGenerator:
             run.font.bold = False
 
 class ReportGenerator:
-    def __init__(self, template_path, markdown_file, output_path):
+    def __init__(self, template_path, markdown_file, output_path, project_name=None):
         self.template_path = template_path
         self.markdown_file = markdown_file
         self.output_path = output_path
-
-    def generate(self, summary_content=None):
+        self.project_name = project_name
+        
+    def generate(self):
+        location = self.project_name  # Use the provided project_name/entity
+        if location == "Haining":
+            summary_content = """
+            ## Summary
+            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
+            """
+        elif location == "Ningbo":
+            summary_content = """
+            ## Summary
+            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
+            """
+        elif location == "Nanjing":
+            summary_content = """
+            ## Summary
+            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
+            """
+        else:
+            summary_content = ""
+        with open(self.markdown_file, 'r', encoding='utf-8') as f:
+            md_content = f.read()
         generator = PowerPointGenerator(self.template_path)
-        try:
-            generator.generate_full_report(self.markdown_file, summary_content or '', self.output_path)
+        try: 
+            generator.generate_full_report(md_content, summary_content, self.output_path)
         except Exception as e:
             print(f"Generation failed: {str(e)}")
 
@@ -674,16 +731,16 @@ def update_project_titles(presentation_path, project_name, output_path=None):
 
 # --- High-level function for app.py ---
 def export_pptx(template_path, markdown_path, output_path, project_name=None):
-    print(f"[DEBUG] Starting export_pptx: template={template_path}, markdown={markdown_path}, output={output_path}, project={project_name}")
-    with open(markdown_path, 'r', encoding='utf-8') as f:
-        md_content = f.read()
-    generator = PowerPointGenerator(template_path)
-    print("[DEBUG] Calling generate_full_report...")
-    generator.generate_full_report(md_content, '', output_path)
-    print("[DEBUG] generate_full_report completed.")
+    logging.info(f"[DEBUG] Starting export_pptx: template={template_path}, markdown={markdown_path}, output={output_path}, project={project_name}")
+    generator = ReportGenerator(template_path, markdown_path, output_path, project_name)
+    generator.generate()
+    if not os.path.exists(output_path):
+        logging.error(f"[ERROR] PPTX file was not created at {output_path}")
+        raise FileNotFoundError(f"PPTX file was not created at {output_path}")
+    logging.info(f"[DEBUG] PPTX file successfully saved at {output_path}")
     if project_name:
-        print("[DEBUG] Updating project titles...")
+        logging.info("[DEBUG] Updating project titles...")
         update_project_titles(output_path, project_name)
-        print("[DEBUG] Project titles updated.")
-    print(f"[DEBUG] Export complete: {output_path}")
+        logging.info("[DEBUG] Project titles updated.")
+    logging.info(f"[DEBUG] Export complete: {output_path}")
     return output_path 
