@@ -81,7 +81,7 @@ output_file_name = st.sidebar.text_input("Output PPTX File Name", value=default_
 # --- Helper Functions ---
 def extract_tables_from_worksheet_robust(excel_path, sheet_name, entity_keywords):
     """
-    Robust table extraction using the original method from utils.py
+    Robust table extraction: always show openpyxl tables if present, regardless of entity keywords.
     """
     try:
         import openpyxl
@@ -90,7 +90,7 @@ def extract_tables_from_worksheet_robust(excel_path, sheet_name, entity_keywords
         
         tables = []
         
-        # Method 1: Try to extract from openpyxl tables (works for individually formatted tables)
+        # Method 1: Extract from openpyxl tables (works for individually formatted tables)
         if hasattr(ws, '_tables') and ws._tables:
             for tbl in ws._tables.values():
                 try:
@@ -99,7 +99,8 @@ def extract_tables_from_worksheet_robust(excel_path, sheet_name, entity_keywords
                     data = []
                     for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col, values_only=True):
                         data.append(row)
-                    if data and len(data) >= 2:
+                    # Only add if there is at least one data row (header + at least one row)
+                    if data and len(data) > 1:
                         tables.append({
                             'data': data,
                             'method': 'openpyxl_table',
@@ -110,53 +111,38 @@ def extract_tables_from_worksheet_robust(excel_path, sheet_name, entity_keywords
                     print(f"Failed to extract table {tbl.name}: {e}")
                     continue
         
-        # Method 2: Original method from utils.py - DataFrame splitting on empty rows
+        # Method 2: DataFrame splitting on empty rows, filtered by entity keywords
         try:
-            # Load the sheet as DataFrame
             xl = pd.ExcelFile(excel_path)
             if sheet_name in xl.sheet_names:
                 df = xl.parse(sheet_name)
-                
-                # Split dataframes on empty rows (original method)
                 empty_rows = df.index[df.isnull().all(1)]
                 start_idx = 0
                 dataframes = []
-                
                 for end_idx in empty_rows:
                     if end_idx > start_idx:
                         split_df = df[start_idx:end_idx]
                         if not split_df.dropna(how='all').empty:
                             dataframes.append(split_df)
                         start_idx = end_idx + 1
-                
                 if start_idx < len(df):
                     dataframes.append(df[start_idx:])
-                
-                # Filter dataframes by entity keywords (original method)
                 combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
-                
                 for i, data_frame in enumerate(dataframes):
-                    # Check if dataframe contains entity keywords
                     mask = data_frame.apply(
                         lambda row: row.astype(str).str.contains(
                             combined_pattern, case=False, regex=True, na=False
                         ).any(),
                         axis=1
                     )
-                    
                     if mask.any():
-                        # Convert DataFrame to list format for consistency
                         table_data = [data_frame.columns.tolist()] + data_frame.values.tolist()
-                        
-                        # Check if table has meaningful content (not empty)
                         if table_data and len(table_data) > 1:
-                            # Check if there's actual data beyond headers
                             has_data = False
-                            for row in table_data[1:]:  # Skip header row
+                            for row in table_data[1:]:
                                 if any(cell and str(cell).strip() for cell in row):
                                     has_data = True
                                     break
-                            
                             if has_data:
                                 tables.append({
                                     'data': table_data,
@@ -164,12 +150,9 @@ def extract_tables_from_worksheet_robust(excel_path, sheet_name, entity_keywords
                                     'name': f'original_table_{i}',
                                     'range': f'dataframe_{i}'
                                 })
-                        
         except Exception as e:
             print(f"Error in original table detection: {e}")
-        
         return tables
-        
     except Exception as e:
         print(f"Error in robust table extraction for worksheet view: {e}")
         return []
