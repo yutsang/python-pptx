@@ -79,6 +79,123 @@ default_output_name = f"{entity}_{sheet_type}_{datetime.datetime.now().strftime(
 output_file_name = st.sidebar.text_input("Output PPTX File Name", value=default_output_name)
 
 # --- Helper Functions ---
+def extract_tables_from_worksheet_robust(excel_path, sheet_name, entity_keywords):
+    """
+    Robust table extraction for worksheet view that works with both individually formatted tables and upslide smart format tables.
+    """
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(excel_path, data_only=True)
+        ws = wb[sheet_name]
+        
+        tables = []
+        
+        # Method 1: Try to extract from openpyxl tables (works for individually formatted tables)
+        if hasattr(ws, '_tables') and ws._tables:
+            for tbl in ws._tables.values():
+                try:
+                    ref = tbl.ref
+                    min_col, min_row, max_col, max_row = openpyxl.utils.range_boundaries(ref)
+                    data = []
+                    for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col, values_only=True):
+                        data.append(row)
+                    if data and len(data) >= 2:
+                        tables.append({
+                            'data': data,
+                            'method': 'openpyxl_table',
+                            'name': tbl.name,
+                            'range': ref
+                        })
+                except Exception as e:
+                    print(f"Failed to extract table {tbl.name}: {e}")
+                    continue
+        
+        # Method 2: Dense block detection (works for upslide smart format and other table-like structures)
+        all_data = []
+        for row in ws.iter_rows(values_only=True):
+            all_data.append(row)
+        
+        if all_data:
+            df = pd.DataFrame(all_data)
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            if len(df) >= 2:
+                # Find dense blocks that could be tables
+                from common.assistant import find_dense_blocks
+                dense_blocks = find_dense_blocks(df, min_rows=3, min_cols=2, density_threshold=0.4)
+                
+                for block in dense_blocks:
+                    row_start, row_end, col_start, col_end = block
+                    block_data = df.iloc[row_start:row_end, col_start:col_end]
+                    
+                    # Check if this block contains entity keywords - handle mixed data types safely
+                    block_str = ' '.join([str(cell) for cell in block_data.values.flatten()]).lower()
+                    has_entity = any(kw.lower() in block_str for kw in entity_keywords)
+                    
+                    if has_entity and len(block_data) >= 2:
+                        # Convert back to list format
+                        table_data = [block_data.columns.tolist()] + block_data.values.tolist()
+                        tables.append({
+                            'data': table_data,
+                            'method': 'dense_block',
+                            'name': f'block_{row_start}_{col_start}',
+                            'range': f'{row_start}:{row_end},{col_start}:{col_end}'
+                        })
+        
+        # Method 3: Pattern-based table detection (for tables with clear headers and data)
+        if all_data:
+            df = pd.DataFrame(all_data)
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            # Look for patterns that indicate table boundaries
+            for i in range(len(df) - 1):
+                # Check if current row looks like a header (has text in most columns)
+                current_row = df.iloc[i]
+                next_row = df.iloc[i + 1]
+                
+                # Header detection: current row has mostly text, next row has mostly numbers
+                current_text_count = sum(1 for cell in current_row if isinstance(cell, str) and str(cell).strip())
+                next_numeric_count = sum(1 for cell in next_row if isinstance(cell, (int, float)) or 
+                                       (isinstance(cell, str) and str(cell).replace(',', '').replace('.', '').replace('-', '').isdigit()))
+                
+                if current_text_count >= len(current_row) * 0.6 and next_numeric_count >= len(next_row) * 0.4:
+                    # This looks like a table header, find the table boundaries
+                    table_start = i
+                    table_end = i + 1
+                    
+                    # Find where the table ends (empty row or different pattern)
+                    for j in range(i + 2, len(df)):
+                        row = df.iloc[j]
+                        if row.isna().all() or all(str(cell).strip() == '' for cell in row):
+                            break
+                        # Check if this row continues the table pattern
+                        if len([cell for cell in row if pd.notna(cell) and str(cell).strip()]) >= len(row) * 0.3:  # At least 30% non-empty
+                            table_end = j
+                        else:
+                            break
+                    
+                    if table_end > table_start + 1:  # At least header + 1 data row
+                        table_data = df.iloc[table_start:table_end + 1]
+                        table_list = [table_data.columns.tolist()] + table_data.values.tolist()
+                        
+                        # Check for entity keywords - handle mixed data types safely
+                        table_str = ' '.join([str(cell) for cell in table_data.values.flatten()]).lower()
+                        has_entity = any(kw.lower() in table_str for kw in entity_keywords)
+                        
+                        if has_entity:
+                            tables.append({
+                                'data': table_list,
+                                'method': 'pattern_detection',
+                                'name': f'pattern_table_{table_start}',
+                                'range': f'{table_start}:{table_end}'
+                            })
+        
+        return tables
+        
+    except Exception as e:
+        print(f"Error in robust table extraction for worksheet view: {e}")
+        return []
+
 def save_results_to_markdown(results, entity: str):
     """Save AI-generated results back to the markdown file"""
     try:
@@ -151,98 +268,125 @@ if uploaded_file:
                     selected_key = key
                     break
             if selected_key is not None:
-                # Worksheet display/filtering code for 'sheet' only (no nested tabs)
-                try:
-                    df = xl.parse(sheet, header=0)
-                    # If columns are Unnamed, use the next row as header
-                    if any(str(col).startswith("Unnamed") for col in df.columns):
-                        df = pd.read_excel(excel_path, sheet_name=sheet, header=1)
-                except Exception as e:
-                    # If parsing fails, try with different parameters
-                    df = pd.read_excel(excel_path, sheet_name=sheet, header=None)
-                    # Try to find a row that looks like headers
-                    for j in range(min(5, len(df))):
-                        if df.iloc[j].apply(lambda x: isinstance(x, str) and len(str(x)) > 0).sum() > len(df.columns) / 2:
-                            df = pd.read_excel(excel_path, sheet_name=sheet, header=j)
-                            break
-                # Drop columns only if all values are NaN
-                df = df.dropna(axis=1, how='all')
-                # Convert all columns to string to avoid ArrowTypeError with mixed data types
-                for col in df.columns:
-                    try:
-                        # Handle mixed data types more aggressively
-                        if df[col].dtype == 'object':
-                            # For object columns, check for mixed types and convert everything to string
-                            df[col] = df[col].apply(lambda x: str(x) if pd.notna(x) else '')
-                        elif pd.api.types.is_datetime64_any_dtype(df[col]):
-                            df[col] = df[col].astype(str)
-                        elif pd.api.types.is_numeric_dtype(df[col]):
-                            # For numeric columns, convert to string but preserve formatting
-                            df[col] = df[col].apply(lambda x: f"{x:,.2f}" if pd.notna(x) else '')
-                        else:
-                            # For all other types, convert to string
-                            df[col] = df[col].astype(str)
-                    except Exception as e:
-                        # Ultimate fallback: convert everything to string
-                        df[col] = df[col].apply(lambda x: str(x) if pd.notna(x) else '')
-                # Optionally drop Unnamed columns if not needed
-                df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-                # Split dataframes on empty rows and filter by entity name (from original utils.py)
-                empty_rows = df.index[df.isnull().all(1)]
-                start_idx = 0
-                dataframes = []
-                # Split on empty rows
-                for end_idx in empty_rows:
-                    if end_idx > start_idx:
-                        split_df = df[start_idx:end_idx]
-                        if not split_df.dropna(how='all').empty:
-                            dataframes.append(split_df)
-                        start_idx = end_idx + 1
-                if start_idx < len(df):
-                    dataframes.append(df[start_idx:])
-                if not dataframes:
+                # Use robust table extraction for better compatibility with different table formats
+                # Create entity keywords that match the actual table content
+                entity_keywords = [entity] + [f"{entity}{suffix}" for suffix in helpers]
+                tables = extract_tables_from_worksheet_robust(excel_path, sheet, entity_keywords)
+                
+                if not tables:
                     st.info("No tables found in this sheet.")
                 else:
+                    st.success(f"Found {len(tables)} table(s) using robust detection")
+                    
                     if enable_filtering:
-                        entity_keywords = [f"{entity}{suffix}" for suffix in helpers]
-                        for k, data_frame in enumerate(dataframes):
-                            df_str = data_frame.astype(str).reset_index(drop=True)
-                            header_indices = []
-                            for idx, row in df_str.iterrows():
-                                row_str = ' '.join(row.values).lower()
-                                for pattern in entity_keywords:
-                                    if pattern.lower() in row_str:
-                                        header_indices.append(idx)
-                                        break
-                            for j, header_idx in enumerate(header_indices):
-                                next_header = header_indices[j+1] if j+1 < len(header_indices) else len(df_str)
-                                empty_after = df_str.iloc[header_idx+1:next_header].index[df_str.iloc[header_idx+1:next_header].apply(lambda r: all(str(cell).strip() == '' for cell in r), axis=1)]
-                                section_end = empty_after[0] if len(empty_after) > 0 else next_header
-                                section = df_str.iloc[header_idx:section_end]
-                                section = section[~section.apply(lambda r: all(str(cell).strip() == '' for cell in r), axis=1)]
-                                if len(section) > 0:
-                                    # Set the first row as the new header, rest as data
-                                    new_header = section.iloc[0].values.tolist()
-                                    section_data = section.iloc[1:].copy()
-                                    # Ensure all rows have the same number of columns as the header
-                                    if section_data.shape[1] != len(new_header):
-                                        section_data = section_data.reindex(columns=range(len(new_header)), fill_value='')
-                                    section_data.columns = new_header
-                                    section_data = section_data.reset_index(drop=True)
-                                    try:
-                                        st.table(section_data)
-                                    except Exception as e:
-                                        st.text(str(section_data.to_string()))
-                    else:
-                        for k, data_frame in enumerate(dataframes):
-                            df_display = data_frame.copy()
-                            for col in df_display.columns:
-                                df_display[col] = df_display[col].astype(str)
+                        matching_tables = []
+                        for i, table_info in enumerate(tables):
                             try:
-                                st.table(df_display)
+                                data = table_info['data']
+                                method = table_info['method']
+                                table_name = table_info['name']
+                                
+                                if not data or len(data) < 2:
+                                    continue
+                                
+                                # Create DataFrame
+                                df = pd.DataFrame(data[1:], columns=data[0])
+                                df = df.dropna(how='all').dropna(axis=1, how='all')
+                                
+                                # Convert all columns to string to avoid ArrowTypeError with mixed data types
+                                for col in df.columns:
+                                    try:
+                                        if df[col].dtype == 'object':
+                                            df[col] = df[col].apply(lambda x: str(x) if pd.notna(x) else '')
+                                        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+                                            df[col] = df[col].astype(str)
+                                        elif pd.api.types.is_numeric_dtype(df[col]):
+                                            df[col] = df[col].apply(lambda x: f"{x:,.2f}" if pd.notna(x) else '')
+                                        else:
+                                            df[col] = df[col].astype(str)
+                                    except Exception as e:
+                                        df[col] = df[col].apply(lambda x: str(x) if pd.notna(x) else '')
+                                
+                                # Drop Unnamed columns - handle mixed data types safely
+                                df = df.loc[:, ~df.columns.astype(str).str.contains('^Unnamed')]
+                                df = df.reset_index(drop=True)
+                                
+                                # Check for entity keywords - handle mixed data types safely
+                                # Include both the original data (which may contain headers) and the processed DataFrame
+                                all_cells = [str(cell).lower().strip() for cell in df.values.flatten()]
+                                # Also check the original data for headers/titles
+                                original_cells = [str(cell).lower().strip() for cell in data[0]] if data and len(data) > 0 else []
+                                all_cells.extend(original_cells)
+                                
+                                # Also check the table name itself for entity keywords
+                                table_name_cells = [str(cell).lower().strip() for cell in table_name.split() if cell]
+                                all_cells.extend(table_name_cells)
+                                
+                                # Check ALL rows of the original data for entity keywords
+                                for row in data:
+                                    row_cells = [str(cell).lower().strip() for cell in row if cell]
+                                    all_cells.extend(row_cells)
+                                
+                                # Check for entity keywords in all collected cells
+                                match_found = any(any(kw.lower() in cell for cell in all_cells) for kw in entity_keywords)
+                                
+                                if match_found:
+                                    matching_tables.append((i+1, method, df))
+                                        
                             except Exception as e:
-                                st.text(str(df_display.to_string()))
-                st.session_state['excel_tables'][sheet] = df
+                                st.error(f"Error processing table {i+1}: {str(e)}")
+                                continue
+                        
+                        # Only show matching tables
+                        if matching_tables:
+                            for table_num, method, df in matching_tables:
+                                st.write(f"**Table {table_num}** (Detected by: {method})")
+                                try:
+                                    st.table(df)
+                                except Exception as e:
+                                    st.text(str(df.to_string()))
+                        else:
+                            st.info("No tables found matching the selected entity.")
+                    else:
+                        # Show all tables without filtering
+                        for i, table_info in enumerate(tables):
+                            try:
+                                data = table_info['data']
+                                method = table_info['method']
+                                table_name = table_info['name']
+                                
+                                if not data or len(data) < 2:
+                                    continue
+                                
+                                # Create DataFrame
+                                df = pd.DataFrame(data[1:], columns=data[0])
+                                df = df.dropna(how='all').dropna(axis=1, how='all')
+                                
+                                # Convert all columns to string
+                                for col in df.columns:
+                                    df[col] = df[col].astype(str)
+                                
+                                # Drop Unnamed columns - handle mixed data types safely
+                                df = df.loc[:, ~df.columns.astype(str).str.contains('^Unnamed')]
+                                df = df.reset_index(drop=True)
+                                
+                                st.write(f"**Table {i+1}** (Detected by: {method})")
+                                try:
+                                    st.table(df)
+                                except Exception as e:
+                                    st.text(str(df.to_string()))
+                                    
+                            except Exception as e:
+                                st.error(f"Error processing table {i+1}: {str(e)}")
+                                continue
+                
+                # Store the first table for session state (for compatibility)
+                if tables:
+                    first_table_data = tables[0]['data']
+                    if first_table_data and len(first_table_data) >= 2:
+                        df_session = pd.DataFrame(first_table_data[1:], columns=first_table_data[0])
+                        df_session = df_session.dropna(how='all').dropna(axis=1, how='all')
+                        st.session_state['excel_tables'][sheet] = df_session
     # --- AI Generation Button ---
     st.subheader("Generate Report Text")
     if st.button("Generate Text (AI/Test)"):

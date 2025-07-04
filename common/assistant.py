@@ -79,6 +79,119 @@ def find_dense_blocks(df, min_rows=2, min_cols=3, density_threshold=0.6):
                             blocks.append((row_start, row_end, col_start, col_end))
     return blocks
 
+def extract_tables_robust(worksheet, entity_keywords):
+    """
+    Robust table extraction that works with both individually formatted tables and upslide smart format tables.
+    """
+    tables = []
+    
+    try:
+        # Method 1: Try to extract from openpyxl tables (works for individually formatted tables)
+        if hasattr(worksheet, '_tables') and worksheet._tables:
+            for tbl in worksheet._tables.values():
+                try:
+                    ref = tbl.ref
+                    min_col, min_row, max_col, max_row = openpyxl.utils.range_boundaries(ref)
+                    data = []
+                    for row in worksheet.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col, values_only=True):
+                        data.append(row)
+                    if data and len(data) >= 2:
+                        tables.append({
+                            'data': data,
+                            'method': 'openpyxl_table',
+                            'name': tbl.name,
+                            'range': ref
+                        })
+                except Exception as e:
+                    print(f"Failed to extract table {tbl.name}: {e}")
+                    continue
+        
+        # Method 2: Dense block detection (works for upslide smart format and other table-like structures)
+        # Convert worksheet to DataFrame for analysis
+        all_data = []
+        for row in worksheet.iter_rows(values_only=True):
+            all_data.append(row)
+        
+        if all_data:
+            df = pd.DataFrame(all_data)
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            if len(df) >= 2:
+                # Find dense blocks that could be tables
+                dense_blocks = find_dense_blocks(df, min_rows=3, min_cols=2, density_threshold=0.4)
+                
+                for block in dense_blocks:
+                    row_start, row_end, col_start, col_end = block
+                    block_data = df.iloc[row_start:row_end, col_start:col_end]
+                    
+                    # Check if this block contains entity keywords - handle mixed data types safely
+                    block_str = ' '.join([str(cell) for cell in block_data.values.flatten()]).lower()
+                    has_entity = any(kw.lower() in block_str for kw in entity_keywords)
+                    
+                    if has_entity and len(block_data) >= 2:
+                        # Convert back to list format
+                        table_data = [block_data.columns.tolist()] + block_data.values.tolist()
+                        tables.append({
+                            'data': table_data,
+                            'method': 'dense_block',
+                            'name': f'block_{row_start}_{col_start}',
+                            'range': f'{row_start}:{row_end},{col_start}:{col_end}'
+                        })
+        
+        # Method 3: Pattern-based table detection (for tables with clear headers and data)
+        if all_data:
+            df = pd.DataFrame(all_data)
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            # Look for patterns that indicate table boundaries
+            for i in range(len(df) - 1):
+                # Check if current row looks like a header (has text in most columns)
+                current_row = df.iloc[i]
+                next_row = df.iloc[i + 1]
+                
+                # Header detection: current row has mostly text, next row has mostly numbers
+                current_text_count = sum(1 for cell in current_row if isinstance(cell, str) and cell.strip())
+                next_numeric_count = sum(1 for cell in next_row if isinstance(cell, (int, float)) or 
+                                       (isinstance(cell, str) and cell.replace(',', '').replace('.', '').replace('-', '').isdigit()))
+                
+                if current_text_count >= len(current_row) * 0.6 and next_numeric_count >= len(next_row) * 0.4:
+                    # This looks like a table header, find the table boundaries
+                    table_start = i
+                    table_end = i + 1
+                    
+                    # Find where the table ends (empty row or different pattern)
+                    for j in range(i + 2, len(df)):
+                        row = df.iloc[j]
+                        if row.isna().all() or (row.astype(str).str.strip() == '').all():
+                            break
+                        # Check if this row continues the table pattern
+                        if len(row.dropna()) >= len(row) * 0.3:  # At least 30% non-empty
+                            table_end = j
+                        else:
+                            break
+                    
+                    if table_end > table_start + 1:  # At least header + 1 data row
+                        table_data = df.iloc[table_start:table_end + 1]
+                        table_list = [table_data.columns.tolist()] + table_data.values.tolist()
+                        
+                        # Check for entity keywords - handle mixed data types safely
+                        table_str = ' '.join([str(cell) for cell in table_data.values.flatten()]).lower()
+                        has_entity = any(kw.lower() in table_str for kw in entity_keywords)
+                        
+                        if has_entity:
+                            tables.append({
+                                'data': table_list,
+                                'method': 'pattern_detection',
+                                'name': f'pattern_table_{table_start}',
+                                'range': f'{table_start}:{table_end}'
+                            })
+        
+        return tables
+        
+    except Exception as e:
+        print(f"Error in robust table extraction: {e}")
+        return []
+
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
     try:
         main_dir = Path(__file__).parent.parent
@@ -87,37 +200,53 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         markdown_content = ""
         entity_keywords = [entity_name] + list(entity_suffixes)
         entity_keywords = [kw.strip().lower() for kw in entity_keywords if kw.strip()]
+        
         for ws in wb.worksheets:
             if ws.title not in tab_name_mapping:
                 continue
-            for tbl in ws._tables.values():
-                ref = tbl.ref
-                min_col, min_row, max_col, max_row = openpyxl.utils.range_boundaries(ref)
-                data = []
-                for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col, values_only=True):
-                    data.append(row)
-                if not data or len(data) < 2:
+            
+            print(f"[DEBUG] Processing worksheet: {ws.title}")
+            
+            # Use robust table extraction
+            tables = extract_tables_robust(ws, entity_keywords)
+            
+            for table_info in tables:
+                try:
+                    data = table_info['data']
+                    method = table_info['method']
+                    table_name = table_info['name']
+                    
+                    if not data or len(data) < 2:
+                        continue
+                    
+                    # Create DataFrame
+                    df = pd.DataFrame(data[1:], columns=data[0])
+                    df = df.dropna(how='all').dropna(axis=1, how='all')
+                    df = df.applymap(lambda x: str(x) if x is not None else "")
+                    df = df.reset_index(drop=True)
+                    
+                    # Check for entity keywords - handle mixed data types safely
+                    all_cells = [str(cell).lower().strip() for cell in df.values.flatten()]
+                    match_found = any(any(kw in cell for cell in all_cells) for kw in entity_keywords)
+                    
+                    if match_found:
+                        print(f"[DEBUG] Table '{table_name}' (method: {method}) in sheet '{ws.title}' included for entity keywords: {entity_keywords}")
+                        try:
+                            markdown_content += tabulate(df, headers='keys', tablefmt='pipe') + '\n\n'
+                        except Exception:
+                            markdown_content += df.to_markdown(index=False) + '\n\n'
+                    else:
+                        print(f"[DEBUG] Table '{table_name}' (method: {method}) in sheet '{ws.title}' skipped for entity keywords: {entity_keywords}")
+                        
+                except Exception as e:
+                    print(f"Error processing table {table_info.get('name', 'unknown')}: {e}")
                     continue
-                df = pd.DataFrame(data[1:], columns=data[0])
-                df = df.dropna(how='all').dropna(axis=1, how='all')
-                df = df.applymap(lambda x: str(x) if x is not None else "")  # Convert every cell to string
-                df = df.reset_index(drop=True)
-                # Flatten all cell values to a list of strings
-                all_cells = df.apply(lambda x: x.str.lower().strip(), axis=1).values.flatten().tolist()
-                # Check if any entity keyword appears in any cell
-                match_found = any(any(kw in cell for cell in all_cells) for kw in entity_keywords)
-                if match_found:
-                    print(f"[DEBUG] Table '{tbl.name}' in sheet '{ws.title}' included for entity keywords: {entity_keywords}")
-                    try:
-                        markdown_content += tabulate(df, headers='keys', tablefmt='pipe') + '\n\n'
-                    except Exception:
-                        markdown_content += df.to_markdown(index=False) + '\n\n'
-                else:
-                    print(f"[DEBUG] Table '{tbl.name}' in sheet '{ws.title}' skipped for entity keywords: {entity_keywords}")
+        
         return markdown_content
+        
     except Exception as e:
         print("An error occurred while processing the Excel file:", e)
-    return ""
+        return ""
 
 def find_financial_figures_with_context_check(filename, sheet_name, date_str, convert_thousands=False):
     try:
