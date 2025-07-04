@@ -81,7 +81,7 @@ output_file_name = st.sidebar.text_input("Output PPTX File Name", value=default_
 # --- Helper Functions ---
 def extract_tables_from_worksheet_robust(excel_path, sheet_name, entity_keywords):
     """
-    Robust table extraction for worksheet view that works with both individually formatted tables and upslide smart format tables.
+    Robust table extraction using the original method from utils.py
     """
     try:
         import openpyxl
@@ -110,157 +110,69 @@ def extract_tables_from_worksheet_robust(excel_path, sheet_name, entity_keywords
                     print(f"Failed to extract table {tbl.name}: {e}")
                     continue
         
-        # Method 2: Smart table detection for upslide smart format and other table-like structures
-        all_data = []
-        for row in ws.iter_rows(values_only=True):
-            all_data.append(row)
-        
-        if all_data:
-            df = pd.DataFrame(all_data)
-            df = df.dropna(how='all').dropna(axis=1, how='all')
-            
-            if len(df) >= 2:
-                # Look for table patterns in the data
-                table_regions = find_table_regions_smart(df, entity_keywords)
+        # Method 2: Original method from utils.py - DataFrame splitting on empty rows
+        try:
+            # Load the sheet as DataFrame
+            xl = pd.ExcelFile(excel_path)
+            if sheet_name in xl.sheet_names:
+                df = xl.parse(sheet_name)
                 
-                for region in table_regions:
-                    row_start, row_end, col_start, col_end = region
-                    table_data = df.iloc[row_start:row_end+1, col_start:col_end+1]
+                # Split dataframes on empty rows (original method)
+                empty_rows = df.index[df.isnull().all(1)]
+                start_idx = 0
+                dataframes = []
+                
+                for end_idx in empty_rows:
+                    if end_idx > start_idx:
+                        split_df = df[start_idx:end_idx]
+                        if not split_df.dropna(how='all').empty:
+                            dataframes.append(split_df)
+                        start_idx = end_idx + 1
+                
+                if start_idx < len(df):
+                    dataframes.append(df[start_idx:])
+                
+                # Filter dataframes by entity keywords (original method)
+                combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
+                
+                for i, data_frame in enumerate(dataframes):
+                    # Check if dataframe contains entity keywords
+                    mask = data_frame.apply(
+                        lambda row: row.astype(str).str.contains(
+                            combined_pattern, case=False, regex=True, na=False
+                        ).any(),
+                        axis=1
+                    )
                     
-                    # Convert to list format
-                    table_list = [table_data.columns.tolist()] + table_data.values.tolist()
-                    
-                    tables.append({
-                        'data': table_list,
-                        'method': 'smart_detection',
-                        'name': f'smart_table_{row_start}_{col_start}',
-                        'range': f'{row_start}:{row_end},{col_start}:{col_end}'
-                    })
+                    if mask.any():
+                        # Convert DataFrame to list format for consistency
+                        table_data = [data_frame.columns.tolist()] + data_frame.values.tolist()
+                        
+                        # Check if table has meaningful content (not empty)
+                        if table_data and len(table_data) > 1:
+                            # Check if there's actual data beyond headers
+                            has_data = False
+                            for row in table_data[1:]:  # Skip header row
+                                if any(cell and str(cell).strip() for cell in row):
+                                    has_data = True
+                                    break
+                            
+                            if has_data:
+                                tables.append({
+                                    'data': table_data,
+                                    'method': 'original_split',
+                                    'name': f'original_table_{i}',
+                                    'range': f'dataframe_{i}'
+                                })
+                        
+        except Exception as e:
+            print(f"Error in original table detection: {e}")
         
         return tables
         
     except Exception as e:
         print(f"Error in robust table extraction for worksheet view: {e}")
         return []
-
-def find_table_regions_smart(df, entity_keywords):
-    """
-    Smart table detection that works with upslide smart format tables.
-    Looks for patterns that indicate table structures.
-    """
-    table_regions = []
-    nrows, ncols = df.shape
-    
-    # Look for table headers and data patterns
-    for i in range(nrows - 2):  # Need at least 3 rows for a table
-        # Check if current row could be a table header
-        current_row = df.iloc[i]
-        next_row = df.iloc[i + 1]
-        next_next_row = df.iloc[i + 2] if i + 2 < nrows else None
-        
-        # Criteria for table header:
-        # 1. Contains entity keywords
-        # 2. Has mostly text content
-        # 3. Followed by rows with data
-        
-        # Check for entity keywords in current row
-        row_text = ' '.join([str(cell).lower() for cell in current_row if pd.notna(cell)])
-        has_entity = any(kw.lower() in row_text for kw in entity_keywords)
-        
-        if has_entity:
-            # Count text vs numeric content in current and next rows
-            current_text_count = sum(1 for cell in current_row if isinstance(cell, str) and str(cell).strip())
-            next_numeric_count = sum(1 for cell in next_row if is_numeric_like(cell))
-            
-            # If current row has mostly text and next row has some numbers, this might be a table
-            if current_text_count >= len(current_row) * 0.3 and next_numeric_count >= 1:
-                # Find the table boundaries
-                table_start = i
-                table_end = i
-                
-                # Look for where the table ends
-                for j in range(i + 1, nrows):
-                    row = df.iloc[j]
-                    
-                    # Check if this row continues the table pattern
-                    if is_table_data_row(row):
-                        table_end = j
-                    else:
-                        # Check if it's an empty row or different pattern
-                        if is_empty_row(row) or not is_table_continuation(row, df.iloc[j-1] if j > 0 else None):
-                            break
-                        else:
-                            table_end = j
-                
-                # Ensure we have a reasonable table size
-                if table_end > table_start and (table_end - table_start + 1) >= 2:
-                    # Find column boundaries
-                    col_start, col_end = find_column_boundaries(df.iloc[table_start:table_end+1])
-                    
-                    # Only add if we have a reasonable table size
-                    if col_end > col_start and (col_end - col_start + 1) >= 2:
-                        table_regions.append((table_start, table_end, col_start, col_end))
-    
-    return table_regions
-
-def is_numeric_like(cell):
-    """Check if a cell contains numeric-like data."""
-    if pd.isna(cell):
-        return False
-    if isinstance(cell, (int, float)):
-        return True
-    if isinstance(cell, str):
-        # Remove common formatting characters
-        cleaned = str(cell).replace(',', '').replace('.', '').replace('-', '').replace('(', '').replace(')', '')
-        return cleaned.replace(' ', '').isdigit()
-    return False
-
-def is_table_data_row(row):
-    """Check if a row looks like table data."""
-    if len(row) == 0:
-        return False
-    
-    # Count non-empty cells
-    non_empty = sum(1 for cell in row if pd.notna(cell) and str(cell).strip())
-    
-    # Count numeric cells
-    numeric = sum(1 for cell in row if is_numeric_like(cell))
-    
-    # Row should have some content and preferably some numbers
-    return non_empty >= len(row) * 0.2 and numeric >= 1
-
-def is_empty_row(row):
-    """Check if a row is essentially empty."""
-    return all(pd.isna(cell) or str(cell).strip() == '' for cell in row)
-
-def is_table_continuation(row, prev_row):
-    """Check if this row continues a table pattern."""
-    if prev_row is None:
-        return False
-    
-    # Check if the structure is similar to previous row
-    current_structure = [is_numeric_like(cell) for cell in row]
-    prev_structure = [is_numeric_like(cell) for cell in prev_row]
-    
-    # If structures are similar, it might be table continuation
-    return sum(current_structure) > 0 and len(set(current_structure) - set(prev_structure)) <= 1
-
-def find_column_boundaries(table_df):
-    """Find the column boundaries for a table."""
-    if table_df.empty:
-        return 0, 0
-    
-    # Find columns with actual content
-    non_empty_cols = []
-    for col_idx in range(table_df.shape[1]):
-        col = table_df.iloc[:, col_idx]
-        if col.notna().sum() > 0:
-            non_empty_cols.append(col_idx)
-    
-    if not non_empty_cols:
-        return 0, 0
-    
-    return min(non_empty_cols), max(non_empty_cols)
 
 def save_results_to_markdown(results, entity: str):
     """Save AI-generated results back to the markdown file"""
@@ -397,7 +309,9 @@ if uploaded_file:
                                 match_found = any(any(kw.lower() in cell for cell in all_cells) for kw in entity_keywords)
                                 
                                 if match_found:
-                                    matching_tables.append((i+1, method, df))
+                                    # Only append if DataFrame is not empty after dropna
+                                    if not df.empty:
+                                        matching_tables.append((i+1, method, df))
                                         
                             except Exception as e:
                                 st.error(f"Error processing table {i+1}: {str(e)}")
@@ -436,11 +350,13 @@ if uploaded_file:
                                 df = df.loc[:, ~df.columns.astype(str).str.contains('^Unnamed')]
                                 df = df.reset_index(drop=True)
                                 
-                                st.write(f"**Table {i+1}** (Detected by: {method})")
-                                try:
-                                    st.table(df)
-                                except Exception as e:
-                                    st.text(str(df.to_string()))
+                                # In the unfiltered display block, add a check to skip empty DataFrames
+                                if not df.empty:
+                                    st.write(f"**Table {i+1}** (Detected by: {method})")
+                                    try:
+                                        st.table(df)
+                                    except Exception as e:
+                                        st.text(str(df.to_string()))
                                     
                             except Exception as e:
                                 st.error(f"Error processing table {i+1}: {str(e)}")
