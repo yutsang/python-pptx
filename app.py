@@ -110,7 +110,7 @@ def extract_tables_from_worksheet_robust(excel_path, sheet_name, entity_keywords
                     print(f"Failed to extract table {tbl.name}: {e}")
                     continue
         
-        # Method 2: Dense block detection (works for upslide smart format and other table-like structures)
+        # Method 2: Smart table detection for upslide smart format and other table-like structures
         all_data = []
         for row in ws.iter_rows(values_only=True):
             all_data.append(row)
@@ -120,81 +120,147 @@ def extract_tables_from_worksheet_robust(excel_path, sheet_name, entity_keywords
             df = df.dropna(how='all').dropna(axis=1, how='all')
             
             if len(df) >= 2:
-                # Find dense blocks that could be tables
-                from common.assistant import find_dense_blocks
-                dense_blocks = find_dense_blocks(df, min_rows=3, min_cols=2, density_threshold=0.4)
+                # Look for table patterns in the data
+                table_regions = find_table_regions_smart(df, entity_keywords)
                 
-                for block in dense_blocks:
-                    row_start, row_end, col_start, col_end = block
-                    block_data = df.iloc[row_start:row_end, col_start:col_end]
+                for region in table_regions:
+                    row_start, row_end, col_start, col_end = region
+                    table_data = df.iloc[row_start:row_end+1, col_start:col_end+1]
                     
-                    # Check if this block contains entity keywords - handle mixed data types safely
-                    block_str = ' '.join([str(cell) for cell in block_data.values.flatten()]).lower()
-                    has_entity = any(kw.lower() in block_str for kw in entity_keywords)
+                    # Convert to list format
+                    table_list = [table_data.columns.tolist()] + table_data.values.tolist()
                     
-                    if has_entity and len(block_data) >= 2:
-                        # Convert back to list format
-                        table_data = [block_data.columns.tolist()] + block_data.values.tolist()
-                        tables.append({
-                            'data': table_data,
-                            'method': 'dense_block',
-                            'name': f'block_{row_start}_{col_start}',
-                            'range': f'{row_start}:{row_end},{col_start}:{col_end}'
-                        })
-        
-        # Method 3: Pattern-based table detection (for tables with clear headers and data)
-        if all_data:
-            df = pd.DataFrame(all_data)
-            df = df.dropna(how='all').dropna(axis=1, how='all')
-            
-            # Look for patterns that indicate table boundaries
-            for i in range(len(df) - 1):
-                # Check if current row looks like a header (has text in most columns)
-                current_row = df.iloc[i]
-                next_row = df.iloc[i + 1]
-                
-                # Header detection: current row has mostly text, next row has mostly numbers
-                current_text_count = sum(1 for cell in current_row if isinstance(cell, str) and str(cell).strip())
-                next_numeric_count = sum(1 for cell in next_row if isinstance(cell, (int, float)) or 
-                                       (isinstance(cell, str) and str(cell).replace(',', '').replace('.', '').replace('-', '').isdigit()))
-                
-                if current_text_count >= len(current_row) * 0.6 and next_numeric_count >= len(next_row) * 0.4:
-                    # This looks like a table header, find the table boundaries
-                    table_start = i
-                    table_end = i + 1
-                    
-                    # Find where the table ends (empty row or different pattern)
-                    for j in range(i + 2, len(df)):
-                        row = df.iloc[j]
-                        if row.isna().all() or all(str(cell).strip() == '' for cell in row):
-                            break
-                        # Check if this row continues the table pattern
-                        if len([cell for cell in row if pd.notna(cell) and str(cell).strip()]) >= len(row) * 0.3:  # At least 30% non-empty
-                            table_end = j
-                        else:
-                            break
-                    
-                    if table_end > table_start + 1:  # At least header + 1 data row
-                        table_data = df.iloc[table_start:table_end + 1]
-                        table_list = [table_data.columns.tolist()] + table_data.values.tolist()
-                        
-                        # Check for entity keywords - handle mixed data types safely
-                        table_str = ' '.join([str(cell) for cell in table_data.values.flatten()]).lower()
-                        has_entity = any(kw.lower() in table_str for kw in entity_keywords)
-                        
-                        if has_entity:
-                            tables.append({
-                                'data': table_list,
-                                'method': 'pattern_detection',
-                                'name': f'pattern_table_{table_start}',
-                                'range': f'{table_start}:{table_end}'
-                            })
+                    tables.append({
+                        'data': table_list,
+                        'method': 'smart_detection',
+                        'name': f'smart_table_{row_start}_{col_start}',
+                        'range': f'{row_start}:{row_end},{col_start}:{col_end}'
+                    })
         
         return tables
         
     except Exception as e:
         print(f"Error in robust table extraction for worksheet view: {e}")
         return []
+
+def find_table_regions_smart(df, entity_keywords):
+    """
+    Smart table detection that works with upslide smart format tables.
+    Looks for patterns that indicate table structures.
+    """
+    table_regions = []
+    nrows, ncols = df.shape
+    
+    # Look for table headers and data patterns
+    for i in range(nrows - 2):  # Need at least 3 rows for a table
+        # Check if current row could be a table header
+        current_row = df.iloc[i]
+        next_row = df.iloc[i + 1]
+        next_next_row = df.iloc[i + 2] if i + 2 < nrows else None
+        
+        # Criteria for table header:
+        # 1. Contains entity keywords
+        # 2. Has mostly text content
+        # 3. Followed by rows with data
+        
+        # Check for entity keywords in current row
+        row_text = ' '.join([str(cell).lower() for cell in current_row if pd.notna(cell)])
+        has_entity = any(kw.lower() in row_text for kw in entity_keywords)
+        
+        if has_entity:
+            # Count text vs numeric content in current and next rows
+            current_text_count = sum(1 for cell in current_row if isinstance(cell, str) and str(cell).strip())
+            next_numeric_count = sum(1 for cell in next_row if is_numeric_like(cell))
+            
+            # If current row has mostly text and next row has some numbers, this might be a table
+            if current_text_count >= len(current_row) * 0.3 and next_numeric_count >= 1:
+                # Find the table boundaries
+                table_start = i
+                table_end = i
+                
+                # Look for where the table ends
+                for j in range(i + 1, nrows):
+                    row = df.iloc[j]
+                    
+                    # Check if this row continues the table pattern
+                    if is_table_data_row(row):
+                        table_end = j
+                    else:
+                        # Check if it's an empty row or different pattern
+                        if is_empty_row(row) or not is_table_continuation(row, df.iloc[j-1] if j > 0 else None):
+                            break
+                        else:
+                            table_end = j
+                
+                # Ensure we have a reasonable table size
+                if table_end > table_start and (table_end - table_start + 1) >= 2:
+                    # Find column boundaries
+                    col_start, col_end = find_column_boundaries(df.iloc[table_start:table_end+1])
+                    
+                    # Only add if we have a reasonable table size
+                    if col_end > col_start and (col_end - col_start + 1) >= 2:
+                        table_regions.append((table_start, table_end, col_start, col_end))
+    
+    return table_regions
+
+def is_numeric_like(cell):
+    """Check if a cell contains numeric-like data."""
+    if pd.isna(cell):
+        return False
+    if isinstance(cell, (int, float)):
+        return True
+    if isinstance(cell, str):
+        # Remove common formatting characters
+        cleaned = str(cell).replace(',', '').replace('.', '').replace('-', '').replace('(', '').replace(')', '')
+        return cleaned.replace(' ', '').isdigit()
+    return False
+
+def is_table_data_row(row):
+    """Check if a row looks like table data."""
+    if len(row) == 0:
+        return False
+    
+    # Count non-empty cells
+    non_empty = sum(1 for cell in row if pd.notna(cell) and str(cell).strip())
+    
+    # Count numeric cells
+    numeric = sum(1 for cell in row if is_numeric_like(cell))
+    
+    # Row should have some content and preferably some numbers
+    return non_empty >= len(row) * 0.2 and numeric >= 1
+
+def is_empty_row(row):
+    """Check if a row is essentially empty."""
+    return all(pd.isna(cell) or str(cell).strip() == '' for cell in row)
+
+def is_table_continuation(row, prev_row):
+    """Check if this row continues a table pattern."""
+    if prev_row is None:
+        return False
+    
+    # Check if the structure is similar to previous row
+    current_structure = [is_numeric_like(cell) for cell in row]
+    prev_structure = [is_numeric_like(cell) for cell in prev_row]
+    
+    # If structures are similar, it might be table continuation
+    return sum(current_structure) > 0 and len(set(current_structure) - set(prev_structure)) <= 1
+
+def find_column_boundaries(table_df):
+    """Find the column boundaries for a table."""
+    if table_df.empty:
+        return 0, 0
+    
+    # Find columns with actual content
+    non_empty_cols = []
+    for col_idx in range(table_df.shape[1]):
+        col = table_df.iloc[:, col_idx]
+        if col.notna().sum() > 0:
+            non_empty_cols.append(col_idx)
+    
+    if not non_empty_cols:
+        return 0, 0
+    
+    return min(non_empty_cols), max(non_empty_cols)
 
 def save_results_to_markdown(results, entity: str):
     """Save AI-generated results back to the markdown file"""
