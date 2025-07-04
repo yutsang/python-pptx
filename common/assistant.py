@@ -319,4 +319,328 @@ class QualityAssuranceAgent:
             content = re.sub(re.escape(artifact), '', content, flags=re.IGNORECASE)
         # Ensure double newlines between paragraphs
         content = re.sub(r'\n{2,}', '\n\n', content)
-        return content.strip() 
+        return content.strip()
+
+# --- Data Validation Agent ---
+class DataValidationAgent:
+    def __init__(self):
+        self.config_file = 'utils/config.json'
+        self.financial_figure_map = {
+            "Cash": "Cash at bank",
+            "AR": "Accounts receivable",
+            "Prepayments": "Prepayments",
+            "OR": "Other receivables",
+            "Other CA": "Other current assets",
+            "IP": "Investment properties",
+            "Other NCA": "Other non-current assets",
+            "AP": "Accounts payable",
+            "Taxes payable": "Taxes payable",
+            "OP": "Other payables",
+            "Capital": "Paid-in capital",
+            "Reserve": "Surplus reserve"
+        }
+    
+    def validate_financial_data(self, content: str, excel_file: str, entity: str, key: str) -> Dict:
+        """Validate that financial figures in content match the Excel data"""
+        try:
+            # Extract financial figures from Excel
+            financial_figures = find_financial_figures_with_context_check(
+                excel_file, 
+                get_tab_name(entity), 
+                '30/09/2022'
+            )
+            expected_figure = financial_figures.get(key)
+            
+            if not AI_AVAILABLE:
+                return self._fallback_data_validation(content, expected_figure, key)
+            
+            # Use AI to validate data accuracy
+            config_details = load_config(self.config_file)
+            oai_client, _ = initialize_ai_services(config_details)
+            
+            system_prompt = """
+            You are a financial data validation specialist. Your task is to verify that financial figures 
+            mentioned in the content match the expected values from the financial statements.
+            
+            CRITICAL REQUIREMENTS:
+            1. Extract all financial figures from the content
+            2. Compare them with the expected figure from financial statements
+            3. Check for accuracy, proper formatting (K/M), and consistency
+            4. Identify any discrepancies or missing data
+            5. Return a structured validation result
+            6. Be very specific about what needs to be corrected
+            """
+            
+            user_query = f"""
+            VALIDATE FINANCIAL DATA ACCURACY:
+            
+            CONTENT TO VALIDATE: {content}
+            EXPECTED FIGURE FOR {key}: {expected_figure}
+            FINANCIAL STATEMENT DATA: {financial_figures}
+            
+            TASKS:
+            1. Extract all financial figures from the content
+            2. Compare with expected figure from financial statements
+            3. Check if figures are properly formatted (K/M notation)
+            4. Verify entity names match the data source
+            5. Identify any discrepancies
+            6. Check for placeholder values (xxx, [amount], etc.)
+            
+            RETURN FORMAT (JSON):
+            {{
+                "needs_correction": true/false,
+                "issues": ["list of specific issues found"],
+                "score": 0-100,
+                "extracted_figures": ["list of figures found in content"],
+                "expected_figure": "expected value",
+                "discrepancies": ["list of discrepancies"],
+                "suggestions": ["list of specific correction suggestions"]
+            }}
+            """
+            
+            response = generate_response(user_query, system_prompt, oai_client, "", config_details['CHAT_MODEL'])
+            
+            # Parse AI response
+            try:
+                result = json.loads(response)
+                # Ensure all required fields are present
+                result.setdefault('needs_correction', False)
+                result.setdefault('issues', [])
+                result.setdefault('score', 100)
+                result.setdefault('suggestions', [])
+                return result
+            except Exception as parse_error:
+                print(f"Failed to parse AI response: {parse_error}")
+                return self._fallback_data_validation(content, expected_figure, key)
+                
+        except Exception as e:
+            print(f"Data validation error: {e}")
+            return {"needs_correction": False, "issues": [f"Validation error: {e}"], "score": 50, "suggestions": []}
+    
+    def _fallback_data_validation(self, content: str, expected_figure: float, key: str) -> Dict:
+        """Fallback validation when AI is not available"""
+        issues = []
+        score = 100
+        
+        # Check if expected figure is mentioned
+        if expected_figure:
+            expected_str = str(expected_figure)
+            if expected_str not in content and str(int(expected_figure)) not in content:
+                issues.append(f"Expected figure {expected_figure} not found in content")
+                score -= 30
+        
+        # Check for placeholder values
+        if 'xxx' in content.lower() or 'placeholder' in content.lower():
+            issues.append("Placeholder values found in content")
+            score -= 20
+        
+        return {
+            "needs_correction": score < 80,
+            "issues": issues,
+            "score": score,
+            "suggestions": [],
+            "extracted_figures": [],
+            "expected_figure": expected_figure,
+            "discrepancies": []
+        }
+    
+    def correct_financial_data(self, content: str, issues: List[str]) -> str:
+        """Correct financial data issues using AI"""
+        try:
+            if not AI_AVAILABLE:
+                return content
+            
+            config_details = load_config(self.config_file)
+            oai_client, _ = initialize_ai_services(config_details)
+            
+            system_prompt = """
+            You are a financial data correction specialist. Your task is to fix financial data 
+            accuracy issues in the content while maintaining the original structure and tone.
+            
+            REQUIREMENTS:
+            1. Fix all identified data accuracy issues
+            2. Ensure figures match financial statements exactly
+            3. Maintain proper formatting (K/M notation)
+            4. Keep the original writing style and structure
+            5. Only correct the identified issues, don't rewrite unnecessarily
+            """
+            
+            user_query = f"""
+            CORRECT FINANCIAL DATA ISSUES:
+            
+            ORIGINAL CONTENT: {content}
+            IDENTIFIED ISSUES: {issues}
+            
+            TASK: Fix the identified issues while maintaining the original content structure.
+            
+            REQUIREMENTS:
+            - Fix all data accuracy issues
+            - Ensure proper figure formatting
+            - Maintain original writing style
+            - Keep the same paragraph structure
+            - Only correct what needs fixing
+            
+            RETURN: Only the corrected content text, no explanations or JSON.
+            """
+            
+            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['CHAT_MODEL'])
+            return corrected_content.strip()
+            
+        except Exception as e:
+            print(f"Data correction error: {e}")
+            return content
+
+# --- Pattern Validation Agent ---
+class PatternValidationAgent:
+    def __init__(self):
+        self.config_file = 'utils/config.json'
+        self.pattern_file = 'utils/pattern.json'
+    
+    def validate_pattern_compliance(self, content: str, key: str) -> Dict:
+        """Validate that content follows the expected pattern structure"""
+        try:
+            # Load patterns for the key
+            patterns = load_ip(self.pattern_file, key)
+            
+            if not AI_AVAILABLE:
+                return self._fallback_pattern_validation(content, patterns, key)
+            
+            # Use AI to validate pattern compliance
+            config_details = load_config(self.config_file)
+            oai_client, _ = initialize_ai_services(config_details)
+            
+            system_prompt = """
+            You are a pattern compliance validation specialist. Your task is to verify that the content 
+            follows the expected pattern structure and format.
+            
+            REQUIREMENTS:
+            1. Compare content against available patterns
+            2. Check for proper structure and formatting
+            3. Verify all placeholders are filled
+            4. Ensure professional tone and language
+            5. Identify any pattern compliance issues
+            6. Provide specific suggestions for improvement
+            """
+            
+            user_query = f"""
+            VALIDATE PATTERN COMPLIANCE:
+            
+            CONTENT TO VALIDATE: {content}
+            KEY: {key}
+            AVAILABLE PATTERNS: {json.dumps(patterns, indent=2)}
+            
+            TASKS:
+            1. Check if content follows any of the available patterns
+            2. Verify all placeholders are properly filled
+            3. Check for proper financial terminology
+            4. Ensure professional writing style
+            5. Identify any structural or formatting issues
+            6. Check for template artifacts (xxx, [placeholder], etc.)
+            
+            RETURN FORMAT (JSON):
+            {{
+                "needs_correction": true/false,
+                "issues": ["list of pattern compliance issues"],
+                "score": 0-100,
+                "pattern_match": "name of matched pattern or 'none'",
+                "missing_elements": ["list of missing pattern elements"],
+                "suggestions": ["list of specific improvement suggestions"]
+            }}
+            """
+            
+            response = generate_response(user_query, system_prompt, oai_client, "", config_details['CHAT_MODEL'])
+            
+            # Parse AI response
+            try:
+                result = json.loads(response)
+                # Ensure all required fields are present
+                result.setdefault('needs_correction', False)
+                result.setdefault('issues', [])
+                result.setdefault('score', 100)
+                result.setdefault('pattern_match', 'none')
+                result.setdefault('missing_elements', [])
+                result.setdefault('suggestions', [])
+                return result
+            except Exception as parse_error:
+                print(f"Failed to parse AI response: {parse_error}")
+                return self._fallback_pattern_validation(content, patterns, key)
+                
+        except Exception as e:
+            print(f"Pattern validation error: {e}")
+            return {"needs_correction": False, "issues": [f"Validation error: {e}"], "score": 50, "suggestions": []}
+    
+    def _fallback_pattern_validation(self, content: str, patterns: Dict, key: str) -> Dict:
+        """Fallback validation when AI is not available"""
+        issues = []
+        score = 100
+        
+        # Check for placeholder values
+        if 'xxx' in content.lower() or '{' in content or '}' in content:
+            issues.append("Unfilled placeholders found in content")
+            score -= 25
+        
+        # Check for pattern structure
+        if not any(pattern.lower() in content.lower() for pattern in patterns.values()):
+            issues.append("Content doesn't match expected pattern structure")
+            score -= 20
+        
+        # Check for professional language
+        professional_terms = ['represented', 'comprised', 'indicated', 'demonstrated']
+        if not any(term in content.lower() for term in professional_terms):
+            issues.append("Missing professional financial language")
+            score -= 15
+        
+        return {
+            "needs_correction": score < 80,
+            "issues": issues,
+            "score": score,
+            "pattern_match": "none",
+            "missing_elements": [],
+            "suggestions": []
+        }
+    
+    def correct_pattern_compliance(self, content: str, issues: List[str]) -> str:
+        """Correct pattern compliance issues using AI"""
+        try:
+            if not AI_AVAILABLE:
+                return content
+            
+            config_details = load_config(self.config_file)
+            oai_client, _ = initialize_ai_services(config_details)
+            
+            system_prompt = """
+            You are a pattern compliance correction specialist. Your task is to fix pattern 
+            compliance issues in the content while maintaining accuracy and professionalism.
+            
+            REQUIREMENTS:
+            1. Fix all identified pattern compliance issues
+            2. Ensure content follows expected pattern structure
+            3. Fill any missing placeholders appropriately
+            4. Maintain professional financial language
+            5. Keep the original meaning and accuracy
+            """
+            
+            user_query = f"""
+            CORRECT PATTERN COMPLIANCE ISSUES:
+            
+            ORIGINAL CONTENT: {content}
+            IDENTIFIED ISSUES: {issues}
+            
+            TASK: Fix the identified pattern compliance issues while maintaining content accuracy.
+            
+            REQUIREMENTS:
+            - Fix all pattern compliance issues
+            - Ensure proper pattern structure
+            - Fill missing placeholders appropriately
+            - Maintain professional language
+            - Keep original meaning intact
+            
+            RETURN: Only the corrected content text, no explanations or JSON.
+            """
+            
+            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['CHAT_MODEL'])
+            return corrected_content.strip()
+            
+        except Exception as e:
+            print(f"Pattern correction error: {e}")
+            return content 
