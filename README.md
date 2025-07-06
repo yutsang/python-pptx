@@ -11,6 +11,29 @@ A Streamlit-based web application for processing and analyzing financial data fr
 - 💾 **Export Functionality**: Download processed data as markdown files
 - ⚙️ **Configuration Management**: View and manage mapping and pattern configurations
 
+### Enhanced Highlighting System (NEW)
+
+The application now includes an advanced highlighting system in Agent 2 that performs pattern-based figure detection:
+
+1. **Pattern Comparison**: Compares AI1 output with the most similar pattern from pattern.json
+2. **Figure Extraction**: Extracts numbers from AI1 content and identifies pattern placeholders
+3. **'000 Detection**: Automatically detects '000 notation in worksheet headers/titles
+4. **Conversion Logic**: Converts balance sheet numbers based on notation (e.g., 9076 → 9076000)
+5. **Row Highlighting**: Highlights all worksheet rows containing matching numbers in yellow
+
+**Example Process:**
+- AI1 Output: "CNY9.1M"
+- Pattern Detection: Finds most similar pattern with [Amount] placeholder
+- '000 Detection: Detects '000 notation in worksheet headers
+- Conversion: 9.1M → 9,100,000 → 9,100 (worksheet number)
+- Highlighting: All rows containing "9100" are highlighted in yellow
+
+### AI Agents
+
+- **Agent 1**: Content generation specialist
+- **Agent 2**: Enhanced data integrity specialist with pattern-based highlighting
+- **Agent 3**: Pattern compliance specialist
+
 ## Installation
 
 1. Clone the repository:
