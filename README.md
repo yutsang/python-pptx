@@ -1,52 +1,106 @@
-# Real Estate Due Diligence Report Generator
+# Financial Data Processor - Streamlit App
 
-This project generates professional due diligence reports for real estate projects using Excel databooks, predefined text patterns, and (optionally) AI for text generation. It supports both command-line and web (Streamlit) interfaces.
+A Streamlit-based web application for processing and analyzing financial data from Excel files, built on the functionality from the original `old_ver` implementation.
 
 ## Features
-- Upload Excel databooks and extract financial tables
-- Pattern-based text generation (AI or test mode)
-- Quality assurance and auto-correction of generated text
-- Editable output for each report section
-- Export to PPTX (coming soon)
+
+- 📊 **Excel File Processing**: Upload and process financial Excel files
+- 🔍 **Worksheet Section Viewing**: View filtered worksheet sections using the `process_and_filter_excel` function
+- 🏢 **Entity Support**: Support for Haining, Nanjing, and Ningbo entities
+- 📋 **Data Visualization**: Interactive tables and data statistics
+- 💾 **Export Functionality**: Download processed data as markdown files
+- ⚙️ **Configuration Management**: View and manage mapping and pattern configurations
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd python-pptx
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+3. Ensure configuration files are present in the `utils/` directory:
+   - `utils/config.json`
+   - `utils/mapping.json`
+   - `utils/pattern.json`
 
 ## Usage
 
-### 1. Streamlit Web App
-Launch the interactive UI:
+1. Run the Streamlit app:
 ```bash
 streamlit run app.py
 ```
-- Upload your Excel databook
-- Select entity and helpers
-- View each worksheet in a tab
-- Click "Generate Text" to fill in report sections
-- Edit the generated text as needed
-- Click "Export to PPTX" (feature coming soon)
 
-### 2. Command-Line Interface
-Run the CLI for batch/scripted use:
-```bash
-python main.py -i <excel_file> -e <entity> [--helpers ...] [--ai] [--output <pptx>] [--config <config>] [--mapping <mapping>] [--pattern <pattern>]
+2. Open your browser and navigate to the provided URL (usually `http://localhost:8501`)
+
+3. Upload an Excel file containing financial data
+
+4. Select the entity (Haining, Nanjing, or Ningbo)
+
+5. Enter entity helpers (comma-separated, e.g., "Wanpu,Limited,")
+
+6. Click "Process Data" to analyze the file
+
+## File Structure
+
 ```
-Example:
-```bash
-python main.py -i utils/your_databook.xlsx -e Haining --helpers Wanpu Limited --ai --output report.pptx
+python-pptx/
+├── app.py                 # Main Streamlit application
+├── requirements.txt       # Python dependencies
+├── README.md             # This file
+├── utils/                # Configuration and utility files
+│   ├── config.json       # AI service configuration
+│   ├── mapping.json      # Financial item mappings
+│   ├── pattern.json      # Report patterns
+│   └── ...
+└── old_ver/              # Original implementation (untouched)
+    ├── utils/
+    ├── financial_processor/
+    └── ...
 ```
-- Omit `--ai` to use local/test mode (no AI required)
 
-## Configuration & Data
-- Place your Excel databooks in a known location (e.g., `utils/`)
-- Edit `utils/config.json`, `utils/mapping.json`, and `utils/pattern.json` as needed
-- All business logic is in `common/assistant.py`
+## Expected Excel File Format
 
-## Project Structure
-- `common/assistant.py` — All core logic (Excel scraping, pattern filling, QA, etc.)
-- `utils/` — Config and pattern files
-- `main.py` — CLI entry point
-- `app.py` — Streamlit web app
+The application expects Excel files with the following structure:
 
-## Clean Codebase
-All legacy, duplicate, and unused scripts have been removed for clarity and maintainability. Only the above files are required for the workflow.
+- **Sheet Names**: BSHN (Haining), BSNJ (Nanjing), BSNB (Ningbo)
+- **Financial Items**: Cash, AR, Prepayments, OR, Other CA, IP, Other NCA, AP, Taxes payable, OP, Capital, Reserve
+- **Data Format**: Standard balance sheet format with descriptions and amounts
 
----
-For questions or improvements, please open an issue or PR.
+## Configuration
+
+### Entity Mapping
+- **Haining** → BSHN sheet
+- **Nanjing** → BSNJ sheet  
+- **Ningbo** → BSNB sheet
+
+### Supported Financial Items
+- **Current Assets**: Cash, AR, Prepayments, OR, Other CA
+- **Non-current Assets**: IP, Other NCA
+- **Liabilities**: AP, Taxes payable, OP
+- **Equity**: Capital, Reserve
+
+## Features from Original Implementation
+
+This Streamlit app incorporates the core functionality from the original `old_ver` implementation:
+
+- ✅ `process_and_filter_excel` function for worksheet section viewing
+- ✅ Entity-based data filtering
+- ✅ Financial item mapping and pattern matching
+- ✅ Configuration file management
+- ✅ Data processing and analysis capabilities
+
+## Troubleshooting
+
+1. **Configuration Files Missing**: Ensure all JSON configuration files are present in the `utils/` directory
+2. **Excel File Format**: Verify your Excel file has the expected sheet names and structure
+3. **Dependencies**: Make sure all required packages are installed using `pip install -r requirements.txt`
+
+## Development
+
+The original implementation files are preserved in the `old_ver/` directory and remain untouched as requested. The new Streamlit app provides a modern web interface while maintaining the core functionality of the original system.
