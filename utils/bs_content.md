@@ -36,7 +36,7 @@ The land lots of Project Haining Wanpu were amortised using straight-line method
 balance as at 30 September 2022 mainly entailed accounts payable to珠海萬維物流發展有限公司 of CNY11.8M.
 
 ### Taxes payables
-"Taxes payable consist of Property Tax of $0.2M and Land Use Tax of $0.6M, totaling $0.8M as at 30/09/2022."
+Taxes payable consist of Property Tax of $0.2M and Land Use Tax of $0.6M, totaling $0.8M as at 30/09/2022.
 
 ### Other payables
 balance as at 30/09/2022 represented:
@@ -46,7 +46,43 @@ $95.4M of Related party payables
 ## Equity
 
 ### Capital
-“Share capital of circa $92.0M was paid up as at 30/09/2022.”
+Share capital of circa $92.0M was paid up as at 30/09/2022.
 
 ### Surplus reserve
 Balance as at latest available date represented the surplus reserve of 342K from the source.
+
+### Advances
+Advances from customers balance as at 30 September 2022 represented customer deposits and prepayments for future services.
+
+### Capital reserve
+Capital reserves balance as at 30 September 2022 represented accumulated capital reserves from various sources.
+
+### Other Income
+Other income balance as at 30 September 2022 represented miscellaneous income from non-operating activities.
+
+### Other Costs
+Other costs balance as at 30 September 2022 represented various operational expenses and costs.
+
+### Tax and Surcharges
+Tax and surcharges balance as at 30 September 2022 represented various tax obligations and surcharges.
+
+### G&A expenses
+General and administrative expenses balance as at 30 September 2022 represented overhead costs and administrative expenses.
+
+### Finance Expenses
+Finance expenses balance as at 30 September 2022 represented interest expenses and other financing costs.
+
+### Credit Losses
+Credit losses balance as at 30 September 2022 represented provisions for expected credit losses on financial assets.
+
+### Non-operating Income
+Non-operating income balance as at 30 September 2022 represented income from non-core business activities.
+
+### Non-operating Expenses
+Non-operating expenses balance as at 30 September 2022 represented expenses from non-core business activities.
+
+### Income tax
+Income tax balance as at 30 September 2022 represented current and deferred income tax obligations.
+
+### Long-term Deferred Tax Assets
+Long-term deferred tax assets balance as at 30 September 2022 represented deferred tax assets with long-term recovery periods.
