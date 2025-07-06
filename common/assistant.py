@@ -190,7 +190,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
             if ws.title not in tab_name_mapping:
                 continue
             
-            print(f"[DEBUG] Processing worksheet: {ws.title}")
+            # Processing worksheet: {ws.title}
             
             # Use robust table extraction
             tables = extract_tables_robust(ws, entity_keywords)
@@ -215,13 +215,14 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     match_found = any(any(kw in cell for cell in all_cells) for kw in entity_keywords)
                     
                     if match_found:
-                        print(f"[DEBUG] Table '{table_name}' (method: {method}) in sheet '{ws.title}' included for entity keywords: {entity_keywords}")
+                        # Table '{table_name}' (method: {method}) in sheet '{ws.title}' included for entity keywords: {entity_keywords}
                         try:
                             markdown_content += tabulate(df, headers='keys', tablefmt='pipe') + '\n\n'
                         except Exception:
                             markdown_content += df.to_markdown(index=False) + '\n\n'
                     else:
-                        print(f"[DEBUG] Table '{table_name}' (method: {method}) in sheet '{ws.title}' skipped for entity keywords: {entity_keywords}")
+                        # Table skipped for entity keywords
+                        pass
                         
                 except Exception as e:
                     print(f"Error processing table {table_info.get('name', 'unknown')}: {e}")

@@ -14,6 +14,23 @@ from pptx.oxml.ns import qn  # Required import for XML namespace handling
 
 logging.basicConfig(level=logging.INFO)
 
+def clean_content_quotes(content):
+    """
+    Remove outermost quotation marks from content while preserving legitimate internal quotes.
+    Supports both straight quotes (") and curly quotes (" ").
+    """
+    if not content:
+        return content
+    
+    # Handle straight quotes
+    content = re.sub(r'^"([^"]*)"$', r'\1', content)
+    
+    # Handle curly quotes
+    content = re.sub(r'^"([^"]*)"$', r'\1', content)
+    content = re.sub(r'^"([^"]*)"$', r'\1', content)
+    
+    return content
+
 @dataclass
 class FinancialItem:
     accounting_type: str
@@ -29,25 +46,18 @@ class PowerPointGenerator:
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
         self.ROWS_PER_SECTION = 30  # Use the same value for all sections
-        print(f"[DEBUG] ROWS_PER_SECTION: {self.ROWS_PER_SECTION}")
         slide = self.prs.slides[0]
         shape = next(s for s in slide.shapes if s.name == "textMainBullets")
-        print(f"[DEBUG] textMainBullets shape height: {shape.height}, LINE_HEIGHT: {self.LINE_HEIGHT}")
         self.CHARS_PER_ROW = 50
         self.BULLET_CHAR = '■ '
         self.DARK_BLUE = RGBColor(0, 50, 150)
         self.DARK_GREY = RGBColor(169, 169, 169)
         self.prev_layer1 = None
         self.prev_layer2 = None
-        self.log_template_shapes()  # Debug: print all shape names
 
     def log_template_shapes(self):
-        print("=== Template Shape Audit ===")
-        for slide_idx, slide in enumerate(self.prs.slides):
-            print(f"Slide {slide_idx + 1} has {len(slide.shapes)} shapes:")
-            for shape in slide.shapes:
-                print(f"  - Name: '{shape.name}' | Type: {shape.shape_type}")
-        print("=== End Shape Audit ===")
+        # Removed shape audit logging to reduce debug output
+        pass
 
     def _calculate_max_rows(self):
         slide = self.prs.slides[0]
@@ -88,7 +98,9 @@ class PowerPointGenerator:
                 current_descs.append("="*40)
             else:
                 if stripped:
-                    current_descs.append(stripped)
+                    # Clean quotes from the content
+                    cleaned_stripped = clean_content_quotes(stripped)
+                    current_descs.append(cleaned_stripped)
 
         if current_descs:
             items.append(FinancialItem(current_type, current_title, current_descs, is_table=is_table))
@@ -161,7 +173,6 @@ class PowerPointGenerator:
                 para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
                 desc_lines += para_lines
         lines += desc_lines
-        print(f"[DEBUG] _calculate_item_lines: Section: {item.account_title}, Header lines: {header_lines}, Desc lines: {desc_lines}, Total: {lines}")
         return lines
 
     def _split_item(self, item: FinancialItem, max_lines: int) -> tuple[FinancialItem, FinancialItem | None]:
@@ -431,26 +442,13 @@ class PowerPointGenerator:
         return bullet_lines if bullet_lines else None
 
     def generate_full_report(self, md_content: str, summary_md: str, output_path: str):
-        print("[DEBUG] Entered generate_full_report")
-        print(f"[DEBUG] ROWS_PER_SECTION: {self.ROWS_PER_SECTION}")
-        print(f"[DEBUG] md_content preview: {md_content[:200]!r}")
         try:
-            print("[DEBUG] Parsing markdown...")
             items = self.parse_markdown(md_content)
-            print(f"[DEBUG] Parsed {len(items)} items from markdown.")
-            print("[DEBUG] Planning content distribution...")
             distribution = self._plan_content_distribution(items)
-            print(f"[DEBUG] Planned distribution for {len(distribution)} slide sections.")
-            for slide_idx, section, section_items in distribution:
-                total_lines = sum(self._calculate_item_lines(item) for item in section_items)
-                print(f"[DEBUG] Slide {slide_idx} section {section}: {len(section_items)} items, {total_lines} lines")
             self._validate_content_placement(distribution)
-            print("[DEBUG] Content placement validated.")
             summary_text = self.parse_summary_markdown(summary_md)
-            print("[DEBUG] Parsed summary markdown.")
             max_slide_used = max((slide_idx for slide_idx, _, _ in distribution), default=0)
             total_slides_needed = max_slide_used + 1
-            print(f"[DEBUG] Total slides needed: {total_slides_needed}")
             wrapper = textwrap.TextWrapper(
                 width=self.CHARS_PER_ROW, 
                 break_long_words=True,
@@ -464,7 +462,6 @@ class PowerPointGenerator:
             ]
             while len(self.prs.slides) < total_slides_needed:
                 self.prs.slides.add_slide(self.prs.slide_layouts[1])
-            print("[DEBUG] Populating main content sections...")
             for slide_idx, section, section_items in distribution:
                 if slide_idx >= len(self.prs.slides):
                     raise ValueError("Insufficient slides in template")
@@ -473,7 +470,6 @@ class PowerPointGenerator:
                 shape = self._get_section_shape(slide, section)
                 if shape:
                     self._populate_section(shape, section_items)
-            print("[DEBUG] Populating summary content on slides...")
             for slide_idx in range(total_slides_needed):
                 slide = self.prs.slides[slide_idx]
                 summary_shape = next((s for s in slide.shapes if s.name == "coSummaryShape"), None)
@@ -482,17 +478,12 @@ class PowerPointGenerator:
                         summary_shape, 
                         slide_summary_chunks[slide_idx] if slide_idx < len(slide_summary_chunks) else []
                     )
-            print("[DEBUG] Removing unused slides if any...")
             unused_slides = self._detect_unused_slides(distribution)
             if unused_slides:
                 logging.info(f"Removing unused slides: {[idx+1 for idx in unused_slides]}")
                 self._remove_slides(unused_slides)
-            print(f"[DEBUG] Saving presentation to {output_path}")
-            print(f"[DEBUG] Current working directory: {os.getcwd()}")
             self.prs.save(output_path)
-            print(f"[DEBUG] Successfully generated PowerPoint with {len(self.prs.slides)} slides and summary content")
         except Exception as e:
-            print(f"[ERROR] Generation failed: {str(e)}")
             logging.error(f"Generation failed: {str(e)}")
             raise
 
@@ -731,16 +722,14 @@ def update_project_titles(presentation_path, project_name, output_path=None):
 
 # --- High-level function for app.py ---
 def export_pptx(template_path, markdown_path, output_path, project_name=None):
-    logging.info(f"[DEBUG] Starting export_pptx: template={template_path}, markdown={markdown_path}, output={output_path}, project={project_name}")
     generator = ReportGenerator(template_path, markdown_path, output_path, project_name)
     generator.generate()
     if not os.path.exists(output_path):
-        logging.error(f"[ERROR] PPTX file was not created at {output_path}")
+        logging.error(f"PPTX file was not created at {output_path}")
         raise FileNotFoundError(f"PPTX file was not created at {output_path}")
-    logging.info(f"[DEBUG] PPTX file successfully saved at {output_path}")
     if project_name:
-        logging.info("[DEBUG] Updating project titles...")
         update_project_titles(output_path, project_name)
-        logging.info("[DEBUG] Project titles updated.")
-    logging.info(f"[DEBUG] Export complete: {output_path}")
+    
+    # Add success message
+    logging.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
     return output_path 
