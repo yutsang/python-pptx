@@ -4,6 +4,7 @@ import json
 import warnings
 import re
 import os
+import datetime
 from pathlib import Path
 from tabulate import tabulate
 import urllib3
@@ -26,10 +27,12 @@ def load_config_files():
             mapping = json.load(f)
         with open('utils/pattern.json', 'r') as f:
             pattern = json.load(f)
-        return config, mapping, pattern
+        with open('utils/prompts.json', 'r') as f:
+            prompts = json.load(f)
+        return config, mapping, pattern, prompts
     except FileNotFoundError as e:
         st.error(f"Configuration file not found: {e}")
-        return None, None, None
+        return None, None, None, None
 
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
     """
@@ -95,15 +98,13 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         st.error(f"An error occurred while processing the Excel file: {e}")
         return ""
 
-def get_worksheet_sections_by_keys(filename, tab_name_mapping, entity_name, entity_suffixes, debug=False):
+def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, debug=False):
     """
     Get worksheet sections organized by financial keys following the mapping
     """
     try:
-        # Load the Excel file
-        main_dir = Path(__file__).parent
-        file_path = main_dir / filename
-        xl = pd.ExcelFile(file_path)
+        # Load the Excel file from uploaded file object
+        xl = pd.ExcelFile(uploaded_file)
         
         # Create a reverse mapping from values to keys
         reverse_mapping = {}
@@ -378,7 +379,7 @@ def main():
     if uploaded_file is not None:
         
         # --- View Table Section ---
-        config, mapping, pattern = load_config_files()
+        config, mapping, pattern, prompts = load_config_files()
         entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
         entity_keywords = [f"{selected_entity} {suffix}" for suffix in entity_suffixes if suffix]
         if not entity_keywords:
@@ -388,7 +389,7 @@ def main():
         if statement_type == "BS":
             # Original BS logic
             sections_by_key = get_worksheet_sections_by_keys(
-                filename=uploaded_file.name,
+                uploaded_file=uploaded_file,
                 tab_name_mapping=mapping,
                 entity_name=selected_entity,
                 entity_suffixes=entity_suffixes,
@@ -404,7 +405,25 @@ def main():
                         sections = sections_by_key[key]
                         if sections:
                             first_section = sections[0]
-                            df_clean = first_section['data'].dropna(axis=1, how='all')
+                            # Create a proper copy to avoid SettingWithCopyWarning
+                            df_clean = first_section['data'].dropna(axis=1, how='all').copy()
+                            
+                            # Convert datetime columns to strings to avoid Arrow serialization issues
+                            for col in df_clean.columns:
+                                if df_clean[col].dtype == 'object':
+                                    # Convert any datetime-like objects to strings
+                                    try:
+                                        # First try to convert to string directly
+                                        df_clean.loc[:, col] = df_clean[col].astype(str)
+                                    except:
+                                        # If that fails, handle datetime objects specifically
+                                        df_clean.loc[:, col] = df_clean[col].apply(
+                                            lambda x: str(x) if pd.notna(x) and not pd.isna(x) else ''
+                                        )
+                                elif 'datetime' in str(df_clean[col].dtype):
+                                    # Handle datetime columns specifically
+                                    df_clean.loc[:, col] = df_clean[col].dt.strftime('%Y-%m-%d %H:%M:%S').fillna('')
+                            
                             if first_section.get('entity_match', False):
                                 st.markdown("**First Section:** ✅ Entity Match")
                             else:
@@ -458,7 +477,7 @@ def main():
         if st.button("🤖 Process with AI", type="primary", use_container_width=True):
             try:
                 # Load configuration files
-                config, mapping, pattern = load_config_files()
+                config, mapping, pattern, prompts = load_config_files()
                 if not all([config, mapping, pattern]):
                     st.error("❌ Failed to load configuration files")
                     return
@@ -471,7 +490,7 @@ def main():
                 
                 # Get worksheet sections for AI processing
                 sections_by_key = get_worksheet_sections_by_keys(
-                    filename=uploaded_file.name,
+                    uploaded_file=uploaded_file,
                     tab_name_mapping=mapping,
                     entity_name=selected_entity,
                     entity_suffixes=entity_suffixes,
@@ -507,9 +526,9 @@ def main():
             # AI Agent Selection and Content/Prompt Toggle
             col1, col2 = st.columns([3, 1])
             with col1:
-                agent_choice = st.radio("", ["Agent 1", "Agent 2", "Agent 3"], horizontal=True)
+                agent_choice = st.radio("Select AI Agent", ["Agent 1", "Agent 2", "Agent 3"], horizontal=True, label_visibility="collapsed")
             with col2:
-                content_mode = st.radio("", ["Content", "Prompt"], horizontal=True, label_visibility="collapsed")
+                content_mode = st.radio("Display Mode", ["Content", "Prompt"], horizontal=True, label_visibility="collapsed")
             
             # Enhanced highlighting indicator for Agent 2
             if agent_choice == "Agent 2":
@@ -671,7 +690,11 @@ def clean_content_quotes(content):
             continue
         
         # Check if the entire line is wrapped in quotes (common AI output issue)
-        if (line.startswith('"') and line.endswith('"')) or (line.startswith('"') and line.endswith('"')):
+        # Handle both straight quotes and curly quotes
+        if ((line.startswith('"') and line.endswith('"')) or 
+            (line.startswith('"') and line.endswith('"')) or
+            (line.startswith('"') and line.endswith('"')) or
+            (line.startswith('"') and line.endswith('"'))):
             # Remove the outer quotes
             cleaned_line = line[1:-1]
             cleaned_lines.append(cleaned_line)
@@ -686,7 +709,10 @@ def clean_content_quotes(content):
             
             for word in words:
                 # If a word is entirely quoted and it's not a proper noun or special term, remove quotes
-                if (word.startswith('"') and word.endswith('"')) or (word.startswith('"') and word.endswith('"')):
+                if ((word.startswith('"') and word.endswith('"')) or 
+                    (word.startswith('"') and word.endswith('"')) or
+                    (word.startswith('"') and word.endswith('"')) or
+                    (word.startswith('"') and word.endswith('"'))):
                     # Check if it's a legitimate quote (proper noun, special term, etc.)
                     unquoted_word = word[1:-1]
                     
@@ -1248,6 +1274,22 @@ def display_ai_content_by_key(key, agent_choice):
                                 return ['background-color: yellow; font-weight: bold'] * len(row)
                             return [''] * len(row)
                         
+                        # Convert datetime columns to strings to avoid Arrow serialization issues
+                        for col in df_clean.columns:
+                            if df_clean[col].dtype == 'object':
+                                # Convert any datetime-like objects to strings
+                                try:
+                                    # First try to convert to string directly
+                                    df_clean.loc[:, col] = df_clean[col].astype(str)
+                                except:
+                                    # If that fails, handle datetime objects specifically
+                                    df_clean.loc[:, col] = df_clean[col].apply(
+                                        lambda x: str(x) if pd.notna(x) and not pd.isna(x) else ''
+                                    )
+                            elif 'datetime' in str(df_clean[col].dtype):
+                                # Handle datetime columns specifically
+                                df_clean.loc[:, col] = df_clean[col].dt.strftime('%Y-%m-%d %H:%M:%S').fillna('')
+                        
                         styled_df = df_clean.style.apply(highlight_figures_in_use, axis=1)
                         st.dataframe(styled_df, use_container_width=True)
                         
@@ -1590,52 +1632,60 @@ def display_ai_content_by_key(key, agent_choice):
 
 def display_ai_prompt_by_key(key, agent_choice):
     """
-    Display AI prompt for the financial key following old_ver methodology
+    Display AI prompt for the financial key using dynamic prompts from configuration
     """
     try:
-        # System prompts based on actual agent roles
-        system_prompts = {
-            'Agent 1': """You are a content generation specialist for financial reports. Your role is to generate comprehensive financial analysis content based on worksheet data and predefined patterns. Focus on:
-1. Content generation using patterns from pattern.json
-2. Integration of actual worksheet data into narrative content
-3. Professional financial writing suitable for audit reports
-4. Consistent formatting and structure
-5. Clear, accurate descriptions of financial positions""",
-            
-            'Agent 2': """You are a data integrity specialist for financial statements. Your role is to validate and verify the integrity of balance sheet data against worksheet content. Focus on:
-1. Data validation and consistency checks
-2. Balance sheet item verification
-3. Cross-referencing worksheet data with financial statements
-4. Identification of data discrepancies and anomalies
-5. Quality assurance of financial data accuracy""",
-            
-            'Agent 3': """You are a formatting compliance specialist for financial reports. Your role is to ensure content formatting adheres to predefined patterns and standards. Focus on:
-1. Pattern compliance verification
-2. Formatting standards enforcement
-3. Consistency checks across financial items
-4. Quality control of report formatting
-5. Pattern optimization and improvement recommendations"""
-        }
+        # Load prompts from configuration
+        config, mapping, pattern, prompts = load_config_files()
         
-        # User prompts based on actual data and patterns
+        if not prompts:
+            st.error("❌ Failed to load prompts configuration")
+            return
+        
+        # Get system prompts from configuration
+        system_prompts = prompts.get('system_prompts', {})
+        
+        # Get user prompts from configuration
+        user_prompts_config = prompts.get('user_prompts', {})
+        generic_prompt_config = prompts.get('generic_prompt', {})
+        
+        # Get AI data for context
         ai_data = st.session_state.get('ai_data', {})
         entity_name = ai_data.get('entity_name', 'Unknown Entity')
         
-        user_prompts = {
-            'Cash': f"""Generate content for {get_key_display_name(key)} using worksheet data and patterns:
+        # Generate dynamic user prompt
+        def generate_user_prompt(key, prompt_config):
+            if not prompt_config:
+                return None
+                
+            title = prompt_config.get('title', f'{get_key_display_name(key)} Analysis')
+            description = prompt_config.get('description', f'Analyze the {get_key_display_name(key)} position')
+            analysis_points = prompt_config.get('analysis_points', [])
+            key_questions = prompt_config.get('key_questions', [])
+            data_sources = prompt_config.get('data_sources', [])
+            
+            prompt = f"""{description}:
 
 **Data Sources:**
 - Worksheet data from Excel file
 - Patterns from pattern.json for {key}
 - Entity information: {entity_name}
+- {', '.join(data_sources)}
 
 **Required Analysis:**
-1. **Data Extraction**: Extract relevant figures from worksheet data
-2. **Pattern Application**: Apply appropriate patterns from pattern.json
-3. **Content Generation**: Generate narrative content using patterns and data
-4. **Formatting**: Ensure consistent formatting and structure
-5. **Validation**: Verify accuracy of generated content
-
+"""
+            
+            for i, point in enumerate(analysis_points, 1):
+                prompt += f"{i}. **{point}**\n"
+            
+            prompt += f"""
+**Key Questions to Address:**
+"""
+            
+            for question in key_questions:
+                prompt += f"- {question}\n"
+            
+            prompt += f"""
 **Key Tasks:**
 - Review worksheet data for {key}
 - Identify applicable patterns from pattern.json
@@ -1647,708 +1697,14 @@ def display_ai_prompt_by_key(key, agent_choice):
 - Narrative content based on patterns and actual data
 - Integration of worksheet figures into text
 - Professional financial report language
-- Consistent formatting with other sections""",
+- Consistent formatting with other sections"""
             
-            'AR': f"""Analyze the accounts receivable for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Receivable Balance**: Review the total accounts receivable balance and aging profile
-2. **Customer Analysis**: Identify major customers, their payment terms, and credit risk assessment
-3. **Aging Analysis**: Assess the aging of receivables and potential credit risk exposure
-4. **Bad Debt Provision**: Evaluate the adequacy of bad debt provisions and methodology
-5. **Collection Performance**: Analyze collection efficiency, trends, and days sales outstanding
-
-**Key Questions to Address:**
-- What is the composition of accounts receivable by customer and aging?
-- Who are the major customers and what are their payment terms and credit limits?
-- What is the aging profile of receivables and potential credit risk?
-- Is the bad debt provision adequate based on historical experience and current conditions?
-- How does collection performance compare to industry standards and company targets?
-
-**Data Sources to Reference:**
-- Aged receivables reports and schedules
-- Customer master data and credit files
-- Collection history and payment patterns
-- Industry benchmarks and peer comparisons
-- Management representations and confirmations
-
-**Expected Output Format:**
-- Detailed aging analysis with specific figures
-- Credit risk assessment and provisioning analysis
-- Collection performance metrics and trends
-- Compliance with accounting standards for receivables""",
-            
-            'Prepayments': f"""Analyze the prepayments for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Prepayment Types**: Identify the nature, types, and business purpose of prepayments
-2. **Timing Analysis**: Assess the timing, duration, and recovery period of prepayments
-3. **Recovery Assessment**: Evaluate the recoverability and business justification of prepaid amounts
-4. **Business Justification**: Review the business rationale and economic substance of prepayments
-5. **Accounting Treatment**: Verify proper accounting treatment, amortization, and classification
-
-**Key Questions to Address:**
-- What types of prepayments exist and what is their nature and business purpose?
-- What is the timing and duration of these prepayments and recovery periods?
-- Are the prepayments recoverable and properly justified by business needs?
-- Is the amortization treatment appropriate and consistent with accounting standards?
-- Are there any unusual or significant prepayments requiring special attention?
-
-**Data Sources to Reference:**
-- Prepayment schedules and supporting documentation
-- Contracts, agreements, and business justifications
-- Amortization calculations and accounting policies
-- Management explanations and confirmations
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by prepayment type and timing
-- Business justification and recoverability analysis
-- Accounting treatment and compliance assessment
-- Risk identification and control evaluation""",
-            
-            'IP': f"""Analyze the investment properties for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Property Portfolio**: Review the composition, location, and characteristics of investment properties
-2. **Valuation Assessment**: Evaluate the carrying value, fair value, and valuation methodology
-3. **Rental Income**: Analyze rental income, occupancy rates, and rental market conditions
-4. **Maintenance and CAPEX**: Assess maintenance requirements, capital expenditure, and property condition
-5. **Market Conditions**: Consider market conditions, property trends, and external factors
-
-**Key Questions to Address:**
-- What is the composition and location of investment properties and their characteristics?
-- How are the properties valued and what is their fair value compared to carrying value?
-- What is the rental income and occupancy performance relative to market conditions?
-- What are the maintenance and capital expenditure requirements and their impact?
-- How do market conditions and external factors affect property values and performance?
-
-**Data Sources to Reference:**
-- Property registers and legal documentation
-- Valuation reports and market analysis
-- Rental agreements and income schedules
-- Market analysis and industry reports
-- Management representations and confirmations
-
-**Expected Output Format:**
-- Property portfolio analysis with specific details
-- Valuation assessment and methodology review
-- Rental performance and market analysis
-- Risk assessment and future outlook""",
-            
-            'AP': f"""Analyze the accounts payable for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Payable Balance**: Review the total accounts payable balance and aging profile
-2. **Supplier Analysis**: Identify major suppliers, their payment terms, and relationship assessment
-3. **Aging Analysis**: Assess the aging of payables and payment timing compliance
-4. **Payment Performance**: Analyze payment efficiency, trends, and days payable outstanding
-5. **Working Capital Impact**: Evaluate the impact on working capital and cash flow management
-
-**Key Questions to Address:**
-- What is the composition of accounts payable by supplier and aging?
-- Who are the major suppliers and what are their payment terms and relationships?
-- What is the aging profile of payables and compliance with payment terms?
-- How does payment performance compare to terms and industry standards?
-- What is the impact on working capital management and cash flow?
-
-**Data Sources to Reference:**
-- Aged payables reports and schedules
-- Supplier master data and payment history
-- Payment history and performance metrics
-- Working capital analysis and cash flow projections
-- Industry benchmarks and peer comparisons
-
-**Expected Output Format:**
-- Detailed aging analysis with specific figures
-- Supplier relationship and payment performance analysis
-- Working capital impact assessment
-- Compliance and risk evaluation""",
-            
-            'Capital': f"""Analyze the share capital for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Capital Structure**: Review the share capital structure, classes, and ownership distribution
-2. **Shareholder Analysis**: Identify major shareholders, their ownership, and voting rights
-3. **Capital History**: Assess historical capital changes, reasons, and regulatory compliance
-4. **Regulatory Compliance**: Verify compliance with capital requirements and regulations
-5. **Future Plans**: Consider any planned capital changes and their implications
-
-**Key Questions to Address:**
-- What is the current share capital structure and classes of shares?
-- Who are the major shareholders and what is their ownership and voting rights?
-- What are the historical capital changes and their business reasons?
-- Is the company compliant with capital requirements and regulations?
-- Are there any planned capital changes and their strategic implications?
-
-**Data Sources to Reference:**
-- Share register and ownership records
-- Capital change history and board resolutions
-- Regulatory filings and compliance reports
-- Board resolutions and strategic plans
-- Legal documentation and corporate governance
-
-**Expected Output Format:**
-- Capital structure analysis with ownership details
-- Historical changes and regulatory compliance assessment
-- Shareholder analysis and voting rights
-- Strategic implications and future outlook""",
-            
-            'OR': f"""Analyze the other receivables for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Receivable Types**: Identify the nature and types of other receivables
-2. **Aging Analysis**: Assess the aging profile and recovery prospects
-3. **Credit Risk**: Evaluate credit risk and bad debt provision adequacy
-4. **Business Justification**: Review the business rationale and economic substance
-5. **Recovery Assessment**: Analyze recovery likelihood and timing
-
-**Key Questions to Address:**
-- What types of other receivables exist and what is their nature?
-- What is the aging profile and recovery prospects for these receivables?
-- Is the bad debt provision adequate for other receivables?
-- What is the business justification for these receivables?
-- How likely is recovery and what is the expected timing?
-
-**Data Sources to Reference:**
-- Other receivables schedules and aging reports
-- Supporting documentation and business justifications
-- Credit risk assessments and provisioning policies
-- Management representations and confirmations
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by receivable type and aging
-- Credit risk assessment and provisioning analysis
-- Business justification and recovery assessment
-- Risk identification and control evaluation""",
-            
-            'Taxes payable': f"""Analyze the taxes payable for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Tax Types**: Identify the types of taxes payable and their nature
-2. **Calculation Verification**: Verify tax calculations and compliance with tax laws
-3. **Payment Timing**: Assess payment timing and compliance with tax deadlines
-4. **Tax Risk Assessment**: Evaluate tax risks and potential exposures
-5. **Regulatory Compliance**: Review compliance with tax regulations and requirements
-
-**Key Questions to Address:**
-- What types of taxes are payable and what is their nature?
-- Are the tax calculations accurate and compliant with tax laws?
-- Is the company compliant with tax payment deadlines?
-- What are the potential tax risks and exposures?
-- Is the company compliant with all tax regulations?
-
-**Data Sources to Reference:**
-- Tax calculations and supporting documentation
-- Tax returns and regulatory filings
-- Payment schedules and compliance records
-- Tax risk assessments and legal opinions
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by tax type and amounts
-- Calculation verification and compliance assessment
-- Payment timing and risk analysis
-- Regulatory compliance evaluation""",
-            
-            'OP': f"""Analyze the other payables for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Payable Types**: Identify the nature and types of other payables
-2. **Aging Analysis**: Assess the aging profile and payment timing
-3. **Business Justification**: Review the business rationale and economic substance
-4. **Payment Performance**: Analyze payment efficiency and compliance
-5. **Working Capital Impact**: Evaluate impact on working capital management
-
-**Key Questions to Address:**
-- What types of other payables exist and what is their nature?
-- What is the aging profile and payment timing for these payables?
-- What is the business justification for these payables?
-- How does payment performance compare to terms and standards?
-- What is the impact on working capital management?
-
-**Data Sources to Reference:**
-- Other payables schedules and aging reports
-- Supporting documentation and business justifications
-- Payment history and performance metrics
-- Working capital analysis and cash flow projections
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by payable type and aging
-- Business justification and payment performance analysis
-- Working capital impact assessment
-- Compliance and risk evaluation""",
-            
-            'Advances': f"""Analyze the advances from customers for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Advance Types**: Identify the nature and types of customer advances
-2. **Customer Analysis**: Review major customers and advance terms
-3. **Recognition Assessment**: Evaluate revenue recognition and accounting treatment
-4. **Business Justification**: Review the business rationale and economic substance
-5. **Risk Assessment**: Analyze risks and potential exposures
-
-**Key Questions to Address:**
-- What types of advances exist and what is their nature?
-- Who are the major customers and what are their advance terms?
-- Is the revenue recognition treatment appropriate?
-- What is the business justification for these advances?
-- What are the potential risks and exposures?
-
-**Data Sources to Reference:**
-- Advance schedules and customer agreements
-- Revenue recognition policies and calculations
-- Customer master data and credit files
-- Business justifications and management representations
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by advance type and customer
-- Revenue recognition and accounting treatment analysis
-- Business justification and risk assessment
-- Compliance and control evaluation""",
-            
-            'Reserve': f"""Analyze the reserves for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Reserve Types**: Identify the types of reserves and their nature
-2. **Calculation Verification**: Verify reserve calculations and methodology
-3. **Regulatory Compliance**: Review compliance with regulatory requirements
-4. **Risk Assessment**: Evaluate adequacy and risk coverage
-5. **Future Plans**: Consider future reserve requirements and plans
-
-**Key Questions to Address:**
-- What types of reserves exist and what is their nature?
-- Are the reserve calculations accurate and appropriate?
-- Is the company compliant with regulatory reserve requirements?
-- Are the reserves adequate for potential risks?
-- What are the future reserve requirements and plans?
-
-**Data Sources to Reference:**
-- Reserve calculations and supporting documentation
-- Regulatory requirements and compliance reports
-- Risk assessments and actuarial reports
-- Board resolutions and strategic plans
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by reserve type and amounts
-- Calculation verification and compliance assessment
-- Risk coverage and adequacy analysis
-- Future requirements and strategic implications""",
-            
-            'Other CA': f"""Analyze the other current assets for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Asset Types**: Identify the nature and types of other current assets
-2. **Valuation Assessment**: Evaluate carrying values and fair value considerations
-3. **Recovery Assessment**: Assess recoverability and realization prospects
-4. **Business Justification**: Review the business rationale and economic substance
-5. **Risk Assessment**: Analyze risks and potential exposures
-
-**Key Questions to Address:**
-- What types of other current assets exist and what is their nature?
-- Are the carrying values appropriate and supportable?
-- What are the recovery and realization prospects?
-- What is the business justification for these assets?
-- What are the potential risks and exposures?
-
-**Data Sources to Reference:**
-- Asset schedules and supporting documentation
-- Valuation reports and fair value assessments
-- Recovery analysis and realization plans
-- Business justifications and management representations
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by asset type and values
-- Valuation and recovery assessment
-- Business justification and risk analysis
-- Compliance and control evaluation""",
-            
-            'Other NCA': f"""Analyze the other non-current assets for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Asset Types**: Identify the nature and types of other non-current assets
-2. **Valuation Assessment**: Evaluate carrying values and fair value considerations
-3. **Useful Life Analysis**: Assess useful lives and amortization treatment
-4. **Business Justification**: Review the business rationale and economic substance
-5. **Risk Assessment**: Analyze risks and potential exposures
-
-**Key Questions to Address:**
-- What types of other non-current assets exist and what is their nature?
-- Are the carrying values appropriate and supportable?
-- Are the useful lives and amortization treatment appropriate?
-- What is the business justification for these assets?
-- What are the potential risks and exposures?
-
-**Data Sources to Reference:**
-- Asset schedules and supporting documentation
-- Valuation reports and fair value assessments
-- Useful life analysis and amortization calculations
-- Business justifications and management representations
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by asset type and values
-- Valuation and useful life assessment
-- Business justification and risk analysis
-- Compliance and control evaluation""",
-            
-            'Capital reserve': f"""Analyze the capital reserves for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Reserve Types**: Identify the types of capital reserves and their nature
-2. **Calculation Verification**: Verify reserve calculations and methodology
-3. **Regulatory Compliance**: Review compliance with regulatory requirements
-4. **Risk Assessment**: Evaluate adequacy and risk coverage
-5. **Future Plans**: Consider future reserve requirements and plans
-
-**Key Questions to Address:**
-- What types of capital reserves exist and what is their nature?
-- Are the reserve calculations accurate and appropriate?
-- Is the company compliant with regulatory capital reserve requirements?
-- Are the reserves adequate for potential risks?
-- What are the future capital reserve requirements and plans?
-
-**Data Sources to Reference:**
-- Capital reserve calculations and supporting documentation
-- Regulatory requirements and compliance reports
-- Risk assessments and actuarial reports
-- Board resolutions and strategic plans
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by capital reserve type and amounts
-- Calculation verification and compliance assessment
-- Risk coverage and adequacy analysis
-- Future requirements and strategic implications""",
-            
-            'OI': f"""Analyze the other income for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Income Types**: Identify the nature and types of other income
-2. **Recognition Assessment**: Evaluate income recognition and accounting treatment
-3. **Business Justification**: Review the business rationale and economic substance
-4. **Risk Assessment**: Analyze risks and potential exposures
-5. **Future Prospects**: Consider future income prospects and sustainability
-
-**Key Questions to Address:**
-- What types of other income exist and what is their nature?
-- Is the income recognition treatment appropriate?
-- What is the business justification for this income?
-- What are the potential risks and exposures?
-- What are the future income prospects and sustainability?
-
-**Data Sources to Reference:**
-- Income schedules and supporting documentation
-- Recognition policies and calculations
-- Business justifications and management representations
-- Risk assessments and sustainability analysis
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by income type and amounts
-- Recognition and accounting treatment analysis
-- Business justification and risk assessment
-- Future prospects and sustainability evaluation""",
-            
-            'OC': f"""Analyze the other costs for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Cost Types**: Identify the nature and types of other costs
-2. **Recognition Assessment**: Evaluate cost recognition and accounting treatment
-3. **Business Justification**: Review the business rationale and economic substance
-4. **Risk Assessment**: Analyze risks and potential exposures
-5. **Future Trends**: Consider future cost trends and sustainability
-
-**Key Questions to Address:**
-- What types of other costs exist and what is their nature?
-- Is the cost recognition treatment appropriate?
-- What is the business justification for these costs?
-- What are the potential risks and exposures?
-- What are the future cost trends and sustainability?
-
-**Data Sources to Reference:**
-- Cost schedules and supporting documentation
-- Recognition policies and calculations
-- Business justifications and management representations
-- Risk assessments and trend analysis
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by cost type and amounts
-- Recognition and accounting treatment analysis
-- Business justification and risk assessment
-- Future trends and sustainability evaluation""",
-            
-            'Tax and Surcharges': f"""Analyze the tax and surcharges for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Tax Types**: Identify the types of taxes and surcharges and their nature
-2. **Calculation Verification**: Verify tax calculations and compliance with tax laws
-3. **Payment Timing**: Assess payment timing and compliance with tax deadlines
-4. **Tax Risk Assessment**: Evaluate tax risks and potential exposures
-5. **Regulatory Compliance**: Review compliance with tax regulations and requirements
-
-**Key Questions to Address:**
-- What types of taxes and surcharges are applicable and what is their nature?
-- Are the tax calculations accurate and compliant with tax laws?
-- Is the company compliant with tax payment deadlines?
-- What are the potential tax risks and exposures?
-- Is the company compliant with all tax regulations?
-
-**Data Sources to Reference:**
-- Tax calculations and supporting documentation
-- Tax returns and regulatory filings
-- Payment schedules and compliance records
-- Tax risk assessments and legal opinions
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by tax type and amounts
-- Calculation verification and compliance assessment
-- Payment timing and risk analysis
-- Regulatory compliance evaluation""",
-            
-            'GA': f"""Analyze the G&A expenses for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Expense Types**: Identify the nature and types of G&A expenses
-2. **Cost Analysis**: Evaluate cost structure and efficiency
-3. **Budget Comparison**: Compare actual expenses to budget and prior periods
-4. **Efficiency Assessment**: Analyze operational efficiency and cost control
-5. **Future Trends**: Consider future expense trends and sustainability
-
-**Key Questions to Address:**
-- What types of G&A expenses exist and what is their nature?
-- How does the cost structure compare to budget and prior periods?
-- Is the company operating efficiently with good cost control?
-- What are the future expense trends and sustainability?
-- Are there opportunities for cost optimization?
-
-**Data Sources to Reference:**
-- Expense schedules and supporting documentation
-- Budget comparisons and variance analysis
-- Efficiency metrics and benchmarking
-- Trend analysis and sustainability assessments
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by expense type and amounts
-- Cost analysis and efficiency assessment
-- Budget comparison and trend analysis
-- Future outlook and optimization opportunities""",
-            
-            'Fin Exp': f"""Analyze the finance expenses for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Expense Types**: Identify the nature and types of finance expenses
-2. **Interest Analysis**: Evaluate interest rates, terms, and debt structure
-3. **Cost Analysis**: Analyze cost of capital and financing efficiency
-4. **Risk Assessment**: Assess interest rate and refinancing risks
-5. **Future Trends**: Consider future financing costs and plans
-
-**Key Questions to Address:**
-- What types of finance expenses exist and what is their nature?
-- How do interest rates and terms compare to market conditions?
-- Is the cost of capital reasonable and financing efficient?
-- What are the interest rate and refinancing risks?
-- What are the future financing costs and plans?
-
-**Data Sources to Reference:**
-- Finance expense schedules and supporting documentation
-- Debt agreements and interest rate analysis
-- Cost of capital calculations and benchmarking
-- Risk assessments and sensitivity analysis
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by expense type and amounts
-- Interest analysis and cost of capital assessment
-- Risk analysis and efficiency evaluation
-- Future outlook and strategic implications""",
-            
-            'Cr Loss': f"""Analyze the credit losses for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Loss Types**: Identify the nature and types of credit losses
-2. **Methodology Assessment**: Evaluate credit loss calculation methodology
-3. **Risk Assessment**: Analyze credit risk and exposure
-4. **Provision Adequacy**: Assess adequacy of credit loss provisions
-5. **Future Trends**: Consider future credit loss trends and expectations
-
-**Key Questions to Address:**
-- What types of credit losses exist and what is their nature?
-- Is the credit loss calculation methodology appropriate?
-- What are the credit risks and exposures?
-- Are the credit loss provisions adequate?
-- What are the future credit loss trends and expectations?
-
-**Data Sources to Reference:**
-- Credit loss schedules and supporting documentation
-- Methodology documentation and calculations
-- Risk assessments and exposure analysis
-- Provision adequacy assessments
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by loss type and amounts
-- Methodology and risk assessment
-- Provision adequacy analysis
-- Future trends and expectations evaluation""",
-            
-            'Other Income': f"""Analyze the other income for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Income Types**: Identify the nature and types of other income
-2. **Recognition Assessment**: Evaluate income recognition and accounting treatment
-3. **Business Justification**: Review the business rationale and economic substance
-4. **Risk Assessment**: Analyze risks and potential exposures
-5. **Future Prospects**: Consider future income prospects and sustainability
-
-**Key Questions to Address:**
-- What types of other income exist and what is their nature?
-- Is the income recognition treatment appropriate?
-- What is the business justification for this income?
-- What are the potential risks and exposures?
-- What are the future income prospects and sustainability?
-
-**Data Sources to Reference:**
-- Income schedules and supporting documentation
-- Recognition policies and calculations
-- Business justifications and management representations
-- Risk assessments and sustainability analysis
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by income type and amounts
-- Recognition and accounting treatment analysis
-- Business justification and risk assessment
-- Future prospects and sustainability evaluation""",
-            
-            'Non-operating Income': f"""Analyze the non-operating income for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Income Types**: Identify the nature and types of non-operating income
-2. **Recognition Assessment**: Evaluate income recognition and accounting treatment
-3. **Business Justification**: Review the business rationale and economic substance
-4. **Risk Assessment**: Analyze risks and potential exposures
-5. **Future Prospects**: Consider future income prospects and sustainability
-
-**Key Questions to Address:**
-- What types of non-operating income exist and what is their nature?
-- Is the income recognition treatment appropriate?
-- What is the business justification for this income?
-- What are the potential risks and exposures?
-- What are the future income prospects and sustainability?
-
-**Data Sources to Reference:**
-- Income schedules and supporting documentation
-- Recognition policies and calculations
-- Business justifications and management representations
-- Risk assessments and sustainability analysis
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by income type and amounts
-- Recognition and accounting treatment analysis
-- Business justification and risk assessment
-- Future prospects and sustainability evaluation""",
-            
-            'Non-operating Exp': f"""Analyze the non-operating expenses for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Expense Types**: Identify the nature and types of non-operating expenses
-2. **Recognition Assessment**: Evaluate expense recognition and accounting treatment
-3. **Business Justification**: Review the business rationale and economic substance
-4. **Risk Assessment**: Analyze risks and potential exposures
-5. **Future Trends**: Consider future expense trends and sustainability
-
-**Key Questions to Address:**
-- What types of non-operating expenses exist and what is their nature?
-- Is the expense recognition treatment appropriate?
-- What is the business justification for these expenses?
-- What are the potential risks and exposures?
-- What are the future expense trends and sustainability?
-
-**Data Sources to Reference:**
-- Expense schedules and supporting documentation
-- Recognition policies and calculations
-- Business justifications and management representations
-- Risk assessments and trend analysis
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by expense type and amounts
-- Recognition and accounting treatment analysis
-- Business justification and risk assessment
-- Future trends and sustainability evaluation""",
-            
-            'Income tax': f"""Analyze the income tax for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Tax Calculation**: Review income tax calculation and methodology
-2. **Compliance Assessment**: Evaluate compliance with tax laws and regulations
-3. **Effective Tax Rate**: Analyze effective tax rate and reconciliation
-4. **Deferred Tax**: Assess deferred tax assets and liabilities
-5. **Tax Risk Assessment**: Evaluate tax risks and potential exposures
-
-**Key Questions to Address:**
-- Is the income tax calculation accurate and appropriate?
-- Is the company compliant with income tax laws and regulations?
-- How does the effective tax rate compare to statutory rates?
-- Are deferred tax assets and liabilities properly recognized?
-- What are the potential tax risks and exposures?
-
-**Data Sources to Reference:**
-- Tax calculations and supporting documentation
-- Tax returns and regulatory filings
-- Effective tax rate reconciliations
-- Deferred tax calculations and assessments
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed tax calculation and compliance assessment
-- Effective tax rate analysis and reconciliation
-- Deferred tax assessment and risk analysis
-- Regulatory compliance evaluation""",
-            
-            'LT DTA': f"""Analyze the long-term deferred tax assets for {get_key_display_name(key)}:
-
-**Required Analysis Points:**
-1. **Asset Types**: Identify the types of long-term deferred tax assets
-2. **Recognition Assessment**: Evaluate recognition criteria and methodology
-3. **Recovery Assessment**: Assess recovery likelihood and timing
-4. **Valuation Analysis**: Review carrying values and impairment considerations
-5. **Risk Assessment**: Analyze risks and potential exposures
-
-**Key Questions to Address:**
-- What types of long-term deferred tax assets exist?
-- Are the recognition criteria and methodology appropriate?
-- What is the recovery likelihood and expected timing?
-- Are the carrying values appropriate and supportable?
-- What are the potential risks and exposures?
-
-**Data Sources to Reference:**
-- Deferred tax asset schedules and supporting documentation
-- Recognition criteria and methodology documentation
-- Recovery analysis and timing assessments
-- Valuation reports and impairment tests
-- Industry practices and peer comparisons
-
-**Expected Output Format:**
-- Detailed breakdown by asset type and amounts
-- Recognition and recovery assessment
-- Valuation and impairment analysis
-- Risk assessment and future outlook"""
-        }
+            return prompt
         
         # Get the prompts for this key and agent
-        system_prompt = system_prompts.get(agent_choice, system_prompts['Agent 1'])
-        user_prompt = user_prompts.get(key)
+        system_prompt = system_prompts.get(agent_choice, system_prompts.get('Agent 1', ''))
+        user_prompt_config = user_prompts_config.get(key, generic_prompt_config)
+        user_prompt = generate_user_prompt(key, user_prompt_config)
         
         if user_prompt:
             st.markdown("### 🤖 AI Prompt Configuration")
@@ -2377,7 +1733,25 @@ def display_ai_prompt_by_key(key, agent_choice):
             if sections:
                 st.markdown("**📋 Worksheet Data:**")
                 first_section = sections[0]
-                df_clean = first_section['data'].dropna(axis=1, how='all')
+                # Create a proper copy to avoid SettingWithCopyWarning
+                df_clean = first_section['data'].dropna(axis=1, how='all').copy()
+                
+                # Convert datetime columns to strings to avoid Arrow serialization issues
+                for col in df_clean.columns:
+                    if df_clean[col].dtype == 'object':
+                        # Convert any datetime-like objects to strings
+                        try:
+                            # First try to convert to string directly
+                            df_clean.loc[:, col] = df_clean[col].astype(str)
+                        except:
+                            # If that fails, handle datetime objects specifically
+                            df_clean.loc[:, col] = df_clean[col].apply(
+                                lambda x: str(x) if pd.notna(x) and not pd.isna(x) else ''
+                            )
+                    elif 'datetime' in str(df_clean[col].dtype):
+                        # Handle datetime columns specifically
+                        df_clean.loc[:, col] = df_clean[col].dt.strftime('%Y-%m-%d %H:%M:%S').fillna('')
+                
                 st.dataframe(df_clean, use_container_width=True)
                 
                 # Data Quality Metrics
@@ -2394,6 +1768,8 @@ def display_ai_prompt_by_key(key, agent_choice):
                 with col3:
                     numeric_cols = df.select_dtypes(include=['number']).columns
                     st.metric("Numeric Columns", len(numeric_cols))
+            else:
+                st.warning("No worksheet data available for this key.")
             
             # Patterns as Tabs
             if key_patterns:
@@ -2449,7 +1825,7 @@ def display_ai_prompt_by_key(key, agent_choice):
 **{agent_choice} Generic Prompt for {get_key_display_name(key)} Analysis:**
 
 **System Prompt:**
-{system_prompts.get(agent_choice, system_prompts['Agent 1'])}
+{system_prompts.get(agent_choice, system_prompts.get('Agent 1', ''))}
 
 **User Prompt:**
 Analyze the {get_key_display_name(key)} position:
