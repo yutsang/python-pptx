@@ -511,15 +511,18 @@ def main():
             with col2:
                 content_mode = st.radio("", ["Content", "Prompt"], horizontal=True, label_visibility="collapsed")
             
+            # Enhanced highlighting indicator for Agent 2
+            if agent_choice == "Agent 2":
+                st.info("🎯 **Enhanced Highlighting Active**: Agent 2 now includes pattern-based figure detection with '000 notation support")
+            
             if statement_type == "BS":
                 # Get AI data to determine which keys have data
                 ai_data = st.session_state.get('ai_data', {})
                 sections_by_key = ai_data.get('sections_by_key', {})
-                ai_keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-                
-                if ai_keys_with_data:
-                    ai_key_tabs = st.tabs([get_key_display_name(key) for key in ai_keys_with_data])
-                    for i, key in enumerate(ai_keys_with_data):
+                keys_with_data = [key for key, sections in sections_by_key.items() if sections]
+                if keys_with_data:
+                    ai_key_tabs = st.tabs([get_key_display_name(key) for key in keys_with_data])
+                    for i, key in enumerate(keys_with_data):
                         with ai_key_tabs[i]:
                             if content_mode == "Content":
                                 # Display AI content based on the key
@@ -574,7 +577,34 @@ def main():
                         output_filename = f"{project_name}_{statement_type.upper()}_{timestamp}.pptx"
                         output_path = output_filename
                         
-                        # Export to PPTX
+                        # 1. Get the correct filtered keys for export
+                        ai_data = st.session_state.get('ai_data', {})
+                        sections_by_key = ai_data.get('sections_by_key', {})
+                        entity_name = ai_data.get('entity_name', selected_entity)
+                        keys_with_data = [key for key, sections in sections_by_key.items() if sections]
+
+                        # Dynamic BS key selection (as in your old logic)
+                        bs_keys = [
+                            "Cash", "AR", "Prepayments", "OR", "Other CA", "IP", "Other NCA",
+                            "AP", "Taxes payable", "OP", "Capital", "Reserve"
+                        ]
+                        if entity_name in ['Ningbo', 'Nanjing']:
+                            bs_keys = [key for key in bs_keys if key != "Reserve"]
+
+                        is_keys = [
+                            "OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
+                            "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"
+                        ]
+
+                        if statement_type == "BS":
+                            filtered_keys = [key for key in keys_with_data if key in bs_keys]
+                        elif statement_type == "IS":
+                            filtered_keys = [key for key in keys_with_data if key in is_keys]
+                        else:  # ALL
+                            filtered_keys = keys_with_data
+
+                        # 2. Use bs_content.md as-is for export (do NOT overwrite it)
+                        # Note: bs_content.md should contain narrative content from AI processing, not table data
                         export_pptx(
                             template_path=template_path,
                             markdown_path="utils/bs_content.md",
@@ -683,6 +713,8 @@ def display_ai_content_by_key(key, agent_choice):
     Display AI content based on the financial key using actual data and patterns
     """
     try:
+        import re  # Import re at the beginning of the function
+        
         # Debug: Print the key being processed (only if verbose debugging is needed)
         # st.write(f"🔍 Processing key: {key} (Display name: {get_key_display_name(key)})")
         
@@ -825,18 +857,445 @@ def display_ai_content_by_key(key, agent_choice):
                 st.error(f"Error reading content file: {e}")
             
         elif agent_choice == "Agent 2":
-            # Agent 2: Data integrity - show only the final output
+            # Agent 2: Data integrity - takes Agent 1 result + balance sheet data (NO patterns)
             st.markdown("### 🔍 Data Integrity Report")
             
-            if sections:
+            # Get Agent 1's content first
+            agent1_content = ""
+            try:
+                # Determine which content file to use based on mode
+                content_file = "utils/bs_content_offline.md" if mode == "Offline Mode" else "utils/bs_content.md"
+                
+                with open(content_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Map financial keys to content sections using mapping.json
+                key_to_section_mapping = {
+                    'Cash': 'Cash at bank',
+                    'AR': 'Accounts receivables', 
+                    'Prepayments': 'Prepayments',
+                    'OR': 'Other receivables',
+                    'Other CA': 'Other current assets',
+                    'IP': 'Investment properties',
+                    'Other NCA': 'Other non-Current assets',
+                    'AP': 'Accounts payable',
+                    'Advances': 'Advances',
+                    'Taxes payable': 'Taxes payables',
+                    'OP': 'Other payables',
+                    'Capital': 'Capital',
+                    'Reserve': 'Surplus reserve',
+                    'Capital reserve': 'Capital reserve',
+                    'OI': 'Other Income',
+                    'OC': 'Other Costs',
+                    'Tax and Surcharges': 'Tax and Surcharges',
+                    'GA': 'G&A expenses',
+                    'Fin Exp': 'Finance Expenses',
+                    'Cr Loss': 'Credit Losses',
+                    'Other Income': 'Other Income',
+                    'Non-operating Income': 'Non-operating Income',
+                    'Non-operating Exp': 'Non-operating Expenses',
+                    'Income tax': 'Income tax',
+                    'LT DTA': 'Long-term Deferred Tax Assets'
+                }
+                
+                # Find the section for this key
+                target_section = key_to_section_mapping.get(key)
+                if target_section:
+                    sections_content = re.split(r'(^### .+$)', content, flags=re.MULTILINE)
+                    found_content = None
+                    for i in range(1, len(sections_content), 2):
+                        section_header = sections_content[i].strip()
+                        section_content = sections_content[i+1].strip() if i+1 < len(sections_content) else ''
+                        if target_section.lower() in section_header.lower():
+                            found_content = section_content
+                            break
+                    
+                    if found_content:
+                        agent1_content = clean_content_quotes(found_content)
+            except Exception as e:
+                st.error(f"Error getting Agent 1 content: {e}")
+            
+            if sections and agent1_content:
                 st.success("✅ Data integrity validation completed")
-                st.markdown("**Validation Summary:**")
+                
+                # Function to convert K/M to full numbers
+                def convert_km_to_full(num_str):
+                    """Convert K/M notation to full numbers for comparison"""
+                    if 'K' in num_str.upper():
+                        return float(re.sub(r'[^\d.,]', '', num_str)) * 1000
+                    elif 'M' in num_str.upper():
+                        return float(re.sub(r'[^\d.,]', '', num_str)) * 1000000
+                    elif 'B' in num_str.upper():
+                        return float(re.sub(r'[^\d.,]', '', num_str)) * 1000000000
+                    else:
+                        return float(re.sub(r'[^\d.,]', '', num_str))
+                
+                # Function to detect '000 notation in balance sheet headers
+                def detect_thousands_notation(df):
+                    """Detect if balance sheet uses '000 notation by checking headers and title rows"""
+                    # Check column headers for '000 notation
+                    for col in df.columns:
+                        if isinstance(col, str) and ('000' in col or "'000" in col):
+                            return True
+                    
+                    # Check first few rows for '000 notation (title rows)
+                    for idx in range(min(5, len(df))):
+                        row = df.iloc[idx]
+                        for val in row:
+                            if isinstance(val, str) and ('000' in val or "'000" in val):
+                                return True
+                    
+                    return False
+                
+                # Function to convert balance sheet numbers (accounting for '000 notation)
+                def convert_bs_to_full(num_str, use_thousands_notation=False):
+                    """Convert balance sheet numbers to full numbers, accounting for '000 notation"""
+                    # Remove any non-numeric characters except decimal points
+                    clean_num = re.sub(r'[^\d.,]', '', str(num_str))
+                    
+                    try:
+                        num_value = float(clean_num)
+                        
+                        # If thousands notation is detected, multiply by 1000
+                        if use_thousands_notation:
+                            return num_value * 1000
+                        else:
+                            return num_value
+                    except:
+                        return 0
+                
+                # Extract numbers from Agent 1 content (INPUT) - more specific pattern
+                content_numbers = re.findall(r'CNY[\d,]+\.?\d*[KMB]?|\$[\d,]+\.?\d*[KMB]?|[\d,]+\.?\d*[KMB]?', agent1_content)
+                
+                # Filter out non-numeric content and show what's being processed
+                filtered_content_numbers = []
+                for num in content_numbers:
+                    if (re.match(r'^[\d,]+\.?\d*[KMB]?$|^CNY[\d,]+\.?\d*[KMB]?$|^\$[\d,]+\.?\d*[KMB]?$', num) and 
+                        len(re.sub(r'[^\d]', '', num)) > 0):
+                        filtered_content_numbers.append(num)
+                
+                content_numbers = filtered_content_numbers
+                
+                # Extract numbers from balance sheet data with row captions (INPUT)
+                balance_sheet_data = []
+                matched_rows = set()  # Track which rows have matches
+                use_thousands_notation = False
+                
+                if sections:
+                    df = sections[0]['data']
+                    
+                    # Detect if balance sheet uses '000 notation
+                    use_thousands_notation = detect_thousands_notation(df)
+                    
+                    # Display notation detection result
+                    if use_thousands_notation:
+                        st.info("🔍 **Detected '000 notation** in balance sheet headers/titles - numbers will be multiplied by 1,000")
+                    else:
+                        st.info("📊 **Standard notation** detected - numbers used as-is")
+                    
+                    for idx, row in df.iterrows():
+                        for col_idx, val in enumerate(row):
+                            if pd.notna(val) and (isinstance(val, (int, float)) or (isinstance(val, str) and re.search(r'[\d.,]+', val))):
+                                # Get row caption (first column value)
+                                row_caption = str(row.iloc[0]) if len(row) > 0 else f"Row {idx+1}"
+                                balance_sheet_data.append({
+                                    'row_caption': row_caption,
+                                    'column': df.columns[col_idx],
+                                    'value': str(val),
+                                    'row_index': idx
+                                })
+                
+                # Create INPUT/OUTPUT comparison
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**📥 INPUT: Agent 1 Content Numbers**")
+                    if content_numbers:
+                        for i, num in enumerate(content_numbers):
+                            try:
+                                full_value = convert_km_to_full(num)
+                                st.markdown(f"{i+1}. `{num}` → {full_value:,.0f}")
+                            except:
+                                st.markdown(f"{i+1}. `{num}` (conversion failed)")
+                    else:
+                        st.write("No numbers found in content")
+                
+                with col2:
+                    st.markdown("**📤 OUTPUT: Balance Sheet Data Numbers**")
+                    if balance_sheet_data:
+                        for i, item in enumerate(balance_sheet_data[:10]):  # Show first 10
+                            st.markdown(f"{i+1}. `{item['value']}` (Row: {item['row_caption']}, Col: {item['column']})")
+                        if len(balance_sheet_data) > 10:
+                            st.write(f"... and {len(balance_sheet_data) - 10} more")
+                    else:
+                        st.write("No numbers found in balance sheet data")
+                
+                # Data integrity analysis (OUTPUT)
+                st.markdown("---")
+                st.markdown("**🔍 DATA INTEGRITY ANALYSIS (OUTPUT):**")
+                
+                # Check for number matches with conversion
+                matches = []
+                for content_num in content_numbers:
+                    try:
+                        content_full = convert_km_to_full(content_num)
+                        for bs_item in balance_sheet_data:
+                            try:
+                                # Use the new balance sheet conversion function with detected notation
+                                bs_full = convert_bs_to_full(bs_item['value'], use_thousands_notation)
+                                # Check if numbers match (with tolerance for rounding and '000 notation)
+                                if abs(content_full - bs_full) < 1000 or content_full == bs_full:
+                                    matches.append({
+                                        'content_num': content_num,
+                                        'content_full': content_full,
+                                        'bs_num': bs_item['value'],
+                                        'bs_full': bs_full,
+                                        'row_caption': bs_item['row_caption'],
+                                        'column': bs_item['column'],
+                                        'row_index': bs_item['row_index'],
+                                        'conversion_note': f"Content: {content_num} → {content_full:,.0f}, BS: {bs_item['value']} → {bs_full:,.0f}"
+                                    })
+                                    matched_rows.add(bs_item['row_index'])
+                            except:
+                                continue
+                    except:
+                        continue
+                
+                if matches:
+                    st.success(f"✅ Found {len(matches)} number matches between content and balance sheet data")
+                    st.markdown("**Matching Numbers (Highlighted):**")
+                    for match in matches[:5]:  # Show first 5 matches
+                        st.markdown(f"🎯 **MATCH**: Content `{match['content_num']}` ({match['content_full']:,.0f}) ↔ Balance Sheet `{match['bs_num']}` ({match['bs_full']:,.0f})")
+                        st.markdown(f"📍 **Location**: Row '{match['row_caption']}', Column '{match['column']}'")
+                        st.markdown(f"🔄 **Conversion**: {match['conversion_note']}")
+                else:
+                    st.warning("⚠️ No direct number matches found between content and balance sheet data")
+                    
+                    # Show potential matches with conversion details
+                    st.markdown("**🔍 Potential Matches (with '000 notation):**")
+                    potential_matches = []
+                    for content_num in content_numbers:
+                        try:
+                            content_full = convert_km_to_full(content_num)
+                            for bs_item in balance_sheet_data:
+                                try:
+                                    bs_full = convert_bs_to_full(bs_item['value'], use_thousands_notation)
+                                    # Show potential matches within 10% tolerance
+                                    if abs(content_full - bs_full) / content_full < 0.1:
+                                        potential_matches.append({
+                                            'content_num': content_num,
+                                            'content_full': content_full,
+                                            'bs_num': bs_item['value'],
+                                            'bs_full': bs_full,
+                                            'difference': abs(content_full - bs_full),
+                                            'percentage': abs(content_full - bs_full) / content_full * 100
+                                        })
+                                except:
+                                    continue
+                        except:
+                            continue
+                    
+                    if potential_matches:
+                        for match in potential_matches[:3]:  # Show first 3 potential matches
+                            st.markdown(f"🔍 **Potential**: Content `{match['content_num']}` ({match['content_full']:,.0f}) vs BS `{match['bs_num']}` ({match['bs_full']:,.0f})")
+                            st.markdown(f"📊 **Difference**: {match['difference']:,.0f} ({match['percentage']:.1f}%)")
+                    else:
+                        st.info("No potential matches found even with '000 notation conversion")
+                
+                # Show worksheet data with enhanced highlighting based on pattern comparison
+                # NEW: Enhanced highlighting that compares AI1 output with patterns, detects '000 notation,
+                # and highlights all worksheet rows containing matching figures after proper conversion
+                if sections:
+                    st.markdown("**📋 Enhanced Worksheet Highlighting - Pattern-Based Figure Detection:**")
+                    worksheet_expander = st.expander("🔍 View Worksheet with Pattern-Based Highlights", expanded=False)
+                    with worksheet_expander:
+                        df = sections[0]['data']
+                        df_clean = df.dropna(axis=1, how='all')
+                        
+                        # Enhanced highlighting logic based on pattern comparison
+                        rows_to_highlight = set()
+                        figures_to_highlight = []
+                        pattern_analysis = []
+                        
+                        # Enhanced highlighting logic based on pattern comparison
+                        if key_patterns and agent1_content:
+                            # Calculate similarity scores for each pattern
+                            pattern_similarities = []
+                            content_lower = agent1_content.lower() if agent1_content else ""
+                            
+                            for pattern_key, pattern_value in key_patterns.items():
+                                if isinstance(pattern_value, dict):
+                                    # For dictionary patterns, combine all values
+                                    pattern_text_combined = ""
+                                    for sub_key, sub_value in pattern_value.items():
+                                        pattern_text_combined += f"{sub_key}: {sub_value} "
+                                    
+                                    # Calculate similarity score
+                                    pattern_words = pattern_text_combined.lower().split()
+                                    content_words = content_lower.split()
+                                    
+                                    # Count matching words
+                                    matching_words = sum(1 for word in pattern_words if word in content_words and len(word) > 3)
+                                    similarity_score = matching_words / len(pattern_words) if pattern_words else 0
+                                    
+                                    pattern_similarities.append({
+                                        'key': pattern_key,
+                                        'text': pattern_text_combined,
+                                        'score': similarity_score,
+                                        'matching_words': matching_words,
+                                        'total_words': len(pattern_words)
+                                    })
+                                else:
+                                    # For string patterns
+                                    pattern_words = str(pattern_value).lower().split()
+                                    content_words = content_lower.split()
+                                    
+                                    # Count matching words
+                                    matching_words = sum(1 for word in pattern_words if word in content_words and len(word) > 3)
+                                    similarity_score = matching_words / len(pattern_words) if pattern_words else 0
+                                    
+                                    pattern_similarities.append({
+                                        'key': pattern_key,
+                                        'text': str(pattern_value),
+                                        'score': similarity_score,
+                                        'matching_words': matching_words,
+                                        'total_words': len(pattern_words)
+                                    })
+                            
+                            # Find the most similar pattern
+                            if pattern_similarities:
+                                best_pattern = max(pattern_similarities, key=lambda x: x['score'])
+                                
+                                # Enhanced figure detection with '000 notation
+                                for content_num in content_numbers:
+                                        try:
+                                            content_full = convert_km_to_full(content_num)
+                                            
+                                            # Enhanced detection: Check for '000 notation in worksheet headers/titles
+                                            detected_thousands_notation = detect_thousands_notation(df)
+                                            
+                                            # Enhanced conversion logic: AI1 output → worksheet number
+                                            detected_thousands_notation = detect_thousands_notation(df)
+                                            
+                                            if detected_thousands_notation:
+                                                # If '000 notation detected, find the worksheet number that converts to AI1 output
+                                                # AI1: 9.1M → 9,100,000 → worksheet should contain 9,100 (9,100,000 ÷ 1000)
+                                                worksheet_number = content_full / 1000
+                                                conversion_note = f"AI1: {content_num} → {content_full:,.0f} | Looking for worksheet number: {worksheet_number:,.0f} (÷1000 due to '000 notation)"
+                                            else:
+                                                # Standard notation - look for exact match
+                                                worksheet_number = content_full
+                                                conversion_note = f"AI1: {content_num} → {content_full:,.0f} | Looking for worksheet number: {worksheet_number:,.0f} (standard notation)"
+                                            
+                                            pattern_analysis.append({
+                                                'ai1_number': content_num,
+                                                'ai1_full': content_full,
+                                                'worksheet_number': worksheet_number,
+                                                'conversion_note': conversion_note,
+                                                'thousands_notation': detected_thousands_notation
+                                            })
+                                            
+                                            # Find all rows containing the worksheet number that converts to AI1 output
+                                            for idx, row in df.iterrows():
+                                                for col_idx, val in enumerate(row):
+                                                    if pd.notna(val):
+                                                        val_str = str(val)
+                                                        # Remove any non-numeric characters for comparison
+                                                        val_clean = re.sub(r'[^\d.,]', '', val_str)
+                                                        try:
+                                                            val_num = float(val_clean)
+                                                            # Check if this worksheet value converts to the AI1 output
+                                                            if detected_thousands_notation:
+                                                                # For '000 notation: worksheet_value × 1000 should match AI1 output
+                                                                converted_val = val_num * 1000
+                                                                # Allow for rounding differences (e.g., 9076 → 9076000 ≈ 9100000)
+                                                                if abs(converted_val - content_full) / content_full < 0.1:  # 10% tolerance for rounding
+                                                                    rows_to_highlight.add(idx)
+                                                                    figures_to_highlight.append({
+                                                                        'content_num': content_num,
+                                                                        'content_full': content_full,
+                                                                        'worksheet_number': val_num,
+                                                                        'converted_worksheet': converted_val,
+                                                                        'row': idx,
+                                                                        'column': df.columns[col_idx],
+                                                                        'value': val_str,
+                                                                        'conversion_note': f"Worksheet: {val_num} × 1000 = {converted_val:,.0f} ≈ AI1: {content_full:,.0f}"
+                                                                    })
+                                                            else:
+                                                                # Standard notation: direct match
+                                                                if abs(val_num - content_full) < 1 or val_num == content_full:
+                                                                    rows_to_highlight.add(idx)
+                                                                    figures_to_highlight.append({
+                                                                        'content_num': content_num,
+                                                                        'content_full': content_full,
+                                                                        'worksheet_number': val_num,
+                                                                        'converted_worksheet': val_num,
+                                                                        'row': idx,
+                                                                        'column': df.columns[col_idx],
+                                                                        'value': val_str,
+                                                                        'conversion_note': f"Worksheet: {val_num} = AI1: {content_full:,.0f}"
+                                                                    })
+                                                        except ValueError:
+                                                            # Skip non-numeric values
+                                                            continue
+                                        
+                                        except Exception as e:
+                                            st.warning(f"Error processing {content_num}: {e}")
+                        
+                        # Create a styled dataframe highlighting entire rows
+                        def highlight_figures_in_use(row):
+                            if row.name in rows_to_highlight:
+                                return ['background-color: yellow; font-weight: bold'] * len(row)
+                            return [''] * len(row)
+                        
+                        styled_df = df_clean.style.apply(highlight_figures_in_use, axis=1)
+                        st.dataframe(styled_df, use_container_width=True)
+                        
+                        # Show which figures are highlighted with enhanced details
+                        if figures_to_highlight:
+                            st.success(f"🎯 **Enhanced Figure Highlighting** - Yellow rows contain numbers that match AI1 output after pattern comparison:")
+                            
+                            # Group by content number
+                            unique_figures = {}
+                            for fig in figures_to_highlight:
+                                content_key = fig['content_num']
+                                if content_key not in unique_figures:
+                                    unique_figures[content_key] = []
+                                unique_figures[content_key].append(fig)
+                            
+                            for content_num, matches in unique_figures.items():
+                                st.markdown(f"**{content_num}** → {matches[0]['content_full']:,.0f}")
+                                st.markdown(f"  - {matches[0]['conversion_note']}")
+                                st.markdown(f"  - Found in {len(matches)} location(s):")
+                                for match in matches:
+                                    st.markdown(f"    - Row {match['row']+1}, Column '{match['column']}': {match['value']}")
+                        else:
+                            st.info("No figures from AI1 output found in worksheet after pattern comparison")
+                
+                # K/M conversion analysis
+                st.markdown("**📊 K/M Conversion Analysis:**")
+                km_numbers = [num for num in content_numbers if 'K' in num.upper() or 'M' in num.upper() or 'B' in num.upper()]
+                if km_numbers:
+                    st.markdown("**K/M Numbers in Content:**")
+                    for num in km_numbers:
+                        try:
+                            full_value = convert_km_to_full(num)
+                            st.markdown(f"- `{num}` → {full_value:,.0f}")
+                        except:
+                            st.markdown(f"- `{num}` (conversion failed)")
+                else:
+                    st.info("No K/M notation found in content")
+                
                 st.markdown(f"""
+                **Data Integrity Summary:**
+                - **Content Numbers Found**: {len(content_numbers)}
+                - **Balance Sheet Numbers Found**: {len(balance_sheet_data)}
+                - **Number Matches**: {len(matches)}
+                - **Matching Rows**: {len(matched_rows)}
+                - **K/M Numbers**: {len(km_numbers)}
                 - **Data Source**: {sections[0]['sheet']}
                 - **Entity**: {entity_name}
                 - **Financial Key**: {get_key_display_name(key)}
-                - **Status**: Data structure validated and consistent
-                - **Quality**: Passed all integrity checks
                 
                 *Analysis performed by Agent 2 - Data Integrity Specialist*
                 """)
@@ -844,22 +1303,253 @@ def display_ai_content_by_key(key, agent_choice):
                 st.error("❌ No data available for integrity validation.")
             
         elif agent_choice == "Agent 3":
-            # Agent 3: Formatting compliance - show only the final output
-            st.markdown("### 📋 Formatting Compliance Report")
+            # Agent 3: Pattern compliance - takes Agent 1 content + patterns (NO data)
+            st.markdown("### 📋 Pattern Compliance Report")
             
-            if key_patterns:
-                st.success("✅ Formatting compliance check completed")
-                st.markdown("**Compliance Summary:**")
-                st.markdown(f"""
-                - **Patterns Available**: {len(key_patterns)} patterns found
-                - **Compliance Status**: All patterns meet formatting standards
-                - **Required Elements**: Balance, CNY format, and descriptions verified
-                - **Quality**: Passed all formatting compliance checks
+            # Get Agent 1's content for pattern comparison
+            agent1_content = ""
+            try:
+                # Determine which content file to use based on mode
+                content_file = "utils/bs_content_offline.md" if mode == "Offline Mode" else "utils/bs_content.md"
                 
-                *Analysis performed by Agent 3 - Formatting Compliance Specialist*
+                with open(content_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Map financial keys to content sections using mapping.json
+                key_to_section_mapping = {
+                    'Cash': 'Cash at bank',
+                    'AR': 'Accounts receivables', 
+                    'Prepayments': 'Prepayments',
+                    'OR': 'Other receivables',
+                    'Other CA': 'Other current assets',
+                    'IP': 'Investment properties',
+                    'Other NCA': 'Other non-Current assets',
+                    'AP': 'Accounts payable',
+                    'Advances': 'Advances',
+                    'Taxes payable': 'Taxes payables',
+                    'OP': 'Other payables',
+                    'Capital': 'Capital',
+                    'Reserve': 'Surplus reserve',
+                    'Capital reserve': 'Capital reserve',
+                    'OI': 'Other Income',
+                    'OC': 'Other Costs',
+                    'Tax and Surcharges': 'Tax and Surcharges',
+                    'GA': 'G&A expenses',
+                    'Fin Exp': 'Finance Expenses',
+                    'Cr Loss': 'Credit Losses',
+                    'Other Income': 'Other Income',
+                    'Non-operating Income': 'Non-operating Income',
+                    'Non-operating Exp': 'Non-operating Expenses',
+                    'Income tax': 'Income tax',
+                    'LT DTA': 'Long-term Deferred Tax Assets'
+                }
+                
+                # Find the section for this key
+                target_section = key_to_section_mapping.get(key)
+                if target_section:
+                    sections_content = re.split(r'(^### .+$)', content, flags=re.MULTILINE)
+                    found_content = None
+                    for i in range(1, len(sections_content), 2):
+                        section_header = sections_content[i].strip()
+                        section_content = sections_content[i+1].strip() if i+1 < len(sections_content) else ''
+                        if target_section.lower() in section_header.lower():
+                            found_content = section_content
+                            break
+                    
+                    if found_content:
+                        agent1_content = clean_content_quotes(found_content)
+            except Exception as e:
+                st.error(f"Error getting Agent 1 content: {e}")
+            
+            if key_patterns and agent1_content:
+                st.success("✅ Pattern compliance check completed")
+                
+                # Create side-by-side comparison: INPUT PATTERNS vs OUTPUT CONTENT
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**📥 INPUT: Most Similar Pattern**")
+                    
+                    # Calculate similarity scores for each pattern
+                    pattern_similarities = []
+                    content_lower = agent1_content.lower() if agent1_content else ""
+                    
+                    for pattern_key, pattern_value in key_patterns.items():
+                        if isinstance(pattern_value, dict):
+                            # For dictionary patterns, combine all values
+                            pattern_text_combined = ""
+                            for sub_key, sub_value in pattern_value.items():
+                                pattern_text_combined += f"{sub_key}: {sub_value} "
+                            
+                            # Calculate similarity score
+                            pattern_words = pattern_text_combined.lower().split()
+                            content_words = content_lower.split()
+                            
+                            # Count matching words
+                            matching_words = sum(1 for word in pattern_words if word in content_words and len(word) > 3)
+                            similarity_score = matching_words / len(pattern_words) if pattern_words else 0
+                            
+                            pattern_similarities.append({
+                                'key': pattern_key,
+                                'text': pattern_text_combined,
+                                'score': similarity_score,
+                                'matching_words': matching_words,
+                                'total_words': len(pattern_words)
+                            })
+                        else:
+                            # For string patterns
+                            pattern_words = str(pattern_value).lower().split()
+                            content_words = content_lower.split()
+                            
+                            # Count matching words
+                            matching_words = sum(1 for word in pattern_words if word in content_words and len(word) > 3)
+                            similarity_score = matching_words / len(pattern_words) if pattern_words else 0
+                            
+                            pattern_similarities.append({
+                                'key': pattern_key,
+                                'text': str(pattern_value),
+                                'score': similarity_score,
+                                'matching_words': matching_words,
+                                'total_words': len(pattern_words)
+                            })
+                    
+                    # Find the pattern with highest similarity
+                    if pattern_similarities:
+                        best_pattern = max(pattern_similarities, key=lambda x: x['score'])
+                        
+                        # Display the most similar pattern
+                        st.markdown(f"**🎯 Best Match: {best_pattern['key']}**")
+                        st.markdown(f"**Similarity Score: {best_pattern['score']:.2%}**")
+                        st.markdown(f"**Matching Words: {best_pattern['matching_words']}/{best_pattern['total_words']}**")
+                        
+                        st.code(best_pattern['text'], language="text")
+                        
+                        # Show other patterns with their scores
+                        if len(pattern_similarities) > 1:
+                            st.markdown("**📊 All Pattern Similarities:**")
+                            for pattern in sorted(pattern_similarities, key=lambda x: x['score'], reverse=True):
+                                status = "🎯" if pattern == best_pattern else "📋"
+                                st.markdown(f"{status} **{pattern['key']}**: {pattern['score']:.2%} ({pattern['matching_words']}/{pattern['total_words']} words)")
+                    else:
+                        st.warning("No patterns available for comparison")
+                    
+                    # Pattern analysis
+                    if pattern_similarities:
+                        best_pattern = max(pattern_similarities, key=lambda x: x['score'])
+                        st.markdown("**📊 Best Pattern Analysis:**")
+                        st.metric("Similarity Score", f"{best_pattern['score']:.1%}")
+                        st.metric("Matching Words", f"{best_pattern['matching_words']}/{best_pattern['total_words']}")
+                        st.metric("Pattern Type", best_pattern['key'])
+                
+                with col2:
+                    st.markdown("**📤 OUTPUT: Agent 1 Content Text**")
+                    st.code(agent1_content, language="text")
+                    
+                    # Content analysis
+                    st.markdown("**📊 Content Analysis:**")
+                    content_words = len(agent1_content.split())
+                    content_sentences = len(agent1_content.split('.'))
+                    content_numbers = re.findall(r'CNY[\d.,]+[KMB]?|\$[\d.,]+[KMB]?|[\d.,]+[KMB]?', agent1_content)
+                    st.metric("Content Words", content_words)
+                    st.metric("Content Sentences", content_sentences)
+                    st.metric("Numbers Found", len(content_numbers))
+                
+                # Pattern compliance analysis (OUTPUT)
+                st.markdown("---")
+                st.markdown("**🔍 PATTERN COMPLIANCE ANALYSIS (OUTPUT):**")
+                
+                # Check pattern compliance by comparing content with best pattern
+                compliance_results = []
+                
+                # Get the best pattern for comparison
+                if pattern_similarities:
+                    best_pattern = max(pattern_similarities, key=lambda x: x['score'])
+                    best_pattern_text = best_pattern['text']
+                    best_pattern_lower = best_pattern_text.lower()
+                else:
+                    best_pattern_text = ""
+                    best_pattern_lower = ""
+                
+                content_lower = agent1_content.lower() if agent1_content else ""
+                
+                # Common pattern requirements to check
+                pattern_checks = [
+                    ("CNY currency format", "cny" in content_lower or "¥" in content_lower),
+                    ("Balance mentioned", "balance" in content_lower),
+                    ("Numbers present", len(content_numbers) > 0),
+                    ("Entity mentioned", entity_name.lower() in content_lower if entity_name else False),
+                    ("Financial key mentioned", get_key_display_name(key).lower() in content_lower if key else False),
+                    ("Proper formatting", len(content_lower.strip()) > 0),
+                    ("Descriptive content", content_words > 10),
+                    ("Structured text", content_sentences > 1)
+                ]
+                
+                # Check specific pattern requirements for best pattern only
+                if best_pattern_text:
+                    # Split best pattern into words and check each significant word
+                    best_pattern_words = best_pattern_lower.split()
+                    for word in best_pattern_words:
+                        if len(word) > 3:  # Only check significant words
+                            found = word in content_lower
+                            compliance_results.append((f"Pattern word: {word}", found, word))
+                
+                # Display compliance results
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**✅ Pattern Elements Found in Content:**")
+                    found_patterns = [result for result in compliance_results if result[1]]
+                    for pattern_name, found, pattern_value in found_patterns[:10]:  # Show first 10
+                        st.success(f"✅ **{pattern_name}**: {pattern_value}")
+                    if len(found_patterns) > 10:
+                        st.write(f"... and {len(found_patterns) - 10} more found")
+                
+                with col2:
+                    st.markdown("**⚠️ Pattern Elements Missing from Content:**")
+                    missing_patterns = [result for result in compliance_results if not result[1]]
+                    for pattern_name, found, pattern_value in missing_patterns[:10]:  # Show first 10
+                        st.warning(f"⚠️ **{pattern_name}**: {pattern_value}")
+                    if len(missing_patterns) > 10:
+                        st.write(f"... and {len(missing_patterns) - 10} more missing")
+                
+                # Overall compliance summary
+                total_patterns = len(compliance_results)
+                found_patterns_count = len(found_patterns)
+                compliance_rate = (found_patterns_count / total_patterns * 100) if total_patterns > 0 else 0
+                
+                st.markdown("**📊 Overall Pattern Compliance:**")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Patterns", total_patterns)
+                with col2:
+                    st.metric("Patterns Found", found_patterns_count)
+                with col3:
+                    st.metric("Compliance Rate", f"{compliance_rate:.1f}%")
+                
+                if compliance_rate >= 80:
+                    st.success("🎉 Excellent pattern compliance!")
+                elif compliance_rate >= 60:
+                    st.info("📋 Good pattern compliance with room for improvement")
+                else:
+                    st.warning("⚠️ Pattern compliance needs improvement")
+                
+                best_pattern_name = best_pattern['key'] if pattern_similarities else 'None'
+                best_pattern_score = f"{best_pattern['score']:.1%}" if pattern_similarities else 'N/A'
+                
+                st.markdown(f"""
+                **Pattern Compliance Summary:**
+                - **Best Pattern**: {best_pattern_name}
+                - **Similarity Score**: {best_pattern_score}
+                - **Pattern Elements**: {total_patterns} individual elements checked
+                - **Elements Found**: {found_patterns_count}/{total_patterns}
+                - **Compliance Rate**: {compliance_rate:.1f}%
+                - **Content Quality**: {content_words} words, {content_sentences} sentences
+                - **Numbers Extracted**: {len(content_numbers)} numerical values
+                
+                *Analysis performed by Agent 3 - Pattern Compliance Specialist*
                 """)
             else:
-                st.warning("⚠️ No patterns available for formatting compliance check.")
+                st.error("❌ No patterns or content available for compliance check.")
         
         # Display source information (without line breaker)
         # Determine the correct source sheet based on the key and mapping
@@ -1665,11 +2355,14 @@ def display_ai_prompt_by_key(key, agent_choice):
             st.markdown(f"**Agent:** {agent_choice}")
             st.markdown(f"**Financial Key:** {get_key_display_name(key)}")
             
-            st.markdown("#### 📋 System Prompt")
-            st.code(system_prompt, language="text")
-            
-            st.markdown("#### 💬 User Prompt")
-            st.code(user_prompt, language="text")
+            # Collapsible prompt sections
+            prompt_expander = st.expander("📝 View AI Prompts", expanded=False)
+            with prompt_expander:
+                st.markdown("#### 📋 System Prompt")
+                st.code(system_prompt, language="text")
+                
+                st.markdown("#### 💬 User Prompt")
+                st.code(user_prompt, language="text")
             
             # Get AI data for debug information
             ai_data = st.session_state.get('ai_data', {})
@@ -1783,6 +2476,34 @@ Analyze the {get_key_display_name(key)} position:
                 
     except Exception as e:
         st.error(f"Error generating AI prompt for {key}: {e}")
+
+# --- For AI1/2/3 prompt/debug output, use a separate file ---
+def write_prompt_debug_content(filtered_keys, sections_by_key):
+    with open("utils/bs_prompt_debug.md", "w", encoding="utf-8") as f:
+        for key in filtered_keys:
+            if key in sections_by_key and sections_by_key[key]:
+                f.write(f"## {get_key_display_name(key)}\n")
+                for section in sections_by_key[key]:
+                    df = section['data']
+                    df_clean = df.dropna(axis=1, how='all')
+                    for idx, row in df_clean.iterrows():
+                        row_str = " | ".join(str(x) for x in row if pd.notna(x) and str(x).strip() != "None")
+                        if row_str:
+                            f.write(f"- {row_str}\n")
+                f.write("\n")
+
+# --- In your AI1/2/3 or debug logic, call write_prompt_debug_content instead of writing to bs_content.md ---
+# Example usage:
+# write_prompt_debug_content(filtered_keys, sections_by_key)
+
+# --- For PowerPoint export, always use bs_content.md ---
+# (No changes needed here, just ensure you do NOT overwrite bs_content.md in prompt/debug logic)
+# export_pptx(
+#     template_path=template_path,
+#     markdown_path="utils/bs_content.md",
+#     output_path=output_path,
+#     project_name=project_name
+# )
 
 if __name__ == "__main__":
     main() 
