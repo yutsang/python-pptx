@@ -7,6 +7,7 @@ from tqdm import tqdm
 from typing import Dict, List, Optional
 import numpy as np
 import openpyxl
+from utils.cache import get_cache_manager, cached_function
 
 # AI-related imports (mocked if not available)
 try:
@@ -35,7 +36,7 @@ def initialize_ai_services(config_details):
     if AzureOpenAI is None or SearchClient is None or AzureKeyCredential is None:
         raise RuntimeError("AI modules not available.")
     oai_client = AzureOpenAI(
-        api_base=config_details['OPENAI_API_BASE'],
+        azure_endpoint=config_details['OPENAI_API_BASE'],
         api_key=config_details['OPENAI_API_KEY'],
         api_version=config_details['OPENAI_API_VERSION_COMPLETION'],
         client=httpx_client
@@ -50,7 +51,13 @@ def initialize_ai_services(config_details):
     return oai_client, search_client
 
 def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model):
-    """Generate a response from the AI model given a user query and system prompt."""
+    """Generate a response from the AI model given a user query and system prompt with caching."""
+    # Check cache first
+    cache_manager = get_cache_manager()
+    cached_response = cache_manager.get_cached_ai_response(user_query, system_prompt, context_content)
+    if cached_response is not None:
+        return cached_response
+    
     conversation = [
         {"role": "system", "content": system_prompt},
         {"role": "assistant", "content": f"Context data: \n{context_content}"},
@@ -60,7 +67,13 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
         model=openai_chat_model,
         messages=conversation,
     )
-    return response.choices[0].message.content
+    
+    response_content = response.choices[0].message.content
+    
+    # Cache the response
+    cache_manager.cache_ai_response(user_query, system_prompt, context_content, response_content)
+    
+    return response_content
 
 # --- Excel and Data Processing ---
 def find_dense_blocks(df, min_rows=2, min_cols=3, density_threshold=0.6):
@@ -91,7 +104,8 @@ def extract_tables_robust(worksheet, entity_keywords):
             for tbl in worksheet._tables.values():
                 try:
                     ref = tbl.ref
-                    min_col, min_row, max_col, max_row = openpyxl.utils.range_boundaries(ref)
+                    from openpyxl.utils import range_boundaries
+                    min_col, min_row, max_col, max_row = range_boundaries(ref)
                     data = []
                     for row in worksheet.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col, values_only=True):
                         data.append(row)
@@ -177,8 +191,15 @@ def extract_tables_robust(worksheet, entity_keywords):
 
 
 
+@cached_function(ttl=1800)  # Cache for 30 minutes
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
     try:
+        # Check cache first
+        cache_manager = get_cache_manager()
+        cached_result = cache_manager.get_cached_processed_excel(filename, entity_name, entity_suffixes)
+        if cached_result is not None:
+            return cached_result
+            
         main_dir = Path(__file__).parent.parent
         file_path = main_dir / filename
         wb = openpyxl.load_workbook(file_path, data_only=True)
@@ -228,6 +249,8 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     print(f"Error processing table {table_info.get('name', 'unknown')}: {e}")
                     continue
         
+        # Cache the processed result
+        cache_manager.cache_processed_excel(filename, entity_name, entity_suffixes, markdown_content)
         return markdown_content
         
     except Exception as e:

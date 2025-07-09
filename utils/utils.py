@@ -6,15 +6,23 @@ import warnings
 import re, os, urllib3
 from tqdm import tqdm
 from pathlib import Path
+from utils.cache import get_cache_manager, cached_function
 
 urllib3.disable_warnings()
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 warnings.simplefilter(action='ignore', category=UserWarning)
 warnings.filterwarnings('ignore', message='Data Validation extension is not supported and will be removed', category=UserWarning, module='openpyxl')
 
+@cached_function(ttl=1800)  # Cache for 30 minutes
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
     
     try:
+        # Check cache first
+        cache_manager = get_cache_manager()
+        cached_result = cache_manager.get_cached_processed_excel(filename, entity_name, entity_suffixes)
+        if cached_result is not None:
+            return cached_result
+            
         # Load the Excel file
         main_dir = Path(__file__).parent.parent
         file_path = main_dir / filename
@@ -65,6 +73,8 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                         markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False)
                         markdown_content += "\n\n" 
         
+        # Cache the processed result
+        cache_manager.cache_processed_excel(filename, entity_name, entity_suffixes, markdown_content)
         return markdown_content
     except Exception as e:
         print("An error occurred while processing the Excel file:", e)
