@@ -378,25 +378,6 @@ def main():
 
     # Sidebar for controls
     with st.sidebar:
-        # Cache statistics
-        st.markdown("### 🚀 Performance")
-        cache_stats = cache_manager.get_cache_stats()
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Cache Hits", cache_stats['hits'])
-        with col2:
-            st.metric("Cache Misses", cache_stats['misses'])
-        st.metric("Hit Rate", cache_stats['hit_rate'])
-        
-        if st.button("🧹 Clear Cache"):
-            cache_manager.clear_cache()
-            st.success("Cache cleared!")
-        
-        if st.button("🗑️ Optimize Memory"):
-            optimize_memory()
-            st.success("Memory optimized!")
-        
-        st.markdown("---")
         uploaded_file = st.file_uploader(
             "Upload Excel File",
             type=['xlsx', 'xls'],
@@ -450,6 +431,25 @@ def main():
             mode = mode_mapping[mode_display]
             st.session_state['selected_mode'] = mode
             st.session_state['ai_model'] = mode_display
+            
+            # Performance statistics - moved below Select Mode
+            st.markdown("---")
+            st.markdown("### 🚀 Performance")
+            cache_stats = cache_manager.get_cache_stats()
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Cache Hits", cache_stats['hits'])
+            with col2:
+                st.metric("Cache Misses", cache_stats['misses'])
+            st.metric("Hit Rate", cache_stats['hit_rate'])
+            
+            if st.button("🧹 Clear Cache"):
+                cache_manager.clear_cache()
+                st.success("Cache cleared!")
+            
+            if st.button("🗑️ Optimize Memory"):
+                optimize_memory()
+                st.success("Memory optimized!")
         else:
             st.info("Please upload an Excel file to get started.")
 
