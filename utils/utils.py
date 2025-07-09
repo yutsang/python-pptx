@@ -259,7 +259,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         
         # Load pattern and mapping
         pattern = load_ip(pattern_file, key)
-        mapping = {key: load_ip(mapping_file)}
+        mapping = {key: load_ip(mapping_file, key)}
         
         excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers)
         detect_zeros = "3. The figures in this table is already expressed in k, express the number in M " \
@@ -302,8 +302,9 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         """
         
         # Generate response using AI services
-        df, context_content = get_search_results(oai_client, search_client, user_query, openai_embedding_model, max_embedding_search_result)
-        response_txt = generate_response(user_query, system_prompt)
+        # Use Excel tables as context content when Azure Search is not available
+        context_content = excel_tables if search_client is None else ""
+        response_txt = generate_response(user_query, system_prompt, oai_client, context_content, openai_model)
         
         # Store the result in the dictionary
         results[key] = response_txt

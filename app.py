@@ -422,6 +422,21 @@ def main():
                 help="Choose the AI model or offline processing mode"
             )
             
+            # Show API configuration status
+            config, _, _, _ = load_config_files()
+            if config:
+                if mode_display == "GPT-4o-mini":
+                    if config.get('OPENAI_API_KEY'):
+                        st.success("✅ OpenAI API key configured")
+                    else:
+                        st.warning("⚠️ OpenAI API key not configured")
+                elif mode_display == "Deepseek":
+                    if config.get('DEEPSEEK_API_KEY'):
+                        st.success("✅ Deepseek API key configured")
+                    else:
+                        st.error("❌ Deepseek API key not configured")
+                        st.info("📖 See DEEPSEEK_SETUP.md for configuration instructions")
+            
             # Map display names to internal mode names
             mode_mapping = {
                 "GPT-4o-mini": "AI Mode",
@@ -611,10 +626,18 @@ def main():
                         
                         # Update config for different AI models
                         if ai_model == "Deepseek":
+                            # Check if Deepseek API key is configured
+                            if not config.get('DEEPSEEK_API_KEY'):
+                                st.error("❌ Deepseek API key not configured in utils/config.json")
+                                st.info("💡 Please add your Deepseek API key to DEEPSEEK_API_KEY in utils/config.json")
+                                return
+                            
                             # Create a temporary config for Deepseek
                             deepseek_config = config.copy()
-                            deepseek_config['CHAT_MODEL'] = "deepseek-chat"
-                            deepseek_config['OPENAI_API_BASE'] = "https://api.deepseek.com/v1"
+                            deepseek_config['CHAT_MODEL'] = config.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
+                            deepseek_config['OPENAI_API_BASE'] = config.get('DEEPSEEK_API_BASE', 'https://api.deepseek.com/v1')
+                            deepseek_config['OPENAI_API_KEY'] = config.get('DEEPSEEK_API_KEY', '')
+                            deepseek_config['OPENAI_API_VERSION_COMPLETION'] = config.get('DEEPSEEK_API_VERSION', 'v1')
                             # Save temporary config
                             import json
                             with open("temp_deepseek_config.json", "w") as f:
@@ -622,6 +645,10 @@ def main():
                             config_file = "temp_deepseek_config.json"
                             st.info(f"🚀 Using Deepseek AI model for processing")
                         else:
+                            # Check if OpenAI API key is configured for GPT models
+                            if not config.get('OPENAI_API_KEY'):
+                                st.warning("⚠️ OpenAI API key not configured in utils/config.json")
+                                st.info("💡 Please add your OpenAI API key to OPENAI_API_KEY in utils/config.json")
                             config_file = "utils/config.json"
                             st.info(f"🚀 Using {ai_model} AI model for processing")
                         

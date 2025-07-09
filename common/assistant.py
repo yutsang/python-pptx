@@ -33,8 +33,10 @@ def initialize_ai_services(config_details):
     if not AI_AVAILABLE:
         raise RuntimeError("AI services not available on this machine.")
     httpx_client = httpx.Client(verify=False)
-    if AzureOpenAI is None or SearchClient is None or AzureKeyCredential is None:
+    if AzureOpenAI is None:
         raise RuntimeError("AI modules not available.")
+    
+    # Initialize OpenAI client
     oai_client = AzureOpenAI(
         azure_endpoint=config_details['OPENAI_API_BASE'],
         api_key=config_details['OPENAI_API_KEY'],
@@ -42,16 +44,34 @@ def initialize_ai_services(config_details):
         http_client=httpx_client
     )
     
-    # Configure search client settings
-    search_client_configs = {
-        'endpoint': f"https://{config_details['AZURE_AI_SEARCH_SERVICE_ENDPOINT']}/",
-        'index_name': config_details['AZURE_SEARCH_INDEX_NAME'],
-        'credential': AzureKeyCredential(config_details['AZURE_SEARCH_API_KEY']),
-        'connection_verify': False,
-        'headers': {"Host": f"{config_details['AZURE_SEARCH_SERVICE_NAME']}.search.windows.net"}
-    }
+    # Initialize search client only if all required configurations are available
+    search_client = None
+    try:
+        # Check if all required Azure Search configurations are present
+        required_search_configs = [
+            'AZURE_AI_SEARCH_SERVICE_ENDPOINT',
+            'AZURE_SEARCH_INDEX_NAME',
+            'AZURE_SEARCH_API_KEY',
+            'AZURE_SEARCH_SERVICE_NAME'
+        ]
+        
+        if all(config_details.get(key) for key in required_search_configs) and SearchClient is not None and AzureKeyCredential is not None:
+            # Configure search client settings
+            search_client_configs = {
+                'endpoint': f"https://{config_details['AZURE_AI_SEARCH_SERVICE_ENDPOINT']}/",
+                'index_name': config_details['AZURE_SEARCH_INDEX_NAME'],
+                'credential': AzureKeyCredential(config_details['AZURE_SEARCH_API_KEY']),
+                'connection_verify': False,
+                'headers': {"Host": f"{config_details['AZURE_SEARCH_SERVICE_NAME']}.search.windows.net"}
+            }
+            
+            search_client = SearchClient(**search_client_configs)
+        else:
+            print("Azure Search configuration incomplete or modules not available. Search client will be None.")
+    except Exception as e:
+        print(f"Failed to initialize Azure Search client: {e}")
+        search_client = None
     
-    search_client = SearchClient(**search_client_configs)
     return oai_client, search_client
 
 def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model):
