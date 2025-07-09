@@ -10,6 +10,7 @@ from tabulate import tabulate
 import urllib3
 import shutil
 from common.pptx_export import export_pptx
+from utils.cache import get_cache_manager, streamlit_cache_manager, optimize_memory, cached_function
 
 # Suppress warnings
 urllib3.disable_warnings()
@@ -18,28 +19,57 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 warnings.filterwarnings('ignore', message='Data Validation extension is not supported and will be removed', category=UserWarning, module='openpyxl')
 
 # Load configuration files
+@cached_function(ttl=3600)  # Cache for 1 hour
 def load_config_files():
-    """Load configuration files from utils directory"""
+    """Load configuration files from utils directory with caching"""
+    cache_manager = get_cache_manager()
+    
+    # Try to get cached configs
+    config = cache_manager.get_cached_config('utils/config.json')
+    mapping = cache_manager.get_cached_config('utils/mapping.json')
+    pattern = cache_manager.get_cached_config('utils/pattern.json')
+    prompts = cache_manager.get_cached_config('utils/prompts.json')
+    
+    # Load any missing configs
     try:
-        with open('utils/config.json', 'r') as f:
-            config = json.load(f)
-        with open('utils/mapping.json', 'r') as f:
-            mapping = json.load(f)
-        with open('utils/pattern.json', 'r') as f:
-            pattern = json.load(f)
-        with open('utils/prompts.json', 'r') as f:
-            prompts = json.load(f)
+        if config is None:
+            with open('utils/config.json', 'r') as f:
+                config = json.load(f)
+            cache_manager.cache_config('utils/config.json', config)
+        
+        if mapping is None:
+            with open('utils/mapping.json', 'r') as f:
+                mapping = json.load(f)
+            cache_manager.cache_config('utils/mapping.json', mapping)
+        
+        if pattern is None:
+            with open('utils/pattern.json', 'r') as f:
+                pattern = json.load(f)
+            cache_manager.cache_config('utils/pattern.json', pattern)
+        
+        if prompts is None:
+            with open('utils/prompts.json', 'r') as f:
+                prompts = json.load(f)
+            cache_manager.cache_config('utils/prompts.json', prompts)
+            
         return config, mapping, pattern, prompts
     except FileNotFoundError as e:
         st.error(f"Configuration file not found: {e}")
         return None, None, None, None
 
+@cached_function(ttl=1800)  # Cache for 30 minutes
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
     """
-    Process and filter Excel file to extract relevant worksheet sections
+    Process and filter Excel file to extract relevant worksheet sections with caching
     This is the core function from old_ver/utils/utils.py
     """
     try:
+        # Check cache first
+        cache_manager = get_cache_manager()
+        cached_result = cache_manager.get_cached_processed_excel(filename, entity_name, entity_suffixes)
+        if cached_result is not None:
+            return cached_result
+        
         # Load the Excel file
         main_dir = Path(__file__).parent
         file_path = main_dir / filename
@@ -93,6 +123,8 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                         markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False)
                         markdown_content += "\n\n" 
         
+        # Cache the processed result
+        cache_manager.cache_processed_excel(filename, entity_name, entity_suffixes, markdown_content)
         return markdown_content
     except Exception as e:
         st.error(f"An error occurred while processing the Excel file: {e}")
@@ -333,6 +365,9 @@ def get_key_display_name(key):
         return key
 
 def main():
+    # Initialize cache manager for Streamlit
+    cache_manager = streamlit_cache_manager()
+    
     st.set_page_config(
         page_title="Financial Data Processor",
         page_icon="📊",
@@ -343,6 +378,25 @@ def main():
 
     # Sidebar for controls
     with st.sidebar:
+        # Cache statistics
+        st.markdown("### 🚀 Performance")
+        cache_stats = cache_manager.get_cache_stats()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Cache Hits", cache_stats['hits'])
+        with col2:
+            st.metric("Cache Misses", cache_stats['misses'])
+        st.metric("Hit Rate", cache_stats['hit_rate'])
+        
+        if st.button("🧹 Clear Cache"):
+            cache_manager.clear_cache()
+            st.success("Cache cleared!")
+        
+        if st.button("🗑️ Optimize Memory"):
+            optimize_memory()
+            st.success("Memory optimized!")
+        
+        st.markdown("---")
         uploaded_file = st.file_uploader(
             "Upload Excel File",
             type=['xlsx', 'xls'],
@@ -354,26 +408,48 @@ def main():
             options=entity_options,
             help="Choose the entity for data processing"
         )
-        entity_helpers = st.text_input(
-            "Entity Helpers (comma-separated)",
-            value="Wanpu,Limited,",
-            help="Enter entity helper suffixes separated by commas (e.g., 'Wanpu,Limited' will become 'Haining Wanpu' and 'Haining Limited')"
-        )
+        # Entity helpers are now hidden/hardcoded
+        entity_helpers = "Wanpu,Limited,"  # Hidden from UI but still functional
         
         # Financial Statement Type Selection
         st.markdown("---")
-        statement_type = st.radio(
+        statement_type_options = ["Balance Sheet", "Income Statement", "All"]
+        statement_type_display = st.radio(
             "Financial Statement Type",
-            ["BS", "IS", "ALL"],
+            statement_type_options,
             help="Select the type of financial statement to process"
         )
+        
+        # Map display names back to internal codes
+        statement_type_mapping = {
+            "Balance Sheet": "BS",
+            "Income Statement": "IS", 
+            "All": "ALL"
+        }
+        statement_type = statement_type_mapping[statement_type_display]
         
         if uploaded_file is not None:
             st.success(f"Uploaded {uploaded_file.name}")
             # Store uploaded file in session state for later use
             st.session_state['uploaded_file'] = uploaded_file
-            mode = st.radio("Select Mode", ["AI Mode", "Offline Mode"])
+            
+            # AI Mode Selection - changed to dropdown
+            ai_mode_options = ["GPT-4o-mini", "Deepseek", "Offline"]
+            mode_display = st.selectbox(
+                "Select Mode", 
+                ai_mode_options,
+                help="Choose the AI model or offline processing mode"
+            )
+            
+            # Map display names to internal mode names
+            mode_mapping = {
+                "GPT-4o-mini": "AI Mode",
+                "Deepseek": "AI Mode - Deepseek",
+                "Offline": "Offline Mode"
+            }
+            mode = mode_mapping[mode_display]
             st.session_state['selected_mode'] = mode
+            st.session_state['ai_model'] = mode_display
         else:
             st.info("Please upload an Excel file to get started.")
 
@@ -522,8 +598,9 @@ def main():
                 # Process each key with AI if in AI Mode
                 ai_results = {}
                 mode = st.session_state.get('selected_mode', 'AI Mode')
+                ai_model = st.session_state.get('ai_model', 'GPT-4o-mini')
                 
-                if mode == "AI Mode":
+                if mode.startswith("AI Mode"):
                     try:
                         from common.assistant import process_keys
                         
@@ -531,6 +608,22 @@ def main():
                         temp_file_path = f"temp_ai_processing_{uploaded_file.name}"
                         with open(temp_file_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
+                        
+                        # Update config for different AI models
+                        if ai_model == "Deepseek":
+                            # Create a temporary config for Deepseek
+                            deepseek_config = config.copy()
+                            deepseek_config['CHAT_MODEL'] = "deepseek-chat"
+                            deepseek_config['OPENAI_API_BASE'] = "https://api.deepseek.com/v1"
+                            # Save temporary config
+                            import json
+                            with open("temp_deepseek_config.json", "w") as f:
+                                json.dump(deepseek_config, f)
+                            config_file = "temp_deepseek_config.json"
+                            st.info(f"🚀 Using Deepseek AI model for processing")
+                        else:
+                            config_file = "utils/config.json"
+                            st.info(f"🚀 Using {ai_model} AI model for processing")
                         
                         # Process all keys with AI
                         entity_helpers = ', '.join(entity_keywords[1:]) if len(entity_keywords) > 1 else ""
@@ -547,7 +640,7 @@ def main():
                                     input_file=temp_file_path,
                                     mapping_file="utils/mapping.json",
                                     pattern_file="utils/pattern.json",
-                                    config_file="utils/config.json",
+                                    config_file=config_file,
                                     use_ai=True
                                 )
                                 
@@ -564,7 +657,7 @@ def main():
                                     input_file=temp_file_path,
                                     mapping_file="utils/mapping.json",
                                     pattern_file="utils/pattern.json",
-                                    config_file="utils/config.json",
+                                    config_file=config_file,
                                     use_ai=False  # Force fallback mode
                                 )
                                 if key in results and results[key]:
@@ -577,9 +670,11 @@ def main():
                             progress = (i + 1) / len(keys_with_data)
                             progress_bar.progress(progress)
                         
-                        # Clean up temp file
+                        # Clean up temp files
                         if os.path.exists(temp_file_path):
                             os.remove(temp_file_path)
+                        if ai_model == "Deepseek" and os.path.exists("temp_deepseek_config.json"):
+                            os.remove("temp_deepseek_config.json")
                         
                         status_text.text("✅ AI processing completed!")
                         
