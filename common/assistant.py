@@ -39,15 +39,19 @@ def initialize_ai_services(config_details):
         azure_endpoint=config_details['OPENAI_API_BASE'],
         api_key=config_details['OPENAI_API_KEY'],
         api_version=config_details['OPENAI_API_VERSION_COMPLETION'],
-        client=httpx_client
+        http_client=httpx_client
     )
-    search_client = SearchClient(
-        endpoint=f"https://{config_details['AZURE_AI_SEARCH_SERVICE_ENDPOINT']}/",
-        index_name=config_details['AZURE_SEARCH_INDEX_NAME'],
-        credential=AzureKeyCredential(config_details['AZURE_SEARCH_API_KEY']),
-        connection_verify=False,
-        headers={"Host": f"{config_details['AZURE_SEARCH_SERVICE_NAME']}.search.windows.net"}
-    )
+    
+    # Configure search client settings
+    search_client_configs = {
+        'endpoint': f"https://{config_details['AZURE_AI_SEARCH_SERVICE_ENDPOINT']}/",
+        'index_name': config_details['AZURE_SEARCH_INDEX_NAME'],
+        'credential': AzureKeyCredential(config_details['AZURE_SEARCH_API_KEY']),
+        'connection_verify': False,
+        'headers': {"Host": f"{config_details['AZURE_SEARCH_SERVICE_NAME']}.search.windows.net"}
+    }
+    
+    search_client = SearchClient(**search_client_configs)
     return oai_client, search_client
 
 def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model):
