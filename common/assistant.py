@@ -8,6 +8,10 @@ from typing import Dict, List, Optional
 import numpy as np
 import openpyxl
 from utils.cache import get_cache_manager, cached_function
+import logging
+
+# Suppress httpx logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # AI-related imports (mocked if not available)
 try:
@@ -240,7 +244,6 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     file_content_hash, original_filename, entity_name, entity_suffixes
                 )
                 if cached_result is not None:
-                    print(f"📋 Cache hit for {original_filename} (content-based)")
                     return cached_result
             except Exception as e:
                 print(f"Content-based cache check failed: {e}")
@@ -248,7 +251,6 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         # Fallback to path-based caching for regular files
         cached_result = cache_manager.get_cached_processed_excel(filename, entity_name, entity_suffixes)
         if cached_result is not None:
-            print(f"📋 Cache hit for {filename} (path-based)")
             return cached_result
             
         main_dir = Path(__file__).parent.parent

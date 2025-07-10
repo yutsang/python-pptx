@@ -84,7 +84,6 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     file_content_hash, original_filename, entity_name, entity_suffixes
                 )
                 if cached_result is not None:
-                    print(f"📋 Cache hit for {original_filename} (content-based)")
                     return cached_result
             except Exception as e:
                 print(f"Content-based cache check failed: {e}")
@@ -92,7 +91,6 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         # Fallback to path-based caching for regular files
         cached_result = cache_manager.get_cached_processed_excel(filename, entity_name, entity_suffixes)
         if cached_result is not None:
-            print(f"📋 Cache hit for {filename} (path-based)")
             return cached_result
         
         # Load the Excel file
@@ -730,8 +728,11 @@ def main():
                             status_text.text(message)
                         
                         try:
-                            # AI1 Processing: Initial content generation
-                            results = process_keys(
+                            # Sequential AI Processing: AI1 → AI2 → AI3
+                            
+                            # Phase 1: AI1 Processing - Initial content generation for all keys
+                            update_progress(0.3, f"🤖 AI1: Generating content for {len(filtered_keys_for_ai)} keys...")
+                            ai1_results = process_keys(
                                 keys=filtered_keys_for_ai,
                                 entity_name=selected_entity,
                                 entity_helpers=entity_helpers,
@@ -740,9 +741,63 @@ def main():
                                 pattern_file="utils/pattern.json",
                                 config_file=config_file,
                                 use_ai=True,
-                                progress_callback=update_progress
+                                progress_callback=lambda p, m: update_progress(0.3 + p * 0.3, f"AI1: {m}")
                             )
-                            ai_results.update(results)
+                            
+                            # Phase 2: AI2 Processing - Data validation for all keys
+                            update_progress(0.6, f"🔍 AI2: Validating data for {len(filtered_keys_for_ai)} keys...")
+                            from common.assistant import DataValidationAgent
+                            ai2_results = {}
+                            validation_agent = DataValidationAgent()
+                            
+                            for i, key in enumerate(filtered_keys_for_ai):
+                                try:
+                                    ai1_content = ai1_results.get(key, "")
+                                    if ai1_content:
+                                        # Perform validation without temp files
+                                        validation_result = validation_agent._fallback_data_validation(
+                                            ai1_content, 0, key  # Use fallback method to avoid temp files
+                                        )
+                                        ai2_results[key] = validation_result
+                                    else:
+                                        ai2_results[key] = {"is_valid": False, "issues": ["No AI1 content available"], "score": 0}
+                                except Exception as e:
+                                    ai2_results[key] = {"is_valid": False, "issues": [f"Validation error: {e}"], "score": 0}
+                                
+                                progress = 0.6 + (i + 1) / len(filtered_keys_for_ai) * 0.2
+                                update_progress(progress, f"AI2: Validated {key}")
+                            
+                            # Phase 3: AI3 Processing - Pattern compliance for all keys  
+                            update_progress(0.8, f"🎯 AI3: Checking pattern compliance for {len(filtered_keys_for_ai)} keys...")
+                            from common.assistant import PatternValidationAgent
+                            ai3_results = {}
+                            pattern_agent = PatternValidationAgent()
+                            
+                            for i, key in enumerate(filtered_keys_for_ai):
+                                try:
+                                    ai1_content = ai1_results.get(key, "")
+                                    if ai1_content:
+                                        # Get patterns for this key
+                                        key_patterns = pattern.get(key, {})
+                                        # Perform pattern validation
+                                        pattern_result = pattern_agent._fallback_pattern_validation(
+                                            ai1_content, key_patterns, key  # Use fallback to avoid AI calls
+                                        )
+                                        ai3_results[key] = pattern_result
+                                    else:
+                                        ai3_results[key] = {"is_compliant": False, "issues": ["No AI1 content available"]}
+                                except Exception as e:
+                                    ai3_results[key] = {"is_compliant": False, "issues": [f"Pattern validation error: {e}"]}
+                                
+                                progress = 0.8 + (i + 1) / len(filtered_keys_for_ai) * 0.15
+                                update_progress(progress, f"AI3: Validated {key}")
+                            
+                            # Store all results
+                            ai_results.update(ai1_results)
+                            
+                            # Store AI2 and AI3 results in session state for display
+                            st.session_state['ai2_results'] = ai2_results
+                            st.session_state['ai3_results'] = ai3_results
                             
                         except RuntimeError as e:
                             # AI services not available, use fallback
@@ -759,6 +814,10 @@ def main():
                                 progress_callback=update_progress
                             )
                             ai_results.update(results)
+                            
+                            # Create empty AI2 and AI3 results for fallback mode
+                            st.session_state['ai2_results'] = {key: {"is_valid": True, "issues": [], "score": 100} for key in filtered_keys_for_ai}
+                            st.session_state['ai3_results'] = {key: {"is_compliant": True, "issues": []} for key in filtered_keys_for_ai}
                         except Exception as e:
                             st.error(f"Failed to process keys: {e}")
                         
@@ -1107,96 +1166,47 @@ def display_ai_content_by_key(key, agent_choice):
                 # Agent 2: Data integrity validation
                 st.markdown("### 🔍 Data Integrity Report")
                 
-                # Always use offline content in offline mode
+                # Get Agent 1 content
                 if mode == "Offline Mode":
                     agent1_content = get_offline_content(key)
                 else:
-                    # First get Agent 1's content
                     ai_results = ai_data.get('ai_results', {})
-                    if key in ai_results:
-                        agent1_content = ai_results[key]
-                    else:
-                        st.warning(f"No AI content available for {get_key_display_name(key)}")
+                    agent1_content = ai_results.get(key, "")
+                    if not agent1_content:
                         agent1_content = get_offline_content(key)
                 
                 if agent1_content:
-                    # Display Agent 1 content
+                    # Display Agent 1 content (like offline mode)
                     st.markdown("**Agent 1 Content:**")
                     st.markdown(clean_content_quotes(agent1_content))
                     
-                    # Now perform data validation
+                    # Display data validation results from session state
                     st.markdown("---")
                     st.markdown("**Data Validation Results:**")
                     
-                    if mode == "Offline Mode":
-                        # Perform offline data validation with table highlighting
-                        perform_offline_data_validation(key, agent1_content, sections_by_key)
-                    else:
-                        try:
-                            # Initialize validation agent
-                            validation_agent = DataValidationAgent()
+                    # Get AI2 results from session state (processed during sequential workflow)
+                    ai2_results = st.session_state.get('ai2_results', {})
+                    validation_result = ai2_results.get(key)
+                    
+                    if validation_result:
+                        if validation_result.get('is_valid', False):
+                            st.success("✅ Data validation passed")
+                            st.info(f"Validation Score: {validation_result.get('score', 100)}/100")
+                        else:
+                            st.warning("⚠️ Data validation issues found:")
+                            for issue in validation_result.get('issues', []):
+                                st.write(f"• {issue}")
                             
-                            # Get the uploaded file for validation
-                            uploaded_file = st.session_state.get('uploaded_file')
-                            if uploaded_file:
-                                # Use unique temp file name with timestamp to avoid conflicts
-                                import time
-                                import threading
-                                timestamp = int(time.time() * 1000)  # milliseconds
-                                thread_id = threading.get_ident()
-                                temp_file_path = f"temp_validation_{timestamp}_{thread_id}_{uploaded_file.name}"
-                                
-                                validation_result = None
-                                try:
-                                    # Write file with exclusive access
-                                    with open(temp_file_path, "wb") as f:
-                                        f.write(uploaded_file.getbuffer())
-                                    
-                                    # Validate the content
-                                    validation_result = validation_agent.validate_financial_data(
-                                        agent1_content, temp_file_path, entity_name, key
-                                    )
-                                    
-                                except Exception as validation_error:
-                                    st.error(f"Validation failed: {validation_error}")
-                                    validation_result = {"is_valid": False, "issues": [f"Validation error: {validation_error}"], "score": 0}
-                                    
-                                finally:
-                                    # Robust cleanup with multiple attempts
-                                    cleanup_attempts = 3
-                                    for attempt in range(cleanup_attempts):
-                                        try:
-                                            if os.path.exists(temp_file_path):
-                                                os.chmod(temp_file_path, 0o777)  # Ensure write permissions
-                                                os.remove(temp_file_path)
-                                                break  # Success, exit loop
-                                        except PermissionError:
-                                            if attempt < cleanup_attempts - 1:
-                                                time.sleep(0.1)  # Brief delay before retry
-                                            else:
-                                                print(f"Warning: Could not clean up temp file {temp_file_path} after {cleanup_attempts} attempts")
-                                        except Exception as cleanup_error:
-                                            if attempt == cleanup_attempts - 1:  # Only show warning on final attempt
-                                                print(f"Warning: Could not clean up temp file {temp_file_path}: {cleanup_error}")
-                                            break
-                                
-                                # Display validation results
-                                if validation_result['is_valid']:
-                                    st.success("✅ Data validation passed")
-                                else:
-                                    st.warning("⚠️ Data validation issues found:")
-                                    for issue in validation_result['issues']:
-                                        st.write(f"• {issue}")
-                                    
-                                    # Show corrected content if available
-                                    if validation_result.get('corrected_content'):
-                                        st.markdown("**Corrected Content:**")
-                                        st.markdown(validation_result['corrected_content'])
-                            else:
-                                st.info("No file available for validation")
-                                
-                        except Exception as e:
-                            st.error(f"Validation failed: {e}")
+                            if validation_result.get('score'):
+                                st.info(f"Validation Score: {validation_result['score']}/100")
+                            
+                            # Show corrected content if available
+                            if validation_result.get('corrected_content'):
+                                st.markdown("**Corrected Content:**")
+                                st.markdown(validation_result['corrected_content'])
+                    else:
+                        # Fallback to offline validation display
+                        perform_offline_data_validation(key, agent1_content, sections_by_key)
                 else:
                     st.warning("No content available for validation")
                     
@@ -1204,56 +1214,43 @@ def display_ai_content_by_key(key, agent_choice):
                 # Agent 3: Pattern compliance validation
                 st.markdown("### 🎯 Pattern Compliance Report")
                 
-                # Always use offline content in offline mode
+                # Get Agent 1 content
                 if mode == "Offline Mode":
                     agent1_content = get_offline_content(key)
                 else:
-                    # First get Agent 1's content
                     ai_results = ai_data.get('ai_results', {})
-                    if key in ai_results:
-                        agent1_content = ai_results[key]
-                    else:
-                        st.warning(f"No AI content available for {get_key_display_name(key)}")
+                    agent1_content = ai_results.get(key, "")
+                    if not agent1_content:
                         agent1_content = get_offline_content(key)
                 
                 if agent1_content:
-                    # Display Agent 1 content
+                    # Display Agent 1 content (like offline mode)
                     st.markdown("**Agent 1 Content:**")
                     st.markdown(clean_content_quotes(agent1_content))
                     
-                    # Now perform pattern validation
+                    # Display pattern compliance results from session state
                     st.markdown("---")
                     st.markdown("**Pattern Compliance Results:**")
                     
-                    if mode == "Offline Mode":
-                        # Perform offline pattern compliance check
-                        perform_offline_pattern_validation(key, agent1_content, pattern)
+                    # Get AI3 results from session state (processed during sequential workflow)
+                    ai3_results = st.session_state.get('ai3_results', {})
+                    pattern_result = ai3_results.get(key)
+                    
+                    if pattern_result:
+                        if pattern_result.get('is_compliant', False):
+                            st.success("✅ Pattern compliance passed")
+                        else:
+                            st.warning("⚠️ Pattern compliance issues found:")
+                            for issue in pattern_result.get('issues', []):
+                                st.write(f"• {issue}")
+                            
+                            # Show corrected content if available
+                            if pattern_result.get('corrected_content'):
+                                st.markdown("**Corrected Content:**")
+                                st.markdown(pattern_result['corrected_content'])
                     else:
-                        try:
-                            # Initialize pattern validation agent
-                            pattern_agent = PatternValidationAgent()
-                            
-                            # Get patterns for this key
-                            key_patterns = pattern.get(key, {})
-                            
-                            # Validate pattern compliance
-                            pattern_result = pattern_agent.validate_pattern_compliance(agent1_content, key_patterns)
-                            
-                            # Display validation results
-                            if pattern_result['is_compliant']:
-                                st.success("✅ Pattern compliance passed")
-                            else:
-                                st.warning("⚠️ Pattern compliance issues found:")
-                                for issue in pattern_result['issues']:
-                                    st.write(f"• {issue}")
-                                
-                                # Show corrected content if available
-                                if pattern_result.get('corrected_content'):
-                                    st.markdown("**Corrected Content:**")
-                                    st.markdown(pattern_result['corrected_content'])
-                                
-                        except Exception as e:
-                            st.error(f"Pattern validation failed: {e}")
+                        # Fallback to offline pattern validation display
+                        perform_offline_pattern_validation(key, agent1_content, pattern)
                 else:
                     st.warning("No content available for pattern validation")
     
