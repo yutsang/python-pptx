@@ -194,6 +194,44 @@ class CacheManager:
         with open(cache_file, 'wb') as f:
             pickle.dump(cache_data, f)
     
+    def get_cached_processed_excel_by_content(self, file_content_hash: str, original_filename: str, entity_name: str, entity_suffixes: list) -> Optional[str]:
+        """Get cached processed Excel markdown content using file content hash"""
+        cache_key = self._get_cache_key(original_filename, entity_name, entity_suffixes, file_content_hash)
+        cache_file = self.cache_dir / 'excel' / f'processed_content_{cache_key}.pkl'
+        
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'rb') as f:
+                    cached_data = pickle.load(f)
+                    # Check if content hash matches
+                    if cached_data.get('file_content_hash') == file_content_hash:
+                        self.cache_stats['hits'] += 1
+                        return cached_data['markdown_content']
+            except:
+                pass
+        
+        self.cache_stats['misses'] += 1
+        return None
+    
+    def cache_processed_excel_by_content(self, file_content_hash: str, original_filename: str, entity_name: str, entity_suffixes: list, markdown_content: str):
+        """Cache processed Excel markdown content using file content hash"""
+        cache_key = self._get_cache_key(original_filename, entity_name, entity_suffixes, file_content_hash)
+        cache_file = self.cache_dir / 'excel' / f'processed_content_{cache_key}.pkl'
+        
+        cache_data = {
+            'markdown_content': markdown_content,
+            'file_content_hash': file_content_hash,
+            'original_filename': original_filename,
+            'timestamp': time.time()
+        }
+        
+        with open(cache_file, 'wb') as f:
+            pickle.dump(cache_data, f)
+    
+    def get_file_content_hash(self, file_content: bytes) -> str:
+        """Get hash of file content from bytes"""
+        return hashlib.md5(file_content).hexdigest()
+    
     def clear_cache(self, cache_type: str = 'all'):
         """Clear cache of specified type"""
         if cache_type == 'all':

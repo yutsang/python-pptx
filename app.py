@@ -64,10 +64,35 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
     This is the core function from old_ver/utils/utils.py
     """
     try:
-        # Check cache first
         cache_manager = get_cache_manager()
+        
+        # For uploaded files, try content-based caching first
+        original_filename = None
+        file_content_hash = None
+        
+        # Check if this is a temporary uploaded file
+        if filename.startswith('temp_ai_processing_'):
+            original_filename = filename.replace('temp_ai_processing_', '')
+            try:
+                # Get file content hash for better caching
+                with open(filename, 'rb') as f:
+                    file_content = f.read()
+                    file_content_hash = cache_manager.get_file_content_hash(file_content)
+                
+                # Try content-based cache first
+                cached_result = cache_manager.get_cached_processed_excel_by_content(
+                    file_content_hash, original_filename, entity_name, entity_suffixes
+                )
+                if cached_result is not None:
+                    print(f"📋 Cache hit for {original_filename} (content-based)")
+                    return cached_result
+            except Exception as e:
+                print(f"Content-based cache check failed: {e}")
+        
+        # Fallback to path-based caching for regular files
         cached_result = cache_manager.get_cached_processed_excel(filename, entity_name, entity_suffixes)
         if cached_result is not None:
+            print(f"📋 Cache hit for {filename} (path-based)")
             return cached_result
         
         # Load the Excel file
@@ -123,8 +148,16 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                         markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False)
                         markdown_content += "\n\n" 
         
-        # Cache the processed result
-        cache_manager.cache_processed_excel(filename, entity_name, entity_suffixes, markdown_content)
+        # Cache the processed result - use content-based caching for uploaded files
+        if file_content_hash and original_filename:
+            cache_manager.cache_processed_excel_by_content(
+                file_content_hash, original_filename, entity_name, entity_suffixes, markdown_content
+            )
+            print(f"📋 Cached result for {original_filename} (content-based)")
+        else:
+            cache_manager.cache_processed_excel(filename, entity_name, entity_suffixes, markdown_content)
+            print(f"📋 Cached result for {filename} (path-based)")
+        
         return markdown_content
     except Exception as e:
         st.error(f"An error occurred while processing the Excel file: {e}")
@@ -602,9 +635,31 @@ def main():
                 # Get keys with data for AI processing
                 keys_with_data = [key for key, sections in sections_by_key.items() if sections]
                 
-                if not keys_with_data:
-                    st.warning("No data found for AI processing. Please check your file and entity selection.")
+                # Filter keys based on statement type (Fix for issue #5)
+                bs_keys = [
+                    "Cash", "AR", "Prepayments", "OR", "Other CA", "IP", "Other NCA",
+                    "AP", "Taxes payable", "OP", "Capital", "Reserve"
+                ]
+                is_keys = [
+                    "OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
+                    "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"
+                ]
+                
+                # Apply statement type filtering for AI processing
+                if statement_type == "BS":
+                    filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
+                elif statement_type == "IS":
+                    filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
+                elif statement_type == "ALL":
+                    filtered_keys_for_ai = [key for key in keys_with_data if key in (bs_keys + is_keys)]
+                else:
+                    filtered_keys_for_ai = keys_with_data
+                
+                if not filtered_keys_for_ai:
+                    st.warning("No data found for AI processing with the selected statement type. Please check your file and statement type selection.")
                     return
+                
+                st.info(f"🎯 Processing {len(filtered_keys_for_ai)} keys for {statement_type} statement type")
                 
                 # Show progress for AI processing
                 progress_bar = st.progress(0)
@@ -652,50 +707,44 @@ def main():
                             config_file = "utils/config.json"
                             st.info(f"🚀 Using {ai_model} AI model for processing")
                         
-                        # Process all keys with AI
+                        # Process all keys with AI - Use ALL filtered keys at once for better progress tracking
                         entity_helpers = ', '.join(entity_keywords[1:]) if len(entity_keywords) > 1 else ""
                         
-                        for i, key in enumerate(keys_with_data):
-                            status_text.text(f"🤖 Processing {get_key_display_name(key)}... ({i+1}/{len(keys_with_data)})")
+                        status_text.text(f"🤖 Processing {len(filtered_keys_for_ai)} keys with AI...")
+                        
+                        try:
+                            # Process ALL filtered keys at once instead of one by one
+                            results = process_keys(
+                                keys=filtered_keys_for_ai,  # Process all keys at once
+                                entity_name=selected_entity,
+                                entity_helpers=entity_helpers,
+                                input_file=temp_file_path,
+                                mapping_file="utils/mapping.json",
+                                pattern_file="utils/pattern.json",
+                                config_file=config_file,
+                                use_ai=True
+                            )
+                            ai_results.update(results)
                             
-                            try:
-                                # Process this specific key
-                                results = process_keys(
-                                    keys=[key],
-                                    entity_name=selected_entity,
-                                    entity_helpers=entity_helpers,
-                                    input_file=temp_file_path,
-                                    mapping_file="utils/mapping.json",
-                                    pattern_file="utils/pattern.json",
-                                    config_file=config_file,
-                                    use_ai=True
-                                )
-                                
-                                if key in results and results[key]:
-                                    ai_results[key] = results[key]
-                                
-                            except RuntimeError as e:
-                                # AI services not available, use fallback
-                                st.warning(f"AI services not available for {key}, using fallback mode")
-                                results = process_keys(
-                                    keys=[key],
-                                    entity_name=selected_entity,
-                                    entity_helpers=entity_helpers,
-                                    input_file=temp_file_path,
-                                    mapping_file="utils/mapping.json",
-                                    pattern_file="utils/pattern.json",
-                                    config_file=config_file,
-                                    use_ai=False  # Force fallback mode
-                                )
-                                if key in results and results[key]:
-                                    ai_results[key] = results[key]
-                            except Exception as e:
-                                st.warning(f"Failed to process {key}: {e}")
-                                # Continue with other keys
-                            
-                            # Update progress
-                            progress = (i + 1) / len(keys_with_data)
-                            progress_bar.progress(progress)
+                        except RuntimeError as e:
+                            # AI services not available, use fallback
+                            st.warning(f"AI services not available, using fallback mode")
+                            results = process_keys(
+                                keys=filtered_keys_for_ai,
+                                entity_name=selected_entity,
+                                entity_helpers=entity_helpers,
+                                input_file=temp_file_path,
+                                mapping_file="utils/mapping.json",
+                                pattern_file="utils/pattern.json",
+                                config_file=config_file,
+                                use_ai=False  # Force fallback mode
+                            )
+                            ai_results.update(results)
+                        except Exception as e:
+                            st.error(f"Failed to process keys: {e}")
+                        
+                        # Update progress to 100%
+                        progress_bar.progress(1.0)
                         
                         # Clean up temp files
                         if os.path.exists(temp_file_path):
@@ -705,9 +754,22 @@ def main():
                         
                         status_text.text("✅ AI processing completed!")
                         
-                        # Generate markdown content file from AI results
+                        # Generate markdown content file from AI results (Fix for issue #3)
                         if ai_results:
-                            generate_markdown_from_ai_results(ai_results, selected_entity)
+                            success = generate_markdown_from_ai_results(ai_results, selected_entity)
+                            if success:
+                                st.success(f"📄 AI output saved to: utils/bs_content.md")
+                                st.info(f"💡 You can find the AI-generated content in utils/bs_content.md file")
+                                
+                                # Also create a copy for offline mode reference
+                                try:
+                                    import shutil
+                                    shutil.copy2('utils/bs_content.md', 'utils/bs_content_ai_generated.md')
+                                    st.info(f"📋 AI results also saved as: utils/bs_content_ai_generated.md for reference")
+                                except Exception as e:
+                                    print(f"Could not create AI reference copy: {e}")
+                            else:
+                                st.warning("⚠️ Failed to save AI results to markdown file")
                         
                     except Exception as e:
                         st.error(f"AI processing failed: {e}")
@@ -1152,13 +1214,30 @@ def display_ai_content_by_key(key, agent_choice):
         st.error(f"Error details: {str(e)}")
 
 def display_offline_content(key):
-    """Display offline content for a given key"""
+    """Display offline content for a given key - with fallback to AI-generated content"""
     try:
-        # Read from offline content file
+        # First try to read from offline content file
         content_file = "utils/bs_content_offline.md"
+        content = None
         
-        with open(content_file, 'r', encoding='utf-8') as f:
-            content = f.read()
+        try:
+            with open(content_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except FileNotFoundError:
+            # Try to read from AI-generated content if offline file not found
+            ai_content_files = ["utils/bs_content.md", "utils/bs_content_ai_generated.md"]
+            for ai_file in ai_content_files:
+                try:
+                    with open(ai_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        st.info(f"📄 Using AI-generated content from: {ai_file}")
+                        break
+                except FileNotFoundError:
+                    continue
+        
+        if not content:
+            st.error(f"No content files found. Checked: {content_file}, utils/bs_content.md, utils/bs_content_ai_generated.md")
+            return
         
         # Map financial keys to content sections
         key_to_section_mapping = {
@@ -1205,14 +1284,12 @@ def display_offline_content(key):
                 cleaned_content = clean_content_quotes(found_content)
                 st.markdown(cleaned_content)
             else:
-                st.info(f"No offline content found for {get_key_display_name(key)}")
+                st.info(f"No content found for {get_key_display_name(key)} in available files")
         else:
             st.info(f"No content mapping available for {get_key_display_name(key)}")
             
-    except FileNotFoundError:
-        st.error(f"Offline content file not found: {content_file}")
     except Exception as e:
-        st.error(f"Error reading offline content: {e}")
+        st.error(f"Error reading content: {e}")
 
 def get_offline_content(key):
     """Get offline content for a given key (returns string)"""

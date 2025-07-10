@@ -50,22 +50,24 @@ def initialize_ai_services(config_details):
         # Check if all required Azure Search configurations are present
         required_search_configs = [
             'AZURE_AI_SEARCH_SERVICE_ENDPOINT',
-            'AZURE_SEARCH_INDEX_NAME',
-            'AZURE_SEARCH_API_KEY',
-            'AZURE_SEARCH_SERVICE_NAME'
+            'AZAURE_AI_SEARCH_INDEX_NAME',
+            'SEARCH_API_KEY',
+            'AZURE_AI_SEARCH_SERVICE_NAME'
         ]
         
         if all(config_details.get(key) for key in required_search_configs) and SearchClient is not None and AzureKeyCredential is not None:
             # Configure search client settings
             search_client_configs = {
-                'endpoint': f"https://{config_details['AZURE_AI_SEARCH_SERVICE_ENDPOINT']}/",
-                'index_name': config_details['AZURE_SEARCH_INDEX_NAME'],
-                'credential': AzureKeyCredential(config_details['AZURE_SEARCH_API_KEY']),
                 'connection_verify': False,
-                'headers': {"Host": f"{config_details['AZURE_SEARCH_SERVICE_NAME']}.search.windows.net"}
+                'headers': {"Host": f"{config_details['AZURE_AI_SEARCH_SERVICE_NAME']}.search.windows.net"}
             }
             
-            search_client = SearchClient(**search_client_configs)
+            search_client = SearchClient(
+                'endpoint': f"https://{config_details['AZURE_AI_SEARCH_SERVICE_ENDPOINT']}/",
+                'index_name': config_details['AZAURE_AI_SEARCH_INDEX_NAME'],
+                'credential': AzureKeyCredential(config_details['SEARCH_API_KEY']),
+                **search_client_configs
+            )
         else:
             print("Azure Search configuration incomplete or modules not available. Search client will be None.")
     except Exception as e:
@@ -218,10 +220,35 @@ def extract_tables_robust(worksheet, entity_keywords):
 @cached_function(ttl=1800)  # Cache for 30 minutes
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
     try:
-        # Check cache first
         cache_manager = get_cache_manager()
+        
+        # For uploaded files, try content-based caching first
+        original_filename = None
+        file_content_hash = None
+        
+        # Check if this is a temporary uploaded file
+        if filename.startswith('temp_ai_processing_'):
+            original_filename = filename.replace('temp_ai_processing_', '')
+            try:
+                # Get file content hash for better caching
+                with open(filename, 'rb') as f:
+                    file_content = f.read()
+                    file_content_hash = cache_manager.get_file_content_hash(file_content)
+                
+                # Try content-based cache first
+                cached_result = cache_manager.get_cached_processed_excel_by_content(
+                    file_content_hash, original_filename, entity_name, entity_suffixes
+                )
+                if cached_result is not None:
+                    print(f"📋 Cache hit for {original_filename} (content-based)")
+                    return cached_result
+            except Exception as e:
+                print(f"Content-based cache check failed: {e}")
+        
+        # Fallback to path-based caching for regular files
         cached_result = cache_manager.get_cached_processed_excel(filename, entity_name, entity_suffixes)
         if cached_result is not None:
+            print(f"📋 Cache hit for {filename} (path-based)")
             return cached_result
             
         main_dir = Path(__file__).parent.parent
@@ -273,8 +300,16 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     print(f"Error processing table {table_info.get('name', 'unknown')}: {e}")
                     continue
         
-        # Cache the processed result
-        cache_manager.cache_processed_excel(filename, entity_name, entity_suffixes, markdown_content)
+        # Cache the processed result - use content-based caching for uploaded files
+        if file_content_hash and original_filename:
+            cache_manager.cache_processed_excel_by_content(
+                file_content_hash, original_filename, entity_name, entity_suffixes, markdown_content
+            )
+            print(f"📋 Cached result for {original_filename} (content-based)")
+        else:
+            cache_manager.cache_processed_excel(filename, entity_name, entity_suffixes, markdown_content)
+            print(f"📋 Cached result for {filename} (path-based)")
+        
         return markdown_content
         
     except Exception as e:
@@ -370,7 +405,10 @@ def load_ip(file, key=None):
 def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', use_ai=True, convert_thousands=False):
     # Use test data if AI is not available
     if not use_ai or not AI_AVAILABLE:
+        print(f"🔄 Using fallback mode for {len(keys)} keys")
         return generate_test_results(keys)
+    
+    print(f"🚀 Starting AI processing for {len(keys)} keys")
     financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), '30/09/2022', convert_thousands=convert_thousands)
     system_prompt = """
         Role: system,
@@ -392,8 +430,14 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         - Never output JSON structure or pattern formatting
     """
     results = {}
-    pbar = tqdm(keys, desc="Processing keys", unit="key")
-    for key in pbar:
+    
+    # Fix tqdm progress bar to show proper total
+    pbar = tqdm(keys, desc="Processing keys", unit="key", total=len(keys))
+    
+    for key_index, key in enumerate(pbar):
+        # Update progress description to show current key and progress
+        pbar.set_description(f"Processing {key}")
+        
         config_details = load_config(config_file)
         
         # Try to initialize AI services with proper error handling
@@ -404,6 +448,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             # AI services not available, return test results
             print(f"AI services not available: {e}")
             return generate_test_results(keys)
+        
         pattern = load_ip(pattern_file, key)
         mapping = {key: load_ip(mapping_file)}
         excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers)
@@ -435,9 +480,18 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         Example of INCORRECT output format:
         "Pattern 1: Cash at bank comprises deposits of xxx held with xxx as at xxx."        
         """
+        
         response_txt = generate_response(user_query, system_prompt, oai_client, excel_tables, openai_model)
         results[key] = response_txt
-        pbar.set_postfix_str(f"key={key}")
+        
+        # Print AI response [:20] for cmd checking (issue #2)
+        print(f"📝 {key}: {response_txt[:20]}...")
+        
+        # Update progress bar with key information
+        pbar.set_postfix_str(f"key={key} ({key_index + 1}/{len(keys)})")
+    
+    pbar.close()
+    print(f"✅ Completed processing {len(keys)} keys")
     return results
 
 def generate_test_results(keys):
