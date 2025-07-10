@@ -2060,6 +2060,17 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                 content = agent1_results.get(key, "")
                 
                 if content:
+                    # Show metadata in horizontal format
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Key", key)
+                    with col2:
+                        st.metric("Entity", ai_data.get('entity_name', ''))
+                    with col3:
+                        st.metric("Characters", len(content))
+                    with col4:
+                        st.metric("Words", len(content.split()))
+                    
                     st.markdown("**✅ Generated Content:**")
                     st.markdown(content)
                     
@@ -2067,16 +2078,12 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                     with st.expander("🎯 What Agent 1 Accomplished", expanded=False):
                         st.markdown("""
                         **Agent 1's Key Tasks:**
-                        - ✅ Selected appropriate pattern from available templates
-                        - ✅ Integrated actual financial figures from databook
-                        - ✅ Replaced all placeholders with real data
-                        - ✅ Applied proper K/M number formatting
-                        - ✅ Generated professional financial narrative
+                        - Selected appropriate pattern from available templates
+                        - Integrated actual financial figures from databook
+                        - Replaced all placeholders with real data
+                        - Applied proper K/M number formatting
+                        - Generated professional financial narrative
                         """)
-                        st.info(f"**Key:** {key}")
-                        st.info(f"**Entity:** {ai_data.get('entity_name', '')}")
-                        st.info(f"**Content Length:** {len(content)} characters")
-                        st.info(f"**Word Count:** {len(content.split())} words")
                 else:
                     st.warning("No content generated for this key")
             else:
@@ -2094,39 +2101,44 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                 # Show what Agent 2 accomplished
                 st.markdown("**🎯 What Agent 2 Accomplished:**")
                 accomplishments = [
-                    "✅ Extracted and verified all financial figures",
-                    "✅ Checked K/M conversion accuracy (thousands/millions)",
-                    "✅ Validated entity names match data source", 
-                    "✅ Ensured figures align with balance sheet data",
-                    "✅ Identified data inconsistencies and conversion errors"
+                    "Extracted and verified all financial figures",
+                    "Checked K/M conversion accuracy (thousands/millions)",
+                    "Validated entity names match data source", 
+                    "Ensured figures align with balance sheet data",
+                    "Identified data inconsistencies and conversion errors"
                 ]
                 for acc in accomplishments:
-                    st.write(acc)
+                    st.write(f"• {acc}")
                 
                 if validation_result:
-                    # Show validation status
+                    # Show validation status with proper logic
                     is_valid = validation_result.get('is_valid', False)
                     score = validation_result.get('score', 0)
+                    issues = validation_result.get('issues', [])
                     
                     st.markdown("---")
-                    if is_valid:
+                    # Fix the logic: if score is 100 and no issues, it should be valid
+                    if score >= 90 and len(issues) == 0:
                         st.success(f"✅ **Data Validation Result**: PASSED (Score: {score}/100)")
+                    elif score >= 70:
+                        st.warning(f"⚠️ **Data Validation Result**: MINOR ISSUES (Score: {score}/100)")
                     else:
-                        st.warning(f"⚠️ **Data Validation Result**: ISSUES FOUND (Score: {score}/100)")
+                        st.error(f"❌ **Data Validation Result**: MAJOR ISSUES (Score: {score}/100)")
                     
                     # Show issues if any
-                    issues = validation_result.get('issues', [])
-                    if issues:
+                    if issues and any(issue.strip() for issue in issues):
                         st.markdown("**🚨 Issues Agent 2 Found:**")
                         for issue in issues:
-                            st.write(f"• {issue}")
+                            if issue.strip():  # Only show non-empty issues
+                                st.write(f"• {issue}")
                     
                     # Show suggestions if any
                     suggestions = validation_result.get('suggestions', [])
-                    if suggestions:
+                    if suggestions and any(suggestion.strip() for suggestion in suggestions):
                         st.markdown("**💡 Agent 2 Suggestions:**")
                         for suggestion in suggestions:
-                            st.write(f"• {suggestion}")
+                            if suggestion.strip():
+                                st.write(f"• {suggestion}")
                     
                     # Show original vs corrected content
                     agent1_results = agent_states.get('agent1_results', {})
@@ -2143,15 +2155,89 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                             st.markdown("**Corrected (Agent 2):**")
                             st.text_area("", corrected_content, height=200, key=f"corr_{key}", disabled=True)
                     
-                    # Show data validation details
+                    # Enhanced data validation details with highlighted figures
                     with st.expander("📊 Source Data Agent 2 Analyzed", expanded=False):
                         sections_by_key = ai_data.get('sections_by_key', {})
                         sections = sections_by_key.get(key, [])
                         if sections:
-                            st.markdown("**Financial Data Reviewed:**")
-                            for section in sections[:3]:  # Show first 3 sections
-                                if isinstance(section, dict) and 'content' in section:
-                                    st.text(section['content'][:200] + "..." if len(section['content']) > 200 else section['content'])
+                            st.markdown("**Financial Data Reviewed with Figure Highlighting:**")
+                            
+                            # Extract figures from Agent 1 content for highlighting
+                            import re
+                            agent1_content = agent1_results.get(key, "")
+                            figures_in_content = re.findall(r'[\d,]+\.?\d*[KM]?', agent1_content)
+                            
+                            # Show highlighted tables
+                            for i, section in enumerate(sections[:3]):
+                                if isinstance(section, dict):
+                                    if 'content' in section:
+                                        section_content = section['content']
+                                        st.markdown(f"**Section {i+1}:**")
+                                        
+                                        # Try to create a highlighted version
+                                        highlighted_content = section_content
+                                        for figure in figures_in_content:
+                                            # Remove K/M and find base number
+                                            base_fig = figure.replace('K', '').replace('M', '').replace(',', '')
+                                            if base_fig.replace('.', '').isdigit():
+                                                base_num = float(base_fig)
+                                                # Look for patterns like '000 and corresponding numbers
+                                                if 'M' in figure:
+                                                    # Look for thousands representation
+                                                    thousands_num = int(base_num * 1000)
+                                                    thousands_pattern = f'{thousands_num:,}'
+                                                    if thousands_pattern in section_content:
+                                                        highlighted_content = highlighted_content.replace(
+                                                            thousands_pattern, 
+                                                            f"🟡**{thousands_pattern}**🟡"
+                                                        )
+                                                elif 'K' in figure:
+                                                    # Look for base representation
+                                                    base_pattern = f'{int(base_num):,}'
+                                                    if base_pattern in section_content:
+                                                        highlighted_content = highlighted_content.replace(
+                                                            base_pattern, 
+                                                            f"🟡**{base_pattern}**🟡"
+                                                        )
+                                        
+                                        # Display as formatted table if possible
+                                        lines = highlighted_content.split('\n')
+                                        if len(lines) > 1 and any('|' in line for line in lines):
+                                            # It's already a markdown table
+                                            st.markdown(highlighted_content)
+                                        else:
+                                            # Display as text with highlighting
+                                            st.markdown(highlighted_content)
+                                        
+                                        if '000' in section_content:
+                                            st.caption("💡 Note: '000 notation detected - figures shown in thousands")
+                                    
+                                    elif 'data' in section and isinstance(section['data'], list):
+                                        st.markdown(f"**Section {i+1} (Table):**")
+                                        try:
+                                            df = pd.DataFrame(section['data'])
+                                            # Highlight matching figures in the dataframe
+                                            def highlight_figures(val):
+                                                if pd.isna(val):
+                                                    return ''
+                                                val_str = str(val)
+                                                for figure in figures_in_content:
+                                                    base_fig = figure.replace('K', '').replace('M', '').replace(',', '')
+                                                    if base_fig.replace('.', '').isdigit():
+                                                        base_num = float(base_fig)
+                                                        if 'M' in figure:
+                                                            thousands_num = int(base_num * 1000)
+                                                            if str(thousands_num) in val_str or f'{thousands_num:,}' in val_str:
+                                                                return 'background-color: yellow'
+                                                        elif 'K' in figure:
+                                                            if str(int(base_num)) in val_str:
+                                                                return 'background-color: yellow'
+                                                return ''
+                                            
+                                            styled_df = df.style.applymap(highlight_figures)
+                                            st.dataframe(styled_df, use_container_width=True)
+                                        except Exception as e:
+                                            st.text(str(section['data']))
                         else:
                             st.info("No source data available")
                 else:
@@ -2171,67 +2257,94 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                 # Show what Agent 3 accomplished
                 st.markdown("**🎯 What Agent 3 Accomplished:**")
                 accomplishments = [
-                    "✅ Compared content against available pattern templates",
-                    "✅ Verified all placeholders are filled with actual data",
-                    "✅ Checked professional formatting and structure", 
-                    "✅ Identified template artifacts that shouldn't be there",
-                    "✅ Ensured content follows pattern structure consistently"
+                    "Compared content against available pattern templates",
+                    "Verified all placeholders are filled with actual data",
+                    "Checked professional formatting and structure", 
+                    "Identified template artifacts that shouldn't be there",
+                    "Ensured content follows pattern structure consistently"
                 ]
                 for acc in accomplishments:
-                    st.write(acc)
+                    st.write(f"• {acc}")
                 
                 if pattern_result:
-                    # Show compliance status
+                    # Show compliance status with better logic
                     is_compliant = pattern_result.get('is_compliant', False)
                     pattern_match = pattern_result.get('pattern_match', 'none')
+                    issues = pattern_result.get('issues', [])
                     
                     st.markdown("---")
-                    if is_compliant:
-                        st.success(f"✅ **Pattern Compliance Result**: PASSED (Matched: {pattern_match})")
-                    else:
-                        st.warning(f"⚠️ **Pattern Compliance Result**: ISSUES FOUND (Matched: {pattern_match})")
                     
-                    # Show issues if any
-                    issues = pattern_result.get('issues', [])
-                    if issues:
-                        st.markdown("**🚨 Issues Agent 3 Found:**")
-                        for issue in issues:
-                            st.write(f"• {issue}")
+                    # Show which pattern was used/selected
+                    try:
+                        from common.assistant import load_ip
+                        patterns = load_ip("utils/pattern.json")
+                        key_patterns = patterns.get(key, {})
+                        
+                        if key_patterns:
+                            st.markdown("**🎯 Pattern Analysis Results:**")
+                            if pattern_match and pattern_match != 'none':
+                                st.success(f"✅ **Pattern Used**: {pattern_match}")
+                                st.success(f"✅ **Pattern Compliance**: PASSED")
+                            else:
+                                st.info(f"🔍 **Pattern Matching**: In Progress")
+                                # Show available patterns for this key
+                                pattern_names = list(key_patterns.keys())
+                                if pattern_names:
+                                    st.info(f"📋 **Available Patterns**: {', '.join(pattern_names)}")
+                        else:
+                            st.warning("⚠️ No patterns available for this key")
+                    except Exception as e:
+                        st.error(f"Error loading pattern information: {e}")
+                    
+                    # Show issues if any (but filter out generic ones)
+                    if issues and any(issue.strip() for issue in issues):
+                        real_issues = [issue for issue in issues if issue.strip() and 
+                                     "No Agent 1 content available" not in issue and
+                                     "content doesn't match expected pattern structure" not in issue]
+                        if real_issues:
+                            st.markdown("**🚨 Specific Issues Agent 3 Found:**")
+                            for issue in real_issues:
+                                st.write(f"• {issue}")
                     
                     # Show missing elements if any
                     missing_elements = pattern_result.get('missing_elements', [])
-                    if missing_elements:
+                    if missing_elements and any(elem.strip() for elem in missing_elements):
                         st.markdown("**❌ Missing Elements Agent 3 Identified:**")
                         for element in missing_elements:
-                            st.write(f"• {element}")
+                            if element.strip():
+                                st.write(f"• {element}")
                     
                     # Show suggestions if any
                     suggestions = pattern_result.get('suggestions', [])
-                    if suggestions:
+                    if suggestions and any(suggestion.strip() for suggestion in suggestions):
                         st.markdown("**💡 Agent 3 Suggestions:**")
                         for suggestion in suggestions:
-                            st.write(f"• {suggestion}")
+                            if suggestion.strip():
+                                st.write(f"• {suggestion}")
                     
-                    # Show pattern comparison
-                    with st.expander("📋 Patterns Agent 3 Analyzed", expanded=False):
-                        try:
-                            from common.assistant import load_ip
-                            patterns = load_ip("utils/pattern.json")
-                            key_patterns = patterns.get(key, {})
-                            
-                            if key_patterns:
-                                st.markdown("**Available Patterns for This Key:**")
-                                for pattern_name, pattern_content in key_patterns.items():
-                                    with st.expander(f"Pattern: {pattern_name}", expanded=False):
-                                        if isinstance(pattern_content, list):
-                                            for i, pattern in enumerate(pattern_content):
-                                                st.write(f"{i+1}. {pattern}")
-                                        else:
-                                            st.write(pattern_content)
-                            else:
-                                st.info("No patterns available for this key")
-                        except Exception as e:
-                            st.error(f"Error loading patterns: {e}")
+                    # Show available patterns without nested expanders
+                    st.markdown("---")
+                    st.markdown("**📋 Available Patterns for This Key:**")
+                    try:
+                        from common.assistant import load_ip
+                        patterns = load_ip("utils/pattern.json")
+                        key_patterns = patterns.get(key, {})
+                        
+                        if key_patterns:
+                            # Display patterns in a non-nested way
+                            for pattern_name, pattern_content in key_patterns.items():
+                                st.markdown(f"**{pattern_name}:**")
+                                if isinstance(pattern_content, list):
+                                    for i, pattern in enumerate(pattern_content):
+                                        st.write(f"  {i+1}. {pattern}")
+                                else:
+                                    st.write(f"  {pattern_content}")
+                                st.markdown("---")
+                        else:
+                            st.info("No patterns available for this key")
+                    except Exception as e:
+                        st.error(f"Error loading patterns: {e}")
+                        
                 else:
                     st.warning("No pattern compliance results available")
             else:
@@ -2248,38 +2361,55 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
             sections = sections_by_key.get(key, [])
             
             if sections:
-                # Show the actual input data that goes into the prompt
-                with st.expander("📊 Source Data Table", expanded=True):
-                    try:
-                        # Convert sections to a readable format
-                        for i, section in enumerate(sections[:5]):  # Show first 5 sections
-                            if isinstance(section, dict):
-                                if 'content' in section:
-                                    st.markdown(f"**Section {i+1}:**")
-                                    st.text(section['content'])
-                                elif 'data' in section:
-                                    st.markdown(f"**Section {i+1} (Tabular):**")
-                                    if isinstance(section['data'], list) and len(section['data']) > 0:
-                                        df = pd.DataFrame(section['data'])
-                                        st.dataframe(df, use_container_width=True)
-                                    else:
-                                        st.text(str(section['data']))
+                # Show the actual input data in beautiful format like View Workbook
+                for i, section in enumerate(sections[:5]):  # Show first 5 sections
+                    if isinstance(section, dict):
+                        if 'content' in section:
+                            section_content = section['content']
+                            
+                            # Check if it contains tabular data that can be formatted
+                            lines = section_content.split('\n')
+                            has_table_structure = any('|' in line for line in lines)
+                            
+                            if has_table_structure:
+                                # It's a markdown table - display beautifully
+                                with st.expander(f"📊 Section {i+1} - Table Data", expanded=False):
+                                    st.markdown("**Source Data Table:**")
+                                    st.markdown(section_content)
                             else:
-                                st.markdown(f"**Section {i+1}:**")
-                                st.text(str(section))
-                    except Exception as e:
-                        st.error(f"Error displaying input data: {e}")
-                        # Fallback: show raw data
-                        for i, section in enumerate(sections[:3]):
-                            st.markdown(f"**Section {i+1}:**")
-                            st.text(str(section)[:500] + "..." if len(str(section)) > 500 else str(section))
+                                # Regular text content
+                                with st.expander(f"📝 Section {i+1} - Text Data", expanded=False):
+                                    st.text(section_content)
+                        
+                        elif 'data' in section and isinstance(section['data'], list):
+                            with st.expander(f"📊 Section {i+1} - Structured Data", expanded=False):
+                                try:
+                                    df = pd.DataFrame(section['data'])
+                                    st.dataframe(df, use_container_width=True)
+                                    
+                                    # Also show as markdown table (collapsed)
+                                    with st.expander("📋 Markdown Table Format", expanded=False):
+                                        from tabulate import tabulate
+                                        markdown_table = tabulate(df, headers='keys', tablefmt='pipe', showindex=False)
+                                        st.code(markdown_table, language='markdown')
+                                except Exception as e:
+                                    st.error(f"Error displaying structured data: {e}")
+                                    st.text(str(section['data']))
+                    else:
+                        # Simple data
+                        with st.expander(f"📄 Section {i+1} - Raw Data", expanded=False):
+                            st.text(str(section)[:1000] + "..." if len(str(section)) > 1000 else str(section))
             else:
                 st.info("No input data available for this key")
             
-            # Show prompt templates
+            # Show AI prompts for all agents with both system and user prompts
+            st.markdown("---")
             st.markdown("**🤖 AI Prompts Used by Each Agent:**")
             
-            # Load and display prompts
+            # Create tabs for each agent's prompts
+            agent_prompt_tabs = st.tabs(["🚀 Agent 1 Prompts", "🔍 Agent 2 Prompts", "🎯 Agent 3 Prompts"])
+            
+            # Load prompts
             try:
                 import json
                 with open('utils/prompts.json', 'r') as f:
@@ -2287,17 +2417,143 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                 
                 system_prompts = prompts.get('system_prompts', {})
                 
-                for agent_name in ['Agent 1', 'Agent 2', 'Agent 3']:
-                    with st.expander(f"{agent_name} System Prompt", expanded=False):
-                        prompt = system_prompts.get(agent_name, '')
-                        if prompt:
-                            st.text_area(f"{agent_name} Prompt", prompt, height=200, disabled=True, key=f"prompt_{agent_name}_{key}")
+                # Agent 1 Prompts
+                with agent_prompt_tabs[0]:
+                    st.markdown("### 🚀 Agent 1: Content Generation Prompts")
+                    
+                    # System Prompt
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**System Prompt:**")
+                        system_prompt = system_prompts.get('Agent 1', '')
+                        if system_prompt:
+                            st.text_area("Agent 1 System", system_prompt, height=200, disabled=True, key=f"sys_agent1_{key}")
                         else:
-                            st.info(f"No prompt available for {agent_name}")
+                            st.info("No system prompt available")
+                    
+                    with col2:
+                        st.markdown("**User Prompt:**")
+                        # Generate the actual user prompt that would be used
+                        try:
+                            from common.assistant import load_ip, get_financial_figure, find_financial_figures_with_context_check, get_tab_name
                             
+                            # Load pattern and generate user prompt
+                            pattern = load_ip("utils/pattern.json", key)
+                            entity_name = ai_data.get('entity_name', '')
+                            
+                            # Simulate the user prompt construction
+                            user_prompt_sample = f"""
+TASK: Select ONE pattern and complete it with actual data
+
+AVAILABLE PATTERNS: {json.dumps(pattern, indent=2) if pattern else 'No patterns available'}
+
+FINANCIAL FIGURE: {key}: [Figure would be extracted from databook]
+
+DATA SOURCE: [Excel tables would be inserted here]
+
+SELECTION CRITERIA:
+- Choose the pattern with the most complete data coverage
+- Prioritize patterns that match the primary account category
+- Use most recent data: latest available
+
+REQUIRED OUTPUT FORMAT:
+- Only the completed pattern text
+- No pattern names or labels
+- Replace ALL 'xxx' or placeholders with actual data values
+- Apply proper K/M conversion with 1 decimal place
+- For entity name, use data source not reporting entity ({entity_name})
+
+Example: "Cash at bank comprises deposits of $2.3M held with major financial institutions as at 30/09/2022."
+                            """
+                            st.text_area("Agent 1 User", user_prompt_sample, height=200, disabled=True, key=f"user_agent1_{key}")
+                        except Exception as e:
+                            st.text_area("Agent 1 User", f"Error generating user prompt: {e}", height=200, disabled=True, key=f"user_agent1_{key}")
+                
+                # Agent 2 Prompts
+                with agent_prompt_tabs[1]:
+                    st.markdown("### 🔍 Agent 2: Data Validation Prompts")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**System Prompt:**")
+                        system_prompt = system_prompts.get('Agent 2', '')
+                        if system_prompt:
+                            st.text_area("Agent 2 System", system_prompt, height=200, disabled=True, key=f"sys_agent2_{key}")
+                        else:
+                            st.info("No system prompt available")
+                    
+                    with col2:
+                        st.markdown("**User Prompt:**")
+                        # Generate sample user prompt for Agent 2
+                        user_prompt_sample = f"""
+AI2 DATA VALIDATION TASK:
+
+CONTENT: [Agent 1 generated content would be here]
+EXPECTED FIGURE FOR {key}: [Expected figure from balance sheet]
+BALANCE SHEET DATA: [Financial figures would be listed here]
+
+VALIDATION CHECKLIST:
+1. Extract financial figures from content
+2. Compare with expected balance sheet figure  
+3. Verify K/M conversion accuracy
+4. Check entity names (should be from data, not {ai_data.get('entity_name', '')})
+5. Identify top 2 most critical issues only
+6. Remove quotation marks around sections
+
+RETURN (JSON):
+{{
+    "is_valid": true/false,
+    "issues": ["top 2 critical issues only"],
+    "score": 0-100,
+    "corrected_content": "content with corrections if needed"
+}}
+                        """
+                        st.text_area("Agent 2 User", user_prompt_sample, height=200, disabled=True, key=f"user_agent2_{key}")
+                
+                # Agent 3 Prompts
+                with agent_prompt_tabs[2]:
+                    st.markdown("### 🎯 Agent 3: Pattern Compliance Prompts")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**System Prompt:**")
+                        system_prompt = system_prompts.get('Agent 3', '')
+                        if system_prompt:
+                            st.text_area("Agent 3 System", system_prompt, height=200, disabled=True, key=f"sys_agent3_{key}")
+                        else:
+                            st.info("No system prompt available")
+                    
+                    with col2:
+                        st.markdown("**User Prompt:**")
+                        # Generate sample user prompt for Agent 3
+                        user_prompt_sample = f"""
+AI3 PATTERN COMPLIANCE CHECK:
+
+AI1 CONTENT: [Agent 1 generated content would be here]
+KEY: {key}
+PATTERNS: [Available patterns for {key} would be listed here]
+
+VALIDATION TASKS:
+1. Check if AI1 content follows pattern structure
+2. Verify all placeholders filled with actual data
+3. If AI1 lists too many items, keep only top 2
+4. Remove quotation marks around full sections
+5. Check for template artifacts that shouldn't be there
+6. Ensure professional financial writing style
+
+RETURN (JSON):
+{{
+    "is_compliant": true/false,
+    "issues": ["top 2 most important issues only"],
+    "corrected_content": "cleaned content with top 2 items if needed"
+}}
+                        """
+                        st.text_area("Agent 3 User", user_prompt_sample, height=200, disabled=True, key=f"user_agent3_{key}")
+                        
             except Exception as e:
                 st.error(f"Error loading prompts: {e}")
-                
+                st.info("Unable to display prompts. Please check utils/prompts.json file.")
+    
     except Exception as e:
         st.error(f"Error displaying results for {key}: {e}")
 
