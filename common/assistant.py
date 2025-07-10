@@ -63,9 +63,9 @@ def initialize_ai_services(config_details):
             }
             
             search_client = SearchClient(
-                'endpoint': f"https://{config_details['AZURE_AI_SEARCH_SERVICE_ENDPOINT']}/",
-                'index_name': config_details['AZAURE_AI_SEARCH_INDEX_NAME'],
-                'credential': AzureKeyCredential(config_details['SEARCH_API_KEY']),
+                endpoint=f"https://{config_details['AZURE_AI_SEARCH_SERVICE_ENDPOINT']}/",
+                index_name=config_details['AZAURE_AI_SEARCH_INDEX_NAME'],
+                credential=AzureKeyCredential(config_details['SEARCH_API_KEY']),
                 **search_client_configs
             )
         else:
@@ -402,7 +402,7 @@ def load_ip(file, key=None):
     return {}
 
 # --- Pattern Filling and Main Processing ---
-def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', use_ai=True, convert_thousands=False):
+def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', use_ai=True, convert_thousands=False, progress_callback=None):
     # Use test data if AI is not available
     if not use_ai or not AI_AVAILABLE:
         print(f"🔄 Using fallback mode for {len(keys)} keys")
@@ -437,6 +437,10 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     for key_index, key in enumerate(pbar):
         # Update progress description to show current key and progress
         pbar.set_description(f"Processing {key}")
+        
+        # Update streamlit progress if callback provided
+        if progress_callback:
+            progress_callback((key_index + 1) / len(keys), f"Processing {key}...")
         
         config_details = load_config(config_file)
         
@@ -484,14 +488,15 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         response_txt = generate_response(user_query, system_prompt, oai_client, excel_tables, openai_model)
         results[key] = response_txt
         
-        # Print AI response [:20] for cmd checking (issue #2)
-        print(f"📝 {key}: {response_txt[:20]}...")
-        
-        # Update progress bar with key information
-        pbar.set_postfix_str(f"key={key} ({key_index + 1}/{len(keys)})")
+        # Update progress bar with key information and AI response preview
+        pbar.set_postfix_str(f"{key}: {response_txt[:10]}...")
     
     pbar.close()
-    print(f"✅ Completed processing {len(keys)} keys")
+    
+    # Final progress update
+    if progress_callback:
+        progress_callback(1.0, "AI processing completed!")
+    
     return results
 
 def generate_test_results(keys):
@@ -582,42 +587,40 @@ class DataValidationAgent:
             oai_client, _ = initialize_ai_services(config_details)
             
             system_prompt = """
-            You are a financial data validation specialist. Your task is to verify that financial figures 
-            mentioned in the content match the expected values from the financial statements.
+            You are AI2, a financial data validation specialist. Your task is to double-check each response 
+            by key to ensure figures match the balance sheet and verify data accuracy including K/M conversions.
             
             CRITICAL REQUIREMENTS:
-            1. Extract all financial figures from the content
-            2. Compare them with the expected figure from financial statements
-            3. Check for accuracy, proper formatting (K/M), and consistency
-            4. Identify any discrepancies or missing data
-            5. Return a structured validation result
-            6. Be very specific about what needs to be corrected
+            1. Extract all financial figures from AI1 content
+            2. Compare with expected balance sheet figures for accuracy
+            3. Verify proper K/M conversion and formatting
+            4. Check entity names match data source (not reporting entity)
+            5. Identify ONLY top 2 most critical data accuracy issues
+            6. Remove unnecessary quotation marks around sections
+            7. Ensure no data inconsistencies or conversion errors
             """
             
             user_query = f"""
-            VALIDATE FINANCIAL DATA ACCURACY:
+            AI2 DATA VALIDATION TASK:
             
-            CONTENT TO VALIDATE: {content}
+            CONTENT: {content}
             EXPECTED FIGURE FOR {key}: {expected_figure}
-            FINANCIAL STATEMENT DATA: {financial_figures}
+            BALANCE SHEET DATA: {financial_figures}
             
-            TASKS:
-            1. Extract all financial figures from the content
-            2. Compare with expected figure from financial statements
-            3. Check if figures are properly formatted (K/M notation)
-            4. Verify entity names match the data source
-            5. Identify any discrepancies
-            6. Check for placeholder values (xxx, [amount], etc.)
+            VALIDATION CHECKLIST:
+            1. Extract financial figures from content
+            2. Compare with expected balance sheet figure  
+            3. Verify K/M conversion accuracy
+            4. Check entity names (should be from data, not {entity})
+            5. Identify top 2 most critical issues only
+            6. Remove quotation marks around sections
             
-            RETURN FORMAT (JSON):
+            RETURN (JSON):
             {{
-                "needs_correction": true/false,
-                "issues": ["list of specific issues found"],
+                "is_valid": true/false,
+                "issues": ["top 2 critical issues only"],
                 "score": 0-100,
-                "extracted_figures": ["list of figures found in content"],
-                "expected_figure": "expected value",
-                "discrepancies": ["list of discrepancies"],
-                "suggestions": ["list of specific correction suggestions"]
+                "corrected_content": "content with corrections if needed"
             }}
             """
             
@@ -733,41 +736,39 @@ class PatternValidationAgent:
             oai_client, _ = initialize_ai_services(config_details)
             
             system_prompt = """
-            You are a pattern compliance validation specialist. Your task is to verify that the content 
-            follows the expected pattern structure and format.
+            You are AI3, a pattern compliance validation specialist. Your task is to check if content 
+            follows patterns correspondingly and clean up excessive items.
             
-            REQUIREMENTS:
-            1. Compare content against available patterns
-            2. Check for proper structure and formatting
-            3. Verify all placeholders are filled
-            4. Ensure professional tone and language
-            5. Identify any pattern compliance issues
-            6. Provide specific suggestions for improvement
+            CRITICAL REQUIREMENTS:
+            1. Compare AI1 content against available pattern templates
+            2. Check proper pattern structure and professional formatting
+            3. Verify all placeholders are filled with actual data
+            4. If AI1 lists too many items, limit to top 2 most important
+            5. Remove quotation marks quoting full sections
+            6. Check for anything that shouldn't be there (template artifacts)
+            7. Ensure content follows pattern structure consistently
             """
             
             user_query = f"""
-            VALIDATE PATTERN COMPLIANCE:
+            AI3 PATTERN COMPLIANCE CHECK:
             
-            CONTENT TO VALIDATE: {content}
+            AI1 CONTENT: {content}
             KEY: {key}
-            AVAILABLE PATTERNS: {json.dumps(patterns, indent=2)}
+            PATTERNS: {json.dumps(patterns, indent=2)}
             
-            TASKS:
-            1. Check if content follows any of the available patterns
-            2. Verify all placeholders are properly filled
-            3. Check for proper financial terminology
-            4. Ensure professional writing style
-            5. Identify any structural or formatting issues
-            6. Check for template artifacts (xxx, [placeholder], etc.)
+            VALIDATION TASKS:
+            1. Check if AI1 content follows pattern structure
+            2. Verify all placeholders filled with actual data
+            3. If AI1 lists too many items, keep only top 2
+            4. Remove quotation marks around full sections
+            5. Check for template artifacts that shouldn't be there
+            6. Ensure professional financial writing style
             
-            RETURN FORMAT (JSON):
+            RETURN (JSON):
             {{
-                "needs_correction": true/false,
-                "issues": ["list of pattern compliance issues"],
-                "score": 0-100,
-                "pattern_match": "name of matched pattern or 'none'",
-                "missing_elements": ["list of missing pattern elements"],
-                "suggestions": ["list of specific improvement suggestions"]
+                "is_compliant": true/false,
+                "issues": ["top 2 most important issues only"],
+                "corrected_content": "cleaned content with top 2 items if needed"
             }}
             """
             
