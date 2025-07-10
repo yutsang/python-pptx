@@ -486,16 +486,13 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         - Figures ≥ 1,000,000: express in M (millions) with 1 decimal place (e.g., 2.3M)
         - Figures ≥ 1,000: express in K (thousands) with 1 decimal place (e.g., 1.5K)
         - Figures < 1,000: express with 1 decimal place (e.g., 123.0)"""
-        user_query = f"""
-        TASK: Select ONE pattern and complete it with actual data
-        AVAILABLE PATTERNS: {json.dumps(pattern, indent=2)}
-        FINANCIAL FIGURE: {key}: {get_financial_figure(financial_figures, key)}
-        DATA SOURCE: {excel_tables_for_ai}
-        SELECTION CRITERIA:
-        - Choose the pattern with the most complete data coverage
-        - Prioritize patterns that match the primary account category
-        - Use most recent data: latest available
-        - {detect_zeros}
+        
+        # User query construction using f-strings for better prompt maintainability
+        pattern_json = json.dumps(pattern, indent=2)
+        financial_figure_info = f"{key}: {get_financial_figure(financial_figures, key)}"
+        
+        # Template for output requirements - reusable across queries
+        output_requirements = f"""
         REQUIRED OUTPUT FORMAT:
         - Only the completed pattern text
         - No pattern names or labels
@@ -508,10 +505,35 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         - Stick to Template format, no extra explanations or comments
         - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
         - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
+        """
+        
+        # Example formats for consistent output
+        examples = f"""
         Example of CORRECT output format:
         "Cash at bank comprises deposits of $2.3M held with major financial institutions as at 30/09/2022."
+        
         Example of INCORRECT output format:
-        "Pattern 1: Cash at bank comprises deposits of xxx held with xxx as at xxx."        
+        "Pattern 1: Cash at bank comprises deposits of xxx held with xxx as at xxx."
+        """
+        
+        user_query = f"""
+        TASK: Select ONE pattern and complete it with actual data
+        
+        AVAILABLE PATTERNS: {pattern_json}
+        
+        FINANCIAL FIGURE: {financial_figure_info}
+        
+        DATA SOURCE: {excel_tables_for_ai}
+        
+        SELECTION CRITERIA:
+        - Choose the pattern with the most complete data coverage
+        - Prioritize patterns that match the primary account category
+        - Use most recent data: latest available
+        - {detect_zeros}
+        
+        {output_requirements}
+        
+        {examples}
         """
         
         response_txt = generate_response(user_query, system_prompt, oai_client, excel_tables, openai_model)

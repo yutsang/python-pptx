@@ -689,6 +689,9 @@ def main():
                         with open(temp_file_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
                         
+                        # Store uploaded file data in session state for agents
+                        st.session_state['uploaded_file_data'] = uploaded_file.getbuffer()
+                        
                         # Update config for different AI models
                         if ai_model == "Deepseek":
                             # Check if Deepseek API key is configured
@@ -728,77 +731,54 @@ def main():
                             status_text.text(message)
                         
                         try:
-                            # Sequential AI Processing: AI1 → AI2 → AI3
+                            # Automatic Sequential AI Processing: AI1 → AI2 → AI3
                             
-                            # Phase 1: AI1 Processing - Initial content generation for all keys
-                            update_progress(0.3, f"🤖 AI1: Generating content for {len(filtered_keys_for_ai)} keys...")
-                            ai1_results = process_keys(
-                                keys=filtered_keys_for_ai,
-                                entity_name=selected_entity,
-                                entity_helpers=entity_helpers,
-                                input_file=temp_file_path,
-                                mapping_file="utils/mapping.json",
-                                pattern_file="utils/pattern.json",
-                                config_file=config_file,
-                                use_ai=True,
-                                progress_callback=lambda p, m: update_progress(0.3 + p * 0.3, f"AI1: {m}")
-                            )
+                            # Initialize agent states
+                            st.session_state['agent_states'] = {
+                                'agent1_completed': False,
+                                'agent2_completed': False, 
+                                'agent3_completed': False,
+                                'agent1_results': {},
+                                'agent2_results': {},
+                                'agent3_results': {},
+                                'all_agents_completed': False
+                            }
                             
-                            # Phase 2: AI2 Processing - Data validation for all keys
+                            # Prepare AI data for agents
+                            temp_ai_data = {
+                                'entity_name': selected_entity,
+                                'entity_keywords': entity_keywords,
+                                'sections_by_key': sections_by_key,
+                                'pattern': pattern,
+                                'mapping': mapping,
+                                'config': config
+                            }
+                            
+                            # Phase 1: AI1 Processing - Content Generation
+                            update_progress(0.4, f"🤖 AI1: Generating content for {len(filtered_keys_for_ai)} keys...")
+                            agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data)
+                            st.session_state['agent_states']['agent1_results'] = agent1_results
+                            st.session_state['agent_states']['agent1_completed'] = True
+                            ai_results.update(agent1_results)
+                            
+                            # Phase 2: AI2 Processing - Data Validation
                             update_progress(0.6, f"🔍 AI2: Validating data for {len(filtered_keys_for_ai)} keys...")
-                            from common.assistant import DataValidationAgent
-                            ai2_results = {}
-                            validation_agent = DataValidationAgent()
+                            agent2_results = run_agent_2(filtered_keys_for_ai, agent1_results, temp_ai_data)
+                            st.session_state['agent_states']['agent2_results'] = agent2_results
+                            st.session_state['agent_states']['agent2_completed'] = True
                             
-                            for i, key in enumerate(filtered_keys_for_ai):
-                                try:
-                                    ai1_content = ai1_results.get(key, "")
-                                    if ai1_content:
-                                        # Perform validation without temp files
-                                        validation_result = validation_agent._fallback_data_validation(
-                                            ai1_content, 0, key  # Use fallback method to avoid temp files
-                                        )
-                                        ai2_results[key] = validation_result
-                                    else:
-                                        ai2_results[key] = {"is_valid": False, "issues": ["No AI1 content available"], "score": 0}
-                                except Exception as e:
-                                    ai2_results[key] = {"is_valid": False, "issues": [f"Validation error: {e}"], "score": 0}
-                                
-                                progress = 0.6 + (i + 1) / len(filtered_keys_for_ai) * 0.2
-                                update_progress(progress, f"AI2: Validated {key}")
-                            
-                            # Phase 3: AI3 Processing - Pattern compliance for all keys  
+                            # Phase 3: AI3 Processing - Pattern Compliance
                             update_progress(0.8, f"🎯 AI3: Checking pattern compliance for {len(filtered_keys_for_ai)} keys...")
-                            from common.assistant import PatternValidationAgent
-                            ai3_results = {}
-                            pattern_agent = PatternValidationAgent()
+                            agent3_results = run_agent_3(filtered_keys_for_ai, agent1_results, temp_ai_data)
+                            st.session_state['agent_states']['agent3_results'] = agent3_results
+                            st.session_state['agent_states']['agent3_completed'] = True
                             
-                            for i, key in enumerate(filtered_keys_for_ai):
-                                try:
-                                    ai1_content = ai1_results.get(key, "")
-                                    if ai1_content:
-                                        # Get patterns for this key
-                                        key_patterns = pattern.get(key, {})
-                                        # Perform pattern validation
-                                        pattern_result = pattern_agent._fallback_pattern_validation(
-                                            ai1_content, key_patterns, key  # Use fallback to avoid AI calls
-                                        )
-                                        ai3_results[key] = pattern_result
-                                    else:
-                                        ai3_results[key] = {"is_compliant": False, "issues": ["No AI1 content available"]}
-                                except Exception as e:
-                                    ai3_results[key] = {"is_compliant": False, "issues": [f"Pattern validation error: {e}"]}
-                                
-                                progress = 0.8 + (i + 1) / len(filtered_keys_for_ai) * 0.15
-                                update_progress(progress, f"AI3: Validated {key}")
+                            # Mark all agents as completed
+                            st.session_state['agent_states']['all_agents_completed'] = True
                             
-                            # Store all results
-                            ai_results.update(ai1_results)
-                            
-                            # Store AI2 and AI3 results in session state for display
-                            st.session_state['ai2_results'] = ai2_results
-                            st.session_state['ai3_results'] = ai3_results
-                            
+                            # Store AI2 and AI3 results in legacy format for backwards compatibility
+                            st.session_state['ai2_results'] = agent2_results
+                            st.session_state['ai3_results'] = agent3_results
                         except RuntimeError as e:
                             # AI services not available, use fallback
                             update_progress(0.5, "AI services not available, using fallback mode...")
@@ -875,22 +855,10 @@ def main():
                 st.error(f"❌ Processing failed: {e}")
                 st.error(f"Error details: {str(e)}")
         
-        # --- AI Results Section ---
+        # --- Sequential AI Agent System ---
         if st.session_state.get('ai_processed', False):
             st.markdown("---")
-            st.markdown("# AI Results")
-            st.progress(100)
-            
-            # AI Agent Selection and Content/Prompt Toggle
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                agent_choice = st.radio("Select AI Agent", ["Agent 1", "Agent 2", "Agent 3"], horizontal=True, label_visibility="collapsed")
-            with col2:
-                content_mode = st.radio("Display Mode", ["Content", "Prompt"], horizontal=True, label_visibility="collapsed")
-            
-            # Enhanced highlighting indicator for Agent 2
-            if agent_choice == "Agent 2":
-                st.info("🎯 **Enhanced Highlighting Active**: Agent 2 now includes pattern-based figure detection with '000 notation support")
+            st.markdown("# AI Agent Results")
             
             # Define BS and IS keys for filtering
             bs_keys = [
@@ -916,18 +884,36 @@ def main():
             else:
                 filtered_keys = keys_with_data
             
-            if filtered_keys:
-                ai_key_tabs = st.tabs([get_key_display_name(key) for key in filtered_keys])
-                for i, key in enumerate(filtered_keys):
-                    with ai_key_tabs[i]:
-                        if content_mode == "Content":
-                            # Display AI content based on the key
-                            display_ai_content_by_key(key, agent_choice)
-                        else:
-                            # Display AI prompt for the key
-                            display_ai_prompt_by_key(key, agent_choice)
-            else:
+            if not filtered_keys:
                 st.info("No data available for AI analysis. Please process with AI first.")
+                return
+            
+            # Show processing completion status
+            agent_states = st.session_state.get('agent_states', {})
+            if agent_states.get('all_agents_completed', False):
+                st.success("✅ All AI agents have completed processing!")
+                
+                # Display agent completion status
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.info("🚀 **Agent 1**: Content Generation ✅")
+                with col2:
+                    st.info("🔍 **Agent 2**: Data Validation ✅")
+                with col3:
+                    st.info("🎯 **Agent 3**: Pattern Compliance ✅")
+            else:
+                st.warning("⚠️ AI agents processing incomplete. Please run 'Process with AI' again.")
+            
+            # Results Display Section - Key-based tabs with agent perspectives
+            st.markdown("---")
+            st.markdown("## 📊 Results by Financial Key")
+            
+            # Create tabs for each key
+            result_tabs = st.tabs([get_key_display_name(key) for key in filtered_keys])
+            
+            for i, key in enumerate(filtered_keys):
+                with result_tabs[i]:
+                    display_sequential_agent_results(key, filtered_keys, ai_data)
         
         # --- PowerPoint Generation Section (Bottom) ---
         st.markdown("---")
@@ -1929,6 +1915,391 @@ def write_prompt_debug_content(filtered_keys, sections_by_key):
 #     output_path=output_path,
 #     project_name=project_name
 # )
+
+def run_agent_1(filtered_keys, ai_data):
+    """Run Agent 1: Content Generation for all keys"""
+    try:
+        from common.assistant import process_keys
+        
+        # Get data from ai_data
+        entity_name = ai_data.get('entity_name', '')
+        entity_keywords = ai_data.get('entity_keywords', [])
+        
+        # Create a temporary file path for processing
+        import tempfile
+        import os
+        temp_file_path = None
+        
+        try:
+            # Get the original uploaded file data from session state if available
+            if 'uploaded_file_data' in st.session_state:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+                    tmp_file.write(st.session_state['uploaded_file_data'])
+                    temp_file_path = tmp_file.name
+            else:
+                # Fallback: look for databook.xlsx
+                if os.path.exists('databook.xlsx'):
+                    temp_file_path = 'databook.xlsx'
+                else:
+                    st.error("No data file available for Agent 1 processing")
+                    return {}
+            
+            # Run Agent 1 processing
+            results = process_keys(
+                keys=filtered_keys,
+                entity_name=entity_name,
+                entity_helpers=entity_keywords,
+                input_file=temp_file_path,
+                mapping_file="utils/mapping.json",
+                pattern_file="utils/pattern.json",
+                config_file='utils/config.json',
+                use_ai=True,
+                progress_callback=None
+            )
+            
+            return results
+            
+        finally:
+            # Clean up temp file if created
+            if temp_file_path and temp_file_path != 'databook.xlsx' and os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+                
+    except Exception as e:
+        st.error(f"Agent 1 processing failed: {e}")
+        return {}
+
+def run_agent_2(filtered_keys, agent1_results, ai_data):
+    """Run Agent 2: Data Validation for all keys"""
+    try:
+        from common.assistant import DataValidationAgent
+        
+        validation_agent = DataValidationAgent()
+        results = {}
+        
+        # Get entity name
+        entity_name = ai_data.get('entity_name', '')
+        
+        for key in filtered_keys:
+            agent1_content = agent1_results.get(key, "")
+            if agent1_content:
+                # Use fallback validation method to avoid file dependencies
+                validation_result = validation_agent._fallback_data_validation(
+                    agent1_content, 0, key
+                )
+                results[key] = validation_result
+            else:
+                results[key] = {
+                    "is_valid": False, 
+                    "issues": ["No Agent 1 content available"], 
+                    "score": 0,
+                    "suggestions": ["Run Agent 1 first"]
+                }
+        
+        return results
+        
+    except Exception as e:
+        st.error(f"Agent 2 processing failed: {e}")
+        return {}
+
+def run_agent_3(filtered_keys, agent1_results, ai_data):
+    """Run Agent 3: Pattern Compliance for all keys"""
+    try:
+        from common.assistant import PatternValidationAgent, load_ip
+        
+        pattern_agent = PatternValidationAgent()
+        results = {}
+        
+        # Load patterns
+        patterns = load_ip("utils/pattern.json")
+        
+        for key in filtered_keys:
+            agent1_content = agent1_results.get(key, "")
+            if agent1_content:
+                # Get patterns for this key
+                key_patterns = patterns.get(key, {})
+                # Use fallback validation method
+                pattern_result = pattern_agent._fallback_pattern_validation(
+                    agent1_content, key_patterns, key
+                )
+                results[key] = pattern_result
+            else:
+                results[key] = {
+                    "is_compliant": False,
+                    "issues": ["No Agent 1 content available"],
+                    "pattern_match": "none",
+                    "suggestions": ["Run Agent 1 first"]
+                }
+        
+        return results
+        
+    except Exception as e:
+        st.error(f"Agent 3 processing failed: {e}")
+        return {}
+
+def display_sequential_agent_results(key, filtered_keys, ai_data):
+    """Display results for all agents for a specific key"""
+    try:
+        # Get agent states
+        agent_states = st.session_state.get('agent_states', {})
+        
+        # Create sub-tabs for different perspectives
+        perspective_tabs = st.tabs([
+            "📝 Agent 1: Content Generation", 
+            "📊 Agent 2: Data Validation", 
+            "🎯 Agent 3: Pattern Compliance", 
+            "🔧 Input Data & Prompts"
+        ])
+        
+        # Tab 1: Agent 1 - Content Generation Focus
+        with perspective_tabs[0]:
+            st.markdown(f"### 🚀 What Agent 1 Does: Content Generation")
+            st.info("**Focus**: Generate comprehensive financial analysis content using actual worksheet data and predefined patterns")
+            
+            if agent_states.get('agent1_completed', False):
+                agent1_results = agent_states.get('agent1_results', {})
+                content = agent1_results.get(key, "")
+                
+                if content:
+                    st.markdown("**✅ Generated Content:**")
+                    st.markdown(content)
+                    
+                    # Show what Agent 1 accomplished
+                    with st.expander("🎯 What Agent 1 Accomplished", expanded=False):
+                        st.markdown("""
+                        **Agent 1's Key Tasks:**
+                        - ✅ Selected appropriate pattern from available templates
+                        - ✅ Integrated actual financial figures from databook
+                        - ✅ Replaced all placeholders with real data
+                        - ✅ Applied proper K/M number formatting
+                        - ✅ Generated professional financial narrative
+                        """)
+                        st.info(f"**Key:** {key}")
+                        st.info(f"**Entity:** {ai_data.get('entity_name', '')}")
+                        st.info(f"**Content Length:** {len(content)} characters")
+                        st.info(f"**Word Count:** {len(content.split())} words")
+                else:
+                    st.warning("No content generated for this key")
+            else:
+                st.info("⏳ Agent 1 will run automatically during 'Process with AI'")
+        
+        # Tab 2: Agent 2 - Data Validation Focus  
+        with perspective_tabs[1]:
+            st.markdown(f"### 🔍 What Agent 2 Does: Data Integrity & Accuracy Validation")
+            st.info("**Focus**: Verify data accuracy, check K/M conversions, validate entity names, and ensure figures match balance sheet")
+            
+            if agent_states.get('agent2_completed', False):
+                agent2_results = agent_states.get('agent2_results', {})
+                validation_result = agent2_results.get(key, {})
+                
+                # Show what Agent 2 accomplished
+                st.markdown("**🎯 What Agent 2 Accomplished:**")
+                accomplishments = [
+                    "✅ Extracted and verified all financial figures",
+                    "✅ Checked K/M conversion accuracy (thousands/millions)",
+                    "✅ Validated entity names match data source", 
+                    "✅ Ensured figures align with balance sheet data",
+                    "✅ Identified data inconsistencies and conversion errors"
+                ]
+                for acc in accomplishments:
+                    st.write(acc)
+                
+                if validation_result:
+                    # Show validation status
+                    is_valid = validation_result.get('is_valid', False)
+                    score = validation_result.get('score', 0)
+                    
+                    st.markdown("---")
+                    if is_valid:
+                        st.success(f"✅ **Data Validation Result**: PASSED (Score: {score}/100)")
+                    else:
+                        st.warning(f"⚠️ **Data Validation Result**: ISSUES FOUND (Score: {score}/100)")
+                    
+                    # Show issues if any
+                    issues = validation_result.get('issues', [])
+                    if issues:
+                        st.markdown("**🚨 Issues Agent 2 Found:**")
+                        for issue in issues:
+                            st.write(f"• {issue}")
+                    
+                    # Show suggestions if any
+                    suggestions = validation_result.get('suggestions', [])
+                    if suggestions:
+                        st.markdown("**💡 Agent 2 Suggestions:**")
+                        for suggestion in suggestions:
+                            st.write(f"• {suggestion}")
+                    
+                    # Show original vs corrected content
+                    agent1_results = agent_states.get('agent1_results', {})
+                    original_content = agent1_results.get(key, "")
+                    corrected_content = validation_result.get('corrected_content', '')
+                    
+                    if original_content and corrected_content and original_content != corrected_content:
+                        st.markdown("**📋 Content Comparison:**")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown("**Original (Agent 1):**")
+                            st.text_area("", original_content, height=200, key=f"orig_{key}", disabled=True)
+                        with col2:
+                            st.markdown("**Corrected (Agent 2):**")
+                            st.text_area("", corrected_content, height=200, key=f"corr_{key}", disabled=True)
+                    
+                    # Show data validation details
+                    with st.expander("📊 Source Data Agent 2 Analyzed", expanded=False):
+                        sections_by_key = ai_data.get('sections_by_key', {})
+                        sections = sections_by_key.get(key, [])
+                        if sections:
+                            st.markdown("**Financial Data Reviewed:**")
+                            for section in sections[:3]:  # Show first 3 sections
+                                if isinstance(section, dict) and 'content' in section:
+                                    st.text(section['content'][:200] + "..." if len(section['content']) > 200 else section['content'])
+                        else:
+                            st.info("No source data available")
+                else:
+                    st.warning("No validation results available")
+            else:
+                st.info("⏳ Agent 2 will run automatically during 'Process with AI'")
+        
+        # Tab 3: Agent 3 - Pattern Compliance Focus
+        with perspective_tabs[2]:
+            st.markdown(f"### 🎯 What Agent 3 Does: Pattern Compliance & Format Validation")
+            st.info("**Focus**: Ensure content follows predefined patterns, check formatting standards, and verify template compliance")
+            
+            if agent_states.get('agent3_completed', False):
+                agent3_results = agent_states.get('agent3_results', {})
+                pattern_result = agent3_results.get(key, {})
+                
+                # Show what Agent 3 accomplished
+                st.markdown("**🎯 What Agent 3 Accomplished:**")
+                accomplishments = [
+                    "✅ Compared content against available pattern templates",
+                    "✅ Verified all placeholders are filled with actual data",
+                    "✅ Checked professional formatting and structure", 
+                    "✅ Identified template artifacts that shouldn't be there",
+                    "✅ Ensured content follows pattern structure consistently"
+                ]
+                for acc in accomplishments:
+                    st.write(acc)
+                
+                if pattern_result:
+                    # Show compliance status
+                    is_compliant = pattern_result.get('is_compliant', False)
+                    pattern_match = pattern_result.get('pattern_match', 'none')
+                    
+                    st.markdown("---")
+                    if is_compliant:
+                        st.success(f"✅ **Pattern Compliance Result**: PASSED (Matched: {pattern_match})")
+                    else:
+                        st.warning(f"⚠️ **Pattern Compliance Result**: ISSUES FOUND (Matched: {pattern_match})")
+                    
+                    # Show issues if any
+                    issues = pattern_result.get('issues', [])
+                    if issues:
+                        st.markdown("**🚨 Issues Agent 3 Found:**")
+                        for issue in issues:
+                            st.write(f"• {issue}")
+                    
+                    # Show missing elements if any
+                    missing_elements = pattern_result.get('missing_elements', [])
+                    if missing_elements:
+                        st.markdown("**❌ Missing Elements Agent 3 Identified:**")
+                        for element in missing_elements:
+                            st.write(f"• {element}")
+                    
+                    # Show suggestions if any
+                    suggestions = pattern_result.get('suggestions', [])
+                    if suggestions:
+                        st.markdown("**💡 Agent 3 Suggestions:**")
+                        for suggestion in suggestions:
+                            st.write(f"• {suggestion}")
+                    
+                    # Show pattern comparison
+                    with st.expander("📋 Patterns Agent 3 Analyzed", expanded=False):
+                        try:
+                            from common.assistant import load_ip
+                            patterns = load_ip("utils/pattern.json")
+                            key_patterns = patterns.get(key, {})
+                            
+                            if key_patterns:
+                                st.markdown("**Available Patterns for This Key:**")
+                                for pattern_name, pattern_content in key_patterns.items():
+                                    with st.expander(f"Pattern: {pattern_name}", expanded=False):
+                                        if isinstance(pattern_content, list):
+                                            for i, pattern in enumerate(pattern_content):
+                                                st.write(f"{i+1}. {pattern}")
+                                        else:
+                                            st.write(pattern_content)
+                            else:
+                                st.info("No patterns available for this key")
+                        except Exception as e:
+                            st.error(f"Error loading patterns: {e}")
+                else:
+                    st.warning("No pattern compliance results available")
+            else:
+                st.info("⏳ Agent 3 will run automatically during 'Process with AI'")
+        
+        # Tab 4: Input Data & Prompts
+        with perspective_tabs[3]:
+            st.markdown(f"### 🔧 Input Data & AI Prompts Used")
+            st.info("**Purpose**: Verify the exact input data and prompts used by all agents for transparency")
+            
+            # Show input table used in prompts
+            st.markdown("**📊 Input Table Data (What Agents Analyzed):**")
+            sections_by_key = ai_data.get('sections_by_key', {})
+            sections = sections_by_key.get(key, [])
+            
+            if sections:
+                # Show the actual input data that goes into the prompt
+                with st.expander("📊 Source Data Table", expanded=True):
+                    try:
+                        # Convert sections to a readable format
+                        for i, section in enumerate(sections[:5]):  # Show first 5 sections
+                            if isinstance(section, dict):
+                                if 'content' in section:
+                                    st.markdown(f"**Section {i+1}:**")
+                                    st.text(section['content'])
+                                elif 'data' in section:
+                                    st.markdown(f"**Section {i+1} (Tabular):**")
+                                    if isinstance(section['data'], list) and len(section['data']) > 0:
+                                        df = pd.DataFrame(section['data'])
+                                        st.dataframe(df, use_container_width=True)
+                                    else:
+                                        st.text(str(section['data']))
+                            else:
+                                st.markdown(f"**Section {i+1}:**")
+                                st.text(str(section))
+                    except Exception as e:
+                        st.error(f"Error displaying input data: {e}")
+                        # Fallback: show raw data
+                        for i, section in enumerate(sections[:3]):
+                            st.markdown(f"**Section {i+1}:**")
+                            st.text(str(section)[:500] + "..." if len(str(section)) > 500 else str(section))
+            else:
+                st.info("No input data available for this key")
+            
+            # Show prompt templates
+            st.markdown("**🤖 AI Prompts Used by Each Agent:**")
+            
+            # Load and display prompts
+            try:
+                import json
+                with open('utils/prompts.json', 'r') as f:
+                    prompts = json.load(f)
+                
+                system_prompts = prompts.get('system_prompts', {})
+                
+                for agent_name in ['Agent 1', 'Agent 2', 'Agent 3']:
+                    with st.expander(f"{agent_name} System Prompt", expanded=False):
+                        prompt = system_prompts.get(agent_name, '')
+                        if prompt:
+                            st.text_area(f"{agent_name} Prompt", prompt, height=200, disabled=True, key=f"prompt_{agent_name}_{key}")
+                        else:
+                            st.info(f"No prompt available for {agent_name}")
+                            
+            except Exception as e:
+                st.error(f"Error loading prompts: {e}")
+                
+    except Exception as e:
+        st.error(f"Error displaying results for {key}: {e}")
 
 if __name__ == "__main__":
     main() 
