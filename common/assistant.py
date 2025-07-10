@@ -699,27 +699,91 @@ class DataValidationAgent:
         """Fallback validation when AI is not available"""
         issues = []
         score = 100
+        is_valid = True
         
-        # Check if expected figure is mentioned
-        if expected_figure:
-            expected_str = str(expected_figure)
-            if expected_str not in content and str(int(expected_figure)) not in content:
-                issues.append(f"Expected figure {expected_figure} not found in content")
-                score -= 30
+        # Basic content checks
+        if not content or len(content.strip()) < 10:
+            issues.append("Content is too short or empty")
+            score -= 30
+            is_valid = False
         
-        # Check for placeholder values
-        if 'xxx' in content.lower() or 'placeholder' in content.lower():
-            issues.append("Placeholder values found in content")
+        # Check for template artifacts that shouldn't be in final content
+        template_artifacts = ['xxx', 'XXX', 'Pattern 1:', 'Pattern 2:', 'Pattern 3:', '[', ']', '{', '}']
+        for artifact in template_artifacts:
+            if artifact in content:
+                issues.append(f"Template artifact '{artifact}' found in content")
+                score -= 15
+                is_valid = False
+        
+        # Check for proper K/M formatting
+        import re
+        numbers = re.findall(r'\d+\.?\d*[KM]?', content)
+        if numbers:
+            for num in numbers:
+                try:
+                    # Extract numeric part
+                    numeric_part = re.findall(r'\d+\.?\d*', num)[0]
+                    value = float(numeric_part)
+                    
+                    # Check formatting rules
+                    if 'K' in num or 'M' in num:
+                        # Should have 1 decimal place
+                        if '.' not in numeric_part:
+                            issues.append(f"K/M figure '{num}' missing decimal place")
+                            score -= 5
+                    elif value >= 1000:
+                        # Large numbers should use K/M notation
+                        issues.append(f"Large figure '{num}' should use K/M notation")
+                        score -= 10
+                        is_valid = False
+                except ValueError:
+                    continue
+        
+        # Check for expected figure if provided
+        if expected_figure and expected_figure > 0:
+            # Look for the expected figure in various formats
+            expected_str = str(int(expected_figure))
+            expected_formatted = f"{expected_figure:,.0f}"
+            expected_k = f"{expected_figure/1000:.1f}K"
+            expected_m = f"{expected_figure/1000000:.1f}M"
+            
+            found_figure = False
+            for expected_format in [expected_str, expected_formatted, expected_k, expected_m]:
+                if expected_format in content:
+                    found_figure = True
+                    break
+            
+            if not found_figure:
+                issues.append(f"Expected figure {expected_figure:,.0f} not found in content")
+                score -= 20
+                is_valid = False
+        
+        # Check for professional language
+        if any(word in content.lower() for word in ['lorem ipsum', 'placeholder', 'example', 'sample']):
+            issues.append("Content contains placeholder or example text")
             score -= 20
+            is_valid = False
+        
+        # Final score adjustment
+        score = max(0, score)
+        
+        # Determine validity based on score and issues
+        if score >= 95 and len(issues) == 0:
+            is_valid = True
+        elif score >= 80 and len([i for i in issues if 'template artifact' in i or 'expected figure' in i]) == 0:
+            is_valid = True  # Minor formatting issues only
+        else:
+            is_valid = False
         
         return {
-            "needs_correction": score < 80,
+            "is_valid": is_valid,
             "issues": issues,
             "score": score,
-            "suggestions": [],
-            "extracted_figures": [],
-            "expected_figure": expected_figure,
-            "discrepancies": []
+            "suggestions": [
+                "Ensure all figures use proper K/M notation",
+                "Verify figures match balance sheet data",
+                "Remove any template artifacts"
+            ] if not is_valid else []
         }
     
     def correct_financial_data(self, content: str, issues: List[str]) -> str:
