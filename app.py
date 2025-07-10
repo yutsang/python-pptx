@@ -610,20 +610,31 @@ def main():
                 st.warning("⚠️ AI Mode: Configuration not found. Will use fallback mode.")
         
         if st.button("🤖 Process with AI", type="primary", use_container_width=True):
+            # Show immediate progress feedback to indicate processing has started
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            status_text.text("🔄 Initializing AI processing...")
+            
             try:
                 # Load configuration files
+                progress_bar.progress(0.05)
+                status_text.text("📋 Loading configuration files...")
                 config, mapping, pattern, prompts = load_config_files()
                 if not all([config, mapping, pattern]):
                     st.error("❌ Failed to load configuration files")
                     return
                 
                 # Process the Excel data for AI analysis
+                progress_bar.progress(0.1)
+                status_text.text("🔧 Processing entity configuration...")
                 entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
                 entity_keywords = [f"{selected_entity} {suffix}" for suffix in entity_suffixes if suffix]
                 if not entity_keywords:
                     entity_keywords = [selected_entity]
                 
                 # Get worksheet sections for AI processing
+                progress_bar.progress(0.15)
+                status_text.text("📊 Analyzing worksheet sections (this may take a few minutes)...")
                 sections_by_key = get_worksheet_sections_by_keys(
                     uploaded_file=uploaded_file,
                     tab_name_mapping=mapping,
@@ -633,9 +644,13 @@ def main():
                 )
                 
                 # Get keys with data for AI processing
+                progress_bar.progress(0.3)
+                status_text.text("🔍 Identifying keys with data...")
                 keys_with_data = [key for key, sections in sections_by_key.items() if sections]
                 
                 # Filter keys based on statement type (Fix for issue #5)
+                progress_bar.progress(0.35)
+                status_text.text("🎯 Filtering keys by statement type...")
                 bs_keys = [
                     "Cash", "AR", "Prepayments", "OR", "Other CA", "IP", "Other NCA",
                     "AP", "Taxes payable", "OP", "Capital", "Reserve"
@@ -659,11 +674,8 @@ def main():
                     st.warning("No data found for AI processing with the selected statement type. Please check your file and statement type selection.")
                     return
                 
-                st.info(f"🎯 Processing {len(filtered_keys_for_ai)} keys for {statement_type} statement type")
-                
-                # Show progress for AI processing
-                progress_bar = st.progress(0)
-                status_text = st.empty()
+                progress_bar.progress(0.4)
+                status_text.text(f"✅ Found {len(filtered_keys_for_ai)} keys for {statement_type} statement type")
                 
                 # Process each key with AI if in AI Mode
                 ai_results = {}
@@ -1129,10 +1141,14 @@ def display_ai_content_by_key(key, agent_choice):
                             if uploaded_file:
                                 # Use unique temp file name with timestamp to avoid conflicts
                                 import time
+                                import threading
                                 timestamp = int(time.time() * 1000)  # milliseconds
-                                temp_file_path = f"temp_validation_{timestamp}_{uploaded_file.name}"
+                                thread_id = threading.get_ident()
+                                temp_file_path = f"temp_validation_{timestamp}_{thread_id}_{uploaded_file.name}"
                                 
+                                validation_result = None
                                 try:
+                                    # Write file with exclusive access
                                     with open(temp_file_path, "wb") as f:
                                         f.write(uploaded_file.getbuffer())
                                     
@@ -1141,13 +1157,28 @@ def display_ai_content_by_key(key, agent_choice):
                                         agent1_content, temp_file_path, entity_name, key
                                     )
                                     
+                                except Exception as validation_error:
+                                    st.error(f"Validation failed: {validation_error}")
+                                    validation_result = {"is_valid": False, "issues": [f"Validation error: {validation_error}"], "score": 0}
+                                    
                                 finally:
-                                    # Always clean up temp file, even if there's an error
-                                    try:
-                                        if os.path.exists(temp_file_path):
-                                            os.remove(temp_file_path)
-                                    except Exception as cleanup_error:
-                                        print(f"Warning: Could not clean up temp file {temp_file_path}: {cleanup_error}")
+                                    # Robust cleanup with multiple attempts
+                                    cleanup_attempts = 3
+                                    for attempt in range(cleanup_attempts):
+                                        try:
+                                            if os.path.exists(temp_file_path):
+                                                os.chmod(temp_file_path, 0o777)  # Ensure write permissions
+                                                os.remove(temp_file_path)
+                                                break  # Success, exit loop
+                                        except PermissionError:
+                                            if attempt < cleanup_attempts - 1:
+                                                time.sleep(0.1)  # Brief delay before retry
+                                            else:
+                                                print(f"Warning: Could not clean up temp file {temp_file_path} after {cleanup_attempts} attempts")
+                                        except Exception as cleanup_error:
+                                            if attempt == cleanup_attempts - 1:  # Only show warning on final attempt
+                                                print(f"Warning: Could not clean up temp file {temp_file_path}: {cleanup_error}")
+                                            break
                                 
                                 # Display validation results
                                 if validation_result['is_valid']:

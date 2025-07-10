@@ -413,11 +413,9 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         return generate_test_results(keys)
     
     print(f"🚀 Starting AI processing for {len(keys)} keys")
-    # Check if we need to adjust figures based on '000 notation
-    test_content = process_and_filter_excel(input_file, {}, entity_name, entity_helpers.split(',') if entity_helpers else [])
-    has_thousands_notation = detect_string_in_file(test_content, "'000")
     
-    financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), '30/09/2022', convert_thousands=has_thousands_notation)
+    # Initialize financial figures without pre-processing (will check '000 per key)
+    financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), '30/09/2022', convert_thousands=False)
     system_prompt = """
         Role: system,
         Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
@@ -470,6 +468,12 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         
         # Process data for AI: multiply figures by 1000 if '000 notation detected
         excel_tables_for_ai = multiply_figures_for_ai_processing(excel_tables) if has_thousands_notation else excel_tables
+        
+        # Apply thousands conversion to the specific financial figure for this key
+        current_financial_figure = financial_figures.get(key, 0)
+        if has_thousands_notation and current_financial_figure:
+            adjusted_financial_figure = current_financial_figure * 1000
+            financial_figures[key] = adjusted_financial_figure
         
         # Update prompt to reflect the data processing
         detect_zeros = """IMPORTANT: The numerical figures in the DATA SOURCE have been adjusted for analysis (multiplied by 1000 from the original '000 notation). 
