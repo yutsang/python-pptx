@@ -336,7 +336,7 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
             print(f"Date '{date_str}' not recognized.")
             return {}
         date_column = date_column_map[date_str]
-        # If convert_thousands and '000' in columns or first row, multiply numeric columns by 1000
+        # If convert_thousands and '000' in columns or first row, multiply numeric values by 1000 for AI processing
         scale_factor = 1000 if (convert_thousands and any("'000" in str(col) for col in df.columns)) else 1
         financial_figure_map = {
             "Cash": "Cash at bank",
@@ -357,6 +357,7 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
             if 'Description' in df.columns and date_column in df.columns:
                 value = df.loc[df['Description'].str.contains(desc, case=False, na=False), date_column].values
                 if value.size > 0:
+                    # Apply scale factor: multiply by 1000 if '000 notation detected
                     financial_figures[key] = float(value[0]) * scale_factor
         return financial_figures
     except Exception as e:
@@ -372,13 +373,16 @@ def get_tab_name(project_name):
         return "BSNB"
 
 def get_financial_figure(financial_figures, key):
+    """Get financial figure with proper K/M formatting and 1 decimal place"""
     figure = financial_figures.get(key, None)
     if figure is None:
         return f"{key} not found in the financial figures."
-    if figure > 1000000:
+    
+    # Ensure 1 decimal place for all conversions
+    if figure >= 1000000:
         return f"{figure / 1000000:.1f}M"
     elif figure >= 1000:
-        return f"{figure / 1000:,.0f}K"
+        return f"{figure / 1000:.1f}K"  # Changed to 1dp for K as well
     else:
         return f"{figure:.1f}"
 
@@ -409,7 +413,11 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         return generate_test_results(keys)
     
     print(f"🚀 Starting AI processing for {len(keys)} keys")
-    financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), '30/09/2022', convert_thousands=convert_thousands)
+    # Check if we need to adjust figures based on '000 notation
+    test_content = process_and_filter_excel(input_file, {}, entity_name, entity_helpers.split(',') if entity_helpers else [])
+    has_thousands_notation = detect_string_in_file(test_content, "'000")
+    
+    financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), '30/09/2022', convert_thousands=has_thousands_notation)
     system_prompt = """
         Role: system,
         Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
@@ -456,31 +464,46 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         pattern = load_ip(pattern_file, key)
         mapping = {key: load_ip(mapping_file)}
         excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers)
-        detect_zeros = "3. The figures in this table is already expressed in k, express the number in M (divide by 1000), rounded to 1 decimal place, if final figure less than 1M, express in K (no decimal places)." if detect_string_in_file(excel_tables, "'000") else ""
+        
+        # Check if '000 notation is detected
+        has_thousands_notation = detect_string_in_file(excel_tables, "'000")
+        
+        # Process data for AI: multiply figures by 1000 if '000 notation detected
+        excel_tables_for_ai = multiply_figures_for_ai_processing(excel_tables) if has_thousands_notation else excel_tables
+        
+        # Update prompt to reflect the data processing
+        detect_zeros = """IMPORTANT: The numerical figures in the DATA SOURCE have been adjusted for analysis (multiplied by 1000 from the original '000 notation). 
+        Express all figures with proper K/M conversion with 1 decimal place:
+        - Figures ≥ 1,000,000: express in M (millions) with 1 decimal place (e.g., 2.3M)
+        - Figures ≥ 1,000: express in K (thousands) with 1 decimal place (e.g., 1.5K)
+        - Figures < 1,000: express with 1 decimal place (e.g., 123.0)""" if has_thousands_notation else """Express all figures with proper K/M conversion with 1 decimal place:
+        - Figures ≥ 1,000,000: express in M (millions) with 1 decimal place (e.g., 2.3M)
+        - Figures ≥ 1,000: express in K (thousands) with 1 decimal place (e.g., 1.5K)
+        - Figures < 1,000: express with 1 decimal place (e.g., 123.0)"""
         user_query = f"""
-        TASK: Select ONE pattern and complete it with actaul data
+        TASK: Select ONE pattern and complete it with actual data
         AVAILABLE PATTERNS: {json.dumps(pattern, indent=2)}
         FINANCIAL FIGURE: {key}: {get_financial_figure(financial_figures, key)}
-        DATA SOURCE: {excel_tables}
+        DATA SOURCE: {excel_tables_for_ai}
         SELECTION CRITERIA:
         - Choose the pattern with the most complete data coverage
         - Prioritize patterns that match the primary account category
-        - use most recent data: latest available
+        - Use most recent data: latest available
         - {detect_zeros}
         REQUIRED OUTPUT FORMAT:
         - Only the completed pattern text
         - No pattern names or labels
         - No template structure
         - No JSON formatting
-        - Replace ALL 'xxx' or placeholders with actaul data values
+        - Replace ALL 'xxx' or placeholders with actual data values
         - Do not use bullet point for listing
-        - Check all numbers if they are in thousands (K) or millions (M) and express accordingly, do appropriate convertion (K or M) for any number > 1000
+        - Apply proper K/M conversion with 1 decimal place for all figures
         - No foreign contents, if any, translate to English
         - Stick to Template format, no extra explanations or comments
         - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
-        - For all listing figures, please check the total, together should be around the same or consituing majority of FINANCIAL FIGURE
+        - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
         Example of CORRECT output format:
-        "Cash at bank comprioses deposits of $2.3M held with major financial institutions as at 30/09/2022."
+        "Cash at bank comprises deposits of $2.3M held with major financial institutions as at 30/09/2022."
         Example of INCORRECT output format:
         "Pattern 1: Cash at bank comprises deposits of xxx held with xxx as at xxx."        
         """
@@ -593,11 +616,12 @@ class DataValidationAgent:
             CRITICAL REQUIREMENTS:
             1. Extract all financial figures from AI1 content
             2. Compare with expected balance sheet figures for accuracy
-            3. Verify proper K/M conversion and formatting
+            3. Verify proper K/M conversion with 1 decimal place (e.g., 2.3M, 1.5K, 123.0)
             4. Check entity names match data source (not reporting entity)
             5. Identify ONLY top 2 most critical data accuracy issues
             6. Remove unnecessary quotation marks around sections
             7. Ensure no data inconsistencies or conversion errors
+            8. Verify figures are properly adjusted for '000 notation if applicable
             """
             
             user_query = f"""
@@ -747,6 +771,7 @@ class PatternValidationAgent:
             5. Remove quotation marks quoting full sections
             6. Check for anything that shouldn't be there (template artifacts)
             7. Ensure content follows pattern structure consistently
+            8. Verify proper K/M conversion with 1 decimal place formatting
             """
             
             user_query = f"""
@@ -867,4 +892,66 @@ class PatternValidationAgent:
             
         except Exception as e:
             print(f"Pattern correction error: {e}")
-            return content 
+            return content
+
+def multiply_figures_for_ai_processing(excel_content: str) -> str:
+    """
+    Multiply all numerical figures by 1000 in Excel content for AI processing when '000 notation is detected.
+    This function processes the markdown table content to adjust figures for AI analysis.
+    """
+    import re
+    
+    if "'000" not in excel_content:
+        return excel_content
+    
+    lines = excel_content.split('\n')
+    processed_lines = []
+    
+    for line in lines:
+        # Skip header lines and separator lines
+        if '|' not in line or line.strip().startswith('|---') or 'Description' in line:
+            processed_lines.append(line)
+            continue
+        
+        # Process table rows with numerical data
+        cells = line.split('|')
+        processed_cells = []
+        
+        for cell in cells:
+            cell = cell.strip()
+            
+            # Look for numerical patterns and multiply by 1000
+            # Match various number formats: 123, 1,234, 1.23, (123), etc.
+            number_pattern = r'(\(?)(-?\d{1,3}(?:,\d{3})*\.?\d*)(\)?)'
+            
+            def multiply_number(match):
+                opening_paren = match.group(1)
+                number_str = match.group(2)
+                closing_paren = match.group(3)
+                
+                try:
+                    # Remove commas and convert to float
+                    clean_number = number_str.replace(',', '')
+                    number = float(clean_number)
+                    
+                    # Multiply by 1000
+                    adjusted_number = number * 1000
+                    
+                    # Format back with commas for large numbers
+                    if adjusted_number == int(adjusted_number):
+                        formatted = f"{int(adjusted_number):,}"
+                    else:
+                        formatted = f"{adjusted_number:,.1f}"
+                    
+                    return f"{opening_paren}{formatted}{closing_paren}"
+                except ValueError:
+                    # If conversion fails, return original
+                    return match.group(0)
+            
+            # Apply multiplication to numbers in the cell
+            processed_cell = re.sub(number_pattern, multiply_number, cell)
+            processed_cells.append(processed_cell)
+        
+        processed_lines.append('|'.join(processed_cells))
+    
+    return '\n'.join(processed_lines) 
