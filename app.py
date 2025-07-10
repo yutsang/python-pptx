@@ -710,25 +710,15 @@ def main():
                         # Process all keys with AI - Use ALL filtered keys at once for better progress tracking
                         entity_helpers = ', '.join(entity_keywords[1:]) if len(entity_keywords) > 1 else ""
                         
-                        status_text.text(f"🤖 Processing {len(filtered_keys_for_ai)} keys with AI...")
+                        status_text.text(f"🤖 Starting AI1 processing for {len(filtered_keys_for_ai)} keys...")
+                        
+                        # Create progress callback for real-time updates
+                        def update_progress(progress, message):
+                            progress_bar.progress(progress)
+                            status_text.text(message)
                         
                         try:
-                            # Process ALL filtered keys at once instead of one by one
-                            results = process_keys(
-                                keys=filtered_keys_for_ai,  # Process all keys at once
-                                entity_name=selected_entity,
-                                entity_helpers=entity_helpers,
-                                input_file=temp_file_path,
-                                mapping_file="utils/mapping.json",
-                                pattern_file="utils/pattern.json",
-                                config_file=config_file,
-                                use_ai=True
-                            )
-                            ai_results.update(results)
-                            
-                        except RuntimeError as e:
-                            # AI services not available, use fallback
-                            st.warning(f"AI services not available, using fallback mode")
+                            # AI1 Processing: Initial content generation
                             results = process_keys(
                                 keys=filtered_keys_for_ai,
                                 entity_name=selected_entity,
@@ -737,7 +727,24 @@ def main():
                                 mapping_file="utils/mapping.json",
                                 pattern_file="utils/pattern.json",
                                 config_file=config_file,
-                                use_ai=False  # Force fallback mode
+                                use_ai=True,
+                                progress_callback=update_progress
+                            )
+                            ai_results.update(results)
+                            
+                        except RuntimeError as e:
+                            # AI services not available, use fallback
+                            update_progress(0.5, "AI services not available, using fallback mode...")
+                            results = process_keys(
+                                keys=filtered_keys_for_ai,
+                                entity_name=selected_entity,
+                                entity_helpers=entity_helpers,
+                                input_file=temp_file_path,
+                                mapping_file="utils/mapping.json",
+                                pattern_file="utils/pattern.json",
+                                config_file=config_file,
+                                use_ai=False,  # Force fallback mode
+                                progress_callback=update_progress
                             )
                             ai_results.update(results)
                         except Exception as e:
@@ -1120,17 +1127,27 @@ def display_ai_content_by_key(key, agent_choice):
                             # Get the uploaded file for validation
                             uploaded_file = st.session_state.get('uploaded_file')
                             if uploaded_file:
-                                temp_file_path = f"temp_validation_{uploaded_file.name}"
-                                with open(temp_file_path, "wb") as f:
-                                    f.write(uploaded_file.getbuffer())
+                                # Use unique temp file name with timestamp to avoid conflicts
+                                import time
+                                timestamp = int(time.time() * 1000)  # milliseconds
+                                temp_file_path = f"temp_validation_{timestamp}_{uploaded_file.name}"
                                 
-                                # Validate the content
-                                validation_result = validation_agent.validate_financial_data(
-                                    agent1_content, temp_file_path, entity_name, key
-                                )
-                                
-                                if os.path.exists(temp_file_path):
-                                    os.remove(temp_file_path)
+                                try:
+                                    with open(temp_file_path, "wb") as f:
+                                        f.write(uploaded_file.getbuffer())
+                                    
+                                    # Validate the content
+                                    validation_result = validation_agent.validate_financial_data(
+                                        agent1_content, temp_file_path, entity_name, key
+                                    )
+                                    
+                                finally:
+                                    # Always clean up temp file, even if there's an error
+                                    try:
+                                        if os.path.exists(temp_file_path):
+                                            os.remove(temp_file_path)
+                                    except Exception as cleanup_error:
+                                        print(f"Warning: Could not clean up temp file {temp_file_path}: {cleanup_error}")
                                 
                                 # Display validation results
                                 if validation_result['is_valid']:
