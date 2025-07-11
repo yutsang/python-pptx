@@ -93,14 +93,9 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         if cached_result is not None:
             return cached_result
         
-        # Load the Excel file with optimization
+        # Load the Excel file
         main_dir = Path(__file__).parent
         file_path = main_dir / filename
-        
-        # Early validation to avoid processing invalid files
-        if not file_path.exists():
-            return ""
-        
         xl = pd.ExcelFile(file_path)
         
         # Create a reverse mapping from values to keys
