@@ -181,29 +181,13 @@ def extract_tables_robust(worksheet, entity_keywords):
                     combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
                     
                     for i, data_frame in enumerate(dataframes):
-                        # Check if dataframe contains entity keywords - robust matching
-                        try:
-                            # Method 1: Vectorized approach (faster)
-                            df_str = data_frame.astype(str).apply(lambda x: ' '.join(x), axis=1)
-                            mask = df_str.str.contains(combined_pattern, case=False, regex=True, na=False)
-                            
-                            # Method 2: Fallback to original logic if no matches
-                            if not mask.any():
-                                mask = data_frame.apply(
-                                    lambda row: row.astype(str).str.contains(
-                                        combined_pattern, case=False, regex=True, na=False
-                                    ).any(),
-                                    axis=1
-                                )
-                        except Exception as e:
-                            # Ultimate fallback: original method
-                            print(f"Using original matching method due to: {e}")
-                            mask = data_frame.apply(
-                                lambda row: row.astype(str).str.contains(
-                                    combined_pattern, case=False, regex=True, na=False
-                                ).any(),
-                                axis=1
-                            )
+                        # Check if dataframe contains entity keywords - ORIGINAL WORKING METHOD
+                        mask = data_frame.apply(
+                            lambda row: row.astype(str).str.contains(
+                                combined_pattern, case=False, regex=True, na=False
+                            ).any(),
+                            axis=1
+                        )
                         
                         if mask.any():
                             # Convert DataFrame to list format for consistency
@@ -302,35 +286,9 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     df = df.map(lambda x: str(x) if x is not None else "")
                     df = df.reset_index(drop=True)
                     
-                    # Check for entity keywords - robust approach that maintains original logic
-                    match_found = False
-                    try:
-                        # Method 1: Quick vectorized check (90% of cases)
-                        df_str = df.astype(str).apply(lambda x: ' '.join(x), axis=1).str.lower()
-                        for kw in entity_keywords:
-                            if df_str.str.contains(re.escape(kw.lower()), regex=True, na=False).any():
-                                match_found = True
-                                break
-                        
-                        # Method 2: Fallback to cell-by-cell check if no match (ensures compatibility)
-                        if not match_found:
-                            for kw in entity_keywords:
-                                kw_lower = kw.lower()
-                                # Check each cell individually like the original method
-                                for idx, row in df.iterrows():
-                                    for cell_value in row:
-                                        if kw_lower in str(cell_value).lower():
-                                            match_found = True
-                                            break
-                                    if match_found:
-                                        break
-                                if match_found:
-                                    break
-                    except Exception as e:
-                        # Ultimate fallback: original method if optimized approaches fail
-                        print(f"Fallback to original method due to: {e}")
-                        all_cells = [str(cell).lower().strip() for cell in df.values.flatten()]
-                        match_found = any(any(kw.lower() in cell for cell in all_cells) for kw in entity_keywords)
+                    # Check for entity keywords - BACK TO ORIGINAL WORKING METHOD
+                    all_cells = [str(cell).lower().strip() for cell in df.values.flatten()]
+                    match_found = any(any(kw.lower() in cell for cell in all_cells) for kw in entity_keywords)
                     
                     if match_found:
                         # Table '{table_name}' (method: {method}) in sheet '{ws.title}' included for entity keywords: {entity_keywords}
