@@ -181,13 +181,9 @@ def extract_tables_robust(worksheet, entity_keywords):
                     combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
                     
                     for i, data_frame in enumerate(dataframes):
-                        # Check if dataframe contains entity keywords
-                        mask = data_frame.apply(
-                            lambda row: row.astype(str).str.contains(
-                                combined_pattern, case=False, regex=True, na=False
-                            ).any(),
-                            axis=1
-                        )
+                        # Check if dataframe contains entity keywords - optimized
+                        df_str = data_frame.astype(str).apply(lambda x: ' '.join(x), axis=1)
+                        mask = df_str.str.contains(combined_pattern, case=False, regex=True, na=False)
                         
                         if mask.any():
                             # Convert DataFrame to list format for consistency
@@ -255,7 +251,8 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
             
         main_dir = Path(__file__).parent.parent
         file_path = main_dir / filename
-        wb = openpyxl.load_workbook(file_path, data_only=True)
+        # Optimize: Load workbook with minimal memory footprint and faster parsing
+        wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True, keep_links=False)
         markdown_content = ""
         entity_keywords = [entity_name] + list(entity_suffixes)
         entity_keywords = [kw.strip().lower() for kw in entity_keywords if kw.strip()]
@@ -281,12 +278,13 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     # Create DataFrame
                     df = pd.DataFrame(data[1:], columns=data[0])
                     df = df.dropna(how='all').dropna(axis=1, how='all')
-                    df = df.applymap(lambda x: str(x) if x is not None else "")
+                    # Fix deprecated applymap - use map for modern pandas
+                    df = df.map(lambda x: str(x) if x is not None else "")
                     df = df.reset_index(drop=True)
                     
-                    # Check for entity keywords - handle mixed data types safely
-                    all_cells = [str(cell).lower().strip() for cell in df.values.flatten()]
-                    match_found = any(any(kw in cell for cell in all_cells) for kw in entity_keywords)
+                    # Check for entity keywords - optimized vectorized approach
+                    df_str = df.astype(str).apply(lambda x: ' '.join(x), axis=1).str.lower()
+                    match_found = any(df_str.str.contains(kw.lower(), regex=False, na=False).any() for kw in entity_keywords)
                     
                     if match_found:
                         # Table '{table_name}' (method: {method}) in sheet '{ws.title}' included for entity keywords: {entity_keywords}

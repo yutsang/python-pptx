@@ -93,9 +93,14 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         if cached_result is not None:
             return cached_result
         
-        # Load the Excel file
+        # Load the Excel file with optimization
         main_dir = Path(__file__).parent
         file_path = main_dir / filename
+        
+        # Early validation to avoid processing invalid files
+        if not file_path.exists():
+            return ""
+        
         xl = pd.ExcelFile(file_path)
         
         # Create a reverse mapping from values to keys
@@ -133,16 +138,15 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
                 
                 for data_frame in dataframes:
-                    mask = data_frame.apply(
-                        lambda row: row.astype(str).str.contains(
-                            combined_pattern, case=False, regex=True, na=False
-                        ).any(),
-                        axis=1
-                    )
+                    # Optimize: Convert DataFrame to string and check pattern vectorized
+                    df_str = data_frame.astype(str).apply(lambda x: ' '.join(x), axis=1)
+                    mask = df_str.str.contains(combined_pattern, case=False, regex=True, na=False)
+                    
                     if mask.any():
                         markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
                     
-                    if any(data_frame.apply(lambda row: row.astype(str).str.contains(keyword, case=False, na=False).any(), axis=1).any() for keyword in entity_keywords):
+                    # Optimize: Check entity keywords vectorized 
+                    if any(df_str.str.contains(re.escape(keyword), case=False, na=False).any() for keyword in entity_keywords):
                         markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False)
                         markdown_content += "\n\n" 
         
@@ -215,12 +219,9 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         if key in tab_name_mapping:
                             key_patterns = tab_name_mapping[key]
                             for pattern in key_patterns:
-                                if data_frame.apply(
-                                    lambda row: row.astype(str).str.contains(
-                                        pattern, case=False, regex=True, na=False
-                                    ).any(),
-                                    axis=1
-                                ).any():
+                                # Optimize: Use vectorized string operations
+                                df_str = data_frame.astype(str).apply(lambda x: ' '.join(x), axis=1)
+                                if df_str.str.contains(pattern, case=False, regex=True, na=False).any():
                                     matched_keys.append(key)
                                     break  # Break inner loop, but continue checking other keys
                     
@@ -237,24 +238,17 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             key_patterns = tab_name_mapping[key]
                             # Calculate a score based on pattern specificity
                             for pattern in key_patterns:
+                                # Optimize: Use pre-computed df_str for all pattern checks
+                                df_str = data_frame.astype(str).apply(lambda x: ' '.join(x), axis=1)
+                                
                                 # Check for exact matches first
-                                exact_match = data_frame.apply(
-                                    lambda row: row.astype(str).str.contains(
-                                        f"^{pattern}$", case=False, regex=True, na=False
-                                    ).any(),
-                                    axis=1
-                                ).any()
+                                exact_match = df_str.str.contains(f"^{pattern}$", case=False, regex=True, na=False).any()
                                 
                                 if exact_match:
                                     score = len(pattern) * 10  # High score for exact matches
                                 else:
                                     # Check for word boundary matches
-                                    word_boundary_match = data_frame.apply(
-                                        lambda row: row.astype(str).str.contains(
-                                            f"\\b{pattern}\\b", case=False, regex=True, na=False
-                                        ).any(),
-                                        axis=1
-                                    ).any()
+                                    word_boundary_match = df_str.str.contains(f"\\b{pattern}\\b", case=False, regex=True, na=False).any()
                                     
                                     if word_boundary_match:
                                         score = len(pattern) * 5  # Medium score for word boundary matches
@@ -273,12 +267,9 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             st.write(f"✅ Assigned to key: {best_key} (score: {best_score})")
                         
                         # Check if it matches entity filter (but be less restrictive)
-                        entity_mask = data_frame.apply(
-                            lambda row: row.astype(str).str.contains(
-                                combined_pattern, case=False, regex=True, na=False
-                            ).any(),
-                            axis=1
-                        )
+                        # Optimize: Use vectorized string operation
+                        df_str = data_frame.astype(str).apply(lambda x: ' '.join(x), axis=1)
+                        entity_mask = df_str.str.contains(combined_pattern, case=False, regex=True, na=False)
                         
                         # If entity filter matches, add it
                         if entity_mask.any():
