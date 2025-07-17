@@ -1944,7 +1944,7 @@ def run_agent_1(filtered_keys, ai_data):
                     st.error("No data file available for Agent 1 processing")
                     return {}
             
-            # Run Agent 1 processing
+            # Run Agent 1 processing with prompts.json integration
             results = process_keys(
                 keys=filtered_keys,
                 entity_name=entity_name,
@@ -1953,6 +1953,7 @@ def run_agent_1(filtered_keys, ai_data):
                 mapping_file="utils/mapping.json",
                 pattern_file="utils/pattern.json",
                 config_file='utils/config.json',
+                prompts_file='utils/prompts.json',  # Add prompts file parameter
                 use_ai=True,
                 progress_callback=None
             )
@@ -1968,43 +1969,255 @@ def run_agent_1(filtered_keys, ai_data):
         st.error(f"Agent 1 processing failed: {e}")
         return {}
 
+def update_bs_content_with_agent_corrections(corrections_dict, entity_name, agent_name):
+    """Update bs_content.md with corrections from Agent 2 or Agent 3"""
+    try:
+        import re
+        
+        # Read current bs_content.md
+        bs_content_path = 'utils/bs_content.md'
+        if not os.path.exists(bs_content_path):
+            st.warning(f"bs_content.md not found at {bs_content_path}")
+            return False
+        
+        with open(bs_content_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Define category mappings based on entity name
+        if entity_name in ['Ningbo', 'Nanjing']:
+            name_mapping = {
+                'Cash': 'Cash at bank',
+                'AR': 'Accounts receivables',
+                'Prepayments': 'Prepayments',
+                'OR': 'Other receivables',
+                'Other CA': 'Other current assets',
+                'IP': 'Investment properties',
+                'Other NCA': 'Other non-current assets',
+                'AP': 'Accounts payable',
+                'Taxes payable': 'Taxes payables',
+                'OP': 'Other payables',
+                'Capital': 'Capital'
+            }
+        else:  # Haining and others
+            name_mapping = {
+                'Cash': 'Cash at bank',
+                'AR': 'Accounts receivables',
+                'Prepayments': 'Prepayments',
+                'OR': 'Other receivables',
+                'Other CA': 'Other current assets',
+                'IP': 'Investment properties',
+                'Other NCA': 'Other non-current assets',
+                'AP': 'Accounts payable',
+                'Taxes payable': 'Taxes payables',
+                'OP': 'Other payables',
+                'Capital': 'Capital',
+                'Reserve': 'Surplus reserve'
+            }
+        
+        # Update content for each corrected key
+        for key, corrected_content in corrections_dict.items():
+            if key in name_mapping:
+                section_name = name_mapping[key]
+                # Find and replace the section content
+                pattern = rf'(### {re.escape(section_name)}\n)(.*?)(?=\n### |\Z)'
+                
+                # Clean the corrected content
+                cleaned_content = clean_content_quotes(corrected_content)
+                replacement = f'\\1{cleaned_content}\n'
+                
+                content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+        
+        # Write updated content back
+        with open(bs_content_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        # Also update the AI generated copy
+        try:
+            import shutil
+            shutil.copy2(bs_content_path, 'utils/bs_content_ai_generated.md')
+        except Exception as e:
+            print(f"Could not update AI reference copy: {e}")
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error updating bs_content.md with {agent_name} corrections: {e}")
+        return False
+
 def run_agent_2(filtered_keys, agent1_results, ai_data):
     """Run Agent 2: Data Validation for all keys"""
     try:
-        from common.assistant import DataValidationAgent
+        from common.assistant import DataValidationAgent, find_financial_figures_with_context_check, get_tab_name
+        import json
+        
+        # Load prompts from prompts.json
+        try:
+            with open('utils/prompts.json', 'r') as f:
+                prompts_config = json.load(f)
+            agent2_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 2', '')
+        except (FileNotFoundError, json.JSONDecodeError):
+            agent2_system_prompt = ""
         
         validation_agent = DataValidationAgent()
         results = {}
         
-        # Get entity name
+        # Get entity name and prepare databook path
         entity_name = ai_data.get('entity_name', '')
         
-        for key in filtered_keys:
-            agent1_content = agent1_results.get(key, "")
-            if agent1_content:
-                # Use fallback validation method to avoid file dependencies
-                validation_result = validation_agent._fallback_data_validation(
-                    agent1_content, 0, key
-                )
-                results[key] = validation_result
-            else:
-                results[key] = {
-                    "is_valid": False, 
-                    "issues": ["No Agent 1 content available"], 
-                    "score": 0,
-                    "suggestions": ["Run Agent 1 first"]
-                }
+        # Get uploaded file data for validation
+        import tempfile
+        import os
+        temp_file_path = None
         
-        return results
+        try:
+            # Get the original uploaded file data from session state if available
+            if 'uploaded_file_data' in st.session_state:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+                    tmp_file.write(st.session_state['uploaded_file_data'])
+                    temp_file_path = tmp_file.name
+            else:
+                # Fallback: look for databook.xlsx
+                if os.path.exists('databook.xlsx'):
+                    temp_file_path = 'databook.xlsx'
+                else:
+                    st.warning("No databook available for Agent 2 validation")
+                    temp_file_path = None
+            
+            # Read current bs_content.md to get Agent 1 output per key
+            bs_content_updates = {}
+            
+            for key in filtered_keys:
+                agent1_content = agent1_results.get(key, "")
+                if agent1_content and temp_file_path:
+                    # Use real AI validation instead of fallback
+                    validation_result = validation_agent.validate_financial_data(
+                        content=agent1_content,
+                        excel_file=temp_file_path,
+                        entity=entity_name,
+                        key=key
+                    )
+                    
+                    # If Agent 2 found issues and provided corrected content, use it
+                    if validation_result.get('corrected_content') and validation_result.get('corrected_content') != agent1_content:
+                        bs_content_updates[key] = validation_result['corrected_content']
+                        validation_result['content_updated'] = True
+                    else:
+                        validation_result['content_updated'] = False
+                    
+                    results[key] = validation_result
+                elif agent1_content:
+                    # Use fallback validation if no databook
+                    validation_result = validation_agent._fallback_data_validation(
+                        agent1_content, 0, key
+                    )
+                    results[key] = validation_result
+                else:
+                    results[key] = {
+                        "is_valid": False, 
+                        "issues": ["No Agent 1 content available"], 
+                        "score": 0,
+                        "suggestions": ["Run Agent 1 first"],
+                        "content_updated": False
+                    }
+            
+            # Update bs_content.md with Agent 2 corrections if any
+            if bs_content_updates:
+                update_bs_content_with_agent_corrections(bs_content_updates, entity_name, "Agent 2")
+                st.info(f"🔍 Agent 2 updated bs_content.md with corrections for {len(bs_content_updates)} keys")
+            
+            return results
+            
+        finally:
+            # Clean up temp file if created
+            if temp_file_path and temp_file_path != 'databook.xlsx' and os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
         
     except Exception as e:
         st.error(f"Agent 2 processing failed: {e}")
+        return {}
+
+def read_bs_content_by_key(entity_name):
+    """Read bs_content.md and return content organized by key"""
+    try:
+        import re
+        
+        # Read current bs_content.md
+        bs_content_path = 'utils/bs_content.md'
+        if not os.path.exists(bs_content_path):
+            return {}
+        
+        with open(bs_content_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Define category mappings based on entity name
+        if entity_name in ['Ningbo', 'Nanjing']:
+            name_mapping = {
+                'Cash at bank': 'Cash',
+                'Accounts receivables': 'AR',
+                'Prepayments': 'Prepayments',
+                'Other receivables': 'OR',
+                'Other current assets': 'Other CA',
+                'Investment properties': 'IP',
+                'Other non-current assets': 'Other NCA',
+                'Accounts payable': 'AP',
+                'Taxes payables': 'Taxes payable',
+                'Other payables': 'OP',
+                'Capital': 'Capital'
+            }
+        else:  # Haining and others
+            name_mapping = {
+                'Cash at bank': 'Cash',
+                'Accounts receivables': 'AR',
+                'Prepayments': 'Prepayments',
+                'Other receivables': 'OR',
+                'Other current assets': 'Other CA',
+                'Investment properties': 'IP',
+                'Other non-current assets': 'Other NCA',
+                'Accounts payable': 'AP',
+                'Taxes payables': 'Taxes payable',
+                'Other payables': 'OP',
+                'Capital': 'Capital',
+                'Surplus reserve': 'Reserve'
+            }
+        
+        # Extract content by section
+        content_by_key = {}
+        
+        # Split by section headers (### Section Name)
+        sections = re.split(r'(^### .+$)', content, flags=re.MULTILINE)
+        
+        for i in range(1, len(sections), 2):
+            if i + 1 < len(sections):
+                section_header = sections[i].strip()
+                section_content = sections[i + 1].strip()
+                
+                # Extract section name from header
+                section_name = section_header.replace('### ', '').strip()
+                
+                # Map section name to key
+                if section_name in name_mapping:
+                    key = name_mapping[section_name]
+                    content_by_key[key] = section_content
+        
+        return content_by_key
+        
+    except Exception as e:
+        print(f"Error reading bs_content.md: {e}")
         return {}
 
 def run_agent_3(filtered_keys, agent1_results, ai_data):
     """Run Agent 3: Pattern Compliance for all keys"""
     try:
         from common.assistant import PatternValidationAgent, load_ip
+        import json
+        
+        # Load prompts from prompts.json
+        try:
+            with open('utils/prompts.json', 'r') as f:
+                prompts_config = json.load(f)
+            agent3_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 3', '')
+        except (FileNotFoundError, json.JSONDecodeError):
+            agent3_system_prompt = ""
         
         pattern_agent = PatternValidationAgent()
         results = {}
@@ -2012,23 +2225,45 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
         # Load patterns
         patterns = load_ip("utils/pattern.json")
         
+        # Read current bs_content.md to get the latest content (possibly updated by Agent 2)
+        bs_content_updates = {}
+        current_content_by_key = read_bs_content_by_key(ai_data.get('entity_name', ''))
+        
         for key in filtered_keys:
-            agent1_content = agent1_results.get(key, "")
-            if agent1_content:
+            # Get the most recent content (from bs_content.md if updated by Agent 2, otherwise from Agent 1)
+            current_content = current_content_by_key.get(key, agent1_results.get(key, ""))
+            
+            if current_content:
                 # Get patterns for this key
                 key_patterns = patterns.get(key, {})
-                # Use fallback validation method
-                pattern_result = pattern_agent._fallback_pattern_validation(
-                    agent1_content, key_patterns, key
+                
+                # Use real AI pattern validation instead of fallback
+                pattern_result = pattern_agent.validate_pattern_compliance(
+                    content=current_content,
+                    key=key
                 )
+                
+                # If Agent 3 found issues and provided corrected content, use it
+                if pattern_result.get('corrected_content') and pattern_result.get('corrected_content') != current_content:
+                    bs_content_updates[key] = pattern_result['corrected_content']
+                    pattern_result['content_updated'] = True
+                else:
+                    pattern_result['content_updated'] = False
+                
                 results[key] = pattern_result
             else:
                 results[key] = {
                     "is_compliant": False,
-                    "issues": ["No Agent 1 content available"],
+                    "issues": ["No content available"],
                     "pattern_match": "none",
-                    "suggestions": ["Run Agent 1 first"]
+                    "suggestions": ["Run Agent 1 first"],
+                    "content_updated": False
                 }
+        
+        # Update bs_content.md with Agent 3 corrections if any
+        if bs_content_updates:
+            update_bs_content_with_agent_corrections(bs_content_updates, ai_data.get('entity_name', ''), "Agent 3")
+            st.info(f"🎯 Agent 3 updated bs_content.md with pattern compliance fixes for {len(bs_content_updates)} keys")
         
         return results
         
