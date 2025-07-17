@@ -408,7 +408,7 @@ def load_ip(file, key=None):
     return {}
 
 # --- Pattern Filling and Main Processing ---
-def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', use_ai=True, convert_thousands=False, progress_callback=None):
+def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', prompts_file='utils/prompts.json', use_ai=True, convert_thousands=False, progress_callback=None):
     # Use test data if AI is not available
     if not use_ai or not AI_AVAILABLE:
         print(f"🔄 Using fallback mode for {len(keys)} keys")
@@ -416,9 +416,36 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     
     print(f"🚀 Starting AI processing for {len(keys)} keys")
     
-    # Initialize financial figures without pre-processing (will check '000 per key)
-    financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), '30/09/2022', convert_thousands=False)
-    system_prompt = """
+    # Load prompts from prompts.json file
+    try:
+        with open(prompts_file, 'r') as f:
+            prompts_config = json.load(f)
+        system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1', '')
+        if not system_prompt:
+            # Fallback to hardcoded if not found
+            system_prompt = """
+            Role: system,
+            Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
+            CORE PRINCIPLES:
+            1. SELECT exactly one appropriate non-nil pattern from the provided pattern options
+            2. Replace all placeholder values with corresponding actual data
+            3. Output only the financial completed pattern text, never show template structure
+            4. ACCURACY: Use only provided - data - never estimate or extrapolate
+            5. CLARITY: Write in clear business English, translating any foreign content
+            6. FORMAT: Follow the exact template structure provided
+            7. CURRENCY: Express figures to Thousands (K) or Millions (M) as appropriate
+            8. CONCISENESS: Focus on material figures and key insights only
+            OUTPUT REQUIREMENTS:
+            - Choose the most suitable single pattern based on available data
+            - Replace all placeholders with actaul figures from databook
+            - Output ONLY the final text - no pattern names, no template structure, no explanations
+            - If data is missing for a pattern, select a different pattern that has complete data
+            - Never output JSON structure or pattern formatting
+            """
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"⚠️ Could not load prompts from {prompts_file}: {e}")
+        # Use fallback hardcoded prompt
+        system_prompt = """
         Role: system,
         Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
         CORE PRINCIPLES:
@@ -436,7 +463,10 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         - Output ONLY the final text - no pattern names, no template structure, no explanations
         - If data is missing for a pattern, select a different pattern that has complete data
         - Never output JSON structure or pattern formatting
-    """
+        """
+    
+    # Initialize financial figures without pre-processing (will check '000 per key)
+    financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), '30/09/2022', convert_thousands=False)
     results = {}
     
     # Fix tqdm progress bar to show proper total
@@ -637,20 +667,44 @@ class DataValidationAgent:
             config_details = load_config(self.config_file)
             oai_client, _ = initialize_ai_services(config_details)
             
-            system_prompt = """
-            You are AI2, a financial data validation specialist. Your task is to double-check each response 
-            by key to ensure figures match the balance sheet and verify data accuracy including K/M conversions.
-            
-            CRITICAL REQUIREMENTS:
-            1. Extract all financial figures from AI1 content
-            2. Compare with expected balance sheet figures for accuracy
-            3. Verify proper K/M conversion with 1 decimal place (e.g., 2.3M, 1.5K, 123.0)
-            4. Check entity names match data source (not reporting entity)
-            5. Identify ONLY top 2 most critical data accuracy issues
-            6. Remove unnecessary quotation marks around sections
-            7. Ensure no data inconsistencies or conversion errors
-            8. Verify figures are properly adjusted for '000 notation if applicable
-            """
+            # Load system prompt from prompts.json
+            try:
+                with open('utils/prompts.json', 'r') as f:
+                    prompts_config = json.load(f)
+                system_prompt = prompts_config.get('system_prompts', {}).get('Agent 2', '')
+                
+                if not system_prompt:
+                    # Fallback to hardcoded prompt
+                    system_prompt = """
+                    You are AI2, a financial data validation specialist. Your task is to double-check each response 
+                    by key to ensure figures match the balance sheet and verify data accuracy including K/M conversions.
+                    
+                    CRITICAL REQUIREMENTS:
+                    1. Extract all financial figures from AI1 content
+                    2. Compare with expected balance sheet figures for accuracy
+                    3. Verify proper K/M conversion with 1 decimal place (e.g., 2.3M, 1.5K, 123.0)
+                    4. Check entity names match data source (not reporting entity)
+                    5. Identify ONLY top 2 most critical data accuracy issues
+                    6. Remove unnecessary quotation marks around sections
+                    7. Ensure no data inconsistencies or conversion errors
+                    8. Verify figures are properly adjusted for '000 notation if applicable
+                    """
+            except (FileNotFoundError, json.JSONDecodeError):
+                # Fallback to hardcoded prompt
+                system_prompt = """
+                You are AI2, a financial data validation specialist. Your task is to double-check each response 
+                by key to ensure figures match the balance sheet and verify data accuracy including K/M conversions.
+                
+                CRITICAL REQUIREMENTS:
+                1. Extract all financial figures from AI1 content
+                2. Compare with expected balance sheet figures for accuracy
+                3. Verify proper K/M conversion with 1 decimal place (e.g., 2.3M, 1.5K, 123.0)
+                4. Check entity names match data source (not reporting entity)
+                5. Identify ONLY top 2 most critical data accuracy issues
+                6. Remove unnecessary quotation marks around sections
+                7. Ensure no data inconsistencies or conversion errors
+                8. Verify figures are properly adjusted for '000 notation if applicable
+                """
             
             user_query = f"""
             AI2 DATA VALIDATION TASK:
@@ -851,20 +905,45 @@ class PatternValidationAgent:
             config_details = load_config(self.config_file)
             oai_client, _ = initialize_ai_services(config_details)
             
-            system_prompt = """
-            You are AI3, a pattern compliance validation specialist. Your task is to check if content 
-            follows patterns correspondingly and clean up excessive items.
-            
-            CRITICAL REQUIREMENTS:
-            1. Compare AI1 content against available pattern templates
-            2. Check proper pattern structure and professional formatting
-            3. Verify all placeholders are filled with actual data
-            4. If AI1 lists too many items, limit to top 2 most important
-            5. Remove quotation marks quoting full sections
-            6. Check for anything that shouldn't be there (template artifacts)
-            7. Ensure content follows pattern structure consistently
-            8. Verify proper K/M conversion with 1 decimal place formatting
-            """
+            # Load system prompt from prompts.json
+            try:
+                import json
+                with open('utils/prompts.json', 'r') as f:
+                    prompts_config = json.load(f)
+                system_prompt = prompts_config.get('system_prompts', {}).get('Agent 3', '')
+                
+                if not system_prompt:
+                    # Fallback to hardcoded prompt
+                    system_prompt = """
+                    You are AI3, a pattern compliance validation specialist. Your task is to check if content 
+                    follows patterns correspondingly and clean up excessive items.
+                    
+                    CRITICAL REQUIREMENTS:
+                    1. Compare AI1 content against available pattern templates
+                    2. Check proper pattern structure and professional formatting
+                    3. Verify all placeholders are filled with actual data
+                    4. If AI1 lists too many items, limit to top 2 most important
+                    5. Remove quotation marks quoting full sections
+                    6. Check for anything that shouldn't be there (template artifacts)
+                    7. Ensure content follows pattern structure consistently
+                    8. Verify proper K/M conversion with 1 decimal place formatting
+                    """
+            except (FileNotFoundError, json.JSONDecodeError):
+                # Fallback to hardcoded prompt
+                system_prompt = """
+                You are AI3, a pattern compliance validation specialist. Your task is to check if content 
+                follows patterns correspondingly and clean up excessive items.
+                
+                CRITICAL REQUIREMENTS:
+                1. Compare AI1 content against available pattern templates
+                2. Check proper pattern structure and professional formatting
+                3. Verify all placeholders are filled with actual data
+                4. If AI1 lists too many items, limit to top 2 most important
+                5. Remove quotation marks quoting full sections
+                6. Check for anything that shouldn't be there (template artifacts)
+                7. Ensure content follows pattern structure consistently
+                8. Verify proper K/M conversion with 1 decimal place formatting
+                """
             
             user_query = f"""
             AI3 PATTERN COMPLIANCE CHECK:
