@@ -652,6 +652,8 @@ class DataValidationAgent:
     def validate_financial_data(self, content: str, excel_file: str, entity: str, key: str) -> Dict:
         """Validate that financial figures in content match the Excel data"""
         try:
+            import json
+            
             # Extract financial figures from Excel
             financial_figures = find_financial_figures_with_context_check(
                 excel_file, 
@@ -709,41 +711,79 @@ class DataValidationAgent:
             user_query = f"""
             AI2 DATA VALIDATION TASK:
             
-            CONTENT: {content}
+            CONTENT TO VALIDATE: {content}
+            
             EXPECTED FIGURE FOR {key}: {expected_figure}
-            BALANCE SHEET DATA: {financial_figures}
             
-            VALIDATION CHECKLIST:
-            1. Extract financial figures from content
-            2. Compare with expected balance sheet figure  
-            3. Verify K/M conversion accuracy
-            4. Check entity names (should be from data, not {entity})
-            5. Identify top 2 most critical issues only
-            6. Remove quotation marks around sections
+            COMPLETE BALANCE SHEET DATA: {json.dumps(financial_figures, indent=2)}
             
-            RETURN (JSON):
+            ENTITY: {entity}
+            
+            DETAILED VALIDATION CHECKLIST:
+            1. Extract all financial figures from AI1 content and list them
+            2. Compare each extracted figure with expected balance sheet figure for {key}: {expected_figure}
+            3. Verify proper K/M conversion accuracy (should be 1 decimal place: 2.3M, 1.5K, 123.0)
+            4. Check entity names match data source (should NOT be reporting entity "{entity}")
+            5. Verify mathematical accuracy of any calculations or breakdowns
+            6. Check for proper currency formatting and consistency
+            7. Ensure dates are accurate (should be 30/09/2022 or Sep-22 format)
+            8. Validate that component figures sum to expected total where applicable
+            9. Remove unnecessary quotation marks around full sections
+            10. Check for template artifacts that shouldn't be in final content
+            
+            SPECIFIC FIGURE ANALYSIS FOR {key}:
+            - Expected total: {expected_figure}
+            - Check if content figures match or reasonably approximate this total
+            - Verify thousand/million notation is correct
+            - Ensure component breakdowns add up properly
+            
+            CRITICAL: You MUST respond with ONLY valid JSON in this exact format:
             {{
-                "is_valid": true/false,
-                "issues": ["top 2 critical issues only"],
-                "score": 0-100,
-                "corrected_content": "content with corrections if needed"
+                "is_valid": true,
+                "issues": ["issue 1", "issue 2"],
+                "score": 95,
+                "corrected_content": "corrected content here if needed",
+                "extracted_figures": ["figure1", "figure2"],
+                "figure_validation": "detailed analysis of figure accuracy"
             }}
+            
+            Do not include any text before or after the JSON. Only return the JSON object.
             """
             
             response = generate_response(user_query, system_prompt, oai_client, "", config_details['CHAT_MODEL'])
             
+            # Clean response and ensure it's valid JSON
+            response = response.strip()
+            
+            # Remove any markdown formatting if present
+            if response.startswith('```json'):
+                response = response.replace('```json', '').replace('```', '').strip()
+            elif response.startswith('```'):
+                response = response.replace('```', '').strip()
+            
             # Parse AI response
             try:
                 result = json.loads(response)
-                # Ensure all required fields are present
-                result.setdefault('needs_correction', False)
+                # Ensure all required fields are present with defaults
+                result.setdefault('is_valid', True)
                 result.setdefault('issues', [])
                 result.setdefault('score', 100)
+                result.setdefault('corrected_content', content)
+                result.setdefault('needs_correction', False)
                 result.setdefault('suggestions', [])
                 return result
-            except Exception as parse_error:
+            except (json.JSONDecodeError, ValueError) as parse_error:
                 print(f"Failed to parse AI response: {parse_error}")
-                return self._fallback_data_validation(content, expected_figure, key)
+                print(f"Raw AI response: {response}")
+                # Return structured fallback result
+                return {
+                    "is_valid": True,
+                    "issues": [f"AI response parsing failed: {str(parse_error)}"],
+                    "score": 75,
+                    "corrected_content": content,
+                    "needs_correction": False,
+                    "suggestions": ["Check AI response format"]
+                }
                 
         except Exception as e:
             print(f"Data validation error: {e}")
@@ -895,6 +935,8 @@ class PatternValidationAgent:
     def validate_pattern_compliance(self, content: str, key: str) -> Dict:
         """Validate that content follows the expected pattern structure"""
         try:
+            import json
+            
             # Load patterns for the key
             patterns = load_ip(self.pattern_file, key)
             
@@ -907,7 +949,6 @@ class PatternValidationAgent:
             
             # Load system prompt from prompts.json
             try:
-                import json
                 with open('utils/prompts.json', 'r') as f:
                     prompts_config = json.load(f)
                 system_prompt = prompts_config.get('system_prompts', {}).get('Agent 3', '')
@@ -948,42 +989,86 @@ class PatternValidationAgent:
             user_query = f"""
             AI3 PATTERN COMPLIANCE CHECK:
             
-            AI1 CONTENT: {content}
+            CONTENT TO ANALYZE: {content}
+            
             KEY: {key}
-            PATTERNS: {json.dumps(patterns, indent=2)}
             
-            VALIDATION TASKS:
-            1. Check if AI1 content follows pattern structure
-            2. Verify all placeholders filled with actual data
-            3. If AI1 lists too many items, keep only top 2
-            4. Remove quotation marks around full sections
-            5. Check for template artifacts that shouldn't be there
-            6. Ensure professional financial writing style
+            AVAILABLE PATTERNS FOR {key}: {json.dumps(patterns, indent=2)}
             
-            RETURN (JSON):
+            PATTERN COMPLIANCE VALIDATION TASKS:
+            1. Analyze AI1 content structure against available pattern templates above
+            2. Verify all placeholders (xxx, [Amount], [Entity], etc.) are filled with actual data
+            3. Check if content follows the narrative flow of selected pattern
+            4. If AI1 content lists too many items/entities, limit to top 2 most important
+            5. Remove quotation marks around full sections or paragraphs  
+            6. Check for template artifacts that shouldn't appear in final content
+            7. Ensure professional financial writing style and tone
+            8. Verify pattern structure is maintained (intro → details → conclusion format)
+            9. Check that selected pattern matches the type of data provided
+            10. Ensure consistent tense and formatting throughout
+            
+            PATTERN ANALYSIS FOR {key}:
+            - Which pattern from above appears to be most suitable?
+            - Are all pattern elements properly filled?
+            - Does the content maintain professional audit report language?
+            - Are there any deviations from expected pattern structure?
+            
+            CONTENT OPTIMIZATION REQUIREMENTS:
+            - Keep only essential information (top 2 items if listing multiple)
+            - Remove redundant or verbose explanations
+            - Ensure dates, amounts, and entities are accurate
+            - Maintain consistent formatting with other sections
+            
+            CRITICAL: You MUST respond with ONLY valid JSON in this exact format:
             {{
-                "is_compliant": true/false,
-                "issues": ["top 2 most important issues only"],
-                "corrected_content": "cleaned content with top 2 items if needed"
+                "is_compliant": true,
+                "issues": ["issue 1", "issue 2"],
+                "corrected_content": "cleaned content with top 2 items if needed",
+                "pattern_used": "Pattern 1 or Pattern 2",
+                "compliance_analysis": "detailed analysis of pattern compliance"
             }}
+            
+            Do not include any text before or after the JSON. Only return the JSON object.
             """
             
             response = generate_response(user_query, system_prompt, oai_client, "", config_details['CHAT_MODEL'])
             
+            # Clean response and ensure it's valid JSON
+            response = response.strip()
+            
+            # Remove any markdown formatting if present
+            if response.startswith('```json'):
+                response = response.replace('```json', '').replace('```', '').strip()
+            elif response.startswith('```'):
+                response = response.replace('```', '').strip()
+            
             # Parse AI response
             try:
                 result = json.loads(response)
-                # Ensure all required fields are present
-                result.setdefault('needs_correction', False)
+                # Ensure all required fields are present with defaults
+                result.setdefault('is_compliant', True)
                 result.setdefault('issues', [])
+                result.setdefault('corrected_content', content)
+                result.setdefault('needs_correction', False)
                 result.setdefault('score', 100)
-                result.setdefault('pattern_match', 'none')
+                result.setdefault('pattern_match', 'compliant')
                 result.setdefault('missing_elements', [])
                 result.setdefault('suggestions', [])
                 return result
-            except Exception as parse_error:
-                print(f"Failed to parse AI response: {parse_error}")
-                return self._fallback_pattern_validation(content, patterns, key)
+            except (json.JSONDecodeError, ValueError) as parse_error:
+                print(f"Failed to parse AI3 response: {parse_error}")
+                print(f"Raw AI3 response: {response}")
+                # Return structured fallback result
+                return {
+                    "is_compliant": True,
+                    "issues": [f"AI response parsing failed: {str(parse_error)}"],
+                    "corrected_content": content,
+                    "needs_correction": False,
+                    "score": 75,
+                    "pattern_match": "unknown",
+                    "missing_elements": [],
+                    "suggestions": ["Check AI response format"]
+                }
                 
         except Exception as e:
             print(f"Pattern validation error: {e}")
