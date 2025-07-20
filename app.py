@@ -18,6 +18,147 @@ warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 warnings.simplefilter(action='ignore', category=UserWarning)
 warnings.filterwarnings('ignore', message='Data Validation extension is not supported and will be removed', category=UserWarning, module='openpyxl')
 
+# AI Agent Logging System
+class AIAgentLogger:
+    """Comprehensive logging system for AI agents"""
+    
+    def __init__(self):
+        self.logs = {
+            'agent1': {},
+            'agent2': {},
+            'agent3': {}
+        }
+        self.session_logs = []
+        
+    def log_agent_input(self, agent_name, key, system_prompt, user_prompt, context_data=None):
+        """Log agent input prompts and data"""
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        log_entry = {
+            'timestamp': timestamp,
+            'agent': agent_name,
+            'key': key,
+            'type': 'INPUT',
+            'system_prompt': system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt,
+            'user_prompt': user_prompt[:300] + "..." if len(user_prompt) > 300 else user_prompt,
+            'context_data': str(context_data)[:100] + "..." if context_data and len(str(context_data)) > 100 else str(context_data)
+        }
+        
+        if agent_name not in self.logs:
+            self.logs[agent_name] = {}
+        if key not in self.logs[agent_name]:
+            self.logs[agent_name][key] = []
+            
+        self.logs[agent_name][key].append(log_entry)
+        self.session_logs.append(log_entry)
+        
+        # Display in Streamlit
+        with st.expander(f"🔍 {agent_name.upper()} Input for {key}", expanded=False):
+            st.write(f"**Timestamp:** {timestamp}")
+            st.text_area("System Prompt", system_prompt, height=150, disabled=True, key=f"sys_{agent_name}_{key}_{timestamp}")
+            st.text_area("User Prompt", user_prompt, height=200, disabled=True, key=f"user_{agent_name}_{key}_{timestamp}")
+            if context_data:
+                st.text_area("Context Data", str(context_data), height=100, disabled=True, key=f"ctx_{agent_name}_{key}_{timestamp}")
+    
+    def log_agent_output(self, agent_name, key, output, processing_time=0):
+        """Log agent output and processing details"""
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        log_entry = {
+            'timestamp': timestamp,
+            'agent': agent_name,
+            'key': key,
+            'type': 'OUTPUT',
+            'output': output,
+            'processing_time': processing_time,
+            'output_length': len(str(output))
+        }
+        
+        if agent_name not in self.logs:
+            self.logs[agent_name] = {}
+        if key not in self.logs[agent_name]:
+            self.logs[agent_name][key] = []
+            
+        self.logs[agent_name][key].append(log_entry)
+        self.session_logs.append(log_entry)
+        
+        # Display in Streamlit with success/error indication
+        status_color = "🟢" if output and not str(output).startswith("Error") else "🔴"
+        with st.expander(f"{status_color} {agent_name.upper()} Output for {key}", expanded=False):
+            st.write(f"**Timestamp:** {timestamp}")
+            st.write(f"**Processing Time:** {processing_time:.2f}s")
+            st.write(f"**Output Length:** {len(str(output))} characters")
+            
+            if isinstance(output, dict):
+                st.json(output)
+            else:
+                st.text_area("AI Output", str(output), height=200, disabled=True, key=f"out_{agent_name}_{key}_{timestamp}")
+    
+    def log_error(self, agent_name, key, error_msg):
+        """Log errors during processing"""
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        log_entry = {
+            'timestamp': timestamp,
+            'agent': agent_name,
+            'key': key,
+            'type': 'ERROR',
+            'error': str(error_msg)
+        }
+        
+        if agent_name not in self.logs:
+            self.logs[agent_name] = {}
+        if key not in self.logs[agent_name]:
+            self.logs[agent_name][key] = []
+            
+        self.logs[agent_name][key].append(log_entry)
+        self.session_logs.append(log_entry)
+        
+        # Display error in Streamlit
+        with st.expander(f"❌ {agent_name.upper()} Error for {key}", expanded=True):
+            st.error(f"**Error at {timestamp}:** {error_msg}")
+    
+    def save_logs_to_file(self):
+        """Save all logs to file for review"""
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = f"ai_agent_logs_{timestamp}.json"
+        
+        try:
+            with open(log_file, 'w') as f:
+                json.dump(self.logs, f, indent=2, default=str)
+            st.info(f"📁 Logs saved to: {log_file}")
+            return log_file
+        except Exception as e:
+            st.error(f"Failed to save logs: {e}")
+            return None
+    
+    def display_session_summary(self):
+        """Display summary of current session"""
+        if not self.session_logs:
+            st.info("No AI agent activity logged yet.")
+            return
+            
+        st.markdown("### 📊 AI Agent Session Summary")
+        
+        # Count by agent
+        agent_counts = {}
+        for log in self.session_logs:
+            agent = log['agent']
+            if agent not in agent_counts:
+                agent_counts[agent] = {'inputs': 0, 'outputs': 0, 'errors': 0}
+            agent_counts[agent][log['type'].lower() + 's'] += 1
+        
+        # Display counts
+        col1, col2, col3 = st.columns(3)
+        for i, (agent, counts) in enumerate(agent_counts.items()):
+            with [col1, col2, col3][i % 3]:
+                st.metric(f"{agent.upper()}", 
+                         f"I:{counts['inputs']} O:{counts['outputs']} E:{counts['errors']}")
+
+# Initialize global logger
+if 'ai_logger' not in st.session_state:
+    st.session_state.ai_logger = AIAgentLogger()
+
 # Load configuration files
 @cached_function(ttl=3600)  # Cache for 1 hour
 def load_config_files():
@@ -923,6 +1064,41 @@ def main():
                                 'all_agents_completed': False
                             }
                             
+                            # Display AI Agent Logging Section
+                            st.markdown("---")
+                            st.markdown("# 🤖 AI Agent Processing Logs")
+                            logger = st.session_state.ai_logger
+                            
+                            # Clear previous logs for new session
+                            logger.logs = {'agent1': {}, 'agent2': {}, 'agent3': {}}
+                            logger.session_logs = []
+                            
+                            # Debug: Check AI service availability
+                            st.markdown("### 🔧 AI Service Status")
+                            try:
+                                from common.assistant import AI_AVAILABLE, initialize_ai_services, load_config
+                                
+                                st.write(f"**AI_AVAILABLE:** {AI_AVAILABLE}")
+                                
+                                if AI_AVAILABLE:
+                                    # Test AI service initialization
+                                    try:
+                                        config_details = load_config('utils/config.json')
+                                        oai_client, search_client = initialize_ai_services(config_details)
+                                        st.success("✅ AI services initialized successfully")
+                                        st.write(f"**OpenAI Model:** {config_details.get('CHAT_MODEL', 'Not configured')}")
+                                        st.write(f"**API Key Status:** {'✅ Configured' if config_details.get('OPENAI_API_KEY') else '❌ Missing'}")
+                                    except Exception as ai_error:
+                                        st.error(f"❌ AI service initialization failed: {ai_error}")
+                                        st.warning("⚠️ Agents will use fallback methods")
+                                else:
+                                    st.error("❌ AI libraries not available - agents will use fallback methods")
+                                    
+                            except Exception as e:
+                                st.error(f"❌ Error checking AI status: {e}")
+                            
+                            st.markdown("---")
+                            
                             # Prepare AI data for agents
                             temp_ai_data = {
                                 'entity_name': selected_entity,
@@ -935,6 +1111,7 @@ def main():
                             
                             # Phase 1: AI1 Processing - Content Generation
                             update_progress(0.4, f"🤖 AI1: Generating content for {len(filtered_keys_for_ai)} keys...")
+                            st.markdown("---")
                             agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data)
                             st.session_state['agent_states']['agent1_results'] = agent1_results
                             st.session_state['agent_states']['agent1_completed'] = True
@@ -942,12 +1119,14 @@ def main():
                             
                             # Phase 2: AI2 Processing - Data Validation
                             update_progress(0.6, f"🔍 AI2: Validating data for {len(filtered_keys_for_ai)} keys...")
+                            st.markdown("---")
                             agent2_results = run_agent_2(filtered_keys_for_ai, agent1_results, temp_ai_data)
                             st.session_state['agent_states']['agent2_results'] = agent2_results
                             st.session_state['agent_states']['agent2_completed'] = True
                             
                             # Phase 3: AI3 Processing - Pattern Compliance
                             update_progress(0.8, f"🎯 AI3: Checking pattern compliance for {len(filtered_keys_for_ai)} keys...")
+                            st.markdown("---")
                             agent3_results = run_agent_3(filtered_keys_for_ai, agent1_results, temp_ai_data)
                             st.session_state['agent_states']['agent3_results'] = agent3_results
                             st.session_state['agent_states']['agent3_completed'] = True
@@ -958,6 +1137,30 @@ def main():
                             # Store AI2 and AI3 results in legacy format for backwards compatibility
                             st.session_state['ai2_results'] = agent2_results
                             st.session_state['ai3_results'] = agent3_results
+                            
+                            # Display logging summary and save option
+                            st.markdown("---")
+                            st.markdown("# 📊 AI Processing Summary")
+                            logger.display_session_summary()
+                            
+                            # Save logs button
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button("💾 Save Logs to File", type="secondary"):
+                                    log_file = logger.save_logs_to_file()
+                                    if log_file:
+                                        st.download_button(
+                                            label="📥 Download Log File",
+                                            data=open(log_file, 'r').read(),
+                                            file_name=log_file,
+                                            mime='application/json'
+                                        )
+                            with col2:
+                                if st.button("🔄 Clear Session Logs"):
+                                    logger.logs = {'agent1': {}, 'agent2': {}, 'agent3': {}}
+                                    logger.session_logs = []
+                                    st.success("✅ Session logs cleared")
+                                    st.rerun()
                         except RuntimeError as e:
                             # AI services not available, use fallback
                             update_progress(0.5, "AI services not available, using fallback mode...")
@@ -2099,6 +2302,10 @@ def run_agent_1(filtered_keys, ai_data):
     """Run Agent 1: Content Generation for all keys"""
     try:
         from common.assistant import process_keys
+        import time
+        
+        logger = st.session_state.ai_logger
+        st.markdown("## 🚀 Agent 1: Content Generation")
         
         # Get data from ai_data
         entity_name = ai_data.get('entity_name', '')
@@ -2123,20 +2330,52 @@ def run_agent_1(filtered_keys, ai_data):
                     st.error("No data file available for Agent 1 processing")
                     return {}
             
-            # Run Agent 1 processing with prompts.json integration
-            results = process_keys(
-                keys=filtered_keys,
-                entity_name=entity_name,
-                entity_helpers=entity_keywords,
-                input_file=temp_file_path,
-                mapping_file="utils/mapping.json",
-                pattern_file="utils/pattern.json",
-                config_file='utils/config.json',
-                prompts_file='utils/prompts.json',  # Add prompts file parameter
-                use_ai=True,
-                progress_callback=None
-            )
+            # Process each key individually with logging
+            results = {}
             
+            for key in filtered_keys:
+                st.write(f"🔄 Processing {key} with Agent 1...")
+                start_time = time.time()
+                
+                try:
+                    # Log Agent 1 input
+                    system_prompt = "Agent 1 system prompt from prompts.json"
+                    user_prompt = f"Generate content for {key} using patterns and worksheet data"
+                    context_data = f"Entity: {entity_name}, Key: {key}"
+                    
+                    logger.log_agent_input('agent1', key, system_prompt, user_prompt, context_data)
+                    
+                    # Run Agent 1 processing for single key
+                    key_results = process_keys(
+                        keys=[key],
+                        entity_name=entity_name,
+                        entity_helpers=entity_keywords,
+                        input_file=temp_file_path,
+                        mapping_file="utils/mapping.json",
+                        pattern_file="utils/pattern.json",
+                        config_file='utils/config.json',
+                        prompts_file='utils/prompts.json',
+                        use_ai=True,
+                        progress_callback=None
+                    )
+                    
+                    processing_time = time.time() - start_time
+                    
+                    # Get result for this key
+                    key_result = key_results.get(key, f"No result generated for {key}")
+                    results[key] = key_result
+                    
+                    # Log Agent 1 output
+                    logger.log_agent_output('agent1', key, key_result, processing_time)
+                    
+                    st.success(f"✅ Agent 1 completed {key} in {processing_time:.2f}s")
+                    
+                except Exception as e:
+                    logger.log_error('agent1', key, str(e))
+                    st.error(f"❌ Agent 1 failed for {key}: {e}")
+                    results[key] = f"Error: {e}"
+            
+            st.success(f"🎉 Agent 1 completed all {len(filtered_keys)} keys")
             return results
             
         finally:
@@ -2228,20 +2467,28 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
     try:
         from common.assistant import DataValidationAgent, find_financial_figures_with_context_check, get_tab_name
         import json
+        import time
+        
+        logger = st.session_state.ai_logger
+        st.markdown("## 🔍 Agent 2: Data Validation")
+        st.write(f"Starting Agent 2 for {len(filtered_keys)} keys...")
         
         # Load prompts from prompts.json
         try:
             with open('utils/prompts.json', 'r') as f:
                 prompts_config = json.load(f)
             agent2_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 2', '')
-        except (FileNotFoundError, json.JSONDecodeError):
-            agent2_system_prompt = ""
+            st.success("✅ Loaded Agent 2 system prompt from prompts.json")
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            st.warning(f"⚠️ Could not load prompts.json: {e}")
+            agent2_system_prompt = "Fallback Agent 2 system prompt"
         
         validation_agent = DataValidationAgent()
         results = {}
         
         # Get entity name and prepare databook path
         entity_name = ai_data.get('entity_name', '')
+        st.write(f"Entity: {entity_name}")
         
         # Get uploaded file data for validation
         import tempfile
@@ -2254,56 +2501,113 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
                     tmp_file.write(st.session_state['uploaded_file_data'])
                     temp_file_path = tmp_file.name
+                st.success("✅ Created temporary databook for validation")
             else:
                 # Fallback: look for databook.xlsx
                 if os.path.exists('databook.xlsx'):
                     temp_file_path = 'databook.xlsx'
+                    st.info("📄 Using existing databook.xlsx")
                 else:
-                    st.warning("No databook available for Agent 2 validation")
+                    st.warning("⚠️ No databook available for Agent 2 validation")
                     temp_file_path = None
             
             # Read current bs_content.md to get Agent 1 output per key
             bs_content_updates = {}
             
             for key in filtered_keys:
-                agent1_content = agent1_results.get(key, "")
-                if agent1_content and temp_file_path:
-                    # Use real AI validation instead of fallback
-                    validation_result = validation_agent.validate_financial_data(
-                        content=agent1_content,
-                        excel_file=temp_file_path,
-                        entity=entity_name,
-                        key=key
-                    )
+                st.write(f"🔄 Validating {key} with Agent 2...")
+                start_time = time.time()
+                
+                try:
+                    agent1_content = agent1_results.get(key, "")
+                    st.write(f"Agent 1 content length for {key}: {len(agent1_content)} characters")
                     
-                    # If Agent 2 found issues and provided corrected content, use it
-                    if validation_result.get('corrected_content') and validation_result.get('corrected_content') != agent1_content:
-                        bs_content_updates[key] = validation_result['corrected_content']
-                        validation_result['content_updated'] = True
+                    if agent1_content and temp_file_path:
+                        # Prepare detailed user prompt for validation
+                        financial_figures = find_financial_figures_with_context_check(
+                            temp_file_path, 
+                            get_tab_name(entity_name), 
+                            '30/09/2022'
+                        )
+                        expected_figure = financial_figures.get(key, 0)
+                        
+                        user_prompt = f"""
+                        AI2 DATA VALIDATION TASK:
+                        
+                        CONTENT TO VALIDATE: {agent1_content}
+                        EXPECTED FIGURE FOR {key}: {expected_figure}
+                        COMPLETE BALANCE SHEET DATA: {json.dumps(financial_figures, indent=2)}
+                        ENTITY: {entity_name}
+                        """
+                        
+                        # Log Agent 2 input
+                        logger.log_agent_input('agent2', key, agent2_system_prompt, user_prompt, 
+                                             {'expected_figure': expected_figure, 'agent1_content_length': len(agent1_content)})
+                        
+                        # Use real AI validation instead of fallback
+                        validation_result = validation_agent.validate_financial_data(
+                            content=agent1_content,
+                            excel_file=temp_file_path,
+                            entity=entity_name,
+                            key=key
+                        )
+                        
+                        processing_time = time.time() - start_time
+                        
+                        # Log Agent 2 output
+                        logger.log_agent_output('agent2', key, validation_result, processing_time)
+                        
+                        # If Agent 2 found issues and provided corrected content, use it
+                        if validation_result.get('corrected_content') and validation_result.get('corrected_content') != agent1_content:
+                            bs_content_updates[key] = validation_result['corrected_content']
+                            validation_result['content_updated'] = True
+                            st.success(f"✅ Agent 2 corrected content for {key}")
+                        else:
+                            validation_result['content_updated'] = False
+                            st.info(f"ℹ️ Agent 2 found no corrections needed for {key}")
+                        
+                        results[key] = validation_result
+                        st.success(f"✅ Agent 2 completed {key} in {processing_time:.2f}s")
+                        
+                    elif agent1_content:
+                        # Use fallback validation if no databook
+                        st.warning(f"⚠️ Using fallback validation for {key} (no databook)")
+                        validation_result = validation_agent._fallback_data_validation(
+                            agent1_content, 0, key
+                        )
+                        results[key] = validation_result
+                        logger.log_agent_output('agent2', key, validation_result, time.time() - start_time)
                     else:
-                        validation_result['content_updated'] = False
-                    
-                    results[key] = validation_result
-                elif agent1_content:
-                    # Use fallback validation if no databook
-                    validation_result = validation_agent._fallback_data_validation(
-                        agent1_content, 0, key
-                    )
-                    results[key] = validation_result
-                else:
+                        error_msg = f"No Agent 1 content available for {key}"
+                        st.error(f"❌ {error_msg}")
+                        results[key] = {
+                            "is_valid": False, 
+                            "issues": [error_msg], 
+                            "score": 0,
+                            "suggestions": ["Run Agent 1 first"],
+                            "content_updated": False
+                        }
+                        logger.log_error('agent2', key, error_msg)
+                
+                except Exception as e:
+                    logger.log_error('agent2', key, str(e))
+                    st.error(f"❌ Agent 2 failed for {key}: {e}")
                     results[key] = {
                         "is_valid": False, 
-                        "issues": ["No Agent 1 content available"], 
+                        "issues": [f"Processing error: {e}"], 
                         "score": 0,
-                        "suggestions": ["Run Agent 1 first"],
+                        "suggestions": ["Check error details"],
                         "content_updated": False
                     }
             
             # Update bs_content.md with Agent 2 corrections if any
             if bs_content_updates:
                 update_bs_content_with_agent_corrections(bs_content_updates, entity_name, "Agent 2")
-                st.info(f"🔍 Agent 2 updated bs_content.md with corrections for {len(bs_content_updates)} keys")
+                st.success(f"✅ Agent 2 updated bs_content.md with corrections for {len(bs_content_updates)} keys")
+            else:
+                st.info("ℹ️ Agent 2 found no content corrections needed")
             
+            st.success(f"🎉 Agent 2 completed all {len(filtered_keys)} keys")
             return results
             
         finally:
@@ -2313,6 +2617,8 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
         
     except Exception as e:
         st.error(f"Agent 2 processing failed: {e}")
+        logger = st.session_state.ai_logger
+        logger.log_error('agent2', 'general', str(e))
         return {}
 
 def read_bs_content_by_key(entity_name):
@@ -2389,65 +2695,122 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
     try:
         from common.assistant import PatternValidationAgent, load_ip
         import json
+        import time
+        
+        logger = st.session_state.ai_logger
+        st.markdown("## 🎯 Agent 3: Pattern Compliance")
+        st.write(f"Starting Agent 3 for {len(filtered_keys)} keys...")
         
         # Load prompts from prompts.json
         try:
             with open('utils/prompts.json', 'r') as f:
                 prompts_config = json.load(f)
             agent3_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 3', '')
-        except (FileNotFoundError, json.JSONDecodeError):
-            agent3_system_prompt = ""
+            st.success("✅ Loaded Agent 3 system prompt from prompts.json")
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            st.warning(f"⚠️ Could not load prompts.json: {e}")
+            agent3_system_prompt = "Fallback Agent 3 system prompt"
         
         pattern_agent = PatternValidationAgent()
         results = {}
         
         # Load patterns
         patterns = load_ip("utils/pattern.json")
+        st.write(f"Loaded patterns for {len(patterns)} keys")
         
         # Read current bs_content.md to get the latest content (possibly updated by Agent 2)
         bs_content_updates = {}
         current_content_by_key = read_bs_content_by_key(ai_data.get('entity_name', ''))
+        st.write(f"Read bs_content.md with content for {len(current_content_by_key)} keys")
         
         for key in filtered_keys:
-            # Get the most recent content (from bs_content.md if updated by Agent 2, otherwise from Agent 1)
-            current_content = current_content_by_key.get(key, agent1_results.get(key, ""))
+            st.write(f"🔄 Checking pattern compliance for {key} with Agent 3...")
+            start_time = time.time()
             
-            if current_content:
-                # Get patterns for this key
-                key_patterns = patterns.get(key, {})
+            try:
+                # Get the most recent content (from bs_content.md if updated by Agent 2, otherwise from Agent 1)
+                current_content = current_content_by_key.get(key, agent1_results.get(key, ""))
+                st.write(f"Content source for {key}: {'bs_content.md' if key in current_content_by_key else 'Agent 1 results'}")
+                st.write(f"Content length for {key}: {len(current_content)} characters")
                 
-                # Use real AI pattern validation instead of fallback
-                pattern_result = pattern_agent.validate_pattern_compliance(
-                    content=current_content,
-                    key=key
-                )
-                
-                # If Agent 3 found issues and provided corrected content, use it
-                if pattern_result.get('corrected_content') and pattern_result.get('corrected_content') != current_content:
-                    bs_content_updates[key] = pattern_result['corrected_content']
-                    pattern_result['content_updated'] = True
+                if current_content:
+                    # Get patterns for this key
+                    key_patterns = patterns.get(key, {})
+                    st.write(f"Found {len(key_patterns)} patterns for {key}")
+                    
+                    # Prepare detailed user prompt for pattern compliance
+                    user_prompt = f"""
+                    AI3 PATTERN COMPLIANCE CHECK:
+                    
+                    CONTENT TO ANALYZE: {current_content}
+                    KEY: {key}
+                    AVAILABLE PATTERNS FOR {key}: {json.dumps(key_patterns, indent=2)}
+                    """
+                    
+                    # Log Agent 3 input
+                    logger.log_agent_input('agent3', key, agent3_system_prompt, user_prompt, 
+                                         {'patterns_count': len(key_patterns), 'content_length': len(current_content)})
+                    
+                    # Use real AI pattern validation instead of fallback
+                    pattern_result = pattern_agent.validate_pattern_compliance(
+                        content=current_content,
+                        key=key
+                    )
+                    
+                    processing_time = time.time() - start_time
+                    
+                    # Log Agent 3 output
+                    logger.log_agent_output('agent3', key, pattern_result, processing_time)
+                    
+                    # If Agent 3 found issues and provided corrected content, use it
+                    if pattern_result.get('corrected_content') and pattern_result.get('corrected_content') != current_content:
+                        bs_content_updates[key] = pattern_result['corrected_content']
+                        pattern_result['content_updated'] = True
+                        st.success(f"✅ Agent 3 improved pattern compliance for {key}")
+                    else:
+                        pattern_result['content_updated'] = False
+                        st.info(f"ℹ️ Agent 3 found no pattern improvements needed for {key}")
+                    
+                    results[key] = pattern_result
+                    st.success(f"✅ Agent 3 completed {key} in {processing_time:.2f}s")
+                    
                 else:
-                    pattern_result['content_updated'] = False
-                
-                results[key] = pattern_result
-            else:
+                    error_msg = f"No content available for {key}"
+                    st.error(f"❌ {error_msg}")
+                    results[key] = {
+                        "is_compliant": False,
+                        "issues": [error_msg],
+                        "pattern_match": "none",
+                        "suggestions": ["Run Agent 1 first"],
+                        "content_updated": False
+                    }
+                    logger.log_error('agent3', key, error_msg)
+            
+            except Exception as e:
+                logger.log_error('agent3', key, str(e))
+                st.error(f"❌ Agent 3 failed for {key}: {e}")
                 results[key] = {
                     "is_compliant": False,
-                    "issues": ["No content available"],
-                    "pattern_match": "none",
-                    "suggestions": ["Run Agent 1 first"],
+                    "issues": [f"Processing error: {e}"],
+                    "pattern_match": "error",
+                    "suggestions": ["Check error details"],
                     "content_updated": False
                 }
         
         # Update bs_content.md with Agent 3 corrections if any
         if bs_content_updates:
             update_bs_content_with_agent_corrections(bs_content_updates, ai_data.get('entity_name', ''), "Agent 3")
-            st.info(f"🎯 Agent 3 updated bs_content.md with pattern compliance fixes for {len(bs_content_updates)} keys")
+            st.success(f"✅ Agent 3 updated bs_content.md with pattern compliance fixes for {len(bs_content_updates)} keys")
+        else:
+            st.info("ℹ️ Agent 3 found no pattern compliance improvements needed")
         
+        st.success(f"🎉 Agent 3 completed all {len(filtered_keys)} keys")
         return results
         
     except Exception as e:
         st.error(f"Agent 3 processing failed: {e}")
+        logger = st.session_state.ai_logger
+        logger.log_error('agent3', 'general', str(e))
         return {}
 
 def display_sequential_agent_results(key, filtered_keys, ai_data):
