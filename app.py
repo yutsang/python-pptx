@@ -52,8 +52,9 @@ class AIAgentLogger:
         self.logs[agent_name][key].append(log_entry)
         self.session_logs.append(log_entry)
         
-        # Display in Streamlit
-        with st.expander(f"🔍 {agent_name.upper()} Input for {key}", expanded=False):
+        # Display in Streamlit with prominent header
+        st.markdown(f"### 🔍 {agent_name.upper()} INPUT LOG for {key}")
+        with st.expander(f"📝 {agent_name.upper()} Input for {key} - {timestamp}", expanded=True):
             st.write(f"**Timestamp:** {timestamp}")
             st.text_area("System Prompt", system_prompt, height=150, disabled=True, key=f"sys_{agent_name}_{key}_{timestamp}")
             st.text_area("User Prompt", user_prompt, height=200, disabled=True, key=f"user_{agent_name}_{key}_{timestamp}")
@@ -82,9 +83,10 @@ class AIAgentLogger:
         self.logs[agent_name][key].append(log_entry)
         self.session_logs.append(log_entry)
         
-        # Display in Streamlit with success/error indication
+        # Display in Streamlit with success/error indication and prominent header
         status_color = "🟢" if output and not str(output).startswith("Error") else "🔴"
-        with st.expander(f"{status_color} {agent_name.upper()} Output for {key}", expanded=False):
+        st.markdown(f"### {status_color} {agent_name.upper()} OUTPUT LOG for {key}")
+        with st.expander(f"{status_color} {agent_name.upper()} Output for {key} - {timestamp}", expanded=True):
             st.write(f"**Timestamp:** {timestamp}")
             st.write(f"**Processing Time:** {processing_time:.2f}s")
             st.write(f"**Output Length:** {len(str(output))} characters")
@@ -114,8 +116,9 @@ class AIAgentLogger:
         self.logs[agent_name][key].append(log_entry)
         self.session_logs.append(log_entry)
         
-        # Display error in Streamlit
-        with st.expander(f"❌ {agent_name.upper()} Error for {key}", expanded=True):
+        # Display error in Streamlit with prominent header
+        st.markdown(f"### ❌ {agent_name.upper()} ERROR LOG for {key}")
+        with st.expander(f"❌ {agent_name.upper()} Error for {key} - {timestamp}", expanded=True):
             st.error(f"**Error at {timestamp}:** {error_msg}")
     
     def save_logs_to_file(self):
@@ -1241,6 +1244,81 @@ def main():
         if st.session_state.get('ai_processed', False):
             st.markdown("---")
             st.markdown("# AI Agent Results")
+            
+            # Show AI Agent Logs Section - PERSISTENT DISPLAY
+            if 'ai_logger' in st.session_state and st.session_state.ai_logger.session_logs:
+                st.markdown("---")
+                st.markdown("# 📋 AI Agent Processing Logs")
+                
+                logger = st.session_state.ai_logger
+                
+                # Display session summary
+                logger.display_session_summary()
+                
+                # Show detailed logs by agent
+                st.markdown("### 🔍 Detailed Agent Logs")
+                
+                # Create tabs for each agent's logs
+                if any(logger.logs[agent] for agent in ['agent1', 'agent2', 'agent3']):
+                    agent_tabs = st.tabs(["🚀 Agent 1 Logs", "🔍 Agent 2 Logs", "🎯 Agent 3 Logs"])
+                    
+                    for i, agent in enumerate(['agent1', 'agent2', 'agent3']):
+                        with agent_tabs[i]:
+                            if logger.logs[agent]:
+                                for key, key_logs in logger.logs[agent].items():
+                                    st.markdown(f"#### 📊 {key}")
+                                    
+                                    for log_entry in key_logs:
+                                        if log_entry['type'] == 'INPUT':
+                                            with st.expander(f"📝 Input - {log_entry['timestamp']}", expanded=False):
+                                                st.text_area("System Prompt", log_entry['system_prompt'], height=100, disabled=True, key=f"log_sys_{agent}_{key}_{log_entry['timestamp']}")
+                                                st.text_area("User Prompt", log_entry['user_prompt'], height=150, disabled=True, key=f"log_user_{agent}_{key}_{log_entry['timestamp']}")
+                                                if log_entry.get('context_data'):
+                                                    st.text_area("Context Data", log_entry['context_data'], height=80, disabled=True, key=f"log_ctx_{agent}_{key}_{log_entry['timestamp']}")
+                                        
+                                        elif log_entry['type'] == 'OUTPUT':
+                                            status_icon = "🟢" if not str(log_entry.get('output', '')).startswith('Error') else "🔴"
+                                            with st.expander(f"{status_icon} Output - {log_entry['timestamp']}", expanded=False):
+                                                st.write(f"**Processing Time:** {log_entry.get('processing_time', 0):.2f}s")
+                                                st.write(f"**Output Length:** {log_entry.get('output_length', 0)} characters")
+                                                
+                                                if isinstance(log_entry.get('output'), dict):
+                                                    st.json(log_entry['output'])
+                                                else:
+                                                    st.text_area("AI Response", str(log_entry.get('output', '')), height=200, disabled=True, key=f"log_out_{agent}_{key}_{log_entry['timestamp']}")
+                                        
+                                        elif log_entry['type'] == 'ERROR':
+                                            with st.expander(f"❌ Error - {log_entry['timestamp']}", expanded=True):
+                                                st.error(f"**Error:** {log_entry.get('error', 'Unknown error')}")
+                            else:
+                                st.info(f"No logs available for {agent.upper()}")
+                
+                # Save/Clear logs controls
+                st.markdown("### 💾 Log Management")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("💾 Save All Logs", type="secondary"):
+                        log_file = logger.save_logs_to_file()
+                        if log_file:
+                            with open(log_file, 'r') as f:
+                                st.download_button(
+                                    label="📥 Download Log File",
+                                    data=f.read(),
+                                    file_name=log_file,
+                                    mime='application/json'
+                                )
+                with col2:
+                    if st.button("🔄 Clear All Logs"):
+                        logger.logs = {'agent1': {}, 'agent2': {}, 'agent3': {}}
+                        logger.session_logs = []
+                        st.success("✅ All logs cleared")
+                        st.rerun()
+                with col3:
+                    if st.button("📊 Show Log Stats"):
+                        st.write(f"**Total Log Entries:** {len(logger.session_logs)}")
+                        st.write(f"**Agent 1 Logs:** {len(logger.logs.get('agent1', {}))}")
+                        st.write(f"**Agent 2 Logs:** {len(logger.logs.get('agent2', {}))}")
+                        st.write(f"**Agent 3 Logs:** {len(logger.logs.get('agent3', {}))}")
             
             # Define BS and IS keys for filtering
             bs_keys = [
