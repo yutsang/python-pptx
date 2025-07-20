@@ -161,6 +161,180 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         st.error(f"An error occurred while processing the Excel file: {e}")
         return ""
 
+def parse_accounting_table(df, key, entity_name, sheet_name):
+    """
+    Parse accounting table with proper header detection and figure column identification
+    Returns structured table data with metadata
+    """
+    try:
+        import re
+        import pandas as pd
+        
+        if df.empty or len(df) < 2:
+            return None
+        
+        # Convert all cells to string for analysis
+        df_str = df.astype(str).fillna('')
+        
+        # Detect thousand/million indicators
+        thousand_indicators = ["'000", "CNY'000", "USD'000", "'000", "thousands", "thousand"]
+        million_indicators = ["'000,000", "millions", "million"]
+        
+        multiplier = 1
+        currency_info = ""
+        
+        # Check for thousand/million indicators in the entire table
+        for i in range(min(5, len(df_str))):  # Check first 5 rows
+            for j in range(len(df_str.columns)):
+                cell_value = str(df_str.iloc[i, j]).lower()
+                if any(indicator in cell_value for indicator in thousand_indicators):
+                    multiplier = 1000
+                    currency_info = "CNY'000"
+                    break
+                elif any(indicator in cell_value for indicator in million_indicators):
+                    multiplier = 1000000
+                    currency_info = "CNY'000,000"
+                    break
+        
+        # Find the value column - look for "Indicative adjusted" first, then "Total"
+        value_col_idx = None
+        value_col_name = ""
+        
+        for i in range(min(3, len(df_str))):  # Check first 3 rows for headers
+            for j in range(len(df_str.columns)):
+                cell_value = str(df_str.iloc[i, j]).lower()
+                if "indicative adjusted" in cell_value:
+                    value_col_idx = j
+                    value_col_name = "Indicative adjusted"
+                    break
+                elif "total" in cell_value and value_col_idx is None:
+                    value_col_idx = j
+                    value_col_name = "Total"
+        
+        # If no specific column found, use the rightmost column with numbers
+        if value_col_idx is None:
+            for j in range(len(df_str.columns) - 1, -1, -1):
+                column_data = df_str.iloc[:, j]
+                # Check if column contains mostly numbers
+                numeric_count = 0
+                for cell in column_data:
+                    if re.search(r'\d+', str(cell)):
+                        numeric_count += 1
+                if numeric_count >= len(column_data) * 0.3:  # At least 30% numeric
+                    value_col_idx = j
+                    value_col_name = f"Column {j+1}"
+                    break
+        
+        if value_col_idx is None:
+            return None
+        
+        # Find where actual data starts (skip header rows)
+        data_start_row = None
+        for i in range(len(df_str)):
+            cell_value = str(df_str.iloc[i, value_col_idx])
+            # Look for cells that contain only numbers (possibly with commas)
+            if re.match(r'^\d+,?\d*\.?\d*$', cell_value.replace(',', '')):
+                data_start_row = i
+                break
+        
+        if data_start_row is None:
+            return None
+        
+        # Extract table metadata (first few rows before data)
+        table_metadata = {
+            'table_name': f"{key} - {entity_name}",
+            'sheet_name': sheet_name,
+            'currency_info': currency_info,
+            'multiplier': multiplier,
+            'value_column': value_col_name,
+            'data_start_row': data_start_row
+        }
+        
+        # Extract actual data rows
+        description_col_idx = 0  # Usually first column
+        data_rows = []
+        
+        for i in range(data_start_row, len(df_str)):
+            description = str(df_str.iloc[i, description_col_idx]).strip()
+            value_str = str(df_str.iloc[i, value_col_idx]).strip()
+            
+            # Skip empty rows
+            if not description or description.lower() in ['nan', '']:
+                continue
+            
+            # Extract numeric value
+            value = 0
+            if re.search(r'\d', value_str):
+                # Remove commas and extract number
+                clean_value = re.sub(r'[^\d.-]', '', value_str.replace(',', ''))
+                try:
+                    value = float(clean_value) * multiplier  # Apply multiplier
+                except ValueError:
+                    value = 0
+            
+            if description and (value != 0 or description.lower() not in ['total', 'subtotal']):
+                data_rows.append({
+                    'description': description,
+                    'value': value,
+                    'original_value': value_str
+                })
+        
+        return {
+            'metadata': table_metadata,
+            'data': data_rows,
+            'raw_df': df
+        }
+        
+    except Exception as e:
+        print(f"Error parsing accounting table: {e}")
+        return None
+
+def create_improved_table_markdown(parsed_table):
+    """Create improved markdown representation of parsed accounting table"""
+    try:
+        if not parsed_table or 'metadata' not in parsed_table or 'data' not in parsed_table:
+            return "No table data available"
+        
+        metadata = parsed_table['metadata']
+        data_rows = parsed_table['data']
+        
+        # Create table header with metadata
+        markdown_lines = []
+        markdown_lines.append(f"**{metadata['table_name']}**")
+        markdown_lines.append(f"*Sheet: {metadata['sheet_name']}*")
+        
+        if metadata.get('currency_info'):
+            markdown_lines.append(f"*Currency: {metadata['currency_info']}*")
+        
+        markdown_lines.append(f"*Value Column: {metadata['value_column']}*")
+        markdown_lines.append("")  # Empty line
+        
+        # Create table with description and value columns
+        if data_rows:
+            markdown_lines.append("| Description | Value |")
+            markdown_lines.append("|-------------|--------|")
+            
+            for row in data_rows:
+                description = row['description']
+                value = row['value']
+                
+                # Format value appropriately
+                if value >= 1000000:
+                    formatted_value = f"{value/1000000:.1f}M"
+                elif value >= 1000:
+                    formatted_value = f"{value/1000:.1f}K"
+                else:
+                    formatted_value = f"{value:.0f}"
+                
+                markdown_lines.append(f"| {description} | {formatted_value} |")
+        else:
+            markdown_lines.append("*No data rows found*")
+        
+        return "\n".join(markdown_lines)
+        
+    except Exception as e:
+        return f"Error creating table markdown: {e}"
+
 def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, debug=False):
     """
     Get worksheet sections organized by financial keys following the mapping
@@ -280,22 +454,27 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             axis=1
                         )
                         
-                        # If entity filter matches, add it
-                        if entity_mask.any():
-                            sections_by_key[best_key].append({
-                                'sheet': sheet_name,
-                                'data': data_frame,
-                                'markdown': tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False),
-                                'entity_match': True
-                            })
-                        # If no entity helpers provided, show all sections for this key
-                        elif not entity_suffixes or all(s.strip() == '' for s in entity_suffixes):
-                            sections_by_key[best_key].append({
-                                'sheet': sheet_name,
-                                'data': data_frame,
-                                'markdown': tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False),
-                                'entity_match': False
-                            })
+                        # If entity filter matches or no entity helpers provided, process with new parser
+                        if entity_mask.any() or not entity_suffixes or all(s.strip() == '' for s in entity_suffixes):
+                            # Use new accounting table parser
+                            parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name)
+                            
+                            if parsed_table:
+                                sections_by_key[best_key].append({
+                                    'sheet': sheet_name,
+                                    'data': data_frame,  # Keep original for compatibility
+                                    'parsed_data': parsed_table,  # New structured data
+                                    'markdown': create_improved_table_markdown(parsed_table),
+                                    'entity_match': entity_mask.any()
+                                })
+                            else:
+                                # Fallback to original format if parsing fails
+                                sections_by_key[best_key].append({
+                                    'sheet': sheet_name,
+                                    'data': data_frame,
+                                    'markdown': tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False),
+                                    'entity_match': entity_mask.any()
+                                })
         
         return sections_by_key
     except Exception as e:
@@ -541,7 +720,7 @@ def main():
                                         df_clean.loc[:, col] = df_clean[col].astype(str)
                                     except:
                                         # If that fails, handle datetime objects specifically
-                                        df_clean.loc[:, col] = df_clean[col].apply(
+                                        df_clean.loc[:, col] = df_clean[col].map(
                                             lambda x: str(x) if pd.notna(x) and not pd.isna(x) else ''
                                         )
                                 elif 'datetime' in str(df_clean[col].dtype):
@@ -1780,7 +1959,7 @@ def display_ai_prompt_by_key(key, agent_choice):
                             df_clean.loc[:, col] = df_clean[col].astype(str)
                         except:
                             # If that fails, handle datetime objects specifically
-                            df_clean.loc[:, col] = df_clean[col].apply(
+                            df_clean.loc[:, col] = df_clean[col].map(
                                 lambda x: str(x) if pd.notna(x) and not pd.isna(x) else ''
                             )
                     elif 'datetime' in str(df_clean[col].dtype):
