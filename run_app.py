@@ -37,74 +37,42 @@ def kill_streamlit_processes():
         print(f"⚠️ Could not check for existing processes: {e}")
         return False
 
-def is_port_in_use(port, host='localhost'):
-    """Check if a port is in use with multiple methods"""
-    # Method 1: Try to bind to the port
+def is_port_available(port, host='localhost'):
+    """Simple but reliable port availability check"""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((host, port))
-            return False  # Port is available
-    except OSError:
-        pass  # Port might be in use, check further
-    
-    # Method 2: Try to connect to the port
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(1)
-            result = sock.connect_ex((host, port))
-            return result == 0  # 0 means connection successful, port is in use
-    except Exception:
-        pass
-    
-    # Method 3: Check with netstat if available (Unix systems)
-    try:
-        if sys.platform != 'win32':
-            result = subprocess.run(['netstat', '-an'], capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                lines = result.stdout.split('\n')
-                for line in lines:
-                    if f':{port} ' in line and ('LISTEN' in line or 'ESTABLISHED' in line):
-                        return True
-    except Exception:
-        pass
-    
-    return False  # Assume available if all checks pass
+            sock.settimeout(3)  # Longer timeout for reliability
+            result = sock.bind((host, port))
+            return True  # Port is available
+    except (OSError, socket.error):
+        return False  # Port is in use or not available
 
-def find_available_port(start_port=8501, max_attempts=100):
-    """Find an available port with enhanced detection"""
+def find_available_port(start_port=8501, max_attempts=50):
+    """Find an available port with simple but reliable detection"""
     print(f"🔍 Searching for available port starting from {start_port}...")
     
-    # Check a wider range of ports
-    ports_to_try = list(range(start_port, start_port + max_attempts))
-    
-    # Add some randomization to avoid conflicts on shared systems
-    random.shuffle(ports_to_try[10:])  # Keep first 10 in order, randomize rest
-    
-    for i, port in enumerate(ports_to_try):
-        if not is_port_in_use(port):
-            print(f"✅ Found available port: {port} (checked {i+1} ports)")
+    # Check ports sequentially first
+    for i in range(max_attempts):
+        port = start_port + i
+        if is_port_available(port):
+            print(f"✅ Found available port: {port}")
             return port
-        else:
-            if i < 10:  # Only show details for first few attempts
-                print(f"❌ Port {port} is in use")
+        elif i < 5:  # Only show details for first few attempts
+            print(f"❌ Port {port} is in use")
     
     print(f"⚠️ No available ports found in range {start_port}-{start_port + max_attempts}")
     return None
 
 def get_random_port_range():
     """Get a random port range to avoid conflicts"""
-    # Choose a random starting point in the valid range
     ranges = [
-        (8501, 8600),   # Standard Streamlit range
-        (8701, 8800),   # Alternative range 1
-        (9001, 9100),   # Alternative range 2
-        (7501, 7600),   # Alternative range 3
+        8601,   # Above standard Streamlit range
+        8701,   # Alternative range 1
+        9001,   # Alternative range 2
+        7501,   # Alternative range 3
     ]
-    
-    start_range, end_range = random.choice(ranges)
-    start_port = random.randint(start_range, end_range - 50)
-    return start_port
+    return random.choice(ranges)
 
 def main():
     """Launch the Streamlit app with enhanced port management"""
@@ -113,59 +81,50 @@ def main():
         import streamlit
         
         print("🚀 Starting Financial Data Processor...")
-        print("🔧 Enhanced port detection and process management enabled")
+        print("🔧 Enhanced port detection enabled")
         
-        # Kill any existing Streamlit processes
-        processes_killed = kill_streamlit_processes()
+        # Kill any existing Streamlit processes (optional, can be disabled)
+        try:
+            kill_streamlit_processes()
+        except Exception as e:
+            print(f"⚠️ Could not clean up processes: {e}")
         
-        # Try different approaches for port finding
+        # Try to find an available port
         available_port = None
         
         # Approach 1: Try standard port range
-        available_port = find_available_port(8501, 50)
+        available_port = find_available_port(8501, 20)
         
-        # Approach 2: If no port found, try a random range
+        # Approach 2: If no port found, try alternative ranges
         if not available_port:
             print("🔄 Trying alternative port ranges...")
-            for _ in range(3):  # Try 3 different random ranges
+            for _ in range(3):  # Try 3 different ranges
                 random_start = get_random_port_range()
-                available_port = find_available_port(random_start, 30)
+                available_port = find_available_port(random_start, 20)
                 if available_port:
                     break
         
-        # Approach 3: Let Streamlit choose automatically
+        # Launch Streamlit
         if available_port:
             print("📊 Streamlit app will open in your browser")
             print(f"📍 URL: http://localhost:{available_port}")
             print("⏹️  Press Ctrl+C to stop the server")
             print("-" * 50)
             
-            # Run streamlit app with the available port
-            cmd = [
+            # Simple launch with just the port - no extra flags that might cause issues
+            subprocess.run([
                 sys.executable, "-m", "streamlit", "run", "app.py", 
-                "--server.port", str(available_port),
-                "--server.headless", "true",
-                "--server.enableCORS", "false",
-                "--server.enableXsrfProtection", "false"
-            ]
-            
-            subprocess.run(cmd)
+                "--server.port", str(available_port)
+            ])
         else:
-            print("🔄 No specific port found, letting Streamlit auto-select...")
+            print("🔄 No specific port found, using Streamlit default...")
             print("📊 Streamlit app will open in your browser")
-            print("📍 URL: Streamlit will choose an available port automatically")
+            print("📍 URL: Streamlit will choose an available port")
             print("⏹️  Press Ctrl+C to stop the server")
             print("-" * 50)
             
-            # Let Streamlit choose the port automatically with enhanced settings
-            cmd = [
-                sys.executable, "-m", "streamlit", "run", "app.py",
-                "--server.headless", "true",
-                "--server.enableCORS", "false",
-                "--server.enableXsrfProtection", "false"
-            ]
-            
-            subprocess.run(cmd)
+            # Default launch - let Streamlit handle everything
+            subprocess.run([sys.executable, "-m", "streamlit", "run", "app.py"])
         
     except ImportError:
         print("❌ Streamlit is not installed!")
@@ -176,12 +135,13 @@ def main():
         print("\n👋 App stopped by user")
     except Exception as e:
         print(f"❌ Error starting app: {e}")
-        print("🔄 Trying fallback launch method...")
+        print("🔄 Trying simple fallback launch...")
         try:
-            # Fallback: basic launch
+            # Simplest possible launch
             subprocess.run([sys.executable, "-m", "streamlit", "run", "app.py"])
         except Exception as fallback_error:
             print(f"❌ Fallback also failed: {fallback_error}")
+            print("💡 Try using: python run_app_simple.py")
             sys.exit(1)
 
 if __name__ == "__main__":
