@@ -162,27 +162,42 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
         st.error(f"Processing error: {e}")
         return {}
 
-def run_ai_processing_fallback(keys_with_data, sections_by_key, entity_name, config, pattern, prompts):
-    """AI processing with fallback mode"""
+def run_ai_processing_with_logging(keys_with_data, sections_by_key, entity_name, config, pattern, prompts):
+    """AI processing with comprehensive logging and real API calls"""
     st.markdown("### 🤖 AI Agent Pipeline")
     
-    # Import AI config from utils
+    # Import AI config and logging from utils
     import sys
+    import time
     sys.path.insert(0, str(Path(__file__).parent / "utils"))
+    
     try:
         from ai_config import load_ai_config, initialize_ai_services, generate_ai_response
+        from ai_logger import start_new_ai_session, get_ai_logger
+        
+        # Start new AI logging session
+        ai_logger = start_new_ai_session()
+        st.success(f"🗂️ AI logging session started: {ai_logger.session_dir}")
+        
+        # Initialize AI services
         ai_config = load_ai_config()
         ai_client, _ = initialize_ai_services(ai_config)
-        has_openai = ai_client is not None
-    except ImportError:
-        # Fallback if utils/ai_config.py not available
-        has_openai = config and config.get('OPENAI_API_KEY')
+        has_real_openai = ai_client and ai_client != "openai_client_placeholder"
+        
+    except ImportError as e:
+        st.error(f"⚠️ AI utilities import failed: {e}")
+        # Basic fallback without logging
+        has_real_openai = False
         ai_client = None
+        ai_logger = None
     
-    if has_openai:
-        st.info("🚀 AI processing with OpenAI (configuration detected)")
+    # Display AI status
+    if has_real_openai:
+        st.success("🚀 **Real OpenAI API detected** - Processing with actual AI")
+    elif ai_client == "openai_client_placeholder":
+        st.info("🔄 **Demo mode** - OpenAI not available, using enhanced placeholders")
     else:
-        st.warning("⚠️ AI processing in fallback mode (no OpenAI key configured)")
+        st.warning("⚠️ **Fallback mode** - No AI configuration detected")
     
     # Single progress bar for all processing
     progress_bar = st.progress(0)
@@ -195,7 +210,7 @@ def run_ai_processing_fallback(keys_with_data, sections_by_key, entity_name, con
     ai_results = {}
     
     for i, key in enumerate(keys_with_data):
-        st.markdown(f"#### Processing Key: {get_key_display_name(key)}")
+        st.markdown(f"#### 🔄 Processing Key: {get_key_display_name(key)}")
         
         sections = sections_by_key[key]
         if not sections:
@@ -209,65 +224,244 @@ def run_ai_processing_fallback(keys_with_data, sections_by_key, entity_name, con
         progress_bar.progress(current_step / total_steps)
         status_text.text(f"🤖 Agent 1: Generating content for {get_key_display_name(key)} ({i+1}/{total_keys})")
         
-        if has_openai and ai_client:
-            system_prompt = prompts.get('system_prompts', {}).get('Agent 1', '') if prompts else ""
-            user_prompt = f"Generate financial analysis for {key} based on this data:\n\nEntity: {entity_name}\nData: {context_data[:1000]}..."
-            agent1_result = generate_ai_response(ai_client, system_prompt, user_prompt)
-        else:
-            agent1_result = f"[Demo Analysis for {key}]\nAnalyzed {len(sections)} sections for {entity_name}.\n\nFindings:\n- {key} data successfully extracted\n- {context_data[:200]}...\n- Analysis complete"
+        start_time = time.time()
+        
+        # Get system and user prompts
+        system_prompt = prompts.get('system_prompts', {}).get('Agent 1', 'You are a financial analyst specializing in due diligence reports.') if prompts else "You are a financial analyst."
+        user_prompt = f"""Generate a comprehensive financial analysis for the {key} category based on this data:
+
+Entity: {entity_name}
+Financial Category: {key}
+Data Sections: {len(sections)}
+
+Raw Data:
+{context_data[:2000]}
+
+Please provide:
+1. Summary of key findings
+2. Important financial figures
+3. Notable trends or patterns
+4. Risk factors or concerns
+5. Recommendations
+
+Format your response clearly and professionally."""
+        
+        agent1_result = generate_ai_response(ai_client, system_prompt, user_prompt)
+        agent1_time = time.time() - start_time
+        
+        # Log the interaction
+        if ai_logger:
+            ai_logger.log_ai_interaction(
+                agent_name="Agent 1",
+                key=key,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                ai_response=agent1_result,
+                entity_name=entity_name,
+                processing_time=agent1_time
+            )
         
         # Agent 2: Data Validation
         current_step += 1
         progress_bar.progress(current_step / total_steps)
         status_text.text(f"🔍 Agent 2: Validating data for {get_key_display_name(key)} ({i+1}/{total_keys})")
         
-        if has_openai and ai_client:
-            system_prompt = prompts.get('system_prompts', {}).get('Agent 2', '') if prompts else ""
-            user_prompt = f"Validate this content for {key}:\n\nContent: {agent1_result}\nOriginal Data: {context_data[:500]}..."
-            agent2_result = generate_ai_response(ai_client, system_prompt, user_prompt)
-        else:
-            agent2_result = f"[Agent 2 Validation for {key}]\n✅ Data validation completed\n✅ Financial figures verified\n✅ Entity names consistent\n✅ No critical issues found"
+        start_time = time.time()
+        
+        system_prompt = prompts.get('system_prompts', {}).get('Agent 2', 'You are a data validation specialist for financial reports.') if prompts else "You are a data validator."
+        user_prompt = f"""Validate the following financial analysis for accuracy and consistency:
+
+Financial Category: {key}
+Entity: {entity_name}
+
+Generated Content:
+{agent1_result}
+
+Original Data for Cross-Reference:
+{context_data[:1000]}
+
+Please:
+1. Verify that all financial figures mentioned are present in the source data
+2. Check for mathematical accuracy
+3. Identify any inconsistencies or discrepancies
+4. Suggest corrections if needed
+5. Rate the accuracy (1-10) and explain your reasoning
+
+Provide your validation in JSON format:
+{{
+    "accuracy_score": 8,
+    "issues_found": ["list", "of", "issues"],
+    "corrections_needed": ["list", "of", "corrections"],
+    "validation_summary": "Overall assessment"
+}}"""
+        
+        agent2_result = generate_ai_response(ai_client, system_prompt, user_prompt)
+        agent2_time = time.time() - start_time
+        
+        # Log the interaction
+        if ai_logger:
+            ai_logger.log_ai_interaction(
+                agent_name="Agent 2",
+                key=key,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                ai_response=agent2_result,
+                entity_name=entity_name,
+                processing_time=agent2_time
+            )
         
         # Agent 3: Pattern Compliance
         current_step += 1
         progress_bar.progress(current_step / total_steps)
         status_text.text(f"🎯 Agent 3: Checking pattern compliance for {get_key_display_name(key)} ({i+1}/{total_keys})")
         
+        start_time = time.time()
+        
         patterns_for_key = pattern.get(key, {}) if pattern else {}
-        if has_openai and ai_client:
-            system_prompt = prompts.get('system_prompts', {}).get('Agent 3', '') if prompts else ""
-            user_prompt = f"Check pattern compliance for {key}:\n\nContent: {agent1_result}\nPatterns: {patterns_for_key}"
-            agent3_result = generate_ai_response(ai_client, system_prompt, user_prompt)
-        else:
-            agent3_result = f"[Agent 3 Pattern Check for {key}]\n✅ Content structure validated\n✅ Pattern compliance verified\n✅ Ready for PowerPoint export\n\nPattern details: {len(patterns_for_key)} patterns checked"
+        system_prompt = prompts.get('system_prompts', {}).get('Agent 3', 'You are a compliance specialist for financial reporting patterns.') if prompts else "You are a compliance checker."
+        user_prompt = f"""Check the following content for compliance with established patterns and format requirements:
+
+Financial Category: {key}
+Entity: {entity_name}
+
+Content to Check:
+{agent1_result}
+
+Required Patterns:
+{json.dumps(patterns_for_key, indent=2)}
+
+Validation Results from Agent 2:
+{agent2_result}
+
+Please:
+1. Ensure the content follows the required patterns
+2. Check formatting and structure compliance
+3. Verify professional tone and language
+4. Remove any template artifacts
+5. Provide the final, compliant version
+
+Return the final compliant content that is ready for PowerPoint export."""
+        
+        agent3_result = generate_ai_response(ai_client, system_prompt, user_prompt)
+        agent3_time = time.time() - start_time
+        
+        # Log the interaction
+        if ai_logger:
+            ai_logger.log_ai_interaction(
+                agent_name="Agent 3",
+                key=key,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                ai_response=agent3_result,
+                entity_name=entity_name,
+                processing_time=agent3_time
+            )
         
         # Store results
         ai_results[key] = {
             'agent1': agent1_result,
             'agent2': agent2_result,
             'agent3': agent3_result,
-            'final_content': agent3_result
+            'final_content': agent3_result,
+            'processing_times': {
+                'agent1': agent1_time,
+                'agent2': agent2_time,
+                'agent3': agent3_time
+            }
         }
         
         # Show completion for this key
-        st.success(f"✅ AI processing completed for {get_key_display_name(key)}")
+        st.success(f"✅ AI processing completed for {get_key_display_name(key)} (Total: {agent1_time + agent2_time + agent3_time:.1f}s)")
         
-        # Show results
+        # Show results in expandable tabs
         with st.expander(f"📊 AI Results for {get_key_display_name(key)}", expanded=False):
-            tab1, tab2, tab3 = st.tabs(["Agent 1", "Agent 2", "Agent 3"])
+            tab1, tab2, tab3, tab4 = st.tabs(["📝 Agent 1", "🔍 Agent 2", "🎯 Agent 3", "📋 Summary"])
+            
             with tab1:
-                st.markdown("**Content Generation:**")
-                st.write(agent1_result)
+                st.markdown("### 🤖 **Agent 1: Content Generation**")
+                st.markdown(f"**Processing Time:** {agent1_time:.2f} seconds")
+                if "[Demo AI Analysis]" in agent1_result:
+                    st.info("🔄 **Demo Mode** - This is placeholder content")
+                elif "[AI Error]" in agent1_result:
+                    st.error("❌ **Error** - AI processing failed")
+                else:
+                    st.success("🤖 **Real AI Response**")
+                st.markdown(agent1_result)
+            
             with tab2:
-                st.markdown("**Data Validation:**")
-                st.write(agent2_result)
+                st.markdown("### 🔍 **Agent 2: Data Validation**")
+                st.markdown(f"**Processing Time:** {agent2_time:.2f} seconds")
+                if "[Demo AI Analysis]" in agent2_result:
+                    st.info("🔄 **Demo Mode** - This is placeholder content")
+                elif "[AI Error]" in agent2_result:
+                    st.error("❌ **Error** - AI processing failed")
+                else:
+                    st.success("🤖 **Real AI Response**")
+                st.markdown(agent2_result)
+            
             with tab3:
-                st.markdown("**Pattern Compliance:**")
-                st.write(agent3_result)
+                st.markdown("### 🎯 **Agent 3: Pattern Compliance**")
+                st.markdown(f"**Processing Time:** {agent3_time:.2f} seconds")
+                if "[Demo AI Analysis]" in agent3_result:
+                    st.info("🔄 **Demo Mode** - This is placeholder content")
+                elif "[AI Error]" in agent3_result:
+                    st.error("❌ **Error** - AI processing failed")
+                else:
+                    st.success("🤖 **Real AI Response**")
+                st.markdown(agent3_result)
+            
+            with tab4:
+                st.markdown("### 📋 **Processing Summary**")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Agent 1 Time", f"{agent1_time:.2f}s")
+                    st.metric("Agent 2 Time", f"{agent2_time:.2f}s")
+                with col2:
+                    st.metric("Agent 3 Time", f"{agent3_time:.2f}s")
+                    st.metric("Total Time", f"{agent1_time + agent2_time + agent3_time:.2f}s")
+                
+                # Response type indicators
+                response_types = []
+                for agent_result in [agent1_result, agent2_result, agent3_result]:
+                    if "[Demo AI Analysis]" in agent_result:
+                        response_types.append("🔄 Demo")
+                    elif "[AI Error]" in agent_result:
+                        response_types.append("❌ Error")
+                    elif not any(x in agent_result for x in ["[Demo AI Analysis]", "[AI Response Placeholder]", "[Fallback Response]"]):
+                        response_types.append("🤖 Real AI")
+                    else:
+                        response_types.append("🔄 Fallback")
+                
+                st.markdown("**Response Types:**")
+                st.write(" | ".join(response_types))
     
     # Final completion
     progress_bar.progress(1.0)
     status_text.text(f"✅ All processing completed! Processed {total_keys} keys with 3 agents each.")
+    
+    # Finalize logging session
+    if ai_logger:
+        session_dir = ai_logger.finalize_session()
+        st.success(f"📊 **AI logging completed:** {session_dir}")
+        
+        # Show logging summary
+        session_info = ai_logger.get_session_info()
+        st.info(f"🗂️ **Session:** {session_info['interactions_count']} interactions logged")
+        
+        # Download logs option
+        try:
+            summary_file = session_dir / "summary.md"
+            if summary_file.exists():
+                with open(summary_file, 'r', encoding='utf-8') as f:
+                    summary_content = f.read()
+                st.download_button(
+                    label="📥 Download AI Logs Summary",
+                    data=summary_content,
+                    file_name=f"ai_logs_{session_info['session_id']}.md",
+                    mime="text/markdown"
+                )
+        except Exception as e:
+            st.warning(f"Could not prepare log download: {e}")
     
     return ai_results
 
@@ -441,7 +635,7 @@ def main():
             st.subheader("🤖 AI Processing Pipeline")
             
             if st.button("🤖 Process with AI Agents", type="primary", use_container_width=True):
-                ai_results = run_ai_processing_fallback(
+                ai_results = run_ai_processing_with_logging(
                     filtered_keys, sections_by_key, selected_entity, config, pattern, prompts
                 )
                 st.session_state['ai_results'] = ai_results
