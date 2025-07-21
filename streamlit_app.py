@@ -384,68 +384,6 @@ Return the final compliant content that is ready for PowerPoint export."""
         
         # Show completion for this key
         st.success(f"✅ AI processing completed for {get_key_display_name(key)} (Total: {agent1_time + agent2_time + agent3_time:.1f}s)")
-        
-        # Show results in expandable tabs
-        with st.expander(f"📊 AI Results for {get_key_display_name(key)}", expanded=False):
-            tab1, tab2, tab3, tab4 = st.tabs(["📝 Agent 1", "🔍 Agent 2", "🎯 Agent 3", "📋 Summary"])
-            
-            with tab1:
-                st.markdown("### 🤖 **Agent 1: Content Generation**")
-                st.markdown(f"**Processing Time:** {agent1_time:.2f} seconds")
-                if "[Demo AI Analysis]" in agent1_result:
-                    st.info("🔄 **Demo Mode** - This is placeholder content")
-                elif "[AI Error]" in agent1_result:
-                    st.error("❌ **Error** - AI processing failed")
-                else:
-                    st.success("🤖 **Real AI Response**")
-                st.markdown(agent1_result)
-            
-            with tab2:
-                st.markdown("### 🔍 **Agent 2: Data Validation**")
-                st.markdown(f"**Processing Time:** {agent2_time:.2f} seconds")
-                if "[Demo AI Analysis]" in agent2_result:
-                    st.info("🔄 **Demo Mode** - This is placeholder content")
-                elif "[AI Error]" in agent2_result:
-                    st.error("❌ **Error** - AI processing failed")
-                else:
-                    st.success("🤖 **Real AI Response**")
-                st.markdown(agent2_result)
-            
-            with tab3:
-                st.markdown("### 🎯 **Agent 3: Pattern Compliance**")
-                st.markdown(f"**Processing Time:** {agent3_time:.2f} seconds")
-                if "[Demo AI Analysis]" in agent3_result:
-                    st.info("🔄 **Demo Mode** - This is placeholder content")
-                elif "[AI Error]" in agent3_result:
-                    st.error("❌ **Error** - AI processing failed")
-                else:
-                    st.success("🤖 **Real AI Response**")
-                st.markdown(agent3_result)
-            
-            with tab4:
-                st.markdown("### 📋 **Processing Summary**")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Agent 1 Time", f"{agent1_time:.2f}s")
-                    st.metric("Agent 2 Time", f"{agent2_time:.2f}s")
-                with col2:
-                    st.metric("Agent 3 Time", f"{agent3_time:.2f}s")
-                    st.metric("Total Time", f"{agent1_time + agent2_time + agent3_time:.2f}s")
-                
-                # Response type indicators
-                response_types = []
-                for agent_result in [agent1_result, agent2_result, agent3_result]:
-                    if "[Demo AI Analysis]" in agent_result:
-                        response_types.append("🔄 Demo")
-                    elif "[AI Error]" in agent_result:
-                        response_types.append("❌ Error")
-                    elif not any(x in agent_result for x in ["[Demo AI Analysis]", "[AI Response Placeholder]", "[Fallback Response]"]):
-                        response_types.append("🤖 Real AI")
-                    else:
-                        response_types.append("🔄 Fallback")
-                
-                st.markdown("**Response Types:**")
-                st.write(" | ".join(response_types))
     
     # Final completion
     progress_bar.progress(1.0)
@@ -475,31 +413,49 @@ Return the final compliant content that is ready for PowerPoint export."""
         except Exception as e:
             st.warning(f"Could not prepare log download: {e}")
     
-    # Show consolidated AI results for all keys
+    # Show consolidated AI results for all keys in 2-layer tabs
     if ai_results:
         st.markdown("---")
-        st.markdown("### 📊 **All AI Results Summary**")
+        st.markdown("### 📊 **AI Results - All Keys**")
         
-        # Create tabs for each agent across all keys
-        all_agent1_tab, all_agent2_tab, all_agent3_tab = st.tabs(["🤖 All Agent 1 Results", "🔍 All Agent 2 Results", "🎯 All Agent 3 Results"])
+        # First layer: Agent tabs
+        agent1_tab, agent2_tab, agent3_tab = st.tabs(["🤖 Agent 1: Content Generation", "🔍 Agent 2: Data Validation", "🎯 Agent 3: Pattern Compliance"])
         
-        with all_agent1_tab:
-            st.markdown("#### **Agent 1: Content Generation - All Keys**")
-            for key, result in ai_results.items():
-                with st.expander(f"📝 {get_key_display_name(key)} - Agent 1", expanded=False):
-                    st.markdown(result['agent1'])
+        with agent1_tab:
+            # Second layer: Key tabs within Agent 1
+            if len(ai_results) > 1:
+                key_tabs = st.tabs([f"📝 {get_key_display_name(key)}" for key in ai_results.keys()])
+                for i, (key, result) in enumerate(ai_results.items()):
+                    with key_tabs[i]:
+                        st.markdown(result['agent1'])
+            else:
+                # Single key, no need for sub-tabs
+                key, result = list(ai_results.items())[0]
+                st.markdown(result['agent1'])
         
-        with all_agent2_tab:
-            st.markdown("#### **Agent 2: Data Validation - All Keys**")
-            for key, result in ai_results.items():
-                with st.expander(f"🔍 {get_key_display_name(key)} - Agent 2", expanded=False):
-                    st.markdown(result['agent2'])
+        with agent2_tab:
+            # Second layer: Key tabs within Agent 2
+            if len(ai_results) > 1:
+                key_tabs = st.tabs([f"🔍 {get_key_display_name(key)}" for key in ai_results.keys()])
+                for i, (key, result) in enumerate(ai_results.items()):
+                    with key_tabs[i]:
+                        st.markdown(result['agent2'])
+            else:
+                # Single key, no need for sub-tabs
+                key, result = list(ai_results.items())[0]
+                st.markdown(result['agent2'])
         
-        with all_agent3_tab:
-            st.markdown("#### **Agent 3: Pattern Compliance - All Keys**")
-            for key, result in ai_results.items():
-                with st.expander(f"🎯 {get_key_display_name(key)} - Agent 3", expanded=False):
-                    st.markdown(result['agent3'])
+        with agent3_tab:
+            # Second layer: Key tabs within Agent 3
+            if len(ai_results) > 1:
+                key_tabs = st.tabs([f"🎯 {get_key_display_name(key)}" for key in ai_results.keys()])
+                for i, (key, result) in enumerate(ai_results.items()):
+                    with key_tabs[i]:
+                        st.markdown(result['agent3'])
+            else:
+                # Single key, no need for sub-tabs
+                key, result = list(ai_results.items())[0]
+                st.markdown(result['agent3'])
     
     return ai_results
 
