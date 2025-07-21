@@ -1,0 +1,111 @@
+{
+  "system_prompts": {
+    "Agent 1": "You are a content generation specialist for financial reports. Your role is to generate comprehensive financial analysis content based on worksheet data and predefined patterns. Focus on:\n1. Content generation using patterns from pattern.json\n2. Integration of actual worksheet data into narrative content\n3. Professional financial writing suitable for audit reports\n4. Consistent formatting and structure\n5. Clear, accurate descriptions of financial positions",
+    
+    "Agent 2": "You are a data integrity specialist for financial statements. Your role is to validate and verify the integrity of balance sheet data against worksheet content. Focus on:\n1. Data validation and consistency checks\n2. Balance sheet item verification\n3. Cross-referencing worksheet data with financial statements\n4. Identification of data discrepancies and anomalies\n5. Quality assurance of financial data accuracy",
+    
+    "Agent 3": "You are a formatting compliance specialist for financial reports. Your role is to ensure content formatting adheres to predefined patterns and standards. Focus on:\n1. Pattern compliance verification\n2. Formatting standards enforcement\n3. Consistency checks across financial items\n4. Quality control of report formatting\n5. Pattern optimization and improvement recommendations"
+  },
+  
+  "user_prompts": {
+    "Cash": {
+      "title": "Cash Analysis",
+      "description": "Generate content for Cash using worksheet data and patterns",
+      "analysis_points": [
+        "Current Balance: Review the current cash balance and composition",
+        "Bank Accounts: Identify major bank accounts and their balances",
+        "Cash Flow: Assess cash flow patterns and liquidity",
+        "Risk Assessment: Evaluate cash management risks",
+        "Business Impact: Consider the impact on business operations"
+      ],
+      "key_questions": [
+        "What is the current cash balance and its composition?",
+        "How has cash changed over time?",
+        "What are the key risks and considerations?",
+        "How does this impact business operations?",
+        "What are the future expectations?"
+      ],
+      "data_sources": [
+        "Financial statements",
+        "Bank reconciliations",
+        "Cash flow statements",
+        "Management representations"
+      ]
+    },
+    
+    "AR": {
+      "title": "Accounts Receivable Analysis",
+      "description": "Analyze the accounts receivable position",
+      "analysis_points": [
+        "Receivable Balance: Review the total accounts receivable balance and aging profile",
+        "Customer Analysis: Identify major customers, their payment terms, and credit risk assessment",
+        "Aging Analysis: Assess the aging of receivables and potential credit risk exposure",
+        "Bad Debt Provision: Evaluate the adequacy of bad debt provisions and methodology",
+        "Collection Performance: Analyze collection efficiency, trends, and days sales outstanding"
+      ],
+      "key_questions": [
+        "What is the composition of accounts receivable by customer and aging?",
+        "Who are the major customers and what are their payment terms?",
+        "What is the aging profile of receivables and potential credit risk?",
+        "Is the bad debt provision adequate based on historical experience?",
+        "How does collection performance compare to industry standards?"
+      ],
+      "data_sources": [
+        "Aged receivables reports",
+        "Customer master data",
+        "Collection history",
+        "Industry benchmarks"
+      ]
+    },
+    
+    "AP": {
+      "title": "Accounts Payable Analysis",
+      "description": "Analyze the accounts payable position",
+      "analysis_points": [
+        "Payable Balance: Review the total accounts payable balance and aging profile",
+        "Supplier Analysis: Identify major suppliers, their payment terms, and relationship assessment",
+        "Aging Analysis: Assess the aging of payables and payment timing compliance",
+        "Payment Performance: Analyze payment efficiency, trends, and days payable outstanding",
+        "Working Capital Impact: Evaluate the impact on working capital and cash flow management"
+      ],
+      "key_questions": [
+        "What is the composition of accounts payable by supplier and aging?",
+        "Who are the major suppliers and what are their payment terms?",
+        "What is the aging profile of payables and compliance with payment terms?",
+        "How does payment performance compare to terms and industry standards?",
+        "What is the impact on working capital management and cash flow?"
+      ],
+      "data_sources": [
+        "Aged payables reports",
+        "Supplier master data",
+        "Payment history",
+        "Working capital analysis"
+      ]
+    }
+  },
+  
+  "generic_prompt": {
+    "title": "Generic Financial Analysis",
+    "description": "Analyze the financial position",
+    "analysis_points": [
+      "Current Balance: Review the current balance and composition",
+      "Trend Analysis: Assess historical trends and changes",
+      "Risk Assessment: Evaluate any associated risks",
+      "Business Impact: Consider the impact on business operations",
+      "Future Outlook: Assess future expectations and plans"
+    ],
+    "key_questions": [
+      "What is the current balance and its composition?",
+      "How has this changed over time?",
+      "What are the key risks and considerations?",
+      "How does this impact business operations?",
+      "What are the future expectations?"
+    ],
+    "data_sources": [
+      "Financial statements",
+      "Management representations",
+      "Industry analysis",
+      "Historical data"
+    ]
+  }
+} 
