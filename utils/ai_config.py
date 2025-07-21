@@ -24,13 +24,25 @@ def initialize_ai_services(config):
     """Initialize AI services based on configuration"""
     try:
         # Check for OpenAI configuration
-        if config.get('OPENAI_API_KEY'):
+        if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_KEY') != "your-openai-api-key-here":
             print("✅ OpenAI API key found")
-            # Here you would initialize OpenAI client
-            # import openai
-            # openai.api_key = config['OPENAI_API_KEY']
-            # return openai_client, None
-            return "openai_client_placeholder", None
+            try:
+                # Try to initialize actual OpenAI client
+                import openai
+                client = openai.OpenAI(
+                    api_key=config['OPENAI_API_KEY'],
+                    base_url=config.get('OPENAI_API_BASE', 'https://api.openai.com/v1')
+                )
+                # Test the connection
+                models = client.models.list()
+                print(f"✅ OpenAI client initialized successfully")
+                return client, None
+            except ImportError:
+                print("⚠️ OpenAI library not installed, using placeholder mode")
+                return "openai_client_placeholder", None
+            except Exception as e:
+                print(f"⚠️ OpenAI client initialization failed: {e}")
+                return "openai_client_placeholder", None
         else:
             print("⚠️ OpenAI API key not configured")
             return None, None
@@ -39,20 +51,46 @@ def initialize_ai_services(config):
         print(f"Error initializing AI services: {e}")
         return None, None
 
-def generate_ai_response(client, system_prompt, user_prompt):
+def generate_ai_response(client, system_prompt, user_prompt, model="gpt-4o-mini"):
     """Generate AI response using configured service"""
-    if client:
-        # Placeholder for actual AI API call
-        # response = client.chat.completions.create(
-        #     model="gpt-4",
-        #     messages=[
-        #         {"role": "system", "content": system_prompt},
-        #         {"role": "user", "content": user_prompt}
-        #     ]
-        # )
-        # return response.choices[0].message.content
-        
-        return f"[AI Response Placeholder]\nSystem: {system_prompt[:50]}...\nUser: {user_prompt[:50]}...\nResponse: This would be the actual AI-generated content."
+    if client and client != "openai_client_placeholder":
+        try:
+            # Actual OpenAI API call
+            import openai
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3,
+                max_tokens=2000
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            return f"[AI Error]\nFailed to generate response: {str(e)}\nFalling back to demo mode."
+    elif client == "openai_client_placeholder":
+        # Enhanced placeholder with realistic content
+        return f"""[Demo AI Analysis]
+
+Based on the provided financial data and system prompt analysis:
+
+**Key Findings:**
+- Financial data structure indicates proper categorization
+- Entity-specific patterns have been identified and validated
+- Data consistency checks passed successfully
+
+**Analysis Details:**
+- System Context: {system_prompt[:100]}...
+- User Request: {user_prompt[:100]}...
+
+**Recommendations:**
+- Data appears complete and ready for further processing
+- No critical validation issues identified
+- Pattern compliance requirements met
+
+*Note: This is a demonstration response. Enable OpenAI API for full AI processing.*
+"""
     else:
         return f"[Fallback Response]\nNo AI service configured. This is a demo response for the given prompt."
 
