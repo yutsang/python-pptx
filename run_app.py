@@ -243,28 +243,46 @@ def main():
         print("🚀 Starting Financial Data Processor...")
         print("🔧 Smart port detection enabled")
         
-        # Always check for process conflicts more aggressively
-        CLEANUP_PROCESSES = True  # Enable cleanup by default
+        # Check for process conflicts more intelligently
+        CLEANUP_PROCESSES = False  # Only cleanup if there are actual conflicts
         
-        if CLEANUP_PROCESSES:
-            try:
-                # Force cleanup if we detect any Streamlit processes
-                streamlit_processes = find_streamlit_processes()
-                if streamlit_processes:
-                    print("🔄 Found existing Streamlit processes, cleaning up...")
-                    kill_streamlit_processes(force=True)  # Force cleanup
-                else:
-                    print("ℹ️ No existing Streamlit processes found")
-            except Exception as e:
-                print(f"⚠️ Process cleanup skipped: {e}")
+        # First, check what ports are actually in use
+        ports_in_use = check_ports_in_use()
+        streamlit_processes = find_streamlit_processes()
+        
+        if streamlit_processes:
+            print(f"🔍 Found {len(streamlit_processes)} existing Streamlit process(es)")
+            
+            # Only cleanup if there are actual port conflicts
+            needs_cleanup = False
+            if ports_in_use:
+                print(f"⚠️ Ports currently in use: {ports_in_use}")
+                # Check if any used ports overlap with what we want (8501-8520)
+                target_ports = list(range(8501, 8521))
+                if any(port in target_ports for port in ports_in_use):
+                    needs_cleanup = True
+                    print("🔄 Port conflict detected, will cleanup processes...")
+            
+            if needs_cleanup or CLEANUP_PROCESSES:
+                try:
+                    kill_streamlit_processes(force=True)
+                except Exception as e:
+                    print(f"⚠️ Process cleanup failed: {e}")
+            else:
+                print("ℹ️ No port conflicts detected, keeping existing processes")
         else:
-            print("ℹ️ Process cleanup disabled")
+            print("ℹ️ No existing Streamlit processes found")
         
         # Try to find an available port
         available_port = None
         
-        # Approach 1: Try standard port range
-        available_port = find_available_port(8501, 15)
+        # Approach 1: Try standard port range, but start from 8502 if 8501 is busy
+        start_port = 8501
+        if 8501 in ports_in_use:
+            print("ℹ️ Port 8501 is busy, trying alternative ports...")
+            start_port = 8502
+        
+        available_port = find_available_port(start_port, 15)
         
         # Approach 2: If no port found, try alternative ranges
         if not available_port:
@@ -283,10 +301,11 @@ def main():
             print("-" * 50)
             
             # Simple launch with just the port
-            subprocess.run([
-                sys.executable, "-m", "streamlit", "run", "app.py", 
-                "--server.port", str(available_port)
-            ])
+            cmd = [sys.executable, "-m", "streamlit", "run", "app.py", 
+                   "--server.port", str(available_port),
+                   "--server.headless", "true",
+                   "--server.enableXsrfProtection", "false"]
+            subprocess.run(cmd)
         else:
             print("🔄 Using Streamlit's automatic port selection...")
             print("📊 Streamlit app will open in your browser")
@@ -295,7 +314,10 @@ def main():
             print("-" * 50)
             
             # Default launch - let Streamlit handle everything
-            subprocess.run([sys.executable, "-m", "streamlit", "run", "app.py"])
+            cmd = [sys.executable, "-m", "streamlit", "run", "app.py",
+                   "--server.headless", "true",
+                   "--server.enableXsrfProtection", "false"]
+            subprocess.run(cmd)
         
     except ImportError:
         print("❌ Streamlit is not installed!")
