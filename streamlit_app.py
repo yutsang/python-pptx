@@ -49,56 +49,55 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
     This matches the original processing logic exactly
     """
     try:
-        # Load the Excel file
-        xl = pd.ExcelFile(filename)
-        
-        # Create a reverse mapping from values to keys
-        reverse_mapping = {}
-        for key, values in tab_name_mapping.items():
-            for value in values:
-                reverse_mapping[value] = key
-                
-        # Initialize a string to store markdown content
-        markdown_content = ""
-        
-        # Process each sheet according to the mapping
-        for sheet_name in xl.sheet_names:
-            if sheet_name in reverse_mapping:
-                df = xl.parse(sheet_name)
-                
-                # Split dataframes on empty rows
-                empty_rows = df.index[df.isnull().all(1)]
-                start_idx = 0
-                dataframes = []
-                for end_idx in empty_rows:
-                    if end_idx > start_idx:
-                        split_df = df[start_idx:end_idx]
-                        if not split_df.dropna(how='all').empty:
-                            dataframes.append(split_df)
-                        start_idx = end_idx + 1
-                if start_idx < len(df):
-                    dataframes.append(df[start_idx:])
-                
-                # Filter dataframes by entity name with proper spacing
-                entity_keywords = [f"{entity_name} {suffix}" for suffix in entity_suffixes if suffix]
-                if not entity_keywords:  # If no helpers, just use entity name
-                    entity_keywords = [entity_name]
-                
-                combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
-                
-                for data_frame in dataframes:
-                    mask = data_frame.apply(
-                        lambda row: row.astype(str).str.contains(
-                            combined_pattern, case=False, regex=True, na=False
-                        ).any(),
-                        axis=1
-                    )
-                    if mask.any():
-                        markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
+        # Load the Excel file with proper context manager to ensure file closure
+        with pd.ExcelFile(filename) as xl:
+            # Create a reverse mapping from values to keys
+            reverse_mapping = {}
+            for key, values in tab_name_mapping.items():
+                for value in values:
+                    reverse_mapping[value] = key
                     
-                    if any(data_frame.apply(lambda row: row.astype(str).str.contains(keyword, case=False, na=False).any(), axis=1).any() for keyword in entity_keywords):
-                        markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False)
-                        markdown_content += "\n\n" 
+            # Initialize a string to store markdown content
+            markdown_content = ""
+            
+            # Process each sheet according to the mapping
+            for sheet_name in xl.sheet_names:
+                if sheet_name in reverse_mapping:
+                    df = xl.parse(sheet_name)
+                    
+                    # Split dataframes on empty rows
+                    empty_rows = df.index[df.isnull().all(1)]
+                    start_idx = 0
+                    dataframes = []
+                    for end_idx in empty_rows:
+                        if end_idx > start_idx:
+                            split_df = df[start_idx:end_idx]
+                            if not split_df.dropna(how='all').empty:
+                                dataframes.append(split_df)
+                            start_idx = end_idx + 1
+                    if start_idx < len(df):
+                        dataframes.append(df[start_idx:])
+                    
+                    # Filter dataframes by entity name with proper spacing
+                    entity_keywords = [f"{entity_name} {suffix}" for suffix in entity_suffixes if suffix]
+                    if not entity_keywords:  # If no helpers, just use entity name
+                        entity_keywords = [entity_name]
+                    
+                    combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
+                    
+                    for data_frame in dataframes:
+                        mask = data_frame.apply(
+                            lambda row: row.astype(str).str.contains(
+                                combined_pattern, case=False, regex=True, na=False
+                            ).any(),
+                            axis=1
+                        )
+                        if mask.any():
+                            markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
+                        
+                        if any(data_frame.apply(lambda row: row.astype(str).str.contains(keyword, case=False, na=False).any(), axis=1).any() for keyword in entity_keywords):
+                            markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False)
+                            markdown_content += "\n\n" 
         
         return markdown_content
     except Exception as e:
@@ -170,6 +169,7 @@ def main():
         
         if st.button("🚀 Process Data", type="primary"):
             with st.spinner("Processing Excel file..."):
+                temp_file_path = None
                 try:
                     # Parse entity helpers
                     entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
@@ -186,9 +186,6 @@ def main():
                         selected_entity,
                         entity_suffixes
                     )
-                    
-                    # Clean up temp file
-                    os.remove(temp_file_path)
                     
                     if result and result.strip():
                         st.success("✅ Processing completed!")
@@ -211,10 +208,23 @@ def main():
                         
                 except Exception as e:
                     st.error(f"❌ Processing failed: {str(e)}")
-                    # Clean up temp file on error
-                    temp_file_path = f"temp_{uploaded_file.name}"
-                    if os.path.exists(temp_file_path):
-                        os.remove(temp_file_path)
+                    
+                finally:
+                    # Clean up temp file - with better error handling
+                    if temp_file_path and os.path.exists(temp_file_path):
+                        try:
+                            import time
+                            time.sleep(0.1)  # Brief pause to ensure file handles are released
+                            os.remove(temp_file_path)
+                        except PermissionError:
+                            # If still can't delete, try again after a longer pause
+                            try:
+                                time.sleep(0.5)
+                                os.remove(temp_file_path)
+                            except:
+                                st.warning(f"⚠️ Could not clean up temporary file: {temp_file_path}")
+                        except Exception:
+                            pass  # Ignore other cleanup errors
     else:
         st.info("📁 Please upload an Excel file to begin processing.")
         
