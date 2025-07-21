@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Working Streamlit Application - Due Diligence Automation
+Financial Data Processor - Due Diligence Automation
 
-This is a self-contained version that demonstrates the new architecture
-without relying on old_ver directory imports.
+Self-contained version that works exactly like the original but uses config/ directory.
 """
 
 import streamlit as st
 import pandas as pd
 import json
 import os
-import tempfile
+import re
 from pathlib import Path
+from tabulate import tabulate
 
 def load_config_files():
-    """Load configuration files from the new config directory."""
+    """Load configuration files from the config directory."""
     try:
         config_dir = Path("config")
         
@@ -43,286 +43,188 @@ def load_config_files():
         st.error(f"Invalid JSON in configuration file: {e}")
         return None, None, None, None
 
-def simple_excel_processor(uploaded_file, entity_name, entity_helpers):
-    """Simple Excel processor using pandas - demonstrates new architecture."""
+def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
+    """
+    Process and filter Excel file to extract relevant worksheet sections
+    This matches the original processing logic exactly
+    """
     try:
-        # Read Excel file
-        excel_data = pd.ExcelFile(uploaded_file)
+        # Load the Excel file
+        xl = pd.ExcelFile(filename)
         
-        # Get sheet names
-        sheet_names = excel_data.sheet_names
-        st.write(f"📊 Found {len(sheet_names)} sheets: {sheet_names}")
+        # Create a reverse mapping from values to keys
+        reverse_mapping = {}
+        for key, values in tab_name_mapping.items():
+            for value in values:
+                reverse_mapping[value] = key
+                
+        # Initialize a string to store markdown content
+        markdown_content = ""
         
-        # Entity mapping
-        entity_sheet_mapping = {
-            "Haining": "BSHN",
-            "Nanjing": "BSNJ", 
-            "Ningbo": "BSNB"
-        }
+        # Process each sheet according to the mapping
+        for sheet_name in xl.sheet_names:
+            if sheet_name in reverse_mapping:
+                df = xl.parse(sheet_name)
+                
+                # Split dataframes on empty rows
+                empty_rows = df.index[df.isnull().all(1)]
+                start_idx = 0
+                dataframes = []
+                for end_idx in empty_rows:
+                    if end_idx > start_idx:
+                        split_df = df[start_idx:end_idx]
+                        if not split_df.dropna(how='all').empty:
+                            dataframes.append(split_df)
+                        start_idx = end_idx + 1
+                if start_idx < len(df):
+                    dataframes.append(df[start_idx:])
+                
+                # Filter dataframes by entity name with proper spacing
+                entity_keywords = [f"{entity_name} {suffix}" for suffix in entity_suffixes if suffix]
+                if not entity_keywords:  # If no helpers, just use entity name
+                    entity_keywords = [entity_name]
+                
+                combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
+                
+                for data_frame in dataframes:
+                    mask = data_frame.apply(
+                        lambda row: row.astype(str).str.contains(
+                            combined_pattern, case=False, regex=True, na=False
+                        ).any(),
+                        axis=1
+                    )
+                    if mask.any():
+                        markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
+                    
+                    if any(data_frame.apply(lambda row: row.astype(str).str.contains(keyword, case=False, na=False).any(), axis=1).any() for keyword in entity_keywords):
+                        markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False)
+                        markdown_content += "\n\n" 
         
-        target_sheet = entity_sheet_mapping.get(entity_name)
-        if target_sheet not in sheet_names:
-            st.warning(f"Target sheet '{target_sheet}' not found for entity '{entity_name}'")
-            return None
-        
-        # Read the target sheet
-        df = pd.read_excel(uploaded_file, sheet_name=target_sheet)
-        st.write(f"✅ Successfully loaded sheet '{target_sheet}' with {len(df)} rows")
-        
-        # Basic processing - filter for entity keywords
-        entity_keywords = [kw.strip() for kw in entity_helpers.split(',') if kw.strip()]
-        filtered_data = []
-        
-        for keyword in entity_keywords:
-            if keyword:
-                # Search for keyword in all string columns
-                for col in df.select_dtypes(include=['object']).columns:
-                    mask = df[col].astype(str).str.contains(keyword, case=False, na=False)
-                    matching_rows = df[mask]
-                    if not matching_rows.empty:
-                        filtered_data.append(f"\n**Keyword: {keyword}**\n")
-                        filtered_data.append(matching_rows.to_string())
-        
-        if filtered_data:
-            return "\n".join(filtered_data)
-        else:
-            return f"No data found for keywords: {entity_keywords}"
-            
+        return markdown_content
     except Exception as e:
-        st.error(f"Error processing Excel file: {e}")
-        return None
+        st.error(f"An error occurred while processing the Excel file: {e}")
+        return ""
 
-def show_architecture_overview():
-    """Show the new architecture overview."""
-    st.markdown("## 🏗️ **New Architecture Overview**")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("""
-        ### ✅ **Implemented Components**
-        - **🗂️ Configuration Management**: Self-contained config files
-        - **📊 Domain Entities**: Business logic separation
-        - **🔧 Repository Interfaces**: Data access patterns
-        - **📱 Clean UI Layer**: Streamlit without old dependencies
-        - **📁 Hexagonal Structure**: Ports & Adapters pattern
-        """)
-    
-    with col2:
-        st.markdown("""
-        ### 🔄 **Independent System**
-        - **❌ No old_ver dependencies**: Completely self-contained
-        - **✅ New config directory**: `config/` with all settings
-        - **✅ New utils directory**: `utils/` with processing logic
-        - **✅ Modular architecture**: Easy to extend and test
-        - **✅ Clean imports**: No relative import issues
-        """)
-    
-    # Show file structure
-    st.markdown("### 📁 **New File Structure**")
-    st.code("""
-python-pptx/
-├── config/                    # ✅ Configuration files
-│   ├── config.json           # AI and system settings
-│   ├── mapping.json          # Entity to sheet mappings
-│   ├── pattern.json          # Content generation patterns
-│   └── prompts.json          # AI agent prompts
-├── utils/                     # ✅ Processing utilities
-│   ├── utils.py              # Core processing functions
-│   └── cache.py              # Caching functionality
-├── src/                       # ✅ Hexagonal architecture
-│   ├── domain/entities/      # Business entities
-│   ├── application/dto/      # Data transfer objects
-│   ├── infrastructure/       # External adapters
-│   └── interfaces/web/       # UI interfaces
-├── streamlit_app_working.py   # ✅ This working app
-└── main.py                   # ✅ Application launcher
-    """, language="text")
+def main():
+    """Main application - matches original UI style"""
+    st.set_page_config(
+        page_title="Financial Data Processor",
+        page_icon="📊",
+        layout="wide"
+    )
+    st.title("📊 Financial Data Processor")
+    st.markdown("---")
 
-def show_configuration_status():
-    """Show status of configuration files."""
-    st.markdown("## ⚙️ **Configuration Status**")
-    
-    config_files = [
-        ("config/config.json", "AI and system configuration"),
-        ("config/mapping.json", "Entity to Excel sheet mappings"),
-        ("config/pattern.json", "Content generation patterns"),
-        ("config/prompts.json", "AI agent prompts")
-    ]
-    
-    status_data = []
-    for file_path, description in config_files:
-        if os.path.exists(file_path):
-            try:
-                with open(file_path, 'r') as f:
-                    data = json.load(f)
-                status = "✅ Available"
-                details = f"{len(data)} items" if isinstance(data, dict) else "Valid JSON"
-            except:
-                status = "❌ Invalid JSON"
-                details = "File exists but invalid format"
-        else:
-            status = "❌ Missing"
-            details = "File not found"
-        
-        status_data.append({
-            "File": file_path,
-            "Description": description,
-            "Status": status,
-            "Details": details
-        })
-    
-    st.table(status_data)
-
-def run_processing_demo():
-    """Run the Excel processing demonstration."""
-    st.markdown("## 🚀 **Excel Processing Demo**")
-    
-    st.info("This demonstrates the new architecture with self-contained processing that doesn't depend on old_ver files.")
-    
-    # Check configuration files
+    # Load configuration files
     config, mapping, pattern, prompts = load_config_files()
     
     if not all([config, mapping, pattern, prompts]):
         st.error("❌ Configuration files not available. Please ensure config/ directory has all required files.")
         return
-    
-    st.success("✅ All configuration files loaded successfully!")
-    
-    # File upload
-    uploaded_file = st.file_uploader(
-        "📁 Upload Excel File",
-        type=['xlsx', 'xls'],
-        help="Upload your financial data Excel file"
-    )
-    
-    if uploaded_file:
-        # Entity selection
-        entity_name = st.selectbox(
-            "🏢 Select Entity",
-            options=["Haining", "Nanjing", "Ningbo"],
+
+    # Sidebar for controls (matches original)
+    with st.sidebar:
+        uploaded_file = st.file_uploader(
+            "Upload Excel File",
+            type=['xlsx', 'xls'],
+            help="Upload your financial data Excel file"
+        )
+        
+        entity_options = ['Haining', 'Nanjing', 'Ningbo']
+        selected_entity = st.selectbox(
+            "Select Entity",
+            options=entity_options,
             help="Choose the entity for data processing"
         )
         
-        # Entity helpers
+        # Entity helpers (matches original default)
         entity_helpers = st.text_input(
-            "📝 Entity Keywords",
+            "Entity Helpers",
             value="Wanpu,Limited,",
-            help="Comma-separated keywords to search for in the data"
+            help="Comma-separated entity keywords"
         )
         
-        if st.button("🚀 Process Data (New Architecture)", type="primary"):
-            with st.spinner("Processing with new architecture..."):
-                # Process using new self-contained method
-                result = simple_excel_processor(uploaded_file, entity_name, entity_helpers)
-                
-                if result:
-                    st.success("✅ Processing completed with new architecture!")
+        # Financial Statement Type Selection (matches original)
+        st.markdown("---")
+        statement_type_options = ["Balance Sheet", "Income Statement", "All"]
+        statement_type_display = st.radio(
+            "Financial Statement Type",
+            options=statement_type_options,
+            index=0,
+            help="Select the type of financial statement to process"
+        )
+        
+        # Convert display names to internal codes
+        statement_type_map = {
+            "Balance Sheet": "BS",
+            "Income Statement": "IS", 
+            "All": "ALL"
+        }
+        statement_type = statement_type_map[statement_type_display]
+
+    # Main content area
+    if uploaded_file is not None:
+        st.success(f"✅ File uploaded: {uploaded_file.name}")
+        st.info(f"🏢 Processing for entity: **{selected_entity}**")
+        st.info(f"📊 Statement type: **{statement_type_display}**")
+        
+        if st.button("🚀 Process Data", type="primary"):
+            with st.spinner("Processing Excel file..."):
+                try:
+                    # Parse entity helpers
+                    entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
                     
-                    # Show results
-                    with st.expander("📊 Processing Results", expanded=True):
-                        st.text_area("Results", result, height=400)
+                    # Save uploaded file temporarily
+                    temp_file_path = f"temp_{uploaded_file.name}"
+                    with open(temp_file_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    
+                    # Process data using the corrected function
+                    result = process_and_filter_excel(
+                        temp_file_path,
+                        mapping,
+                        selected_entity,
+                        entity_suffixes
+                    )
+                    
+                    # Clean up temp file
+                    os.remove(temp_file_path)
+                    
+                    if result and result.strip():
+                        st.success("✅ Processing completed!")
                         
-                    # Show configuration used
-                    with st.expander("⚙️ Configuration Details", expanded=False):
-                        st.json({
-                            "Entity": entity_name,
-                            "Keywords": entity_helpers.split(','),
-                            "Mapping Keys": list(mapping.keys()) if mapping else [],
-                            "Pattern Keys": list(pattern.keys()) if pattern else [],
-                            "Available Prompts": list(prompts.get('system_prompts', {}).keys()) if prompts else []
-                        })
-                else:
-                    st.error("❌ Processing failed or no data found")
-
-def main():
-    """Main application."""
-    st.set_page_config(
-        page_title="Due Diligence Automation - Working New Architecture",
-        page_icon="✅",
-        layout="wide"
-    )
-    
-    st.title("✅ Due Diligence Automation - Working New Architecture")
-    st.markdown("**Self-Contained System - No Dependencies on old_ver**")
-    
-    # Show success message
-    st.success("🎉 **NEW ARCHITECTURE IS WORKING!** This application is completely independent of old_ver files.")
-    
-    # Navigation tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🏗️ Architecture",
-        "⚙️ Configuration", 
-        "🚀 Excel Processing",
-        "📖 Migration Status"
-    ])
-    
-    with tab1:
-        show_architecture_overview()
-    
-    with tab2:
-        show_configuration_status()
-    
-    with tab3:
-        run_processing_demo()
-    
-    with tab4:
-        st.markdown("## 📋 **Migration Status**")
+                        # Show results in expandable section
+                        with st.expander("📊 Processing Results", expanded=True):
+                            st.markdown(result)
+                            
+                        # Download option
+                        st.download_button(
+                            label="📥 Download Results",
+                            data=result,
+                            file_name=f"{selected_entity}_processing_results.md",
+                            mime="text/markdown"
+                        )
+                        
+                    else:
+                        st.warning("⚠️ No data found for the selected entity and configuration.")
+                        st.info("💡 Try adjusting the entity helpers or check if the Excel file contains the expected sheet names.")
+                        
+                except Exception as e:
+                    st.error(f"❌ Processing failed: {str(e)}")
+                    # Clean up temp file on error
+                    temp_file_path = f"temp_{uploaded_file.name}"
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+    else:
+        st.info("📁 Please upload an Excel file to begin processing.")
         
-        st.markdown("""
-        ### ✅ **Completed**
-        - **Configuration Independence**: All config files moved to `config/` directory
-        - **Self-Contained Processing**: Excel processing without old_ver dependencies  
-        - **Clean Architecture**: Hexagonal structure in `src/` directory
-        - **Working UI**: Streamlit app with no import issues
-        
-        ### ⏳ **Next Steps** 
-        - **Advanced AI Processing**: Implement full 3-agent pipeline
-        - **Database Integration**: Add PostgreSQL for persistence
-        - **FastAPI Endpoints**: REST API for programmatic access
-        - **PowerPoint Integration**: Connect the preserved export functionality
-        
-        ### 🎯 **Benefits Achieved**
-        - **🚀 Independent**: No reliance on old_ver files
-        - **🔧 Maintainable**: Clean separation of concerns
-        - **📈 Scalable**: Ready for multi-user deployment
-        - **🧪 Testable**: Modular components for easy testing
-        """)
-        
-        # Show directory structure
-        st.markdown("### 📁 **Current Directory Structure**")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**✅ New Architecture (Active)**")
-            st.code("""
-config/
-├── config.json ✅
-├── mapping.json ✅  
-├── pattern.json ✅
-└── prompts.json ✅
-
-utils/
-├── utils.py ✅
-└── cache.py ✅
-
-src/
-├── domain/entities/ ✅
-├── application/dto/ ✅
-└── infrastructure/ ✅
-            """, language="text")
-        
-        with col2:
-            st.markdown("**📁 Preserved (Reference Only)**")
-            st.code("""
-old_ver/
-├── app.py (preserved)
-├── utils/ (preserved)
-└── common/ (preserved)
-
-Note: New system is completely
-independent of old_ver files
-            """, language="text")
+        # Show configuration status
+        with st.expander("⚙️ Configuration Status"):
+            st.write("**Loaded Configuration Files:**")
+            st.write(f"- mapping.json: {len(mapping) if mapping else 0} entities")
+            st.write(f"- pattern.json: {len(pattern) if pattern else 0} patterns") 
+            st.write(f"- config.json: ✅ Available")
+            st.write(f"- prompts.json: ✅ Available")
 
 if __name__ == "__main__":
     main() 
