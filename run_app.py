@@ -32,10 +32,10 @@ def find_streamlit_processes():
                             # Try different methods to get connections based on psutil version
                             process = psutil.Process(proc.info['pid'])
                             
-                            # Method 1: Try the connections() method (newer psutil)
-                            if hasattr(process, 'connections'):
+                            # Method 1: Try the net_connections() method (newer psutil)
+                            if hasattr(process, 'net_connections'):
                                 try:
-                                    connections = process.connections()
+                                    connections = process.net_connections()
                                     for conn in connections:
                                         if hasattr(conn, 'laddr') and conn.laddr and conn.status == 'LISTEN':
                                             used_ports.append(conn.laddr.port)
