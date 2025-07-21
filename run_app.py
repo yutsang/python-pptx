@@ -16,7 +16,8 @@ def find_streamlit_processes():
     """Find actual Streamlit processes running this specific app"""
     streamlit_processes = []
     try:
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'connections']):
+        # Use basic process info that's compatible across psutil versions
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             try:
                 cmdline = proc.info['cmdline']
                 if cmdline and len(cmdline) > 0:
@@ -25,14 +26,36 @@ def find_streamlit_processes():
                     if ('streamlit' in cmdline_str and 
                         ('run' in cmdline_str or 'app.py' in cmdline_str)):
                         
-                        # Try to get port information
+                        # Try to get port information with compatibility handling
                         used_ports = []
                         try:
-                            connections = proc.connections()
-                            for conn in connections:
-                                if conn.laddr and conn.status == 'LISTEN':
-                                    used_ports.append(conn.laddr.port)
-                        except (psutil.AccessDenied, psutil.NoSuchProcess):
+                            # Try different methods to get connections based on psutil version
+                            process = psutil.Process(proc.info['pid'])
+                            
+                            # Method 1: Try the connections() method (newer psutil)
+                            if hasattr(process, 'connections'):
+                                try:
+                                    connections = process.connections()
+                                    for conn in connections:
+                                        if hasattr(conn, 'laddr') and conn.laddr and conn.status == 'LISTEN':
+                                            used_ports.append(conn.laddr.port)
+                                except (AttributeError, psutil.AccessDenied):
+                                    pass
+                            
+                            # Method 2: Try get_connections() method (older psutil)
+                            elif hasattr(process, 'get_connections'):
+                                try:
+                                    connections = process.get_connections()
+                                    for conn in connections:
+                                        if hasattr(conn, 'local_address') and conn.local_address and conn.status == 'LISTEN':
+                                            used_ports.append(conn.local_address[1])
+                                        elif hasattr(conn, 'laddr') and conn.laddr and conn.status == 'LISTEN':
+                                            used_ports.append(conn.laddr[1])
+                                except (AttributeError, psutil.AccessDenied):
+                                    pass
+                                    
+                        except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+                            # If we can't get connections, still track the process
                             pass
                         
                         streamlit_processes.append({
@@ -61,19 +84,52 @@ def is_port_available(port, host='localhost'):
         # Port is definitely in use
         return False
 
+def check_ports_in_use_fallback():
+    """Fallback method to check ports using netstat or system commands"""
+    ports_in_use = []
+    
+    try:
+        # Try using netstat command as fallback
+        if sys.platform != 'win32':  # Unix-like systems
+            result = subprocess.run(['netstat', '-an'], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    # Look for listening ports in the Streamlit range
+                    for port in range(8501, 8520):
+                        if f':{port} ' in line and ('LISTEN' in line or 'LISTENING' in line):
+                            ports_in_use.append(port)
+        else:  # Windows
+            result = subprocess.run(['netstat', '-an'], capture_output=True, text=True, timeout=5, shell=True)
+            if result.returncode == 0:
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    for port in range(8501, 8520):
+                        if f':{port} ' in line and 'LISTENING' in line:
+                            ports_in_use.append(port)
+    except Exception:
+        pass
+    
+    return list(set(ports_in_use))
+
 def check_ports_in_use():
     """Check which ports in the Streamlit range are actually in use"""
     ports_in_use = []
     
-    # Check common Streamlit ports
+    # Method 1: Direct socket binding test (most reliable)
     for port in range(8501, 8520):
         if not is_port_available(port):
             ports_in_use.append(port)
     
-    # Also check what ports Streamlit processes are using
+    # Method 2: Try to get ports from processes (if psutil supports it)
     streamlit_processes = find_streamlit_processes()
     for proc in streamlit_processes:
-        ports_in_use.extend(proc['ports'])
+        if proc['ports']:
+            ports_in_use.extend(proc['ports'])
+    
+    # Method 3: Fallback using system commands
+    fallback_ports = check_ports_in_use_fallback()
+    ports_in_use.extend(fallback_ports)
     
     return list(set(ports_in_use))  # Remove duplicates
 
@@ -87,7 +143,7 @@ def kill_streamlit_processes(force=False):
     
     print(f"🔍 Found {len(streamlit_processes)} Streamlit process(es):")
     for proc in streamlit_processes:
-        ports_info = f" (ports: {proc['ports']})" if proc['ports'] else ""
+        ports_info = f" (ports: {proc['ports']})" if proc['ports'] else " (no port info)"
         print(f"   PID {proc['pid']}: {proc['cmdline'][:60]}...{ports_info}")
     
     if not force:
@@ -106,8 +162,12 @@ def kill_streamlit_processes(force=False):
             if proc['ports']:
                 streamlit_using_ports.extend(proc['ports'])
         
-        if streamlit_using_ports:
-            print(f"🔄 Streamlit processes using ports: {streamlit_using_ports}")
+        # If we can't determine port usage, assume conflict and clean up
+        if streamlit_using_ports or len(streamlit_processes) > 0:
+            if streamlit_using_ports:
+                print(f"🔄 Streamlit processes using ports: {streamlit_using_ports}")
+            else:
+                print("🔄 Cannot determine port usage, cleaning up Streamlit processes for safety")
             print("🔄 Will clean up conflicting processes...")
         else:
             print("ℹ️ Streamlit processes not using target ports, keeping them")
