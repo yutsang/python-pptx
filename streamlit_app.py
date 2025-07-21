@@ -166,13 +166,31 @@ def run_ai_processing_fallback(keys_with_data, sections_by_key, entity_name, con
     """AI processing with fallback mode"""
     st.markdown("### 🤖 AI Agent Pipeline")
     
-    # Check if OpenAI is configured
-    has_openai = config and config.get('OPENAI_API_KEY')
+    # Import AI config from utils
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent / "utils"))
+    try:
+        from ai_config import load_ai_config, initialize_ai_services, generate_ai_response
+        ai_config = load_ai_config()
+        ai_client, _ = initialize_ai_services(ai_config)
+        has_openai = ai_client is not None
+    except ImportError:
+        # Fallback if utils/ai_config.py not available
+        has_openai = config and config.get('OPENAI_API_KEY')
+        ai_client = None
     
     if has_openai:
         st.info("🚀 AI processing with OpenAI (configuration detected)")
     else:
         st.warning("⚠️ AI processing in fallback mode (no OpenAI key configured)")
+    
+    # Single progress bar for all processing
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    total_keys = len(keys_with_data)
+    total_steps = total_keys * 3  # 3 agents per key
+    current_step = 0
     
     ai_results = {}
     
@@ -186,31 +204,42 @@ def run_ai_processing_fallback(keys_with_data, sections_by_key, entity_name, con
         # Prepare context data
         context_data = "\n\n".join([section['markdown'] for section in sections])
         
-        progress = st.progress(0)
-        status = st.empty()
-        
         # Agent 1: Content Generation
-        status.text("🤖 Agent 1: Generating content...")
-        progress.progress(0.33)
+        current_step += 1
+        progress_bar.progress(current_step / total_steps)
+        status_text.text(f"🤖 Agent 1: Generating content for {get_key_display_name(key)} ({i+1}/{total_keys})")
         
-        if has_openai:
-            # Would use actual OpenAI API here
-            agent1_result = f"[OpenAI Analysis for {key}]\nComprehensive financial analysis based on {len(sections)} data sections for {entity_name}.\n\nKey observations:\n- Data structure indicates {key} category\n- Entity-specific patterns identified\n- Ready for validation"
+        if has_openai and ai_client:
+            system_prompt = prompts.get('system_prompts', {}).get('Agent 1', '') if prompts else ""
+            user_prompt = f"Generate financial analysis for {key} based on this data:\n\nEntity: {entity_name}\nData: {context_data[:1000]}..."
+            agent1_result = generate_ai_response(ai_client, system_prompt, user_prompt)
         else:
             agent1_result = f"[Demo Analysis for {key}]\nAnalyzed {len(sections)} sections for {entity_name}.\n\nFindings:\n- {key} data successfully extracted\n- {context_data[:200]}...\n- Analysis complete"
         
         # Agent 2: Data Validation
-        status.text("🔍 Agent 2: Validating data...")
-        progress.progress(0.66)
+        current_step += 1
+        progress_bar.progress(current_step / total_steps)
+        status_text.text(f"🔍 Agent 2: Validating data for {get_key_display_name(key)} ({i+1}/{total_keys})")
         
-        agent2_result = f"[Agent 2 Validation for {key}]\n✅ Data validation completed\n✅ Financial figures verified\n✅ Entity names consistent\n✅ No critical issues found"
+        if has_openai and ai_client:
+            system_prompt = prompts.get('system_prompts', {}).get('Agent 2', '') if prompts else ""
+            user_prompt = f"Validate this content for {key}:\n\nContent: {agent1_result}\nOriginal Data: {context_data[:500]}..."
+            agent2_result = generate_ai_response(ai_client, system_prompt, user_prompt)
+        else:
+            agent2_result = f"[Agent 2 Validation for {key}]\n✅ Data validation completed\n✅ Financial figures verified\n✅ Entity names consistent\n✅ No critical issues found"
         
         # Agent 3: Pattern Compliance
-        status.text("🎯 Agent 3: Checking pattern compliance...")
-        progress.progress(1.0)
+        current_step += 1
+        progress_bar.progress(current_step / total_steps)
+        status_text.text(f"🎯 Agent 3: Checking pattern compliance for {get_key_display_name(key)} ({i+1}/{total_keys})")
         
         patterns_for_key = pattern.get(key, {}) if pattern else {}
-        agent3_result = f"[Agent 3 Pattern Check for {key}]\n✅ Content structure validated\n✅ Pattern compliance verified\n✅ Ready for PowerPoint export\n\nPattern details: {len(patterns_for_key)} patterns checked"
+        if has_openai and ai_client:
+            system_prompt = prompts.get('system_prompts', {}).get('Agent 3', '') if prompts else ""
+            user_prompt = f"Check pattern compliance for {key}:\n\nContent: {agent1_result}\nPatterns: {patterns_for_key}"
+            agent3_result = generate_ai_response(ai_client, system_prompt, user_prompt)
+        else:
+            agent3_result = f"[Agent 3 Pattern Check for {key}]\n✅ Content structure validated\n✅ Pattern compliance verified\n✅ Ready for PowerPoint export\n\nPattern details: {len(patterns_for_key)} patterns checked"
         
         # Store results
         ai_results[key] = {
@@ -220,7 +249,7 @@ def run_ai_processing_fallback(keys_with_data, sections_by_key, entity_name, con
             'final_content': agent3_result
         }
         
-        status.text("✅ Completed")
+        # Show completion for this key
         st.success(f"✅ AI processing completed for {get_key_display_name(key)}")
         
         # Show results
@@ -235,6 +264,10 @@ def run_ai_processing_fallback(keys_with_data, sections_by_key, entity_name, con
             with tab3:
                 st.markdown("**Pattern Compliance:**")
                 st.write(agent3_result)
+    
+    # Final completion
+    progress_bar.progress(1.0)
+    status_text.text(f"✅ All processing completed! Processed {total_keys} keys with 3 agents each.")
     
     return ai_results
 
