@@ -16,7 +16,7 @@ def find_streamlit_processes():
     """Find actual Streamlit processes running this specific app"""
     streamlit_processes = []
     try:
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'connections']):
             try:
                 cmdline = proc.info['cmdline']
                 if cmdline and len(cmdline) > 0:
@@ -24,9 +24,21 @@ def find_streamlit_processes():
                     cmdline_str = ' '.join(cmdline).lower()
                     if ('streamlit' in cmdline_str and 
                         ('run' in cmdline_str or 'app.py' in cmdline_str)):
+                        
+                        # Try to get port information
+                        used_ports = []
+                        try:
+                            connections = proc.connections()
+                            for conn in connections:
+                                if conn.laddr and conn.status == 'LISTEN':
+                                    used_ports.append(conn.laddr.port)
+                        except (psutil.AccessDenied, psutil.NoSuchProcess):
+                            pass
+                        
                         streamlit_processes.append({
                             'pid': proc.info['pid'],
-                            'cmdline': cmdline_str
+                            'cmdline': cmdline_str,
+                            'ports': used_ports
                         })
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
@@ -35,77 +47,118 @@ def find_streamlit_processes():
     
     return streamlit_processes
 
+def is_port_available(port, host='localhost'):
+    """Enhanced port availability check with multiple methods"""
+    # Method 1: Try to bind to the port
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.settimeout(1)
+            sock.bind((host, port))
+            # If we can bind, the port should be available
+            return True
+    except (OSError, socket.error):
+        # Port is definitely in use
+        return False
+
+def check_ports_in_use():
+    """Check which ports in the Streamlit range are actually in use"""
+    ports_in_use = []
+    
+    # Check common Streamlit ports
+    for port in range(8501, 8520):
+        if not is_port_available(port):
+            ports_in_use.append(port)
+    
+    # Also check what ports Streamlit processes are using
+    streamlit_processes = find_streamlit_processes()
+    for proc in streamlit_processes:
+        ports_in_use.extend(proc['ports'])
+    
+    return list(set(ports_in_use))  # Remove duplicates
+
 def kill_streamlit_processes(force=False):
     """Kill existing Streamlit processes - only if explicitly requested or if conflicts detected"""
+    streamlit_processes = find_streamlit_processes()
+    
+    if not streamlit_processes:
+        print("ℹ️ No Streamlit processes found")
+        return False
+    
+    print(f"🔍 Found {len(streamlit_processes)} Streamlit process(es):")
+    for proc in streamlit_processes:
+        ports_info = f" (ports: {proc['ports']})" if proc['ports'] else ""
+        print(f"   PID {proc['pid']}: {proc['cmdline'][:60]}...{ports_info}")
+    
     if not force:
-        # Only kill if there are actual port conflicts
-        streamlit_processes = find_streamlit_processes()
-        if not streamlit_processes:
-            print("ℹ️ No Streamlit processes found")
-            return False
-        
-        print(f"🔍 Found {len(streamlit_processes)} Streamlit process(es):")
-        for proc in streamlit_processes:
-            print(f"   PID {proc['pid']}: {proc['cmdline'][:80]}...")
-        
-        # Check if any of these processes are using common ports
-        ports_in_use = []
-        for port in range(8501, 8510):
-            if not is_port_available(port):
-                ports_in_use.append(port)
+        # Check if any of these processes are actually using ports we want
+        ports_in_use = check_ports_in_use()
         
         if not ports_in_use:
             print("ℹ️ No port conflicts detected, keeping existing processes")
             return False
         
-        print(f"⚠️ Ports in use: {ports_in_use}")
-        print("🔄 Will clean up conflicting processes...")
+        print(f"⚠️ Ports currently in use: {ports_in_use}")
+        
+        # Check if any Streamlit processes are using these ports
+        streamlit_using_ports = []
+        for proc in streamlit_processes:
+            if proc['ports']:
+                streamlit_using_ports.extend(proc['ports'])
+        
+        if streamlit_using_ports:
+            print(f"🔄 Streamlit processes using ports: {streamlit_using_ports}")
+            print("🔄 Will clean up conflicting processes...")
+        else:
+            print("ℹ️ Streamlit processes not using target ports, keeping them")
+            return False
     
     try:
         killed_count = 0
-        streamlit_processes = find_streamlit_processes()
         
         for proc_info in streamlit_processes:
             try:
                 proc = psutil.Process(proc_info['pid'])
                 print(f"🔄 Stopping Streamlit process (PID: {proc_info['pid']})")
-                proc.terminate()  # Use terminate instead of kill for graceful shutdown
+                proc.terminate()  # Use terminate for graceful shutdown
                 killed_count += 1
-                time.sleep(0.5)  # Give time for cleanup
+                time.sleep(0.5)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
         
         if killed_count > 0:
             print(f"✅ Stopped {killed_count} Streamlit process(es)")
-            time.sleep(2)  # Extra time for port cleanup
+            time.sleep(3)  # More time for port cleanup
         
         return killed_count > 0
     except Exception as e:
         print(f"⚠️ Could not clean up processes: {e}")
         return False
 
-def is_port_available(port, host='localhost'):
-    """Simple but reliable port availability check"""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.settimeout(2)  # Quick timeout
-            result = sock.bind((host, port))
-            return True  # Port is available
-    except (OSError, socket.error):
-        return False  # Port is in use or not available
-
 def find_available_port(start_port=8501, max_attempts=20):
-    """Find an available port with simple but reliable detection"""
+    """Find an available port with enhanced detection"""
     print(f"🔍 Searching for available port starting from {start_port}...")
     
-    # Check ports sequentially
+    # First, get a list of currently used ports
+    ports_in_use = check_ports_in_use()
+    if ports_in_use:
+        print(f"⚠️ Ports currently in use: {ports_in_use}")
+    
+    # Check ports sequentially, skipping known used ports
     for i in range(max_attempts):
         port = start_port + i
+        
+        # Skip ports we know are in use
+        if port in ports_in_use:
+            if i < 5:
+                print(f"❌ Port {port} is in use (detected)")
+            continue
+        
+        # Double-check port availability
         if is_port_available(port):
             print(f"✅ Found available port: {port}")
             return port
-        elif i < 3:  # Only show details for first few attempts
+        elif i < 5:
             print(f"❌ Port {port} is in use")
     
     print(f"⚠️ No available ports found in range {start_port}-{start_port + max_attempts}")
@@ -130,13 +183,18 @@ def main():
         print("🚀 Starting Financial Data Processor...")
         print("🔧 Smart port detection enabled")
         
-        # Optional: Clean up only if there are actual conflicts
-        # You can disable this by setting CLEANUP_PROCESSES=False
-        CLEANUP_PROCESSES = True  # Set to False to disable process cleanup
+        # Always check for process conflicts more aggressively
+        CLEANUP_PROCESSES = True  # Enable cleanup by default
         
         if CLEANUP_PROCESSES:
             try:
-                kill_streamlit_processes(force=False)  # Only kill if conflicts detected
+                # Force cleanup if we detect any Streamlit processes
+                streamlit_processes = find_streamlit_processes()
+                if streamlit_processes:
+                    print("🔄 Found existing Streamlit processes, cleaning up...")
+                    kill_streamlit_processes(force=True)  # Force cleanup
+                else:
+                    print("ℹ️ No existing Streamlit processes found")
             except Exception as e:
                 print(f"⚠️ Process cleanup skipped: {e}")
         else:
@@ -151,7 +209,7 @@ def main():
         # Approach 2: If no port found, try alternative ranges
         if not available_port:
             print("🔄 Trying alternative port ranges...")
-            for _ in range(2):  # Try 2 different ranges
+            for _ in range(2):
                 random_start = get_random_port_range()
                 available_port = find_available_port(random_start, 15)
                 if available_port:
