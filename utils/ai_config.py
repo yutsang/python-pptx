@@ -93,29 +93,9 @@ def generate_ai_response(client, system_prompt, user_prompt, model="gpt-4o-mini"
         except Exception as e:
             return f"[AI Error]\nFailed to generate response: {str(e)}\nFalling back to demo mode."
     elif client == "openai_client_placeholder":
-        # Enhanced placeholder with realistic content
-        return f"""[Demo AI Analysis]
-
-Based on the provided financial data and system prompt analysis:
-
-**Key Findings:**
-- Financial data structure indicates proper categorization
-- Entity-specific patterns have been identified and validated
-- Data consistency checks passed successfully
-
-**Analysis Details:**
-- System Context: {system_prompt[:100]}...
-- User Request: {user_prompt[:100]}...
-
-**Recommendations:**
-- Data appears complete and ready for further processing
-- No critical validation issues identified
-- Pattern compliance requirements met
-
-*Note: This is a demonstration response. Enable OpenAI API for full AI processing.*
-"""
+        return f"[AI Ready] OpenAI library detected but no valid API key. Configure API key for processing."
     else:
-        return f"[Fallback Response]\nNo AI service configured. This is a demo response for the given prompt."
+        return f"[AI Unavailable] No AI service configured. Add API key to config/config.json for AI processing."
 
 # Configuration template
 AI_CONFIG_TEMPLATE = {

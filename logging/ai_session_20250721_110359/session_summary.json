@@ -1,0 +1,16 @@
+{
+  "session_id": "20250721_110359",
+  "start_time": "2025-07-21T11:03:59.845555",
+  "interactions": [],
+  "summary": {
+    "total_interactions": 0,
+    "successful_responses": 0,
+    "errors": 0,
+    "agents_used": [],
+    "keys_processed": [],
+    "session_duration_seconds": 2.1e-05,
+    "real_ai_responses": 0,
+    "placeholder_responses": 0
+  },
+  "end_time": "2025-07-21T11:03:59.845576"
+}
