@@ -52,7 +52,7 @@ class AIAgentLogger:
             print(f"Error writing to log file: {e}")
         
     def log_agent_input(self, agent_name, key, system_prompt, user_prompt, context_data=None):
-        """Log agent input prompts and data to file"""
+        """Log agent input prompts and data to file with session focus"""
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         log_entry = {
@@ -60,9 +60,9 @@ class AIAgentLogger:
             'agent': agent_name,
             'key': key,
             'type': 'INPUT',
-            'system_prompt': system_prompt,
-            'user_prompt': user_prompt,
-            'context_data': str(context_data) if context_data else None
+            'system_prompt': system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt,
+            'user_prompt': user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
+            'context_data': str(context_data)[:100] + "..." if context_data and len(str(context_data)) > 100 else str(context_data) if context_data else None
         }
         
         if agent_name not in self.logs:
@@ -73,23 +73,31 @@ class AIAgentLogger:
         self.logs[agent_name][key].append(log_entry)
         self.session_logs.append(log_entry)
         
-        # Write to file
-        self._write_to_file(f"\n{'='*60}")
-        self._write_to_file(f"[{timestamp}] {agent_name.upper()} INPUT - {key}")
-        self._write_to_file(f"{'='*60}")
-        self._write_to_file(f"SYSTEM PROMPT:\n{system_prompt}")
-        self._write_to_file(f"\nUSER PROMPT:\n{user_prompt}")
+        # Write full prompts to log file
+        self._write_to_file(f"\n{'='*80}")
+        self._write_to_file(f"📝 [{timestamp}] {agent_name.upper()} INPUT → {key}")
+        self._write_to_file(f"{'='*80}")
+        self._write_to_file(f"SYSTEM PROMPT ({len(system_prompt)} chars):")
+        self._write_to_file(f"{'-'*40}")
+        self._write_to_file(system_prompt)
+        self._write_to_file(f"\n{'-'*40}")
+        self._write_to_file(f"USER PROMPT ({len(user_prompt)} chars):")
+        self._write_to_file(f"{'-'*40}")
+        self._write_to_file(user_prompt)
         if context_data:
-            self._write_to_file(f"\nCONTEXT DATA:\n{context_data}")
-        self._write_to_file("")
+            self._write_to_file(f"\n{'-'*40}")
+            self._write_to_file(f"CONTEXT DATA ({len(str(context_data))} chars):")
+            self._write_to_file(f"{'-'*40}")
+            self._write_to_file(str(context_data))
+        self._write_to_file(f"{'='*80}\n")
         
-        # Display minimal status in Streamlit
-        st.write(f"📝 {agent_name.upper()} processing {key} - Input logged to {self.log_file.name}")
+        # No Streamlit display during processing (silent logging)
     
     def log_agent_output(self, agent_name, key, output, processing_time=0):
-        """Log agent output and processing details to file"""
+        """Log agent output and processing details to file with session focus"""
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
+        # Store full output in memory for session
         log_entry = {
             'timestamp': timestamp,
             'agent': agent_name,
@@ -97,7 +105,8 @@ class AIAgentLogger:
             'type': 'OUTPUT',
             'output': output,
             'processing_time': processing_time,
-            'output_length': len(str(output))
+            'output_length': len(str(output)),
+            'is_success': output and not str(output).startswith("Error")
         }
         
         if agent_name not in self.logs:
@@ -108,21 +117,30 @@ class AIAgentLogger:
         self.logs[agent_name][key].append(log_entry)
         self.session_logs.append(log_entry)
         
-        # Write to file
-        self._write_to_file(f"\n{'-'*60}")
-        self._write_to_file(f"[{timestamp}] {agent_name.upper()} OUTPUT - {key}")
-        self._write_to_file(f"Processing Time: {processing_time:.2f}s | Output Length: {len(str(output))} chars")
-        self._write_to_file(f"{'-'*60}")
+        # Write full output to log file
+        status_icon = "✅" if output and not str(output).startswith("Error") else "❌"
+        self._write_to_file(f"\n{'='*80}")
+        self._write_to_file(f"{status_icon} [{timestamp}] {agent_name.upper()} OUTPUT ← {key} ({processing_time:.2f}s)")
+        self._write_to_file(f"{'='*80}")
+        self._write_to_file(f"OUTPUT ({len(str(output))} chars):")
+        self._write_to_file(f"{'-'*40}")
         
+        # Write the full output content
         if isinstance(output, dict):
-            self._write_to_file(f"OUTPUT (JSON):\n{json.dumps(output, indent=2)}")
+            # For JSON outputs (Agent 2, 3), log full structured output
+            self._write_to_file(json.dumps(output, indent=2, ensure_ascii=False))
         else:
-            self._write_to_file(f"OUTPUT:\n{str(output)}")
-        self._write_to_file("")
+            # For text outputs (Agent 1), log full content
+            self._write_to_file(str(output))
         
-        # Display status in Streamlit with success/error indication
-        status_icon = "🟢" if output and not str(output).startswith("Error") else "🔴"
-        st.write(f"{status_icon} {agent_name.upper()} completed {key} in {processing_time:.2f}s - Output logged")
+        self._write_to_file(f"\n{'-'*40}")
+        self._write_to_file(f"PROCESSING SUMMARY:")
+        self._write_to_file(f"- Processing Time: {processing_time:.2f} seconds")
+        self._write_to_file(f"- Output Length: {len(str(output))} characters")
+        self._write_to_file(f"- Status: {'Success' if output and not str(output).startswith('Error') else 'Error/Failed'}")
+        self._write_to_file(f"{'='*80}\n")
+        
+        # No Streamlit display during processing (silent logging)
     
     def log_error(self, agent_name, key, error_msg):
         """Log errors during processing to file"""
@@ -2857,12 +2875,11 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
         # Get agent states
         agent_states = st.session_state.get('agent_states', {})
         
-        # Create sub-tabs for different perspectives
+        # Create sub-tabs for different perspectives (AI outputs only)
         perspective_tabs = st.tabs([
             "📝 Agent 1: Content Generation", 
             "📊 Agent 2: Data Validation", 
-            "🎯 Agent 3: Pattern Compliance", 
-            "🔧 Input Data & Prompts"
+            "🎯 Agent 3: Pattern Compliance"
         ])
         
         # Tab 1: Agent 1 - Content Generation Focus
@@ -3280,211 +3297,7 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
             else:
                 st.info("⏳ Agent 3 will run automatically during 'Process with AI'")
         
-        # Tab 4: Input Data & Prompts
-        with perspective_tabs[3]:
-            st.markdown(f"### 🔧 Input Data & AI Prompts Used")
-            st.info("**Purpose**: Verify the exact input data and prompts used by all agents for transparency")
-            
-            # Show input table used in prompts
-            st.markdown("**📊 Input Table Data (What Agents Analyzed):**")
-            sections_by_key = ai_data.get('sections_by_key', {})
-            sections = sections_by_key.get(key, [])
-            
-            if sections:
-                # Show the actual input data in beautiful format like View Workbook
-                for i, section in enumerate(sections[:5]):  # Show first 5 sections
-                    if isinstance(section, dict):
-                        if 'content' in section:
-                            section_content = section['content']
-                            
-                            # Check if it contains tabular data that can be formatted
-                            lines = section_content.split('\n')
-                            has_table_structure = any('|' in line for line in lines)
-                            
-                            if has_table_structure:
-                                # It's a markdown table - display beautifully
-                                with st.expander(f"📊 Section {i+1} - Table Data", expanded=False):
-                                    st.markdown("**Source Data Table:**")
-                                    st.markdown(section_content)
-                            else:
-                                # Regular text content
-                                with st.expander(f"📝 Section {i+1} - Text Data", expanded=False):
-                                    st.text(section_content)
-                        
-                        elif 'data' in section and isinstance(section['data'], list):
-                            with st.expander(f"📊 Section {i+1} - Structured Data", expanded=False):
-                                try:
-                                    df = pd.DataFrame(section['data'])
-                                    st.dataframe(df, use_container_width=True)
-                                    
-                                    # Also show as markdown table (collapsed)
-                                    with st.expander("📋 Markdown Table Format", expanded=False):
-                                        from tabulate import tabulate
-                                        markdown_table = tabulate(df, headers='keys', tablefmt='pipe', showindex=False)
-                                        st.code(markdown_table, language='markdown')
-                                except Exception as e:
-                                    st.error(f"Error displaying structured data: {e}")
-                                    st.text(str(section['data']))
-                    else:
-                        # Simple data
-                        with st.expander(f"📄 Section {i+1} - Raw Data", expanded=False):
-                            st.text(str(section)[:1000] + "..." if len(str(section)) > 1000 else str(section))
-            else:
-                st.info("No input data available for this key")
-            
-            # Show AI prompts for all agents with both system and user prompts
-            st.markdown("---")
-            st.markdown("**🤖 AI Prompts Used by Each Agent:**")
-            
-            # Create tabs for each agent's prompts
-            agent_prompt_tabs = st.tabs(["🚀 Agent 1 Prompts", "🔍 Agent 2 Prompts", "🎯 Agent 3 Prompts"])
-            
-            # Load prompts
-            try:
-                import json
-                with open('utils/prompts.json', 'r') as f:
-                    prompts = json.load(f)
-                
-                system_prompts = prompts.get('system_prompts', {})
-                
-                # Agent 1 Prompts
-                with agent_prompt_tabs[0]:
-                    st.markdown("### 🚀 Agent 1: Content Generation Prompts")
-                    
-                    # System Prompt - Full width
-                    st.markdown("**System Prompt:**")
-                    system_prompt = system_prompts.get('Agent 1', '')
-                    if system_prompt:
-                        st.text_area("Agent 1 System", system_prompt, height=200, disabled=True, key=f"sys_agent1_{key}")
-                    else:
-                        st.info("No system prompt available")
-                    
-                    st.markdown("---")
-                    
-                    # User Prompt - Full width
-                    st.markdown("**User Prompt:**")
-                    # Generate the actual user prompt that would be used
-                    try:
-                        from common.assistant import load_ip, get_financial_figure, find_financial_figures_with_context_check, get_tab_name
-                        
-                        # Load pattern and generate user prompt
-                        pattern = load_ip("utils/pattern.json", key)
-                        entity_name = ai_data.get('entity_name', '')
-                        
-                        # Simulate the user prompt construction
-                        user_prompt_sample = f"""
-TASK: Select ONE pattern and complete it with actual data
 
-AVAILABLE PATTERNS: {json.dumps(pattern, indent=2) if pattern else 'No patterns available'}
-
-FINANCIAL FIGURE: {key}: [Figure would be extracted from databook]
-
-DATA SOURCE: [Excel tables would be inserted here]
-
-SELECTION CRITERIA:
-- Choose the pattern with the most complete data coverage
-- Prioritize patterns that match the primary account category
-- Use most recent data: latest available
-
-REQUIRED OUTPUT FORMAT:
-- Only the completed pattern text
-- No pattern names or labels
-- Replace ALL 'xxx' or placeholders with actual data values
-- Apply proper K/M conversion with 1 decimal place
-- For entity name, use data source not reporting entity ({entity_name})
-
-Example: "Cash at bank comprises deposits of $2.3M held with major financial institutions as at 30/09/2022."
-                        """
-                        st.text_area("Agent 1 User", user_prompt_sample, height=300, disabled=True, key=f"user_agent1_{key}")
-                    except Exception as e:
-                        st.text_area("Agent 1 User", f"Error generating user prompt: {e}", height=300, disabled=True, key=f"user_agent1_{key}")
-                
-                # Agent 2 Prompts
-                with agent_prompt_tabs[1]:
-                    st.markdown("### 🔍 Agent 2: Data Validation Prompts")
-                    
-                    # System Prompt - Full width
-                    st.markdown("**System Prompt:**")
-                    system_prompt = system_prompts.get('Agent 2', '')
-                    if system_prompt:
-                        st.text_area("Agent 2 System", system_prompt, height=200, disabled=True, key=f"sys_agent2_{key}")
-                    else:
-                        st.info("No system prompt available")
-                    
-                    st.markdown("---")
-                    
-                    # User Prompt - Full width
-                    st.markdown("**User Prompt:**")
-                    # Generate sample user prompt for Agent 2
-                    user_prompt_sample = f"""
-AI2 DATA VALIDATION TASK:
-
-CONTENT: [Agent 1 generated content would be here]
-EXPECTED FIGURE FOR {key}: [Expected figure from balance sheet]
-BALANCE SHEET DATA: [Financial figures would be listed here]
-
-VALIDATION CHECKLIST:
-1. Extract financial figures from content
-2. Compare with expected balance sheet figure  
-3. Verify K/M conversion accuracy
-4. Check entity names (should be from data, not {ai_data.get('entity_name', '')})
-5. Identify top 2 most critical issues only
-6. Remove quotation marks around sections
-
-RETURN (JSON):
-{{
-    "is_valid": true/false,
-    "issues": ["top 2 critical issues only"],
-    "score": 0-100,
-    "corrected_content": "content with corrections if needed"
-}}
-                    """
-                    st.text_area("Agent 2 User", user_prompt_sample, height=300, disabled=True, key=f"user_agent2_{key}")
-                
-                # Agent 3 Prompts
-                with agent_prompt_tabs[2]:
-                    st.markdown("### 🎯 Agent 3: Pattern Compliance Prompts")
-                    
-                    # System Prompt - Full width
-                    st.markdown("**System Prompt:**")
-                    system_prompt = system_prompts.get('Agent 3', '')
-                    if system_prompt:
-                        st.text_area("Agent 3 System", system_prompt, height=200, disabled=True, key=f"sys_agent3_{key}")
-                    else:
-                        st.info("No system prompt available")
-                    
-                    st.markdown("---")
-                    
-                    # User Prompt - Full width
-                    st.markdown("**User Prompt:**")
-                    # Generate sample user prompt for Agent 3
-                    user_prompt_sample = f"""
-AI3 PATTERN COMPLIANCE CHECK:
-
-AI1 CONTENT: [Agent 1 generated content would be here]
-KEY: {key}
-PATTERNS: [Available patterns for {key} would be listed here]
-
-VALIDATION TASKS:
-1. Check if AI1 content follows pattern structure
-2. Verify all placeholders filled with actual data
-3. If AI1 lists too many items, keep only top 2
-4. Remove quotation marks around full sections
-5. Check for template artifacts that shouldn't be there
-6. Ensure professional financial writing style
-
-RETURN (JSON):
-{{
-    "is_compliant": true/false,
-    "issues": ["top 2 most important issues only"],
-    "corrected_content": "cleaned content with top 2 items if needed"
-}}
-                    """
-                    st.text_area("Agent 3 User", user_prompt_sample, height=300, disabled=True, key=f"user_agent3_{key}")
-                        
-            except Exception as e:
-                st.error(f"Error loading prompts: {e}")
-                st.info("Unable to display prompts. Please check utils/prompts.json file.")
     
     except Exception as e:
         st.error(f"Error displaying results for {key}: {e}")
