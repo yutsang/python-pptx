@@ -1,0 +1,192 @@
+{
+    "Cash": [
+        "Cash",
+        "Cash and Cash Equivalents",
+        "Cash and cash equivalents"
+    ],
+    "AR": [
+        "AR",
+        "Accounts Receivables",
+        "Accounts Receivable",
+        "Accounts receivable",
+        "Accounts receivables"
+    ],
+    "Prepayments": [
+        "Prepayment",
+        "Prepayments"
+    ],
+    "OR": [
+        "OR",
+        "Other Receivables",
+        "Other receivables",
+        "Other Receivable",
+        "Other receivables"
+    ],
+    "IP": [
+        "IP",
+        "Investment Property",
+        "Investment properties",
+        "Investment property",
+        "Investment Properties"
+    ],
+    "NCA": [
+        "NCA",
+        "Non-current Assets",
+        "Non-current asset",
+        "Non-current assets",
+        "Non Current Assets",
+        "Non Current Asset",
+        "Fixed Assets",
+        "Fixed Asset",
+        "Fixed assets",
+        "Fixed asset"
+    ],
+    "Other NCA": [
+        "Other NCA",
+        "Other Non-current Assets",
+        "Other Non-current asset",
+        "Other Non-current assets",
+        "Other Non Current Assets",
+        "Other Non Current Asset",
+        "Other Fixed Assets",
+        "Other Fixed Asset",
+        "Other Fixed assets",
+        "Other Fixed asset"
+    ],
+    "Other CA": [
+        "Other CA",
+        "Other Current Assets",
+        "Other Current asset",
+        "Other Current assets",
+        "Other Current Assets",
+        "Other Current Asset",
+        "Other Current assets",
+        "Other Current asset"
+    ],
+    "AP": [
+        "AP",
+        "Accounts Payables",
+        "Accounts Payable",
+        "Accounts payable",
+        "Accounts payables"
+    ],
+    "Advances": [
+        "Advances",
+        "Advances from Customers",
+        "Advances from customers",
+        "Advances from customer",
+        "Advances from Customer"
+    ],
+    "Taxes payable": [
+        "Taxes payable",
+        "Tax Payable",
+        "Tax payable",
+        "Taxes Payable",
+        "Taxes payables"
+    ],
+    "OP": [
+        "OP",
+        "Other Payables",
+        "Other payables",
+        "Other Payable",
+        "Other payables"
+    ],
+    "Capital": [
+        "Capital",
+        "Share Capital",
+        "Share capital",
+        "Shareholder's Equity",
+        "Shareholders' Equity",
+        "Shareholders Equity",
+        "Shareholder Equity"
+    ],
+    "Reserve": [
+        "Reserve",
+        "Reserves"
+    ],
+    "Capital reserve": [
+        "Capital reserve",
+        "Capital Reserves",
+        "Capital Reserve"
+    ],
+    "OI": [
+        "OI",
+        "Other Income",
+        "Other income",
+        "Other Income and Gains",
+        "Other income and gains",
+        "Sales",
+        "Sale"
+    ],
+    "OC": [
+        "OC",
+        "Other Costs",
+        "Other costs",
+        "Other Cost",
+        "Other cost",
+        "Cost"
+    ],
+    "Tax and Surcharges": [
+        "Tax and Surcharges",
+        "Tax and surcharges",
+        "Taxes and Surcharges",
+        "Taxes and surcharges",
+        "Tax and surcharge",
+        "Taxes and surcharge"
+    ],
+    "GA": [
+        "GA",
+        "G&A expenses"
+    ],
+    "Fin Exp": [
+        "Fin Exp",
+        "Finance Expenses",
+        "Finance expenses",
+        "Financial Expenses",
+        "Financial expenses",
+        "Financial Expense",
+        "Financial expense"
+    ],
+    "Cr Loss": [
+        "Cr Loss",
+        "Credit Losses",
+        "Credit losses",
+        "Credit loss",
+        "Credit Loss"
+    ],
+    "Other Income": [
+        "Other Income",
+        "Other income",
+        "Other Income and Gains",
+        "Other income and gains"
+    ],
+    "Non-operating Income": [
+        "Non-operating Income",
+        "Non-operating income",
+        "Non Operating Income",
+        "Non Operating income"
+    ],
+    "Non-operating Exp": [
+        "Non-operating Exp",
+        "Non-operating Expenses",
+        "Non-operating expenses",
+        "Non Operating Expenses",
+        "Non Operating expenses"
+    ],
+    "Income tax": [
+        "Income tax",
+        "Income Tax",
+        "Income Taxes",
+        "Income taxes",
+        "Income tax expense",
+        "Income tax expenses"
+    ],
+    "LT DTA": [
+        "LT DTA",
+        "Long-term Deferred Tax Assets",
+        "Long-term deferred tax assets",
+        "Long-term Deferred Tax Asset",
+        "Long-term deferred tax asset"
+    ]
+
+}

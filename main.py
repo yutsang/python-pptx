@@ -25,12 +25,16 @@ def run_streamlit():
     os.environ.setdefault("STREAMLIT_SERVER_PORT", "8501")
     os.environ.setdefault("STREAMLIT_SERVER_ADDRESS", "localhost")
     
-    # Check if we have the working demo app
+    # Check available applications in priority order
+    working_app = current_dir / "streamlit_app_working.py"
     demo_app = current_dir / "streamlit_app.py"
     new_streamlit_app = src_dir / "interfaces" / "web" / "streamlit_app.py"
     original_app = current_dir / "old_ver" / "app.py"
     
-    if demo_app.exists():
+    if working_app.exists():
+        print("✅ Running self-contained new architecture app...")
+        os.system(f"streamlit run {working_app}")
+    elif demo_app.exists():
         print("🎯 Running architecture demo app...")
         os.system(f"streamlit run {demo_app}")
     elif new_streamlit_app.exists():
@@ -42,8 +46,9 @@ def run_streamlit():
     else:
         print("❌ No Streamlit application found!")
         print("💡 Available options:")
-        print("   - streamlit run streamlit_app.py  (architecture demo)")
-        print("   - streamlit run old_ver/app.py    (original working version)")
+        print("   - streamlit run streamlit_app_working.py  (new independent architecture)")
+        print("   - streamlit run streamlit_app.py         (architecture demo)")
+        print("   - streamlit run old_ver/app.py           (original working version)")
 
 
 def run_fastapi():
