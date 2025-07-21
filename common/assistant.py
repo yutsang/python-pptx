@@ -281,7 +281,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     # Create DataFrame
                     df = pd.DataFrame(data[1:], columns=data[0])
                     df = df.dropna(how='all').dropna(axis=1, how='all')
-                    df = df.applymap(lambda x: str(x) if x is not None else "")
+                    df = df.map(lambda x: str(x) if x is not None else "")
                     df = df.reset_index(drop=True)
                     
                     # Check for entity keywords - handle mixed data types safely
