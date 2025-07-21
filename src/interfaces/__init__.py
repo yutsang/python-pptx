@@ -1,1 +1,0 @@
-"""Interface layer - UI and API adapters.""" 
