@@ -1,84 +1,13 @@
-# Core Dependencies
 streamlit>=1.28.0
-fastapi>=0.104.0
-uvicorn>=0.24.0
-pydantic>=2.4.0
-pydantic-settings>=2.0.0
-
-# Data Processing
-pandas>=2.1.0
+pandas>=2.0.0
 openpyxl>=3.1.0
-xlrd>=2.0.1
-
-# AI and ML
-openai>=1.3.0
-tenacity>=8.2.0
-tiktoken>=0.5.0
-
-# Database
-sqlalchemy>=2.0.0
-alembic>=1.12.0
-asyncpg>=0.29.0  # PostgreSQL async driver
-psycopg2-binary>=2.9.0  # PostgreSQL sync driver
-
-# Caching
-redis>=5.0.0
-hiredis>=2.2.0
-
-# PowerPoint Export (preserved from old system)
-python-pptx>=0.6.21
-Pillow>=10.0.0
-
-# Data Validation and Processing
-marshmallow>=3.20.0
 tabulate>=0.9.0
-
-# HTTP and Networking
-httpx>=0.25.0
 urllib3>=2.0.0
-
-# Monitoring and Logging
-structlog>=23.1.0
-prometheus-client>=0.18.0
-
-# Development and Testing
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
-pytest-mock>=3.11.0
-black>=23.7.0
-isort>=5.12.0
-mypy>=1.5.0
-
-# Performance and Reliability
-circuitbreaker>=1.4.0
-
-# Configuration
-python-dotenv>=1.0.0
-
-# Utilities
-tqdm>=4.66.0
-click>=8.1.0
-rich>=13.5.0
-
-# Date and Time
-python-dateutil>=2.8.0
-
-# Async Support
-asyncio-mqtt>=0.13.0
-aiofiles>=23.2.0
-
-# Security
-cryptography>=41.0.0
-passlib>=1.7.4
-
-# Data Serialization
-orjson>=3.9.0
-
-# File Processing
-pathlib2>=2.3.7
-
-# Math and Statistics
-numpy>=1.24.0
-
-# Environment
-python-multipart>=0.0.6  # For FastAPI file uploads 
+python-pptx>=0.6.21
+tqdm>=4.65.0
+httpx>=0.24.0
+openai>=1.0.0
+azure-search-documents>=11.4.0
+azure-core>=1.29.0
+ipython>=8.0.0
+pillow>=10.0.0 

@@ -1,142 +1,129 @@
-# Real Estate Due Diligence Automation
+# Financial Data Processor - Streamlit App
 
-An enterprise-grade financial data processing system for real estate due diligence reports.
+A Streamlit-based web application for processing and analyzing financial data from Excel files, built on the functionality from the original `old_ver` implementation.
 
-## 🎯 **Overview**
+## Features
 
-This system automates the creation of due diligence reports by:
-- 📊 Processing Excel financial data with intelligent pattern matching
-- 🤖 Using a 3-agent AI validation pipeline (Content Generation → Data Validation → Pattern Compliance)
-- 📋 Generating professional PowerPoint presentations
-- 🔍 Providing comprehensive data validation and error checking
+- 📊 **Excel File Processing**: Upload and process financial Excel files
+- 🔍 **Worksheet Section Viewing**: View filtered worksheet sections using the `process_and_filter_excel` function
+- 🏢 **Entity Support**: Support for Haining, Nanjing, and Ningbo entities
+- 📋 **Data Visualization**: Interactive tables and data statistics
+- 💾 **Export Functionality**: Download processed data as markdown files
+- ⚙️ **Configuration Management**: View and manage mapping and pattern configurations
 
-## 🚀 **Quick Start**
+### Enhanced Highlighting System (NEW)
 
-### **Installation**
+The application now includes an advanced highlighting system in Agent 2 that performs pattern-based figure detection:
+
+1. **Pattern Comparison**: Compares AI1 output with the most similar pattern from pattern.json
+2. **Figure Extraction**: Extracts numbers from AI1 content and identifies pattern placeholders
+3. **'000 Detection**: Automatically detects '000 notation in worksheet headers/titles
+4. **Conversion Logic**: Converts balance sheet numbers based on notation (e.g., 9076 → 9076000)
+5. **Row Highlighting**: Highlights all worksheet rows containing matching numbers in yellow
+
+**Example Process:**
+- AI1 Output: "CNY9.1M"
+- Pattern Detection: Finds most similar pattern with [Amount] placeholder
+- '000 Detection: Detects '000 notation in worksheet headers
+- Conversion: 9.1M → 9,100,000 → 9,100 (worksheet number)
+- Highlighting: All rows containing "9100" are highlighted in yellow
+
+### AI Agents
+
+- **Agent 1**: Content generation specialist
+- **Agent 2**: Enhanced data integrity specialist with pattern-based highlighting
+- **Agent 3**: Pattern compliance specialist
+
+## Installation
+
+1. Clone the repository:
 ```bash
-# Clone the repository
 git clone <repository-url>
 cd python-pptx
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Optional: Install AI dependencies for real AI processing
-pip install -r utils/requirements_ai.txt
 ```
 
-### **Running the Application**
+2. Install dependencies:
 ```bash
-# Run the main application
-streamlit run streamlit_app.py
+pip install -r requirements.txt
 ```
 
-### **AI Configuration (Optional)**
-For real AI processing, configure your API key:
-```json
-// config/config.json
-{
-    "OPENAI_API_KEY": "sk-your-api-key-here",
-    "CHAT_MODEL": "gpt-4o-mini"
-}
+3. Ensure configuration files are present in the `utils/` directory:
+   - `utils/config.json`
+   - `utils/mapping.json`
+   - `utils/pattern.json`
+
+## Usage
+
+1. Run the Streamlit app:
+```bash
+streamlit run app.py
 ```
 
-## 📊 **Key Features**
+2. Open your browser and navigate to the provided URL (usually `http://localhost:8501`)
 
-### **🤖 AI Processing Pipeline**
-- **Agent 1**: Content Generation using pattern templates
-- **Agent 2**: Data validation and accuracy checking
-- **Agent 3**: Pattern compliance and format verification
+3. Upload an Excel file containing financial data
 
-### **📋 Data Processing**
-- **Excel Processing**: Automated extraction of financial data
-- **Entity Recognition**: Smart parsing of real estate entity names
-- **Key-based Analysis**: Organized processing by financial categories
-- **PowerPoint Export**: Automated presentation generation
+4. Select the entity (Haining, Nanjing, or Ningbo)
 
-### **🔍 UI Features**
-- **Single Progress Bar**: Real-time processing status
-- **2-Layer Tabs**: Organized AI results by Agent → Key structure
-- **AI Logging**: Complete session tracking with timestamps
-- **Export Options**: PowerPoint presentations and AI log summaries
+5. Enter entity helpers (comma-separated, e.g., "Wanpu,Limited,")
 
-## 🔧 **Configuration**
+6. Click "Process Data" to analyze the file
 
-### **Directory Structure**
-```
-├── streamlit_app.py          # Main application
-├── config/
-│   ├── config.json           # AI and system configuration
-│   ├── mapping.json          # Financial key mappings
-│   ├── pattern.json          # Processing patterns
-│   └── prompts.json          # AI agent prompts
-├── utils/
-│   ├── ai_config.py          # AI service initialization
-│   ├── ai_logger.py          # AI interaction logging
-│   └── requirements_ai.txt   # Optional AI dependencies
-└── logging/                  # AI session logs with timestamps
-```
-
-### **Configuration Files**
-- **config.json**: AI API keys and system settings
-- **mapping.json**: Financial category mappings  
-- **pattern.json**: Data processing patterns
-- **prompts.json**: AI agent system prompts
-
-## 📈 **Usage Workflow**
-
-### **Processing Financial Data**
-1. **Upload Excel File**: Financial data spreadsheet
-2. **Select Entity**: Choose real estate entity for analysis  
-3. **Filter Keys**: Select financial categories to process
-4. **AI Processing**: Optional 3-agent analysis pipeline
-5. **Export Results**: PowerPoint presentation generation
-
-### **AI Processing Status**
-- **🚀 Real AI**: When valid API key is configured
-- **⚠️ No AI**: System works without AI, skips AI processing steps
-
-## 🗂️ **AI Logging**
-
-All AI interactions are automatically logged to `logging/` directory:
+## File Structure
 
 ```
-logging/ai_session_YYYYMMDD_HHMMSS/
-├── session_summary.json      # Complete session metadata
-├── detailed_interactions.jsonl # Line-by-line AI interactions  
-├── summary.md                # Human-readable summary
-└── Agent_X_Key_Y.json        # Individual interaction files
+python-pptx/
+├── app.py                 # Main Streamlit application
+├── requirements.txt       # Python dependencies
+├── README.md             # This file
+├── utils/                # Configuration and utility files
+│   ├── config.json       # AI service configuration
+│   ├── mapping.json      # Financial item mappings
+│   ├── pattern.json      # Report patterns
+│   └── ...
+└── old_ver/              # Original implementation (untouched)
+    ├── utils/
+    ├── financial_processor/
+    └── ...
 ```
 
-### **Log Contents**
-- Input prompts (system and user)
-- AI responses (full content)
-- Processing times and connection status
-- Success/error tracking
-- Response type classification
+## Expected Excel File Format
 
-## 🛠️ **Troubleshooting**
+The application expects Excel files with the following structure:
 
-### **Common Issues**
+- **Sheet Names**: BSHN (Haining), BSNJ (Nanjing), BSNB (Ningbo)
+- **Financial Items**: Cash, AR, Prepayments, OR, Other CA, IP, Other NCA, AP, Taxes payable, OP, Capital, Reserve
+- **Data Format**: Standard balance sheet format with descriptions and amounts
 
-#### **AI Services Not Available**
-- Check if API key is configured in `config/config.json`
-- Install AI dependencies: `pip install -r utils/requirements_ai.txt`
-- System works without AI - will skip AI processing steps
+## Configuration
 
-#### **Excel Processing Errors**
-- Ensure Excel file is in .xlsx or .xls format
-- Check for required worksheets and data structure
-- Verify entity name matches supported entities
+### Entity Mapping
+- **Haining** → BSHN sheet
+- **Nanjing** → BSNJ sheet  
+- **Ningbo** → BSNB sheet
 
-#### **PowerPoint Generation Issues**
-- Ensure template.pptx exists in utils/ directory
-- Check file permissions for output directory
+### Supported Financial Items
+- **Current Assets**: Cash, AR, Prepayments, OR, Other CA
+- **Non-current Assets**: IP, Other NCA
+- **Liabilities**: AP, Taxes payable, OP
+- **Equity**: Capital, Reserve
 
-## 📄 **License**
+## Features from Original Implementation
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This Streamlit app incorporates the core functionality from the original `old_ver` implementation:
 
----
+- ✅ `process_and_filter_excel` function for worksheet section viewing
+- ✅ Entity-based data filtering
+- ✅ Financial item mapping and pattern matching
+- ✅ Configuration file management
+- ✅ Data processing and analysis capabilities
 
-**🚀 Ready for professional real estate due diligence processing!** 🏠✨
+## Troubleshooting
+
+1. **Configuration Files Missing**: Ensure all JSON configuration files are present in the `utils/` directory
+2. **Excel File Format**: Verify your Excel file has the expected sheet names and structure
+3. **Dependencies**: Make sure all required packages are installed using `pip install -r requirements.txt`
+
+## Development
+
+The original implementation files are preserved in the `old_ver/` directory and remain untouched as requested. The new Streamlit app provides a modern web interface while maintaining the core functionality of the original system.
