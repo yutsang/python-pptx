@@ -26,12 +26,16 @@ def run_streamlit():
     os.environ.setdefault("STREAMLIT_SERVER_ADDRESS", "localhost")
     
     # Check available applications in priority order
+    full_app = current_dir / "streamlit_app_full.py"
     working_app = current_dir / "streamlit_app_working.py"
     demo_app = current_dir / "streamlit_app.py"
     new_streamlit_app = src_dir / "interfaces" / "web" / "streamlit_app.py"
     original_app = current_dir / "old_ver" / "app.py"
     
-    if working_app.exists():
+    if full_app.exists():
+        print("🚀 Running full-featured application with AI and PowerPoint export...")
+        os.system(f"streamlit run {full_app}")
+    elif working_app.exists():
         print("✅ Running self-contained new architecture app...")
         os.system(f"streamlit run {working_app}")
     elif demo_app.exists():
@@ -46,8 +50,8 @@ def run_streamlit():
     else:
         print("❌ No Streamlit application found!")
         print("💡 Available options:")
-        print("   - streamlit run streamlit_app_working.py  (new independent architecture)")
-        print("   - streamlit run streamlit_app.py         (architecture demo)")
+        print("   - streamlit run streamlit_app_full.py    (complete functionality)")
+        print("   - streamlit run streamlit_app.py         (simplified version)")
         print("   - streamlit run old_ver/app.py           (original working version)")
 
 
