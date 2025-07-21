@@ -184,12 +184,21 @@ def run_ai_processing_with_logging(keys_with_data, sections_by_key, entity_name,
         ai_client, _ = initialize_ai_services(ai_config)
         has_real_openai = ai_client and ai_client != "openai_client_placeholder"
         
+        # Determine connection status for logging
+        if has_real_openai:
+            connection_status = "real_openai_connected"
+        elif ai_client == "openai_client_placeholder":
+            connection_status = "placeholder_mode"
+        else:
+            connection_status = "no_ai_configured"
+        
     except ImportError as e:
         st.error(f"⚠️ AI utilities import failed: {e}")
         # Basic fallback without logging
         has_real_openai = False
         ai_client = None
         ai_logger = None
+        connection_status = "import_error"
     
     # Display AI status
     if has_real_openai:
@@ -258,7 +267,8 @@ Format your response clearly and professionally."""
                 user_prompt=user_prompt,
                 ai_response=agent1_result,
                 entity_name=entity_name,
-                processing_time=agent1_time
+                processing_time=agent1_time,
+                ai_connection_status=connection_status
             )
         
         # Agent 2: Data Validation
@@ -307,7 +317,8 @@ Provide your validation in JSON format:
                 user_prompt=user_prompt,
                 ai_response=agent2_result,
                 entity_name=entity_name,
-                processing_time=agent2_time
+                processing_time=agent2_time,
+                ai_connection_status=connection_status
             )
         
         # Agent 3: Pattern Compliance
@@ -354,7 +365,8 @@ Return the final compliant content that is ready for PowerPoint export."""
                 user_prompt=user_prompt,
                 ai_response=agent3_result,
                 entity_name=entity_name,
-                processing_time=agent3_time
+                processing_time=agent3_time,
+                ai_connection_status=connection_status
             )
         
         # Store results
@@ -462,6 +474,32 @@ Return the final compliant content that is ready for PowerPoint export."""
                 )
         except Exception as e:
             st.warning(f"Could not prepare log download: {e}")
+    
+    # Show consolidated AI results for all keys
+    if ai_results:
+        st.markdown("---")
+        st.markdown("### 📊 **All AI Results Summary**")
+        
+        # Create tabs for each agent across all keys
+        all_agent1_tab, all_agent2_tab, all_agent3_tab = st.tabs(["🤖 All Agent 1 Results", "🔍 All Agent 2 Results", "🎯 All Agent 3 Results"])
+        
+        with all_agent1_tab:
+            st.markdown("#### **Agent 1: Content Generation - All Keys**")
+            for key, result in ai_results.items():
+                with st.expander(f"📝 {get_key_display_name(key)} - Agent 1", expanded=False):
+                    st.markdown(result['agent1'])
+        
+        with all_agent2_tab:
+            st.markdown("#### **Agent 2: Data Validation - All Keys**")
+            for key, result in ai_results.items():
+                with st.expander(f"🔍 {get_key_display_name(key)} - Agent 2", expanded=False):
+                    st.markdown(result['agent2'])
+        
+        with all_agent3_tab:
+            st.markdown("#### **Agent 3: Pattern Compliance - All Keys**")
+            for key, result in ai_results.items():
+                with st.expander(f"🎯 {get_key_display_name(key)} - Agent 3", expanded=False):
+                    st.markdown(result['agent3'])
     
     return ai_results
 

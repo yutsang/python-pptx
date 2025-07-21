@@ -56,7 +56,8 @@ class AILogger:
         ai_response: str,
         entity_name: str = "",
         processing_time: float = 0,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        ai_connection_status: str = "unknown"
     ):
         """Log a complete AI interaction"""
         
@@ -70,6 +71,7 @@ class AILogger:
             "key": key,
             "entity_name": entity_name,
             "processing_time_seconds": processing_time,
+            "ai_connection_status": ai_connection_status,
             "input": {
                 "system_prompt": system_prompt,
                 "user_prompt": user_prompt,
@@ -85,7 +87,8 @@ class AILogger:
             "metadata": {
                 "is_placeholder": "[Demo AI Analysis]" in ai_response or "[AI Response Placeholder]" in ai_response,
                 "is_fallback": "[Fallback Response]" in ai_response,
-                "has_real_ai": not any(x in ai_response for x in ["[Demo AI Analysis]", "[AI Response Placeholder]", "[Fallback Response]"])
+                "has_real_ai": not any(x in ai_response for x in ["[Demo AI Analysis]", "[AI Response Placeholder]", "[Fallback Response]"]),
+                "connection_status": ai_connection_status
             }
         }
         

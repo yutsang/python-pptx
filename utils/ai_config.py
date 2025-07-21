@@ -10,14 +10,37 @@ import json
 from pathlib import Path
 
 def load_ai_config():
-    """Load AI configuration from config.json"""
+    """Load AI configuration from config.json with fallbacks"""
     try:
+        config = {}
+        
+        # Try main config/config.json 
         config_path = Path("config/config.json")
-        with open(config_path, 'r') as f:
-            config = json.load(f)
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config.update(json.load(f))
+                print(f"✅ AI config loaded from config/: {len(config)} settings")
+        
+        # Check environment variables as fallback
+        import os
+        if not config.get('OPENAI_API_KEY') or config.get('OPENAI_API_KEY') == "":
+            env_key = os.getenv('OPENAI_API_KEY')
+            if env_key:
+                config['OPENAI_API_KEY'] = env_key
+                print("✅ OpenAI API key loaded from environment")
+        
+        # Debug the final config status
+        has_openai_key = bool(config.get('OPENAI_API_KEY') and config.get('OPENAI_API_KEY') != "" and config.get('OPENAI_API_KEY') != "your-openai-api-key-here")
+        print(f"🔑 API Key Status: {'✅ Available' if has_openai_key else '❌ Not Set'}")
+        
+        if not has_openai_key:
+            print("⚠️ No OpenAI API key found - will use demo mode")
+            print("💡 To enable real AI: Set OPENAI_API_KEY in config/config.json or environment variable")
+        
         return config
+        
     except Exception as e:
-        print(f"Error loading AI config: {e}")
+        print(f"❌ Error loading config: {e}")
         return {}
 
 def initialize_ai_services(config):
