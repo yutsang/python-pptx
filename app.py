@@ -34,9 +34,10 @@ class AIAgentLogger:
         self.log_dir = Path("logging")
         self.log_dir.mkdir(exist_ok=True)
         
-        # Create timestamped log file
+        # Create timestamped log file  
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_file = self.log_dir / f"ai_agents_{timestamp}.log"
+        self.session_id = timestamp
         
         # Initialize log file with header
         with open(self.log_file, 'w', encoding='utf-8') as f:
@@ -50,19 +51,54 @@ class AIAgentLogger:
                 f.write(f"{message}\n")
         except Exception as e:
             print(f"Error writing to log file: {e}")
+    
+    def _save_json_log(self, log_entry, log_type):
+        """Save individual JSON log files for structured access"""
+        try:
+            # Create JSON subdirectory
+            json_log_dir = self.log_dir / "json"
+            json_log_dir.mkdir(exist_ok=True)
+            
+            # Create filename with timestamp and type
+            timestamp = log_entry['timestamp'].replace(' ', '_').replace(':', '-')
+            agent = log_entry['agent'].lower()
+            key = log_entry['key'].lower()
+            filename = f"{timestamp}_{agent}_{key}_{log_type}.json"
+            
+            json_file_path = json_log_dir / filename
+            
+            # Save structured JSON
+            with open(json_file_path, 'w', encoding='utf-8') as f:
+                json.dump(log_entry, f, indent=2, ensure_ascii=False)
+                
+        except Exception as e:
+            print(f"Error saving JSON log: {e}")
         
     def log_agent_input(self, agent_name, key, system_prompt, user_prompt, context_data=None):
-        """Log agent input prompts and data to file with session focus"""
+        """Log agent input prompts and data to JSON files with clear structure"""
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
+        # Create structured log entry for JSON
         log_entry = {
             'timestamp': timestamp,
-            'agent': agent_name,
+            'agent': agent_name.upper(),
             'key': key,
             'type': 'INPUT',
-            'system_prompt': system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt,
-            'user_prompt': user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
-            'context_data': str(context_data)[:100] + "..." if context_data and len(str(context_data)) > 100 else str(context_data) if context_data else None
+            'prompts': {
+                'system_prompt': {
+                    'content': system_prompt,
+                    'length': len(system_prompt)
+                },
+                'user_prompt': {
+                    'content': user_prompt,
+                    'length': len(user_prompt)
+                }
+            },
+            'context_data': {
+                'content': str(context_data) if context_data else None,
+                'length': len(str(context_data)) if context_data else 0
+            },
+            'session_id': getattr(self, 'session_id', 'default')
         }
         
         if agent_name not in self.logs:
@@ -73,40 +109,39 @@ class AIAgentLogger:
         self.logs[agent_name][key].append(log_entry)
         self.session_logs.append(log_entry)
         
-        # Write full prompts to log file
-        self._write_to_file(f"\n{'='*80}")
+        # Save individual JSON input file
+        self._save_json_log(log_entry, 'input')
+        
+        # Write summary to text log
         self._write_to_file(f"📝 [{timestamp}] {agent_name.upper()} INPUT → {key}")
-        self._write_to_file(f"{'='*80}")
-        self._write_to_file(f"SYSTEM PROMPT ({len(system_prompt)} chars):")
-        self._write_to_file(f"{'-'*40}")
-        self._write_to_file(system_prompt)
-        self._write_to_file(f"\n{'-'*40}")
-        self._write_to_file(f"USER PROMPT ({len(user_prompt)} chars):")
-        self._write_to_file(f"{'-'*40}")
-        self._write_to_file(user_prompt)
+        self._write_to_file(f"   System: {len(system_prompt)} chars | User: {len(user_prompt)} chars")
         if context_data:
-            self._write_to_file(f"\n{'-'*40}")
-            self._write_to_file(f"CONTEXT DATA ({len(str(context_data))} chars):")
-            self._write_to_file(f"{'-'*40}")
-            self._write_to_file(str(context_data))
-        self._write_to_file(f"{'='*80}\n")
+            self._write_to_file(f"   Context: {len(str(context_data))} chars")
         
         # No Streamlit display during processing (silent logging)
     
     def log_agent_output(self, agent_name, key, output, processing_time=0):
-        """Log agent output and processing details to file with session focus"""
+        """Log agent output and processing details to JSON files with clear structure"""
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        is_success = output and not str(output).startswith("Error")
         
-        # Store full output in memory for session
+        # Create structured log entry for JSON
         log_entry = {
             'timestamp': timestamp,
-            'agent': agent_name,
+            'agent': agent_name.upper(),
             'key': key,
             'type': 'OUTPUT',
-            'output': output,
-            'processing_time': processing_time,
-            'output_length': len(str(output)),
-            'is_success': output and not str(output).startswith("Error")
+            'output': {
+                'content': output,
+                'length': len(str(output)),
+                'format': 'json' if isinstance(output, dict) else 'text'
+            },
+            'processing': {
+                'time_seconds': processing_time,
+                'status': 'success' if is_success else 'error',
+                'is_success': is_success
+            },
+            'session_id': getattr(self, 'session_id', 'default')
         }
         
         if agent_name not in self.logs:
@@ -117,28 +152,13 @@ class AIAgentLogger:
         self.logs[agent_name][key].append(log_entry)
         self.session_logs.append(log_entry)
         
-        # Write full output to log file
-        status_icon = "✅" if output and not str(output).startswith("Error") else "❌"
-        self._write_to_file(f"\n{'='*80}")
+        # Save individual JSON output file
+        self._save_json_log(log_entry, 'output')
+        
+        # Write summary to text log
+        status_icon = "✅" if is_success else "❌"
         self._write_to_file(f"{status_icon} [{timestamp}] {agent_name.upper()} OUTPUT ← {key} ({processing_time:.2f}s)")
-        self._write_to_file(f"{'='*80}")
-        self._write_to_file(f"OUTPUT ({len(str(output))} chars):")
-        self._write_to_file(f"{'-'*40}")
-        
-        # Write the full output content
-        if isinstance(output, dict):
-            # For JSON outputs (Agent 2, 3), log full structured output
-            self._write_to_file(json.dumps(output, indent=2, ensure_ascii=False))
-        else:
-            # For text outputs (Agent 1), log full content
-            self._write_to_file(str(output))
-        
-        self._write_to_file(f"\n{'-'*40}")
-        self._write_to_file(f"PROCESSING SUMMARY:")
-        self._write_to_file(f"- Processing Time: {processing_time:.2f} seconds")
-        self._write_to_file(f"- Output Length: {len(str(output))} characters")
-        self._write_to_file(f"- Status: {'Success' if output and not str(output).startswith('Error') else 'Error/Failed'}")
-        self._write_to_file(f"{'='*80}\n")
+        self._write_to_file(f"   Length: {len(str(output))} chars | Status: {'Success' if is_success else 'Error'}")
         
         # No Streamlit display during processing (silent logging)
     
@@ -1245,9 +1265,9 @@ def main():
                         
                         status_text.text("✅ AI processing completed!")
                         
-                        # Generate markdown content file from session storage (PERFORMANCE OPTIMIZED)
+                        # Generate content files from session storage (PERFORMANCE OPTIMIZED)
                         if ai_results or st.session_state.get('ai_content_store'):
-                            success = generate_markdown_from_session_storage(selected_entity)
+                            success = generate_content_from_session_storage(selected_entity)
                             if success:
                                 st.success(f"📄 AI output saved to: utils/bs_content.md")
                                 st.info(f"💡 You can find the latest AI-generated content in utils/bs_content.md file")
@@ -2032,8 +2052,8 @@ def perform_offline_pattern_validation(key, agent1_content, pattern):
     except Exception as e:
         st.error(f"Error in offline pattern validation: {e}")
 
-def generate_markdown_from_session_storage(entity_name):
-    """Generate markdown file from session state storage for PowerPoint export (PERFORMANCE OPTIMIZED)"""
+def generate_content_from_session_storage(entity_name):
+    """Generate content files (JSON + Markdown) from session state storage (PERFORMANCE OPTIMIZED)"""
     try:
         # Get content from session state storage (fastest method)
         content_store = st.session_state.get('ai_content_store', {})
@@ -2085,12 +2105,24 @@ def generate_markdown_from_session_storage(entity_name):
                 'Equity': ['Capital', 'Reserve']
             }
         
-        # Generate markdown content from session storage (latest versions)
-        markdown_lines = []
-        st.info(f"📊 Generating bs_content.md from session storage for {len(content_store)} keys")
+        # Generate JSON content from session storage (for AI2 easy access)
+        json_content = {
+            'metadata': {
+                'entity_name': entity_name,
+                'generated_timestamp': datetime.datetime.now().isoformat(),
+                'session_id': getattr(st.session_state.get('ai_logger'), 'session_id', 'default'),
+                'total_keys': len(content_store)
+            },
+            'categories': {},
+            'keys': {}
+        }
         
+        st.info(f"📊 Generating content files from session storage for {len(content_store)} keys")
+        
+        # Process content by category
         for category, items in category_mapping.items():
-            markdown_lines.append(f"## {category}\n")
+            json_content['categories'][category] = []
+            
             for item in items:
                 full_name = name_mapping[item]
                 
@@ -2099,35 +2131,71 @@ def generate_markdown_from_session_storage(entity_name):
                     key_data = content_store[item]
                     latest_content = key_data.get('current_content', key_data.get('agent1_content', ''))
                     
-                    # Show which agent version is being used
+                    # Determine content source
                     if 'agent3_content' in key_data:
-                        content_source = "Agent 3 (final)"
+                        content_source = "agent3_final"
+                        source_timestamp = key_data.get('agent3_timestamp')
                     elif 'agent2_content' in key_data:
-                        content_source = "Agent 2 (validated)"
+                        content_source = "agent2_validated"
+                        source_timestamp = key_data.get('agent2_timestamp')
                     else:
-                        content_source = "Agent 1 (original)"
+                        content_source = "agent1_original"
+                        source_timestamp = key_data.get('agent1_timestamp')
                     
                     st.write(f"  • {item}: Using {content_source} version")
                 else:
                     latest_content = f"No information available for {item}"
+                    content_source = "none"
+                    source_timestamp = None
                     st.write(f"  • {item}: No content found")
                 
                 # Clean the content
                 cleaned_content = clean_content_quotes(latest_content)
+                
+                # Add to JSON structure
+                key_info = {
+                    'key': item,
+                    'display_name': full_name,
+                    'content': cleaned_content,
+                    'content_source': content_source,
+                    'source_timestamp': source_timestamp,
+                    'length': len(cleaned_content),
+                    'category': category
+                }
+                
+                json_content['categories'][category].append(key_info)
+                json_content['keys'][item] = key_info
+        
+        # Save JSON format (for AI2 easy access)
+        json_file_path = 'utils/bs_content.json'
+        with open(json_file_path, 'w', encoding='utf-8') as file:
+            json.dump(json_content, file, indent=2, ensure_ascii=False)
+        
+        # Also generate markdown for PowerPoint compatibility
+        markdown_lines = []
+        for category, items in category_mapping.items():
+            markdown_lines.append(f"## {category}\n")
+            for item in items:
+                full_name = name_mapping[item]
+                key_info = json_content['keys'].get(item)
+                if key_info:
+                    cleaned_content = key_info['content']
+                else:
+                    cleaned_content = f"No information available for {item}"
                 markdown_lines.append(f"### {full_name}\n{cleaned_content}\n")
         
         markdown_text = "\n".join(markdown_lines)
         
-        # Write to file
-        file_path = 'utils/bs_content.md'
-        with open(file_path, 'w', encoding='utf-8') as file:
+        # Save markdown format (for PowerPoint export)
+        md_file_path = 'utils/bs_content.md'
+        with open(md_file_path, 'w', encoding='utf-8') as file:
             file.write(markdown_text)
         
-        st.success(f"✅ Generated bs_content.md from session storage (latest versions)")
+        st.success(f"✅ Generated bs_content.json (AI-friendly) and bs_content.md (PowerPoint-compatible)")
         return True
         
     except Exception as e:
-        st.error(f"Error generating markdown from session storage: {e}")
+        st.error(f"Error generating content from session storage: {e}")
         return False
 
 def generate_markdown_from_ai_results(ai_results, entity_name):
@@ -2696,12 +2764,23 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
                 start_time = time.time()
                 
                 try:
-                    # Get Agent 1 content from session state storage
+                    # Get Agent 1 content from session state storage + JSON fallback
                     key_data = content_store[key]
                     agent1_content = key_data['agent1_content']
                     
+                    # Also try JSON file fallback if session state is incomplete
+                    if not agent1_content:
+                        try:
+                            with open('utils/bs_content.json', 'r', encoding='utf-8') as f:
+                                json_data = json.load(f)
+                                if key in json_data.get('keys', {}):
+                                    agent1_content = json_data['keys'][key]['content']
+                                    st.info(f"📄 Loaded {key} content from bs_content.json (JSON fallback)")
+                        except (FileNotFoundError, json.JSONDecodeError):
+                            pass
+                    
                     st.write(f"✅ Agent 1 content length for {key}: {len(agent1_content)} characters")
-                    st.write(f"📊 Content source: Session state storage (fast access)")
+                    st.write(f"📊 Content source: Session state storage + JSON fallback (reliable access)")
                     
                     if agent1_content and temp_file_path:
                         # Prepare detailed user prompt for validation
@@ -3027,65 +3106,94 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
         return {}
 
 def display_sequential_agent_results(key, filtered_keys, ai_data):
-    """Display results for all agents for a specific key"""
+    """Display consolidated AI results for a specific key (SIMPLIFIED - Single Area)"""
     try:
-        # Get agent states
-        agent_states = st.session_state.get('agent_states', {})
+        # Single consolidated AI results area
+        st.markdown(f"### 🤖 AI Processing Results for {get_key_display_name(key)}")
         
-        # Create sub-tabs for different perspectives (AI outputs only)
-        perspective_tabs = st.tabs([
-            "📝 Agent 1: Content Generation", 
-            "📊 Agent 2: Data Validation", 
-            "🎯 Agent 3: Pattern Compliance"
-        ])
+        # Get content from session storage (latest version from any agent)
+        content_store = st.session_state.get('ai_content_store', {})
         
-        # Tab 1: Agent 1 - Content Generation Focus
-        with perspective_tabs[0]:
-            st.markdown(f"### 🚀 What Agent 1 Does: Content Generation")
-            st.info("**Focus**: Generate comprehensive financial analysis content using actual worksheet data and predefined patterns")
+        if key in content_store:
+            key_data = content_store[key]
+            current_content = key_data.get('current_content', key_data.get('agent1_content', ''))
+            
+            if current_content:
+                # Determine which agent version we're showing
+                if 'agent3_content' in key_data:
+                    content_source = "Agent 3 (Final - Pattern Compliant)"
+                    content_icon = "🎯"
+                    processing_steps = "Generated → Validated → Pattern Compliant"
+                elif 'agent2_content' in key_data:
+                    content_source = "Agent 2 (Validated - Data Accurate)" 
+                    content_icon = "📊"
+                    processing_steps = "Generated → Validated"
+                else:
+                    content_source = "Agent 1 (Original - Generated)"
+                    content_icon = "📝"
+                    processing_steps = "Generated"
+                
+                # Show metadata
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Key", key)
+                with col2:
+                    st.metric("Entity", ai_data.get('entity_name', ''))
+                with col3:
+                    st.metric("Characters", len(current_content))
+                with col4:
+                    st.metric("Words", len(current_content.split()))
+                
+                # Show processing pipeline
+                st.info(f"🔄 Processing Pipeline: {processing_steps}")
+                
+                # Show final content
+                st.markdown(f"**{content_icon} {content_source}:**")
+                st.markdown(current_content)
+                
+                # Show additional details in collapsible section
+                with st.expander("📋 Processing Details", expanded=False):
+                    if 'agent1_timestamp' in key_data:
+                        st.write(f"📝 Agent 1 Generated: {datetime.datetime.fromtimestamp(key_data['agent1_timestamp']).strftime('%H:%M:%S')}")
+                    if 'agent2_timestamp' in key_data:
+                        st.write(f"📊 Agent 2 Validated: {datetime.datetime.fromtimestamp(key_data['agent2_timestamp']).strftime('%H:%M:%S')}")
+                    if 'agent3_timestamp' in key_data:
+                        st.write(f"🎯 Agent 3 Finalized: {datetime.datetime.fromtimestamp(key_data['agent3_timestamp']).strftime('%H:%M:%S')}")
+                    
+                    st.write(f"💾 Session Storage: ✅ Available")
+                    st.write(f"📄 JSON Backup: {'✅ Available' if os.path.exists('utils/bs_content.json') else '❌ Not found'}")
+            else:
+                st.warning("No content available for this key")
+        else:
+            # Fallback to agent states if session storage not available
+            agent_states = st.session_state.get('agent_states', {})
             
             if agent_states.get('agent1_completed', False):
                 agent1_results = agent_states.get('agent1_results', {})
                 content = agent1_results.get(key, "")
                 
                 if content:
-                    # Show metadata in horizontal format
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Key", key)
-                    with col2:
-                        st.metric("Entity", ai_data.get('entity_name', ''))
-                    with col3:
-                        st.metric("Characters", len(content))
-                    with col4:
-                        st.metric("Words", len(content.split()))
-                    
-                    st.markdown("**✅ Generated Content:**")
+                    st.markdown("**📝 Agent 1 (Generated Content):**")
                     st.markdown(content)
                     
-                    # Show what Agent 1 accomplished
-                    with st.expander("🎯 What Agent 1 Accomplished", expanded=False):
-                        st.markdown("""
-                        **Agent 1's Key Tasks:**
-                        - Selected appropriate pattern from available templates
-                        - Integrated actual financial figures from databook
-                        - Replaced all placeholders with real data
-                        - Applied proper K/M number formatting
-                        - Generated professional financial narrative
-                        """)
+                    # Show metadata
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Characters", len(content))
+                    with col2:
+                        st.metric("Words", len(content.split()))
+                    with col3:
+                        st.metric("Source", "Agent 1 Only")
                 else:
                     st.warning("No content generated for this key")
             else:
-                st.info("⏳ Agent 1 will run automatically during 'Process with AI'")
-        
-        # Tab 2: Agent 2 - Data Validation Focus  
-        with perspective_tabs[1]:
-            st.markdown(f"### 🔍 What Agent 2 Does: Data Integrity & Accuracy Validation")
-            st.info("**Focus**: Verify data accuracy, check K/M conversions, validate entity names, and ensure figures match balance sheet")
-            
-            if agent_states.get('agent2_completed', False):
-                agent2_results = agent_states.get('agent2_results', {})
-                validation_result = agent2_results.get(key, {})
+                st.info("⏳ Run 'Process with AI' to generate content for this key")
+    
+    except Exception as e:
+        st.error(f"Error displaying results for {key}: {e}")
+
+if __name__ == "__main__":
+    main()
                 
                 # Show what Agent 2 accomplished - make it collapsible
                 with st.expander("🎯 What Agent 2 Accomplished", expanded=False):
