@@ -2732,7 +2732,14 @@ def run_agent_1(filtered_keys, ai_data):
             for key in filtered_keys:
                 # Get the actual table data for this key
                 key_sections = sections_by_key.get(key, [])
-                key_tables = "\n".join(key_sections) if key_sections else "No table data available"
+                # Convert sections to strings if they're dictionaries
+                key_sections_str = []
+                for section in key_sections:
+                    if isinstance(section, dict):
+                        key_sections_str.append(json.dumps(section, indent=2))
+                    else:
+                        key_sections_str.append(str(section))
+                key_tables = "\n".join(key_sections_str) if key_sections_str else "No table data available"
                 
                 # Build the actual user prompt that matches what gets sent to AI
                 pattern = ai_data.get('pattern', {}).get(key, {})
