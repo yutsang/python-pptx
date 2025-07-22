@@ -1245,18 +1245,18 @@ def main():
                         
                         status_text.text("✅ AI processing completed!")
                         
-                        # Generate markdown content file from AI results (Fix for issue #3)
-                        if ai_results:
-                            success = generate_markdown_from_ai_results(ai_results, selected_entity)
+                        # Generate markdown content file from session storage (PERFORMANCE OPTIMIZED)
+                        if ai_results or st.session_state.get('ai_content_store'):
+                            success = generate_markdown_from_session_storage(selected_entity)
                             if success:
                                 st.success(f"📄 AI output saved to: utils/bs_content.md")
-                                st.info(f"💡 You can find the AI-generated content in utils/bs_content.md file")
+                                st.info(f"💡 You can find the latest AI-generated content in utils/bs_content.md file")
                                 
                                 # Also create a copy for offline mode reference
                                 try:
                                     import shutil
                                     shutil.copy2('utils/bs_content.md', 'utils/bs_content_ai_generated.md')
-                                    st.info(f"📋 AI results also saved as: utils/bs_content_ai_generated.md for reference")
+                                    st.info(f"📋 Latest AI results also saved as: utils/bs_content_ai_generated.md for reference")
                                 except Exception as e:
                                     print(f"Could not create AI reference copy: {e}")
                             else:
@@ -2032,6 +2032,104 @@ def perform_offline_pattern_validation(key, agent1_content, pattern):
     except Exception as e:
         st.error(f"Error in offline pattern validation: {e}")
 
+def generate_markdown_from_session_storage(entity_name):
+    """Generate markdown file from session state storage for PowerPoint export (PERFORMANCE OPTIMIZED)"""
+    try:
+        # Get content from session state storage (fastest method)
+        content_store = st.session_state.get('ai_content_store', {})
+        
+        if not content_store:
+            st.warning("⚠️ No content in session storage. Using fallback method.")
+            return generate_markdown_from_ai_results(st.session_state.get('ai_data', {}).get('ai_results', {}), entity_name)
+        
+        # Define category mappings based on entity name
+        if entity_name in ['Ningbo', 'Nanjing']:
+            name_mapping = {
+                'Cash': 'Cash at bank',
+                'AR': 'Accounts receivables',
+                'Prepayments': 'Prepayments',
+                'OR': 'Other receivables',
+                'Other CA': 'Other current assets',
+                'IP': 'Investment properties',
+                'Other NCA': 'Other non-current assets',
+                'AP': 'Accounts payable',
+                'Taxes payable': 'Taxes payables',
+                'OP': 'Other payables',
+                'Capital': 'Capital'
+            }
+            category_mapping = {
+                'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
+                'Non-current Assets': ['IP', 'Other NCA'],
+                'Liabilities': ['AP', 'Taxes payable', 'OP'],
+                'Equity': ['Capital']
+            }
+        else:  # Haining and others
+            name_mapping = {
+                'Cash': 'Cash at bank',
+                'AR': 'Accounts receivables',
+                'Prepayments': 'Prepayments',
+                'OR': 'Other receivables',
+                'Other CA': 'Other current assets',
+                'IP': 'Investment properties',
+                'Other NCA': 'Other non-current assets',
+                'AP': 'Accounts payable',
+                'Taxes payable': 'Taxes payables',
+                'OP': 'Other payables',
+                'Capital': 'Capital',
+                'Reserve': 'Surplus reserve'
+            }
+            category_mapping = {
+                'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
+                'Non-current Assets': ['IP', 'Other NCA'],
+                'Liabilities': ['AP', 'Taxes payable', 'OP'],
+                'Equity': ['Capital', 'Reserve']
+            }
+        
+        # Generate markdown content from session storage (latest versions)
+        markdown_lines = []
+        st.info(f"📊 Generating bs_content.md from session storage for {len(content_store)} keys")
+        
+        for category, items in category_mapping.items():
+            markdown_lines.append(f"## {category}\n")
+            for item in items:
+                full_name = name_mapping[item]
+                
+                # Get latest content from session storage (could be Agent 1, 2, or 3 version)
+                if item in content_store:
+                    key_data = content_store[item]
+                    latest_content = key_data.get('current_content', key_data.get('agent1_content', ''))
+                    
+                    # Show which agent version is being used
+                    if 'agent3_content' in key_data:
+                        content_source = "Agent 3 (final)"
+                    elif 'agent2_content' in key_data:
+                        content_source = "Agent 2 (validated)"
+                    else:
+                        content_source = "Agent 1 (original)"
+                    
+                    st.write(f"  • {item}: Using {content_source} version")
+                else:
+                    latest_content = f"No information available for {item}"
+                    st.write(f"  • {item}: No content found")
+                
+                # Clean the content
+                cleaned_content = clean_content_quotes(latest_content)
+                markdown_lines.append(f"### {full_name}\n{cleaned_content}\n")
+        
+        markdown_text = "\n".join(markdown_lines)
+        
+        # Write to file
+        file_path = 'utils/bs_content.md'
+        with open(file_path, 'w', encoding='utf-8') as file:
+            file.write(markdown_text)
+        
+        st.success(f"✅ Generated bs_content.md from session storage (latest versions)")
+        return True
+        
+    except Exception as e:
+        st.error(f"Error generating markdown from session storage: {e}")
+        return False
+
 def generate_markdown_from_ai_results(ai_results, entity_name):
     """Generate markdown content file from AI results following the old version pattern"""
     try:
@@ -2535,6 +2633,39 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
         entity_name = ai_data.get('entity_name', '')
         st.write(f"Entity: {entity_name}")
         
+        # Initialize improved content storage in session state
+        if 'ai_content_store' not in st.session_state:
+            st.session_state['ai_content_store'] = {}
+        
+        # Get Agent 1 content from session state storage (more reliable)
+        content_store = st.session_state['ai_content_store']
+        
+        # Check content availability
+        available_keys = []
+        missing_keys = []
+        
+        for key in filtered_keys:
+            if key in agent1_results and agent1_results[key]:
+                # Store in session state for fast access
+                content_store[key] = {
+                    'agent1_content': agent1_results[key],
+                    'agent1_timestamp': time.time(),
+                    'entity_name': entity_name
+                }
+                available_keys.append(key)
+            else:
+                missing_keys.append(key)
+        
+        if missing_keys:
+            st.warning(f"⚠️ Missing Agent 1 content for keys: {missing_keys}")
+            st.info("Agent 2 will only process keys with available content")
+        
+        if not available_keys:
+            st.error("❌ No Agent 1 content available for any keys")
+            return {}
+        
+        st.success(f"✅ Found Agent 1 content for {len(available_keys)} keys: {available_keys}")
+        
         # Get uploaded file data for validation
         import tempfile
         import os
@@ -2556,27 +2687,21 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
                     st.warning("⚠️ No databook available for Agent 2 validation")
                     temp_file_path = None
             
-            # Read current bs_content.md to get Agent 1 output per key
+            # Initialize content updates storage
             bs_content_updates = {}
             
-            for key in filtered_keys:
+            # Process only keys with available content
+            for key in available_keys:
                 st.write(f"🔄 Validating {key} with Agent 2...")
                 start_time = time.time()
                 
                 try:
-                    # Get Agent 1 content from multiple sources
-                    agent1_content = agent1_results.get(key, "")
+                    # Get Agent 1 content from session state storage
+                    key_data = content_store[key]
+                    agent1_content = key_data['agent1_content']
                     
-                    # If not found in agent1_results, try reading from bs_content.md
-                    if not agent1_content:
-                        try:
-                            current_content_by_key = read_bs_content_by_key(entity_name)
-                            agent1_content = current_content_by_key.get(key, "")
-                        except Exception:
-                            agent1_content = ""
-                    
-                    st.write(f"Agent 1 content length for {key}: {len(agent1_content)} characters")
-                    st.write(f"Content source: {'Agent 1 results' if key in agent1_results else 'bs_content.md' if agent1_content else 'None'}")
+                    st.write(f"✅ Agent 1 content length for {key}: {len(agent1_content)} characters")
+                    st.write(f"📊 Content source: Session state storage (fast access)")
                     
                     if agent1_content and temp_file_path:
                         # Prepare detailed user prompt for validation
@@ -2615,10 +2740,19 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
                         
                         # If Agent 2 found issues and provided corrected content, use it
                         if validation_result.get('corrected_content') and validation_result.get('corrected_content') != agent1_content:
-                            bs_content_updates[key] = validation_result['corrected_content']
+                            corrected_content = validation_result['corrected_content']
+                            bs_content_updates[key] = corrected_content
+                            
+                            # Update session state storage with corrected content
+                            content_store[key]['agent2_content'] = corrected_content
+                            content_store[key]['agent2_timestamp'] = time.time()
+                            content_store[key]['current_content'] = corrected_content  # Latest version
+                            
                             validation_result['content_updated'] = True
                             st.success(f"✅ Agent 2 corrected content for {key}")
                         else:
+                            # Keep Agent 1 content as current
+                            content_store[key]['current_content'] = agent1_content
                             validation_result['content_updated'] = False
                             st.info(f"ℹ️ Agent 2 found no corrections needed for {key}")
                         
@@ -2774,20 +2908,35 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
         patterns = load_ip("utils/pattern.json")
         st.write(f"Loaded patterns for {len(patterns)} keys")
         
-        # Read current bs_content.md to get the latest content (possibly updated by Agent 2)
+        # Use improved session state storage for fast content access
+        content_store = st.session_state.get('ai_content_store', {})
         bs_content_updates = {}
-        current_content_by_key = read_bs_content_by_key(ai_data.get('entity_name', ''))
-        st.write(f"Read bs_content.md with content for {len(current_content_by_key)} keys")
         
+        # Check content availability from session state
+        available_keys = []
         for key in filtered_keys:
+            if key in content_store and 'current_content' in content_store[key]:
+                available_keys.append(key)
+        
+        if not available_keys:
+            st.error("❌ No content available in session state for Agent 3")
+            st.info("Make sure Agent 1 and Agent 2 have run successfully")
+            return {}
+        
+        st.success(f"✅ Found content for {len(available_keys)} keys in session state storage")
+        
+        for key in available_keys:
             st.write(f"🔄 Checking pattern compliance for {key} with Agent 3...")
             start_time = time.time()
             
             try:
-                # Get the most recent content (from bs_content.md if updated by Agent 2, otherwise from Agent 1)
-                current_content = current_content_by_key.get(key, agent1_results.get(key, ""))
-                st.write(f"Content source for {key}: {'bs_content.md' if key in current_content_by_key else 'Agent 1 results'}")
-                st.write(f"Content length for {key}: {len(current_content)} characters")
+                # Get the most recent content from session state (Agent 2 corrected or Agent 1 original)
+                key_data = content_store[key]
+                current_content = key_data.get('current_content', key_data.get('agent1_content', ''))
+                
+                content_source = "Agent 2 corrected" if 'agent2_content' in key_data else "Agent 1 original"
+                st.write(f"📊 Content source for {key}: {content_source} (session state)")
+                st.write(f"✅ Content length for {key}: {len(current_content)} characters")
                 
                 if current_content:
                     # Get patterns for this key
@@ -2820,10 +2969,18 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
                     
                     # If Agent 3 found issues and provided corrected content, use it
                     if pattern_result.get('corrected_content') and pattern_result.get('corrected_content') != current_content:
-                        bs_content_updates[key] = pattern_result['corrected_content']
+                        corrected_content = pattern_result['corrected_content']
+                        bs_content_updates[key] = corrected_content
+                        
+                        # Update session state storage with Agent 3 corrected content
+                        content_store[key]['agent3_content'] = corrected_content
+                        content_store[key]['agent3_timestamp'] = time.time()
+                        content_store[key]['current_content'] = corrected_content  # Latest version
+                        
                         pattern_result['content_updated'] = True
                         st.success(f"✅ Agent 3 improved pattern compliance for {key}")
                     else:
+                        # Keep existing content as current (no Agent 3 changes)
                         pattern_result['content_updated'] = False
                         st.info(f"ℹ️ Agent 3 found no pattern improvements needed for {key}")
                     
