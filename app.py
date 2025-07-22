@@ -75,23 +75,17 @@ class AIAgentLogger:
         except Exception as e:
             print(f"Error saving JSON log: {e}")
     
-    def _save_paired_log(self, input_entry, output_entry):
-        """Save input and output as a paired log file"""
+    def _save_key_log(self, agent_name, key, input_entry, output_entry):
+        """Save input and output for a key in one JSON file"""
         try:
-            # Create paired subdirectory
-            paired_log_dir = self.log_dir / "paired"
-            paired_log_dir.mkdir(exist_ok=True)
-            
-            # Create filename for paired log
+            # Create filename for key log
             timestamp = input_entry['timestamp'].replace(' ', '_').replace(':', '-')
-            agent = input_entry['agent'].lower()
-            key = input_entry['key'].lower()
-            filename = f"{timestamp}_{agent}_{key}_paired.json"
+            filename = f"{timestamp}_{agent_name.lower()}_{key.lower()}.json"
             
-            paired_file_path = paired_log_dir / filename
+            key_file_path = self.log_dir / filename
             
-            # Combine input and output into paired structure
-            paired_log = {
+            # Combine input and output into key structure
+            key_log = {
                 'timestamp': input_entry['timestamp'],
                 'agent': input_entry['agent'],
                 'key': input_entry['key'],
@@ -103,11 +97,11 @@ class AIAgentLogger:
             }
             
             # Save as formatted JSON
-            with open(paired_file_path, 'w', encoding='utf-8') as f:
-                json.dump(paired_log, f, indent=2, ensure_ascii=False)
+            with open(key_file_path, 'w', encoding='utf-8') as f:
+                json.dump(key_log, f, indent=2, ensure_ascii=False)
                 
         except Exception as e:
-            print(f"Error saving paired log: {e}")
+            print(f"Error saving key log: {e}")
         
     def _save_to_consolidated_log(self, log_entry):
         """Save log entry to consolidated session file (1 file per session with all agents and keys)"""
@@ -225,12 +219,12 @@ class AIAgentLogger:
         # Save individual JSON output file
         self._save_json_log(log_entry, 'output')
         
-        # Create paired log if input exists
+        # Create key log if input exists
         input_key = f"{agent_name}_{key}"
         if hasattr(self, 'pending_inputs') and input_key in self.pending_inputs:
             input_entry = self.pending_inputs[input_key]
-            self._save_paired_log(input_entry, log_entry)
-            # Remove from pending after paired log is created
+            self._save_key_log(agent_name, key, input_entry, log_entry)
+            # Remove from pending after key log is created
             del self.pending_inputs[input_key]
         
         # Write summary to text log
@@ -1078,20 +1072,14 @@ def main():
             """)
 
         # --- AI Processing Section (Bottom) ---
-        st.markdown("---")
-        st.subheader("🤖 AI Processing")
-        
-        if not st.session_state.get('ai_processed', False):
-            st.info("Click 'Process with AI' to generate AI results.")
-            
-            # Check AI configuration status
-            try:
-                config, _, _, _ = load_config_files()
-                if config and (not config.get('OPENAI_API_KEY') or not config.get('OPENAI_API_BASE')):
-                    st.warning("⚠️ AI Mode: API keys not configured. Will use fallback mode with test data.")
-                    st.info("💡 To enable full AI functionality, please configure your OpenAI API keys in utils/config.json")
-            except Exception:
-                st.warning("⚠️ AI Mode: Configuration not found. Will use fallback mode.")
+        # Check AI configuration status
+        try:
+            config, _, _, _ = load_config_files()
+            if config and (not config.get('OPENAI_API_KEY') or not config.get('OPENAI_API_BASE')):
+                st.warning("⚠️ AI Mode: API keys not configured. Will use fallback mode with test data.")
+                st.info("💡 To enable full AI functionality, please configure your OpenAI API keys in utils/config.json")
+        except Exception:
+            st.warning("⚠️ AI Mode: Configuration not found. Will use fallback mode.")
         
         # --- AI Processing & Results Section ---
         st.markdown("---")
@@ -2706,27 +2694,99 @@ def run_agent_1(filtered_keys, ai_data):
                     st.error("No data file available for Agent 1 processing")
                     return {}
             
-            # Load actual prompts from prompts.json
+            # Get the actual prompts that will be sent to AI by calling process_keys
+            # We need to capture the real prompts with table data
             try:
-                with open('utils/prompts.json', 'r', encoding='utf-8') as f:
+                # Load prompts from prompts.json file
+                with open('utils/prompts.json', 'r') as f:
                     prompts_config = json.load(f)
-                agent1_prompts = prompts_config.get('agent1', {})
-                actual_system_prompt = agent1_prompts.get('system_prompt', 'Default system prompt')
+                actual_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1', '')
+                if not actual_system_prompt:
+                    actual_system_prompt = """
+                    Role: system,
+                    Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
+                    CORE PRINCIPLES:
+                    1. SELECT exactly one appropriate non-nil pattern from the provided pattern options
+                    2. Replace all placeholder values with corresponding actual data
+                    3. Output only the financial completed pattern text, never show template structure
+                    4. ACCURACY: Use only provided - data - never estimate or extrapolate
+                    5. CLARITY: Write in clear business English, translating any foreign content
+                    6. FORMAT: Follow the exact template structure provided
+                    7. CURRENCY: Express figures to Thousands (K) or Millions (M) as appropriate
+                    8. CONCISENESS: Focus on material figures and key insights only
+                    OUTPUT REQUIREMENTS:
+                    - Choose the most suitable single pattern based on available data
+                    - Replace all placeholders with actaul figures from databook
+                    - Output ONLY the final text - no pattern names, no template structure, no explanations
+                    - If data is missing for a pattern, select a different pattern that has complete data
+                    - Never output JSON structure or pattern formatting
+                    """
             except Exception as e:
                 actual_system_prompt = "Error loading prompts.json"
                 print(f"Error loading prompts: {e}")
             
+            # Get sections data for each key to build actual user prompts
+            sections_by_key = ai_data.get('sections_by_key', {})
+            
             # Log Agent 1 input for all keys with actual prompts
             for key in filtered_keys:
-                # Generate the actual user prompt that would be sent to AI
-                actual_user_prompt = f"Generate content for {key} for entity {entity_name}"
-                context_data = f"Entity: {entity_name}, Key: {key}"
+                # Get the actual table data for this key
+                key_sections = sections_by_key.get(key, [])
+                key_tables = "\n".join(key_sections) if key_sections else "No table data available"
+                
+                # Build the actual user prompt that matches what gets sent to AI
+                pattern = ai_data.get('pattern', {}).get(key, {})
+                pattern_json = json.dumps(pattern, indent=2)
+                
+                # Get financial figure for this key
+                from common.assistant import find_financial_figures_with_context_check, get_tab_name, get_financial_figure
+                financial_figures = find_financial_figures_with_context_check(temp_file_path, get_tab_name(entity_name), '30/09/2022', convert_thousands=False)
+                financial_figure_info = f"{key}: {get_financial_figure(financial_figures, key)}"
+                
+                # Build the actual user prompt that gets sent to AI
+                actual_user_prompt = f"""
+                TASK: Select ONE pattern and complete it with actual data
+                
+                AVAILABLE PATTERNS: {pattern_json}
+                
+                FINANCIAL FIGURE: {financial_figure_info}
+                
+                DATA SOURCE: {key_tables}
+                
+                SELECTION CRITERIA:
+                - Choose the pattern with the most complete data coverage
+                - Prioritize patterns that match the primary account category
+                - Use most recent data: latest available
+                - Express all figures with proper K/M conversion with 1 decimal place
+                
+                REQUIRED OUTPUT FORMAT:
+                - Only the completed pattern text
+                - No pattern names or labels
+                - No template structure
+                - No JSON formatting
+                - Replace ALL 'xxx' or placeholders with actual data values
+                - Do not use bullet point for listing
+                - Apply proper K/M conversion with 1 decimal place for all figures
+                - No foreign contents, if any, translate to English
+                - Stick to Template format, no extra explanations or comments
+                - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
+                - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
+                """
+                
+                context_data = {
+                    'entity': entity_name,
+                    'key': key,
+                    'financial_figure': financial_figure_info,
+                    'table_data_length': len(key_tables),
+                    'patterns_count': len(pattern) if pattern else 0
+                }
                 
                 # Store the actual prompts that will be sent to AI
                 actual_prompts = {
                     'system_prompt': actual_system_prompt,
                     'user_prompt': actual_user_prompt,
-                    'context': context_data
+                    'context': context_data,
+                    'table_data': key_tables[:1000] + "..." if len(key_tables) > 1000 else key_tables  # Truncate for logging
                 }
                 
                 logger.log_agent_input('agent1', key, actual_system_prompt, actual_user_prompt, context_data, actual_prompts)
