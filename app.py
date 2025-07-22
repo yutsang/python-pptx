@@ -5,6 +5,7 @@ import warnings
 import re
 import os
 import datetime
+import time
 from pathlib import Path
 from tabulate import tabulate
 import urllib3
@@ -1253,29 +1254,89 @@ def main():
                             
                             agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data)
                             st.session_state['agent_states']['agent1_results'] = agent1_results
-                            st.session_state['agent_states']['agent1_completed'] = True
-                            ai_results.update(agent1_results)
                             
-                            # Phase 2: AI2 Processing - Data Validation
-                            for i, key in enumerate(filtered_keys_for_ai):
-                                update_progress(0.5, f"🔍 AI2: Validating data", 'agent2', key, len(filtered_keys_for_ai), i)
-                                time.sleep(0.1)  # Brief pause to show progress
+                            # Check Agent 1 success - only mark completed if we have actual results
+                            agent1_success = bool(agent1_results and any(agent1_results.values()))
+                            st.session_state['agent_states']['agent1_completed'] = agent1_success
+                            st.session_state['agent_states']['agent1_success'] = agent1_success
                             
-                            agent2_results = run_agent_2(filtered_keys_for_ai, agent1_results, temp_ai_data)
-                            st.session_state['agent_states']['agent2_results'] = agent2_results
-                            st.session_state['agent_states']['agent2_completed'] = True
+                            if agent1_success:
+                                ai_results.update(agent1_results)
+                                update_progress(0.33, "✅ AI1: Content generation completed")
+                            else:
+                                update_progress(0.33, "❌ AI1: Content generation failed")
+                                st.error("❌ Agent 1 failed to generate content")
                             
-                            # Phase 3: AI3 Processing - Pattern Compliance
-                            for i, key in enumerate(filtered_keys_for_ai):
-                                update_progress(0.8, f"🎯 AI3: Checking compliance", 'agent3', key, len(filtered_keys_for_ai), i)
-                                time.sleep(0.1)  # Brief pause to show progress
+                            # Phase 2: AI2 Processing - Data Validation (only if Agent 1 succeeded)
+                            if agent1_success:
+                                for i, key in enumerate(filtered_keys_for_ai):
+                                    update_progress(0.5, f"🔍 AI2: Validating data", 'agent2', key, len(filtered_keys_for_ai), i)
+                                    time.sleep(0.1)  # Brief pause to show progress
+                                
+                                agent2_results = run_agent_2(filtered_keys_for_ai, agent1_results, temp_ai_data)
+                                st.session_state['agent_states']['agent2_results'] = agent2_results
+                                
+                                # Check Agent 2 success
+                                agent2_success = bool(agent2_results and len(agent2_results) > 0)
+                                st.session_state['agent_states']['agent2_completed'] = agent2_success
+                                st.session_state['agent_states']['agent2_success'] = agent2_success
+                                
+                                if agent2_success:
+                                    update_progress(0.66, "✅ AI2: Data validation completed")
+                                else:
+                                    update_progress(0.66, "❌ AI2: Data validation failed")
+                                    st.error("❌ Agent 2 failed to validate data")
+                            else:
+                                agent2_success = False
+                                st.session_state['agent_states']['agent2_completed'] = False
+                                st.session_state['agent_states']['agent2_success'] = False
+                                update_progress(0.66, "⏭️ AI2: Skipped due to AI1 failure")
                             
-                            agent3_results = run_agent_3(filtered_keys_for_ai, agent1_results, temp_ai_data)
-                            st.session_state['agent_states']['agent3_results'] = agent3_results
-                            st.session_state['agent_states']['agent3_completed'] = True
-                            st.session_state['agent_states']['all_agents_completed'] = True
+                            # Phase 3: AI3 Processing - Pattern Compliance (only if Agent 1 succeeded)
+                            if agent1_success:
+                                for i, key in enumerate(filtered_keys_for_ai):
+                                    update_progress(0.8, f"🎯 AI3: Checking compliance", 'agent3', key, len(filtered_keys_for_ai), i)
+                                    time.sleep(0.1)  # Brief pause to show progress
+                                
+                                agent3_results = run_agent_3(filtered_keys_for_ai, agent1_results, temp_ai_data)
+                                st.session_state['agent_states']['agent3_results'] = agent3_results
+                                
+                                # Check Agent 3 success
+                                agent3_success = bool(agent3_results and len(agent3_results) > 0)
+                                st.session_state['agent_states']['agent3_completed'] = agent3_success
+                                st.session_state['agent_states']['agent3_success'] = agent3_success
+                                
+                                if agent3_success:
+                                    update_progress(1.0, "✅ AI3: Pattern compliance completed")
+                                else:
+                                    update_progress(1.0, "❌ AI3: Pattern compliance failed")
+                                    st.error("❌ Agent 3 failed to check pattern compliance")
+                            else:
+                                agent3_success = False
+                                st.session_state['agent_states']['agent3_completed'] = False
+                                st.session_state['agent_states']['agent3_success'] = False
+                                update_progress(1.0, "⏭️ AI3: Skipped due to AI1 failure")
                             
-                            update_progress(1.0, "✅ All AI agents completed successfully!")
+                            # Determine overall completion status
+                            all_completed = agent1_success and agent2_success and agent3_success
+                            st.session_state['agent_states']['all_agents_completed'] = all_completed
+                            st.session_state['agent_states']['processing_success'] = all_completed
+                            
+                            # Show final status based on actual results
+                            if all_completed:
+                                update_progress(1.0, "✅ All AI agents completed successfully!")
+                                st.success("🎉 All AI agents completed successfully!")
+                            elif agent1_success:
+                                failures = []
+                                if not agent2_success:
+                                    failures.append("AI2")
+                                if not agent3_success:
+                                    failures.append("AI3")
+                                update_progress(1.0, f"⚠️ Partial completion - {', '.join(failures)} failed")
+                                st.warning(f"⚠️ Partial completion - {', '.join(failures)} failed but AI1 succeeded")
+                            else:
+                                update_progress(1.0, "❌ AI processing failed - Agent 1 could not generate content")
+                                st.error("❌ AI processing failed - Agent 1 could not generate content")
                             
                             # Store AI2 and AI3 results in legacy format for backwards compatibility
                             st.session_state['ai2_results'] = agent2_results
@@ -1396,12 +1457,79 @@ def main():
                 st.info("No data available for AI analysis. Please process with AI first.")
                 return
             
-            # Show processing completion status (simplified)
+            # Show processing completion status with detailed success/failure info
             agent_states = st.session_state.get('agent_states', {})
-            if agent_states.get('all_agents_completed', False):
-                st.success("✅ All AI agents have completed processing!")
+            processing_success = agent_states.get('processing_success', False)
+            all_completed = agent_states.get('all_agents_completed', False)
+            
+            if processing_success and all_completed:
+                st.success("✅ All AI agents have completed successfully!")
+            elif agent_states.get('agent1_success', False):
+                # Partial success - show details
+                successful_agents = []
+                failed_agents = []
+                
+                if agent_states.get('agent1_success', False):
+                    successful_agents.append("AI1")
+                else:
+                    failed_agents.append("AI1")
+                    
+                if agent_states.get('agent2_success', False):
+                    successful_agents.append("AI2")
+                elif agent_states.get('agent2_completed', False) == False and agent_states.get('agent1_success', False):
+                    failed_agents.append("AI2")
+                    
+                if agent_states.get('agent3_success', False):
+                    successful_agents.append("AI3")
+                elif agent_states.get('agent3_completed', False) == False and agent_states.get('agent1_success', False):
+                    failed_agents.append("AI3")
+                
+                if successful_agents and failed_agents:
+                    st.warning(f"⚠️ Partial completion: {', '.join(successful_agents)} succeeded, {', '.join(failed_agents)} failed")
+                elif successful_agents:
+                    st.info(f"✅ {', '.join(successful_agents)} completed successfully")
+                else:
+                    st.error("❌ All agents failed")
             else:
-                st.warning("⚠️ AI agents processing incomplete. Please run 'Process with AI' again.")
+                st.error("❌ AI processing failed. Please check your configuration and try again.")
+                
+            # Show detailed agent status
+            with st.expander("🔍 Detailed Agent Status", expanded=False):
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    agent1_success = agent_states.get('agent1_success', False)
+                    agent1_completed = agent_states.get('agent1_completed', False)
+                    if agent1_success:
+                        st.success("🤖 AI1: ✅ Success")
+                    elif agent1_completed:
+                        st.warning("🤖 AI1: ⚠️ Completed with issues")
+                    else:
+                        st.error("🤖 AI1: ❌ Failed")
+                
+                with col2:
+                    agent2_success = agent_states.get('agent2_success', False)
+                    agent2_completed = agent_states.get('agent2_completed', False)
+                    if agent2_success:
+                        st.success("🔍 AI2: ✅ Success")
+                    elif agent2_completed:
+                        st.warning("🔍 AI2: ⚠️ Completed with issues")
+                    elif agent_states.get('agent1_success', False):
+                        st.error("🔍 AI2: ❌ Failed")
+                    else:
+                        st.info("🔍 AI2: ⏳ Waiting for AI1")
+                
+                with col3:
+                    agent3_success = agent_states.get('agent3_success', False)
+                    agent3_completed = agent_states.get('agent3_completed', False)
+                    if agent3_success:
+                        st.success("🎯 AI3: ✅ Success")
+                    elif agent3_completed:
+                        st.warning("🎯 AI3: ⚠️ Completed with issues")
+                    elif agent_states.get('agent1_success', False):
+                        st.error("🎯 AI3: ❌ Failed")
+                    else:
+                        st.info("🎯 AI3: ⏳ Waiting for AI1")
             
             # Results Display Section - NEW TABBED INTERFACE
             display_sequential_agent_results(None, filtered_keys, ai_data)
@@ -1735,8 +1863,113 @@ def display_ai_content_by_key(key, agent_choice):
         st.error(f"Error in AI content display: {e}")
         st.error(f"Error details: {str(e)}")
 
+# JSON Content Access Helper Functions
+@cached_function(ttl=1800)  # Cache for 30 minutes
+def load_json_content():
+    """Load content from JSON file with caching for better performance"""
+    try:
+        # Try JSON first (better performance)
+        json_file = "utils/bs_content.json"
+        if os.path.exists(json_file):
+            with open(json_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Error loading JSON content: {e}")
+    
+    # Fallback to parsing markdown if JSON not available
+    try:
+        content_files = ["utils/bs_content.md", "utils/bs_content_ai_generated.md", "utils/bs_content_offline.md"]
+        for file_path in content_files:
+            if os.path.exists(file_path):
+                return parse_markdown_to_json(file_path)
+    except Exception as e:
+        print(f"Error parsing markdown fallback: {e}")
+    
+    return None
+
+def parse_markdown_to_json(md_file_path):
+    """Parse markdown file and convert to JSON-like structure for compatibility"""
+    try:
+        with open(md_file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Parse markdown into structured format
+        sections = re.split(r'(^### .+$)', content, flags=re.MULTILINE)
+        parsed_data = {"financial_items": {}}
+        
+        for i in range(1, len(sections), 2):
+            if i + 1 < len(sections):
+                header = sections[i].strip().replace('### ', '')
+                section_content = sections[i + 1].strip()
+                
+                # Map headers back to keys
+                header_to_key_mapping = {
+                    'Cash at bank': 'Cash',
+                    'Accounts receivables': 'AR',
+                    'Prepayments': 'Prepayments',
+                    'Other receivables': 'OR',
+                    'Other current assets': 'Other CA',
+                    'Investment properties': 'IP',
+                    'Other non-current assets': 'Other NCA',
+                    'Accounts payable': 'AP',
+                    'Taxes payables': 'Taxes payable',
+                    'Other payables': 'OP',
+                    'Capital': 'Capital',
+                    'Surplus reserve': 'Reserve'
+                }
+                
+                key = header_to_key_mapping.get(header, header)
+                parsed_data["financial_items"][key] = {
+                    "content": section_content,
+                    "display_name": header
+                }
+        
+        return parsed_data
+    except Exception as e:
+        print(f"Error parsing markdown: {e}")
+        return None
+
+def get_content_from_json(key):
+    """Get content for a specific financial key from JSON data"""
+    json_data = load_json_content()
+    if not json_data:
+        return None
+    
+    # Search in all categories
+    for category in ["current_assets", "non_current_assets", "liabilities", "equity"]:
+        category_data = json_data.get("financial_items", {}).get(category, {})
+        if key in category_data:
+            return category_data[key]["content"]
+    
+    # Direct key lookup for backwards compatibility
+    direct_items = json_data.get("financial_items", {})
+    if key in direct_items:
+        return direct_items[key].get("content", "")
+    
+    return None
+
 def display_offline_content(key):
-    """Display offline content for a given key - with fallback to AI-generated content"""
+    """Display offline content for a given key using JSON format for better performance"""
+    try:
+        content = get_content_from_json(key)
+        
+        if content:
+            # Clean the content
+            cleaned_content = clean_content_quotes(content)
+            st.markdown(cleaned_content)
+            
+            # Show JSON source info
+            st.info(f"📄 Content loaded from JSON format for better performance")
+        else:
+            st.info(f"No content found for {get_key_display_name(key)} in JSON data")
+            
+    except Exception as e:
+        st.error(f"Error reading JSON content: {e}")
+        # Fallback to old method
+        display_offline_content_fallback(key)
+
+def display_offline_content_fallback(key):
+    """Fallback to original markdown parsing method"""
     try:
         # First try to read from offline content file
         content_file = "utils/bs_content_offline.md"
@@ -1814,7 +2047,21 @@ def display_offline_content(key):
         st.error(f"Error reading content: {e}")
 
 def get_offline_content(key):
-    """Get offline content for a given key (returns string)"""
+    """Get offline content for a given key (returns string) using JSON for better performance"""
+    try:
+        # Try JSON first (much faster)
+        content = get_content_from_json(key)
+        if content:
+            return content
+            
+        # Fallback to markdown parsing
+        return get_offline_content_fallback(key)
+        
+    except Exception:
+        return ""
+
+def get_offline_content_fallback(key):
+    """Fallback method for getting content from markdown files"""
     try:
         content_file = "utils/bs_content_offline.md"
         
@@ -3140,12 +3387,12 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
         return {}
 
 def display_sequential_agent_results(key, filtered_keys, ai_data):
-    """Display consolidated AI results in organized tabs (IMPROVED INTERFACE)"""
+    """Display consolidated AI results in organized tabs with parallel comparison (ENHANCED INTERFACE)"""
     # Single consolidated AI results area with tabs
     st.markdown("## 🤖 AI Processing Results")
     
     # Create main tabs for different views
-    main_tabs = st.tabs(["📊 By Agent", "🗂️ By Key", "📈 Session Overview"])
+    main_tabs = st.tabs(["📊 By Agent", "🗂️ By Key", "🔄 Parallel Comparison", "📈 Session Overview"])
     
     # Tab 1: Results organized by Agent (AI1, AI2, AI3)
     with main_tabs[0]:
@@ -3340,8 +3587,78 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
         else:
             st.info("No content available in session storage")
     
-    # Tab 3: Session Overview
+    # Tab 3: Parallel Comparison with Before/After Visualization
     with main_tabs[2]:
+        st.markdown("### 🔄 Parallel Agent Comparison & Before/After Changes")
+        
+        # Get agent states and results
+        agent_states = st.session_state.get('agent_states', {})
+        agent1_results = agent_states.get('agent1_results', {})
+        agent2_results = agent_states.get('agent2_results', {})
+        agent3_results = agent_states.get('agent3_results', {})
+        content_store = st.session_state.get('ai_content_store', {})
+        
+        # Key selector for comparison
+        if filtered_keys:
+            selected_key = st.selectbox(
+                "Select Financial Key for Detailed Comparison:",
+                filtered_keys,
+                format_func=get_key_display_name,
+                key="parallel_comparison_key"
+            )
+            
+            if selected_key:
+                st.markdown(f"### Analysis for {get_key_display_name(selected_key)}")
+                
+                # Parallel comparison buttons
+                st.markdown("#### 🔄 Choose Comparison Mode:")
+                comparison_mode = st.radio(
+                    "Comparison Type:",
+                    ["Before vs After (AI1 → AI3)", "Step-by-Step (AI1 → AI2 → AI3)", "Agent Validation (AI2 vs AI3)"],
+                    horizontal=True,
+                    key="comparison_mode"
+                )
+                
+                # Get content for selected key
+                agent1_content = agent1_results.get(selected_key, "")
+                agent2_content = ""
+                agent3_content = ""
+                
+                # Get validated content from Agent 2
+                if selected_key in agent2_results:
+                    agent2_data = agent2_results[selected_key]
+                    agent2_content = agent2_data.get('corrected_content', '')
+                    if not agent2_content and selected_key in content_store:
+                        agent2_content = content_store[selected_key].get('agent2_content', '')
+                
+                # Get final content from Agent 3
+                if selected_key in agent3_results:
+                    agent3_data = agent3_results[selected_key]
+                    agent3_content = agent3_data.get('corrected_content', '')
+                    if not agent3_content and selected_key in content_store:
+                        agent3_content = content_store[selected_key].get('agent3_content', '')
+                
+                # Default to Agent 1 content if later agents don't have content
+                if not agent2_content:
+                    agent2_content = agent1_content
+                if not agent3_content:
+                    agent3_content = agent2_content or agent1_content
+                
+                # Display comparison based on selected mode
+                if comparison_mode == "Before vs After (AI1 → AI3)":
+                    display_before_after_comparison(selected_key, agent1_content, agent3_content, agent_states)
+                    
+                elif comparison_mode == "Step-by-Step (AI1 → AI2 → AI3)":
+                    display_step_by_step_comparison(selected_key, agent1_content, agent2_content, agent3_content, agent_states)
+                    
+                elif comparison_mode == "Agent Validation (AI2 vs AI3)":
+                    display_validation_comparison(selected_key, agent2_content, agent3_content, agent2_results, agent3_results)
+        
+        else:
+            st.info("No financial keys available for comparison")
+    
+    # Tab 4: Session Overview
+    with main_tabs[3]:
         st.markdown("### Session Processing Overview")
         
         # Session statistics
@@ -3378,6 +3695,255 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                 st.warning("No logging information available")
         else:
             st.info("No processing session data available")
+
+# Helper functions for parallel comparison and before/after visualization
+
+def display_before_after_comparison(key, before_content, after_content, agent_states):
+    """Display before (AI1) vs after (AI3) comparison with visual diff"""
+    st.markdown("#### 📊 Before vs After Comparison")
+    
+    # Status indicators
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        agent1_success = agent_states.get('agent1_success', False)
+        st.metric("Agent 1", "✅ Success" if agent1_success else "❌ Failed")
+    with col2:
+        changes_made = before_content != after_content
+        st.metric("Changes Made", "✅ Yes" if changes_made else "➖ No")
+    with col3:
+        agent3_success = agent_states.get('agent3_success', False)
+        st.metric("Agent 3", "✅ Success" if agent3_success else "❌ Failed")
+    
+    # Side-by-side comparison
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("##### 📝 **BEFORE** (Agent 1 - Original)")
+        if before_content:
+            st.markdown(f"**Length:** {len(before_content)} characters, {len(before_content.split())} words")
+            with st.container():
+                st.markdown(before_content)
+        else:
+            st.warning("No original content available")
+    
+    with col2:
+        st.markdown("##### 🎯 **AFTER** (Agent 3 - Final)")
+        if after_content:
+            st.markdown(f"**Length:** {len(after_content)} characters, {len(after_content.split())} words")
+            with st.container():
+                st.markdown(after_content)
+        else:
+            st.warning("No final content available")
+    
+    # Change analysis
+    if before_content and after_content:
+        st.markdown("---")
+        st.markdown("#### 📈 Change Analysis")
+        
+        # Length comparison
+        length_diff = len(after_content) - len(before_content)
+        word_diff = len(after_content.split()) - len(before_content.split())
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Character Change", f"{length_diff:+d}", delta=f"{length_diff/len(before_content)*100:+.1f}%" if before_content else "N/A")
+        with col2:
+            st.metric("Word Change", f"{word_diff:+d}", delta=f"{word_diff/len(before_content.split())*100:+.1f}%" if before_content.split() else "N/A")
+        with col3:
+            similarity = calculate_content_similarity(before_content, after_content)
+            st.metric("Similarity", f"{similarity:.1f}%")
+        
+        # Highlight differences
+        if before_content != after_content:
+            with st.expander("🔍 Detailed Changes", expanded=False):
+                show_text_differences(before_content, after_content)
+
+def display_step_by_step_comparison(key, agent1_content, agent2_content, agent3_content, agent_states):
+    """Display step-by-step progression through all agents"""
+    st.markdown("#### 🔄 Step-by-Step Agent Progression")
+    
+    # Progress indicators
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        agent1_success = agent_states.get('agent1_success', False)
+        st.metric("🚀 Agent 1", "✅ Generated" if agent1_success else "❌ Failed")
+    with col2:
+        agent2_success = agent_states.get('agent2_success', False)
+        st.metric("📊 Agent 2", "✅ Validated" if agent2_success else "❌ Failed")
+    with col3:
+        agent3_success = agent_states.get('agent3_success', False)
+        st.metric("🎯 Agent 3", "✅ Compliant" if agent3_success else "❌ Failed")
+    
+    # Agent progression tabs
+    step_tabs = st.tabs(["🚀 Step 1: Generation", "📊 Step 2: Validation", "🎯 Step 3: Compliance"])
+    
+    with step_tabs[0]:
+        st.markdown("##### Agent 1: Content Generation")
+        if agent1_content:
+            st.markdown(f"**Length:** {len(agent1_content)} characters")
+            st.markdown(agent1_content)
+        else:
+            st.warning("No content generated by Agent 1")
+    
+    with step_tabs[1]:
+        st.markdown("##### Agent 2: Data Validation & Correction")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Before Validation:**")
+            if agent1_content:
+                st.markdown(agent1_content[:200] + "..." if len(agent1_content) > 200 else agent1_content)
+            else:
+                st.warning("No input content")
+        
+        with col2:
+            st.markdown("**After Validation:**")
+            if agent2_content:
+                if agent2_content != agent1_content:
+                    st.success("✅ Changes made during validation")
+                    st.markdown(agent2_content[:200] + "..." if len(agent2_content) > 200 else agent2_content)
+                else:
+                    st.info("ℹ️ No changes needed")
+                    st.markdown("Content validated as accurate")
+            else:
+                st.warning("No validation output")
+    
+    with step_tabs[2]:
+        st.markdown("##### Agent 3: Pattern Compliance & Final Polish")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Before Compliance Check:**")
+            if agent2_content:
+                st.markdown(agent2_content[:200] + "..." if len(agent2_content) > 200 else agent2_content)
+            else:
+                st.warning("No input content")
+        
+        with col2:
+            st.markdown("**After Compliance Check:**")
+            if agent3_content:
+                if agent3_content != agent2_content:
+                    st.success("✅ Pattern compliance improvements made")
+                    st.markdown(agent3_content[:200] + "..." if len(agent3_content) > 200 else agent3_content)
+                else:
+                    st.info("ℹ️ Content already compliant")
+                    st.markdown("No pattern improvements needed")
+            else:
+                st.warning("No compliance output")
+
+def display_validation_comparison(key, agent2_content, agent3_content, agent2_results, agent3_results):
+    """Display comparison between Agent 2 and Agent 3 results"""
+    st.markdown("#### 🔍 Agent Validation Comparison")
+    
+    # Get validation details
+    agent2_data = agent2_results.get(key, {})
+    agent3_data = agent3_results.get(key, {})
+    
+    # Validation metrics comparison
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("##### 📊 Agent 2: Data Validation")
+        validation_score = agent2_data.get('score', 0)
+        is_valid = agent2_data.get('is_valid', False)
+        issues = agent2_data.get('issues', [])
+        
+        st.metric("Validation Score", f"{validation_score}%")
+        st.metric("Status", "✅ Valid" if is_valid else "❌ Issues Found")
+        st.metric("Issues Found", len(issues))
+        
+        if issues:
+            with st.expander("🚨 Data Issues", expanded=False):
+                for issue in issues:
+                    st.write(f"• {issue}")
+        
+        if agent2_content:
+            with st.expander("📝 Agent 2 Content", expanded=False):
+                st.markdown(agent2_content)
+    
+    with col2:
+        st.markdown("##### 🎯 Agent 3: Pattern Compliance")
+        is_compliant = agent3_data.get('is_compliant', False)
+        compliance_issues = agent3_data.get('issues', [])
+        pattern_match = agent3_data.get('pattern_match', 'unknown')
+        
+        st.metric("Compliance Status", "✅ Compliant" if is_compliant else "⚠️ Issues")
+        st.metric("Pattern Match", pattern_match.title())
+        st.metric("Pattern Issues", len(compliance_issues))
+        
+        if compliance_issues:
+            with st.expander("🚨 Pattern Issues", expanded=False):
+                for issue in compliance_issues:
+                    st.write(f"• {issue}")
+        
+        if agent3_content:
+            with st.expander("📝 Agent 3 Content", expanded=False):
+                st.markdown(agent3_content)
+    
+    # Overall comparison
+    st.markdown("---")
+    st.markdown("#### 📈 Overall Quality Comparison")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        data_quality = "High" if is_valid else "Needs Work"
+        st.metric("Data Quality", data_quality)
+    with col2:
+        pattern_quality = "High" if is_compliant else "Needs Work"
+        st.metric("Pattern Quality", pattern_quality)
+    with col3:
+        overall_status = "✅ Ready" if (is_valid and is_compliant) else "⚠️ Needs Review"
+        st.metric("Overall Status", overall_status)
+
+def calculate_content_similarity(text1, text2):
+    """Calculate similarity percentage between two texts"""
+    if not text1 or not text2:
+        return 0.0
+    
+    # Simple word-based similarity
+    words1 = set(text1.lower().split())
+    words2 = set(text2.lower().split())
+    
+    if not words1 and not words2:
+        return 100.0
+    
+    intersection = words1.intersection(words2)
+    union = words1.union(words2)
+    
+    return (len(intersection) / len(union)) * 100 if union else 0.0
+
+def show_text_differences(text1, text2):
+    """Show differences between two texts (simplified diff)"""
+    if text1 == text2:
+        st.info("No differences found")
+        return
+    
+    # Split into sentences for comparison
+    sentences1 = [s.strip() for s in text1.split('.') if s.strip()]
+    sentences2 = [s.strip() for s in text2.split('.') if s.strip()]
+    
+    st.markdown("**Changes Summary:**")
+    
+    # Find added/removed sentences
+    added = [s for s in sentences2 if s not in sentences1]
+    removed = [s for s in sentences1 if s not in sentences2]
+    
+    if added:
+        st.markdown("**✅ Added:**")
+        for sentence in added[:3]:  # Show first 3
+            st.write(f"+ {sentence}")
+        if len(added) > 3:
+            st.write(f"... and {len(added) - 3} more additions")
+    
+    if removed:
+        st.markdown("**❌ Removed:**")
+        for sentence in removed[:3]:  # Show first 3
+            st.write(f"- {sentence}")
+        if len(removed) > 3:
+            st.write(f"... and {len(removed) - 3} more removals")
+    
+    if not added and not removed:
+        st.info("Changes are mostly within existing sentences (minor edits)")
 
 if __name__ == "__main__":
     main() 
