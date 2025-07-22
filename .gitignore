@@ -17,7 +17,6 @@ FDD.Draft Report.For AI solution purpose Only.pptx
 *template*.pptx
 *databook*.pptx
 
-*.md
 # Add any other input/output file types as needed
 
 # Python cache and build files
@@ -69,3 +68,33 @@ venv.bak/
 
 # Reference folder
 /old_ver
+old_ver/
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+
+# Documentation (except README.md)
+PORT_MANAGEMENT_GUIDE.md
+LOGGING_ENHANCEMENT_README.md
+*.md
+!README.md
