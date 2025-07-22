@@ -74,6 +74,40 @@ class AIAgentLogger:
                 
         except Exception as e:
             print(f"Error saving JSON log: {e}")
+    
+    def _save_paired_log(self, input_entry, output_entry):
+        """Save input and output as a paired log file"""
+        try:
+            # Create paired subdirectory
+            paired_log_dir = self.log_dir / "paired"
+            paired_log_dir.mkdir(exist_ok=True)
+            
+            # Create filename for paired log
+            timestamp = input_entry['timestamp'].replace(' ', '_').replace(':', '-')
+            agent = input_entry['agent'].lower()
+            key = input_entry['key'].lower()
+            filename = f"{timestamp}_{agent}_{key}_paired.json"
+            
+            paired_file_path = paired_log_dir / filename
+            
+            # Combine input and output into paired structure
+            paired_log = {
+                'timestamp': input_entry['timestamp'],
+                'agent': input_entry['agent'],
+                'key': input_entry['key'],
+                'session_id': input_entry.get('session_id', 'default'),
+                'input': input_entry,
+                'output': output_entry,
+                'processing_time': output_entry.get('processing_time', 0),
+                'success': output_entry.get('success', False)
+            }
+            
+            # Save as formatted JSON
+            with open(paired_file_path, 'w', encoding='utf-8') as f:
+                json.dump(paired_log, f, indent=2, ensure_ascii=False)
+                
+        except Exception as e:
+            print(f"Error saving paired log: {e}")
         
     def _save_to_consolidated_log(self, log_entry):
         """Save log entry to consolidated session file (1 file per session with all agents and keys)"""
@@ -102,7 +136,7 @@ class AIAgentLogger:
         except Exception as e:
             print(f"Error saving to consolidated log: {e}")
     
-    def log_agent_input(self, agent_name, key, system_prompt, user_prompt, context_data=None):
+    def log_agent_input(self, agent_name, key, system_prompt, user_prompt, context_data=None, actual_prompts=None):
         """Log agent input prompts and data to consolidated session file"""
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
@@ -128,6 +162,7 @@ class AIAgentLogger:
                 'content': str(context_data) if context_data else None,
                 'length': len(str(context_data)) if context_data else 0
             },
+            'actual_prompts': actual_prompts,  # Store the actual parsed prompts
             'session_id': getattr(self, 'session_id', 'default')
         }
         
@@ -144,6 +179,11 @@ class AIAgentLogger:
         
         # Save individual JSON input file for detailed debugging
         self._save_json_log(log_entry, 'input')
+        
+        # Store input entry for paired logging
+        if not hasattr(self, 'pending_inputs'):
+            self.pending_inputs = {}
+        self.pending_inputs[f"{agent_name}_{key}"] = log_entry
         
         # Minimal text log for quick reference
         self._write_to_file(f"📝 [{timestamp}] {agent_name.upper()} INPUT → {key} (Est. {log_entry['prompts']['system_prompt']['token_estimate'] + log_entry['prompts']['user_prompt']['token_estimate']:.0f} tokens)")
@@ -184,6 +224,14 @@ class AIAgentLogger:
         
         # Save individual JSON output file
         self._save_json_log(log_entry, 'output')
+        
+        # Create paired log if input exists
+        input_key = f"{agent_name}_{key}"
+        if hasattr(self, 'pending_inputs') and input_key in self.pending_inputs:
+            input_entry = self.pending_inputs[input_key]
+            self._save_paired_log(input_entry, log_entry)
+            # Remove from pending after paired log is created
+            del self.pending_inputs[input_key]
         
         # Write summary to text log
         status_icon = "✅" if is_success else "❌"
@@ -1045,8 +1093,9 @@ def main():
             except Exception:
                 st.warning("⚠️ AI Mode: Configuration not found. Will use fallback mode.")
         
-        # Individual AI Agent Buttons
-        st.markdown("### 🤖 Individual AI Agent Processing")
+        # --- AI Processing & Results Section ---
+        st.markdown("---")
+        st.markdown("## 🤖 AI Processing & Results")
         
         # Initialize session state for AI data if not exists
         if 'ai_data' not in st.session_state:
@@ -1133,12 +1182,23 @@ def main():
                         'agent3_success': False
                     }
                 
-                # Individual Agent Buttons
+                # AI Processing Buttons with Progress
+                agent_states = st.session_state.get('agent_states', {})
+                agent1_completed = agent_states.get('agent1_completed', False)
+                agent1_results = agent_states.get('agent1_results', {})
+                
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
                     if st.button("🚀 Run AI1: Content Generation", type="primary", use_container_width=True):
-                        with st.spinner("🤖 AI1 is generating content..."):
+                        # Progress bar for AI1
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        try:
+                            status_text.text("🤖 AI1: Initializing...")
+                            progress_bar.progress(0.1)
+                            
                             agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data)
                             agent1_success = bool(agent1_results and any(agent1_results.values()))
                             
@@ -1146,20 +1206,32 @@ def main():
                             st.session_state['agent_states']['agent1_completed'] = True
                             st.session_state['agent_states']['agent1_success'] = agent1_success
                             
+                            progress_bar.progress(1.0)
                             if agent1_success:
-                                st.success(f"✅ AI1 completed successfully! Generated content for {len(agent1_results)} keys.")
+                                status_text.text(f"✅ AI1 completed! Generated content for {len(agent1_results)} keys.")
                             else:
-                                st.error("❌ AI1 failed to generate content.")
+                                status_text.text("❌ AI1 failed to generate content.")
+                            
+                            time.sleep(2)  # Show completion message briefly
+                            st.rerun()
+                            
+                        except Exception as e:
+                            progress_bar.progress(1.0)
+                            status_text.text(f"❌ AI1 failed: {e}")
+                            time.sleep(2)
                             st.rerun()
                 
                 with col2:
-                    # Check if AI1 has run first
-                    agent1_completed = st.session_state['agent_states'].get('agent1_completed', False)
-                    agent1_results = st.session_state['agent_states'].get('agent1_results', {})
-                    
                     if agent1_completed and agent1_results:
                         if st.button("📊 Run AI2: Data Validation", type="secondary", use_container_width=True):
-                            with st.spinner("🔍 AI2 is validating data..."):
+                            # Progress bar for AI2
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            try:
+                                status_text.text("🔍 AI2: Initializing...")
+                                progress_bar.progress(0.1)
+                                
                                 agent2_results = run_agent_2(filtered_keys_for_ai, agent1_results, temp_ai_data)
                                 agent2_success = bool(agent2_results and len(agent2_results) > 0)
                                 
@@ -1167,20 +1239,35 @@ def main():
                                 st.session_state['agent_states']['agent2_completed'] = True
                                 st.session_state['agent_states']['agent2_success'] = agent2_success
                                 
+                                progress_bar.progress(1.0)
                                 if agent2_success:
-                                    st.success(f"✅ AI2 completed successfully! Validated {len(agent2_results)} keys.")
+                                    status_text.text(f"✅ AI2 completed! Validated {len(agent2_results)} keys.")
                                 else:
-                                    st.error("❌ AI2 failed to validate data.")
+                                    status_text.text("❌ AI2 failed to validate data.")
+                                
+                                time.sleep(2)
+                                st.rerun()
+                                
+                            except Exception as e:
+                                progress_bar.progress(1.0)
+                                status_text.text(f"❌ AI2 failed: {e}")
+                                time.sleep(2)
                                 st.rerun()
                     else:
                         st.button("📊 Run AI2: Data Validation", disabled=True, use_container_width=True)
                         st.caption("⚠️ Run AI1 first")
                 
                 with col3:
-                    # Check if AI1 has run first
                     if agent1_completed and agent1_results:
                         if st.button("🎯 Run AI3: Pattern Compliance", type="secondary", use_container_width=True):
-                            with st.spinner("🎯 AI3 is checking pattern compliance..."):
+                            # Progress bar for AI3
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            try:
+                                status_text.text("🎯 AI3: Initializing...")
+                                progress_bar.progress(0.1)
+                                
                                 agent3_results = run_agent_3(filtered_keys_for_ai, agent1_results, temp_ai_data)
                                 agent3_success = bool(agent3_results and len(agent3_results) > 0)
                                 
@@ -1188,61 +1275,30 @@ def main():
                                 st.session_state['agent_states']['agent3_completed'] = True
                                 st.session_state['agent_states']['agent3_success'] = agent3_success
                                 
+                                progress_bar.progress(1.0)
                                 if agent3_success:
-                                    st.success(f"✅ AI3 completed successfully! Checked compliance for {len(agent3_results)} keys.")
+                                    status_text.text(f"✅ AI3 completed! Checked compliance for {len(agent3_results)} keys.")
                                 else:
-                                    st.error("❌ AI3 failed to check pattern compliance.")
+                                    status_text.text("❌ AI3 failed to check pattern compliance.")
+                                
+                                time.sleep(2)
+                                st.rerun()
+                                
+                            except Exception as e:
+                                progress_bar.progress(1.0)
+                                status_text.text(f"❌ AI3 failed: {e}")
+                                time.sleep(2)
                                 st.rerun()
                     else:
                         st.button("🎯 Run AI3: Pattern Compliance", disabled=True, use_container_width=True)
                         st.caption("⚠️ Run AI1 first")
-                
-                # Agent Status Display
-                st.markdown("---")
-                st.markdown("### 📊 Agent Status")
-                
-                status_col1, status_col2, status_col3 = st.columns(3)
-                
-                with status_col1:
-                    agent1_status = st.session_state['agent_states'].get('agent1_success', False)
-                    if agent1_status:
-                        st.success("🚀 AI1: ✅ Completed")
-                    elif st.session_state['agent_states'].get('agent1_completed', False):
-                        st.warning("🚀 AI1: ⚠️ Completed with issues")
-                    else:
-                        st.info("🚀 AI1: ⏳ Not started")
-                
-                with status_col2:
-                    agent2_status = st.session_state['agent_states'].get('agent2_success', False)
-                    if agent2_status:
-                        st.success("📊 AI2: ✅ Completed")
-                    elif st.session_state['agent_states'].get('agent2_completed', False):
-                        st.warning("📊 AI2: ⚠️ Completed with issues")
-                    elif agent1_completed:
-                        st.info("📊 AI2: ⏳ Ready to run")
-                    else:
-                        st.info("📊 AI2: ⏳ Waiting for AI1")
-                
-                with status_col3:
-                    agent3_status = st.session_state['agent_states'].get('agent3_success', False)
-                    if agent3_status:
-                        st.success("🎯 AI3: ✅ Completed")
-                    elif st.session_state['agent_states'].get('agent3_completed', False):
-                        st.warning("🎯 AI3: ⚠️ Completed with issues")
-                    elif agent1_completed:
-                        st.info("🎯 AI3: ⏳ Ready to run")
-                    else:
-                        st.info("🎯 AI3: ⏳ Waiting for AI1")
                 
             except Exception as e:
                 st.error(f"❌ Failed to prepare AI data: {e}")
         else:
             st.info("Please upload an Excel file first.")
         
-        # --- AI Results Output Window ---
-        st.markdown("---")
-        st.markdown("## 📊 AI Results Output")
-        
+        # --- AI Results Display ---
         # Check if any agent has run
         agent_states = st.session_state.get('agent_states', {})
         any_agent_completed = any([
@@ -1254,123 +1310,98 @@ def main():
         if any_agent_completed:
             # Get available keys
             filtered_keys = st.session_state.get('filtered_keys_for_ai', [])
-            ai_data = st.session_state.get('ai_data', {})
             
             if filtered_keys:
-                # Key selector
-                selected_key = st.selectbox(
-                    "Select Financial Key to View Results:",
-                    filtered_keys,
-                    format_func=get_key_display_name,
-                    key="results_key_selector"
-                )
+                # Create tabs for each key (load all at once)
+                key_tabs = st.tabs([get_key_display_name(key) for key in filtered_keys])
                 
-                if selected_key:
-                    st.markdown(f"### Results for {get_key_display_name(selected_key)}")
-                    
-                    # Create tabs for different agent results
-                    result_tabs = st.tabs(["🚀 AI1: Generation", "📊 AI2: Validation", "🎯 AI3: Compliance"])
-                    
-                    # AI1 Results Tab
-                    with result_tabs[0]:
-                        agent1_results = agent_states.get('agent1_results', {})
-                        if selected_key in agent1_results and agent1_results[selected_key]:
-                            content = agent1_results[selected_key]
-                            st.markdown("**Generated Content:**")
-                            st.markdown(content)
-                            
-                            # Metadata
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric("Characters", len(content))
-                            with col2:
-                                st.metric("Words", len(content.split()))
-                            with col3:
-                                st.metric("Status", "✅ Generated" if content else "❌ Failed")
-                        else:
-                            st.info("No AI1 results available for this key. Run AI1 first.")
-                    
-                    # AI2 Results Tab
-                    with result_tabs[1]:
-                        agent2_results = agent_states.get('agent2_results', {})
-                        if selected_key in agent2_results:
-                            validation_result = agent2_results[selected_key]
-                            
-                            # Validation metrics
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                score = validation_result.get('score', 0)
-                                st.metric("Validation Score", f"{score}%")
-                            with col2:
-                                is_valid = validation_result.get('is_valid', False)
-                                st.metric("Status", "✅ Valid" if is_valid else "❌ Issues")
-                            with col3:
-                                issues = validation_result.get('issues', [])
-                                st.metric("Issues Found", len(issues))
-                            
-                            # Show corrected content if available
-                            corrected_content = validation_result.get('corrected_content', '')
-                            if corrected_content:
-                                st.markdown("**Validated Content:**")
-                                st.markdown(corrected_content)
-                            
-                            # Show issues if any
-                            if issues:
-                                with st.expander("🚨 Issues Found", expanded=False):
-                                    for issue in issues:
-                                        st.write(f"• {issue}")
-                        else:
-                            st.info("No AI2 results available for this key. Run AI2 first.")
-                    
-                    # AI3 Results Tab
-                    with result_tabs[2]:
-                        agent3_results = agent_states.get('agent3_results', {})
-                        if selected_key in agent3_results:
-                            pattern_result = agent3_results[selected_key]
-                            
-                            # Compliance metrics
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                is_compliant = pattern_result.get('is_compliant', False)
-                                st.metric("Pattern Compliance", "✅ Compliant" if is_compliant else "⚠️ Issues")
-                            with col2:
-                                issues = pattern_result.get('issues', [])
-                                st.metric("Issues Found", len(issues))
-                            
-                            # Show final content if available
-                            corrected_content = pattern_result.get('corrected_content', '')
-                            if corrected_content:
-                                st.markdown("**Final Content:**")
-                                st.markdown(corrected_content)
-                            
-                            # Show issues if any
-                            if issues:
-                                with st.expander("🚨 Pattern Issues", expanded=False):
-                                    for issue in issues:
-                                        st.write(f"• {issue}")
-                        else:
-                            st.info("No AI3 results available for this key. Run AI3 first.")
-                
-                # Logging Information (Background - not shown in UI)
-                st.markdown("---")
-                st.markdown("### 📋 Logging Information")
-                
-                logger = st.session_state.get('ai_logger')
-                if logger:
-                    session_id = getattr(logger, 'session_id', 'unknown')
-                    log_file = getattr(logger, 'log_file', 'unknown')
-                    
-                    st.info(f"📁 **Session ID**: {session_id}")
-                    st.info(f"📄 **Detailed logs saved to**: `{log_file}`")
-                    st.info(f"📊 **Consolidated logs saved to**: `logging/session_{session_id}.json`")
-                    st.info("💡 **Note**: All AI input prompts and outputs are automatically logged to files for debugging.")
-                    
-                    # Token usage summary (if available)
-                    total_logs = len(logger.session_logs) if hasattr(logger, 'session_logs') else 0
-                    st.metric("Total Log Entries", total_logs)
-                else:
-                    st.warning("No logging information available")
-            
+                # Display results for each key in its tab
+                for i, key in enumerate(filtered_keys):
+                    with key_tabs[i]:
+                        st.markdown(f"### {get_key_display_name(key)} Results")
+                        
+                        # Create sub-tabs for each agent
+                        agent_tabs = st.tabs(["🚀 AI1: Generation", "📊 AI2: Validation", "🎯 AI3: Compliance"])
+                        
+                        # AI1 Results
+                        with agent_tabs[0]:
+                            agent1_results = agent_states.get('agent1_results', {})
+                            if key in agent1_results and agent1_results[key]:
+                                content = agent1_results[key]
+                                st.markdown("**Generated Content:**")
+                                st.markdown(content)
+                                
+                                # Metadata
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric("Characters", len(content))
+                                with col2:
+                                    st.metric("Words", len(content.split()))
+                                with col3:
+                                    st.metric("Status", "✅ Generated" if content else "❌ Failed")
+                            else:
+                                st.info("No AI1 results available. Run AI1 first.")
+                        
+                        # AI2 Results
+                        with agent_tabs[1]:
+                            agent2_results = agent_states.get('agent2_results', {})
+                            if key in agent2_results:
+                                validation_result = agent2_results[key]
+                                
+                                # Validation metrics
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    score = validation_result.get('score', 0)
+                                    st.metric("Validation Score", f"{score}%")
+                                with col2:
+                                    is_valid = validation_result.get('is_valid', False)
+                                    st.metric("Status", "✅ Valid" if is_valid else "❌ Issues")
+                                with col3:
+                                    issues = validation_result.get('issues', [])
+                                    st.metric("Issues Found", len(issues))
+                                
+                                # Show corrected content if available
+                                corrected_content = validation_result.get('corrected_content', '')
+                                if corrected_content:
+                                    st.markdown("**Validated Content:**")
+                                    st.markdown(corrected_content)
+                                
+                                # Show issues if any
+                                if issues:
+                                    with st.expander("🚨 Issues Found", expanded=False):
+                                        for issue in issues:
+                                            st.write(f"• {issue}")
+                            else:
+                                st.info("No AI2 results available. Run AI2 first.")
+                        
+                        # AI3 Results
+                        with agent_tabs[2]:
+                            agent3_results = agent_states.get('agent3_results', {})
+                            if key in agent3_results:
+                                pattern_result = agent3_results[key]
+                                
+                                # Compliance metrics
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    is_compliant = pattern_result.get('is_compliant', False)
+                                    st.metric("Pattern Compliance", "✅ Compliant" if is_compliant else "⚠️ Issues")
+                                with col2:
+                                    issues = pattern_result.get('issues', [])
+                                    st.metric("Issues Found", len(issues))
+                                
+                                # Show final content if available
+                                corrected_content = pattern_result.get('corrected_content', '')
+                                if corrected_content:
+                                    st.markdown("**Final Content:**")
+                                    st.markdown(corrected_content)
+                                
+                                # Show issues if any
+                                if issues:
+                                    with st.expander("🚨 Pattern Issues", expanded=False):
+                                        for issue in issues:
+                                            st.write(f"• {issue}")
+                            else:
+                                st.info("No AI3 results available. Run AI3 first.")
             else:
                 st.info("No financial keys available for results display.")
         else:
@@ -2675,13 +2706,30 @@ def run_agent_1(filtered_keys, ai_data):
                     st.error("No data file available for Agent 1 processing")
                     return {}
             
-            # Log Agent 1 input for all keys
-            system_prompt = "Agent 1 system prompt from prompts.json"
-            user_prompt = f"Generate content for {len(filtered_keys)} keys: {', '.join(filtered_keys)}"
-            context_data = f"Entity: {entity_name}, Keys: {filtered_keys}"
+            # Load actual prompts from prompts.json
+            try:
+                with open('utils/prompts.json', 'r', encoding='utf-8') as f:
+                    prompts_config = json.load(f)
+                agent1_prompts = prompts_config.get('agent1', {})
+                actual_system_prompt = agent1_prompts.get('system_prompt', 'Default system prompt')
+            except Exception as e:
+                actual_system_prompt = "Error loading prompts.json"
+                print(f"Error loading prompts: {e}")
             
+            # Log Agent 1 input for all keys with actual prompts
             for key in filtered_keys:
-                logger.log_agent_input('agent1', key, system_prompt, f"Generate content for {key}", f"Entity: {entity_name}")
+                # Generate the actual user prompt that would be sent to AI
+                actual_user_prompt = f"Generate content for {key} for entity {entity_name}"
+                context_data = f"Entity: {entity_name}, Key: {key}"
+                
+                # Store the actual prompts that will be sent to AI
+                actual_prompts = {
+                    'system_prompt': actual_system_prompt,
+                    'user_prompt': actual_user_prompt,
+                    'context': context_data
+                }
+                
+                logger.log_agent_input('agent1', key, actual_system_prompt, actual_user_prompt, context_data, actual_prompts)
             
             # Process ALL keys at once with proper tqdm progress (1/9, 2/9, etc.)
             start_time = time.time()
@@ -2923,9 +2971,21 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
                         ENTITY: {entity_name}
                         """
                         
-                        # Log Agent 2 input
+                        # Store the actual prompts that will be sent to AI
+                        actual_prompts = {
+                            'system_prompt': agent2_system_prompt,
+                            'user_prompt': user_prompt,
+                            'context': {
+                                'expected_figure': expected_figure, 
+                                'agent1_content_length': len(agent1_content),
+                                'entity': entity_name,
+                                'key': key
+                            }
+                        }
+                        
+                        # Log Agent 2 input with actual prompts
                         logger.log_agent_input('agent2', key, agent2_system_prompt, user_prompt, 
-                                             {'expected_figure': expected_figure, 'agent1_content_length': len(agent1_content)})
+                                             {'expected_figure': expected_figure, 'agent1_content_length': len(agent1_content)}, actual_prompts)
                         
                         # Use real AI validation instead of fallback
                         validation_result = validation_agent.validate_financial_data(
@@ -3154,9 +3214,21 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
                     AVAILABLE PATTERNS FOR {key}: {json.dumps(key_patterns, indent=2)}
                     """
                     
-                    # Log Agent 3 input
+                    # Store the actual prompts that will be sent to AI
+                    actual_prompts = {
+                        'system_prompt': agent3_system_prompt,
+                        'user_prompt': user_prompt,
+                        'context': {
+                            'patterns_count': len(key_patterns), 
+                            'content_length': len(current_content),
+                            'key': key,
+                            'patterns': key_patterns
+                        }
+                    }
+                    
+                    # Log Agent 3 input with actual prompts
                     logger.log_agent_input('agent3', key, agent3_system_prompt, user_prompt, 
-                                         {'patterns_count': len(key_patterns), 'content_length': len(current_content)})
+                                         {'patterns_count': len(key_patterns), 'content_length': len(current_content)}, actual_prompts)
                     
                     # Use real AI pattern validation instead of fallback
                     pattern_result = pattern_agent.validate_pattern_compliance(
