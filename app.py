@@ -2808,8 +2808,50 @@ def run_agent_1(filtered_keys, ai_data):
                     'system_prompt': actual_system_prompt,
                     'user_prompt': actual_user_prompt,
                     'context': context_data,
-                    'table_data': key_tables[:1000] + "..." if len(key_tables) > 1000 else key_tables  # Truncate for logging
+                    'table_data': key_tables[:2000] + "..." if len(key_tables) > 2000 else key_tables,  # Show more structured data
+                    'structured_tables': []  # Will store parsed structured tables
                 }
+                
+                # Parse structured tables from the key_tables content
+                try:
+                    # Extract structured table information from the markdown content
+                    table_sections = key_tables.split('## ')
+                    for section in table_sections[1:]:  # Skip first empty section
+                        lines = section.strip().split('\n')
+                        if len(lines) > 0:
+                            table_info = {
+                                'table_name': lines[0],
+                                'entity': 'Unknown',
+                                'date': 'Unknown',
+                                'currency': 'CNY',
+                                'multiplier': 1,
+                                'items': [],
+                                'total': 'Unknown'
+                            }
+                            
+                            for line in lines[1:]:
+                                if line.startswith('**Entity:**'):
+                                    table_info['entity'] = line.replace('**Entity:**', '').strip()
+                                elif line.startswith('**Date:**'):
+                                    table_info['date'] = line.replace('**Date:**', '').strip()
+                                elif line.startswith('**Currency:**'):
+                                    table_info['currency'] = line.replace('**Currency:**', '').strip()
+                                elif line.startswith('**Multiplier:**'):
+                                    table_info['multiplier'] = int(line.replace('**Multiplier:**', '').strip())
+                                elif line.startswith('**Total:**'):
+                                    table_info['total'] = line.replace('**Total:**', '').strip()
+                                elif line.startswith('- ') and ':' in line:
+                                    # Parse item line like "- Deposits with banks: 9076000"
+                                    item_parts = line[2:].split(': ')
+                                    if len(item_parts) == 2:
+                                        table_info['items'].append({
+                                            'description': item_parts[0],
+                                            'amount': item_parts[1]
+                                        })
+                            
+                            actual_prompts['structured_tables'].append(table_info)
+                except Exception as e:
+                    print(f"Error parsing structured tables for logging: {e}")
                 
                 logger.log_agent_input('agent1', key, actual_system_prompt, actual_user_prompt, context_data, actual_prompts)
             
