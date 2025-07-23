@@ -2742,7 +2742,16 @@ def run_agent_1(filtered_keys, ai_data):
                         except:
                             key_sections_str.append(str(section))
                     elif hasattr(section, 'to_string'):  # DataFrame
-                        key_sections_str.append(section.to_string())
+                        # Clean DataFrame output to avoid empty cells
+                        df_str = section.to_string(index=False, na_rep='')
+                        # Remove rows with all empty values
+                        lines = df_str.split('\n')
+                        cleaned_lines = []
+                        for line in lines:
+                            # Skip lines that are mostly empty or just separators
+                            if line.strip() and not line.strip().replace('|', '').replace('-', '').replace(' ', '').replace('+', '') == '':
+                                cleaned_lines.append(line)
+                        key_sections_str.append('\n'.join(cleaned_lines))
                     else:
                         key_sections_str.append(str(section))
                 key_tables = "\n".join(key_sections_str) if key_sections_str else "No table data available"
