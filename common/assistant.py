@@ -106,6 +106,161 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
     return response_content
 
 # --- Excel and Data Processing ---
+def parse_table_to_structured_format(df, entity_name, table_name):
+    """
+    Parse a DataFrame into structured format for financial tables.
+    Extracts table name, entity, date, currency, multiplier, and items.
+    """
+    try:
+        import re
+        from datetime import datetime
+        
+        # Initialize structured data
+        structured_data = {
+            'table_name': table_name,
+            'entity': entity_name,
+            'date': None,
+            'currency': 'CNY',
+            'multiplier': 1,
+            'items': [],
+            'total': None
+        }
+        
+        # Convert DataFrame to list of rows for easier processing
+        rows = df.values.tolist()
+        if not rows:
+            return None
+        
+        # Find the two most important columns (description and amount)
+        # Usually the first two columns, but let's be smart about it
+        desc_col = 0
+        amount_col = 1
+        
+        # Look for columns with numbers in the amount column
+        for col_idx in range(min(2, len(df.columns))):
+            numeric_count = 0
+            for row in rows:
+                if col_idx < len(row):
+                    cell_value = str(row[col_idx]).strip()
+                    # Check if it's a number (including with commas, decimals, etc.)
+                    if re.match(r'^[\d,]+\.?\d*$', cell_value.replace(',', '')):
+                        numeric_count += 1
+            
+            if numeric_count > len(rows) * 0.3:  # At least 30% of rows have numbers
+                amount_col = col_idx
+                desc_col = 1 if col_idx == 0 else 0
+                break
+        
+        # Process rows to extract information
+        for row_idx, row in enumerate(rows):
+            if len(row) < 2:
+                continue
+                
+            desc_cell = str(row[desc_col]).strip() if desc_col < len(row) else ""
+            amount_cell = str(row[amount_col]).strip() if amount_col < len(row) else ""
+            
+            # Skip empty rows
+            if not desc_cell and not amount_cell:
+                continue
+            
+            # Extract date
+            if not structured_data['date']:
+                # Look for date patterns in any cell
+                for cell in row:
+                    cell_str = str(cell).strip()
+                    # Common date patterns
+                    date_patterns = [
+                        r'\d{4}-\d{2}-\d{2}',  # YYYY-MM-DD
+                        r'\d{2}/\d{2}/\d{4}',  # MM/DD/YYYY
+                        r'\d{2}-\d{2}-\d{4}',  # DD-MM-YYYY
+                        r'\d{4}/\d{2}/\d{2}',  # YYYY/MM/DD
+                    ]
+                    for pattern in date_patterns:
+                        match = re.search(pattern, cell_str)
+                        if match:
+                            try:
+                                # Try to parse the date
+                                date_str = match.group()
+                                if '-' in date_str:
+                                    if len(date_str.split('-')[0]) == 4:  # YYYY-MM-DD
+                                        parsed_date = datetime.strptime(date_str, '%Y-%m-%d')
+                                    else:  # DD-MM-YYYY
+                                        parsed_date = datetime.strptime(date_str, '%d-%m-%Y')
+                                else:  # MM/DD/YYYY or YYYY/MM/DD
+                                    if len(date_str.split('/')[0]) == 4:  # YYYY/MM/DD
+                                        parsed_date = datetime.strptime(date_str, '%Y/%m/%d')
+                                    else:  # MM/DD/YYYY
+                                        parsed_date = datetime.strptime(date_str, '%m/%d/%Y')
+                                structured_data['date'] = parsed_date.strftime('%Y-%m-%d %H:%M:%S')
+                                break
+                            except:
+                                continue
+            
+            # Extract currency and multiplier
+            if 'CNY' in desc_cell.upper() or 'CNY' in amount_cell.upper():
+                structured_data['currency'] = 'CNY'
+                if "'000" in desc_cell or "'000" in amount_cell:
+                    structured_data['multiplier'] = 1000
+                elif "million" in desc_cell.lower() or "million" in amount_cell.lower():
+                    structured_data['multiplier'] = 1000000
+                elif "000" in desc_cell or "000" in amount_cell:
+                    # Check if it's a standalone "000" indicating thousands
+                    if re.match(r'^0*000$', desc_cell.replace("'", "")) or re.match(r'^0*000$', amount_cell.replace("'", "")):
+                        structured_data['multiplier'] = 1000
+            
+            # Extract items (skip header rows and totals)
+            if (desc_cell.lower() not in ['total', 'indicative adjusted', 'nan', ''] and 
+                not re.match(r'^[A-Z\s]+$', desc_cell) and  # Skip all caps headers
+                amount_cell and amount_cell != 'nan'):
+                
+                # Try to extract numeric amount
+                amount_match = re.search(r'[\d,]+\.?\d*', amount_cell.replace(',', ''))
+                if amount_match:
+                    amount_str = amount_match.group()
+                    try:
+                        amount = float(amount_str.replace(',', ''))
+                        # Apply multiplier if needed
+                        if structured_data['multiplier'] > 1:
+                            amount *= structured_data['multiplier']
+                        
+                        structured_data['items'].append({
+                            'description': desc_cell,
+                            'amount': int(amount) if amount.is_integer() else amount
+                        })
+                    except:
+                        pass
+            
+            # Extract total
+            if desc_cell.lower() == 'total' and amount_cell and amount_cell != 'nan':
+                amount_match = re.search(r'[\d,]+\.?\d*', amount_cell.replace(',', ''))
+                if amount_match:
+                    amount_str = amount_match.group()
+                    try:
+                        amount = float(amount_str.replace(',', ''))
+                        if structured_data['multiplier'] > 1:
+                            amount *= structured_data['multiplier']
+                        structured_data['total'] = int(amount) if amount.is_integer() else amount
+                    except:
+                        pass
+        
+        # Extract entity name from table content if not found
+        if structured_data['entity'] == entity_name:
+            # Look for more specific entity names in the data
+            for item in structured_data['items']:
+                desc = item['description'].lower()
+                if 'haining' in desc:
+                    # Extract the full entity name
+                    entity_match = re.search(r'haining\s+[a-zA-Z]+', desc, re.IGNORECASE)
+                    if entity_match:
+                        structured_data['entity'] = entity_match.group()
+                        break
+        
+        return structured_data if structured_data['items'] else None
+        
+    except Exception as e:
+        print(f"Error parsing table to structured format: {e}")
+        return None
+
 def find_dense_blocks(df, min_rows=2, min_cols=3, density_threshold=0.6):
     blocks = []
     nrows, ncols = df.shape
@@ -306,14 +461,32 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                             if row_has_target_entity and not row_has_other_entities:
                                 filtered_rows.append(row)
                         
-                        # Create filtered DataFrame
+                        # Create filtered DataFrame and parse it into structured format
                         if filtered_rows:
                             filtered_df = pd.DataFrame(filtered_rows)
-                            # Table '{table_name}' (method: {method}) in sheet '{ws.title}' included for entity keywords: {entity_keywords}
-                            try:
-                                markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
-                            except Exception:
-                                markdown_content += filtered_df.to_markdown(index=False) + '\n\n'
+                            
+                            # Parse the table into structured format
+                            structured_table = parse_table_to_structured_format(filtered_df, entity_name, table_name)
+                            
+                            if structured_table:
+                                # Add structured table to markdown content
+                                markdown_content += f"## {structured_table['table_name']}\n"
+                                markdown_content += f"**Entity:** {structured_table['entity']}\n"
+                                markdown_content += f"**Date:** {structured_table['date']}\n"
+                                markdown_content += f"**Currency:** {structured_table['currency']}\n"
+                                markdown_content += f"**Multiplier:** {structured_table['multiplier']}\n\n"
+                                
+                                # Add items
+                                for item in structured_table['items']:
+                                    markdown_content += f"- {item['description']}: {item['amount']}\n"
+                                
+                                markdown_content += f"\n**Total:** {structured_table['total']}\n\n"
+                            else:
+                                # Fallback to original format if parsing fails
+                                try:
+                                    markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
+                                except Exception:
+                                    markdown_content += filtered_df.to_markdown(index=False) + '\n\n'
                         else:
                             # No rows matched the strict filtering criteria
                             pass
