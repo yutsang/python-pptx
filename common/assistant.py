@@ -289,11 +289,34 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     match_found = any(any(kw in cell for cell in all_cells) for kw in entity_keywords)
                     
                     if match_found:
-                        # Table '{table_name}' (method: {method}) in sheet '{ws.title}' included for entity keywords: {entity_keywords}
-                        try:
-                            markdown_content += tabulate(df, headers='keys', tablefmt='pipe') + '\n\n'
-                        except Exception:
-                            markdown_content += df.to_markdown(index=False) + '\n\n'
+                        # Filter rows to only include those with the target entity
+                        filtered_rows = []
+                        for idx, row in df.iterrows():
+                            row_cells = [str(cell).lower().strip() for cell in row.values]
+                            # Check if this row contains the target entity
+                            row_has_target_entity = any(any(kw in cell for cell in row_cells) for kw in entity_keywords)
+                            # Check if this row contains other entities (to exclude them)
+                            other_entities = ['ningbo', 'nanjing', 'wanchen', 'haining']
+                            target_entity_keywords = [kw.lower() for kw in entity_keywords]
+                            row_has_other_entities = any(any(other_entity in cell for cell in row_cells) 
+                                                       for other_entity in other_entities 
+                                                       if other_entity not in target_entity_keywords)
+                            
+                            # Include row if it has target entity and doesn't have other entities
+                            if row_has_target_entity and not row_has_other_entities:
+                                filtered_rows.append(row)
+                        
+                        # Create filtered DataFrame
+                        if filtered_rows:
+                            filtered_df = pd.DataFrame(filtered_rows)
+                            # Table '{table_name}' (method: {method}) in sheet '{ws.title}' included for entity keywords: {entity_keywords}
+                            try:
+                                markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
+                            except Exception:
+                                markdown_content += filtered_df.to_markdown(index=False) + '\n\n'
+                        else:
+                            # No rows matched the strict filtering criteria
+                            pass
                     else:
                         # Table skipped for entity keywords
                         pass
