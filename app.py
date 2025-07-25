@@ -474,8 +474,51 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
         if df.empty or len(df) < 2:
             return None
         
+        # Debug: Show original DataFrame structure
+        print(f"DEBUG: Original DataFrame shape: {df.shape}")
+        print(f"DEBUG: Original DataFrame columns: {df.columns.tolist()}")
+        print(f"DEBUG: Original DataFrame first few rows:")
+        for i in range(min(5, len(df))):
+            print(f"  Row {i}: {df.iloc[i].tolist()}")
+        
+        # Clean the DataFrame first - drop unnamed columns that are all NaN
+        df_clean = df.copy()
+        dropped_columns = []
+        for col in df_clean.columns:
+            if col.startswith('Unnamed:') or df_clean[col].isna().all():
+                dropped_columns.append(col)
+                df_clean = df_clean.drop(columns=[col])
+        
+        if dropped_columns:
+            print(f"DEBUG: Dropped columns: {dropped_columns}")
+            print(f"DEBUG: Remaining columns: {df_clean.columns.tolist()}")
+        
+        # If all columns were dropped, try a different approach
+        if len(df_clean.columns) == 0:
+            print("DEBUG: All columns dropped, trying alternative approach...")
+            # Try to find columns with actual data
+            df_clean = df.copy()
+            for col in df_clean.columns:
+                # Check if column has any non-null, non-empty values
+                non_null_count = df_clean[col].notna().sum()
+                non_empty_count = (df_clean[col].astype(str).str.strip() != '').sum()
+                if non_null_count > 0 or non_empty_count > 0:
+                    print(f"DEBUG: Keeping column {col} (non-null: {non_null_count}, non-empty: {non_empty_count})")
+                else:
+                    print(f"DEBUG: Dropping column {col} (all null/empty)")
+                    df_clean = df_clean.drop(columns=[col])
+        
+        # Additional cleaning: remove columns that are all None/NaN after initial cleaning
+        for col in list(df_clean.columns):
+            if df_clean[col].isna().all() or (df_clean[col].astype(str) == 'None').all():
+                df_clean = df_clean.drop(columns=[col])
+                print(f"DEBUG: Removed all-NaN column {col} from structured parsing")
+        
+        print(f"DEBUG: Final cleaned DataFrame shape: {df_clean.shape}")
+        print(f"DEBUG: Final cleaned DataFrame columns: {df_clean.columns.tolist()}")
+        
         # Convert all cells to string for analysis
-        df_str = df.astype(str).fillna('')
+        df_str = df_clean.astype(str).fillna('')
         
         # Detect thousand/million indicators
         thousand_indicators = ["'000", "CNY'000", "USD'000", "'000", "thousands", "thousand"]
@@ -533,18 +576,65 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
         data_start_row = None
         for i in range(len(df_str)):
             cell_value = str(df_str.iloc[i, value_col_idx])
-            # Look for cells that contain only numbers (possibly with commas)
-            if re.match(r'^\d+,?\d*\.?\d*$', cell_value.replace(',', '')):
-                data_start_row = i
-                break
+            # Look for cells that contain numbers (more flexible)
+            if re.search(r'\d+', cell_value) and cell_value.strip() not in ['nan', '']:
+                # Check if this looks like a data row (has both description and value)
+                desc_cell = str(df_str.iloc[i, 0]).strip()
+                if desc_cell and desc_cell.lower() not in ['nan', '']:
+                    data_start_row = i
+                    break
         
         if data_start_row is None:
-            return None
+            # Fallback: start from row 2 if we have at least 3 rows
+            if len(df_str) >= 3:
+                data_start_row = 2
+            else:
+                return None
+        
+        # Extract date from the table - look for date patterns in the first few rows
+        extracted_date = None
+        date_patterns = [
+            r'(\d{4})-(\d{1,2})-(\d{1,2})',  # YYYY-MM-DD
+            r'(\d{1,2})/(\d{1,2})/(\d{4})',  # DD/MM/YYYY
+            r'(\d{1,2})-(\d{1,2})-(\d{4})',  # DD-MM-YYYY
+            r'(\d{4})/(\d{1,2})/(\d{1,2})',  # YYYY/MM/DD
+        ]
+        
+        # Search for date in the first 10 rows
+        for i in range(min(10, len(df_str))):
+            for j in range(len(df_str.columns)):
+                cell_value = str(df_str.iloc[i, j]).strip()
+                for pattern in date_patterns:
+                    match = re.search(pattern, cell_value)
+                    if match:
+                        try:
+                            if pattern == r'(\d{4})-(\d{1,2})-(\d{1,2})':
+                                year, month, day = match.groups()
+                            elif pattern == r'(\d{1,2})/(\d{1,2})/(\d{4})':
+                                day, month, year = match.groups()
+                            elif pattern == r'(\d{1,2})-(\d{1,2})-(\d{4})':
+                                day, month, year = match.groups()
+                            elif pattern == r'(\d{4})/(\d{1,2})/(\d{1,2})':
+                                year, month, day = match.groups()
+                            
+                            # Validate date
+                            from datetime import datetime
+                            dt = datetime(int(year), int(month), int(day))
+                            extracted_date = dt.strftime('%Y-%m-%d')
+                            print(f"DEBUG: Found date '{extracted_date}' in cell [{i},{j}]: '{cell_value}'")
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                if extracted_date:
+                    break
+            if extracted_date:
+                break
         
         # Extract table metadata (first few rows before data)
         table_metadata = {
             'table_name': f"{key} - {entity_name}",
             'sheet_name': sheet_name,
+            'date': extracted_date,
             'currency_info': currency_info,
             'multiplier': multiplier,
             'value_column': value_col_name,
@@ -555,6 +645,15 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
         description_col_idx = 0  # Usually first column
         data_rows = []
         
+        # Debug: Print the DataFrame to understand the structure
+        print(f"DEBUG: DataFrame shape: {df_str.shape}")
+        print(f"DEBUG: DataFrame columns: {df_str.columns.tolist()}")
+        print(f"DEBUG: Data start row: {data_start_row}")
+        print(f"DEBUG: Value column index: {value_col_idx}")
+        print(f"DEBUG: First few rows:")
+        for i in range(min(10, len(df_str))):
+            print(f"  Row {i}: {df_str.iloc[i].tolist()}")
+        
         for i in range(data_start_row, len(df_str)):
             description = str(df_str.iloc[i, description_col_idx]).strip()
             value_str = str(df_str.iloc[i, value_col_idx]).strip()
@@ -563,32 +662,118 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
             if not description or description.lower() in ['nan', '']:
                 continue
             
-            # Extract numeric value
+            # Skip currency/date header rows that shouldn't be treated as data
+            skip_patterns = [
+                r"CNY'000", r"USD'000", r"'000", r"thousands", r"thousand",
+                r"millions", r"million", r"'000,000",
+                r"\d{4}-\d{1,2}-\d{1,2}",  # Date patterns
+                r"\d{1,2}/\d{1,2}/\d{4}",
+                r"\d{1,2}-\d{1,2}-\d{4}",
+                r"\d{4}/\d{1,2}/\d{1,2}",
+                r"indicative adjusted"
+            ]
+            
+            # Check if this row should be skipped
+            should_skip = False
+            for pattern in skip_patterns:
+                if re.search(pattern, description.lower()) or re.search(pattern, value_str.lower()):
+                    should_skip = True
+                    print(f"DEBUG: Skipping row - Description: '{description}', Value: '{value_str}' (matches pattern: {pattern})")
+                    break
+            
+            if should_skip:
+                continue
+            
+            # Extract numeric value - be more flexible
             value = 0
             if re.search(r'\d', value_str):
-                # Remove commas and extract number
+                # Remove commas and extract number - handle more formats
                 clean_value = re.sub(r'[^\d.-]', '', value_str.replace(',', ''))
                 try:
                     value = float(clean_value) * multiplier  # Apply multiplier
                 except ValueError:
-                    value = 0
+                    # Try to extract just the numeric part
+                    numeric_match = re.search(r'[\d,]+\.?\d*', value_str.replace(',', ''))
+                    if numeric_match:
+                        try:
+                            value = float(numeric_match.group()) * multiplier
+                        except ValueError:
+                            value = 0
+                    else:
+                        value = 0
             
-            if description and (value != 0 or description.lower() not in ['total', 'subtotal']):
+            # Include rows with descriptions even if value is 0 (for debugging)
+            if description and description.lower() not in ['nan']:
+                # Include total rows but mark them
+                is_total = description.lower() in ['total', 'subtotal']
                 data_rows.append({
                     'description': description,
                     'value': value,
-                    'original_value': value_str
+                    'original_value': value_str,
+                    'is_total': is_total
                 })
+                print(f"DEBUG: Added row - Description: '{description}', Value: {value}, Original: '{value_str}', IsTotal: {is_total}")
+        
+        print(f"DEBUG: Total data rows extracted: {len(data_rows)}")
         
         return {
             'metadata': table_metadata,
             'data': data_rows,
-            'raw_df': df
+            'raw_df': df_clean  # Use cleaned DataFrame
         }
         
     except Exception as e:
         print(f"Error parsing accounting table: {e}")
         return None
+
+def format_date_to_dd_mmm_yyyy(date_str):
+    """Convert date string to dd-mmm-yyyy format"""
+    import re
+    from datetime import datetime
+    
+    if not date_str or str(date_str).lower() in ['nan', 'none', 'unknown']:
+        return 'Unknown'
+    
+    date_str = str(date_str).strip()
+    
+    # Common date patterns
+    patterns = [
+        # YYYY-MM-DD HH:MM:SS
+        r'(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+\d{1,2}:\d{1,2}:\d{1,2})?',
+        # DD/MM/YYYY or MM/DD/YYYY
+        r'(\d{1,2})/(\d{1,2})/(\d{4})',
+        # DD-MM-YYYY
+        r'(\d{1,2})-(\d{1,2})-(\d{4})',
+        # YYYY/MM/DD
+        r'(\d{4})/(\d{1,2})/(\d{1,2})',
+    ]
+    
+    for pattern in patterns:
+        match = re.match(pattern, date_str)
+        if match:
+            try:
+                if len(match.groups()) == 3:
+                    if pattern == r'(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+\d{1,2}:\d{1,2}:\d{1,2})?':
+                        # YYYY-MM-DD format
+                        year, month, day = match.groups()
+                    elif pattern == r'(\d{1,2})/(\d{1,2})/(\d{4})':
+                        # DD/MM/YYYY or MM/DD/YYYY - assume DD/MM/YYYY
+                        day, month, year = match.groups()
+                    elif pattern == r'(\d{1,2})-(\d{1,2})-(\d{4})':
+                        # DD-MM-YYYY
+                        day, month, year = match.groups()
+                    elif pattern == r'(\d{4})/(\d{1,2})/(\d{1,2})':
+                        # YYYY/MM/DD
+                        year, month, day = match.groups()
+                    
+                    # Create datetime object and format
+                    dt = datetime(int(year), int(month), int(day))
+                    return dt.strftime('%d-%b-%Y')
+            except (ValueError, TypeError):
+                continue
+    
+    # If no pattern matches, return original
+    return date_str
 
 def create_improved_table_markdown(parsed_table):
     """Create improved markdown representation of parsed accounting table"""
@@ -604,6 +789,11 @@ def create_improved_table_markdown(parsed_table):
         markdown_lines.append(f"**{metadata['table_name']}**")
         markdown_lines.append(f"*Sheet: {metadata['sheet_name']}*")
         
+        # Format date if present
+        if metadata.get('date'):
+            formatted_date = format_date_to_dd_mmm_yyyy(metadata['date'])
+            markdown_lines.append(f"*Date: {formatted_date}*")
+        
         if metadata.get('currency_info'):
             markdown_lines.append(f"*Currency: {metadata['currency_info']}*")
         
@@ -618,14 +808,21 @@ def create_improved_table_markdown(parsed_table):
             for row in data_rows:
                 description = row['description']
                 value = row['value']
+                is_total = row.get('is_total', False)
                 
-                # Format value appropriately
-                if value >= 1000000:
-                    formatted_value = f"{value/1000000:.1f}M"
-                elif value >= 1000:
-                    formatted_value = f"{value/1000:.1f}K"
+                # Use actual multiplied values with formatting
+                actual_value = value  # This is already multiplied by the multiplier
+                
+                # Format value with thousand separators and 2 decimal places
+                if isinstance(actual_value, (int, float)):
+                    formatted_value = f"{actual_value:,.2f}"
                 else:
-                    formatted_value = f"{value:.0f}"
+                    formatted_value = str(actual_value)
+                
+                # Add bold formatting for total rows
+                if is_total:
+                    description = f"**{description}**"
+                    formatted_value = f"**{formatted_value}**"
                 
                 markdown_lines.append(f"| {description} | {formatted_value} |")
         else:
@@ -1009,34 +1206,212 @@ def main():
                         sections = sections_by_key[key]
                         if sections:
                             first_section = sections[0]
-                            # Create a proper copy to avoid SettingWithCopyWarning
-                            df_clean = first_section['data'].dropna(axis=1, how='all').copy()
                             
-                            # Convert datetime columns to strings to avoid Arrow serialization issues
-                            for col in df_clean.columns:
-                                if df_clean[col].dtype == 'object':
-                                    # Convert any datetime-like objects to strings
-                                    try:
-                                        # First try to convert to string directly
-                                        df_clean.loc[:, col] = df_clean[col].astype(str)
-                                    except:
-                                        # If that fails, handle datetime objects specifically
-                                        df_clean.loc[:, col] = df_clean[col].map(
-                                            lambda x: str(x) if pd.notna(x) and not pd.isna(x) else ''
-                                        )
-                                elif 'datetime' in str(df_clean[col].dtype):
-                                    # Handle datetime columns specifically
-                                    df_clean.loc[:, col] = df_clean[col].dt.strftime('%Y-%m-%d %H:%M:%S').fillna('')
+                            # Check if we have structured data available
+                            if 'parsed_data' in first_section and first_section['parsed_data']:
+                                # Use structured data
+                                parsed_data = first_section['parsed_data']
+                                metadata = parsed_data['metadata']
+                                data_rows = parsed_data['data']
+                                
+                                # Display metadata horizontally to save space
+                                col1, col2, col3, col4, col5, col6 = st.columns(6)
+                                with col1:
+                                    st.markdown(f"**Table:** {metadata['table_name']}")
+                                with col2:
+                                    if metadata.get('date'):
+                                        formatted_date = format_date_to_dd_mmm_yyyy(metadata['date'])
+                                        st.markdown(f"**Date:** {formatted_date}")
+                                    else:
+                                        st.markdown("**Date:** Unknown")
+                                with col3:
+                                    st.markdown(f"**Currency:** {metadata['currency_info']}")
+                                with col4:
+                                    st.markdown(f"**Multiplier:** {metadata['multiplier']}x")
+                                with col5:
+                                    st.markdown(f"**Value Column:** {metadata['value_column']}")
+                                with col6:
+                                    if first_section.get('entity_match', False):
+                                        st.markdown("**Entity:** ✅")
+                                    else:
+                                        st.markdown("**Entity:** ⚠️")
+                                
+                                # Display structured data as a clean table
+                                if data_rows:
+                                    structured_data = []
+                                    for row in data_rows:
+                                        description = row['description']
+                                        value = row['value']
+                                        
+                                        # Use actual multiplied values with formatting
+                                        actual_value = value  # This is already multiplied by the multiplier
+                                        
+                                        # Format value with thousand separators and 2 decimal places
+                                        if isinstance(actual_value, (int, float)):
+                                            formatted_value = f"{actual_value:,.2f}"
+                                        else:
+                                            formatted_value = str(actual_value)
+                                        
+                                        structured_data.append({
+                                            'Description': description,
+                                            'Value': formatted_value
+                                        })
+                                    
+                                    df_structured = pd.DataFrame(structured_data)
+                                    
+                                    # Clean up the display - show only Description and Value columns
+                                    display_df = df_structured[['Description', 'Value']].copy()
+                                    
+                                    # Highlight total rows with theme-appropriate styling
+                                    def highlight_totals(row):
+                                        if row['Description'].lower() in ['total', 'subtotal']:
+                                            # Use a subtle highlight that works with both light and dark themes
+                                            # Light blue tint with low opacity works well in both themes
+                                            return ['background-color: rgba(173, 216, 230, 0.3)'] * len(row)
+                                        return [''] * len(row)  # Let theme handle default background
+                                    
+                                    styled_df = display_df.style.apply(highlight_totals, axis=1)
+                                    st.dataframe(styled_df, use_container_width=True)
+                                    
+                                    # Show structured markdown
+                                    with st.expander(f"📋 Structured Markdown", expanded=False):
+                                        st.code(first_section.get('markdown', 'No markdown available'), language='markdown')
+                                else:
+                                    st.info("No structured data rows found")
+                                    st.write(f"**Financial Data for {key}:**")
+                                    
+                                    # Try to use parsed data structure even if no rows were extracted
+                                    if 'parsed_data' in first_section and first_section['parsed_data']:
+                                        parsed_data = first_section['parsed_data']
+                                        metadata = parsed_data['metadata']
+                                        
+                                        # Display metadata horizontally
+                                        col1, col2, col3, col4, col5, col6 = st.columns(6)
+                                        with col1:
+                                            st.markdown(f"**Table:** {metadata['table_name']}")
+                                        with col2:
+                                            if metadata.get('date'):
+                                                formatted_date = format_date_to_dd_mmm_yyyy(metadata['date'])
+                                                st.markdown(f"**Date:** {formatted_date}")
+                                            else:
+                                                st.markdown("**Date:** Unknown")
+                                        with col3:
+                                            st.markdown(f"**Currency:** {metadata['currency_info']}")
+                                        with col4:
+                                            st.markdown(f"**Multiplier:** {metadata['multiplier']}x")
+                                        with col5:
+                                            st.markdown(f"**Value Column:** {metadata['value_column']}")
+                                        with col6:
+                                            if first_section.get('entity_match', False):
+                                                st.markdown("**Entity:** ✅")
+                                            else:
+                                                st.markdown("**Entity:** ⚠️")
+                                        
+                                        # Clean and display the raw DataFrame with proper column names
+                                        raw_df = first_section['data'].copy()
+                                        
+                                        # Remove columns that are all None/NaN
+                                        for col in list(raw_df.columns):
+                                            if raw_df[col].isna().all() or (raw_df[col].astype(str) == 'None').all():
+                                                raw_df = raw_df.drop(columns=[col])
+                                                print(f"DEBUG: Removed all-NaN column: {col}")
+                                        
+                                        # Rename columns to be more descriptive
+                                        if len(raw_df.columns) >= 2:
+                                            new_column_names = [f"{key} (Description)", f"{key} (Balance)"]
+                                            if len(raw_df.columns) > 2:
+                                                for i in range(2, len(raw_df.columns)):
+                                                    new_column_names.append(f"{key} (Column {i+1})")
+                                            raw_df.columns = new_column_names
+                                        elif len(raw_df.columns) == 1:
+                                            raw_df.columns = [f"{key} (Description)"]
+                                        
+                                        # Display the cleaned DataFrame
+                                        if len(raw_df.columns) > 0:
+                                            st.dataframe(raw_df, use_container_width=True)
+                                            
+                                            # Create structured markdown for AI prompts
+                                            markdown_lines = []
+                                            markdown_lines.append(f"## {metadata['table_name']}")
+                                            markdown_lines.append(f"**Entity:** {metadata['table_name'].split(' - ')[-1] if ' - ' in metadata['table_name'] else 'Unknown'}")
+                                            
+                                            # Format date if present
+                                            if metadata.get('date'):
+                                                formatted_date = format_date_to_dd_mmm_yyyy(metadata['date'])
+                                                markdown_lines.append(f"**Date:** {formatted_date}")
+                                            else:
+                                                markdown_lines.append(f"**Date:** {metadata.get('data_start_row', 'Unknown')}")
+                                            
+                                            markdown_lines.append(f"**Currency:** {metadata['currency_info']}")
+                                            markdown_lines.append(f"**Multiplier:** {metadata['multiplier']}")
+                                            markdown_lines.append("")
+                                            
+                                            # Add data rows with actual values
+                                            for _, row in raw_df.iterrows():
+                                                description = str(row.iloc[0]) if len(row) > 0 else ""
+                                                if len(row) > 1:
+                                                    value = str(row.iloc[1])
+                                                    # Try to convert to numeric and apply multiplier if it's a number
+                                                    try:
+                                                        numeric_value = float(value.replace(',', ''))
+                                                        # Apply multiplier from metadata if available
+                                                        if 'multiplier' in metadata:
+                                                            actual_value = numeric_value * metadata['multiplier']
+                                                            # Format with thousand separators and 2 decimal places
+                                                            if isinstance(actual_value, (int, float)):
+                                                                value = f"{actual_value:,.2f}"
+                                                            else:
+                                                                value = str(actual_value)
+                                                    except (ValueError, AttributeError):
+                                                        # Keep original value if not numeric
+                                                        pass
+                                                    
+                                                    if description and description.lower() not in ['nan', 'none', '']:
+                                                        markdown_lines.append(f"- {description}: {value}")
+                                            
+                                            markdown_lines.append("")
+                                            
+                                            # Show the structured markdown
+                                            with st.expander(f"📋 Structured Data for AI", expanded=False):
+                                                st.code('\n'.join(markdown_lines), language='markdown')
+                                        else:
+                                            st.error("No valid data columns found after cleaning")
+                                    
+                                    else:
+                                        # Fallback to original cleaning logic if no parsed data
+                                        raw_df = first_section['data'].copy()
+                                        
+                                        # Remove columns that are all None/NaN
+                                        for col in list(raw_df.columns):
+                                            if raw_df[col].isna().all() or (raw_df[col].astype(str) == 'None').all():
+                                                raw_df = raw_df.drop(columns=[col])
+                                                print(f"DEBUG: Removed all-NaN column: {col}")
+                                        
+                                        # Rename columns to be more descriptive
+                                        if len(raw_df.columns) >= 2:
+                                            new_column_names = [f"{key} (Description)", f"{key} (Balance)"]
+                                            if len(raw_df.columns) > 2:
+                                                for i in range(2, len(raw_df.columns)):
+                                                    new_column_names.append(f"{key} (Column {i+1})")
+                                            raw_df.columns = new_column_names
+                                        elif len(raw_df.columns) == 1:
+                                            raw_df.columns = [f"{key} (Description)"]
+                                        
+                                        if len(raw_df.columns) > 0:
+                                            st.dataframe(raw_df, use_container_width=True)
+                                        else:
+                                            st.error("No valid columns found after cleaning")
+                                            st.write("**Original DataFrame:**")
+                                            st.dataframe(first_section['data'], use_container_width=True)
+                                    
+                                    # Also show the parsed data structure for debugging
+                                    if 'parsed_data' in first_section:
+                                        with st.expander("🔍 Debug: Parsed Data Structure", expanded=False):
+                                            st.json(first_section['parsed_data'])
+                                
+                            # Note: The fallback logic is now handled in the "else" block above
+                            # This ensures we always use the improved DataFrame cleaning and markdown generation
                             
-                            if first_section.get('entity_match', False):
-                                st.markdown("**First Section:** ✅ Entity Match")
-                            else:
-                                st.markdown("**First Section:** ⚠️ No Entity Match")
-                            st.dataframe(df_clean, use_container_width=True)
-                            from tabulate import tabulate
-                            markdown_table = tabulate(df_clean, headers='keys', tablefmt='pipe', showindex=False)
-                            with st.expander(f"📋 Markdown Table - First Section", expanded=False):
-                                st.code(markdown_table, language='markdown')
                             st.info(f"**Source Sheet:** {first_section['sheet']}")
                             st.markdown("---")
                         else:
@@ -2721,6 +3096,16 @@ def run_agent_1(filtered_keys, ai_data):
                     - If data is missing for a pattern, select a different pattern that has complete data
                     - Never output JSON structure or pattern formatting
                     """
+                
+                # Add entity placeholder instructions to system prompt
+                actual_system_prompt += f"""
+
+IMPORTANT ENTITY INSTRUCTIONS:
+- Replace all [ENTITY_NAME] placeholders with the actual entity name from the provided financial data
+- Use the exact entity name as shown in the financial data tables (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
+- Do not use the reporting entity name ({entity_name}) unless it matches the entity in the financial data
+- Ensure all entity references in your analysis are accurate according to the provided data
+"""
             except Exception as e:
                 actual_system_prompt = "Error loading prompts.json"
                 print(f"Error loading prompts: {e}")
@@ -2730,10 +3115,10 @@ def run_agent_1(filtered_keys, ai_data):
             
             # Log Agent 1 input for all keys with actual prompts
             for key in filtered_keys:
-                # Get the actual table data for this key
+                # Get the actual table data for this key with proper cleaning
                 key_sections = sections_by_key.get(key, [])
-                # Convert sections to strings if they're dictionaries or DataFrames
                 key_sections_str = []
+                
                 for section in key_sections:
                     if isinstance(section, dict):
                         # Handle dict serialization
@@ -2742,9 +3127,15 @@ def run_agent_1(filtered_keys, ai_data):
                         except:
                             key_sections_str.append(str(section))
                     elif hasattr(section, 'to_string'):  # DataFrame
-                        # Clean DataFrame output to avoid empty cells
-                        df_str = section.to_string(index=False, na_rep='')
-                        # Remove rows with all empty values
+                        # Clean the DataFrame first - remove columns that are all None/NaN
+                        df = section.copy()
+                        for col in list(df.columns):
+                            if df[col].isna().all() or (df[col].astype(str) == 'None').all():
+                                df = df.drop(columns=[col])
+                                print(f"DEBUG: Removed all-NaN column {col} for AI prompt")
+                        
+                        # Convert to string with proper formatting
+                        df_str = df.to_string(index=False, na_rep='')
                         lines = df_str.split('\n')
                         cleaned_lines = []
                         for line in lines:
@@ -2754,6 +3145,7 @@ def run_agent_1(filtered_keys, ai_data):
                         key_sections_str.append('\n'.join(cleaned_lines))
                     else:
                         key_sections_str.append(str(section))
+                
                 key_tables = "\n".join(key_sections_str) if key_sections_str else "No table data available"
                 
                 # Build the actual user prompt that matches what gets sent to AI
@@ -2787,12 +3179,15 @@ def run_agent_1(filtered_keys, ai_data):
                 - No template structure
                 - No JSON formatting
                 - Replace ALL 'xxx' or placeholders with actual data values
+                - Replace ALL [ENTITY_NAME] placeholders with the actual entity name from the DATA SOURCE
+                - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
                 - Do not use bullet point for listing
                 - Apply proper K/M conversion with 1 decimal place for all figures
                 - No foreign contents, if any, translate to English
                 - Stick to Template format, no extra explanations or comments
                 - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
                 - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
+                - Ensure all financial figures mentioned match the actual values from the DATA SOURCE
                 """
                 
                 context_data = {
@@ -3054,7 +3449,7 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
             # Process only keys with available content
             for i, key in enumerate(available_keys):
                 # Update progress with key-level detail
-                update_progress(0.6, f"🔍 AI2: Validating data", 'agent2', key, len(available_keys), i)
+                st.write(f"🔍 AI2: Validating data for {key} ({i+1}/{len(available_keys)})")
                 
                 start_time = time.time()
                 
