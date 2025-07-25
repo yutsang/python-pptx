@@ -1,6 +1,6 @@
 {
   "system_prompts": {
-    "Agent 1": "You are a content generation specialist for financial reports. Your role is to generate comprehensive financial analysis content based on worksheet data and predefined patterns. Focus on:\n1. Content generation using patterns from pattern.json\n2. Integration of actual worksheet data into narrative content\n3. Professional financial writing suitable for audit reports\n4. Consistent formatting and structure\n5. Clear, accurate descriptions of financial positions",
+    "Agent 1": "You are a content generation specialist for financial reports. Your role is to generate comprehensive financial analysis content based on worksheet data and predefined patterns. Focus on:\n1. Content generation using patterns from pattern.json\n2. Integration of actual worksheet data into narrative content\n3. Professional financial writing suitable for audit reports\n4. Consistent formatting and structure\n5. Clear, accurate descriptions of financial positions\n6. Replace all entity placeholders (e.g., [ENTITY_NAME], [COMPANY_NAME]) with the actual entity name from the provided financial data tables\n7. Use the exact entity name as shown in the financial data tables (e.g., 'Haining Wanpu', 'Ningbo Wanchen')",
     
     "Agent 2": "You are a data integrity specialist for financial statements. Your role is to validate and verify the integrity of balance sheet data against worksheet content. Focus on:\n1. Data validation and consistency checks\n2. Balance sheet item verification\n3. Cross-referencing worksheet data with financial statements\n4. Identification of data discrepancies and anomalies\n5. Quality assurance of financial data accuracy",
     
@@ -9,22 +9,22 @@
   
   "user_prompts": {
     "Cash": {
-      "title": "Cash Analysis",
-      "description": "Generate content for Cash using worksheet data and patterns",
+      "title": "Cash Analysis for [ENTITY_NAME]",
+      "description": "Generate content for Cash using worksheet data and patterns for [ENTITY_NAME]",
       "analysis_points": [
-        "Current Balance: Review the current cash balance and composition",
-        "Bank Accounts: Identify major bank accounts and their balances",
-        "Cash Flow: Assess cash flow patterns and liquidity",
-        "Risk Assessment: Evaluate cash management risks",
-        "Business Impact: Consider the impact on business operations"
+        "Current Balance: Review the current cash balance and composition for [ENTITY_NAME]",
+        "Bank Accounts: Identify major bank accounts and their balances for [ENTITY_NAME]",
+        "Cash Flow: Assess cash flow patterns and liquidity for [ENTITY_NAME]",
+        "Risk Assessment: Evaluate cash management risks for [ENTITY_NAME]",
+        "Business Impact: Consider the impact on business operations for [ENTITY_NAME]"
       ],
-      "key_questions": [
-        "What is the current cash balance and its composition?",
-        "How has cash changed over time?",
-        "What are the key risks and considerations?",
-        "How does this impact business operations?",
-        "What are the future expectations?"
-      ],
+              "key_questions": [
+          "What is the current cash balance and its composition for [ENTITY_NAME]?",
+          "How has cash changed over time for [ENTITY_NAME]?",
+          "What are the key risks and considerations for [ENTITY_NAME]?",
+          "How does this impact business operations for [ENTITY_NAME]?",
+          "What are the future expectations for [ENTITY_NAME]?"
+        ],
       "data_sources": [
         "Financial statements",
         "Bank reconciliations",
@@ -34,22 +34,22 @@
     },
     
     "AR": {
-      "title": "Accounts Receivable Analysis",
-      "description": "Analyze the accounts receivable position",
+      "title": "Accounts Receivable Analysis for [ENTITY_NAME]",
+      "description": "Analyze the accounts receivable position for [ENTITY_NAME]",
       "analysis_points": [
-        "Receivable Balance: Review the total accounts receivable balance and aging profile",
-        "Customer Analysis: Identify major customers, their payment terms, and credit risk assessment",
-        "Aging Analysis: Assess the aging of receivables and potential credit risk exposure",
-        "Bad Debt Provision: Evaluate the adequacy of bad debt provisions and methodology",
-        "Collection Performance: Analyze collection efficiency, trends, and days sales outstanding"
+        "Receivable Balance: Review the total accounts receivable balance and aging profile for [ENTITY_NAME]",
+        "Customer Analysis: Identify major customers, their payment terms, and credit risk assessment for [ENTITY_NAME]",
+        "Aging Analysis: Assess the aging of receivables and potential credit risk exposure for [ENTITY_NAME]",
+        "Bad Debt Provision: Evaluate the adequacy of bad debt provisions and methodology for [ENTITY_NAME]",
+        "Collection Performance: Analyze collection efficiency, trends, and days sales outstanding for [ENTITY_NAME]"
       ],
-      "key_questions": [
-        "What is the composition of accounts receivable by customer and aging?",
-        "Who are the major customers and what are their payment terms?",
-        "What is the aging profile of receivables and potential credit risk?",
-        "Is the bad debt provision adequate based on historical experience?",
-        "How does collection performance compare to industry standards?"
-      ],
+              "key_questions": [
+          "What is the composition of accounts receivable by customer and aging for [ENTITY_NAME]?",
+          "Who are the major customers and what are their payment terms for [ENTITY_NAME]?",
+          "What is the aging profile of receivables and potential credit risk for [ENTITY_NAME]?",
+          "Is the bad debt provision adequate based on historical experience for [ENTITY_NAME]?",
+          "How does collection performance compare to industry standards for [ENTITY_NAME]?"
+        ],
       "data_sources": [
         "Aged receivables reports",
         "Customer master data",
@@ -59,22 +59,22 @@
     },
     
     "AP": {
-      "title": "Accounts Payable Analysis",
-      "description": "Analyze the accounts payable position",
+      "title": "Accounts Payable Analysis for [ENTITY_NAME]",
+      "description": "Analyze the accounts payable position for [ENTITY_NAME]",
       "analysis_points": [
-        "Payable Balance: Review the total accounts payable balance and aging profile",
-        "Supplier Analysis: Identify major suppliers, their payment terms, and relationship assessment",
-        "Aging Analysis: Assess the aging of payables and payment timing compliance",
-        "Payment Performance: Analyze payment efficiency, trends, and days payable outstanding",
-        "Working Capital Impact: Evaluate the impact on working capital and cash flow management"
+        "Payable Balance: Review the total accounts payable balance and aging profile for [ENTITY_NAME]",
+        "Supplier Analysis: Identify major suppliers, their payment terms, and relationship assessment for [ENTITY_NAME]",
+        "Aging Analysis: Assess the aging of payables and payment timing compliance for [ENTITY_NAME]",
+        "Payment Performance: Analyze payment efficiency, trends, and days payable outstanding for [ENTITY_NAME]",
+        "Working Capital Impact: Evaluate the impact on working capital and cash flow management for [ENTITY_NAME]"
       ],
-      "key_questions": [
-        "What is the composition of accounts payable by supplier and aging?",
-        "Who are the major suppliers and what are their payment terms?",
-        "What is the aging profile of payables and compliance with payment terms?",
-        "How does payment performance compare to terms and industry standards?",
-        "What is the impact on working capital management and cash flow?"
-      ],
+              "key_questions": [
+          "What is the composition of accounts payable by supplier and aging for [ENTITY_NAME]?",
+          "Who are the major suppliers and what are their payment terms for [ENTITY_NAME]?",
+          "What is the aging profile of payables and compliance with payment terms for [ENTITY_NAME]?",
+          "How does payment performance compare to terms and industry standards for [ENTITY_NAME]?",
+          "What is the impact on working capital management and cash flow for [ENTITY_NAME]?"
+        ],
       "data_sources": [
         "Aged payables reports",
         "Supplier master data",
@@ -85,21 +85,21 @@
   },
   
   "generic_prompt": {
-    "title": "Generic Financial Analysis",
-    "description": "Analyze the financial position",
+    "title": "Generic Financial Analysis for [ENTITY_NAME]",
+    "description": "Analyze the financial position for [ENTITY_NAME]",
     "analysis_points": [
-      "Current Balance: Review the current balance and composition",
-      "Trend Analysis: Assess historical trends and changes",
-      "Risk Assessment: Evaluate any associated risks",
-      "Business Impact: Consider the impact on business operations",
-      "Future Outlook: Assess future expectations and plans"
+      "Current Balance: Review the current balance and composition for [ENTITY_NAME]",
+      "Trend Analysis: Assess historical trends and changes for [ENTITY_NAME]",
+      "Risk Assessment: Evaluate any associated risks for [ENTITY_NAME]",
+      "Business Impact: Consider the impact on business operations for [ENTITY_NAME]",
+      "Future Outlook: Assess future expectations and plans for [ENTITY_NAME]"
     ],
     "key_questions": [
-      "What is the current balance and its composition?",
-      "How has this changed over time?",
-      "What are the key risks and considerations?",
-      "How does this impact business operations?",
-      "What are the future expectations?"
+      "What is the current balance and its composition for [ENTITY_NAME]?",
+      "How has this changed over time for [ENTITY_NAME]?",
+      "What are the key risks and considerations for [ENTITY_NAME]?",
+      "How does this impact business operations for [ENTITY_NAME]?",
+      "What are the future expectations for [ENTITY_NAME]?"
     ],
     "data_sources": [
       "Financial statements",

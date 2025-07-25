@@ -634,9 +634,12 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             OUTPUT REQUIREMENTS:
             - Choose the most suitable single pattern based on available data
             - Replace all placeholders with actaul figures from databook
+            - Replace all [ENTITY_NAME] placeholders with the actual entity name from the provided financial data
+            - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
             - Output ONLY the final text - no pattern names, no template structure, no explanations
             - If data is missing for a pattern, select a different pattern that has complete data
             - Never output JSON structure or pattern formatting
+            - Ensure all entity references in your analysis are accurate according to the provided data
             """
     except (FileNotFoundError, json.JSONDecodeError) as e:
         print(f"⚠️ Could not load prompts from {prompts_file}: {e}")
@@ -656,9 +659,12 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         OUTPUT REQUIREMENTS:
         - Choose the most suitable single pattern based on available data
         - Replace all placeholders with actaul figures from databook
+        - Replace all [ENTITY_NAME] placeholders with the actual entity name from the provided financial data
+        - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
         - Output ONLY the final text - no pattern names, no template structure, no explanations
         - If data is missing for a pattern, select a different pattern that has complete data
         - Never output JSON structure or pattern formatting
+        - Ensure all entity references in your analysis are accurate according to the provided data
         """
     
     # Initialize financial figures without pre-processing (will check '000 per key)
@@ -725,12 +731,15 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         - No template structure
         - No JSON formatting
         - Replace ALL 'xxx' or placeholders with actual data values
+        - Replace ALL [ENTITY_NAME] placeholders with the actual entity name from the DATA SOURCE
+        - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
         - Do not use bullet point for listing
         - Apply proper K/M conversion with 1 decimal place for all figures
         - No foreign contents, if any, translate to English
         - Stick to Template format, no extra explanations or comments
         - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
         - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
+        - Ensure all financial figures mentioned match the actual values from the DATA SOURCE
         """
         
         # Example formats for consistent output
