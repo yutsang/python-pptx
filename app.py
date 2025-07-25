@@ -575,70 +575,52 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
         
         # If no specific column found, use the rightmost column with numbers
         if value_col_idx is None:
+            candidate_cols = []
             for j in range(len(df_str.columns) - 1, -1, -1):
                 column_data = df_str.iloc[:, j]
-                
-                # Skip Excel-generated row number columns
                 column_name = str(df_str.columns[j]).lower()
+                # Exclude Excel-generated or index columns
                 if any(skip_name in column_name for skip_name in ['column1', 'unnamed', 'index']):
                     print(f"DEBUG: Skipping column {j} '{df_str.columns[j]}' - appears to be Excel-generated")
                     continue
-                
-                # Check if column contains mostly numbers
-                numeric_count = 0
-                total_cells = 0
+                # Check if column is strictly sequential (row numbers)
                 numeric_values = []
                 for cell in column_data:
                     cell_str = str(cell).strip()
                     if cell_str and cell_str.lower() not in ['nan', '']:
-                        total_cells += 1
-                        # Check if it's a valid financial number (not just any number)
-                        if re.search(r'^\d+\.?\d*$', cell_str.replace(',', '')):
-                            numeric_count += 1
+                        if re.fullmatch(r'\d+', cell_str.replace(',', '')):
                             try:
-                                numeric_values.append(float(cell_str.replace(',', '')))
+                                numeric_values.append(int(cell_str.replace(',', '')))
                             except ValueError:
                                 pass
-                
-                # Only consider columns with meaningful financial data
-                if total_cells > 0 and numeric_count >= total_cells * 0.3:  # At least 30% are valid financial numbers
-                    # Additional checks to exclude row number columns
-                    if numeric_values:
-                        # Check if this looks like row numbers (sequential, small numbers)
-                        sorted_values = sorted(numeric_values)
-                        is_sequential = True
-                        has_large_numbers = False
-                        
-                        # Check if numbers are sequential (like 1, 2, 3, 4...)
-                        for i in range(1, min(5, len(sorted_values))):
-                            if abs(sorted_values[i] - sorted_values[i-1] - 1) > 0.1:
-                                is_sequential = False
-                                break
-                        
-                        # Check if there are any large numbers (financial values)
-                        for val in numeric_values:
-                            if val > 100:
-                                has_large_numbers = True
-                                break
-                        
-                        # Skip if it looks like row numbers (sequential and no large numbers)
-                        if is_sequential and not has_large_numbers:
-                            print(f"DEBUG: Skipping column {j} - appears to be row numbers: {sorted_values[:5]}")
-                            continue
-                        
-                        # Skip if all numbers are very small (likely row numbers)
-                        if max(numeric_values) < 10:
-                            print(f"DEBUG: Skipping column {j} - all numbers too small: {sorted_values[:5]}")
-                            continue
-                    
-                    # If we get here, this looks like a real financial data column
-                    value_col_idx = j
-                    value_col_name = f"Column {j+1}"
-                    print(f"DEBUG: Selected value column {j} with {numeric_count}/{total_cells} numeric cells, sample values: {numeric_values[:5]}")
-                    break
-        
-        if value_col_idx is None:
-            return None
+                if len(numeric_values) >= 2:
+                    diffs = [numeric_values[i+1] - numeric_values[i] for i in range(len(numeric_values)-1)]
+                    if all(d == 1 for d in diffs) or all(d == 0 for d in diffs):
+                        print(f"DEBUG: Skipping column {j} - strictly sequential numbers: {numeric_values[:5]}")
+                        continue
+                    # Also skip if all values are the same (e.g., all 1000)
+                    if len(set(numeric_values)) == 1:
+                        print(f"DEBUG: Skipping column {j} - all values identical: {numeric_values[0]}")
+                        continue
+                # Now check if this is a good candidate
+                numeric_count = 0
+                total_cells = 0
+                for cell in column_data:
+                    cell_str = str(cell).strip()
+                    if cell_str and cell_str.lower() not in ['nan', '']:
+                        total_cells += 1
+                        if re.search(r'^\d+\.?\d*$', cell_str.replace(',', '')):
+                            numeric_count += 1
+                if total_cells > 0 and numeric_count >= total_cells * 0.3:
+                    candidate_cols.append(j)
+            if candidate_cols:
+                # Pick the rightmost candidate
+                value_col_idx = candidate_cols[0]
+                value_col_name = f"Column {value_col_idx+1}"
+                print(f"DEBUG: Selected value column {value_col_idx} (rightmost non-row-number column)")
+            else:
+                print("DEBUG: No valid value column found after excluding row number/index columns.")
+                return None
         
         # Find where actual data starts (skip header rows)
         data_start_row = None
