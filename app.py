@@ -550,18 +550,44 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                 if "indicative adjusted" in cell_value:
                     value_col_idx = j
                     value_col_name = "Indicative adjusted"
+                    print(f"DEBUG: Found 'Indicative adjusted' in column {j}")
                     break
                 elif "total" in cell_value and value_col_idx is None:
                     value_col_idx = j
                     value_col_name = "Total"
+                    print(f"DEBUG: Found 'Total' in column {j}")
+        
+        # If still no specific column found, look for any column with financial data patterns
+        if value_col_idx is None:
+            for j in range(len(df_str.columns)):
+                column_data = df_str.iloc[:, j]
+                # Look for columns that contain financial data patterns
+                financial_patterns = ['amount', 'value', 'balance', 'figure', 'total', 'sum']
+                for i in range(min(3, len(df_str))):
+                    cell_value = str(df_str.iloc[i, j]).lower()
+                    if any(pattern in cell_value for pattern in financial_patterns):
+                        value_col_idx = j
+                        value_col_name = f"Financial Column {j+1}"
+                        print(f"DEBUG: Found financial pattern in column {j}: '{cell_value}'")
+                        break
+                if value_col_idx is not None:
+                    break
         
         # If no specific column found, use the rightmost column with numbers
         if value_col_idx is None:
             for j in range(len(df_str.columns) - 1, -1, -1):
                 column_data = df_str.iloc[:, j]
+                
+                # Skip Excel-generated row number columns
+                column_name = str(df_str.columns[j]).lower()
+                if any(skip_name in column_name for skip_name in ['column1', 'unnamed', 'index']):
+                    print(f"DEBUG: Skipping column {j} '{df_str.columns[j]}' - appears to be Excel-generated")
+                    continue
+                
                 # Check if column contains mostly numbers
                 numeric_count = 0
                 total_cells = 0
+                numeric_values = []
                 for cell in column_data:
                     cell_str = str(cell).strip()
                     if cell_str and cell_str.lower() not in ['nan', '']:
@@ -569,28 +595,47 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                         # Check if it's a valid financial number (not just any number)
                         if re.search(r'^\d+\.?\d*$', cell_str.replace(',', '')):
                             numeric_count += 1
+                            try:
+                                numeric_values.append(float(cell_str.replace(',', '')))
+                            except ValueError:
+                                pass
                 
                 # Only consider columns with meaningful financial data
                 if total_cells > 0 and numeric_count >= total_cells * 0.3:  # At least 30% are valid financial numbers
-                    # Additional check: make sure this isn't just row numbers or indices
-                    # Look for typical financial values (not just 1, 2, 3, etc.)
-                    has_large_numbers = False
-                    for cell in column_data:
-                        cell_str = str(cell).strip()
-                        if cell_str and re.search(r'^\d+\.?\d*$', cell_str.replace(',', '')):
-                            try:
-                                num_val = float(cell_str.replace(',', ''))
-                                if num_val > 100:  # Financial values are usually larger
-                                    has_large_numbers = True
-                                    break
-                            except ValueError:
-                                continue
+                    # Additional checks to exclude row number columns
+                    if numeric_values:
+                        # Check if this looks like row numbers (sequential, small numbers)
+                        sorted_values = sorted(numeric_values)
+                        is_sequential = True
+                        has_large_numbers = False
+                        
+                        # Check if numbers are sequential (like 1, 2, 3, 4...)
+                        for i in range(1, min(5, len(sorted_values))):
+                            if abs(sorted_values[i] - sorted_values[i-1] - 1) > 0.1:
+                                is_sequential = False
+                                break
+                        
+                        # Check if there are any large numbers (financial values)
+                        for val in numeric_values:
+                            if val > 100:
+                                has_large_numbers = True
+                                break
+                        
+                        # Skip if it looks like row numbers (sequential and no large numbers)
+                        if is_sequential and not has_large_numbers:
+                            print(f"DEBUG: Skipping column {j} - appears to be row numbers: {sorted_values[:5]}")
+                            continue
+                        
+                        # Skip if all numbers are very small (likely row numbers)
+                        if max(numeric_values) < 10:
+                            print(f"DEBUG: Skipping column {j} - all numbers too small: {sorted_values[:5]}")
+                            continue
                     
-                    if has_large_numbers:
-                        value_col_idx = j
-                        value_col_name = f"Column {j+1}"
-                        print(f"DEBUG: Selected value column {j} with {numeric_count}/{total_cells} numeric cells")
-                        break
+                    # If we get here, this looks like a real financial data column
+                    value_col_idx = j
+                    value_col_name = f"Column {j+1}"
+                    print(f"DEBUG: Selected value column {j} with {numeric_count}/{total_cells} numeric cells, sample values: {numeric_values[:5]}")
+                    break
         
         if value_col_idx is None:
             return None
