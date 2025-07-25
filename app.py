@@ -561,13 +561,36 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                 column_data = df_str.iloc[:, j]
                 # Check if column contains mostly numbers
                 numeric_count = 0
+                total_cells = 0
                 for cell in column_data:
-                    if re.search(r'\d+', str(cell)):
-                        numeric_count += 1
-                if numeric_count >= len(column_data) * 0.3:  # At least 30% numeric
-                    value_col_idx = j
-                    value_col_name = f"Column {j+1}"
-                    break
+                    cell_str = str(cell).strip()
+                    if cell_str and cell_str.lower() not in ['nan', '']:
+                        total_cells += 1
+                        # Check if it's a valid financial number (not just any number)
+                        if re.search(r'^\d+\.?\d*$', cell_str.replace(',', '')):
+                            numeric_count += 1
+                
+                # Only consider columns with meaningful financial data
+                if total_cells > 0 and numeric_count >= total_cells * 0.3:  # At least 30% are valid financial numbers
+                    # Additional check: make sure this isn't just row numbers or indices
+                    # Look for typical financial values (not just 1, 2, 3, etc.)
+                    has_large_numbers = False
+                    for cell in column_data:
+                        cell_str = str(cell).strip()
+                        if cell_str and re.search(r'^\d+\.?\d*$', cell_str.replace(',', '')):
+                            try:
+                                num_val = float(cell_str.replace(',', ''))
+                                if num_val > 100:  # Financial values are usually larger
+                                    has_large_numbers = True
+                                    break
+                            except ValueError:
+                                continue
+                    
+                    if has_large_numbers:
+                        value_col_idx = j
+                        value_col_name = f"Column {j+1}"
+                        print(f"DEBUG: Selected value column {j} with {numeric_count}/{total_cells} numeric cells")
+                        break
         
         if value_col_idx is None:
             return None
@@ -650,9 +673,26 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
         print(f"DEBUG: DataFrame columns: {df_str.columns.tolist()}")
         print(f"DEBUG: Data start row: {data_start_row}")
         print(f"DEBUG: Value column index: {value_col_idx}")
+        print(f"DEBUG: Value column name: {value_col_name}")
         print(f"DEBUG: First few rows:")
         for i in range(min(10, len(df_str))):
             print(f"  Row {i}: {df_str.iloc[i].tolist()}")
+        
+        # Debug: Show column analysis
+        print(f"DEBUG: Column analysis:")
+        for j in range(len(df_str.columns)):
+            column_data = df_str.iloc[:, j]
+            numeric_count = 0
+            total_cells = 0
+            sample_values = []
+            for cell in column_data:
+                cell_str = str(cell).strip()
+                if cell_str and cell_str.lower() not in ['nan', '']:
+                    total_cells += 1
+                    sample_values.append(cell_str)
+                    if re.search(r'^\d+\.?\d*$', cell_str.replace(',', '')):
+                        numeric_count += 1
+            print(f"  Column {j}: {numeric_count}/{total_cells} numeric, samples: {sample_values[:3]}")
         
         for i in range(data_start_row, len(df_str)):
             description = str(df_str.iloc[i, description_col_idx]).strip()
