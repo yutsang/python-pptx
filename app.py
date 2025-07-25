@@ -583,6 +583,11 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                 if any(skip_name in column_name for skip_name in ['column1', 'unnamed', 'index']):
                     print(f"DEBUG: Skipping column {j} '{df_str.columns[j]}' - appears to be Excel-generated")
                     continue
+                
+                # Additional check: skip if column name is a pure number
+                if re.match(r'^\d+\.?\d*$', column_name):
+                    print(f"DEBUG: Skipping column {j} '{df_str.columns[j]}' - column name is pure number")
+                    continue
                 # Check if column is strictly sequential (row numbers)
                 numeric_values = []
                 for cell in column_data:
@@ -605,14 +610,27 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                 # Now check if this is a good candidate
                 numeric_count = 0
                 total_cells = 0
+                large_numbers = 0
                 for cell in column_data:
                     cell_str = str(cell).strip()
                     if cell_str and cell_str.lower() not in ['nan', '']:
                         total_cells += 1
                         if re.search(r'^\d+\.?\d*$', cell_str.replace(',', '')):
                             numeric_count += 1
-                if total_cells > 0 and numeric_count >= total_cells * 0.3:
+                            # Check if it's a large number (likely financial data)
+                            try:
+                                num_val = float(cell_str.replace(',', ''))
+                                if num_val > 100:  # Skip small numbers like 1, 2, 3, 1000
+                                    large_numbers += 1
+                            except ValueError:
+                                pass
+                
+                # Only consider columns with significant large numbers
+                if total_cells > 0 and numeric_count >= total_cells * 0.3 and large_numbers >= 2:
                     candidate_cols.append(j)
+                    print(f"DEBUG: Column {j} is a good candidate - {large_numbers} large numbers out of {numeric_count} numeric values")
+                else:
+                    print(f"DEBUG: Column {j} rejected - {large_numbers} large numbers out of {numeric_count} numeric values")
             if candidate_cols:
                 # Pick the rightmost candidate
                 value_col_idx = candidate_cols[0]
@@ -631,8 +649,10 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                 # Check if this looks like a data row (has both description and value)
                 desc_cell = str(df_str.iloc[i, 0]).strip()
                 if desc_cell and desc_cell.lower() not in ['nan', '']:
-                    data_start_row = i
-                    break
+                    # Additional check: skip if the description is a pure number (like 1000, 1001, etc.)
+                    if not re.match(r'^\d+\.?\d*$', desc_cell):
+                        data_start_row = i
+                        break
         
         if data_start_row is None:
             # Fallback: start from row 2 if we have at least 3 rows
@@ -905,7 +925,6 @@ def create_improved_table_markdown(parsed_table):
     except Exception as e:
         return f"Error creating table markdown: {e}"
 
-@cached_function(ttl=1800)  # Cache for 30 minutes
 def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, debug=False):
     """
     Get worksheet sections organized by financial keys following the mapping
