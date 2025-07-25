@@ -734,7 +734,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         - Replace ALL [ENTITY_NAME] placeholders with the actual entity name from the DATA SOURCE
         - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
         - Do not use bullet point for listing
-        - Apply proper K/M conversion with 1 decimal place for all figures
+        - Use actual numerical values from the DATA SOURCE (do not convert to K/M format)
         - No foreign contents, if any, translate to English
         - Stick to Template format, no extra explanations or comments
         - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
