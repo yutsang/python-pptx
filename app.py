@@ -721,6 +721,17 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                         numeric_count += 1
             print(f"  Column {j}: {numeric_count}/{total_cells} numeric, samples: {sample_values[:3]}")
         
+        # Skip currency/date header rows that shouldn't be treated as data
+        skip_patterns = [
+            r"CNY'000", r"USD'000", r"'000", r"thousands", r"thousand",
+            r"millions", r"million", r"'000,000",
+            r"\d{4}-\d{1,2}-\d{1,2}",  # Date patterns
+            r"\d{1,2}/\d{1,2}/\d{4}",
+            r"\d{1,2}-\d{1,2}-\d{4}",
+            r"\d{4}/\d{1,2}/\d{1,2}",
+            r"indicative adjusted"
+        ]
+        
         for i in range(data_start_row, len(df_str)):
             description = str(df_str.iloc[i, description_col_idx]).strip()
             value_str = str(df_str.iloc[i, value_col_idx]).strip()
@@ -729,17 +740,6 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
             if not description or description.lower() in ['nan', '']:
                 continue
             
-            # Skip currency/date header rows that shouldn't be treated as data
-            skip_patterns = [
-                r"CNY'000", r"USD'000", r"'000", r"thousands", r"thousand",
-                r"millions", r"million", r"'000,000",
-                r"\d{4}-\d{1,2}-\d{1,2}",  # Date patterns
-                r"\d{1,2}/\d{1,2}/\d{4}",
-                r"\d{1,2}-\d{1,2}-\d{4}",
-                r"\d{4}/\d{1,2}/\d{1,2}",
-                r"indicative adjusted"
-            ]
-            
             # Check if this row should be skipped
             should_skip = False
             for pattern in skip_patterns:
@@ -747,6 +747,11 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                     should_skip = True
                     print(f"DEBUG: Skipping row - Description: '{description}', Value: '{value_str}' (matches pattern: {pattern})")
                     break
+            
+            # Additional check: skip if description is a pure number (like 1000, 1001, etc.)
+            if re.match(r'^\d+\.?\d*$', description.strip()):
+                should_skip = True
+                print(f"DEBUG: Skipping row - Description is pure number: '{description}'")
             
             if should_skip:
                 continue
@@ -900,6 +905,7 @@ def create_improved_table_markdown(parsed_table):
     except Exception as e:
         return f"Error creating table markdown: {e}"
 
+@cached_function(ttl=1800)  # Cache for 30 minutes
 def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, debug=False):
     """
     Get worksheet sections organized by financial keys following the mapping
@@ -3249,7 +3255,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
                 - Replace ALL [ENTITY_NAME] placeholders with the actual entity name from the DATA SOURCE
                 - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
                 - Do not use bullet point for listing
-                - Apply proper K/M conversion with 1 decimal place for all figures
+                - Use actual numerical values from the DATA SOURCE (do not convert to K/M format)
                 - No foreign contents, if any, translate to English
                 - Stick to Template format, no extra explanations or comments
                 - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
@@ -3321,6 +3327,11 @@ IMPORTANT ENTITY INSTRUCTIONS:
             start_time = time.time()
             st.write(f"🤖 Processing {len(filtered_keys)} keys with Agent 1...")
             
+            # Create progress callback for Streamlit
+            def update_progress(progress, message):
+                progress_bar.progress(progress)
+                status_text.text(message)
+            
             results = process_keys(
                 keys=filtered_keys,  # All keys at once
                 entity_name=entity_name,
@@ -3331,7 +3342,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
                 config_file='utils/config.json',
                 prompts_file='utils/prompts.json',
                 use_ai=True,
-                progress_callback=None
+                progress_callback=update_progress
             )
             
             processing_time = time.time() - start_time
@@ -3489,6 +3500,10 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
         
         st.success(f"✅ Found Agent 1 content for {len(available_keys)} keys: {available_keys}")
         
+        # Create progress bar for Agent 2
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
         # Get uploaded file data for validation
         import tempfile
         import os
@@ -3515,8 +3530,10 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
             
             # Process only keys with available content
             for i, key in enumerate(available_keys):
-                # Update progress with key-level detail
-                st.write(f"🔍 AI2: Validating data for {key} ({i+1}/{len(available_keys)})")
+                # Update progress
+                progress = (i + 1) / len(available_keys)
+                progress_bar.progress(progress)
+                status_text.text(f"🔍 AI2: Validating data for {key} ({i+1}/{len(available_keys)})")
                 
                 start_time = time.time()
                 
