@@ -12,6 +12,8 @@ import urllib3
 import shutil
 from common.pptx_export import export_pptx
 from utils.cache import get_cache_manager, streamlit_cache_manager, optimize_memory, cached_function
+import uuid
+import tempfile
 
 # Suppress warnings
 urllib3.disable_warnings()
@@ -925,6 +927,7 @@ def create_improved_table_markdown(parsed_table):
     except Exception as e:
         return f"Error creating table markdown: {e}"
 
+@cached_function(ttl=1800)  # Cache for 30 minutes
 def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, debug=False):
     """
     Get worksheet sections organized by financial keys following the mapping
@@ -3142,55 +3145,59 @@ def run_agent_1(filtered_keys, ai_data):
         entity_name = ai_data.get('entity_name', '')
         entity_keywords = ai_data.get('entity_keywords', [])
         
-        # Create a temporary file path for processing
-        import tempfile
-        import os
+        # Create temporary file for processing
         temp_file_path = None
-        
         try:
-            # Get the original uploaded file data from session state if available
             if 'uploaded_file_data' in st.session_state:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+                # Use a unique filename to avoid conflicts
+                unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
+                temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
+                
+                with open(temp_file_path, 'wb') as tmp_file:
                     tmp_file.write(st.session_state['uploaded_file_data'])
-                    temp_file_path = tmp_file.name
+                st.success("✅ Created temporary databook for processing")
             else:
-                # Fallback: look for databook.xlsx
+                # Fallback: use existing databook.xlsx
                 if os.path.exists('databook.xlsx'):
                     temp_file_path = 'databook.xlsx'
+                    st.info("📄 Using existing databook.xlsx")
                 else:
-                    st.error("No data file available for Agent 1 processing")
+                    st.error("❌ No databook available for processing")
                     return {}
+        except Exception as e:
+            st.error(f"❌ Error creating temporary file: {e}")
+            return {}
+        
+        # Get the actual prompts that will be sent to AI by calling process_keys
+        # We need to capture the real prompts with table data
+        try:
+            # Load prompts from prompts.json file
+            with open('utils/prompts.json', 'r') as f:
+                prompts_config = json.load(f)
+            actual_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1', '')
+            if not actual_system_prompt:
+                actual_system_prompt = """
+                Role: system,
+                Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
+                CORE PRINCIPLES:
+                1. SELECT exactly one appropriate non-nil pattern from the provided pattern options
+                2. Replace all placeholder values with corresponding actual data
+                3. Output only the financial completed pattern text, never show template structure
+                4. ACCURACY: Use only provided - data - never estimate or extrapolate
+                5. CLARITY: Write in clear business English, translating any foreign content
+                6. FORMAT: Follow the exact template structure provided
+                7. CURRENCY: Express figures to Thousands (K) or Millions (M) as appropriate
+                8. CONCISENESS: Focus on material figures and key insights only
+                OUTPUT REQUIREMENTS:
+                - Choose the most suitable single pattern based on available data
+                - Replace all placeholders with actaul figures from databook
+                - Output ONLY the final text - no pattern names, no template structure, no explanations
+                - If data is missing for a pattern, select a different pattern that has complete data
+                - Never output JSON structure or pattern formatting
+                """
             
-            # Get the actual prompts that will be sent to AI by calling process_keys
-            # We need to capture the real prompts with table data
-            try:
-                # Load prompts from prompts.json file
-                with open('utils/prompts.json', 'r') as f:
-                    prompts_config = json.load(f)
-                actual_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1', '')
-                if not actual_system_prompt:
-                    actual_system_prompt = """
-                    Role: system,
-                    Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
-                    CORE PRINCIPLES:
-                    1. SELECT exactly one appropriate non-nil pattern from the provided pattern options
-                    2. Replace all placeholder values with corresponding actual data
-                    3. Output only the financial completed pattern text, never show template structure
-                    4. ACCURACY: Use only provided - data - never estimate or extrapolate
-                    5. CLARITY: Write in clear business English, translating any foreign content
-                    6. FORMAT: Follow the exact template structure provided
-                    7. CURRENCY: Express figures to Thousands (K) or Millions (M) as appropriate
-                    8. CONCISENESS: Focus on material figures and key insights only
-                    OUTPUT REQUIREMENTS:
-                    - Choose the most suitable single pattern based on available data
-                    - Replace all placeholders with actaul figures from databook
-                    - Output ONLY the final text - no pattern names, no template structure, no explanations
-                    - If data is missing for a pattern, select a different pattern that has complete data
-                    - Never output JSON structure or pattern formatting
-                    """
-                
-                # Add entity placeholder instructions to system prompt
-                actual_system_prompt += f"""
+            # Add entity placeholder instructions to system prompt
+            actual_system_prompt += f"""
 
 IMPORTANT ENTITY INSTRUCTIONS:
 - Replace all [ENTITY_NAME] placeholders with the actual entity name from the provided financial data
@@ -3198,33 +3205,33 @@ IMPORTANT ENTITY INSTRUCTIONS:
 - Do not use the reporting entity name ({entity_name}) unless it matches the entity in the financial data
 - Ensure all entity references in your analysis are accurate according to the provided data
 """
-            except Exception as e:
-                actual_system_prompt = "Error loading prompts.json"
-                print(f"Error loading prompts: {e}")
+        except Exception as e:
+            actual_system_prompt = "Error loading prompts.json"
+            print(f"Error loading prompts: {e}")
+        
+        # Get sections data for each key to build actual user prompts
+        sections_by_key = ai_data.get('sections_by_key', {})
+        
+        # Log Agent 1 input for all keys with actual prompts
+        for key in filtered_keys:
+            # Get the actual table data for this key with proper cleaning
+            key_sections = sections_by_key.get(key, [])
+            key_sections_str = []
             
-            # Get sections data for each key to build actual user prompts
-            sections_by_key = ai_data.get('sections_by_key', {})
-            
-            # Log Agent 1 input for all keys with actual prompts
-            for key in filtered_keys:
-                # Get the actual table data for this key with proper cleaning
-                key_sections = sections_by_key.get(key, [])
-                key_sections_str = []
-                
-                for section in key_sections:
-                    if isinstance(section, dict):
-                        # Handle dict serialization
-                        try:
-                            key_sections_str.append(json.dumps(section, indent=2, default=str))
-                        except:
-                            key_sections_str.append(str(section))
-                    elif hasattr(section, 'to_string'):  # DataFrame
-                        # Clean the DataFrame first - remove columns that are all None/NaN
-                        df = section.copy()
-                        for col in list(df.columns):
-                            if df[col].isna().all() or (df[col].astype(str) == 'None').all():
-                                df = df.drop(columns=[col])
-                                print(f"DEBUG: Removed all-NaN column {col} for AI prompt")
+            for section in key_sections:
+                if isinstance(section, dict):
+                    # Handle dict serialization
+                    try:
+                        key_sections_str.append(json.dumps(section, indent=2, default=str))
+                    except:
+                        key_sections_str.append(str(section))
+                elif hasattr(section, 'to_string'):  # DataFrame
+                    # Clean the DataFrame first - remove columns that are all None/NaN
+                    df = section.copy()
+                    for col in list(df.columns):
+                        if df[col].isna().all() or (df[col].astype(str) == 'None').all():
+                            df = df.drop(columns=[col])
+                            print(f"DEBUG: Removed all-NaN column {col} for AI prompt")
                         
                         # Convert to string with proper formatting
                         df_str = df.to_string(index=False, na_rep='')
@@ -3235,150 +3242,150 @@ IMPORTANT ENTITY INSTRUCTIONS:
                             if line.strip() and not line.strip().replace('|', '').replace('-', '').replace(' ', '').replace('+', '') == '':
                                 cleaned_lines.append(line)
                         key_sections_str.append('\n'.join(cleaned_lines))
-                    else:
-                        key_sections_str.append(str(section))
-                
-                key_tables = "\n".join(key_sections_str) if key_sections_str else "No table data available"
-                
-                # Build the actual user prompt that matches what gets sent to AI
-                pattern = ai_data.get('pattern', {}).get(key, {})
-                pattern_json = json.dumps(pattern, indent=2)
-                
-                # Get financial figure for this key
-                from common.assistant import find_financial_figures_with_context_check, get_tab_name, get_financial_figure
-                financial_figures = find_financial_figures_with_context_check(temp_file_path, get_tab_name(entity_name), '30/09/2022', convert_thousands=False)
-                financial_figure_info = f"{key}: {get_financial_figure(financial_figures, key)}"
-                
-                # Build the actual user prompt that gets sent to AI
-                actual_user_prompt = f"""
-                TASK: Select ONE pattern and complete it with actual data
-                
-                AVAILABLE PATTERNS: {pattern_json}
-                
-                FINANCIAL FIGURE: {financial_figure_info}
-                
-                DATA SOURCE: {key_tables}
-                
-                SELECTION CRITERIA:
-                - Choose the pattern with the most complete data coverage
-                - Prioritize patterns that match the primary account category
-                - Use most recent data: latest available
-                - Express all figures with proper K/M conversion with 1 decimal place
-                
-                REQUIRED OUTPUT FORMAT:
-                - Only the completed pattern text
-                - No pattern names or labels
-                - No template structure
-                - No JSON formatting
-                - Replace ALL 'xxx' or placeholders with actual data values
-                - Replace ALL [ENTITY_NAME] placeholders with the actual entity name from the DATA SOURCE
-                - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
-                - Do not use bullet point for listing
-                - Use actual numerical values from the DATA SOURCE (do not convert to K/M format)
-                - No foreign contents, if any, translate to English
-                - Stick to Template format, no extra explanations or comments
-                - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
-                - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
-                - Ensure all financial figures mentioned match the actual values from the DATA SOURCE
-                """
-                
-                context_data = {
-                    'entity': entity_name,
-                    'key': key,
-                    'financial_figure': financial_figure_info,
-                    'table_data_length': len(key_tables),
-                    'patterns_count': len(pattern) if pattern else 0
-                }
-                
-                # Store the actual prompts that will be sent to AI
-                actual_prompts = {
-                    'system_prompt': actual_system_prompt,
-                    'user_prompt': actual_user_prompt,
-                    'context': context_data,
-                    'table_data': key_tables[:2000] + "..." if len(key_tables) > 2000 else key_tables,  # Show more structured data
-                    'structured_tables': []  # Will store parsed structured tables
-                }
-                
-                # Parse structured tables from the key_tables content
-                try:
-                    # Extract structured table information from the markdown content
-                    table_sections = key_tables.split('## ')
-                    for section in table_sections[1:]:  # Skip first empty section
-                        lines = section.strip().split('\n')
-                        if len(lines) > 0:
-                            table_info = {
-                                'table_name': lines[0],
-                                'entity': 'Unknown',
-                                'date': 'Unknown',
-                                'currency': 'CNY',
-                                'multiplier': 1,
-                                'items': [],
-                                'total': 'Unknown'
-                            }
-                            
-                            for line in lines[1:]:
-                                if line.startswith('**Entity:**'):
-                                    table_info['entity'] = line.replace('**Entity:**', '').strip()
-                                elif line.startswith('**Date:**'):
-                                    table_info['date'] = line.replace('**Date:**', '').strip()
-                                elif line.startswith('**Currency:**'):
-                                    table_info['currency'] = line.replace('**Currency:**', '').strip()
-                                elif line.startswith('**Multiplier:**'):
-                                    table_info['multiplier'] = int(line.replace('**Multiplier:**', '').strip())
-                                elif line.startswith('**Total:**'):
-                                    table_info['total'] = line.replace('**Total:**', '').strip()
-                                elif line.startswith('- ') and ':' in line:
-                                    # Parse item line like "- Deposits with banks: 9076000"
-                                    item_parts = line[2:].split(': ')
-                                    if len(item_parts) == 2:
-                                        table_info['items'].append({
-                                            'description': item_parts[0],
-                                            'amount': item_parts[1]
-                                        })
+                else:
+                    key_sections_str.append(str(section))
+            
+            key_tables = "\n".join(key_sections_str) if key_sections_str else "No table data available"
+            
+            # Build the actual user prompt that matches what gets sent to AI
+            pattern = ai_data.get('pattern', {}).get(key, {})
+            pattern_json = json.dumps(pattern, indent=2)
+            
+            # Get financial figure for this key
+            from common.assistant import find_financial_figures_with_context_check, get_tab_name, get_financial_figure
+            financial_figures = find_financial_figures_with_context_check(temp_file_path, get_tab_name(entity_name), '30/09/2022', convert_thousands=False)
+            financial_figure_info = f"{key}: {get_financial_figure(financial_figures, key)}"
+            
+            # Build the actual user prompt that gets sent to AI
+            actual_user_prompt = f"""
+            TASK: Select ONE pattern and complete it with actual data
+            
+            AVAILABLE PATTERNS: {pattern_json}
+            
+            FINANCIAL FIGURE: {financial_figure_info}
+            
+            DATA SOURCE: {key_tables}
+            
+            SELECTION CRITERIA:
+            - Choose the pattern with the most complete data coverage
+            - Prioritize patterns that match the primary account category
+            - Use most recent data: latest available
+            - Express all figures with proper K/M conversion with 1 decimal place
+            
+            REQUIRED OUTPUT FORMAT:
+            - Only the completed pattern text
+            - No pattern names or labels
+            - No template structure
+            - No JSON formatting
+            - Replace ALL 'xxx' or placeholders with actual data values
+            - Replace ALL [ENTITY_NAME] placeholders with the actual entity name from the DATA SOURCE
+            - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
+            - Do not use bullet point for listing
+            - Use actual numerical values from the DATA SOURCE (do not convert to K/M format)
+            - No foreign contents, if any, translate to English
+            - Stick to Template format, no extra explanations or comments
+            - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
+            - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
+            - Ensure all financial figures mentioned match the actual values from the DATA SOURCE
+            """
+            
+            context_data = {
+                'entity': entity_name,
+                'key': key,
+                'financial_figure': financial_figure_info,
+                'table_data_length': len(key_tables),
+                'patterns_count': len(pattern) if pattern else 0
+            }
+            
+            # Store the actual prompts that will be sent to AI
+            actual_prompts = {
+                'system_prompt': actual_system_prompt,
+                'user_prompt': actual_user_prompt,
+                'context': context_data,
+                'table_data': key_tables[:2000] + "..." if len(key_tables) > 2000 else key_tables,  # Show more structured data
+                'structured_tables': []  # Will store parsed structured tables
+            }
+            
+            # Parse structured tables from the key_tables content
+            try:
+                # Extract structured table information from the markdown content
+                table_sections = key_tables.split('## ')
+                for section in table_sections[1:]:  # Skip first empty section
+                    lines = section.strip().split('\n')
+                    if len(lines) > 0:
+                        table_info = {
+                            'table_name': lines[0],
+                            'entity': 'Unknown',
+                            'date': 'Unknown',
+                            'currency': 'CNY',
+                            'multiplier': 1,
+                            'items': [],
+                            'total': 'Unknown'
+                        }
+                        
+                        for line in lines[1:]:
+                            if line.startswith('**Entity:**'):
+                                table_info['entity'] = line.replace('**Entity:**', '').strip()
+                            elif line.startswith('**Date:**'):
+                                table_info['date'] = line.replace('**Date:**', '').strip()
+                            elif line.startswith('**Currency:**'):
+                                table_info['currency'] = line.replace('**Currency:**', '').strip()
+                            elif line.startswith('**Multiplier:**'):
+                                table_info['multiplier'] = int(line.replace('**Multiplier:**', '').strip())
+                            elif line.startswith('**Total:**'):
+                                table_info['total'] = line.replace('**Total:**', '').strip()
+                            elif line.startswith('- ') and ':' in line:
+                                # Parse item line like "- Deposits with banks: 9076000"
+                                item_parts = line[2:].split(': ')
+                                if len(item_parts) == 2:
+                                    table_info['items'].append({
+                                        'description': item_parts[0],
+                                        'amount': item_parts[1]
+                                    })
                             
                             actual_prompts['structured_tables'].append(table_info)
-                except Exception as e:
-                    print(f"Error parsing structured tables for logging: {e}")
-                
-                logger.log_agent_input('agent1', key, actual_system_prompt, actual_user_prompt, context_data, actual_prompts)
+            except Exception as e:
+                print(f"Error parsing structured tables for logging: {e}")
             
-            # Process ALL keys at once with proper tqdm progress (1/9, 2/9, etc.)
-            start_time = time.time()
-            st.write(f"🤖 Processing {len(filtered_keys)} keys with Agent 1...")
+            logger.log_agent_input('agent1', key, actual_system_prompt, actual_user_prompt, context_data, actual_prompts)
+        
+        # Process ALL keys at once with proper tqdm progress (1/9, 2/9, etc.)
+        start_time = time.time()
+        st.write(f"🤖 Processing {len(filtered_keys)} keys with Agent 1...")
+        
+        # Create progress callback for Streamlit
+        def update_progress(progress, message):
+            progress_bar.progress(progress)
+            status_text.text(message)
+        
+        results = process_keys(
+            keys=filtered_keys,  # All keys at once
+            entity_name=entity_name,
+            entity_helpers=entity_keywords,
+            input_file=temp_file_path,
+            mapping_file="utils/mapping.json",
+            pattern_file="utils/pattern.json",
+            config_file='utils/config.json',
+            prompts_file='utils/prompts.json',
+            use_ai=True,
+            progress_callback=update_progress
+        )
+        
+        processing_time = time.time() - start_time
+        
+        # Log Agent 1 output for each key
+        for key in filtered_keys:
+            key_result = results.get(key, f"No result generated for {key}")
+            logger.log_agent_output('agent1', key, key_result, processing_time / len(filtered_keys))
+        
+        st.success(f"🎉 Agent 1 completed all {len(filtered_keys)} keys in {processing_time:.2f}s")
+        return results
             
-            # Create progress callback for Streamlit
-            def update_progress(progress, message):
-                progress_bar.progress(progress)
-                status_text.text(message)
+    finally:
+        # Clean up temp file if created
+        if temp_file_path and temp_file_path != 'databook.xlsx' and os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
             
-            results = process_keys(
-                keys=filtered_keys,  # All keys at once
-                entity_name=entity_name,
-                entity_helpers=entity_keywords,
-                input_file=temp_file_path,
-                mapping_file="utils/mapping.json",
-                pattern_file="utils/pattern.json",
-                config_file='utils/config.json',
-                prompts_file='utils/prompts.json',
-                use_ai=True,
-                progress_callback=update_progress
-            )
-            
-            processing_time = time.time() - start_time
-            
-            # Log Agent 1 output for each key
-            for key in filtered_keys:
-                key_result = results.get(key, f"No result generated for {key}")
-                logger.log_agent_output('agent1', key, key_result, processing_time / len(filtered_keys))
-            
-            st.success(f"🎉 Agent 1 completed all {len(filtered_keys)} keys in {processing_time:.2f}s")
-            return results
-            
-        finally:
-            # Clean up temp file if created
-            if temp_file_path and temp_file_path != 'databook.xlsx' and os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
-                
     except Exception as e:
         st.error(f"Agent 1 processing failed: {e}")
         return {}
@@ -3528,21 +3535,24 @@ def run_agent_2(filtered_keys, agent1_results, ai_data):
         import os
         temp_file_path = None
         
-        try:
-            # Get the original uploaded file data from session state if available
-            if 'uploaded_file_data' in st.session_state:
+        # Get the original uploaded file data from session state if available
+        if 'uploaded_file_data' in st.session_state:
+            try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
                     tmp_file.write(st.session_state['uploaded_file_data'])
                     temp_file_path = tmp_file.name
                 st.success("✅ Created temporary databook for validation")
+            except Exception as e:
+                st.error(f"❌ Error creating temporary file: {e}")
+                temp_file_path = None
+        else:
+            # Fallback: look for databook.xlsx
+            if os.path.exists('databook.xlsx'):
+                temp_file_path = 'databook.xlsx'
+                st.info("📄 Using existing databook.xlsx")
             else:
-                # Fallback: look for databook.xlsx
-                if os.path.exists('databook.xlsx'):
-                    temp_file_path = 'databook.xlsx'
-                    st.info("📄 Using existing databook.xlsx")
-                else:
-                    st.warning("⚠️ No databook available for Agent 2 validation")
-                    temp_file_path = None
+                st.warning("⚠️ No databook available for Agent 2 validation")
+                temp_file_path = None
             
             # Initialize content updates storage
             bs_content_updates = {}
