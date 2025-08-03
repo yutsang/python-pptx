@@ -1,0 +1,5 @@
+{
+  "generate_response": false,
+  "data_validation_agent": true,
+  "streamlit_app": true
+}

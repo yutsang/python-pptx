@@ -1,0 +1,17 @@
+[server]
+# Disable file watching to prevent FileNotFoundError
+fileWatcherType = "none"
+# Disable file watching for specific directories
+headless = true
+
+[logger]
+# Reduce logging verbosity
+level = "error"
+
+[browser]
+# Disable automatic browser opening
+gatherUsageStats = false
+
+[client]
+# Disable caching to prevent file watching issues
+caching = false 

@@ -13,13 +13,16 @@ warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 warnings.simplefilter(action='ignore', category=UserWarning)
 warnings.filterwarnings('ignore', message='Data Validation extension is not supported and will be removed', category=UserWarning, module='openpyxl')
 
-@cached_function(ttl=1800)  # Cache for 30 minutes
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
+    """Process and filter Excel file with simple caching"""
     
     try:
+        # Use simple cache instead of complex cache manager
+        from utils.simple_cache import get_simple_cache
+        cache = get_simple_cache()
+        
         # Check cache first
-        cache_manager = get_cache_manager()
-        cached_result = cache_manager.get_cached_processed_excel(filename, entity_name, entity_suffixes)
+        cached_result = cache.get_cached_excel_data(filename, entity_name)
         if cached_result is not None:
             return cached_result
             
@@ -73,8 +76,8 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                         markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False)
                         markdown_content += "\n\n" 
         
-        # Cache the processed result
-        cache_manager.cache_processed_excel(filename, entity_name, entity_suffixes, markdown_content)
+        # Cache the processed result using simple cache
+        cache.cache_excel_data(filename, entity_name, markdown_content)
         return markdown_content
     except Exception as e:
         print("An error occurred while processing the Excel file:", e)
@@ -250,12 +253,10 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         
         # Load configuration and initialize services
         config_details = load_config(config_file)
-        oai_client, search_client = initialize_ai_services(config_details)
+        oai_client, _ = initialize_ai_services(config_details)
         
         # Load model details from config
-        openai_embedding_model = config_details['EMBEDDING_MODEL']
-        openai_model = config_details['CHAT_MODEL']
-        max_embedding_search_result = config_details['MAX_EMBEDDING_SEARCH_RESULT']
+        openai_model = config_details['DEEPSEEK_CHAT_MODEL']
         
         # Load pattern and mapping
         pattern = load_ip(pattern_file, key)
@@ -302,9 +303,9 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         """
         
         # Generate response using AI services
-        # Use Excel tables as context content when Azure Search is not available
-        context_content = excel_tables if search_client is None else ""
-        response_txt = generate_response(user_query, system_prompt, oai_client, context_content, openai_model)
+        # Use Excel tables as context content
+        context_content = excel_tables
+        response_txt = generate_response(user_query, system_prompt, oai_client, context_content, openai_model, entity_name)
         
         # Store the result in the dictionary
         results[key] = response_txt

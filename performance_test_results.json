@@ -1,0 +1,79 @@
+{
+  "configuration": {
+    "success": true,
+    "score": 3,
+    "details": [
+      "DEEPSEEK_API_KEY",
+      "DEEPSEEK_API_BASE",
+      "DEEPSEEK_CHAT_MODEL"
+    ]
+  },
+  "deepseek_connectivity": {
+    "success": true,
+    "response_time": 4.019207000732422,
+    "tokens_used": 28
+  },
+  "bs_content_loader": {
+    "success": true,
+    "load_time": 0.0003650188446044922,
+    "summary": {
+      "metadata": {
+        "source": "bs_content.md",
+        "converted_date": "2024-01-01",
+        "version": "1.0",
+        "description": "Structured balance sheet content for financial analysis"
+      },
+      "sections": [
+        "metadata",
+        "current_assets",
+        "non_current_assets",
+        "liabilities",
+        "equity"
+      ],
+      "total_items": 11,
+      "total_amounts": 11,
+      "entities": [
+        "Zhejiang Jinhong Supply Chain Management Co., Ltd.",
+        "Zhejiang Jinhong Supply Chain Management",
+        "Zhejiang Jinghong Supply Chain Management",
+        "Project Haining Wanpu",
+        "Zhejiang Jinghong Supply Chain Management Co., Ltd.",
+        "Zhejiang Jinhong",
+        "Zhejiang Jinghong Supply Chain Management Co.",
+        "Zhejiang Jinhong Supply Chain Management Co.",
+        "Zhejiang Jinhong Supply Chain",
+        "Zhejiang Jinhong Supply Chain Mangement Co.",
+        "\u73e0\u6d77\u842c\u7dad\u7269\u6d41\u767c\u5c55\u6709\u9650\u516c\u53f8",
+        "Haining Wanpu",
+        "Zhejiang Jinghong"
+      ],
+      "amounts": {
+        "current_assets.cash_at_bank": "CNY9.1M",
+        "current_assets.accounts_receivables": "Not specified",
+        "current_assets.prepayments": "CNY346.1k total (CNY336.0k construction + CNY10.1k utilities)",
+        "current_assets.other_receivables": "CNY687K",
+        "current_assets.other_current_assets": "CNY7.8M",
+        "non_current_assets.investment_properties": "CNY197.5M",
+        "non_current_assets.other_non_current_assets": "$2.1M",
+        "liabilities.accounts_payable": "CNY11.8M",
+        "liabilities.taxes_payables": "$0.8M total",
+        "liabilities.other_payables": "$120.9M total",
+        "equity.capital": "$92.0M"
+      }
+    }
+  },
+  "enhanced_prompts": {
+    "success": true,
+    "score": 3,
+    "requirements": [
+      "dollar amounts and currency",
+      "specific entity names",
+      "summary of key financial figures"
+    ]
+  },
+  "ai_processing": {
+    "success": true,
+    "processing_time": 3.0994415283203125e-06,
+    "results_count": 2
+  }
+}

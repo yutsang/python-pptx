@@ -1,0 +1,6 @@
+{
+  "streamlit_app": true,
+  "progress_bar_fix": true,
+  "deepseek_default": true,
+  "enhanced_prompts": true
+}
