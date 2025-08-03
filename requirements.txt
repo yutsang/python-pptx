@@ -7,7 +7,5 @@ python-pptx>=0.6.21
 tqdm>=4.65.0
 httpx>=0.24.0
 openai>=1.0.0
-azure-search-documents>=11.4.0
-azure-core>=1.29.0
 ipython>=8.0.0
 pillow>=10.0.0 

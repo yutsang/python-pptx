@@ -4,8 +4,6 @@ urllib3
 tqdm
 httpx
 openai
-azure-search-documents
-azure-core
 ipython
 pillow
 tabulate

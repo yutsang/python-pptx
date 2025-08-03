@@ -13,16 +13,12 @@ import logging
 # Suppress httpx logging
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# AI-related imports (mocked if not available)
+# AI-related imports (DeepSeek only)
 try:
-    from openai import AzureOpenAI
-    from azure.search.documents import SearchClient
-    from azure.core.credentials import AzureKeyCredential
+    from openai import OpenAI
     AI_AVAILABLE = True
 except ImportError:
-    AzureOpenAI = None
-    SearchClient = None
-    AzureKeyCredential = None
+    OpenAI = None
     AI_AVAILABLE = False
 
 # --- Config and AI Service Helpers ---
@@ -33,75 +29,68 @@ def load_config(file_path):
     return config_details
 
 def initialize_ai_services(config_details):
-    """Initialize Azure OpenAI and Azure Search clients using config details."""
+    """Initialize DeepSeek AI client using config details."""
     if not AI_AVAILABLE:
         raise RuntimeError("AI services not available on this machine.")
     httpx_client = httpx.Client(verify=False)
-    if AzureOpenAI is None:
+    if OpenAI is None:
         raise RuntimeError("AI modules not available.")
     
-    # Initialize OpenAI client
-    oai_client = AzureOpenAI(
-        azure_endpoint=config_details['OPENAI_API_BASE'],
-        api_key=config_details['OPENAI_API_KEY'],
-        api_version=config_details['OPENAI_API_VERSION_COMPLETION'],
-        http_client=httpx_client
-    )
+    # Check if DeepSeek configuration is available
+    if config_details.get('DEEPSEEK_API_KEY') and config_details.get('DEEPSEEK_API_BASE'):
+        # Initialize DeepSeek client (using regular OpenAI client)
+        oai_client = OpenAI(
+            api_key=config_details['DEEPSEEK_API_KEY'],
+            base_url=config_details['DEEPSEEK_API_BASE'],
+            http_client=httpx_client
+        )
+        print("🤖 Using DeepSeek AI for processing")
+    else:
+        raise RuntimeError("DeepSeek configuration not found. Please check DEEPSEEK_API_KEY and DEEPSEEK_API_BASE in config.")
     
-    # Initialize search client only if all required configurations are available
-    search_client = None
-    try:
-        # Check if all required Azure Search configurations are present
-        required_search_configs = [
-            'AZURE_AI_SEARCH_SERVICE_ENDPOINT',
-            'AZAURE_AI_SEARCH_INDEX_NAME',
-            'SEARCH_API_KEY',
-            'AZURE_AI_SEARCH_SERVICE_NAME'
-        ]
-        
-        if all(config_details.get(key) for key in required_search_configs) and SearchClient is not None and AzureKeyCredential is not None:
-            # Configure search client settings
-            search_client_configs = {
-                'connection_verify': False,
-                'headers': {"Host": f"{config_details['AZURE_AI_SEARCH_SERVICE_NAME']}.search.windows.net"}
-            }
-            
-            search_client = SearchClient(
-                endpoint=f"https://{config_details['AZURE_AI_SEARCH_SERVICE_ENDPOINT']}/",
-                index_name=config_details['AZAURE_AI_SEARCH_INDEX_NAME'],
-                credential=AzureKeyCredential(config_details['SEARCH_API_KEY']),
-                **search_client_configs
-            )
-        else:
-            print("Azure Search configuration incomplete or modules not available. Search client will be None.")
-    except Exception as e:
-        print(f"Failed to initialize Azure Search client: {e}")
-        search_client = None
-    
-    return oai_client, search_client
+    return oai_client, None  # No search client needed
 
-def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model):
-    """Generate a response from the AI model given a user query and system prompt with caching."""
-    # Check cache first
-    cache_manager = get_cache_manager()
-    cached_response = cache_manager.get_cached_ai_response(user_query, system_prompt, context_content)
+def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model, entity_name="default"):
+    """Generate a response from the AI model given a user query and system prompt with simple caching."""
+    # Use simple cache instead of complex hash-based cache
+    from utils.simple_cache import get_simple_cache
+    cache = get_simple_cache()
+    
+    # Create a simple cache key from the query
+    cache_key = f"{hash(user_query) % 1000000}_{hash(system_prompt) % 1000000}"
+    
+    # Check cache first (with force refresh option)
+    try:
+        import streamlit as st
+        force_refresh = st.session_state.get('force_refresh', False)
+    except:
+        force_refresh = False
+        
+    cached_response = cache.get_cached_ai_result(cache_key, entity_name, force_refresh)
     if cached_response is not None:
         return cached_response
     
+    # Include context data in the user query instead of as a separate assistant message
+    enhanced_user_query = f"Context data:\n{context_content}\n\nUser query:\n{user_query}"
+    
     conversation = [
         {"role": "system", "content": system_prompt},
-        {"role": "assistant", "content": f"Context data: \n{context_content}"},
-        {"role": "user", "content": user_query}
+        {"role": "user", "content": enhanced_user_query}
     ]
-    response = oai_client.chat.completions.create(
-        model=openai_chat_model,
-        messages=conversation,
-    )
+    
+    try:
+        response = oai_client.chat.completions.create(
+            model=openai_chat_model,
+            messages=conversation,
+        )
+    except Exception as e:
+        print(f"❌ API call failed with model '{openai_chat_model}': {e}")
+        raise
     
     response_content = response.choices[0].message.content
     
-    # Cache the response
-    cache_manager.cache_ai_response(user_query, system_prompt, context_content, response_content)
+    # Cache the response using simple cache
+    cache.cache_ai_result(cache_key, entity_name, response_content)
     
     return response_content
 
@@ -376,35 +365,15 @@ def extract_tables_robust(worksheet, entity_keywords):
 
 
 
-@cached_function(ttl=1800)  # Cache for 30 minutes
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
+    """Process and filter Excel file with simple caching"""
     try:
-        cache_manager = get_cache_manager()
+        # Use simple cache instead of complex cache manager
+        from utils.simple_cache import get_simple_cache
+        cache = get_simple_cache()
         
-        # For uploaded files, try content-based caching first
-        original_filename = None
-        file_content_hash = None
-        
-        # Check if this is a temporary uploaded file
-        if filename.startswith('temp_ai_processing_'):
-            original_filename = filename.replace('temp_ai_processing_', '')
-            try:
-                # Get file content hash for better caching
-                with open(filename, 'rb') as f:
-                    file_content = f.read()
-                    file_content_hash = cache_manager.get_file_content_hash(file_content)
-                
-                # Try content-based cache first
-                cached_result = cache_manager.get_cached_processed_excel_by_content(
-                    file_content_hash, original_filename, entity_name, entity_suffixes
-                )
-                if cached_result is not None:
-                    return cached_result
-            except Exception as e:
-                print(f"Content-based cache check failed: {e}")
-        
-        # Fallback to path-based caching for regular files
-        cached_result = cache_manager.get_cached_processed_excel(filename, entity_name, entity_suffixes)
+        # Check cache first
+        cached_result = cache.get_cached_excel_data(filename, entity_name)
         if cached_result is not None:
             return cached_result
             
@@ -444,21 +413,14 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     match_found = any(any(kw in cell for cell in all_cells) for kw in entity_keywords)
                     
                     if match_found:
-                        # Filter rows to only include those with the target entity
+                        # Include all rows that contain any entity information
+                        # This allows the AI to see all entity names in the table
                         filtered_rows = []
                         for idx, row in df.iterrows():
                             row_cells = [str(cell).lower().strip() for cell in row.values]
-                            # Check if this row contains the target entity
-                            row_has_target_entity = any(any(kw in cell for cell in row_cells) for kw in entity_keywords)
-                            # Check if this row contains other entities (to exclude them)
-                            other_entities = ['ningbo', 'nanjing', 'wanchen', 'haining']
-                            target_entity_keywords = [kw.lower() for kw in entity_keywords]
-                            row_has_other_entities = any(any(other_entity in cell for cell in row_cells) 
-                                                       for other_entity in other_entities 
-                                                       if other_entity not in target_entity_keywords)
-                            
-                            # Include row if it has target entity and doesn't have other entities
-                            if row_has_target_entity and not row_has_other_entities:
+                            # Include rows that contain any entity information
+                            # This will help the AI identify the correct entity names
+                            if any(cell for cell in row_cells if cell and cell != 'nan'):
                                 filtered_rows.append(row)
                         
                         # Create filtered DataFrame and parse it into structured format
@@ -498,15 +460,9 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     print(f"Error processing table {table_info.get('name', 'unknown')}: {e}")
                     continue
         
-        # Cache the processed result - use content-based caching for uploaded files
-        if file_content_hash and original_filename:
-            cache_manager.cache_processed_excel_by_content(
-                file_content_hash, original_filename, entity_name, entity_suffixes, markdown_content
-            )
-            print(f"📋 Cached result for {original_filename} (content-based)")
-        else:
-            cache_manager.cache_processed_excel(filename, entity_name, entity_suffixes, markdown_content)
-            print(f"📋 Cached result for {filename} (path-based)")
+        # Cache the processed result using simple cache
+        cache.cache_excel_data(filename, entity_name, markdown_content)
+        print(f"📋 Cached result for {filename}")
         
         return markdown_content
         
@@ -524,18 +480,33 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
         df = xl.parse(sheet_name)
         if not isinstance(df, pd.DataFrame):
             return {}
-        df.columns = ['Description', 'Date_2020', 'Date_2021', 'Date_2022']
-        date_column_map = {
-            '31/12/2020': 'Date_2020',
-            '31/12/2021': 'Date_2021',
-            '30/09/2022': 'Date_2022'
-        }
+        # Handle different sheet formats
+        if sheet_name == 'BSHN':
+            # BSHN sheet has different column structure
+            df.columns = ['Description', 'Column1', 'Column2', 'Column3']
+            date_column_map = {
+                '31/12/2020': 'Column1',
+                '31/12/2021': 'Column2', 
+                '30/09/2022': 'Column3'
+            }
+        else:
+            # Standard sheet format
+            df.columns = ['Description', 'Date_2020', 'Date_2021', 'Date_2022']
+            date_column_map = {
+                '31/12/2020': 'Date_2020',
+                '31/12/2021': 'Date_2021',
+                '30/09/2022': 'Date_2022'
+            }
         if date_str not in date_column_map:
             print(f"Date '{date_str}' not recognized.")
             return {}
         date_column = date_column_map[date_str]
         # If convert_thousands and '000' in columns or first row, multiply numeric values by 1000 for AI processing
-        scale_factor = 1000 if (convert_thousands and any("'000" in str(col) for col in df.columns)) else 1
+        # For BSHN sheet, always apply scale factor since it's in '000 format
+        if sheet_name == 'BSHN':
+            scale_factor = 1000  # BSHN sheet is always in '000 format
+        else:
+            scale_factor = 1000 if (convert_thousands and any("'000" in str(col) for col in df.columns)) else 1
         financial_figure_map = {
             "Cash": "Cash at bank",
             "AR": "Accounts receivable",
@@ -547,8 +518,8 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
             "AP": "Accounts payable",
             "Taxes payable": "Taxes payable",
             "OP": "Other payables",
-            "Capital": "Paid-in capital",
-            "Reserve": "Surplus reserve"
+            "Capital": "Share capital",
+            "Reserve": "Reserve"
         }
         financial_figures = {}
         for key, desc in financial_figure_map.items():
@@ -604,11 +575,13 @@ def load_ip(file, key=None):
     return {}
 
 # --- Pattern Filling and Main Processing ---
-def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', prompts_file='utils/prompts.json', use_ai=True, convert_thousands=False, progress_callback=None):
-    # Use test data if AI is not available
-    if not use_ai or not AI_AVAILABLE:
-        print(f"🔄 Using fallback mode for {len(keys)} keys")
-        return generate_test_results(keys)
+def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', prompts_file='utils/prompts.json', use_ai=True, convert_thousands=False, progress_callback=None, processed_table_data=None):
+    # AI is required - no fallback mode
+    if not use_ai:
+        raise RuntimeError("AI processing is required. Cannot run in offline mode.")
+    
+    if not AI_AVAILABLE:
+        raise RuntimeError("AI services are not available. Please check your configuration and internet connection.")
     
     print(f"🚀 Starting AI processing for {len(keys)} keys")
     
@@ -634,8 +607,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             OUTPUT REQUIREMENTS:
             - Choose the most suitable single pattern based on available data
             - Replace all placeholders with actaul figures from databook
-            - Replace all [ENTITY_NAME] placeholders with the actual entity name from the provided financial data
-            - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
+            - Replace all [ENTITY_NAME] placeholders with the SPECIFIC entity name from the provided financial data
+            - CRITICAL: Use the SPECIFIC entity names from the table data (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
             - Output ONLY the final text - no pattern names, no template structure, no explanations
             - If data is missing for a pattern, select a different pattern that has complete data
             - Never output JSON structure or pattern formatting
@@ -659,8 +632,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         OUTPUT REQUIREMENTS:
         - Choose the most suitable single pattern based on available data
         - Replace all placeholders with actaul figures from databook
-        - Replace all [ENTITY_NAME] placeholders with the actual entity name from the provided financial data
-        - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
+        - Replace all [ENTITY_NAME] placeholders with the SPECIFIC entity name from the provided financial data
+        - CRITICAL: Use the SPECIFIC entity names from the table data (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
         - Output ONLY the final text - no pattern names, no template structure, no explanations
         - If data is missing for a pattern, select a different pattern that has complete data
         - Never output JSON structure or pattern formatting
@@ -684,18 +657,19 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         
         config_details = load_config(config_file)
         
-        # Try to initialize AI services with proper error handling
-        try:
-            oai_client, search_client = initialize_ai_services(config_details)
-            openai_model = config_details['CHAT_MODEL']
-        except RuntimeError as e:
-            # AI services not available, return test results
-            print(f"AI services not available: {e}")
-            return generate_test_results(keys)
+        # Initialize AI services - required for processing
+        oai_client, search_client = initialize_ai_services(config_details)
+        # Use DeepSeek model
+        openai_model = config_details['DEEPSEEK_CHAT_MODEL']
         
         pattern = load_ip(pattern_file, key)
         mapping = {key: load_ip(mapping_file)}
-        excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers)
+        
+        # Use processed table data if provided, otherwise process Excel file
+        if processed_table_data and key in processed_table_data:
+            excel_tables = processed_table_data[key]
+        else:
+            excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers)
         
         # Check if '000 notation is detected
         has_thousands_notation = detect_string_in_file(excel_tables, "'000")
@@ -731,21 +705,22 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         - No template structure
         - No JSON formatting
         - Replace ALL 'xxx' or placeholders with actual data values
-        - Replace ALL [ENTITY_NAME] placeholders with the actual entity name from the DATA SOURCE
-        - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
+        - Replace ALL [ENTITY_NAME] placeholders with the SPECIFIC entity name from the DATA SOURCE
+        - CRITICAL: Use the SPECIFIC entity names from the table data (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
         - Do not use bullet point for listing
-        - Use actual numerical values from the DATA SOURCE (do not convert to K/M format)
+        - Express all figures with proper K/M conversion (e.g., 9,076,000 = 9.1M, 1,500 = 1.5K)
         - No foreign contents, if any, translate to English
         - Stick to Template format, no extra explanations or comments
-        - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
+        - For entity name to be filled into template, use the specific entity names from the DATA SOURCE table
         - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
         - Ensure all financial figures mentioned match the actual values from the DATA SOURCE
+        - IMPORTANT: Look at the table data to identify the correct entity names (e.g., 'Third-party receivables', 'Company #1', etc.)
         """
         
         # Example formats for consistent output
         examples = f"""
         Example of CORRECT output format:
-        "Cash at bank comprises deposits of $2.3M held with major financial institutions as at 30/09/2022."
+        "Cash at bank comprises deposits of CNY9.1M held with major financial institutions as at 30/09/2022."
         
         Example of INCORRECT output format:
         "Pattern 1: Cash at bank comprises deposits of xxx held with xxx as at xxx."
@@ -769,10 +744,30 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         {output_requirements}
         
         {examples}
+        
+        IMPORTANT REQUIREMENTS:
+        1. ALWAYS specify exact dollar amounts and currency (e.g., "CNY9.1M", "$2.3M", "CNY687K")
+        2. ALWAYS identify and mention the specific entity names from the DATA SOURCE table
+        3. CRITICAL: For entity names, use the SPECIFIC entity names from the financial data table (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
+        4. Look at the table data to identify the correct entity names and amounts
+        5. When the table shows 'Third-party receivables', use that exact name, not the reporting entity
+        6. At the end of your response, provide a brief summary like:
+           "SUMMARY: Used entity 'Third-party receivables' with amounts: CNY634K (total receivables)"
         """
         
-        response_txt = generate_response(user_query, system_prompt, oai_client, excel_tables, openai_model)
-        results[key] = response_txt
+        response_txt = generate_response(user_query, system_prompt, oai_client, excel_tables, openai_model, entity_name)
+        
+        # Clean up response: remove outer quotation marks and translate Chinese
+        response_txt = clean_response_text(response_txt)
+        
+        # Store result with pattern information for logging
+        results[key] = {
+            'content': response_txt,
+            'pattern_used': 'Pattern 1',  # Default, will be updated based on actual pattern
+            'table_data': excel_tables_for_ai,
+            'financial_figure': financial_figures.get(key, 0),
+            'entity_name': entity_name
+        }
         
         # Update progress bar with key information and AI response preview
         pbar.set_postfix_str(f"{key}: {response_txt[:10]}...")
@@ -786,8 +781,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     return results
 
 def generate_test_results(keys):
-    # Generate mock/test results for each key
-    return {key: f"[TEST] Example output for {key}." for key in keys}
+    # This function is deprecated - AI is now required
+    raise RuntimeError("AI processing is required. Cannot generate test results.")
 
 # --- QA Agent ---
 class QualityAssuranceAgent:
@@ -868,7 +863,7 @@ class DataValidationAgent:
             expected_figure = financial_figures.get(key)
             
             if not AI_AVAILABLE:
-                return self._fallback_data_validation(content, expected_figure, key)
+                raise RuntimeError("AI services are required for data validation. Please check your configuration.")
             
             # Use AI to validate data accuracy
             config_details = load_config(self.config_file)
@@ -955,7 +950,7 @@ class DataValidationAgent:
             Do not include any text before or after the JSON. Only return the JSON object.
             """
             
-            response = generate_response(user_query, system_prompt, oai_client, "", config_details['CHAT_MODEL'])
+            response = generate_response(user_query, system_prompt, oai_client, content, config_details['DEEPSEEK_CHAT_MODEL'], entity)
             
             # Clean response and ensure it's valid JSON
             response = response.strip()
@@ -995,101 +990,14 @@ class DataValidationAgent:
             return {"needs_correction": False, "issues": [f"Validation error: {e}"], "score": 50, "suggestions": []}
     
     def _fallback_data_validation(self, content: str, expected_figure: float, key: str) -> Dict:
-        """Fallback validation when AI is not available"""
-        issues = []
-        score = 100
-        is_valid = True
-        
-        # Basic content checks
-        if not content or len(content.strip()) < 10:
-            issues.append("Content is too short or empty")
-            score -= 30
-            is_valid = False
-        
-        # Check for template artifacts that shouldn't be in final content
-        template_artifacts = ['xxx', 'XXX', 'Pattern 1:', 'Pattern 2:', 'Pattern 3:', '[', ']', '{', '}']
-        for artifact in template_artifacts:
-            if artifact in content:
-                issues.append(f"Template artifact '{artifact}' found in content")
-                score -= 15
-                is_valid = False
-        
-        # Check for proper K/M formatting
-        import re
-        numbers = re.findall(r'\d+\.?\d*[KM]?', content)
-        if numbers:
-            for num in numbers:
-                try:
-                    # Extract numeric part
-                    numeric_part = re.findall(r'\d+\.?\d*', num)[0]
-                    value = float(numeric_part)
-                    
-                    # Check formatting rules
-                    if 'K' in num or 'M' in num:
-                        # Should have 1 decimal place
-                        if '.' not in numeric_part:
-                            issues.append(f"K/M figure '{num}' missing decimal place")
-                            score -= 5
-                    elif value >= 1000:
-                        # Large numbers should use K/M notation
-                        issues.append(f"Large figure '{num}' should use K/M notation")
-                        score -= 10
-                        is_valid = False
-                except ValueError:
-                    continue
-        
-        # Check for expected figure if provided
-        if expected_figure and expected_figure > 0:
-            # Look for the expected figure in various formats
-            expected_str = str(int(expected_figure))
-            expected_formatted = f"{expected_figure:,.0f}"
-            expected_k = f"{expected_figure/1000:.1f}K"
-            expected_m = f"{expected_figure/1000000:.1f}M"
-            
-            found_figure = False
-            for expected_format in [expected_str, expected_formatted, expected_k, expected_m]:
-                if expected_format in content:
-                    found_figure = True
-                    break
-            
-            if not found_figure:
-                issues.append(f"Expected figure {expected_figure:,.0f} not found in content")
-                score -= 20
-                is_valid = False
-        
-        # Check for professional language
-        if any(word in content.lower() for word in ['lorem ipsum', 'placeholder', 'example', 'sample']):
-            issues.append("Content contains placeholder or example text")
-            score -= 20
-            is_valid = False
-        
-        # Final score adjustment
-        score = max(0, score)
-        
-        # Determine validity based on score and issues
-        if score >= 95 and len(issues) == 0:
-            is_valid = True
-        elif score >= 80 and len([i for i in issues if 'template artifact' in i or 'expected figure' in i]) == 0:
-            is_valid = True  # Minor formatting issues only
-        else:
-            is_valid = False
-        
-        return {
-            "is_valid": is_valid,
-            "issues": issues,
-            "score": score,
-            "suggestions": [
-                "Ensure all figures use proper K/M notation",
-                "Verify figures match balance sheet data",
-                "Remove any template artifacts"
-            ] if not is_valid else []
-        }
+        """This function is deprecated - AI is now required"""
+        raise RuntimeError("AI services are required for data validation. Please check your configuration.")
     
     def correct_financial_data(self, content: str, issues: List[str]) -> str:
         """Correct financial data issues using AI"""
         try:
             if not AI_AVAILABLE:
-                return content
+                raise RuntimeError("AI services are required for data correction. Please check your configuration.")
             
             config_details = load_config(self.config_file)
             oai_client, _ = initialize_ai_services(config_details)
@@ -1124,7 +1032,7 @@ class DataValidationAgent:
             RETURN: Only the corrected content text, no explanations or JSON.
             """
             
-            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['CHAT_MODEL'])
+            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['DEEPSEEK_CHAT_MODEL'], entity)
             return corrected_content.strip()
             
         except Exception as e:
@@ -1146,7 +1054,7 @@ class PatternValidationAgent:
             patterns = load_ip(self.pattern_file, key)
             
             if not AI_AVAILABLE:
-                return self._fallback_pattern_validation(content, patterns, key)
+                raise RuntimeError("AI services are required for pattern validation. Please check your configuration.")
             
             # Use AI to validate pattern compliance
             config_details = load_config(self.config_file)
@@ -1236,7 +1144,7 @@ class PatternValidationAgent:
             Do not include any text before or after the JSON. Only return the JSON object.
             """
             
-            response = generate_response(user_query, system_prompt, oai_client, "", config_details['CHAT_MODEL'])
+            response = generate_response(user_query, system_prompt, oai_client, content, config_details['DEEPSEEK_CHAT_MODEL'], entity)
             
             # Clean response and ensure it's valid JSON
             response = response.strip()
@@ -1280,40 +1188,14 @@ class PatternValidationAgent:
             return {"needs_correction": False, "issues": [f"Validation error: {e}"], "score": 50, "suggestions": []}
     
     def _fallback_pattern_validation(self, content: str, patterns: Dict, key: str) -> Dict:
-        """Fallback validation when AI is not available"""
-        issues = []
-        score = 100
-        
-        # Check for placeholder values
-        if 'xxx' in content.lower() or '{' in content or '}' in content:
-            issues.append("Unfilled placeholders found in content")
-            score -= 25
-        
-        # Check for pattern structure
-        if not any(pattern.lower() in content.lower() for pattern in patterns.values()):
-            issues.append("Content doesn't match expected pattern structure")
-            score -= 20
-        
-        # Check for professional language
-        professional_terms = ['represented', 'comprised', 'indicated', 'demonstrated']
-        if not any(term in content.lower() for term in professional_terms):
-            issues.append("Missing professional financial language")
-            score -= 15
-        
-        return {
-            "needs_correction": score < 80,
-            "issues": issues,
-            "score": score,
-            "pattern_match": "none",
-            "missing_elements": [],
-            "suggestions": []
-        }
+        """This function is deprecated - AI is now required"""
+        raise RuntimeError("AI services are required for pattern validation. Please check your configuration.")
     
     def correct_pattern_compliance(self, content: str, issues: List[str]) -> str:
         """Correct pattern compliance issues using AI"""
         try:
             if not AI_AVAILABLE:
-                return content
+                raise RuntimeError("AI services are required for pattern correction. Please check your configuration.")
             
             config_details = load_config(self.config_file)
             oai_client, _ = initialize_ai_services(config_details)
@@ -1348,12 +1230,45 @@ class PatternValidationAgent:
             RETURN: Only the corrected content text, no explanations or JSON.
             """
             
-            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['CHAT_MODEL'])
+            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['DEEPSEEK_CHAT_MODEL'], entity)
             return corrected_content.strip()
             
         except Exception as e:
             print(f"Pattern correction error: {e}")
             return content
+
+def clean_response_text(text: str) -> str:
+    """Clean up AI response text: remove outer quotes, translate Chinese, etc."""
+    if not text:
+        return text
+    
+    # Remove outer quotation marks
+    text = text.strip()
+    if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+        text = text[1:-1]
+    
+    # Translate Chinese to English (basic common translations)
+    chinese_translations = {
+        '進項稅金中轉': 'Input Tax Transfer',
+        '自來水有限公司': 'Water Supply Co., Ltd.',
+        '仲量聯行北京諮詢公司': 'Jones Lang LaSalle Beijing Consulting Co.',
+        '信用中和會計師事務所': 'Credit Zhonghe Accounting Firm',
+        '企業管理諮詢公司': 'Business Management Consulting Co.',
+        '科技有限公司': 'Technology Co., Ltd.',
+        '物業服務有限公司': 'Property Services Co., Ltd.',
+        '物流發展有限公司': 'Logistics Development Co., Ltd.',
+        '股權投資基金合夥企業': 'Equity Investment Fund Partnership',
+        '物流倉儲有限公司': 'Logistics Storage Co., Ltd.',
+        '特殊普通合夥': 'Special General Partnership',
+        '戰區運營': 'Regional Operations',
+        '已認證未入帳': 'Certified but Not Recorded',
+        '有限合夥': 'Limited Partnership'
+    }
+    
+    for chinese, english in chinese_translations.items():
+        text = text.replace(chinese, english)
+    
+    return text.strip()
 
 def multiply_figures_for_ai_processing(excel_content: str) -> str:
     """

@@ -92,6 +92,7 @@ desktop.ini
 *.temp
 *.log
 *.bak
+clean_cache.py
 
 # Documentation (except README.md)
 PORT_MANAGEMENT_GUIDE.md

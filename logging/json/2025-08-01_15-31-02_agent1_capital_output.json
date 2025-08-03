@@ -1,0 +1,17 @@
+{
+  "timestamp": "2025-08-01 15:31:02",
+  "agent": "AGENT1",
+  "key": "Capital",
+  "type": "OUTPUT",
+  "output": {
+    "content": "\"Share capital of circa CNY92.0K was paid up as at the reporting date.\"\n\nSUMMARY: Used entity 'Haining Wanpu' with amounts: CNY92.0K (capital)",
+    "length": 142,
+    "format": "text"
+  },
+  "processing": {
+    "time_seconds": 10.109302759170532,
+    "status": "success",
+    "is_success": true
+  },
+  "session_id": "20250801_152912"
+}

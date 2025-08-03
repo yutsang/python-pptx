@@ -1,0 +1,5 @@
+{
+  "config_loading": true,
+  "excel_processing": true,
+  "streamlit_app": true
+}

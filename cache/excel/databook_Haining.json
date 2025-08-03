@@ -1,0 +1,7 @@
+{
+  "content": "## original_table_0\n**Entity:** Haining\n**Date:** 2022-09-30 00:00:00\n**Currency:** CNY\n**Multiplier:** 1000\n\n- CNY'000: 2022000\n- Third-party receivables: 241000\n- Provision for bad and doubtful debts: 22000\n- CNY'000: 2022000\n- Third-party receivables: 640000\n- Provision for bad and doubtful debts: 6000\n- CNY'000: 2022000\n- Third-party receivables: 410000\n- Provision for bad and doubtful debts: 4000\n\n**Total:** 406000\n\n",
+  "file_hash": "fb7dbe7a18ef219081bab781c66e4e4b",
+  "timestamp": 1754035540.126593,
+  "source_file": "databook.xlsx",
+  "entity_name": "Haining"
+}
