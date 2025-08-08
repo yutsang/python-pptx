@@ -10,13 +10,15 @@
     "OPENAI_API_VERSION_COMPLETION": "2024-08-01-preview",
     "OPENAI_API_VERSION_EMBEDDING": "2023-03-15",
     "EMBEDDINGS_MODEL": "text-embedding-ada-002",
+
     "AZURE_AI_SEARCH_SERVICE_NAME": "placeholder-azure-search-service",
     "AZURE_AI_SEARCH_SERVICE_ENDPOINT": "placeholder-azure-search-endpoint",
     "AZURE_AI_SEARCH_INDEX_NAME": "flow-chart-index",
+    "SEARCH_API_KEY": "placeholder-search-api-key",
+
     "EMBEDDING_SIZE": 1536,
     "MAX_CONVERSATION": 10,
     "MAX_EMBEDDING_SEARCH_RESULT": 1,
-    "SEARCH_API_KEY": "placeholder-search-api-key",
 
     "LOCAL_AI_API_BASE": "http://localhost:1234/v1",
     "LOCAL_AI_API_KEY": "placeholder-local-api-key",
