@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-08-08 08:11:37",
+  "agent": "AGENT1",
+  "key": "Taxes payable",
+  "type": "OUTPUT",
+  "output": {
+    "content": {
+      "content": "balance as at 30 September 2022 represented 房產稅 payable of CNY216K and 土地使用稅 payable of CNY623K\n\nSUMMARY: Used entities '房產稅' (CNY216K) and '土地使用稅' (CNY623K) with total tax payable of CNY840K",
+      "pattern_used": "Pattern 1",
+      "table_data": [
+        {
+          "sheet": "Tax payable",
+          "data": 

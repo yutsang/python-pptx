@@ -1,0 +1,30 @@
+{
+  "timestamp": "2025-08-08 08:18:25",
+  "agent": "AGENT1",
+  "key": "Prepayments",
+  "type": "OUTPUT",
+  "output": {
+    "content": {
+      "content": "The balance as at 30 September 2022 represented CNY336K of upfront utility expense payments to 海寧市供電有限公司 for electricity and CNY10K of utility expense payments to 海寧錢塘水務有限公司 for water, covering the next 2-3 months of prepaid utility expenses.\n\nSUMMARY: Used entities '海寧市供電有限公司' (CNY336K) and '海寧錢塘水務有限公司' (CNY10K) with total prepayments of CNY346K.",
+      "pattern_used": "Pattern 1",
+      "table_data": [
+        {
+          "sheet": "Prepayments",
+          "data": "    Unnamed: 0                   Unnamed: 1 Unnamed: 2           Unnamed: 3\n13         NaN  Prepayments - Haining Wanpu        NaN                  NaN\n14         NaN                          NaN        NaN  Indivative adjusted\n15         NaN                      CNY'000     Nature  2022-09-30 00:00:00\n16         NaN                    海寧市供電有限公司    預付帳款-電費                  336\n17         NaN                   海寧錢塘水務有限公司    預付帳款-水費                   10\n18         NaN                  珠海市物業服務有限公司        物業費                    0\n19         NaN                        Total        NaN                  346",
+          "markdown": "|   Unnamed: 0 | Unnamed: 1                  | Unnamed: 2    | Unnamed: 3          |\n|-------------:|:----------------------------|:--------------|:--------------------|\n|          nan | Prepayments - Haining Wanpu | nan           | nan                 |\n|          nan | nan                         | nan           | Indivative adjusted |\n|          nan | CNY'000                     | Nature        | 2022-09-30 00:00:00 |\n|          nan | 海寧市供電有限公司          | 預付帳款-電費 | 336                 |\n|          nan | 海寧錢塘水務有限公司        | 預付帳款-水費 | 10                  |\n|          nan | 珠海市物業服務有限公司      | 物業費        | 0                   |\n|          nan | Total                       | nan           | 346                 |",
+          "entity_match": "True"
+        }
+      ],
+      "financial_figure": 346000.0,
+      "entity_name": "Haining"
+    },
+    "length": 1875,
+    "format": "json"
+  },
+  "processing": {
+    "time_seconds": 8.576908906300863,
+    "status": "success",
+    "is_success": true
+  },
+  "session_id": "20250808_081701"
+}

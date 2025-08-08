@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-08-08 07:56:59",
+  "agent": "AGENT1",
+  "key": "OP",
+  "type": "OUTPUT",
+  "output": {
+    "content": {
+      "content": "balance as at 30-Sep-2022 represented:\n\nCNY30.5M of Others subtotal, including CNY25.5M of 暫估成本 (estimated costs), CNY4.8M of Company #2, and CNY2199K of Deposit subtotal\nCNY85.2M of Related party payables Subtotal, primarily consisting of CNY83.0M from Equity Investment Fund Partnership(Limited Partnership) (Equity Investment Fund Partnership) and CNY2.2M from Logistics Storage Co., Ltd. (Logistics Warehouse Co., Ltd.)\n\nSUMMARY: Used entities 'Others subtotal' (CNY30.5M) and 'Related party payables Subtotal' (CNY85.2M) with major components including 暫估成本, Company #2, Deposit subtotal, Equity Investment Fund Partnership, and Logistics Storage Co., Ltd.. Total payables: CNY121.0M.",
+      "pattern_used": "Pattern 1",
+      "table_data": [
+        {
+          "sheet": "OP",
+          "data": 

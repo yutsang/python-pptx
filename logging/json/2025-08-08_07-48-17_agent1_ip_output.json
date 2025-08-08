@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-08-08 07:48:17",
+  "agent": "AGENT1",
+  "key": "IP",
+  "type": "OUTPUT",
+  "output": {
+    "content": {
+      "content": "balance as at 30 September 2022 mainly represented the net book value of the Targeted properties of CNY197.5M. The original value did not change over the period, the book value change represented the depreciation of properties.\n\nProject Haining Wanpu was an investment property that the entity previously acquired from an undisclosed party. The land was located in Haining (size not specified), the construction of Project Haining Wanpu was completed in an unspecified date and was under unspecified leasing status over the period. The land (土地使用權) and warehouses (房屋建築物) were depreciated using straight-line method of 50 years and 20 years of useful life, with the residual value rate of 0% and 4%, respectively.\n\nAs at this report date, Project Haining Wanpu did not conduct final accounts. Though management said that most of the primary contracts had been verified and accounted, the original costs may still not be finalised. Potential under-estimated construction payables and CAPEX commitment may still exist, you should confirm with management if there are any future CAPEX plans and factor the capital commitments (if any) into your valuation model.\n\nTotal properties of Project Haining Wanpu were mortgaged as loan collateral in favour of an unspecified bank.\n\nSUMMARY: Used entity 'Haining Wanpu' with amounts: CNY197.5M (total carrying amount), consisting of 房屋建築物 (CNY126.4M) and 土地使用權 (CNY71.1M)",
+      "pattern_used": "Pattern 1",
+      "table_data": [
+        {
+          "sheet": "Investment properties",
+          "data": 
