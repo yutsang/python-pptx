@@ -28,8 +28,8 @@ def load_config(file_path):
         config_details = json.load(config_file)
     return config_details
 
-def initialize_ai_services(config_details, use_local=False):
-    """Initialize AI client using config details - supports both server (DeepSeek) and local AI."""
+def initialize_ai_services(config_details, use_local=False, use_openai=False):
+    """Initialize AI client using config details - supports DeepSeek, OpenAI, and local AI."""
     if not AI_AVAILABLE:
         raise RuntimeError("AI services not available on this machine.")
     httpx_client = httpx.Client(verify=False)
@@ -47,6 +47,17 @@ def initialize_ai_services(config_details, use_local=False):
             print("🏠 Using Local AI model")
         else:
             raise RuntimeError("Local AI configuration not found or not enabled. Please check LOCAL_AI_API_BASE and LOCAL_AI_ENABLED in config.")
+    elif use_openai:
+        # Initialize OpenAI client
+        if config_details.get('OPENAI_API_KEY') and config_details.get('OPENAI_API_BASE'):
+            oai_client = OpenAI(
+                api_key=config_details['OPENAI_API_KEY'],
+                base_url=config_details['OPENAI_API_BASE'],
+                http_client=httpx_client
+            )
+            print("🤖 Using OpenAI GPT-4o-mini")
+        else:
+            raise RuntimeError("OpenAI configuration not found. Please check OPENAI_API_KEY and OPENAI_API_BASE in config.")
     else:
         # Initialize DeepSeek client (server)
         if config_details.get('DEEPSEEK_API_KEY') and config_details.get('DEEPSEEK_API_BASE'):
@@ -61,17 +72,17 @@ def initialize_ai_services(config_details, use_local=False):
     
     return oai_client, None  # No search client needed
 
-def get_openai_client(config_details=None, use_local=False):
+def get_openai_client(config_details=None, use_local=False, use_openai=False):
     """Get the appropriate OpenAI client based on model selection."""
     if config_details is None:
         # Load config if not provided
         config_path = os.path.join(os.path.dirname(__file__), '..', 'utils', 'config.json')
         config_details = load_config(config_path)
     
-    client, _ = initialize_ai_services(config_details, use_local=use_local)
+    client, _ = initialize_ai_services(config_details, use_local=use_local, use_openai=use_openai)
     return client
 
-def get_chat_model(config_details=None, use_local=False):
+def get_chat_model(config_details=None, use_local=False, use_openai=False):
     """Get the appropriate chat model name based on selection."""
     if config_details is None:
         # Load config if not provided
@@ -80,10 +91,12 @@ def get_chat_model(config_details=None, use_local=False):
     
     if use_local:
         return config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
+    elif use_openai:
+        return config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
     else:
         return config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
 
-def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model, entity_name="default"):
+def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model, entity_name="default", use_local_ai=False):
     """Generate a response from the AI model given a user query and system prompt with simple caching."""
     # Use simple cache instead of complex hash-based cache
     from utils.simple_cache import get_simple_cache
@@ -112,15 +125,37 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
     ]
     
     try:
+        # For local AI with thinking support (DeepSeek 671B), enable reasoning
+        extra_params = {}
+        if use_local_ai:
+            # Check if local AI supports thinking process
+            try:
+                config_path = os.path.join(os.path.dirname(__file__), '..', 'utils', 'config.json')
+                config_details = load_config(config_path)
+                if config_details.get('LOCAL_AI_SUPPORTS_THINKING', False):
+                    extra_params['reasoning'] = True
+                    extra_params['temperature'] = 0.1  # Lower temperature for more focused reasoning
+                    print("🧠 Using local AI with thinking process enabled")
+            except Exception as e:
+                print(f"⚠️ Could not check thinking support: {e}")
+        
         response = oai_client.chat.completions.create(
             model=openai_chat_model,
             messages=conversation,
+            **extra_params
         )
     except Exception as e:
         print(f"❌ API call failed with model '{openai_chat_model}': {e}")
         raise
     
     response_content = response.choices[0].message.content
+    
+    # For local AI with thinking process, extract final answer if reasoning is included
+    if use_local_ai and "<thinking>" in response_content:
+        # Extract content after thinking process
+        if "</thinking>" in response_content:
+            response_content = response_content.split("</thinking>")[-1].strip()
+            print("🧠 Extracted final answer from thinking process")
     
     # Cache the response using simple cache
     cache.cache_ai_result(cache_key, entity_name, response_content)
@@ -608,7 +643,7 @@ def load_ip(file, key=None):
     return {}
 
 # --- Pattern Filling and Main Processing ---
-def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', prompts_file='utils/prompts.json', use_ai=True, convert_thousands=False, progress_callback=None, processed_table_data=None, use_local_ai=False):
+def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', prompts_file='utils/prompts.json', use_ai=True, convert_thousands=False, progress_callback=None, processed_table_data=None, use_local_ai=False, use_openai=False):
     # AI is required - no fallback mode
     if not use_ai:
         raise RuntimeError("AI processing is required. Cannot run in offline mode.")
@@ -691,10 +726,12 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         config_details = load_config(config_file)
         
         # Initialize AI services - required for processing
-        oai_client, search_client = initialize_ai_services(config_details, use_local=use_local_ai)
+        oai_client, search_client = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
         # Use appropriate model based on selection
         if use_local_ai:
             openai_model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
+        elif use_openai:
+            openai_model = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
         else:
             openai_model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
         
@@ -1077,10 +1114,11 @@ class DataValidationAgent:
 
 # --- Pattern Validation Agent ---
 class PatternValidationAgent:
-    def __init__(self, use_local_ai=False):
+    def __init__(self, use_local_ai=False, use_openai=False):
         self.config_file = 'utils/config.json'
         self.pattern_file = 'utils/pattern.json'
         self.use_local_ai = use_local_ai
+        self.use_openai = use_openai
     
     def validate_pattern_compliance(self, content: str, key: str) -> Dict:
         """Validate that content follows the expected pattern structure"""
@@ -1095,7 +1133,7 @@ class PatternValidationAgent:
             
             # Use AI to validate pattern compliance
             config_details = load_config(self.config_file)
-            oai_client, _ = initialize_ai_services(config_details, use_local=self.use_local_ai)
+            oai_client, _ = initialize_ai_services(config_details, use_local=self.use_local_ai, use_openai=self.use_openai)
             
             # Load system prompt from prompts.json
             try:
@@ -1184,6 +1222,8 @@ class PatternValidationAgent:
             # Use appropriate model based on selection
             if self.use_local_ai:
                 model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
+            elif self.use_openai:
+                model = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
             else:
                 model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
             

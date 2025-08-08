@@ -11,3 +11,21 @@
 📝 [2025-08-08 08:28:32] AGENT1 INPUT → Taxes payable (Est. 850 tokens)
 📝 [2025-08-08 08:28:32] AGENT1 INPUT → OP (Est. 1455 tokens)
 📝 [2025-08-08 08:28:32] AGENT1 INPUT → Capital (Est. 872 tokens)
+✅ [2025-08-08 08:29:52] AGENT1 OUTPUT ← Cash (8.95s)
+   Length: 2041 chars | Status: Success
+✅ [2025-08-08 08:29:52] AGENT1 OUTPUT ← AR (8.95s)
+   Length: 3005 chars | Status: Success
+✅ [2025-08-08 08:29:52] AGENT1 OUTPUT ← Prepayments (8.95s)
+   Length: 1872 chars | Status: Success
+✅ [2025-08-08 08:29:52] AGENT1 OUTPUT ← OR (8.95s)
+   Length: 2562 chars | Status: Success
+✅ [2025-08-08 08:29:52] AGENT1 OUTPUT ← IP (8.95s)
+   Length: 6868 chars | Status: Success
+✅ [2025-08-08 08:29:52] AGENT1 OUTPUT ← AP (8.95s)
+   Length: 7965 chars | Status: Success
+✅ [2025-08-08 08:29:52] AGENT1 OUTPUT ← Taxes payable (8.95s)
+   Length: 2096 chars | Status: Success
+✅ [2025-08-08 08:29:52] AGENT1 OUTPUT ← OP (8.95s)
+   Length: 7670 chars | Status: Success
+✅ [2025-08-08 08:29:52] AGENT1 OUTPUT ← Capital (8.95s)
+   Length: 2223 chars | Status: Success
