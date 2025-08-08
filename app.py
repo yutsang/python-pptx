@@ -1259,17 +1259,20 @@ def main():
                 "Select Mode", 
                 ai_mode_options,
                 index=0,  # Set DeepSeek as default (first option)
-                help="Choose the AI model or offline processing mode (DeepSeek is default, Local AI for self-hosted models)"
+                help="Choose the AI model or offline processing mode (DeepSeek is default, Local AI for self-hosted, GPT-4o-mini for OpenAI)"
             )
             
             # Show API configuration status
             config, _, _, _ = load_config_files()
             if config:
                 if mode_display == "GPT-4o-mini":
-                    if config.get('OPENAI_API_KEY'):
+                    if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_KEY') != 'placeholder-openai-api-key':
                         st.success("✅ OpenAI API key configured")
+                        st.info(f"🤖 Model: {config.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')}")
+                        st.info(f"📅 Version: {config.get('OPENAI_API_VERSION', '2024-08-01-preview')}")
                     else:
                         st.warning("⚠️ OpenAI API key not configured")
+                        st.info("🔧 Please add your OpenAI API key to config.json")
                 elif mode_display == "Deepseek":
                     if config.get('DEEPSEEK_API_KEY'):
                         st.success("✅ Deepseek API key configured")
@@ -1287,8 +1290,8 @@ def main():
             
             # Map display names to internal mode names
             mode_mapping = {
-                "GPT-4o-mini": "AI Mode",
-                "Deepseek": "AI Mode - Deepseek",
+                "GPT-4o-mini": "AI Mode - OpenAI",
+                "Deepseek": "AI Mode - Deepseek", 
                 "Local AI": "AI Mode - Local",
                 "Offline": "Offline Mode"
             }
@@ -1296,6 +1299,7 @@ def main():
             st.session_state['selected_mode'] = mode
             st.session_state['ai_model'] = mode_display
             st.session_state['use_local_ai'] = (mode_display == "Local AI")
+            st.session_state['use_openai'] = (mode_display == "GPT-4o-mini")
             
             # Performance statistics - moved below Select Mode
             st.markdown("---")
@@ -3345,8 +3349,9 @@ IMPORTANT ENTITY INSTRUCTIONS:
         # Get processed table data from session state
         processed_table_data = ai_data.get('sections_by_key', {})
         
-        # Get local AI setting from session state
+        # Get AI model settings from session state
         use_local_ai = st.session_state.get('use_local_ai', False)
+        use_openai = st.session_state.get('use_openai', False)
         
         results = process_keys(
             keys=filtered_keys,  # All keys at once
@@ -3360,7 +3365,8 @@ IMPORTANT ENTITY INSTRUCTIONS:
             use_ai=True,
             progress_callback=update_progress,
             processed_table_data=processed_table_data,
-            use_local_ai=use_local_ai
+            use_local_ai=use_local_ai,
+            use_openai=use_openai
         )
         
         processing_time = time.time() - start_time
@@ -3857,9 +3863,10 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
             st.warning(f"⚠️ Could not load prompts.json: {e}")
             agent3_system_prompt = "Fallback Agent 3 system prompt"
         
-        # Get local AI setting from session state
+        # Get AI model settings from session state
         use_local_ai = st.session_state.get('use_local_ai', False)
-        pattern_agent = PatternValidationAgent(use_local_ai=use_local_ai)
+        use_openai = st.session_state.get('use_openai', False)
+        pattern_agent = PatternValidationAgent(use_local_ai=use_local_ai, use_openai=use_openai)
         results = {}
         
         # Load patterns

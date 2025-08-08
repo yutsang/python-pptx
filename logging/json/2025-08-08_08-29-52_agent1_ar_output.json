@@ -1,0 +1,62 @@
+{
+  "timestamp": "2025-08-08 08:29:52",
+  "agent": "AGENT1",
+  "key": "AR",
+  "type": "OUTPUT",
+  "output": {
+    "content": {
+      "content": "The balance as at 30 September 2022 represented receivables of rental and property management income due from Third-party receivables amounting to CNY640K. The Target recognised revenue using straight-line method; we reclassified the levelling impact of revenue recognition in the rent-free period to other non-current assets at the end of September 2022. Management did not accrue bad debt provision for accounts receivables from Third-party receivables, we indicatively accrued provision of CNY6K at the rate of 1% according to the Target's policy, resulting in a net receivable balance of CNY634K.\n\nSUMMARY: Used entity 'Third-party receivables' with amounts: CNY640K (gross receivables), CNY6K (provision), and CNY634K (net total)",
+      "pattern_used": "Pattern 1",
+      "table_data": [
+        {
+          "sheet": "AR",
+          "data": "    Unnamed: 0                            Unnamed: 1           Unnamed: 2  ...  Unnamed: 8 Unnamed: 9 Unnamed: 10\n9          NaN   Accounts receivable - Haining Wanpu                  NaN  ...         NaN        NaN         NaN\n10         NaN                                   NaN  Indicative adjusted  ...         NaN        NaN         NaN\n11         NaN                               CNY'000  2022-09-30 00:00:00  ...         NaN        NaN         NaN\n12         NaN               Third-party receivables                  640  ...         NaN        NaN         NaN\n13         NaN  Provision for bad and doubtful debts                   -6  ...         NaN        NaN         NaN\n14         NaN                                 Total                  634  ...         NaN        NaN         NaN\n\n[6 rows x 11 columns]",
+          "parsed_data": {
+            "metadata": {
+              "table_name": "AR - Haining",
+              "sheet_name": "AR",
+              "date": "2022-09-30",
+              "currency_info": "CNY'000",
+              "multiplier": 1000,
+              "value_column": "Indicative adjusted",
+              "data_start_row": 2
+            },
+            "data": [
+              {
+                "description": "Third-party receivables",
+                "value": 640000.0,
+                "original_value": "640",
+                "is_total": false
+              },
+              {
+                "description": "Provision for bad and doubtful debts",
+                "value": -6000.0,
+                "original_value": "-6",
+                "is_total": false
+              },
+              {
+                "description": "Total",
+                "value": 634000.0,
+                "original_value": "634",
+                "is_total": true
+              }
+            ],
+            "raw_df": "                              Unnamed: 1           Unnamed: 2\n9    Accounts receivable - Haining Wanpu                  NaN\n10                                   NaN  Indicative adjusted\n11                               CNY'000  2022-09-30 00:00:00\n12               Third-party receivables                  640\n13  Provision for bad and doubtful debts                   -6\n14                                 Total                  634"
+          },
+          "markdown": "**AR - Haining**\n*Sheet: AR*\n*Date: 30-Sep-2022*\n*Currency: CNY'000*\n*Value Column: Indicative adjusted*\n\n| Description | Value |\n|-------------|--------|\n| Third-party receivables | 640,000.00 |\n| Provision for bad and doubtful debts | -6,000.00 |\n| **Total** | **634,000.00** |",
+          "entity_match": "True"
+        }
+      ],
+      "financial_figure": 634000.0,
+      "entity_name": "Haining"
+    },
+    "length": 3005,
+    "format": "json"
+  },
+  "processing": {
+    "time_seconds": 8.95069522327847,
+    "status": "success",
+    "is_success": true
+  },
+  "session_id": "20250808_082826"
+}
