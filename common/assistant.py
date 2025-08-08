@@ -44,7 +44,7 @@ def initialize_ai_services(config_details):
             base_url=config_details['DEEPSEEK_API_BASE'],
             http_client=httpx_client
         )
-        print("🤖 Using DeepSeek AI for processing")
+        # DeepSeek AI initialized (silent for cleaner progress bar)
     else:
         raise RuntimeError("DeepSeek configuration not found. Please check DEEPSEEK_API_KEY and DEEPSEEK_API_BASE in config.")
     
