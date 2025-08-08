@@ -83,12 +83,28 @@ class AIAgentLogger:
             
             json_file_path = json_log_dir / filename
             
-            # Save structured JSON
+            # Create JSON-serializable copy and save
+            safe_log_entry = self._make_json_serializable(log_entry)
             with open(json_file_path, 'w', encoding='utf-8') as f:
-                json.dump(log_entry, f, indent=2, ensure_ascii=False)
+                json.dump(safe_log_entry, f, indent=2, ensure_ascii=False)
                 
         except Exception as e:
             print(f"Error saving JSON log: {e}")
+    
+    def _make_json_serializable(self, obj):
+        """Convert DataFrame and other non-serializable objects to strings"""
+        if hasattr(obj, 'to_dict'):  # DataFrame
+            return str(obj)
+        elif isinstance(obj, dict):
+            return {k: self._make_json_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_json_serializable(item) for item in obj]
+        else:
+            try:
+                json.dumps(obj)  # Test if serializable
+                return obj
+            except (TypeError, ValueError):
+                return str(obj)
     
     def _save_key_log(self, agent_name, key, input_entry, output_entry):
         """Save input and output for a key in one JSON file"""
@@ -111,9 +127,10 @@ class AIAgentLogger:
                 'success': output_entry.get('success', False)
             }
             
-            # Save as formatted JSON
+            # Create JSON-serializable copy and save
+            safe_key_log = self._make_json_serializable(key_log)
             with open(key_file_path, 'w', encoding='utf-8') as f:
-                json.dump(key_log, f, indent=2, ensure_ascii=False)
+                json.dump(safe_key_log, f, indent=2, ensure_ascii=False)
                 
         except Exception as e:
             print(f"Error saving key log: {e}")
@@ -460,7 +477,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         st.error(f"An error occurred while processing the Excel file: {e}")
         return ""
 
-def parse_accounting_table(df, key, entity_name, sheet_name):
+def parse_accounting_table(df, key, entity_name, sheet_name, debug=False):
     """
     Parse accounting table with proper header detection and figure column identification
     Returns structured table data with metadata
@@ -472,12 +489,9 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
         if df.empty or len(df) < 2:
             return None
         
-        # Debug: Show original DataFrame structure
-        print(f"DEBUG: Original DataFrame shape: {df.shape}")
-        print(f"DEBUG: Original DataFrame columns: {df.columns.tolist()}")
-        print(f"DEBUG: Original DataFrame first few rows:")
-        for i in range(min(5, len(df))):
-            print(f"  Row {i}: {df.iloc[i].tolist()}")
+        # Debug info reduced for cleaner output
+        if debug:  # Only show if explicitly debugging
+            print(f"DEBUG: DataFrame shape: {df.shape}")
         
         # Clean the DataFrame first - drop unnamed columns that are all NaN
         df_clean = df.copy()
@@ -487,33 +501,21 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                 dropped_columns.append(col)
                 df_clean = df_clean.drop(columns=[col])
         
-        if dropped_columns:
-            print(f"DEBUG: Dropped columns: {dropped_columns}")
-            print(f"DEBUG: Remaining columns: {df_clean.columns.tolist()}")
-        
         # If all columns were dropped, try a different approach
         if len(df_clean.columns) == 0:
-            print("DEBUG: All columns dropped, trying alternative approach...")
             # Try to find columns with actual data
             df_clean = df.copy()
             for col in df_clean.columns:
                 # Check if column has any non-null, non-empty values
                 non_null_count = df_clean[col].notna().sum()
                 non_empty_count = (df_clean[col].astype(str).str.strip() != '').sum()
-                if non_null_count > 0 or non_empty_count > 0:
-                    print(f"DEBUG: Keeping column {col} (non-null: {non_null_count}, non-empty: {non_empty_count})")
-                else:
-                    print(f"DEBUG: Dropping column {col} (all null/empty)")
+                if non_null_count == 0 and non_empty_count == 0:
                     df_clean = df_clean.drop(columns=[col])
         
         # Additional cleaning: remove columns that are all None/NaN after initial cleaning
         for col in list(df_clean.columns):
             if df_clean[col].isna().all() or (df_clean[col].astype(str) == 'None').all():
                 df_clean = df_clean.drop(columns=[col])
-                print(f"DEBUG: Removed all-NaN column {col} from structured parsing")
-        
-        print(f"DEBUG: Final cleaned DataFrame shape: {df_clean.shape}")
-        print(f"DEBUG: Final cleaned DataFrame columns: {df_clean.columns.tolist()}")
         
         # Convert all cells to string for analysis
         df_str = df_clean.astype(str).fillna('')
@@ -548,12 +550,12 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                 if "indicative adjusted" in cell_value:
                     value_col_idx = j
                     value_col_name = "Indicative adjusted"
-                    print(f"DEBUG: Found 'Indicative adjusted' in column {j}")
+                    # Found value column indicator
                     break
                 elif "total" in cell_value and value_col_idx is None:
                     value_col_idx = j
                     value_col_name = "Total"
-                    print(f"DEBUG: Found 'Total' in column {j}")
+                    # Found total column
         
         # If still no specific column found, look for any column with financial data patterns
         if value_col_idx is None:
@@ -566,7 +568,7 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                     if any(pattern in cell_value for pattern in financial_patterns):
                         value_col_idx = j
                         value_col_name = f"Financial Column {j+1}"
-                        print(f"DEBUG: Found financial pattern in column {j}: '{cell_value}'")
+                        # Found financial pattern
                         break
                 if value_col_idx is not None:
                     break
@@ -579,12 +581,12 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                 column_name = str(df_str.columns[j]).lower()
                 # Exclude Excel-generated or index columns
                 if any(skip_name in column_name for skip_name in ['column1', 'unnamed', 'index']):
-                    print(f"DEBUG: Skipping column {j} '{df_str.columns[j]}' - appears to be Excel-generated")
+                    # Skipping Excel-generated column
                     continue
                 
                 # Additional check: skip if column name is a pure number
                 if re.match(r'^\d+\.?\d*$', column_name):
-                    print(f"DEBUG: Skipping column {j} '{df_str.columns[j]}' - column name is pure number")
+                    # Skipping numeric column name
                     continue
                 # Check if column is strictly sequential (row numbers)
                 numeric_values = []
@@ -599,11 +601,11 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                 if len(numeric_values) >= 2:
                     diffs = [numeric_values[i+1] - numeric_values[i] for i in range(len(numeric_values)-1)]
                     if all(d == 1 for d in diffs) or all(d == 0 for d in diffs):
-                        print(f"DEBUG: Skipping column {j} - strictly sequential numbers: {numeric_values[:5]}")
+                        # Skipping sequential numbers column
                         continue
                     # Also skip if all values are the same (e.g., all 1000)
                     if len(set(numeric_values)) == 1:
-                        print(f"DEBUG: Skipping column {j} - all values identical: {numeric_values[0]}")
+                        # Skipping identical values column
                         continue
                 # Now check if this is a good candidate
                 numeric_count = 0
@@ -626,16 +628,20 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                 # Only consider columns with significant large numbers
                 if total_cells > 0 and numeric_count >= total_cells * 0.3 and large_numbers >= 2:
                     candidate_cols.append(j)
-                    print(f"DEBUG: Column {j} is a good candidate - {large_numbers} large numbers out of {numeric_count} numeric values")
+                    # Found good candidate column
+                    pass
                 else:
-                    print(f"DEBUG: Column {j} rejected - {large_numbers} large numbers out of {numeric_count} numeric values")
+                    # Column rejected
+                    pass
             if candidate_cols:
                 # Pick the rightmost candidate
                 value_col_idx = candidate_cols[0]
                 value_col_name = f"Column {value_col_idx+1}"
-                print(f"DEBUG: Selected value column {value_col_idx} (rightmost non-row-number column)")
+                # Selected value column
+                pass
             else:
-                print("DEBUG: No valid value column found after excluding row number/index columns.")
+                # No valid value column found
+                pass
                 return None
         
         # Find where actual data starts (skip header rows)
@@ -689,7 +695,7 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                             from datetime import datetime
                             dt = datetime(int(year), int(month), int(day))
                             extracted_date = dt.strftime('%Y-%m-%d')
-                            print(f"DEBUG: Found date '{extracted_date}' in cell [{i},{j}]: '{cell_value}'")
+                            # Found date in cell
                             break
                         except (ValueError, TypeError):
                             continue
@@ -713,31 +719,13 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
         description_col_idx = 0  # Usually first column
         data_rows = []
         
-        # Debug: Print the DataFrame to understand the structure
-        print(f"DEBUG: DataFrame shape: {df_str.shape}")
-        print(f"DEBUG: DataFrame columns: {df_str.columns.tolist()}")
-        print(f"DEBUG: Data start row: {data_start_row}")
-        print(f"DEBUG: Value column index: {value_col_idx}")
-        print(f"DEBUG: Value column name: {value_col_name}")
-        print(f"DEBUG: First few rows:")
-        for i in range(min(10, len(df_str))):
-            print(f"  Row {i}: {df_str.iloc[i].tolist()}")
+        # Minimal debug output (reduced for better UX)
+        if debug:
+            print(f"DEBUG: Processing {df_str.shape[0]} rows, data starts at row {data_start_row}")
         
-        # Debug: Show column analysis
-        print(f"DEBUG: Column analysis:")
-        for j in range(len(df_str.columns)):
-            column_data = df_str.iloc[:, j]
-            numeric_count = 0
-            total_cells = 0
-            sample_values = []
-            for cell in column_data:
-                cell_str = str(cell).strip()
-                if cell_str and cell_str.lower() not in ['nan', '']:
-                    total_cells += 1
-                    sample_values.append(cell_str)
-                    if re.search(r'^\d+\.?\d*$', cell_str.replace(',', '')):
-                        numeric_count += 1
-            print(f"  Column {j}: {numeric_count}/{total_cells} numeric, samples: {sample_values[:3]}")
+        # Column analysis (reduced verbosity)
+        if debug:
+            print(f"DEBUG: Analyzing {len(df_str.columns)} columns for data extraction")
         
         # Skip currency/date header rows that shouldn't be treated as data
         skip_patterns = [
@@ -763,13 +751,13 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
             for pattern in skip_patterns:
                 if re.search(pattern, description.lower()) or re.search(pattern, value_str.lower()):
                     should_skip = True
-                    print(f"DEBUG: Skipping row - Description: '{description}', Value: '{value_str}' (matches pattern: {pattern})")
+                    # Skipping header/currency row
                     break
             
             # Additional check: skip if description is a pure number (like 1000, 1001, etc.)
             if re.match(r'^\d+\.?\d*$', description.strip()):
                 should_skip = True
-                print(f"DEBUG: Skipping row - Description is pure number: '{description}'")
+                # Skipping numeric description row
             
             if should_skip:
                 continue
@@ -802,9 +790,11 @@ def parse_accounting_table(df, key, entity_name, sheet_name):
                     'original_value': value_str,
                     'is_total': is_total
                 })
-                print(f"DEBUG: Added row - Description: '{description}', Value: {value}, Original: '{value_str}', IsTotal: {is_total}")
+                if debug:
+                    print(f"DEBUG: Added row - {description}: {value}")
         
-        print(f"DEBUG: Total data rows extracted: {len(data_rows)}")
+        if debug:
+            print(f"DEBUG: Extracted {len(data_rows)} data rows")
         
         return {
             'metadata': table_metadata,
@@ -1302,9 +1292,23 @@ def main():
             st.markdown("### 🚀 Performance")
             cache = get_simple_cache()
             
-            if st.button("🧹 Clear Cache"):
+            if st.button("🧹 Clear All Cache"):
                 cache.clear_cache()
-                st.success("Cache cleared!")
+                # Also clear session state cache for Excel processing
+                keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
+                for key in keys_to_remove:
+                    del st.session_state[key]
+                st.success("All cache cleared!")
+            
+            if st.button("📊 Clear Excel Cache"):
+                # Clear only Excel processing cache
+                keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
+                if keys_to_remove:
+                    for key in keys_to_remove:
+                        del st.session_state[key]
+                    st.success(f"Excel cache cleared! ({len(keys_to_remove)} entries removed)")
+                else:
+                    st.info("No Excel cache to clear")
             
             if st.button("🔄 Force Refresh"):
                 st.session_state['force_refresh'] = True
@@ -1324,16 +1328,26 @@ def main():
         if not entity_keywords:
             entity_keywords = [selected_entity]
         
-        # Handle different statement types
+        # Handle different statement types with session state caching
         if statement_type == "BS":
-            # Original BS logic
-            sections_by_key = get_worksheet_sections_by_keys(
-                uploaded_file=uploaded_file,
-                tab_name_mapping=mapping,
-                entity_name=selected_entity,
-                entity_suffixes=entity_suffixes,
-                debug=False  # Set to True for debugging
-            )
+            # Create cache key to avoid reprocessing
+            cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}"
+            
+            if cache_key not in st.session_state:
+                # Original BS logic - only run if not cached
+                with st.spinner("🔄 Processing Excel file (first time)..."):
+                    sections_by_key = get_worksheet_sections_by_keys(
+                        uploaded_file=uploaded_file,
+                        tab_name_mapping=mapping,
+                        entity_name=selected_entity,
+                        entity_suffixes=entity_suffixes,
+                        debug=False  # Set to True for debugging
+                    )
+                    st.session_state[cache_key] = sections_by_key
+                st.success("✅ Excel processing completed and cached")
+            else:
+                sections_by_key = st.session_state[cache_key]
+                st.info("⚡ Using cached data (faster loading)")
             st.subheader("View Table by Key")
             keys_with_data = [key for key, sections in sections_by_key.items() if sections]
             if keys_with_data:
@@ -1619,14 +1633,23 @@ def main():
                 if not entity_keywords:
                     entity_keywords = [selected_entity]
                 
-                # Get worksheet sections
-                sections_by_key = get_worksheet_sections_by_keys(
-                    uploaded_file=uploaded_file,
-                    tab_name_mapping=mapping,
-                    entity_name=selected_entity,
-                    entity_suffixes=entity_suffixes,
-                    debug=False
-                )
+                # Get worksheet sections with caching
+                cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}"
+                
+                if cache_key not in st.session_state:
+                    with st.spinner("🔄 Processing Excel file for AI..."):
+                        sections_by_key = get_worksheet_sections_by_keys(
+                            uploaded_file=uploaded_file,
+                            tab_name_mapping=mapping,
+                            entity_name=selected_entity,
+                            entity_suffixes=entity_suffixes,
+                            debug=False
+                        )
+                        st.session_state[cache_key] = sections_by_key
+                    st.success("✅ Excel processing completed for AI")
+                else:
+                    sections_by_key = st.session_state[cache_key]
+                    st.info("⚡ Using cached Excel data for AI processing")
                 
                 # Get keys with data
                 keys_with_data = [key for key, sections in sections_by_key.items() if sections]
@@ -1690,75 +1713,39 @@ def main():
                 agent1_completed = agent_states.get('agent1_completed', False)
                 agent1_results = agent_states.get('agent1_results', {}) or {}
                 
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if st.button("🚀 Run AI1: Content Generation", type="primary", use_container_width=True):
-                        # Progress bar for AI1
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
+                # Single column layout since AI2 was removed
+                if st.button("🚀 Run AI: Content Generation", type="primary", use_container_width=True):
+                    # Progress bar for AI1
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    try:
+                        status_text.text("🤖 AI: Initializing...")
+                        progress_bar.progress(0.1)
                         
-                        try:
-                            status_text.text("🤖 AI1: Initializing...")
-                            progress_bar.progress(0.1)
-                            
-                            agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data)
-                            agent1_success = bool(agent1_results and any(agent1_results.values()))
-                            
-                            st.session_state['agent_states']['agent1_results'] = agent1_results
-                            st.session_state['agent_states']['agent1_completed'] = True
-                            st.session_state['agent_states']['agent1_success'] = agent1_success
-                            
-                            progress_bar.progress(1.0)
-                            if agent1_success:
-                                status_text.text(f"✅ AI1 completed! Generated content for {len(agent1_results)} keys.")
-                            else:
-                                status_text.text("❌ AI1 failed to generate content.")
-                            
-                            time.sleep(2)  # Show completion message briefly
-                            st.rerun()
-                            
-                        except Exception as e:
-                            progress_bar.progress(1.0)
-                            status_text.text(f"❌ AI1 failed: {e}")
-                            time.sleep(2)
-                            st.rerun()
+                        agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data)
+                        agent1_success = bool(agent1_results and any(agent1_results.values()))
+                        
+                        st.session_state['agent_states']['agent1_results'] = agent1_results
+                        st.session_state['agent_states']['agent1_completed'] = True
+                        st.session_state['agent_states']['agent1_success'] = agent1_success
+                        
+                        progress_bar.progress(1.0)
+                        if agent1_success:
+                            status_text.text(f"✅ AI completed! Generated content for {len(agent1_results)} keys.")
+                        else:
+                            status_text.text("❌ AI failed to generate content.")
+                        
+                        time.sleep(2)  # Show completion message briefly
+                        st.rerun()
+                        
+                    except Exception as e:
+                        progress_bar.progress(1.0)
+                        status_text.text(f"❌ AI failed: {e}")
+                        time.sleep(2)
+                        st.rerun()
                 
-                with col2:
-                    if agent1_completed and agent1_results:
-                        if st.button("📊 Run AI2: Data Validation", type="secondary", use_container_width=True):
-                            # Progress bar for AI2
-                            progress_bar = st.progress(0)
-                            status_text = st.empty()
-                            
-                            try:
-                                status_text.text("🔍 AI2: Initializing...")
-                                progress_bar.progress(0.1)
-                                
-                                agent2_results = run_agent_2(filtered_keys_for_ai, agent1_results, temp_ai_data)
-                                agent2_success = bool(agent2_results and len(agent2_results) > 0)
-                                
-                                st.session_state['agent_states']['agent2_results'] = agent2_results
-                                st.session_state['agent_states']['agent2_completed'] = True
-                                st.session_state['agent_states']['agent2_success'] = agent2_success
-                                
-                                progress_bar.progress(1.0)
-                                if agent2_success:
-                                    status_text.text(f"✅ AI2 completed! Validated {len(agent2_results)} keys.")
-                                else:
-                                    status_text.text("❌ AI2 failed to validate data.")
-                                
-                                time.sleep(2)
-                                st.rerun()
-                                
-                            except Exception as e:
-                                progress_bar.progress(1.0)
-                                status_text.text(f"❌ AI2 failed: {e}")
-                                time.sleep(2)
-                                st.rerun()
-                    else:
-                        st.button("📊 Run AI2: Data Validation", disabled=True, use_container_width=True)
-                        st.caption("⚠️ Run AI1 first")
+                # AI2 functionality removed as requested
                 
 
                 
@@ -1788,62 +1775,37 @@ def main():
                     with key_tabs[i]:
                         st.markdown(f"### {get_key_display_name(key)} Results")
                         
-                        # Create sub-tabs for each agent
-                        agent_tabs = st.tabs(["🚀 AI1: Generation", "📊 AI2: Validation", "🎯 AI3: Compliance"])
+                        # Create sub-tabs for each agent (AI2 removed as requested)
+                        agent_tabs = st.tabs(["🚀 AI: Generation", "🎯 AI: Compliance"])
                         
                         # AI1 Results
                         with agent_tabs[0]:
                             agent1_results = agent_states.get('agent1_results', {}) or {}
                             if key in agent1_results and agent1_results[key]:
                                 content = agent1_results[key]
+                                
+                                # Handle both string and dict content
+                                if isinstance(content, dict):
+                                    content_str = content.get('content', str(content))
+                                else:
+                                    content_str = str(content)
+                                
                                 st.markdown("**Generated Content:**")
-                                st.markdown(content)
+                                st.markdown(content_str)
                                 
                                 # Metadata
                                 col1, col2, col3 = st.columns(3)
                                 with col1:
-                                    st.metric("Characters", len(content))
+                                    st.metric("Characters", len(content_str))
                                 with col2:
-                                    st.metric("Words", len(content.split()))
+                                    st.metric("Words", len(content_str.split()))
                                 with col3:
                                     st.metric("Status", "✅ Generated" if content else "❌ Failed")
                             else:
-                                st.info("No AI1 results available. Run AI1 first.")
+                                st.info("No AI results available. Run AI first.")
                         
-                        # AI2 Results
+                        # AI3 Results (AI2 removed as requested)
                         with agent_tabs[1]:
-                            agent2_results = agent_states.get('agent2_results', {}) or {}
-                            if key in agent2_results:
-                                validation_result = agent2_results[key]
-                                
-                                # Validation metrics
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    score = validation_result.get('score', 0)
-                                    st.metric("Validation Score", f"{score}%")
-                                with col2:
-                                    is_valid = validation_result.get('is_valid', False)
-                                    st.metric("Status", "✅ Valid" if is_valid else "❌ Issues")
-                                with col3:
-                                    issues = validation_result.get('issues', [])
-                                    st.metric("Issues Found", len(issues))
-                                
-                                # Show corrected content if available
-                                corrected_content = validation_result.get('corrected_content', '')
-                                if corrected_content:
-                                    st.markdown("**Validated Content:**")
-                                    st.markdown(corrected_content)
-                                
-                                # Show issues if any
-                                if issues:
-                                    with st.expander("🚨 Issues Found", expanded=False):
-                                        for issue in issues:
-                                            st.write(f"• {issue}")
-                            else:
-                                st.info("No AI2 results available. Run AI2 first.")
-                        
-                        # AI3 Results
-                        with agent_tabs[2]:
                             agent3_results = agent_states.get('agent3_results', {}) or {}
                             if key in agent3_results:
                                 pattern_result = agent3_results[key]
@@ -2631,7 +2593,7 @@ def perform_offline_pattern_validation(key, agent1_content, pattern):
             'has_date': bool(re.search(r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}', agent1_content)),
             'has_currency': bool(re.search(r'CNY|\$', agent1_content, re.IGNORECASE)),
             'has_amount': len(numbers) > 0,
-            'has_description': len(agent1_content.split()) > 10,
+            'has_description': len(str(agent1_content).split()) > 10,
             'has_entity_reference': bool(re.search(r'Haining|Nanjing|Ningbo', agent1_content, re.IGNORECASE))
         }
         
@@ -3513,23 +3475,31 @@ def update_bs_content_with_agent_corrections(corrections_dict, entity_name, agen
         st.error(f"Error updating bs_content.md with {agent_name} corrections: {e}")
         return False
 
-def run_agent_2(filtered_keys, agent1_results, ai_data):
-    """Run Agent 2: Data Validation for all keys"""
-    try:
+# run_agent_2 function removed as requested
 
+def read_bs_content_by_key():
+    """Read BS content by key - simplified since AI2 removed"""
+    return {}
+
+# Previous run_agent_2 code removed - this section will be cleaned up
+# All content below was part of the old run_agent_2 function and needs to be removed
+
+def run_agent_3(filtered_keys, agent1_results, ai_data):
+    """Run Agent 3: Pattern Compliance for all keys"""
+    try:
         import json
         import time
         
         logger = st.session_state.ai_logger
-        st.markdown("## 🔍 Agent 2: Data Validation")
-        st.write(f"Starting Agent 2 for {len(filtered_keys)} keys...")
+        st.markdown("## 🎯 Agent 3: Pattern Compliance")
+        st.write(f"Starting Agent 3 for {len(filtered_keys)} keys...")
         
         # Load prompts from prompts.json
         try:
             with open('utils/prompts.json', 'r') as f:
                 prompts_config = json.load(f)
-            agent2_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 2', '')
-            st.success("✅ Loaded Agent 2 system prompt from prompts.json")
+            agent3_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 3', '')
+            st.success("✅ Loaded Agent 3 system prompt from prompts.json")
         except (FileNotFoundError, json.JSONDecodeError) as e:
             st.warning(f"⚠️ Could not load prompts.json: {e}")
             agent2_system_prompt = "Fallback Agent 2 system prompt"
@@ -4073,18 +4043,24 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                             with key_tabs[i]:
                                 content = agent1_results[key]
                                 if content:
+                                    # Handle both string and dict content
+                                    if isinstance(content, dict):
+                                        content_str = content.get('content', str(content))
+                                    else:
+                                        content_str = str(content)
+                                    
                                     # Show metadata
                                     col1, col2, col3 = st.columns(3)
                                     with col1:
-                                        st.metric("Characters", len(content))
+                                        st.metric("Characters", len(content_str))
                                     with col2:
-                                        st.metric("Words", len(content.split()))
+                                        st.metric("Words", len(content_str.split()))
                                     with col3:
                                         st.metric("Entity", ai_data.get('entity_name', ''))
                                     
                                     # Show content
                                     st.markdown("**Generated Content:**")
-                                    st.markdown(content)
+                                    st.markdown(content_str)
                                 else:
                                     st.warning("No content generated")
                     else:
@@ -4183,7 +4159,7 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                             with col3:
                                 st.metric("Characters", len(current_content))
                             with col4:
-                                st.metric("Words", len(current_content.split()))
+                                st.metric("Words", len(str(current_content).split()))
                             
                             # Show processing pipeline
                             st.info(f"🔄 Processing Pipeline: {processing_steps}")
@@ -4332,7 +4308,7 @@ def display_before_after_comparison(key, before_content, after_content, agent_st
     with col1:
         st.markdown("##### 📝 **BEFORE** (Agent 1 - Original)")
         if before_content:
-            st.markdown(f"**Length:** {len(before_content)} characters, {len(before_content.split())} words")
+            st.markdown(f"**Length:** {len(str(before_content))} characters, {len(str(before_content).split())} words")
             with st.container():
                 st.markdown(before_content)
         else:
@@ -4341,7 +4317,7 @@ def display_before_after_comparison(key, before_content, after_content, agent_st
     with col2:
         st.markdown("##### 🎯 **AFTER** (Agent 3 - Final)")
         if after_content:
-            st.markdown(f"**Length:** {len(after_content)} characters, {len(after_content.split())} words")
+            st.markdown(f"**Length:** {len(str(after_content))} characters, {len(str(after_content).split())} words")
             with st.container():
                 st.markdown(after_content)
         else:
@@ -4354,13 +4330,13 @@ def display_before_after_comparison(key, before_content, after_content, agent_st
         
         # Length comparison
         length_diff = len(after_content) - len(before_content)
-        word_diff = len(after_content.split()) - len(before_content.split())
+        word_diff = len(str(after_content).split()) - len(str(before_content).split())
         
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Character Change", f"{length_diff:+d}", delta=f"{length_diff/len(before_content)*100:+.1f}%" if before_content else "N/A")
         with col2:
-            st.metric("Word Change", f"{word_diff:+d}", delta=f"{word_diff/len(before_content.split())*100:+.1f}%" if before_content.split() else "N/A")
+            st.metric("Word Change", f"{word_diff:+d}", delta=f"{word_diff/len(str(before_content).split())*100:+.1f}%" if str(before_content).split() else "N/A")
         with col3:
             similarity = calculate_content_similarity(before_content, after_content)
             st.metric("Similarity", f"{similarity:.1f}%")

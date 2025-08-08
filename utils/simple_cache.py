@@ -111,10 +111,11 @@ class SimpleCache:
                 
                 # Check if cache is still valid (1 hour instead of 24 hours)
                 if time.time() - data.get('timestamp', 0) < 3600:
-                    print(f"🤖 Using cached AI result for {key}")
+                    # Using cached AI result (silent for better UX)
                     return data.get('content')
                 else:
-                    print(f"🤖 Cache expired for {key}, regenerating")
+                    # Cache expired, will regenerate (silent for better UX)
+                    pass
             except Exception as e:
                 print(f"⚠️ Error reading AI cache: {e}")
         
@@ -135,7 +136,7 @@ class SimpleCache:
         try:
             with open(cache_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-            print(f"💾 Cached AI result for {key}")
+            # Cached AI result (silent for better progress bar display)
         except Exception as e:
             print(f"⚠️ Error caching AI result: {e}")
     
