@@ -828,7 +828,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
            "SUMMARY: Used entity 'Third-party receivables' with amounts: CNY634K (total receivables)"
         """
         
-        response_txt = generate_response(user_query, system_prompt, oai_client, excel_tables, openai_model, entity_name)
+        response_txt = generate_response(user_query, system_prompt, oai_client, excel_tables, openai_model, entity_name, use_local_ai)
         
         # Clean up response: remove outer quotation marks and translate Chinese
         response_txt = clean_response_text(response_txt)
@@ -1023,7 +1023,7 @@ class DataValidationAgent:
             Do not include any text before or after the JSON. Only return the JSON object.
             """
             
-            response = generate_response(user_query, system_prompt, oai_client, content, config_details['DEEPSEEK_CHAT_MODEL'], entity)
+            response = generate_response(user_query, system_prompt, oai_client, content, config_details['DEEPSEEK_CHAT_MODEL'], entity, False)
             
             # Clean response and ensure it's valid JSON
             response = response.strip()
@@ -1105,7 +1105,7 @@ class DataValidationAgent:
             RETURN: Only the corrected content text, no explanations or JSON.
             """
             
-            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['DEEPSEEK_CHAT_MODEL'], entity)
+            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['DEEPSEEK_CHAT_MODEL'], entity, False)
             return corrected_content.strip()
             
         except Exception as e:
@@ -1227,7 +1227,7 @@ class PatternValidationAgent:
             else:
                 model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
             
-            response = generate_response(user_query, system_prompt, oai_client, content, model, entity)
+            response = generate_response(user_query, system_prompt, oai_client, content, model, entity, self.use_local_ai)
             
             # Clean response and ensure it's valid JSON
             response = response.strip()
@@ -1313,7 +1313,7 @@ class PatternValidationAgent:
             RETURN: Only the corrected content text, no explanations or JSON.
             """
             
-            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['DEEPSEEK_CHAT_MODEL'], entity)
+            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['DEEPSEEK_CHAT_MODEL'], entity, False)
             return corrected_content.strip()
             
         except Exception as e:
