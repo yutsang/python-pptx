@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-08-08 07:52:28",
+  "agent": "AGENT1",
+  "key": "AR",
+  "type": "OUTPUT",
+  "output": {
+    "content": {
+      "content": "The balance as at 30 September 2022 represented receivables of CNY640.0K from Third-party receivables. The Target recognised revenue using straight-line method; we reclassified the levelling impact of revenue recognition in the rent-free period to other non-current assets at the end of September 2022. Management did not accrue bad debt provision for accounts receivables from Third-party receivables, we indicatively accrued provision of CNY6.0K at the rate of 1% according to the Target's policy, resulting in a net receivable balance of CNY634.0K.\n\nSUMMARY: Used entities 'Third-party receivables' and 'Provision for bad and doubtful debts' with amounts: CNY640.0K (gross receivables), -CNY6.0K (provision), and CNY634.0K (net total)",
+      "pattern_used": "Pattern 1",
+      "table_data": [
+        {
+          "sheet": "AR",
+          "data": 

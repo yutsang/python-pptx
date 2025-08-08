@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-08-08 07:56:59",
+  "agent": "AGENT1",
+  "key": "Capital",
+  "type": "OUTPUT",
+  "output": {
+    "content": {
+      "content": "\"Share capital of circa CNY92.0M was paid up as at 30-Sep-2022, comprising CNY91.1M from Equity Investment Fund Partnership(Limited Partnership) and CNY920.0K from Logistics Storage Co., Ltd..\"\n\nSUMMARY: Used entities 'Equity Investment Fund Partnership(Limited Partnership)' (CNY91.1M) and 'Logistics Storage Co., Ltd.' (CNY920K) with total share capital of CNY92.0M as at 30-Sep-2022.",
+      "pattern_used": "Pattern 1",
+      "table_data": [
+        {
+          "sheet": "Share capital",
+          "data": 

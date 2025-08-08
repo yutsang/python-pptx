@@ -1,0 +1,10 @@
+python-pptx
+pandas
+urllib3
+tqdm
+httpx
+openai
+ipython
+pillow
+tabulate
+openpyxl

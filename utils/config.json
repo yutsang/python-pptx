@@ -4,5 +4,10 @@
     "DEEPSEEK_CHAT_MODEL": "deepseek-chat",
     "DEEPSEEK_API_VERSION": "v1",
 
-    "_comment": "DeepSeek AI Configuration - All Azure services removed"
+    "LOCAL_AI_API_BASE": "http://localhost:1234/v1",
+    "LOCAL_AI_API_KEY": "placeholder-local-api-key",
+    "LOCAL_AI_CHAT_MODEL": "placeholder-local-model-name",
+    "LOCAL_AI_ENABLED": false,
+
+    "_comment": "AI Configuration - DeepSeek (server) and Local AI options"
 } 

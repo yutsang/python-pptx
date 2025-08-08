@@ -28,27 +28,60 @@ def load_config(file_path):
         config_details = json.load(config_file)
     return config_details
 
-def initialize_ai_services(config_details):
-    """Initialize DeepSeek AI client using config details."""
+def initialize_ai_services(config_details, use_local=False):
+    """Initialize AI client using config details - supports both server (DeepSeek) and local AI."""
     if not AI_AVAILABLE:
         raise RuntimeError("AI services not available on this machine.")
     httpx_client = httpx.Client(verify=False)
     if OpenAI is None:
         raise RuntimeError("AI modules not available.")
     
-    # Check if DeepSeek configuration is available
-    if config_details.get('DEEPSEEK_API_KEY') and config_details.get('DEEPSEEK_API_BASE'):
-        # Initialize DeepSeek client (using regular OpenAI client)
-        oai_client = OpenAI(
-            api_key=config_details['DEEPSEEK_API_KEY'],
-            base_url=config_details['DEEPSEEK_API_BASE'],
-            http_client=httpx_client
-        )
-        # DeepSeek AI initialized (silent for cleaner progress bar)
+    if use_local:
+        # Initialize Local AI client
+        if config_details.get('LOCAL_AI_API_BASE') and config_details.get('LOCAL_AI_ENABLED'):
+            oai_client = OpenAI(
+                api_key=config_details.get('LOCAL_AI_API_KEY', 'local-key'),
+                base_url=config_details['LOCAL_AI_API_BASE'],
+                http_client=httpx_client
+            )
+            print("🏠 Using Local AI model")
+        else:
+            raise RuntimeError("Local AI configuration not found or not enabled. Please check LOCAL_AI_API_BASE and LOCAL_AI_ENABLED in config.")
     else:
-        raise RuntimeError("DeepSeek configuration not found. Please check DEEPSEEK_API_KEY and DEEPSEEK_API_BASE in config.")
+        # Initialize DeepSeek client (server)
+        if config_details.get('DEEPSEEK_API_KEY') and config_details.get('DEEPSEEK_API_BASE'):
+            oai_client = OpenAI(
+                api_key=config_details['DEEPSEEK_API_KEY'],
+                base_url=config_details['DEEPSEEK_API_BASE'],
+                http_client=httpx_client
+            )
+            # DeepSeek AI initialized (silent for cleaner progress bar)
+        else:
+            raise RuntimeError("DeepSeek configuration not found. Please check DEEPSEEK_API_KEY and DEEPSEEK_API_BASE in config.")
     
     return oai_client, None  # No search client needed
+
+def get_openai_client(config_details=None, use_local=False):
+    """Get the appropriate OpenAI client based on model selection."""
+    if config_details is None:
+        # Load config if not provided
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'utils', 'config.json')
+        config_details = load_config(config_path)
+    
+    client, _ = initialize_ai_services(config_details, use_local=use_local)
+    return client
+
+def get_chat_model(config_details=None, use_local=False):
+    """Get the appropriate chat model name based on selection."""
+    if config_details is None:
+        # Load config if not provided
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'utils', 'config.json')
+        config_details = load_config(config_path)
+    
+    if use_local:
+        return config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
+    else:
+        return config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
 
 def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model, entity_name="default"):
     """Generate a response from the AI model given a user query and system prompt with simple caching."""
@@ -575,7 +608,7 @@ def load_ip(file, key=None):
     return {}
 
 # --- Pattern Filling and Main Processing ---
-def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', prompts_file='utils/prompts.json', use_ai=True, convert_thousands=False, progress_callback=None, processed_table_data=None):
+def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', prompts_file='utils/prompts.json', use_ai=True, convert_thousands=False, progress_callback=None, processed_table_data=None, use_local_ai=False):
     # AI is required - no fallback mode
     if not use_ai:
         raise RuntimeError("AI processing is required. Cannot run in offline mode.")
@@ -658,9 +691,12 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         config_details = load_config(config_file)
         
         # Initialize AI services - required for processing
-        oai_client, search_client = initialize_ai_services(config_details)
-        # Use DeepSeek model
-        openai_model = config_details['DEEPSEEK_CHAT_MODEL']
+        oai_client, search_client = initialize_ai_services(config_details, use_local=use_local_ai)
+        # Use appropriate model based on selection
+        if use_local_ai:
+            openai_model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
+        else:
+            openai_model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
         
         pattern = load_ip(pattern_file, key)
         mapping = {key: load_ip(mapping_file)}
@@ -1041,9 +1077,10 @@ class DataValidationAgent:
 
 # --- Pattern Validation Agent ---
 class PatternValidationAgent:
-    def __init__(self):
+    def __init__(self, use_local_ai=False):
         self.config_file = 'utils/config.json'
         self.pattern_file = 'utils/pattern.json'
+        self.use_local_ai = use_local_ai
     
     def validate_pattern_compliance(self, content: str, key: str) -> Dict:
         """Validate that content follows the expected pattern structure"""
@@ -1058,7 +1095,7 @@ class PatternValidationAgent:
             
             # Use AI to validate pattern compliance
             config_details = load_config(self.config_file)
-            oai_client, _ = initialize_ai_services(config_details)
+            oai_client, _ = initialize_ai_services(config_details, use_local=self.use_local_ai)
             
             # Load system prompt from prompts.json
             try:
@@ -1144,7 +1181,13 @@ class PatternValidationAgent:
             Do not include any text before or after the JSON. Only return the JSON object.
             """
             
-            response = generate_response(user_query, system_prompt, oai_client, content, config_details['DEEPSEEK_CHAT_MODEL'], entity)
+            # Use appropriate model based on selection
+            if self.use_local_ai:
+                model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
+            else:
+                model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
+            
+            response = generate_response(user_query, system_prompt, oai_client, content, model, entity)
             
             # Clean response and ensure it's valid JSON
             response = response.strip()

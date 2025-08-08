@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-08-08 07:56:59",
+  "agent": "AGENT1",
+  "key": "AP",
+  "type": "OUTPUT",
+  "output": {
+    "content": {
+      "content": "balance as at 30 September 2022 mainly entailed consulting fees to Business Management Consulting Co. of CNY2.3M and logistics services to Logistics Development Co., Ltd. of CNY8.3M\n\nSUMMARY: Used entities 'Business Management Consulting Co.' (CNY2.3M) and 'Logistics Development Co., Ltd.' (CNY8.3M) which together constitute the majority of the total CNY11.8M accounts payable balance.",
+      "pattern_used": "Pattern 1",
+      "table_data": [
+        {
+          "sheet": "AP",
+          "data": 

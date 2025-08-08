@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-08-08 07:48:17",
+  "agent": "AGENT1",
+  "key": "AP",
+  "type": "OUTPUT",
+  "output": {
+    "content": {
+      "content": "The accounts payable balance as at 30 September 2022 mainly entailed consulting fees to Business Management Consulting Co. (Management Consulting Company) of CNY2.3M and professional fees to Credit Zhonghe Accounting Firm(Special General Partnership) (ShineWing Certified Public Accountants) of CNY14.0K.\n\nSUMMARY: Used entities 'Business Management Consulting Co.' (CNY2.3M) and 'Credit Zhonghe Accounting Firm(Special General Partnership)' (CNY14.0K) which constitute major portions of the total accounts payable of CNY11.8M.",
+      "pattern_used": "Pattern 1",
+      "table_data": [
+        {
+          "sheet": "AP",
+          "data": 
