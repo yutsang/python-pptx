@@ -80,15 +80,11 @@ def render_balance_sheet_sections(
 
                     styled_df = display_df.style.apply(highlight_totals, axis=1)
                     st.dataframe(styled_df, use_container_width=True)
-
-                    with st.expander("📋 Structured Markdown", expanded=False):
-                        st.code(first_section.get('markdown', 'No markdown available'), language='markdown')
                 else:
                     st.info("No structured data rows found")
 
                 with st.expander("📋 Structured Markdown", expanded=False):
                     st.code(first_section.get('markdown', 'No markdown available'), language='markdown')
-                    st.info(f"Source Sheet: {first_section['sheet']}")
                 st.markdown("—")
                 continue
 
