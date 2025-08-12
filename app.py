@@ -1220,12 +1220,7 @@ def main():
                 st.error(f"❌ Default file not found: {default_file_path}")
                 st.info("Please upload an Excel file to get started.")
 
-        # AI Provider and Model selection (modularized)
-        from common.ui import select_ai_provider_and_model
-        config = load_ip('utils/config.json') if os.path.exists('utils/config.json') else {}
-        provider, model = select_ai_provider_and_model(config)
-        st.session_state['selected_provider'] = provider
-        st.session_state['selected_model'] = model
+        # (Removed duplicate provider/model UI to avoid two model selectors)
         
         entity_options = ['Haining', 'Nanjing', 'Ningbo']
         selected_entity = st.selectbox(
@@ -1259,53 +1254,51 @@ def main():
             # Store uploaded file in session state for later use
             st.session_state['uploaded_file'] = uploaded_file
             
-            # AI Mode Selection - changed to dropdown with DeepSeek as default
-            ai_mode_options = ["Deepseek", "Local AI", "GPT-4o-mini", "Offline"]
+            # AI Provider Selection (models defined in utils/config.json)
+            ai_mode_options = ["DeepSeek", "Open AI", "Local AI", "Offline"]
             mode_display = st.selectbox(
                 "Select Mode", 
                 ai_mode_options,
-                index=0,  # Set DeepSeek as default (first option)
-                help="Choose the AI model or offline processing mode (DeepSeek is default, Local AI for self-hosted, GPT-4o-mini for OpenAI)"
+                index=0,  # DeepSeek default
+                help="Choose AI provider. Models are taken from utils/config.json"
             )
             
             # Show API configuration status
             config, _, _, _ = load_config_files()
             if config:
-                if mode_display == "GPT-4o-mini":
-                    if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_KEY') != 'placeholder-openai-api-key':
-                        st.success("✅ OpenAI API key configured")
-                        st.info(f"🤖 Model: {config.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')}")
-                        st.info(f"📅 Version: {config.get('OPENAI_API_VERSION', '2024-08-01-preview')}")
+                if mode_display == "Open AI":
+                    if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_BASE'):
+                        st.success("✅ OpenAI configured")
+                        st.info(f"🤖 Model: {config.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini')}")
                     else:
-                        st.warning("⚠️ OpenAI API key not configured")
-                        st.info("🔧 Please add your OpenAI API key to config.json")
-                elif mode_display == "Deepseek":
-                    if config.get('DEEPSEEK_API_KEY'):
-                        st.success("✅ Deepseek API key configured")
+                        st.warning("⚠️ OpenAI not configured. Add OPENAI_API_KEY and OPENAI_API_BASE in utils/config.json")
+                elif mode_display == "DeepSeek":
+                    if config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_BASE'):
+                        st.success("✅ DeepSeek configured")
+                        st.info(f"🤖 Model: {config.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')}")
                     else:
-                        st.error("❌ Deepseek API key not configured")
-                        st.info("📖 See DEEPSEEK_SETUP.md for configuration instructions")
+                        st.warning("⚠️ DeepSeek not configured. Add DEEPSEEK_API_KEY and DEEPSEEK_API_BASE in utils/config.json")
                 elif mode_display == "Local AI":
                     if config.get('LOCAL_AI_API_BASE') and config.get('LOCAL_AI_ENABLED'):
                         st.success("✅ Local AI configured")
-                        st.info(f"🏠 Model: {config.get('LOCAL_AI_CHAT_MODEL', 'Not specified')}")
+                        st.info(f"🏠 Model: {config.get('LOCAL_AI_CHAT_MODEL', 'local-qwen2')}")
                         st.info(f"🔗 Endpoint: {config.get('LOCAL_AI_API_BASE', 'Not specified')}")
                     else:
-                        st.warning("⚠️ Local AI not configured")
-                        st.info("🔧 Please configure LOCAL_AI settings in config.json")
+                        st.warning("⚠️ Local AI not configured. Configure LOCAL_AI_* in utils/config.json")
             
             # Map display names to internal mode names
-            mode_mapping = {
-                "GPT-4o-mini": "AI Mode - OpenAI",
-                "Deepseek": "AI Mode - Deepseek", 
-                "Local AI": "AI Mode - Local",
-                "Offline": "Offline Mode"
+            provider_mapping = {
+                "Open AI": "Open AI",
+                "Local AI": "Local AI",
+                "DeepSeek": "DeepSeek",
+                "Offline": "Offline"
             }
-            mode = mode_mapping[mode_display]
+            mode = f"AI Mode - {provider_mapping[mode_display]}" if mode_display != "Offline" else "Offline Mode"
             st.session_state['selected_mode'] = mode
             st.session_state['ai_model'] = mode_display
+            st.session_state['selected_provider'] = provider_mapping[mode_display]
             st.session_state['use_local_ai'] = (mode_display == "Local AI")
-            st.session_state['use_openai'] = (mode_display == "GPT-4o-mini")
+            st.session_state['use_openai'] = (mode_display == "Open AI")
             
             # Performance statistics - moved below Select Mode
             st.markdown("---")
