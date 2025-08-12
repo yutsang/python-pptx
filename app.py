@@ -1200,7 +1200,8 @@ def main():
         # Models per provider
         openai_models = [config.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini')]
         local_models = config.get('LOCAL_MODELS', ['local-qwen2', 'local-deep-seek', 'local-deep-seek-full'])
-        server_models = config.get('SERVER_MODELS', ['local-qwen2', 'local-deep-seek', 'local-deep-seek-full'])
+        # Server AI shares same API format as Local AI (choose from same list)
+        server_models = config.get('SERVER_MODELS', local_models)
 
         if provider == 'Open AI':
             model = st.selectbox("Model", options=openai_models, key="model_select_openai")
@@ -1209,7 +1210,7 @@ def main():
             default_idx = local_models.index('local-qwen2') if 'local-qwen2' in local_models else 0
             model = st.selectbox("Model", options=local_models, index=default_idx, key="model_select_local")
         else:
-            # Server AI defaults to local-qwen2 if present
+            # Server AI uses same format as Local AI; default to local-qwen2 if present
             default_idx = server_models.index('local-qwen2') if 'local-qwen2' in server_models else 0
             model = st.selectbox("Model", options=server_models, index=default_idx, key="model_select_server")
         st.session_state['selected_model'] = model

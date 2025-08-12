@@ -47,22 +47,28 @@ def initialize_ai_services(config_details, use_local=False, use_openai=False):
             use_local = True
             use_openai = False
         elif selected_provider == 'Server AI':
-            use_local = False
+            # Treat Server AI the same as Local AI (same OpenAI-compatible API format)
+            # Just different base URL and key configured in config.json
+            use_local = True
             use_openai = False
     except Exception:
         pass
 
     if use_local:
-        # Initialize Local AI client
-        if config_details.get('LOCAL_AI_API_BASE') and config_details.get('LOCAL_AI_ENABLED'):
+        # Initialize Local/Server AI client (same OpenAI-compatible format)
+        # Prefer LOCAL_*; if SERVER_* are provided, they can be mapped externally by updating config.
+        local_base = config_details.get('LOCAL_AI_API_BASE') or config_details.get('SERVER_AI_API_BASE')
+        local_key = config_details.get('LOCAL_AI_API_KEY') or config_details.get('SERVER_AI_API_KEY') or 'local-key'
+        local_enabled = config_details.get('LOCAL_AI_ENABLED', True)
+        if local_base and local_enabled:
             oai_client = OpenAI(
-                api_key=config_details.get('LOCAL_AI_API_KEY', 'local-key'),
-                base_url=config_details['LOCAL_AI_API_BASE'],
+                api_key=local_key,
+                base_url=local_base,
                 http_client=httpx_client
             )
-            print("🏠 Using Local AI model")
+            print("🏠 Using Local/Server AI (OpenAI-compatible)")
         else:
-            raise RuntimeError("Local AI configuration not found or not enabled. Please check LOCAL_AI_API_BASE and LOCAL_AI_ENABLED in config.")
+            raise RuntimeError("Local/Server AI configuration not found or not enabled. Please check LOCAL_AI_API_BASE (or SERVER_AI_API_BASE) and LOCAL_AI_ENABLED in config.")
     elif use_openai:
         # Initialize OpenAI client
         if config_details.get('OPENAI_API_KEY') and config_details.get('OPENAI_API_BASE'):
@@ -121,7 +127,8 @@ def get_chat_model(config_details=None, use_local=False, use_openai=False):
             if selected_model:
                 return selected_model
         elif selected_provider == 'Server AI':
-            use_local = False
+            # Same format as Local AI; use the same model selection/defaults
+            use_local = True
             use_openai = False
             if selected_model:
                 return selected_model
