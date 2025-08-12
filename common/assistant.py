@@ -447,12 +447,14 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
             
         main_dir = Path(__file__).parent.parent
         file_path = main_dir / filename
-        wb = openpyxl.load_workbook(file_path, data_only=True)
+        wb = None
         markdown_content = ""
         entity_keywords = [entity_name] + list(entity_suffixes)
         entity_keywords = [kw.strip().lower() for kw in entity_keywords if kw.strip()]
-        
-        for ws in wb.worksheets:
+
+        try:
+            wb = openpyxl.load_workbook(file_path, data_only=True)
+            for ws in wb.worksheets:
             if ws.title not in tab_name_mapping:
                 continue
             
@@ -527,7 +529,14 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 except Exception as e:
                     print(f"Error processing table {table_info.get('name', 'unknown')}: {e}")
                     continue
-        
+        finally:
+            # Ensure workbook is closed to release file handle on Windows
+            try:
+                if wb is not None:
+                    wb.close()
+            except Exception:
+                pass
+
         # Cache the processed result using simple cache
         cache.cache_excel_data(filename, entity_name, markdown_content)
         print(f"📋 Cached result for {filename}")
@@ -541,11 +550,11 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
 def find_financial_figures_with_context_check(filename, sheet_name, date_str, convert_thousands=False):
     try:
         file_path = Path(filename)
-        xl = pd.ExcelFile(file_path)
-        if sheet_name not in xl.sheet_names:
-            print(f"Sheet '{sheet_name}' not found in the file.")
-            return {}
-        df = xl.parse(sheet_name)
+        with pd.ExcelFile(file_path) as xl:
+            if sheet_name not in xl.sheet_names:
+                print(f"Sheet '{sheet_name}' not found in the file.")
+                return {}
+            df = xl.parse(sheet_name)
         if not isinstance(df, pd.DataFrame):
             return {}
         # Handle different sheet formats

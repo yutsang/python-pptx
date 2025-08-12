@@ -918,14 +918,12 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
     Get worksheet sections organized by financial keys following the mapping
     """
     try:
-        # Handle both uploaded files and default file
+        # Handle both uploaded files and default file using context manager to avoid file locks
         if hasattr(uploaded_file, 'name') and uploaded_file.name == "databook.xlsx":
-            # Use the default file path
-            xl = pd.ExcelFile("databook.xlsx")
+            excel_source = "databook.xlsx"
         else:
-            # Load the Excel file from uploaded file object
-            xl = pd.ExcelFile(uploaded_file)
-        
+            excel_source = uploaded_file
+
         # Create a reverse mapping from values to keys
         reverse_mapping = {}
         if tab_name_mapping is not None:
@@ -939,10 +937,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
         # Initialize sections by key
         sections_by_key = {key: [] for key in financial_keys}
         
-        # Process each sheet
-        for sheet_name in xl.sheet_names:
-            if sheet_name in reverse_mapping:
-                df = xl.parse(sheet_name)
+        # Process sheets within context manager
+        with pd.ExcelFile(excel_source) as xl:
+            for sheet_name in xl.sheet_names:
+                if sheet_name in reverse_mapping:
+                    df = xl.parse(sheet_name)
                 
                 # Split dataframes on empty rows
                 empty_rows = df.index[df.isnull().all(1)]
@@ -3417,8 +3416,18 @@ IMPORTANT ENTITY INSTRUCTIONS:
         return {}
     finally:
         # Clean up temp file if created
-        if temp_file_path and temp_file_path != 'databook.xlsx' and os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
+        try:
+            if temp_file_path and temp_file_path != 'databook.xlsx' and os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+        except PermissionError:
+            # On Windows, file may still be locked momentarily; retry once
+            try:
+                import time
+                time.sleep(0.2)
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
+            except Exception:
+                pass
 
 def update_bs_content_with_agent_corrections(corrections_dict, entity_name, agent_name):
     """Update bs_content.md with corrections from Agent 2 or Agent 3"""
@@ -3772,6 +3781,19 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
     except Exception as e:
         st.error(f"❌ **Agent 2 Unexpected Error**: {e}")
         return {}
+    finally:
+        # Ensure Agent 2 temp file is deleted
+        try:
+            if temp_file_path and temp_file_path != 'databook.xlsx' and os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+        except PermissionError:
+            try:
+                import time
+                time.sleep(0.2)
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
+            except Exception:
+                pass
 
 def read_bs_content_by_key(entity_name):
     """Read bs_content.md and return content organized by key"""

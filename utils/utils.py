@@ -29,52 +29,59 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         # Load the Excel file
         main_dir = Path(__file__).parent.parent
         file_path = main_dir / filename
-        xl = pd.ExcelFile(file_path)
-        
-        # Create a reserse mapping from values to keys
-        reverse_mapping = {}
-        for key, values in tab_name_mapping.items():
-            for value in values:
-                reverse_mapping[value] = key
-                
-        # Initialize a string to store markdown content
-        markdown_content = ""
-        
-        # Process each sheet according to the mapping
-        for sheet_name in xl.sheet_names:
-            if sheet_name in reverse_mapping:
-                df = xl.parse(sheet_name)
-                
-                # Split dataframes on empty rows
-                empty_rows = df.index[df.isnull().all(1)]
-                start_idx = 0
-                dataframes = []
-                for end_idx in empty_rows:
-                    if end_idx > start_idx:
-                        split_df = df[start_idx:end_idx]
-                        if not split_df.dropna(how='all').empty:
-                            dataframes.append(split_df)
-                        start_idx = end_idx + 1
-                if start_idx < len(df):
-                    dataframes.append(df[start_idx:])
-                
-                # Filter dataframes by entity name
-                entity_keywords = [f"{entity_name}{suffix}" for suffix in entity_suffixes]
-                combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
-                
-                for data_frame in dataframes:
-                    mask = data_frame.apply(
-                        lambda row: row.astype(str).str.contains(
-                            combined_pattern, case=False, regex=True, na=False
-                        ).any(),
-                        axis=1
-                    )
-                    if mask.any():
-                        markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
+        # Use context manager to ensure file handle is released on Windows
+        with pd.ExcelFile(file_path) as xl:
+            # Create a reverse mapping from values to keys
+            reverse_mapping = {}
+            for key, values in tab_name_mapping.items():
+                for value in values:
+                    reverse_mapping[value] = key
+            
+            # Initialize a string to store markdown content
+            markdown_content = ""
+            
+            # Process each sheet according to the mapping
+            for sheet_name in xl.sheet_names:
+                if sheet_name in reverse_mapping:
+                    df = xl.parse(sheet_name)
                     
-                    if any(data_frame.apply(lambda row: row.astype(str).str.contains(keyword, case=False, na=False).any(), axis=1).any() for keyword in entity_keywords):
-                        markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False)
-                        markdown_content += "\n\n" 
+                    # Split dataframes on empty rows
+                    empty_rows = df.index[df.isnull().all(1)]
+                    start_idx = 0
+                    dataframes = []
+                    for end_idx in empty_rows:
+                        if end_idx > start_idx:
+                            split_df = df[start_idx:end_idx]
+                            if not split_df.dropna(how='all').empty:
+                                dataframes.append(split_df)
+                            start_idx = end_idx + 1
+                    if start_idx < len(df):
+                        dataframes.append(df[start_idx:])
+                    
+                    # Filter dataframes by entity name
+                    entity_keywords = [f"{entity_name}{suffix}" for suffix in entity_suffixes]
+                    combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
+                    
+                    for data_frame in dataframes:
+                        mask = data_frame.apply(
+                            lambda row: row.astype(str).str.contains(
+                                combined_pattern, case=False, regex=True, na=False
+                            ).any(),
+                            axis=1
+                        )
+                        if mask.any():
+                            markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
+                        
+                        if any(
+                            data_frame.apply(
+                                lambda row: row.astype(str).str.contains(keyword, case=False, na=False).any(),
+                                axis=1
+                            ).any() for keyword in entity_keywords
+                        ):
+                            markdown_content += tabulate(
+                                data_frame, headers='keys', tablefmt='pipe', showindex=False
+                            )
+                            markdown_content += "\n\n"
         
         # Cache the processed result using simple cache
         cache.cache_excel_data(filename, entity_name, markdown_content)
@@ -133,14 +140,14 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str):
     try:
         # Load the Excel file
         file_path = Path(filename)
-        xl = pd.ExcelFile(file_path)
-        
-        if sheet_name not in xl.sheet_names:
-            print(f"Sheet '{sheet_name}' not found in the file.")
-            return {}
-
-        # Parse the sheet
-        df = xl.parse(sheet_name)
+        # Use context manager to ensure file handle is released
+        with pd.ExcelFile(file_path) as xl:
+            if sheet_name not in xl.sheet_names:
+                print(f"Sheet '{sheet_name}' not found in the file.")
+                return {}
+            
+            # Parse the sheet
+            df = xl.parse(sheet_name)
         
         # Rename columns if seeing usual headers following context title
         df.columns = ['Description', 'Date_2020', 'Date_2021', 'Date_2022']
