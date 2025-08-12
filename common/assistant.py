@@ -66,7 +66,6 @@ def initialize_ai_services(config_details, use_local=False, use_openai=False):
                 base_url=local_base,
                 http_client=httpx_client
             )
-            print("🏠 Using Local/Server AI (OpenAI-compatible)")
         else:
             raise RuntimeError("Local/Server AI configuration not found or not enabled. Please check LOCAL_AI_API_BASE (or SERVER_AI_API_BASE) and LOCAL_AI_ENABLED in config.")
     elif use_openai:
