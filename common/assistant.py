@@ -511,80 +511,80 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         try:
             wb = openpyxl.load_workbook(file_path, data_only=True)
             for ws in wb.worksheets:
-            if ws.title not in tab_name_mapping:
-                continue
-            
-            # Processing worksheet: {ws.title}
-            
-            # Use robust table extraction
-            tables = extract_tables_robust(ws, entity_keywords)
-            
-            for table_info in tables:
-                try:
-                    data = table_info['data']
-                    method = table_info['method']
-                    table_name = table_info['name']
-                    
-                    if not data or len(data) < 2:
-                        continue
-                    
-                    # Create DataFrame
-                    df = pd.DataFrame(data[1:], columns=data[0])
-                    df = df.dropna(how='all').dropna(axis=1, how='all')
-                    df = df.map(lambda x: str(x) if x is not None else "")
-                    df = df.reset_index(drop=True)
-                    
-                    # Check for entity keywords - handle mixed data types safely
-                    all_cells = [str(cell).lower().strip() for cell in df.values.flatten()]
-                    match_found = any(any(kw in cell for cell in all_cells) for kw in entity_keywords)
-                    
-                    if match_found:
-                        # Include all rows that contain any entity information
-                        # This allows the AI to see all entity names in the table
-                        filtered_rows = []
-                        for idx, row in df.iterrows():
-                            row_cells = [str(cell).lower().strip() for cell in row.values]
-                            # Include rows that contain any entity information
-                            # This will help the AI identify the correct entity names
-                            if any(cell for cell in row_cells if cell and cell != 'nan'):
-                                filtered_rows.append(row)
-                        
-                        # Create filtered DataFrame and parse it into structured format
-                        if filtered_rows:
-                            filtered_df = pd.DataFrame(filtered_rows)
-                            
-                            # Parse the table into structured format
-                            structured_table = parse_table_to_structured_format(filtered_df, entity_name, table_name)
-                            
-                            if structured_table:
-                                # Add structured table to markdown content
-                                markdown_content += f"## {structured_table['table_name']}\n"
-                                markdown_content += f"**Entity:** {structured_table['entity']}\n"
-                                markdown_content += f"**Date:** {structured_table['date']}\n"
-                                markdown_content += f"**Currency:** {structured_table['currency']}\n"
-                                markdown_content += f"**Multiplier:** {structured_table['multiplier']}\n\n"
-                                
-                                # Add items
-                                for item in structured_table['items']:
-                                    markdown_content += f"- {item['description']}: {item['amount']}\n"
-                                
-                                markdown_content += f"\n**Total:** {structured_table['total']}\n\n"
-                            else:
-                                # Fallback to original format if parsing fails
-                                try:
-                                    markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
-                                except Exception:
-                                    markdown_content += filtered_df.to_markdown(index=False) + '\n\n'
-                        else:
-                            # No rows matched the strict filtering criteria
-                            pass
-                    else:
-                        # Table skipped for entity keywords
-                        pass
-                        
-                except Exception as e:
-                    print(f"Error processing table {table_info.get('name', 'unknown')}: {e}")
+                if ws.title not in tab_name_mapping:
                     continue
+                
+                # Processing worksheet: {ws.title}
+                
+                # Use robust table extraction
+                tables = extract_tables_robust(ws, entity_keywords)
+                
+                for table_info in tables:
+                    try:
+                        data = table_info['data']
+                        method = table_info['method']
+                        table_name = table_info['name']
+                        
+                        if not data or len(data) < 2:
+                            continue
+                        
+                        # Create DataFrame
+                        df = pd.DataFrame(data[1:], columns=data[0])
+                        df = df.dropna(how='all').dropna(axis=1, how='all')
+                        df = df.map(lambda x: str(x) if x is not None else "")
+                        df = df.reset_index(drop=True)
+                        
+                        # Check for entity keywords - handle mixed data types safely
+                        all_cells = [str(cell).lower().strip() for cell in df.values.flatten()]
+                        match_found = any(any(kw in cell for cell in all_cells) for kw in entity_keywords)
+                        
+                        if match_found:
+                            # Include all rows that contain any entity information
+                            # This allows the AI to see all entity names in the table
+                            filtered_rows = []
+                            for idx, row in df.iterrows():
+                                row_cells = [str(cell).lower().strip() for cell in row.values]
+                                # Include rows that contain any entity information
+                                # This will help the AI identify the correct entity names
+                                if any(cell for cell in row_cells if cell and cell != 'nan'):
+                                    filtered_rows.append(row)
+                            
+                            # Create filtered DataFrame and parse it into structured format
+                            if filtered_rows:
+                                filtered_df = pd.DataFrame(filtered_rows)
+                                
+                                # Parse the table into structured format
+                                structured_table = parse_table_to_structured_format(filtered_df, entity_name, table_name)
+                                
+                                if structured_table:
+                                    # Add structured table to markdown content
+                                    markdown_content += f"## {structured_table['table_name']}\n"
+                                    markdown_content += f"**Entity:** {structured_table['entity']}\n"
+                                    markdown_content += f"**Date:** {structured_table['date']}\n"
+                                    markdown_content += f"**Currency:** {structured_table['currency']}\n"
+                                    markdown_content += f"**Multiplier:** {structured_table['multiplier']}\n\n"
+                                    
+                                    # Add items
+                                    for item in structured_table['items']:
+                                        markdown_content += f"- {item['description']}: {item['amount']}\n"
+                                    
+                                    markdown_content += f"\n**Total:** {structured_table['total']}\n\n"
+                                else:
+                                    # Fallback to original format if parsing fails
+                                    try:
+                                        markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
+                                    except Exception:
+                                        markdown_content += filtered_df.to_markdown(index=False) + '\n\n'
+                            else:
+                                # No rows matched the strict filtering criteria
+                                pass
+                        else:
+                            # Table skipped for entity keywords
+                            pass
+                            
+                    except Exception as e:
+                        print(f"Error processing table {table_info.get('name', 'unknown')}: {e}")
+                        continue
         finally:
             # Ensure workbook is closed to release file handle on Windows
             try:
