@@ -182,24 +182,32 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
         # For local AI with thinking support (DeepSeek 671B), enable reasoning
         extra_params = {}
         if use_local_ai:
-            # Check if local AI supports thinking process
+            # Check if local AI supports 'reasoning'; only add for DeepSeek-compatible servers
             try:
                 config_path = os.path.join(os.path.dirname(__file__), '..', 'utils', 'config.json')
                 config_details = load_config(config_path)
-                if config_details.get('LOCAL_AI_SUPPORTS_THINKING', False):
+                supports_thinking = config_details.get('LOCAL_AI_SUPPORTS_THINKING', False)
+                selected_model = None
+                try:
+                    import streamlit as st
+                    selected_model = st.session_state.get('selected_model')
+                except Exception:
+                    pass
+                # Only attach 'reasoning' for models that support it (e.g., deepseek-r1-671b). Avoid for qwen2.
+                if supports_thinking and selected_model and 'deepseek' in selected_model.lower():
                     extra_params['reasoning'] = True
-                    extra_params['temperature'] = 0.1  # Lower temperature for more focused reasoning
+                    extra_params['temperature'] = 0.1
                     print("🧠 Using local AI with thinking process enabled")
             except Exception as e:
                 print(f"⚠️ Could not check thinking support: {e}")
         
         # Use selected chat model if provided; fall back to session/config selection
         model_name = openai_chat_model or get_chat_model()
-        response = oai_client.chat.completions.create(
-            model=model_name,
-            messages=conversation,
-            **extra_params
-        )
+        # Remove unsupported params defensively for non-DeepSeek models (e.g., qwen2)
+        safe_params = dict(extra_params)
+        if 'qwen' in (model_name or '').lower():
+            safe_params.pop('reasoning', None)
+        response = oai_client.chat.completions.create(model=model_name, messages=conversation, **safe_params)
     except Exception as e:
         print(f"❌ API call failed with model '{openai_chat_model}': {e}")
         raise

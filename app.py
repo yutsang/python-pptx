@@ -1176,18 +1176,11 @@ def main():
             help="Upload your financial data Excel file or use the default databook.xlsx"
         )
 
-        # AI Provider and Model selection (modularized)
-        from common.ui import select_ai_provider_and_model
-        config = load_ip('utils/config.json') if os.path.exists('utils/config.json') else {}
-        provider, model = select_ai_provider_and_model(config)
-        st.session_state['selected_provider'] = provider
-        st.session_state['selected_model'] = model
-        
-        # Use default file if no file is uploaded
+        # Use default file if no file is uploaded (show immediately under uploader)
         if uploaded_file is None:
             default_file_path = "databook.xlsx"
             if os.path.exists(default_file_path):
-                st.success(f"✅ Using default file: {default_file_path}")
+                st.caption(f"Using default file: {default_file_path}")
                 # Create a proper mock uploaded file object for the default file
                 class MockUploadedFile:
                     def __init__(self, file_path):
@@ -1226,6 +1219,13 @@ def main():
             else:
                 st.error(f"❌ Default file not found: {default_file_path}")
                 st.info("Please upload an Excel file to get started.")
+
+        # AI Provider and Model selection (modularized)
+        from common.ui import select_ai_provider_and_model
+        config = load_ip('utils/config.json') if os.path.exists('utils/config.json') else {}
+        provider, model = select_ai_provider_and_model(config)
+        st.session_state['selected_provider'] = provider
+        st.session_state['selected_model'] = model
         
         entity_options = ['Haining', 'Nanjing', 'Ningbo']
         selected_entity = st.selectbox(
