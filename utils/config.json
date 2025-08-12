@@ -27,9 +27,9 @@
     "LOCAL_AI_SUPPORTS_THINKING": true,
     "LOCAL_AI_THINKING_MODEL": "deepseek-r1-671b-reasoning",
 
-    "DEFAULT_AI_PROVIDER": "Server AI",
-    "LOCAL_MODELS": ["local-deep-seek", "local-deep-seek-full", "deepseek-r1-671b"],
-    "SERVER_MODELS": ["local-deep-seek", "local-deep-seek-full", "deepseek-chat"],
+    "DEFAULT_AI_PROVIDER": "Local AI", // Server AI, OpenAI, Local AI
+    "LOCAL_MODELS": ["local-qwen2", "local-deep-seek", "local-deep-seek-full"],
+    "SERVER_MODELS": ["local-qwen2", "local-deep-seek", "local-deep-seek-full"],
 
     "_comment": "AI Configuration - DeepSeek (server), OpenAI with full features, and Local AI (DeepSeek 671B with thinking process)"
 } 
