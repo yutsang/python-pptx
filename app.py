@@ -1417,42 +1417,27 @@ def main():
                         'agent3_success': False
                     }
                 
-                # AI Processing Buttons with Progress
+                # AI Processing Button with a single main progress bar
                 agent_states = st.session_state.get('agent_states', {})
-                agent1_completed = agent_states.get('agent1_completed', False)
-                agent1_results = agent_states.get('agent1_results', {}) or {}
-                
-                # Single column layout since AI2 was removed
                 if st.button("🚀 Run AI: Content Generation", type="primary", use_container_width=True):
-                    # Progress bar for AI1
-            # Single progress bar shown in AI Processing & Results section only
-            progress_bar = None
+                    progress_bar = st.progress(0)
                     status_text = st.empty()
-                    
                     try:
                         status_text.text("🤖 AI: Initializing...")
-                        progress_bar.progress(0.1)
-                        
+                        progress_bar.progress(10)
                         agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data)
                         agent1_success = bool(agent1_results and any(agent1_results.values()))
-                        
                         st.session_state['agent_states']['agent1_results'] = agent1_results
                         st.session_state['agent_states']['agent1_completed'] = True
                         st.session_state['agent_states']['agent1_success'] = agent1_success
-                        
-                        progress_bar.progress(1.0)
-                        if agent1_success:
-                            status_text.text(f"✅ AI completed! Generated content for {len(agent1_results)} keys.")
-                        else:
-                            status_text.text("❌ AI failed to generate content.")
-                        
-                        time.sleep(2)  # Show completion message briefly
+                        progress_bar.progress(100)
+                        status_text.text("✅ AI done" if agent1_success else "❌ AI failed")
+                        time.sleep(1)
                         st.rerun()
-                        
                     except Exception as e:
-                        progress_bar.progress(1.0)
+                        progress_bar.progress(100)
                         status_text.text(f"❌ AI failed: {e}")
-                        time.sleep(2)
+                        time.sleep(1)
                         st.rerun()
                 
                 # AI2 functionality removed as requested

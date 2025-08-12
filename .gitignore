@@ -1,3 +1,6 @@
+# Logs
+logging/
+logging/**
 *.pptx
 
 # library folder
