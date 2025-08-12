@@ -22,7 +22,7 @@ os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 from common.pptx_export import export_pptx
 from utils.simple_cache import get_simple_cache
 # Import assistant modules at module level to prevent runtime import issues
-from common.assistant import process_keys, QualityAssuranceAgent, DataValidationAgent, PatternValidationAgent, find_financial_figures_with_context_check, get_tab_name, get_financial_figure, load_ip
+from common.assistant import process_keys, QualityAssuranceAgent, DataValidationAgent, PatternValidationAgent, find_financial_figures_with_context_check, get_tab_name, get_financial_figure, load_ip, ProofreadingAgent
 import uuid
 import tempfile
 
@@ -1419,7 +1419,13 @@ def main():
                 
                 # AI Processing Button with a single main progress bar
                 agent_states = st.session_state.get('agent_states', {})
-                if st.button("🚀 Run AI: Content Generation", type="primary", use_container_width=True):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    run_ai_clicked = st.button("🚀 Run AI: Content Generation", type="primary", use_container_width=True)
+                with col_b:
+                    run_proof_clicked = st.button("🧐 Run AI Proofreader", type="secondary", use_container_width=True)
+
+                if run_ai_clicked:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     try:
@@ -1440,7 +1446,30 @@ def main():
                         time.sleep(1)
                         st.rerun()
                 
-                # AI2 functionality removed as requested
+                if run_proof_clicked:
+                    # Run AI Proofreader using Agent 1 outputs
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    try:
+                        status_text.text("🧐 Proofreader: Initializing...")
+                        progress_bar.progress(10)
+                        agent1_results = st.session_state.get('agent_states', {}).get('agent1_results', {}) or {}
+                        if not agent1_results:
+                            st.warning("Run content generation first to produce material for proofreading.")
+                        else:
+                            proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data)
+                            st.session_state['agent_states']['agent3_results'] = proof_results
+                            st.session_state['agent_states']['agent3_completed'] = True
+                            st.session_state['agent_states']['agent3_success'] = bool(proof_results)
+                        progress_bar.progress(100)
+                        status_text.text("✅ Proofreading done")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        progress_bar.progress(100)
+                        status_text.text(f"❌ Proofreading failed: {e}")
+                        time.sleep(1)
+                        st.rerun()
                 
 
                 
@@ -1454,7 +1483,8 @@ def main():
         agent_states = st.session_state.get('agent_states', {})
         any_agent_completed = any([
             agent_states.get('agent1_completed', False),
-            agent_states.get('agent2_completed', False)
+            agent_states.get('agent2_completed', False),
+            agent_states.get('agent3_completed', False)
         ])
         
         if any_agent_completed:
@@ -1499,7 +1529,7 @@ def main():
                             else:
                                 st.info("No AI results available. Run AI first.")
                         
-                        # AI3 Results (AI2 removed as requested)
+                        # AI: Compliance (AI Proofreader)
                         with agent_tabs[1]:
                             agent3_results = agent_states.get('agent3_results', {}) or {}
                             if key in agent3_results:
@@ -1509,24 +1539,24 @@ def main():
                                 col1, col2 = st.columns(2)
                                 with col1:
                                     is_compliant = pattern_result.get('is_compliant', False)
-                                    st.metric("Pattern Compliance", "✅ Compliant" if is_compliant else "⚠️ Issues")
+                                    st.metric("Compliance", "✅ Compliant" if is_compliant else "⚠️ Issues")
                                 with col2:
                                     issues = pattern_result.get('issues', [])
                                     st.metric("Issues Found", len(issues))
                                 
                                 # Show final content if available
-                                corrected_content = pattern_result.get('corrected_content', '')
+                                corrected_content = pattern_result.get('corrected_content', '') or pattern_result.get('content', '')
                                 if corrected_content:
-                                    st.markdown("**Final Content:**")
+                                    st.markdown("**Proofread Content:**")
                                     st.markdown(corrected_content)
                                 
                                 # Show issues if any
                                 if issues:
-                                    with st.expander("🚨 Pattern Issues", expanded=False):
+                                    with st.expander("🚨 Compliance Issues", expanded=False):
                                         for issue in issues:
                                             st.write(f"• {issue}")
                             else:
-                                st.info("No AI3 results available. Run AI3 first.")
+                                st.info("No compliance results available. Run AI Proofreader.")
             else:
                 st.info("No financial keys available for results display.")
         else:
@@ -3030,6 +3060,87 @@ IMPORTANT ENTITY INSTRUCTIONS:
             except Exception:
                 pass
 
+def run_ai_proofreader(filtered_keys, agent1_results, ai_data):
+    """Run AI Proofreader for all keys (Compliance, Figures, Entities, Grammar)."""
+    try:
+        import json
+        logger = st.session_state.ai_logger
+        st.markdown("## 🧐 AI Proofreader: Compliance & Polish")
+        st.write(f"Starting AI Proofreader for {len(filtered_keys)} keys...")
+
+        # Model/provider selection
+        use_local_ai = st.session_state.get('use_local_ai', False)
+        use_openai = st.session_state.get('use_openai', False)
+        proof_agent = ProofreadingAgent(use_local_ai=use_local_ai, use_openai=use_openai)
+
+        results = {}
+        entity_name = ai_data.get('entity_name', '')
+        sections_by_key = ai_data.get('sections_by_key', {})
+
+        # Prepare per-key tables markdown (from processed tables)
+        def get_tables_for_key(k):
+            key_sections = sections_by_key.get(k, [])
+            parts = []
+            for section in key_sections:
+                if isinstance(section, dict):
+                    try:
+                        parts.append(json.dumps(section, indent=2, default=str))
+                    except Exception:
+                        parts.append(str(section))
+                elif hasattr(section, 'to_string'):
+                    df = section.copy()
+                    for col in list(df.columns):
+                        if df[col].isna().all() or (df[col].astype(str) == 'None').all():
+                            df = df.drop(columns=[col])
+                    parts.append(df.to_string(index=False, na_rep=''))
+                else:
+                    parts.append(str(section))
+            return "\n".join(parts)
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        for idx, key in enumerate(filtered_keys):
+            status_text.text(f"Proofreading {key} ({idx+1}/{len(filtered_keys)})")
+            progress_bar.progress((idx+1)/len(filtered_keys))
+            try:
+                content = agent1_results.get(key, '')
+                if isinstance(content, dict):
+                    content_text = content.get('content', '')
+                    tables_md = content.get('table_data', '') or get_tables_for_key(key)
+                else:
+                    content_text = str(content)
+                    tables_md = get_tables_for_key(key)
+
+                if not content_text:
+                    results[key] = {'is_compliant': False, 'issues': ["No Agent 1 content"], 'corrected_content': ''}
+                    continue
+
+                result = proof_agent.proofread(content_text, key, tables_md, entity_name)
+                results[key] = result
+
+                # Log output
+                try:
+                    logger.log_agent_output('agent3', key, result, 0)
+                except Exception:
+                    pass
+
+                # Update session store with corrected content
+                content_store = st.session_state.get('ai_content_store', {})
+                if key not in content_store:
+                    content_store[key] = {}
+                corrected = result.get('corrected_content') or content_text
+                content_store[key]['agent3_content'] = corrected
+                content_store[key]['current_content'] = corrected
+                st.session_state['ai_content_store'] = content_store
+            except Exception as e:
+                results[key] = {'is_compliant': False, 'issues': [str(e)], 'corrected_content': ''}
+
+        st.success("✅ AI Proofreader completed")
+        return results
+    except Exception as e:
+        st.error(f"❌ AI Proofreader Error: {e}")
+        return {}
+
 def update_bs_content_with_agent_corrections(corrections_dict, entity_name, agent_name):
     """Update bs_content.md with corrections from Agent 2 or Agent 3"""
     try:
@@ -3237,7 +3348,7 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
                     
                     # Store the actual prompts that will be sent to AI
                     actual_prompts = {
-                        'system_prompt': agent2_system_prompt,
+                        'system_prompt': 'Agent 2',
                         'user_prompt': user_prompt,
                         'context': {
                             'expected_figure': expected_figure, 
@@ -3247,8 +3358,8 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
                         }
                     }
                     
-                    # Log Agent 2 input with actual prompts
-                    logger.log_agent_input('agent2', key, agent2_system_prompt, user_prompt, 
+                    # Log Agent 2 input with actual prompts (system prompt omitted)
+                    logger.log_agent_input('agent2', key, 'Agent 2', user_prompt, 
                                          {'expected_figure': expected_figure, 'agent1_content_length': len(agent1_content)}, actual_prompts)
                     
                     # Use real AI validation instead of fallback
