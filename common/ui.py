@@ -12,11 +12,10 @@ def configure_streamlit_page():
 
 def select_ai_provider_and_model(config: dict):
     """Render provider/model selection and return (provider, model)."""
-    st.markdown("---")
     st.markdown("### 🔧 AI Provider & Model")
 
-    default_provider = config.get('DEFAULT_AI_PROVIDER', 'Server AI')
-    providers = ["Open AI", "Local AI", "Server AI"]
+    default_provider = config.get('DEFAULT_AI_PROVIDER', 'Local AI')
+    providers = ["Local AI", "Open AI", "Server AI"]
     default_index = providers.index(default_provider) if default_provider in providers else 2
     provider = st.selectbox("Select AI Provider", options=providers, index=default_index, key="provider_select")
 

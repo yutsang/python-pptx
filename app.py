@@ -1074,7 +1074,6 @@ def main():
     from common.ui import configure_streamlit_page
     configure_streamlit_page()
     st.title("📊 Financial Data Processor")
-    st.markdown("---")
 
     # Sidebar for controls
     with st.sidebar:
@@ -1419,18 +1418,23 @@ def main():
                 
                 # AI Processing Button with a single main progress bar
                 agent_states = st.session_state.get('agent_states', {})
-                col_a, col_b = st.columns(2)
+                col_a, col_b, col_c = st.columns(3)
                 with col_a:
                     run_ai_clicked = st.button("🚀 Run AI: Content Generation", type="primary", use_container_width=True)
                 with col_b:
-                    run_proof_clicked = st.button("🧐 Run AI Proofreader", type="secondary", use_container_width=True)
+                    run_proof_clicked = st.button("🧐 Run AI: Proofreader", type="secondary", use_container_width=True)
+                with col_c:
+                    run_both_clicked = st.button("🔁 Run AI: Generate → Proofread", type="secondary", use_container_width=True)
 
                 if run_ai_clicked:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
+                    eta_text = st.empty()
                     try:
                         status_text.text("🤖 AI: Initializing...")
                         progress_bar.progress(10)
+                        # Disable cache for this run
+                        st.session_state['force_refresh'] = True
                         agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data)
                         agent1_success = bool(agent1_results and any(agent1_results.values()))
                         st.session_state['agent_states']['agent1_results'] = agent1_results
@@ -1450,9 +1454,12 @@ def main():
                     # Run AI Proofreader using Agent 1 outputs
                     progress_bar = st.progress(0)
                     status_text = st.empty()
+                    eta_text = st.empty()
                     try:
                         status_text.text("🧐 Proofreader: Initializing...")
                         progress_bar.progress(10)
+                        # Disable cache for this run
+                        st.session_state['force_refresh'] = True
                         agent1_results = st.session_state.get('agent_states', {}).get('agent1_results', {}) or {}
                         if not agent1_results:
                             st.warning("Run content generation first to produce material for proofreading.")
@@ -1468,6 +1475,34 @@ def main():
                     except Exception as e:
                         progress_bar.progress(100)
                         status_text.text(f"❌ Proofreading failed: {e}")
+                        time.sleep(1)
+                        st.rerun()
+
+                if run_both_clicked:
+                    # Run Generation then Proofreader in sequence with single trigger
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    try:
+                        status_text.text("🤖 AI: Initializing...")
+                        progress_bar.progress(10)
+                        st.session_state['force_refresh'] = True
+                        agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data)
+                        st.session_state['agent_states']['agent1_results'] = agent1_results
+                        st.session_state['agent_states']['agent1_completed'] = True
+                        st.session_state['agent_states']['agent1_success'] = bool(agent1_results)
+                        # Proofreader
+                        status_text.text("🧐 Proofreader: Running...")
+                        proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data)
+                        st.session_state['agent_states']['agent3_results'] = proof_results
+                        st.session_state['agent_states']['agent3_completed'] = True
+                        st.session_state['agent_states']['agent3_success'] = bool(proof_results)
+                        progress_bar.progress(100)
+                        status_text.text("✅ Generate → Proofread complete")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        progress_bar.progress(100)
+                        status_text.text(f"❌ Combined run failed: {e}")
                         time.sleep(1)
                         st.rerun()
                 
@@ -1498,13 +1533,28 @@ def main():
                 # Display results for each key in its tab
                 for i, key in enumerate(filtered_keys):
                     with key_tabs[i]:
-                        st.markdown(f"### {get_key_display_name(key)} Results")
-                        
-                        # Create sub-tabs for each agent (AI2 removed as requested)
-                        agent_tabs = st.tabs(["🚀 AI: Generation", "🎯 AI: Compliance"])
-                        
-                        # AI1 Results
-                        with agent_tabs[0]:
+                        # Show Compliance (Proofreader) first if available
+                        agent3_results_all = agent_states.get('agent3_results', {}) or {}
+                        if key in agent3_results_all:
+                            pr = agent3_results_all[key]
+                            corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
+                            if corrected_content:
+                                st.markdown("**Proofread Content:**")
+                                st.markdown(corrected_content)
+                                is_compliant = pr.get('is_compliant', False)
+                                issues = pr.get('issues', [])
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.metric("Compliance", "✅ Compliant" if is_compliant else "⚠️ Issues")
+                                with col2:
+                                    st.metric("Issues Found", len(issues))
+                                if issues:
+                                    with st.expander("🚨 Compliance Issues", expanded=False):
+                                        for issue in issues:
+                                            st.write(f"• {issue}")
+
+                        # AI1 Results (collapsible if proofreader exists)
+                        with st.expander("📝 AI: Generation (details)", expanded=key not in agent3_results_all):
                             agent1_results = agent_states.get('agent1_results', {}) or {}
                             if key in agent1_results and agent1_results[key]:
                                 content = agent1_results[key]
@@ -1528,35 +1578,8 @@ def main():
                                     st.metric("Status", "✅ Generated" if content else "❌ Failed")
                             else:
                                 st.info("No AI results available. Run AI first.")
-                        
-                        # AI: Compliance (AI Proofreader)
-                        with agent_tabs[1]:
-                            agent3_results = agent_states.get('agent3_results', {}) or {}
-                            if key in agent3_results:
-                                pattern_result = agent3_results[key]
-                                
-                                # Compliance metrics
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    is_compliant = pattern_result.get('is_compliant', False)
-                                    st.metric("Compliance", "✅ Compliant" if is_compliant else "⚠️ Issues")
-                                with col2:
-                                    issues = pattern_result.get('issues', [])
-                                    st.metric("Issues Found", len(issues))
-                                
-                                # Show final content if available
-                                corrected_content = pattern_result.get('corrected_content', '') or pattern_result.get('content', '')
-                                if corrected_content:
-                                    st.markdown("**Proofread Content:**")
-                                    st.markdown(corrected_content)
-                                
-                                # Show issues if any
-                                if issues:
-                                    with st.expander("🚨 Compliance Issues", expanded=False):
-                                        for issue in issues:
-                                            st.write(f"• {issue}")
-                            else:
-                                st.info("No compliance results available. Run AI Proofreader.")
+                        if key not in agent3_results_all:
+                            st.info("No compliance results available. Run AI Proofreader.")
             else:
                 st.info("No financial keys available for results display.")
         else:
