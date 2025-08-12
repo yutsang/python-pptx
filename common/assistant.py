@@ -36,6 +36,22 @@ def initialize_ai_services(config_details, use_local=False, use_openai=False):
     if OpenAI is None:
         raise RuntimeError("AI modules not available.")
     
+    # Allow session-level override of provider selection
+    try:
+        import streamlit as st
+        selected_provider = st.session_state.get('selected_provider')
+        if selected_provider == 'Open AI':
+            use_openai = True
+            use_local = False
+        elif selected_provider == 'Local AI':
+            use_local = True
+            use_openai = False
+        elif selected_provider == 'Server AI':
+            use_local = False
+            use_openai = False
+    except Exception:
+        pass
+
     if use_local:
         # Initialize Local AI client
         if config_details.get('LOCAL_AI_API_BASE') and config_details.get('LOCAL_AI_ENABLED'):
@@ -89,6 +105,29 @@ def get_chat_model(config_details=None, use_local=False, use_openai=False):
         config_path = os.path.join(os.path.dirname(__file__), '..', 'utils', 'config.json')
         config_details = load_config(config_path)
     
+    # Allow session-level override of provider and model
+    try:
+        import streamlit as st
+        selected_provider = st.session_state.get('selected_provider')
+        selected_model = st.session_state.get('selected_model')
+        if selected_provider == 'Local AI':
+            use_local = True
+            use_openai = False
+            if selected_model:
+                return selected_model
+        elif selected_provider == 'Open AI':
+            use_openai = True
+            use_local = False
+            if selected_model:
+                return selected_model
+        elif selected_provider == 'Server AI':
+            use_local = False
+            use_openai = False
+            if selected_model:
+                return selected_model
+    except Exception:
+        pass
+
     if use_local:
         return config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
     elif use_openai:
@@ -109,12 +148,20 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
     try:
         import streamlit as st
         force_refresh = st.session_state.get('force_refresh', False)
-    except:
+    except Exception:
         force_refresh = False
         
     cached_response = cache.get_cached_ai_result(cache_key, entity_name, force_refresh)
     if cached_response is not None:
         return cached_response
+    else:
+        # Reset force refresh after use
+        try:
+            import streamlit as st
+            if force_refresh:
+                st.session_state['force_refresh'] = False
+        except Exception:
+            pass
     
     # Include context data in the user query instead of as a separate assistant message
     enhanced_user_query = f"Context data:\n{context_content}\n\nUser query:\n{user_query}"
@@ -139,8 +186,10 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
             except Exception as e:
                 print(f"⚠️ Could not check thinking support: {e}")
         
+        # Use selected chat model if provided; fall back to session/config selection
+        model_name = openai_chat_model or get_chat_model()
         response = oai_client.chat.completions.create(
-            model=openai_chat_model,
+            model=model_name,
             messages=conversation,
             **extra_params
         )

@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 import pickle
+import logging
 
 class SimpleCache:
     """Simple file-based caching system"""
@@ -44,7 +45,7 @@ class SimpleCache:
     def get_cached_excel_data(self, filename: str, entity_name: str, force_refresh: bool = False) -> Optional[str]:
         """Get cached Excel processing results"""
         if force_refresh:
-            print(f"🔄 Force refresh requested for Excel data")
+            logging.debug("Force refresh requested for Excel data")
             return None
             
         safe_name = self._get_safe_filename(filename)
@@ -98,7 +99,7 @@ class SimpleCache:
     def get_cached_ai_result(self, key: str, entity_name: str, force_refresh: bool = False) -> Optional[str]:
         """Get cached AI processing results"""
         if force_refresh:
-            print(f"🔄 Force refresh requested for AI result")
+            logging.debug("Force refresh requested for AI result")
             return None
             
         safe_key = "".join(c for c in key if c.isalnum() or c in ('-', '_'))

@@ -1164,6 +1164,14 @@ def main():
         page_icon="📊",
         layout="wide"
     )
+    # Remove deprecated/invalid Streamlit options if any were set elsewhere
+    try:
+        import streamlit as st
+        # No use of st.set_option('client.caching') anywhere; ensure no leftover state
+        if 'client.caching' in st.session_state:
+            del st.session_state['client.caching']
+    except Exception:
+        pass
     st.title("📊 Financial Data Processor")
     st.markdown("---")
 
@@ -1175,6 +1183,40 @@ def main():
             type=['xlsx', 'xls'],
             help="Upload your financial data Excel file or use the default databook.xlsx"
         )
+
+        # AI Provider and Model selection (expandable; OpenAI placeholder on server)
+        st.markdown("---")
+        st.markdown("### 🔧 AI Provider & Model")
+        config = load_ip('utils/config.json') if os.path.exists('utils/config.json') else {}
+        default_provider = config.get('DEFAULT_AI_PROVIDER', 'Server AI')
+        provider = st.selectbox(
+            "Select AI Provider",
+            options=["Open AI", "Local AI", "Server AI"],
+            index=["Open AI", "Local AI", "Server AI"].index(default_provider) if default_provider in ["Open AI", "Local AI", "Server AI"] else 2,
+            key="provider_select"
+        )
+        st.session_state['selected_provider'] = provider
+
+        # Models per provider
+        openai_models = [config.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini')]
+        local_models = config.get('LOCAL_MODELS', [
+            'local-deep-seek',
+            'local-deep-seek-full',
+            config.get('LOCAL_AI_CHAT_MODEL', 'deepseek-r1-671b')
+        ])
+        server_models = config.get('SERVER_MODELS', [
+            'local-deep-seek',
+            'local-deep-seek-full',
+            config.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
+        ])
+
+        if provider == 'Open AI':
+            model = st.selectbox("Model", options=openai_models, key="model_select_openai")
+        elif provider == 'Local AI':
+            model = st.selectbox("Model", options=local_models, key="model_select_local")
+        else:
+            model = st.selectbox("Model", options=server_models, key="model_select_server")
+        st.session_state['selected_model'] = model
         
         # Use default file if no file is uploaded
         if uploaded_file is None:
@@ -3154,7 +3196,7 @@ def run_agent_1(filtered_keys, ai_data):
         # Get the actual prompts that will be sent to AI by calling process_keys
         # We need to capture the real prompts with table data
         try:
-            # Load prompts from prompts.json file
+        # Load prompts from prompts.json file
             with open('utils/prompts.json', 'r') as f:
                 prompts_config = json.load(f)
             actual_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1', '')
