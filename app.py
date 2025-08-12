@@ -1159,19 +1159,9 @@ def get_key_display_name(key):
 
 def main():
     
-    st.set_page_config(
-        page_title="Financial Data Processor",
-        page_icon="📊",
-        layout="wide"
-    )
-    # Remove deprecated/invalid Streamlit options if any were set elsewhere
-    try:
-        import streamlit as st
-        # No use of st.set_option('client.caching') anywhere; ensure no leftover state
-        if 'client.caching' in st.session_state:
-            del st.session_state['client.caching']
-    except Exception:
-        pass
+    # Configure Streamlit page and sanitize deprecated options
+    from common.ui import configure_streamlit_page
+    configure_streamlit_page()
     st.title("📊 Financial Data Processor")
     st.markdown("---")
 
@@ -1184,35 +1174,11 @@ def main():
             help="Upload your financial data Excel file or use the default databook.xlsx"
         )
 
-        # AI Provider and Model selection (expandable; OpenAI placeholder on server)
-        st.markdown("---")
-        st.markdown("### 🔧 AI Provider & Model")
+        # AI Provider and Model selection (modularized)
+        from common.ui import select_ai_provider_and_model
         config = load_ip('utils/config.json') if os.path.exists('utils/config.json') else {}
-        default_provider = config.get('DEFAULT_AI_PROVIDER', 'Server AI')
-        provider = st.selectbox(
-            "Select AI Provider",
-            options=["Open AI", "Local AI", "Server AI"],
-            index=["Open AI", "Local AI", "Server AI"].index(default_provider) if default_provider in ["Open AI", "Local AI", "Server AI"] else 2,
-            key="provider_select"
-        )
+        provider, model = select_ai_provider_and_model(config)
         st.session_state['selected_provider'] = provider
-
-        # Models per provider
-        openai_models = [config.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini')]
-        local_models = config.get('LOCAL_MODELS', ['local-qwen2', 'local-deep-seek', 'local-deep-seek-full'])
-        # Server AI shares same API format as Local AI (choose from same list)
-        server_models = config.get('SERVER_MODELS', local_models)
-
-        if provider == 'Open AI':
-            model = st.selectbox("Model", options=openai_models, key="model_select_openai")
-        elif provider == 'Local AI':
-            # default index to local-qwen2 if present
-            default_idx = local_models.index('local-qwen2') if 'local-qwen2' in local_models else 0
-            model = st.selectbox("Model", options=local_models, index=default_idx, key="model_select_local")
-        else:
-            # Server AI uses same format as Local AI; default to local-qwen2 if present
-            default_idx = server_models.index('local-qwen2') if 'local-qwen2' in server_models else 0
-            model = st.selectbox("Model", options=server_models, index=default_idx, key="model_select_server")
         st.session_state['selected_model'] = model
         
         # Use default file if no file is uploaded
