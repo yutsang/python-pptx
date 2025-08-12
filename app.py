@@ -1366,228 +1366,13 @@ def main():
             else:
                 sections_by_key = st.session_state[cache_key]
                 st.info("⚡ Using cached data (faster loading)")
-            st.subheader("View Table by Key")
-            keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-            if keys_with_data:
-                key_tabs = st.tabs([get_key_display_name(key) for key in keys_with_data])
-                for i, key in enumerate(keys_with_data):
-                    with key_tabs[i]:
-                        st.subheader(f"Sheet: {get_key_display_name(key)}")
-                        sections = sections_by_key[key]
-                        if sections:
-                            first_section = sections[0]
-                            
-                            # Check if we have structured data available
-                            if 'parsed_data' in first_section and first_section['parsed_data']:
-                                # Use structured data
-                                parsed_data = first_section['parsed_data']
-                                metadata = parsed_data['metadata']
-                                data_rows = parsed_data['data']
-                                
-                                # Display metadata horizontally to save space
-                                col1, col2, col3, col4, col5, col6 = st.columns(6)
-                                with col1:
-                                    st.markdown(f"**Table:** {metadata['table_name']}")
-                                with col2:
-                                    if metadata.get('date'):
-                                        formatted_date = format_date_to_dd_mmm_yyyy(metadata['date'])
-                                        st.markdown(f"**Date:** {formatted_date}")
-                                    else:
-                                        st.markdown("**Date:** Unknown")
-                                with col3:
-                                    st.markdown(f"**Currency:** {metadata['currency_info']}")
-                                with col4:
-                                    st.markdown(f"**Multiplier:** {metadata['multiplier']}x")
-                                with col5:
-                                    st.markdown(f"**Value Column:** {metadata['value_column']}")
-                                with col6:
-                                    if first_section.get('entity_match', False):
-                                        st.markdown("**Entity:** ✅")
-                                    else:
-                                        st.markdown("**Entity:** ⚠️")
-                                
-                                # Display structured data as a clean table
-                                if data_rows:
-                                    structured_data = []
-                                    for row in data_rows:
-                                        description = row['description']
-                                        value = row['value']
-                                        
-                                        # Use actual multiplied values with formatting
-                                        actual_value = value  # This is already multiplied by the multiplier
-                                        
-                                        # Format value with thousand separators and 2 decimal places
-                                        if isinstance(actual_value, (int, float)):
-                                            formatted_value = f"{actual_value:,.2f}"
-                                        else:
-                                            formatted_value = str(actual_value)
-                                        
-                                        structured_data.append({
-                                            'Description': description,
-                                            'Value': formatted_value
-                                        })
-                                    
-                                    df_structured = pd.DataFrame(structured_data)
-                                    
-                                    # Clean up the display - show only Description and Value columns
-                                    display_df = df_structured[['Description', 'Value']].copy()
-                                    
-                                    # Highlight total rows with theme-appropriate styling
-                                    def highlight_totals(row):
-                                        if row['Description'].lower() in ['total', 'subtotal']:
-                                            # Use a subtle highlight that works with both light and dark themes
-                                            # Light blue tint with low opacity works well in both themes
-                                            return ['background-color: rgba(173, 216, 230, 0.3)'] * len(row)
-                                        return [''] * len(row)  # Let theme handle default background
-                                    
-                                    styled_df = display_df.style.apply(highlight_totals, axis=1)
-                                    st.dataframe(styled_df, use_container_width=True)
-                                    
-                                    # Show structured markdown
-                                    with st.expander(f"📋 Structured Markdown", expanded=False):
-                                        st.code(first_section.get('markdown', 'No markdown available'), language='markdown')
-                                else:
-                                    st.info("No structured data rows found")
-                                    st.write(f"**Financial Data for {key}:**")
-                                    
-                                    # Try to use parsed data structure even if no rows were extracted
-                                    if 'parsed_data' in first_section and first_section['parsed_data']:
-                                        parsed_data = first_section['parsed_data']
-                                        metadata = parsed_data['metadata']
-                                        
-                                        # Display metadata horizontally
-                                        col1, col2, col3, col4, col5, col6 = st.columns(6)
-                                        with col1:
-                                            st.markdown(f"**Table:** {metadata['table_name']}")
-                                        with col2:
-                                            if metadata.get('date'):
-                                                formatted_date = format_date_to_dd_mmm_yyyy(metadata['date'])
-                                                st.markdown(f"**Date:** {formatted_date}")
-                                            else:
-                                                st.markdown("**Date:** Unknown")
-                                        with col3:
-                                            st.markdown(f"**Currency:** {metadata['currency_info']}")
-                                        with col4:
-                                            st.markdown(f"**Multiplier:** {metadata['multiplier']}x")
-                                        with col5:
-                                            st.markdown(f"**Value Column:** {metadata['value_column']}")
-                                        with col6:
-                                            if first_section.get('entity_match', False):
-                                                st.markdown("**Entity:** ✅")
-                                            else:
-                                                st.markdown("**Entity:** ⚠️")
-                                        
-                                        # Clean and display the raw DataFrame with proper column names
-                                        raw_df = first_section['data'].copy()
-                                        
-                                        # Remove columns that are all None/NaN
-                                        for col in list(raw_df.columns):
-                                            if raw_df[col].isna().all() or (raw_df[col].astype(str) == 'None').all():
-                                                raw_df = raw_df.drop(columns=[col])
-                                                print(f"DEBUG: Removed all-NaN column: {col}")
-                                        
-                                        # Rename columns to be more descriptive
-                                        if len(raw_df.columns) >= 2:
-                                            new_column_names = [f"{key} (Description)", f"{key} (Balance)"]
-                                            if len(raw_df.columns) > 2:
-                                                for i in range(2, len(raw_df.columns)):
-                                                    new_column_names.append(f"{key} (Column {i+1})")
-                                            raw_df.columns = new_column_names
-                                        elif len(raw_df.columns) == 1:
-                                            raw_df.columns = [f"{key} (Description)"]
-                                        
-                                        # Display the cleaned DataFrame
-                                        if len(raw_df.columns) > 0:
-                                            st.dataframe(raw_df, use_container_width=True)
-                                            
-                                            # Create structured markdown for AI prompts
-                                            markdown_lines = []
-                                            markdown_lines.append(f"## {metadata['table_name']}")
-                                            markdown_lines.append(f"**Entity:** {metadata['table_name'].split(' - ')[-1] if ' - ' in metadata['table_name'] else 'Unknown'}")
-                                            
-                                            # Format date if present
-                                            if metadata.get('date'):
-                                                formatted_date = format_date_to_dd_mmm_yyyy(metadata['date'])
-                                                markdown_lines.append(f"**Date:** {formatted_date}")
-                                            else:
-                                                markdown_lines.append(f"**Date:** {metadata.get('data_start_row', 'Unknown')}")
-                                            
-                                            markdown_lines.append(f"**Currency:** {metadata['currency_info']}")
-                                            markdown_lines.append(f"**Multiplier:** {metadata['multiplier']}")
-                                            markdown_lines.append("")
-                                            
-                                            # Add data rows with actual values
-                                            for _, row in raw_df.iterrows():
-                                                description = str(row.iloc[0]) if len(row) > 0 else ""
-                                                if len(row) > 1:
-                                                    value = str(row.iloc[1])
-                                                    # Try to convert to numeric and apply multiplier if it's a number
-                                                    try:
-                                                        numeric_value = float(value.replace(',', ''))
-                                                        # Apply multiplier from metadata if available
-                                                        if 'multiplier' in metadata:
-                                                            actual_value = numeric_value * metadata['multiplier']
-                                                            # Format with thousand separators and 2 decimal places
-                                                            if isinstance(actual_value, (int, float)):
-                                                                value = f"{actual_value:,.2f}"
-                                                            else:
-                                                                value = str(actual_value)
-                                                    except (ValueError, AttributeError):
-                                                        # Keep original value if not numeric
-                                                        pass
-                                                    
-                                                    if description and description.lower() not in ['nan', 'none', '']:
-                                                        markdown_lines.append(f"- {description}: {value}")
-                                            
-                                            markdown_lines.append("")
-                                            
-                                            # Show the structured markdown
-                                            with st.expander(f"📋 Structured Data for AI", expanded=False):
-                                                st.code('\n'.join(markdown_lines), language='markdown')
-                                        else:
-                                            st.error("No valid data columns found after cleaning")
-                                    
-                                    else:
-                                        # Fallback to original cleaning logic if no parsed data
-                                        raw_df = first_section['data'].copy()
-                                        
-                                        # Remove columns that are all None/NaN
-                                        for col in list(raw_df.columns):
-                                            if raw_df[col].isna().all() or (raw_df[col].astype(str) == 'None').all():
-                                                raw_df = raw_df.drop(columns=[col])
-                                                print(f"DEBUG: Removed all-NaN column: {col}")
-                                        
-                                        # Rename columns to be more descriptive
-                                        if len(raw_df.columns) >= 2:
-                                            new_column_names = [f"{key} (Description)", f"{key} (Balance)"]
-                                            if len(raw_df.columns) > 2:
-                                                for i in range(2, len(raw_df.columns)):
-                                                    new_column_names.append(f"{key} (Column {i+1})")
-                                            raw_df.columns = new_column_names
-                                        elif len(raw_df.columns) == 1:
-                                            raw_df.columns = [f"{key} (Description)"]
-                                        
-                                        if len(raw_df.columns) > 0:
-                                            st.dataframe(raw_df, use_container_width=True)
-                                        else:
-                                            st.error("No valid columns found after cleaning")
-                                            st.write("**Original DataFrame:**")
-                                            st.dataframe(first_section['data'], use_container_width=True)
-                                    
-                                    # Also show the parsed data structure for debugging
-                                    if 'parsed_data' in first_section:
-                                        with st.expander("🔍 Debug: Parsed Data Structure", expanded=False):
-                                            st.json(first_section['parsed_data'])
-                                
-                            # Note: The fallback logic is now handled in the "else" block above
-                            # This ensures we always use the improved DataFrame cleaning and markdown generation
-                            
-                            st.info(f"**Source Sheet:** {first_section['sheet']}")
-                            st.markdown("---")
-                        else:
-                            st.info("No sections found for this key.")
-            else:
-                st.warning("No data found for any financial keys.")
+            from common.ui_sections import render_balance_sheet_sections
+            render_balance_sheet_sections(
+                sections_by_key,
+                get_key_display_name,
+                selected_entity,
+                format_date_to_dd_mmm_yyyy,
+            )
         
         elif statement_type == "IS":
             # Income Statement placeholder
@@ -1620,11 +1405,17 @@ def main():
         # Check AI configuration status (updated for DeepSeek as default)
         try:
             config, _, _, _ = load_config_files()
-            if config and (not config.get('DEEPSEEK_API_KEY') or not config.get('DEEPSEEK_API_BASE')):
-                st.warning("⚠️ AI Mode: DeepSeek API keys not configured. Will use fallback mode with test data.")
-                st.info("💡 To enable full AI functionality, please configure your DeepSeek API keys in utils/config.json")
-            elif config and config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_BASE'):
-                st.success("✅ DeepSeek AI Mode: API keys configured and ready for processing.")
+            if config:
+                any_provider_configured = (
+                    (config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_BASE')) or
+                    (config.get('OPENAI_API_KEY') and config.get('OPENAI_API_BASE')) or
+                    (config.get('LOCAL_AI_API_BASE') and config.get('LOCAL_AI_ENABLED')) or
+                    (config.get('SERVER_AI_API_BASE') and (config.get('SERVER_AI_API_KEY') or config.get('LOCAL_AI_API_KEY')))
+                )
+                if any_provider_configured:
+                    st.success("✅ AI Mode: At least one provider is configured and ready.")
+                else:
+                    st.warning("⚠️ AI Mode: No provider configured. Will use fallback mode with test data.")
         except Exception:
             st.warning("⚠️ AI Mode: Configuration not found. Will use fallback mode.")
         
