@@ -26,7 +26,6 @@ def render_balance_sheet_sections(
     key_tabs = st.tabs([get_key_display_name(key) for key in keys_with_data])
     for i, key in enumerate(keys_with_data):
         with key_tabs[i]:
-            st.subheader(f"Sheet: {get_key_display_name(key)}")
             sections = sections_by_key[key]
             if not sections:
                 st.info("No sections found for this key.")

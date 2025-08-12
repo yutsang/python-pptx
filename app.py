@@ -1360,7 +1360,6 @@ def main():
                 st.success("✅ Excel processing completed and cached")
             else:
                 sections_by_key = st.session_state[cache_key]
-                st.info("⚡ Using cached data (faster loading)")
             from common.ui_sections import render_balance_sheet_sections
             render_balance_sheet_sections(
                 sections_by_key,
@@ -1407,9 +1406,7 @@ def main():
                     (config.get('LOCAL_AI_API_BASE') and config.get('LOCAL_AI_ENABLED')) or
                     (config.get('SERVER_AI_API_BASE') and (config.get('SERVER_AI_API_KEY') or config.get('LOCAL_AI_API_KEY')))
                 )
-                if any_provider_configured:
-                    st.success("✅ AI Mode: At least one provider is configured and ready.")
-                else:
+                if not any_provider_configured:
                     st.warning("⚠️ AI Mode: No provider configured. Will use fallback mode with test data.")
         except Exception:
             st.warning("⚠️ AI Mode: Configuration not found. Will use fallback mode.")
@@ -1453,7 +1450,6 @@ def main():
                     st.success("✅ Excel processing completed for AI")
                 else:
                     sections_by_key = st.session_state[cache_key]
-                    st.info("⚡ Using cached Excel data for AI processing")
                 
                 # Get keys with data
                 keys_with_data = [key for key, sections in sections_by_key.items() if sections]
@@ -1725,7 +1721,9 @@ def main():
                     st.error(f"Error details: {str(e)}")
         
         with col2:
-            if st.session_state.get('pptx_exported', False):
+            # Show a disabled download button until a PPTX is available, then enable
+            pptx_ready = st.session_state.get('pptx_exported', False) and os.path.exists(st.session_state.get('pptx_path', ''))
+            if pptx_ready:
                 with open(st.session_state['pptx_path'], "rb") as file:
                     st.download_button(
                         label="📥 Download PowerPoint",
@@ -1734,6 +1732,14 @@ def main():
                         mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                         use_container_width=True
                     )
+            else:
+                st.download_button(
+                    label="📥 Download PowerPoint",
+                    data=b"",
+                    disabled=True,
+                    file_name="report.pptx",
+                    use_container_width=True
+                )
 
 # Helper function to parse and display bs_content.md by key
 def display_bs_content_by_key(md_path):
@@ -3030,38 +3036,63 @@ IMPORTANT ENTITY INSTRUCTIONS:
             financial_figures = find_financial_figures_with_context_check(temp_file_path, get_tab_name(entity_name), '30/09/2022', convert_thousands=False)
             financial_figure_info = f"{key}: {get_financial_figure(financial_figures, key)}"
             
-            # Build the actual user prompt that gets sent to AI
-            actual_user_prompt = f"""
-            TASK: Select ONE pattern and complete it with actual data
-            
-            AVAILABLE PATTERNS: {pattern_json}
-            
-            FINANCIAL FIGURE: {financial_figure_info}
-            
-            DATA SOURCE: {key_tables}
-            
-            SELECTION CRITERIA:
-            - Choose the pattern with the most complete data coverage
-            - Prioritize patterns that match the primary account category
-            - Use most recent data: latest available
-            - Express all figures with proper K/M conversion with 1 decimal place
-            
-            REQUIRED OUTPUT FORMAT:
-            - Only the completed pattern text
-            - No pattern names or labels
-            - No template structure
-            - No JSON formatting
-            - Replace ALL 'xxx' or placeholders with actual data values
-            - Replace ALL [ENTITY_NAME] placeholders with the actual entity name from the DATA SOURCE
-            - Use the exact entity name as shown in the financial data (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
-            - Do not use bullet point for listing
-            - Use actual numerical values from the DATA SOURCE (do not convert to K/M format)
-            - No foreign contents, if any, translate to English
-            - Stick to Template format, no extra explanations or comments
-            - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
-            - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
-            - Ensure all financial figures mentioned match the actual values from the DATA SOURCE
-            """
+            # Build the actual user prompt using templates from prompts.json, then inject dynamic data
+            try:
+                with open('utils/prompts.json', 'r') as f:
+                    prompts_cfg = json.load(f)
+                user_prompts_cfg = prompts_cfg.get('user_prompts', {})
+                generic_cfg = prompts_cfg.get('generic_prompt', {})
+                # Pick key-specific config if available; else generic
+                key_prompt_cfg = user_prompts_cfg.get(key, generic_cfg)
+            except Exception:
+                key_prompt_cfg = {}
+
+            title = key_prompt_cfg.get('title', f'{get_key_display_name(key)} Analysis for {entity_name}')
+            description = key_prompt_cfg.get('description', f'Analyze {get_key_display_name(key)} using worksheet data')
+            analysis_points = key_prompt_cfg.get('analysis_points', [])
+            key_questions = key_prompt_cfg.get('key_questions', [])
+            data_sources = key_prompt_cfg.get('data_sources', [])
+
+            # Compose user prompt template then inject dynamic dataset and patterns
+            prompt_lines = [
+                f"{title}",
+                f"{description}",
+                "",
+                f"AVAILABLE PATTERNS: {pattern_json}",
+                f"FINANCIAL FIGURE: {financial_figure_info}",
+                f"DATA SOURCE: {key_tables}",
+                "",
+            ]
+
+            if analysis_points:
+                prompt_lines.append("REQUIRED ANALYSIS:")
+                for i, p in enumerate(analysis_points, 1):
+                    prompt_lines.append(f"{i}. {p.replace('[ENTITY_NAME]', entity_name)}")
+                prompt_lines.append("")
+
+            if key_questions:
+                prompt_lines.append("KEY QUESTIONS:")
+                for q in key_questions:
+                    prompt_lines.append(f"- {q.replace('[ENTITY_NAME]', entity_name)}")
+                prompt_lines.append("")
+
+            if data_sources:
+                prompt_lines.append("DATA SOURCES:")
+                for s in data_sources:
+                    prompt_lines.append(f"- {s}")
+                prompt_lines.append("")
+
+            # Output requirements central; concise, no template artifacts
+            prompt_lines += [
+                "OUTPUT REQUIREMENTS:",
+                "- Provide only the final completed text; no JSON, no headers, no pattern names",
+                "- Replace placeholders with actual values and entity names from the DATA SOURCE",
+                "- Use exact entity names shown in the table (not the reporting entity)",
+                "- Maintain professional financial tone and formatting",
+                "- Ensure all figures match the DATA SOURCE",
+            ]
+
+            actual_user_prompt = "\n".join(prompt_lines)
             
             context_data = {
                 'entity': entity_name,

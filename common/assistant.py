@@ -709,60 +709,10 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     
     print(f"🚀 Starting AI processing for {len(keys)} keys")
     
-    # Load prompts from prompts.json file
-    try:
-        with open(prompts_file, 'r') as f:
-            prompts_config = json.load(f)
-        system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1', '')
-        if not system_prompt:
-            # Fallback to hardcoded if not found
-            system_prompt = """
-            Role: system,
-            Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
-            CORE PRINCIPLES:
-            1. SELECT exactly one appropriate non-nil pattern from the provided pattern options
-            2. Replace all placeholder values with corresponding actual data
-            3. Output only the financial completed pattern text, never show template structure
-            4. ACCURACY: Use only provided - data - never estimate or extrapolate
-            5. CLARITY: Write in clear business English, translating any foreign content
-            6. FORMAT: Follow the exact template structure provided
-            7. CURRENCY: Express figures to Thousands (K) or Millions (M) as appropriate
-            8. CONCISENESS: Focus on material figures and key insights only
-            OUTPUT REQUIREMENTS:
-            - Choose the most suitable single pattern based on available data
-            - Replace all placeholders with actaul figures from databook
-            - Replace all [ENTITY_NAME] placeholders with the SPECIFIC entity name from the provided financial data
-            - CRITICAL: Use the SPECIFIC entity names from the table data (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
-            - Output ONLY the final text - no pattern names, no template structure, no explanations
-            - If data is missing for a pattern, select a different pattern that has complete data
-            - Never output JSON structure or pattern formatting
-            - Ensure all entity references in your analysis are accurate according to the provided data
-            """
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"⚠️ Could not load prompts from {prompts_file}: {e}")
-        # Use fallback hardcoded prompt
-        system_prompt = """
-        Role: system,
-        Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
-        CORE PRINCIPLES:
-        1. SELECT exactly one appropriate non-nil pattern from the provided pattern options
-        2. Replace all placeholder values with corresponding actual data
-        3. Output only the financial completed pattern text, never show template structure
-        4. ACCURACY: Use only provided - data - never estimate or extrapolate
-        5. CLARITY: Write in clear business English, translating any foreign content
-        6. FORMAT: Follow the exact template structure provided
-        7. CURRENCY: Express figures to Thousands (K) or Millions (M) as appropriate
-        8. CONCISENESS: Focus on material figures and key insights only
-        OUTPUT REQUIREMENTS:
-        - Choose the most suitable single pattern based on available data
-        - Replace all placeholders with actaul figures from databook
-        - Replace all [ENTITY_NAME] placeholders with the SPECIFIC entity name from the provided financial data
-        - CRITICAL: Use the SPECIFIC entity names from the table data (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
-        - Output ONLY the final text - no pattern names, no template structure, no explanations
-        - If data is missing for a pattern, select a different pattern that has complete data
-        - Never output JSON structure or pattern formatting
-        - Ensure all entity references in your analysis are accurate according to the provided data
-        """
+    # Load prompts from prompts.json file (no hardcoded fallback)
+    with open(prompts_file, 'r') as f:
+        prompts_config = json.load(f)
+    system_prompt = prompts_config['system_prompts']['Agent 1']
     
     # Initialize financial figures without pre-processing (will check '000 per key)
     financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), '30/09/2022', convert_thousands=False)
