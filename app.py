@@ -6,6 +6,12 @@ import re
 import os
 import datetime
 import time
+from utils.mappings import (
+    KEY_TO_SECTION_MAPPING,
+    KEY_TERMS_BY_KEY,
+    DISPLAY_NAME_MAPPING_DEFAULT,
+    DISPLAY_NAME_MAPPING_NB_NJ,
+)
 from pathlib import Path
 from tabulate import tabulate
 import urllib3
@@ -33,63 +39,24 @@ logging.getLogger('streamlit.watcher.util').setLevel(logging.ERROR)
 
 # AI Agent Logging System
 class AIAgentLogger:
-    """File-based logging system for AI agents"""
+    """Single-file JSON logging per session (inputs, outputs, errors)."""
     
     def __init__(self):
-        self.logs = {
-            'agent1': {},
-            'agent2': {},
-            'agent3': {}
-        }
+        self.logs = {'agent1': {}, 'agent2': {}, 'agent3': {}}
         self.session_logs = []
-        
-        # Create logging directory
         self.log_dir = Path("logging")
         self.log_dir.mkdir(exist_ok=True)
-        
-        # Create timestamped log file
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = self.log_dir / f"ai_agents_{timestamp}.json"
-        self.session_id = timestamp
-        
-        # Initialize log file with JSON structure
-        with open(self.log_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                "session_id": self.session_id,
-                "started": datetime.datetime.now().isoformat(),
-                "logs": []
-            }, f, indent=2, default=str, ensure_ascii=False)
+        self.session_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Consolidated session JSON file (only file we keep)
+        self.session_file = self.log_dir / f"session_{self.session_id}.json"
         
     def _write_to_file(self, message):
-        """Write message to log file"""
-        try:
-            with open(self.log_file, 'a', encoding='utf-8') as f:
-                f.write(f"{message}\n")
-        except Exception as e:
-            print(f"Error writing to log file: {e}")
+        """No-op: we only keep consolidated JSON logs."""
+        return
     
     def _save_json_log(self, log_entry, log_type):
-        """Save individual JSON log files for structured access"""
-        try:
-            # Create JSON subdirectory
-            json_log_dir = self.log_dir / "json"
-            json_log_dir.mkdir(exist_ok=True)
-            
-            # Create filename with timestamp and type
-            timestamp = log_entry['timestamp'].replace(' ', '_').replace(':', '-')
-            agent = log_entry['agent'].lower()
-            key = log_entry['key'].lower()
-            filename = f"{timestamp}_{agent}_{key}_{log_type}.json"
-            
-            json_file_path = json_log_dir / filename
-            
-            # Create JSON-serializable copy and save
-            safe_log_entry = self._make_json_serializable(log_entry)
-            with open(json_file_path, 'w', encoding='utf-8') as f:
-                json.dump(safe_log_entry, f, indent=2, ensure_ascii=False)
-                
-        except Exception as e:
-            print(f"Error saving JSON log: {e}")
+        """Disabled: per-entry JSON files are not used."""
+        return
     
     def _make_json_serializable(self, obj):
         """Convert DataFrame and other non-serializable objects to strings"""
@@ -107,40 +74,13 @@ class AIAgentLogger:
                 return str(obj)
     
     def _save_key_log(self, agent_name, key, input_entry, output_entry):
-        """Save input and output for a key in one JSON file"""
-        try:
-            # Create filename for key log
-            timestamp = input_entry['timestamp'].replace(' ', '_').replace(':', '-')
-            filename = f"{timestamp}_{agent_name.lower()}_{key.lower()}.json"
-            
-            key_file_path = self.log_dir / filename
-            
-            # Combine input and output into key structure
-            key_log = {
-                'timestamp': input_entry['timestamp'],
-                'agent': input_entry['agent'],
-                'key': input_entry['key'],
-                'session_id': input_entry.get('session_id', 'default'),
-                'input': input_entry,
-                'output': output_entry,
-                'processing_time': output_entry.get('processing_time', 0),
-                'success': output_entry.get('success', False)
-            }
-            
-            # Create JSON-serializable copy and save
-            safe_key_log = self._make_json_serializable(key_log)
-            with open(key_file_path, 'w', encoding='utf-8') as f:
-                json.dump(safe_key_log, f, indent=2, ensure_ascii=False)
-                
-        except Exception as e:
-            print(f"Error saving key log: {e}")
+        """Disabled: per-key JSON files are not used."""
+        return
         
     def _save_to_consolidated_log(self, log_entry):
         """Save log entry to consolidated session file (1 file per session with all agents and keys)"""
         try:
-            # Create consolidated session file
-            session_file = self.log_dir / f"session_{self.session_id}.json"
-            
+            session_file = self.session_file
             # Load existing session data or create new
             session_data = {'session_info': {'session_id': self.session_id, 'started': datetime.datetime.now().isoformat()}, 'logs': []}
             if session_file.exists():
@@ -203,8 +143,7 @@ class AIAgentLogger:
         # Save to consolidated session file
         self._save_to_consolidated_log(log_entry)
         
-        # Save individual JSON input file for detailed debugging
-        self._save_json_log(log_entry, 'input')
+        # Per-entry JSON disabled
         
         # Store input entry for paired logging
         if not hasattr(self, 'pending_inputs'):
@@ -248,14 +187,13 @@ class AIAgentLogger:
         self.logs[agent_name][key].append(log_entry)
         self.session_logs.append(log_entry)
         
-        # Save individual JSON output file
-        self._save_json_log(log_entry, 'output')
+        # Per-entry JSON disabled
         
         # Create key log if input exists
         input_key = f"{agent_name}_{key}"
         if hasattr(self, 'pending_inputs') and input_key in self.pending_inputs:
             input_entry = self.pending_inputs[input_key]
-            self._save_key_log(agent_name, key, input_entry, log_entry)
+            # Per-key JSON disabled
             # Remove from pending after key log is created
             del self.pending_inputs[input_key]
         
@@ -314,7 +252,7 @@ class AIAgentLogger:
             return
             
         st.markdown("### 📊 AI Processing Summary")
-        st.info(f"📁 Detailed logs saved to: `{self.log_file}`")
+        st.info(f"📁 Detailed logs saved to: `{self.session_file}`")
         
         # Count by agent
         agent_counts = {}
@@ -331,21 +269,19 @@ class AIAgentLogger:
                 st.metric(f"{agent.upper()}", 
                          f"I:{counts['inputs']} O:{counts['outputs']} E:{counts['errors']}")
         
-        # Provide download option for JSON logs
-        if st.button("💾 Save Structured Logs (JSON)", type="secondary"):
-            json_file = self.save_logs_to_json()
-            if json_file:
-                st.success(f"📄 JSON logs saved to: `{json_file}`")
-                try:
-                    with open(json_file, 'r', encoding='utf-8') as f:
-                        st.download_button(
-                            label="📥 Download JSON Logs",
-                            data=f.read(),
-                            file_name=json_file.name,
-                            mime='application/json'
-                        )
-                except Exception:
-                    pass
+        # Download consolidated session log
+        try:
+            if self.session_file.exists():
+                with open(self.session_file, 'r', encoding='utf-8') as f:
+                    st.download_button(
+                        label="📥 Download Session Log (JSON)",
+                        data=f.read(),
+                        file_name=self.session_file.name,
+                        mime='application/json',
+                        type="secondary"
+                    )
+        except Exception:
+            pass
 
 # Initialize global logger
 if 'ai_logger' not in st.session_state:
@@ -401,8 +337,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
     This is the core function from old_ver/utils/utils.py
     """
     try:
-        # Use simple cache instead of complex cache manager
-        from utils.simple_cache import get_simple_cache
+        # Use simple cache (imported at top)
         cache = get_simple_cache()
         
         # Check cache first (with force refresh option)
@@ -1126,35 +1061,9 @@ def get_key_display_name(key):
         else:
             return key
     except FileNotFoundError:
-        # Fallback to hardcoded mapping if mapping.json not found
-        name_mapping = {
-            'Cash': 'Cash',
-            'AR': 'Accounts Receivable',
-            'Prepayments': 'Prepayments',
-            'OR': 'Other Receivables',
-            'Other CA': 'Other Current Assets',
-            'IP': 'Investment Properties',
-            'Other NCA': 'Other Non-Current Assets',
-            'AP': 'Accounts Payable',
-            'Taxes payable': 'Tax Payable',
-            'OP': 'Other Payables',
-            'Capital': 'Share Capital',
-            'Reserve': 'Reserve',
-            'Advances': 'Advances from Customers',
-            'Capital reserve': 'Capital Reserve',
-            'OI': 'Other Income',
-            'OC': 'Other Costs',
-            'Tax and Surcharges': 'Tax and Surcharges',
-            'GA': 'G&A Expenses',
-            'Fin Exp': 'Finance Expenses',
-            'Cr Loss': 'Credit Losses',
-            'Other Income': 'Other Income',
-            'Non-operating Income': 'Non-operating Income',
-            'Non-operating Exp': 'Non-operating Expenses',
-            'Income tax': 'Income Tax',
-            'LT DTA': 'Long-term Deferred Tax Assets'
-        }
-        return name_mapping.get(key, key)
+        # Fallback to centralized defaults if mapping.json not found
+        from utils.mappings import DISPLAY_NAME_MAPPING_DEFAULT as default_names
+        return default_names.get(key, key)
     except Exception as e:
         st.error(f"Error loading mapping.json for display names: {e}")
         return key
@@ -1516,7 +1425,8 @@ def main():
                 # Single column layout since AI2 was removed
                 if st.button("🚀 Run AI: Content Generation", type="primary", use_container_width=True):
                     # Progress bar for AI1
-                    progress_bar = st.progress(0)
+            # Single progress bar shown in AI Processing & Results section only
+            progress_bar = None
                     status_text = st.empty()
                     
                     try:
@@ -2106,33 +2016,7 @@ def display_offline_content_fallback(key):
             return
         
         # Map financial keys to content sections
-        key_to_section_mapping = {
-            'Cash': 'Cash at bank',
-            'AR': 'Accounts receivables', 
-            'Prepayments': 'Prepayments',
-            'OR': 'Other receivables',
-            'Other CA': 'Other current assets',
-            'IP': 'Investment properties',
-            'Other NCA': 'Other non-Current assets',
-            'AP': 'Accounts payable',
-            'Advances': 'Advances',
-            'Taxes payable': 'Taxes payables',
-            'OP': 'Other payables',
-            'Capital': 'Capital',
-            'Reserve': 'Surplus reserve',
-            'Capital reserve': 'Capital reserve',
-            'OI': 'Other Income',
-            'OC': 'Other Costs',
-            'Tax and Surcharges': 'Tax and Surcharges',
-            'GA': 'G&A expenses',
-            'Fin Exp': 'Finance Expenses',
-            'Cr Loss': 'Credit Losses',
-            'Other Income': 'Other Income',
-            'Non-operating Income': 'Non-operating Income',
-            'Non-operating Exp': 'Non-operating Expenses',
-            'Income tax': 'Income tax',
-            'LT DTA': 'Long-term Deferred Tax Assets'
-        }
+        key_to_section_mapping = KEY_TO_SECTION_MAPPING
         
         # Find the section for this key
         target_section = key_to_section_mapping.get(key)
@@ -2179,33 +2063,8 @@ def get_offline_content_fallback(key):
         with open(content_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        key_to_section_mapping = {
-            'Cash': 'Cash at bank',
-            'AR': 'Accounts receivables', 
-            'Prepayments': 'Prepayments',
-            'OR': 'Other receivables',
-            'Other CA': 'Other current assets',
-            'IP': 'Investment properties',
-            'Other NCA': 'Other non-Current assets',
-            'AP': 'Accounts payable',
-            'Advances': 'Advances',
-            'Taxes payable': 'Taxes payables',
-            'OP': 'Other payables',
-            'Capital': 'Capital',
-            'Reserve': 'Surplus reserve',
-            'Capital reserve': 'Capital reserve',
-            'OI': 'Other Income',
-            'OC': 'Other Costs',
-            'Tax and Surcharges': 'Tax and Surcharges',
-            'GA': 'G&A expenses',
-            'Fin Exp': 'Finance Expenses',
-            'Cr Loss': 'Credit Losses',
-            'Other Income': 'Other Income',
-            'Non-operating Income': 'Non-operating Income',
-            'Non-operating Exp': 'Non-operating Expenses',
-            'Income tax': 'Income tax',
-            'LT DTA': 'Long-term Deferred Tax Assets'
-        }
+        # Centralized mapping
+        from utils.mappings import KEY_TO_SECTION_MAPPING as key_to_section_mapping
         
         target_section = key_to_section_mapping.get(key)
         if target_section:
@@ -2257,22 +2116,7 @@ def perform_offline_data_validation(key, agent1_content, sections_by_key):
             key_lower = key.lower()
             
             # Check for key-related terms
-            key_terms = {
-                'Cash': ['cash', 'bank', 'deposit'],
-                'AR': ['receivable', 'receivables', 'ar'],
-                'AP': ['payable', 'payables', 'ap'],
-                'IP': ['investment', 'property', 'properties'],
-                'Capital': ['capital', 'share', 'equity'],
-                'Reserve': ['reserve', 'surplus'],
-                'Taxes payable': ['tax', 'taxes', 'taxable'],
-                'OP': ['other', 'payable', 'payables'],
-                'Prepayments': ['prepayment', 'prepaid'],
-                'OR': ['other', 'receivable', 'receivables'],
-                'Other CA': ['other', 'current', 'asset'],
-                'Other NCA': ['other', 'non-current', 'asset']
-            }
-            
-            terms = key_terms.get(key, [key_lower])
+            terms = KEY_TERMS_BY_KEY.get(key, [key_lower])
             if any(term in row_str.lower() for term in terms):
                 return ['background-color: yellow'] * len(row)
             return [''] * len(row)
@@ -2454,19 +2298,7 @@ def generate_content_from_session_storage(entity_name):
         
         # Define category mappings based on entity name
         if entity_name in ['Ningbo', 'Nanjing']:
-            name_mapping = {
-                'Cash': 'Cash at bank',
-                'AR': 'Accounts receivables',
-                'Prepayments': 'Prepayments',
-                'OR': 'Other receivables',
-                'Other CA': 'Other current assets',
-                'IP': 'Investment properties',
-                'Other NCA': 'Other non-current assets',
-                'AP': 'Accounts payable',
-                'Taxes payable': 'Taxes payables',
-                'OP': 'Other payables',
-                'Capital': 'Capital'
-            }
+            name_mapping = DISPLAY_NAME_MAPPING_NB_NJ
             category_mapping = {
                 'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
                 'Non-current Assets': ['IP', 'Other NCA'],
@@ -2474,20 +2306,7 @@ def generate_content_from_session_storage(entity_name):
                 'Equity': ['Capital']
             }
         else:  # Haining and others
-            name_mapping = {
-                'Cash': 'Cash at bank',
-                'AR': 'Accounts receivables',
-                'Prepayments': 'Prepayments',
-                'OR': 'Other receivables',
-                'Other CA': 'Other current assets',
-                'IP': 'Investment properties',
-                'Other NCA': 'Other non-current assets',
-                'AP': 'Accounts payable',
-                'Taxes payable': 'Taxes payables',
-                'OP': 'Other payables',
-                'Capital': 'Capital',
-                'Reserve': 'Surplus reserve'
-            }
+            name_mapping = DISPLAY_NAME_MAPPING_DEFAULT
             category_mapping = {
                 'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
                 'Non-current Assets': ['IP', 'Other NCA'],
@@ -2593,19 +2412,7 @@ def generate_markdown_from_ai_results(ai_results, entity_name):
     try:
         # Define category mappings based on entity name
         if entity_name in ['Ningbo', 'Nanjing']:
-            name_mapping = {
-                'Cash': 'Cash at bank',
-                'AR': 'Accounts receivables',
-                'Prepayments': 'Prepayments',
-                'OR': 'Other receivables',
-                'Other CA': 'Other current assets',
-                'IP': 'Investment properties',
-                'Other NCA': 'Other non-current assets',
-                'AP': 'Accounts payable',
-                'Taxes payable': 'Taxes payables',
-                'OP': 'Other payables',
-                'Capital': 'Capital'
-            }
+            name_mapping = DISPLAY_NAME_MAPPING_NB_NJ
             category_mapping = {
                 'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
                 'Non-current Assets': ['IP', 'Other NCA'],
@@ -2613,20 +2420,7 @@ def generate_markdown_from_ai_results(ai_results, entity_name):
                 'Equity': ['Capital']
             }
         else:  # Haining and others
-            name_mapping = {
-                'Cash': 'Cash at bank',
-                'AR': 'Accounts receivables',
-                'Prepayments': 'Prepayments',
-                'OR': 'Other receivables',
-                'Other CA': 'Other current assets',
-                'IP': 'Investment properties',
-                'Other NCA': 'Other non-current assets',
-                'AP': 'Accounts payable',
-                'Taxes payable': 'Taxes payables',
-                'OP': 'Other payables',
-                'Capital': 'Capital',
-                'Reserve': 'Surplus reserve'
-            }
+            name_mapping = DISPLAY_NAME_MAPPING_DEFAULT
             category_mapping = {
                 'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
                 'Non-current Assets': ['IP', 'Other NCA'],
@@ -2935,7 +2729,7 @@ def run_agent_1(filtered_keys, ai_data):
                 
                 with open(temp_file_path, 'wb') as tmp_file:
                     tmp_file.write(st.session_state['uploaded_file_data'])
-                st.success("✅ Created temporary databook for processing")
+                # Temp file created silently
             else:
                 # Fallback: use existing databook.xlsx
                 if os.path.exists('databook.xlsx'):
@@ -3159,7 +2953,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
         st.write(f"🤖 Processing {len(filtered_keys)} keys with Agent 1...")
         
         # Create progress bar and status text for Streamlit
-        progress_bar = st.progress(0)
+        progress_bar = st.progress(0)  # main progress bar
         status_text = st.empty()
         
         # Create progress callback for Streamlit
@@ -3267,34 +3061,9 @@ def update_bs_content_with_agent_corrections(corrections_dict, entity_name, agen
         
         # Define category mappings based on entity name
         if entity_name in ['Ningbo', 'Nanjing']:
-            name_mapping = {
-                'Cash': 'Cash at bank',
-                'AR': 'Accounts receivables',
-                'Prepayments': 'Prepayments',
-                'OR': 'Other receivables',
-                'Other CA': 'Other current assets',
-                'IP': 'Investment properties',
-                'Other NCA': 'Other non-current assets',
-                'AP': 'Accounts payable',
-                'Taxes payable': 'Taxes payables',
-                'OP': 'Other payables',
-                'Capital': 'Capital'
-            }
+            from utils.mappings import DISPLAY_NAME_MAPPING_NB_NJ as name_mapping
         else:  # Haining and others
-            name_mapping = {
-                'Cash': 'Cash at bank',
-                'AR': 'Accounts receivables',
-                'Prepayments': 'Prepayments',
-                'OR': 'Other receivables',
-                'Other CA': 'Other current assets',
-                'IP': 'Investment properties',
-                'Other NCA': 'Other non-current assets',
-                'AP': 'Accounts payable',
-                'Taxes payable': 'Taxes payables',
-                'OP': 'Other payables',
-                'Capital': 'Capital',
-                'Reserve': 'Surplus reserve'
-            }
+            from utils.mappings import DISPLAY_NAME_MAPPING_DEFAULT as name_mapping
         
         # Update content for each corrected key
         for key, corrected_content in corrections_dict.items():
@@ -3345,15 +3114,10 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
         st.markdown("## 🎯 Agent 3: Pattern Compliance")
         st.write(f"Starting Agent 3 for {len(filtered_keys)} keys...")
         
-        # Load prompts from prompts.json
-        try:
-            with open('utils/prompts.json', 'r') as f:
-                prompts_config = json.load(f)
-            agent3_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 3', '')
-            st.success("✅ Loaded Agent 3 system prompt from prompts.json")
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            st.warning(f"⚠️ Could not load prompts.json: {e}")
-            agent2_system_prompt = "Fallback Agent 2 system prompt"
+        # Load prompts from prompts.json (no fallback)
+        with open('utils/prompts.json', 'r') as f:
+            prompts_config = json.load(f)
+        agent3_system_prompt = prompts_config['system_prompts']['Agent 3']
         
         validation_agent = DataValidationAgent()
         results = {}
@@ -3396,6 +3160,7 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
         st.success(f"✅ Found Agent 1 content for {len(available_keys)} keys: {available_keys}")
         
         # Create progress bar for Agent 2
+        # Use the main progress bar; remove secondary bars
         progress_bar = st.progress(0)
         status_text = st.empty()
         
@@ -3410,7 +3175,7 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
                     tmp_file.write(st.session_state['uploaded_file_data'])
                     temp_file_path = tmp_file.name
-                st.success("✅ Created temporary databook for validation")
+                # Temp file created silently
             except Exception as e:
                 st.error(f"❌ Error creating temporary file: {e}")
                 temp_file_path = None
