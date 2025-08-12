@@ -1199,23 +1199,19 @@ def main():
 
         # Models per provider
         openai_models = [config.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini')]
-        local_models = config.get('LOCAL_MODELS', [
-            'local-deep-seek',
-            'local-deep-seek-full',
-            config.get('LOCAL_AI_CHAT_MODEL', 'deepseek-r1-671b')
-        ])
-        server_models = config.get('SERVER_MODELS', [
-            'local-deep-seek',
-            'local-deep-seek-full',
-            config.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
-        ])
+        local_models = config.get('LOCAL_MODELS', ['local-qwen2', 'local-deep-seek', 'local-deep-seek-full'])
+        server_models = config.get('SERVER_MODELS', ['local-qwen2', 'local-deep-seek', 'local-deep-seek-full'])
 
         if provider == 'Open AI':
             model = st.selectbox("Model", options=openai_models, key="model_select_openai")
         elif provider == 'Local AI':
-            model = st.selectbox("Model", options=local_models, key="model_select_local")
+            # default index to local-qwen2 if present
+            default_idx = local_models.index('local-qwen2') if 'local-qwen2' in local_models else 0
+            model = st.selectbox("Model", options=local_models, index=default_idx, key="model_select_local")
         else:
-            model = st.selectbox("Model", options=server_models, key="model_select_server")
+            # Server AI defaults to local-qwen2 if present
+            default_idx = server_models.index('local-qwen2') if 'local-qwen2' in server_models else 0
+            model = st.selectbox("Model", options=server_models, index=default_idx, key="model_select_server")
         st.session_state['selected_model'] = model
         
         # Use default file if no file is uploaded

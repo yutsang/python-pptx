@@ -22,7 +22,7 @@
 
     "LOCAL_AI_API_BASE": "http://localhost:1234/v1",
     "LOCAL_AI_API_KEY": "placeholder-local-api-key",
-    "LOCAL_AI_CHAT_MODEL": "deepseek-r1-671b",
+    "LOCAL_AI_CHAT_MODEL": "local-qwen2",
     "LOCAL_AI_ENABLED": false,
     "LOCAL_AI_SUPPORTS_THINKING": true,
     "LOCAL_AI_THINKING_MODEL": "deepseek-r1-671b-reasoning",
