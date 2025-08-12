@@ -33,6 +33,18 @@ def select_ai_provider_and_model(config: dict):
         default_idx = server_models.index('local-qwen2') if 'local-qwen2' in server_models else 0
         model = st.selectbox("Model", options=server_models, index=default_idx, key="model_select_server")
 
+    # Compact provider status info: success if ANY provider is configured
+    any_provider_configured = (
+        (config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_BASE')) or
+        (config.get('OPENAI_API_KEY') and config.get('OPENAI_API_BASE')) or
+        (config.get('LOCAL_AI_API_BASE') and config.get('LOCAL_AI_ENABLED')) or
+        (config.get('SERVER_AI_API_BASE') and (config.get('SERVER_AI_API_KEY') or config.get('LOCAL_AI_API_KEY')))
+    )
+    if any_provider_configured:
+        st.success("✅ AI Provider: configuration detected")
+    else:
+        st.warning("⚠️ No AI provider configured yet")
+
     return provider, model
 
 

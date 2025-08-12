@@ -148,50 +148,50 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str):
             
             # Parse the sheet
             df = xl.parse(sheet_name)
-        
-        # Rename columns if seeing usual headers following context title
-        df.columns = ['Description', 'Date_2020', 'Date_2021', 'Date_2022']
-        
-        # Filter for the specific date column
-        date_column_map = {
-            '31/12/2020': 'Date_2020',
-            '31/12/2021': 'Date_2021',
-            '30/09/2022': 'Date_2022'
-        }
-        
-        if date_str not in date_column_map:
-            print(f"Date '{date_str}' not recognized.")
-            return {}
-        
-        date_column = date_column_map[date_str]
-        
-        # Scale factor based on the '000 notation
-        scale_factor = 1000
-        
-        # Extract financial figures now if starts early perhaps descriptive context
-        financial_figure_map = {
-            "Cash": "Cash at bank",
-            "AR": "Accounts receivable",
-            "Prepayments": "Prepayments",
-            "OR": "Other receivables",
-            "Other CA": "Other current assets",
-            "IP": "Investment properties",
-            "Other NCA": "Other non-current assets",
-            "AP": "Accounts payable",
-            "Taxes payable": "Taxes payable",
-            "OP": "Other payables",
-            "Capital": "Paid-in capital",
-            "Reserve": "Surplus reserve"
-        }
-        
-        financial_figures = {}
-        
-        # Iterate only effectively without further row entity considerations
-        for key, desc in financial_figure_map.items():
-            value = df.loc[df['Description'].str.contains(desc, case=False, na=False), date_column].values
-            if value.size > 0:
-                financial_figures[key] = float(value[0]) / scale_factor
-        return financial_figures
+
+            # Rename columns if seeing usual headers following context title
+            df.columns = ['Description', 'Date_2020', 'Date_2021', 'Date_2022']
+            
+            # Filter for the specific date column
+            date_column_map = {
+                '31/12/2020': 'Date_2020',
+                '31/12/2021': 'Date_2021',
+                '30/09/2022': 'Date_2022'
+            }
+            
+            if date_str not in date_column_map:
+                print(f"Date '{date_str}' not recognized.")
+                return {}
+            
+            date_column = date_column_map[date_str]
+            
+            # Scale factor based on the '000 notation
+            scale_factor = 1000
+            
+            # Extract financial figures now if starts early perhaps descriptive context
+            financial_figure_map = {
+                "Cash": "Cash at bank",
+                "AR": "Accounts receivable",
+                "Prepayments": "Prepayments",
+                "OR": "Other receivables",
+                "Other CA": "Other current assets",
+                "IP": "Investment properties",
+                "Other NCA": "Other non-current assets",
+                "AP": "Accounts payable",
+                "Taxes payable": "Taxes payable",
+                "OP": "Other payables",
+                "Capital": "Paid-in capital",
+                "Reserve": "Surplus reserve"
+            }
+            
+            financial_figures = {}
+            
+            # Iterate only effectively without further row entity considerations
+            for key, desc in financial_figure_map.items():
+                value = df.loc[df['Description'].str.contains(desc, case=False, na=False), date_column].values
+                if value.size > 0:
+                    financial_figures[key] = float(value[0]) / scale_factor
+            return financial_figures
     
     except Exception as e:
         print(f"An error occurred while processing the Excel file: {e}")
