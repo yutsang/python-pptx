@@ -940,9 +940,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
         # Process sheets within context manager
         with pd.ExcelFile(excel_source) as xl:
             for sheet_name in xl.sheet_names:
-                if sheet_name in reverse_mapping:
-                    df = xl.parse(sheet_name)
-                
+                # Skip sheets not in mapping to avoid using undefined df
+                if sheet_name not in reverse_mapping:
+                    continue
+                df = xl.parse(sheet_name)
+
                 # Split dataframes on empty rows
                 empty_rows = df.index[df.isnull().all(1)]
                 start_idx = 0
