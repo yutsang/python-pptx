@@ -18,6 +18,7 @@ FDD.Draft Report.For AI solution purpose Only.pptx
 *databook*.pptx
 
 # Add any other input/output file types as needed
+/utils/config.json
 
 # Python cache and build files
 __pycache__/
