@@ -1326,6 +1326,114 @@ class PatternValidationAgent:
             print(f"Pattern correction error: {e}")
             return content
 
+class ProofreadingAgent:
+    """AI Proofreader for compliance, figure formatting, entity matching, and grammar/style."""
+    def __init__(self, use_local_ai: bool = False, use_openai: bool = False):
+        self.config_file = 'utils/config.json'
+        self.pattern_file = 'utils/pattern.json'
+        self.use_local_ai = use_local_ai
+        self.use_openai = use_openai
+
+    def proofread(self, content: str, key: str, tables_markdown: str, entity: str) -> Dict:
+        try:
+            import json
+            # Load patterns for the key
+            patterns = load_ip(self.pattern_file, key)
+
+            if not AI_AVAILABLE:
+                raise RuntimeError("AI services are required for proofreading. Please check your configuration.")
+
+            # Initialize AI
+            config_details = load_config(self.config_file)
+            oai_client, _ = initialize_ai_services(config_details, use_local=self.use_local_ai, use_openai=self.use_openai)
+
+            # Load system prompt
+            try:
+                with open('utils/prompts.json', 'r') as f:
+                    prompts_config = json.load(f)
+                system_prompt = prompts_config.get('system_prompts', {}).get('AI Proofreader', '')
+            except (FileNotFoundError, json.JSONDecodeError):
+                system_prompt = (
+                    "You are an AI proofreader for financial due diligence narratives. Focus on pattern compliance, "
+                    "K/M figure formatting, entity correctness, grammar/pro tone, and language normalization. Return JSON."
+                )
+
+            # Build user query
+            user_query = f"""
+            AI PROOFREADING TASK
+
+            KEY: {key}
+            REPORTING ENTITY: {entity}
+            AVAILABLE PATTERNS: {json.dumps(patterns, indent=2)}
+
+            CONTENT TO REVIEW:
+            {content}
+
+            DATA TABLES (for entity/details and figure source):
+            {tables_markdown}
+
+            STRICT OUTPUT: Return ONLY a JSON object with fields:
+            {{
+              "is_compliant": true,
+              "issues": ["..."],
+              "corrected_content": "...",
+              "figure_checks": ["..."],
+              "entity_checks": ["..."],
+              "grammar_notes": ["..."],
+              "pattern_used": "Pattern X"
+            }}
+            """
+
+            # Model selection
+            if self.use_local_ai:
+                model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
+            elif self.use_openai:
+                model = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
+            else:
+                model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
+
+            response = generate_response(user_query, system_prompt, oai_client, tables_markdown, model, entity, self.use_local_ai)
+            response = response.strip()
+            if response.startswith('```json'):
+                response = response.replace('```json', '').replace('```', '').strip()
+            elif response.startswith('```'):
+                response = response.replace('```', '').strip()
+
+            try:
+                result = json.loads(response)
+                # Fill defaults
+                result.setdefault('is_compliant', True)
+                result.setdefault('issues', [])
+                result.setdefault('corrected_content', content)
+                result.setdefault('figure_checks', [])
+                result.setdefault('entity_checks', [])
+                result.setdefault('grammar_notes', [])
+                result.setdefault('pattern_used', '')
+                return result
+            except Exception as parse_error:
+                print(f"Failed to parse AI Proofreader response: {parse_error}")
+                print(f"Raw response: {response}")
+                return {
+                    'is_compliant': True,
+                    'issues': [f"AI response parsing failed: {parse_error}"],
+                    'corrected_content': content,
+                    'figure_checks': [],
+                    'entity_checks': [],
+                    'grammar_notes': [],
+                    'pattern_used': ''
+                }
+        except Exception as e:
+            print(f"Proofreading error: {e}")
+            return {
+                'is_compliant': False,
+                'issues': [f"Proofreading error: {e}"],
+                'corrected_content': content,
+                'figure_checks': [],
+                'entity_checks': [],
+                'grammar_notes': [],
+                'pattern_used': ''
+            }
+
 def clean_response_text(text: str) -> str:
     """Clean up AI response text: remove outer quotes, translate Chinese, etc."""
     if not text:

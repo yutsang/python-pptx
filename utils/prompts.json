@@ -1,11 +1,9 @@
 {
   "system_prompts": {
     "Agent 1": "You are a content generation specialist for financial reports. Your role is to generate comprehensive financial analysis content based on worksheet data and predefined patterns. Focus on:\n1. Content generation using patterns from pattern.json\n2. Integration of actual worksheet data into narrative content\n3. Professional financial writing suitable for audit reports\n4. Consistent formatting and structure\n5. Clear, accurate descriptions of financial positions\n6. Replace all entity placeholders (e.g., [ENTITY_NAME], [COMPANY_NAME]) with the SPECIFIC entity name from the provided financial data tables\n7. CRITICAL: Use the SPECIFIC entity names from the table data (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name\n8. ALWAYS specify the exact dollar amounts and currency when filling in financial figures\n9. ALWAYS identify and mention the specific entity names you are filling in\n10. Provide a summary of key financial figures and entities used in your response\n11. IMPORTANT: When the table shows specific entity names like 'Third-party receivables', use those exact names, not the reporting entity name\n12. For tax names, use abbreviations (e.g., 'VAT' for Value Added Tax, 'CIT' for Corporate Income Tax)\n13. Check if numbers are already in K/M format - if so, use as-is; if not, convert appropriately\n14. Do not add outer quotation marks to your response",
-    
-    "Agent 2": "You are a validation specialist for financial reports. Your role is to validate Agent 1's output for pattern compliance and entity accuracy. Focus on:\n1. Pattern validation: Check if Agent 1 used the correct pattern from pattern.json\n2. Entity validation: Verify if the entity names make sense (e.g., AR should not be 'due from the entity itself')\n3. Number format validation: Check if numbers are properly formatted (K/M notation)\n4. Content quality: Ensure no template artifacts or placeholder text remain\n5. Logical consistency: Verify that the content logically matches the financial data"
-
+    "Agent 2": "You are a validation specialist for financial reports. Your role is to validate Agent 1's output for pattern compliance and entity accuracy. Focus on:\n1. Pattern validation: Check if Agent 1 used the correct pattern from pattern.json\n2. Entity validation: Verify if the entity names make sense (e.g., AR should not be 'due from the entity itself')\n3. Number format validation: Check if numbers are properly formatted (K/M notation)\n4. Content quality: Ensure no template artifacts or placeholder text remain\n5. Logical consistency: Verify that the content logically matches the financial data",
+    "AI Proofreader": "You are an AI proofreader for financial due diligence narratives. Review Agent 1 content for: pattern compliance, figure formatting (K/M 1dp; handle '000), entity/details correctness per tables (not reporting entity), grammar/pro tone (remove outer quotes), language normalization (translate Chinese to English; use VAT, CIT, WHT, Surtax). Rules: do not invent data; keep concise; if list too long, keep top 2 items. Return JSON with: is_compliant (bool), issues (array), corrected_content (string), figure_checks (array), entity_checks (array), grammar_notes (array), pattern_used (string). corrected_content must be the final cleaned text only."
   },
-  
   "user_prompts": {
     "Cash": {
       "title": "Cash Analysis for [ENTITY_NAME]",
@@ -17,13 +15,13 @@
         "Risk Assessment: Evaluate cash management risks for [ENTITY_NAME]",
         "Business Impact: Consider the impact on business operations for [ENTITY_NAME]"
       ],
-              "key_questions": [
-          "What is the current cash balance and its composition for [ENTITY_NAME]?",
-          "How has cash changed over time for [ENTITY_NAME]?",
-          "What are the key risks and considerations for [ENTITY_NAME]?",
-          "How does this impact business operations for [ENTITY_NAME]?",
-          "What are the future expectations for [ENTITY_NAME]?"
-        ],
+      "key_questions": [
+        "What is the current cash balance and its composition for [ENTITY_NAME]?",
+        "How has cash changed over time for [ENTITY_NAME]?",
+        "What are the key risks and considerations for [ENTITY_NAME]?",
+        "How does this impact business operations for [ENTITY_NAME]?",
+        "What are the future expectations for [ENTITY_NAME]?"
+      ],
       "data_sources": [
         "Financial statements",
         "Bank reconciliations",
@@ -31,7 +29,6 @@
         "Management representations"
       ]
     },
-    
     "AR": {
       "title": "Accounts Receivable Analysis for [ENTITY_NAME]",
       "description": "Analyze the accounts receivable position for [ENTITY_NAME]",
@@ -42,13 +39,13 @@
         "Bad Debt Provision: Evaluate the adequacy of bad debt provisions and methodology for [ENTITY_NAME]",
         "Collection Performance: Analyze collection efficiency, trends, and days sales outstanding for [ENTITY_NAME]"
       ],
-              "key_questions": [
-          "What is the composition of accounts receivable by customer and aging for [ENTITY_NAME]?",
-          "Who are the major customers and what are their payment terms for [ENTITY_NAME]?",
-          "What is the aging profile of receivables and potential credit risk for [ENTITY_NAME]?",
-          "Is the bad debt provision adequate based on historical experience for [ENTITY_NAME]?",
-          "How does collection performance compare to industry standards for [ENTITY_NAME]?"
-        ],
+      "key_questions": [
+        "What is the composition of accounts receivable by customer and aging for [ENTITY_NAME]?",
+        "Who are the major customers and what are their payment terms for [ENTITY_NAME]?",
+        "What is the aging profile of receivables and potential credit risk for [ENTITY_NAME]?",
+        "Is the bad debt provision adequate based on historical experience for [ENTITY_NAME]?",
+        "How does collection performance compare to industry standards for [ENTITY_NAME]?"
+      ],
       "data_sources": [
         "Aged receivables reports",
         "Customer master data",
@@ -56,7 +53,6 @@
         "Industry benchmarks"
       ]
     },
-    
     "AP": {
       "title": "Accounts Payable Analysis for [ENTITY_NAME]",
       "description": "Analyze the accounts payable position for [ENTITY_NAME]",
@@ -67,13 +63,13 @@
         "Payment Performance: Analyze payment efficiency, trends, and days payable outstanding for [ENTITY_NAME]",
         "Working Capital Impact: Evaluate the impact on working capital and cash flow management for [ENTITY_NAME]"
       ],
-              "key_questions": [
-          "What is the composition of accounts payable by supplier and aging for [ENTITY_NAME]?",
-          "Who are the major suppliers and what are their payment terms for [ENTITY_NAME]?",
-          "What is the aging profile of payables and compliance with payment terms for [ENTITY_NAME]?",
-          "How does payment performance compare to terms and industry standards for [ENTITY_NAME]?",
-          "What is the impact on working capital management and cash flow for [ENTITY_NAME]?"
-        ],
+      "key_questions": [
+        "What is the composition of accounts payable by supplier and aging for [ENTITY_NAME]?",
+        "Who are the major suppliers and what are their payment terms for [ENTITY_NAME]?",
+        "What is the aging profile of payables and compliance with payment terms for [ENTITY_NAME]?",
+        "How does payment performance compare to terms and industry standards for [ENTITY_NAME]?",
+        "What is the impact on working capital management and cash flow for [ENTITY_NAME]?"
+      ],
       "data_sources": [
         "Aged payables reports",
         "Supplier master data",
@@ -82,7 +78,6 @@
       ]
     }
   },
-  
   "generic_prompt": {
     "title": "Generic Financial Analysis for [ENTITY_NAME]",
     "description": "Analyze the financial position for [ENTITY_NAME]",
@@ -107,4 +102,4 @@
       "Historical data"
     ]
   }
-} 
+}
