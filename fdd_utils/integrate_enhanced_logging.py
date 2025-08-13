@@ -12,7 +12,7 @@ def integrate_enhanced_logging():
     """Integrate enhanced logging with the existing system"""
     try:
         # Only import if the user wants enhanced features
-        from utils.enhanced_logging_config import enhance_existing_logger, create_logging_dashboard_data
+        from fdd_utils.enhanced_logging_config import enhance_existing_logger, create_logging_dashboard_data
         
         # Enhance the existing logger if it exists
         if 'ai_logger' in st.session_state:

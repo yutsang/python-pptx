@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Any
 class BSContentLoader:
     """Loader for structured balance sheet content from JSON."""
     
-    def __init__(self, json_file_path: str = "utils/bs_content_structured.json"):
+    def __init__(self, json_file_path: str = "fdd_utils/bs_content_structured.json"):
         """Initialize the loader with the JSON file path."""
         self.json_file_path = Path(json_file_path)
         self._content = None
@@ -151,7 +151,7 @@ class BSContentLoader:
         
         return summary
     
-    def export_to_markdown(self, output_file: str = "utils/bs_content_exported.md") -> str:
+    def export_to_markdown(self, output_file: str = "fdd_utils/bs_content_exported.md") -> str:
         """Export the structured content back to markdown format."""
         content = self.load_content()
         markdown_lines = []

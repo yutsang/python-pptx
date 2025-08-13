@@ -6,7 +6,7 @@ import re
 import os
 import datetime
 import time
-from utils.mappings import (
+from fdd_utils.mappings import (
     KEY_TO_SECTION_MAPPING,
     KEY_TERMS_BY_KEY,
     DISPLAY_NAME_MAPPING_DEFAULT,
@@ -20,7 +20,7 @@ import shutil
 # Disable Python bytecode generation to prevent __pycache__ issues
 os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 from common.pptx_export import export_pptx
-from utils.simple_cache import get_simple_cache
+from fdd_utils.simple_cache import get_simple_cache
 # Import assistant modules at module level to prevent runtime import issues
 from common.assistant import process_keys, QualityAssuranceAgent, DataValidationAgent, PatternValidationAgent, find_financial_figures_with_context_check, get_tab_name, get_financial_figure, load_ip, ProofreadingAgent
 import uuid
@@ -299,28 +299,28 @@ def load_config_files():
         
         # Try to load config files directly
         try:
-            with open('utils/config.json', 'r') as f:
+            with open('fdd_utils/config.json', 'r') as f:
                 config = json.load(f)
         except FileNotFoundError:
             st.error("Configuration file not found: utils/config.json")
             return None, None, None, None
         
         try:
-            with open('utils/mapping.json', 'r') as f:
+            with open('fdd_utils/mapping.json', 'r') as f:
                 mapping = json.load(f)
         except FileNotFoundError:
             st.error("Configuration file not found: utils/mapping.json")
             return None, None, None, None
         
         try:
-            with open('utils/pattern.json', 'r') as f:
+            with open('fdd_utils/pattern.json', 'r') as f:
                 pattern = json.load(f)
         except FileNotFoundError:
             st.error("Configuration file not found: utils/pattern.json")
             return None, None, None, None
         
         try:
-            with open('utils/prompts.json', 'r') as f:
+            with open('fdd_utils/prompts.json', 'r') as f:
                 prompts = json.load(f)
         except FileNotFoundError:
             st.error("Configuration file not found: utils/prompts.json")
@@ -1024,7 +1024,7 @@ def get_tab_name(project_name):
 def get_financial_keys():
     """Get all financial keys from mapping.json"""
     try:
-        with open('utils/mapping.json', 'r') as f:
+        with open('fdd_utils/mapping.json', 'r') as f:
             mapping = json.load(f)
         return list(mapping.keys())
     except FileNotFoundError:
@@ -1043,7 +1043,7 @@ def get_financial_keys():
 def get_key_display_name(key):
     """Get display name for financial key using mapping.json"""
     try:
-        with open('utils/mapping.json', 'r') as f:
+        with open('fdd_utils/mapping.json', 'r') as f:
             mapping = json.load(f)
         
         # If the key exists in mapping, find the best display name
@@ -1072,7 +1072,7 @@ def get_key_display_name(key):
             return key
     except FileNotFoundError:
         # Fallback to centralized defaults if mapping.json not found
-        from utils.mappings import DISPLAY_NAME_MAPPING_DEFAULT as default_names
+        from fdd_utils.mappings import DISPLAY_NAME_MAPPING_DEFAULT as default_names
         return default_names.get(key, key)
     except Exception as e:
         st.error(f"Error loading mapping.json for display names: {e}")
@@ -1172,13 +1172,13 @@ def main():
             # Store uploaded file in session state for later use
             st.session_state['uploaded_file'] = uploaded_file
             
-            # AI Provider Selection (models defined in utils/config.json)
+            # AI Provider Selection (models defined in fdd_utils/config.json)
             ai_mode_options = ["Local AI", "Open AI", "DeepSeek", "Offline"]
             mode_display = st.selectbox(
                 "Select Mode", 
                 ai_mode_options,
                 index=0,  # Local AI default
-                help="Choose AI provider. Models are taken from utils/config.json"
+                help="Choose AI provider. Models are taken from fdd_utils/config.json"
             )
             
             # Show API configuration status
@@ -1189,20 +1189,20 @@ def main():
                         st.success("✅ OpenAI configured")
                         st.info(f"🤖 Model: {config.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini')}")
                     else:
-                        st.warning("⚠️ OpenAI not configured. Add OPENAI_API_KEY and OPENAI_API_BASE in utils/config.json")
+                        st.warning("⚠️ OpenAI not configured. Add OPENAI_API_KEY and OPENAI_API_BASE in fdd_utils/config.json")
                 elif mode_display == "DeepSeek":
                     if config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_BASE'):
                         st.success("✅ DeepSeek configured")
                         st.info(f"🤖 Model: {config.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')}")
                     else:
-                        st.warning("⚠️ DeepSeek not configured. Add DEEPSEEK_API_KEY and DEEPSEEK_API_BASE in utils/config.json")
+                        st.warning("⚠️ DeepSeek not configured. Add DEEPSEEK_API_KEY and DEEPSEEK_API_BASE in fdd_utils/config.json")
                 elif mode_display == "Local AI":
                     if config.get('LOCAL_AI_API_BASE') and config.get('LOCAL_AI_ENABLED'):
                         st.success("✅ Local AI configured")
                         st.info(f"🏠 Model: {config.get('LOCAL_AI_CHAT_MODEL', 'local-qwen2')}")
                         st.info(f"🔗 Endpoint: {config.get('LOCAL_AI_API_BASE', 'Not specified')}")
                     else:
-                        st.warning("⚠️ Local AI not configured. Configure LOCAL_AI_* in utils/config.json")
+                        st.warning("⚠️ Local AI not configured. Configure LOCAL_AI_* in fdd_utils/config.json")
             
             # Map display names to internal mode names
             provider_mapping = {
@@ -1619,7 +1619,7 @@ def main():
                     
                     # Check for template file in common locations
                     possible_templates = [
-                        "utils/template.pptx",
+                        "fdd_utils/template.pptx",
                         "template.pptx", 
                         "old_ver/template.pptx",
                         "common/template.pptx"
@@ -1632,7 +1632,7 @@ def main():
                             break
                     
                     if not template_path:
-                        st.error("❌ PowerPoint template not found. Please ensure 'template.pptx' exists in the utils/ directory.")
+                        st.error("❌ PowerPoint template not found. Please ensure 'template.pptx' exists in the fdd_utils/ directory.")
                         st.info("💡 You can copy a template file from the old_ver/ directory or create a new one.")
                     else:
                         # Define output path with timestamp
@@ -1671,7 +1671,7 @@ def main():
                         # Note: bs_content.md should contain narrative content from AI processing, not table data
                         export_pptx(
                             template_path=template_path,
-                            markdown_path="utils/bs_content.md",
+                            markdown_path="fdd_utils/bs_content.md",
                             output_path=output_path,
                             project_name=project_name
                         )
@@ -1948,7 +1948,7 @@ def load_json_content():
     """Load content from JSON file with caching for better performance"""
     try:
         # Try JSON first (better performance)
-        json_file = "utils/bs_content.json"
+        json_file = "fdd_utils/bs_content.json"
         if os.path.exists(json_file):
             with open(json_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -1957,7 +1957,7 @@ def load_json_content():
     
     # Fallback to parsing markdown if JSON not available
     try:
-        content_files = ["utils/bs_content.md", "utils/bs_content_ai_generated.md", "utils/bs_content_offline.md"]
+        content_files = ["fdd_utils/bs_content.md", "fdd_utils/bs_content_ai_generated.md", "fdd_utils/bs_content_offline.md"]
         for file_path in content_files:
             if os.path.exists(file_path):
                 return parse_markdown_to_json(file_path)
@@ -2051,7 +2051,7 @@ def display_offline_content_fallback(key):
     """Fallback to original markdown parsing method"""
     try:
         # First try to read from offline content file
-        content_file = "utils/bs_content_offline.md"
+        content_file = "fdd_utils/bs_content_offline.md"
         content = None
         
         try:
@@ -2059,7 +2059,7 @@ def display_offline_content_fallback(key):
                 content = f.read()
         except FileNotFoundError:
             # Try to read from AI-generated content if offline file not found
-            ai_content_files = ["utils/bs_content.md", "utils/bs_content_ai_generated.md"]
+            ai_content_files = ["fdd_utils/bs_content.md", "fdd_utils/bs_content_ai_generated.md"]
             for ai_file in ai_content_files:
                 try:
                     with open(ai_file, 'r', encoding='utf-8') as f:
@@ -2070,7 +2070,7 @@ def display_offline_content_fallback(key):
                     continue
         
         if not content:
-            st.error(f"No content files found. Checked: {content_file}, utils/bs_content.md, utils/bs_content_ai_generated.md")
+            st.error(f"No content files found. Checked: {content_file}, fdd_utils/bs_content.md, fdd_utils/bs_content_ai_generated.md")
             return
         
         # Map financial keys to content sections
@@ -2116,13 +2116,13 @@ def get_offline_content(key):
 def get_offline_content_fallback(key):
     """Fallback method for getting content from markdown files"""
     try:
-        content_file = "utils/bs_content_offline.md"
+        content_file = "fdd_utils/bs_content_offline.md"
         
         with open(content_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
         # Centralized mapping
-        from utils.mappings import KEY_TO_SECTION_MAPPING as key_to_section_mapping
+        from fdd_utils.mappings import KEY_TO_SECTION_MAPPING as key_to_section_mapping
         
         target_section = key_to_section_mapping.get(key)
         if target_section:
@@ -2434,7 +2434,7 @@ def generate_content_from_session_storage(entity_name):
                 json_content['keys'][item] = key_info
         
         # Save JSON format (for AI2 easy access)
-        json_file_path = 'utils/bs_content.json'
+        json_file_path = 'fdd_utils/bs_content.json'
         with open(json_file_path, 'w', encoding='utf-8') as file:
             json.dump(json_content, file, indent=2, ensure_ascii=False)
         
@@ -2454,7 +2454,7 @@ def generate_content_from_session_storage(entity_name):
         markdown_text = "\n".join(markdown_lines)
         
         # Save markdown format (for PowerPoint export)
-        md_file_path = 'utils/bs_content.md'
+        md_file_path = 'fdd_utils/bs_content.md'
         with open(md_file_path, 'w', encoding='utf-8') as file:
             file.write(markdown_text)
         
@@ -2502,7 +2502,7 @@ def generate_markdown_from_ai_results(ai_results, entity_name):
         markdown_text = "\n".join(markdown_lines)
         
         # Write to file
-        file_path = 'utils/bs_content.md'
+        file_path = 'fdd_utils/bs_content.md'
         with open(file_path, 'w', encoding='utf-8') as file:
             file.write(markdown_text)
         
@@ -2737,7 +2737,7 @@ Analyze the {get_key_display_name(key)} position:
 
 # --- For AI1/2/3 prompt/debug output, use a separate file ---
 def write_prompt_debug_content(filtered_keys, sections_by_key):
-    with open("utils/bs_prompt_debug.md", "w", encoding="utf-8") as f:
+    with open("fdd_utils/bs_prompt_debug.md", "w", encoding="utf-8") as f:
         for key in filtered_keys:
             if key in sections_by_key and sections_by_key[key]:
                 f.write(f"## {get_key_display_name(key)}\n")
@@ -2803,7 +2803,7 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None):
         # We need to capture the real prompts with table data
         try:
         # Load prompts from prompts.json file
-            with open('utils/prompts.json', 'r') as f:
+            with open('fdd_utils/prompts.json', 'r') as f:
                 prompts_config = json.load(f)
             actual_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1', '')
             if not actual_system_prompt:
@@ -2889,7 +2889,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
             
             # Build the actual user prompt using templates from prompts.json, then inject dynamic data
             try:
-                with open('utils/prompts.json', 'r') as f:
+                with open('fdd_utils/prompts.json', 'r') as f:
                     prompts_cfg = json.load(f)
                 user_prompts_cfg = prompts_cfg.get('user_prompts', {})
                 generic_cfg = prompts_cfg.get('generic_prompt', {})
@@ -3067,10 +3067,10 @@ IMPORTANT ENTITY INSTRUCTIONS:
             entity_name=entity_name,
             entity_helpers=entity_keywords,
             input_file=temp_file_path,
-            mapping_file="utils/mapping.json",
-            pattern_file="utils/pattern.json",
-            config_file='utils/config.json',
-            prompts_file='utils/prompts.json',
+            mapping_file="fdd_utils/mapping.json",
+            pattern_file="fdd_utils/pattern.json",
+            config_file='fdd_utils/config.json',
+            prompts_file='fdd_utils/prompts.json',
             use_ai=True,
             progress_callback=update_progress,
             processed_table_data=processed_table_data,
@@ -3249,7 +3249,7 @@ def update_bs_content_with_agent_corrections(corrections_dict, entity_name, agen
         import re
         
         # Read current bs_content.md
-        bs_content_path = 'utils/bs_content.md'
+        bs_content_path = 'fdd_utils/bs_content.md'
         if not os.path.exists(bs_content_path):
             st.warning(f"bs_content.md not found at {bs_content_path}")
             return False
@@ -3259,9 +3259,9 @@ def update_bs_content_with_agent_corrections(corrections_dict, entity_name, agen
         
         # Define category mappings based on entity name
         if entity_name in ['Ningbo', 'Nanjing']:
-            from utils.mappings import DISPLAY_NAME_MAPPING_NB_NJ as name_mapping
+            from fdd_utils.mappings import DISPLAY_NAME_MAPPING_NB_NJ as name_mapping
         else:  # Haining and others
-            from utils.mappings import DISPLAY_NAME_MAPPING_DEFAULT as name_mapping
+            from fdd_utils.mappings import DISPLAY_NAME_MAPPING_DEFAULT as name_mapping
         
         # Update content for each corrected key
         for key, corrected_content in corrections_dict.items():
@@ -3283,7 +3283,7 @@ def update_bs_content_with_agent_corrections(corrections_dict, entity_name, agen
         # Also update the AI generated copy
         try:
             import shutil
-            shutil.copy2(bs_content_path, 'utils/bs_content_ai_generated.md')
+            shutil.copy2(bs_content_path, 'fdd_utils/bs_content_ai_generated.md')
         except Exception as e:
             print(f"Could not update AI reference copy: {e}")
         
@@ -3312,7 +3312,7 @@ def read_bs_content_by_key(entity_name):
         import re
         
         # Read current bs_content.md
-        bs_content_path = 'utils/bs_content.md'
+        bs_content_path = 'fdd_utils/bs_content.md'
         if not os.path.exists(bs_content_path):
             return {}
         
@@ -3388,7 +3388,7 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
         
         # Load prompts from prompts.json
         try:
-            with open('utils/prompts.json', 'r') as f:
+            with open('fdd_utils/prompts.json', 'r') as f:
                 prompts_config = json.load(f)
             agent3_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 3', '')
             st.success("✅ Loaded Agent 3 system prompt from prompts.json")
@@ -3403,7 +3403,7 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
         results = {}
         
         # Load patterns
-        patterns = load_ip("utils/pattern.json")
+        patterns = load_ip("fdd_utils/pattern.json")
         st.write(f"Loaded patterns for {len(patterns)} keys")
         
         # Use improved session state storage for fast content access

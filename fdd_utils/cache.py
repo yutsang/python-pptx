@@ -16,7 +16,7 @@ class CacheManager:
     
     def __init__(self, cache_dir: str = "cache", max_cache_size: int = 100):
         # Ensure cache directory is relative to project root
-        project_root = Path(__file__).parent.parent  # Go up from utils/ to project root
+        project_root = Path(__file__).parent.parent  # Go up from fdd_utils/ to project root
         self.cache_dir = project_root / cache_dir
         self.cache_dir.mkdir(exist_ok=True)
         self.max_cache_size = max_cache_size
