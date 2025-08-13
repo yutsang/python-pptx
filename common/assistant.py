@@ -1464,7 +1464,7 @@ def clean_response_text(text: str) -> str:
         '個人所得稅': 'Individual Income Tax (IIT)',
         '附加稅費': 'Surtaxes',
         '房產稅': 'Property Tax',
-        '土地使用稅': 'Land Use Tax',
+        '土地使用稅': 'LUT',
         '印花稅': 'Stamp Tax'
     }
     for chinese, english in chinese_translations.items():
