@@ -1542,19 +1542,7 @@ def main():
                             pr = agent3_results_all[key]
                             corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
                             if corrected_content:
-                                st.markdown("**Proofread Content:**")
                                 st.markdown(corrected_content)
-                                is_compliant = pr.get('is_compliant', False)
-                                issues = pr.get('issues', [])
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.metric("Compliance", "✅ Compliant" if is_compliant else "⚠️ Issues")
-                                with col2:
-                                    st.metric("Issues Found", len(issues))
-                                if issues:
-                                    with st.expander("🚨 Compliance Issues", expanded=False):
-                                        for issue in issues:
-                                            st.write(f"• {issue}")
 
                         # AI1 Results (collapsible if proofreader exists)
                         with st.expander("📝 AI: Generation (details)", expanded=key not in agent3_results_all):
@@ -2753,8 +2741,7 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None):
         import time
         
         logger = st.session_state.ai_logger
-        st.markdown("## 🚀 Agent 1: Content Generation")
-        st.write(f"Starting Agent 1 for {len(filtered_keys)} keys...")
+        # Keep content section minimal; avoid extra headings that duplicate the main status
         
         # Get data from ai_data
         entity_name = ai_data.get('entity_name', '')

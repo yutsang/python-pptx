@@ -1443,7 +1443,7 @@ def clean_response_text(text: str) -> str:
     if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
         text = text[1:-1]
     
-    # Translate Chinese to English (basic common translations)
+    # Translate Chinese to English (extended common terms)
     chinese_translations = {
         '進項稅金中轉': 'Input Tax Transfer',
         '自來水有限公司': 'Water Supply Co., Ltd.',
@@ -1458,9 +1458,15 @@ def clean_response_text(text: str) -> str:
         '特殊普通合夥': 'Special General Partnership',
         '戰區運營': 'Regional Operations',
         '已認證未入帳': 'Certified but Not Recorded',
-        '有限合夥': 'Limited Partnership'
+        '有限合夥': 'Limited Partnership',
+        '增值稅': 'Value-Added Tax (VAT)',
+        '企業所得稅': 'Corporate Income Tax (CIT)',
+        '個人所得稅': 'Individual Income Tax (IIT)',
+        '附加稅費': 'Surtaxes',
+        '房產稅': 'Property Tax',
+        '土地使用稅': 'Land Use Tax',
+        '印花稅': 'Stamp Tax'
     }
-    
     for chinese, english in chinese_translations.items():
         text = text.replace(chinese, english)
     

@@ -85,7 +85,6 @@ def render_balance_sheet_sections(
 
                 with st.expander("📋 Structured Markdown", expanded=False):
                     st.code(first_section.get('markdown', 'No markdown available'), language='markdown')
-                st.markdown("—")
                 continue
 
             # Fallback: render raw DataFrame with cleaning
