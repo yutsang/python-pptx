@@ -1420,11 +1420,11 @@ def main():
                 agent_states = st.session_state.get('agent_states', {})
                 col_a, col_b, col_c = st.columns(3)
                 with col_a:
-                    run_ai_clicked = st.button("🚀 Run AI: Content Generation", type="primary", use_container_width=True)
+                    run_ai_clicked = st.button("🚀 Run AI: Content Generation", type="secondary", use_container_width=True, key="btn_ai_gen")
                 with col_b:
-                    run_proof_clicked = st.button("🧐 Run AI: Proofreader", type="secondary", use_container_width=True)
+                    run_proof_clicked = st.button("🧐 Run AI: Proofreader", type="secondary", use_container_width=True, key="btn_ai_proof")
                 with col_c:
-                    run_both_clicked = st.button("🔁 Run AI: Generate → Proofread", type="secondary", use_container_width=True)
+                    run_both_clicked = st.button("🔁 Run AI: Generate → Proofread", type="primary", use_container_width=True, key="btn_ai_both")
 
                 if run_ai_clicked:
                     progress_bar = st.progress(0)
@@ -3018,7 +3018,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
                     remaining = 0
                 mins, secs = divmod(max(0, remaining), 60)
                 eta_str = f"ETA {mins:02d}:{secs:02d}" if progress < 1 else "ETA 00:00"
-                status_text.text(f"{message} — {eta_str}")
+                status_text.text(f"📝 Agent 1 — {message} — {eta_str}")
             except Exception:
                 pass
         
@@ -3157,7 +3157,7 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
             eta_seconds = int(avg * remaining) if idx else 0
             mins, secs = divmod(eta_seconds, 60)
             eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else "ETA --:--"
-            status_text.text(f"🧐 Proofreading {key} ({idx+1}/{total}) — {eta_str}")
+            status_text.text(f"🧐 Proofreader — {key} ({idx+1}/{total}) — {eta_str}")
             try:
                 progress_bar.progress((idx+1)/len(filtered_keys))
             except Exception:
