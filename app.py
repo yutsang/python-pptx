@@ -1163,11 +1163,11 @@ def main():
             st.session_state['uploaded_file'] = uploaded_file
             
             # AI Provider Selection (models defined in utils/config.json)
-            ai_mode_options = ["DeepSeek", "Open AI", "Local AI", "Offline"]
+            ai_mode_options = ["Local AI", "Open AI", "DeepSeek", "Offline"]
             mode_display = st.selectbox(
                 "Select Mode", 
                 ai_mode_options,
-                index=0,  # DeepSeek default
+                index=0,  # Local AI default
                 help="Choose AI provider. Models are taken from utils/config.json"
             )
             
@@ -1435,7 +1435,8 @@ def main():
                         progress_bar.progress(10)
                         # Disable cache for this run
                         st.session_state['force_refresh'] = True
-                        agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data)
+                        ext = {'bar': progress_bar, 'status': status_text}
+                        agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
                         agent1_success = bool(agent1_results and any(agent1_results.values()))
                         st.session_state['agent_states']['agent1_results'] = agent1_results
                         st.session_state['agent_states']['agent1_completed'] = True
@@ -1464,7 +1465,8 @@ def main():
                         if not agent1_results:
                             st.warning("Run content generation first to produce material for proofreading.")
                         else:
-                            proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data)
+                            ext = {'bar': progress_bar, 'status': status_text}
+                            proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
                             st.session_state['agent_states']['agent3_results'] = proof_results
                             st.session_state['agent_states']['agent3_completed'] = True
                             st.session_state['agent_states']['agent3_success'] = bool(proof_results)
@@ -1486,13 +1488,14 @@ def main():
                         status_text.text("🤖 AI: Initializing...")
                         progress_bar.progress(10)
                         st.session_state['force_refresh'] = True
-                        agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data)
+                        ext = {'bar': progress_bar, 'status': status_text}
+                        agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
                         st.session_state['agent_states']['agent1_results'] = agent1_results
                         st.session_state['agent_states']['agent1_completed'] = True
                         st.session_state['agent_states']['agent1_success'] = bool(agent1_results)
                         # Proofreader
                         status_text.text("🧐 Proofreader: Running...")
-                        proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data)
+                        proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
                         st.session_state['agent_states']['agent3_results'] = proof_results
                         st.session_state['agent_states']['agent3_completed'] = True
                         st.session_state['agent_states']['agent3_success'] = bool(proof_results)
@@ -2743,7 +2746,7 @@ def write_prompt_debug_content(filtered_keys, sections_by_key):
 #     project_name=project_name
 # )
 
-def run_agent_1(filtered_keys, ai_data):
+def run_agent_1(filtered_keys, ai_data, external_progress=None):
     """Run Agent 1: Content Generation for all keys"""
     try:
 
@@ -2990,14 +2993,24 @@ IMPORTANT ENTITY INSTRUCTIONS:
         start_time = time.time()
         st.write(f"🤖 Processing {len(filtered_keys)} keys with Agent 1...")
         
-        # Create progress bar and status text for Streamlit
-        progress_bar = st.progress(0)  # main progress bar
-        status_text = st.empty()
+        # Create/Reuse a single progress bar and status text
+        if external_progress:
+            progress_bar = external_progress.get('bar')
+            status_text = external_progress.get('status')
+        else:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
         
         # Create progress callback for Streamlit
         def update_progress(progress, message):
-            progress_bar.progress(progress)
-            status_text.text(message)
+            try:
+                progress_bar.progress(progress)
+            except Exception:
+                pass
+            try:
+                status_text.text(message)
+            except Exception:
+                pass
         
         # Get processed table data from session state
         processed_table_data = ai_data.get('sections_by_key', {})
@@ -3083,7 +3096,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
             except Exception:
                 pass
 
-def run_ai_proofreader(filtered_keys, agent1_results, ai_data):
+def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress=None):
     """Run AI Proofreader for all keys (Compliance, Figures, Entities, Grammar)."""
     try:
         import json
@@ -3120,11 +3133,18 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data):
                     parts.append(str(section))
             return "\n".join(parts)
 
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        if external_progress:
+            progress_bar = external_progress.get('bar')
+            status_text = external_progress.get('status')
+        else:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
         for idx, key in enumerate(filtered_keys):
             status_text.text(f"Proofreading {key} ({idx+1}/{len(filtered_keys)})")
-            progress_bar.progress((idx+1)/len(filtered_keys))
+            try:
+                progress_bar.progress((idx+1)/len(filtered_keys))
+            except Exception:
+                pass
             try:
                 content = agent1_results.get(key, '')
                 if isinstance(content, dict):
