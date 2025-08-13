@@ -1589,12 +1589,15 @@ def main():
                             changed = bool(pr.get('corrected_content'))
                             if issues or changed:
                                 with st.expander("🧐 AI Proofreader: Changes & Notes", expanded=False):
-                                    if changed:
+                                    if changed and not issues:
                                         st.markdown("- Corrected content applied")
                                     if issues:
                                         st.markdown("- Detected issues (reference only):")
                                         for issue in issues:
                                             st.write(f"  • {issue}")
+                                    runs = pr.get('translation_runs', 0)
+                                    if runs:
+                                        st.markdown(f"- Heuristic translation applied: {runs} run(s)")
                         if key not in agent3_results_all:
                             st.info("No compliance results available. Run AI Proofreader.")
             else:

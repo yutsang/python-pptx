@@ -1336,6 +1336,7 @@ class ProofreadingAgent:
     def proofread(self, content: str, key: str, tables_markdown: str, entity: str) -> Dict:
         try:
             import json
+            import re
             # Load patterns for the key
             patterns = load_ip(self.pattern_file, key)
 
@@ -1408,6 +1409,33 @@ class ProofreadingAgent:
                 result.setdefault('entity_checks', [])
                 result.setdefault('grammar_notes', [])
                 result.setdefault('pattern_used', '')
+                result.setdefault('translation_runs', 0)
+
+                # Heuristic one-shot translation for any residual CJK text (run up to 2 passes)
+                def contains_cjk(txt: str) -> bool:
+                    try:
+                        return bool(re.search(r"[\u4e00-\u9fff]", txt or ''))
+                    except Exception:
+                        return False
+
+                corrected = result.get('corrected_content') or content
+                runs = 0
+                while contains_cjk(corrected) and runs < 2:
+                    trans_system = (
+                        "You are a professional financial translator. Translate ALL non-English text to clear business English. "
+                        "Keep numbers/currency intact, use standard tax abbreviations (VAT, CIT, WHT, LUT), remove pinyin, "
+                        "no brackets or explanations, output final English text only."
+                    )
+                    trans_user = f"Translate to English (final text only):\n{corrected}"
+                    trans = generate_response(trans_user, trans_system, oai_client, tables_markdown, model, entity, self.use_local_ai)
+                    corrected = clean_response_text(trans)
+                    runs += 1
+                    if not contains_cjk(corrected):
+                        break
+
+                if runs > 0:
+                    result['corrected_content'] = corrected
+                    result['translation_runs'] = runs
                 return result
             except Exception as parse_error:
                 print(f"Failed to parse AI Proofreader response: {parse_error}")
@@ -1419,7 +1447,8 @@ class ProofreadingAgent:
                     'figure_checks': [],
                     'entity_checks': [],
                     'grammar_notes': [],
-                    'pattern_used': ''
+                    'pattern_used': '',
+                    'translation_runs': 0
                 }
         except Exception as e:
             print(f"Proofreading error: {e}")
@@ -1430,7 +1459,8 @@ class ProofreadingAgent:
                 'figure_checks': [],
                 'entity_checks': [],
                 'grammar_notes': [],
-                'pattern_used': ''
+                'pattern_used': '',
+                'translation_runs': 0
             }
 
 def clean_response_text(text: str) -> str:
@@ -1469,6 +1499,16 @@ def clean_response_text(text: str) -> str:
     }
     for chinese, english in chinese_translations.items():
         text = text.replace(chinese, english)
+
+    # Fallback: detect any residual CJK characters and annotate/remedy
+    try:
+        import re
+        if re.search(r"[\u4e00-\u9fff]", text):
+            # As a minimal remediation, wrap unknown Chinese segments in brackets with a note
+            # while keeping the rest English; prevents raw Chinese leaking to final output
+            text = re.sub(r"([\u4e00-\u9fff]+)", r"[Translate: \1]", text)
+    except Exception:
+        pass
     
     return text.strip()
 
