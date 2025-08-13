@@ -6,7 +6,7 @@ import warnings
 import re, os, urllib3
 from tqdm import tqdm
 from pathlib import Path
-from utils.cache import get_cache_manager, cached_function
+from fdd_utils.cache import get_cache_manager, cached_function
 
 urllib3.disable_warnings()
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
@@ -18,7 +18,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
     
     try:
         # Use simple cache instead of complex cache manager
-        from utils.simple_cache import get_simple_cache
+        from fdd_utils.simple_cache import get_simple_cache
         cache = get_simple_cache()
         
         # Check cache first
@@ -198,7 +198,7 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str):
     return {}
 
 # Example usage
-excel_file_name = 'utils/221128.Project TK.Databook.JW_enhanced.xlsx'
+excel_file_name = 'fdd_utils/221128.Project TK.Databook.JW_enhanced.xlsx'
 project_name = 'Nanjing'
 date = '30/09/2022'
 
@@ -224,7 +224,7 @@ def get_financial_figure(financial_figures, key):
         return f"{figure:.1f}"
     
 # Main Function 
-def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json'):
+def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='fdd_utils/config.json'):
 
     financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), date)
     

@@ -26,7 +26,7 @@ def test_direct_ai_processing():
         print(f"AI_AVAILABLE: {AI_AVAILABLE}")
         
         # Load configuration
-        config = load_config('utils/config.json')
+        config = load_config('fdd_utils/config.json')
         print(f"DeepSeek API Key configured: {'Yes' if config.get('DEEPSEEK_API_KEY') else 'No'}")
         print(f"DeepSeek API Base configured: {'Yes' if config.get('DEEPSEEK_API_BASE') else 'No'}")
         
@@ -55,8 +55,8 @@ def test_direct_ai_processing():
             input_file='databook.xlsx',
             mapping_file="utils/mapping.json",
             pattern_file="utils/pattern.json",
-            config_file='utils/config.json',
-            prompts_file='utils/prompts.json',
+            config_file='fdd_utils/config.json',
+            prompts_file='fdd_utils/prompts.json',
             use_ai=True,  # Explicitly enable AI
             convert_thousands=False
         )
@@ -93,7 +93,7 @@ def test_minimal_ai_processing():
         import httpx
         
         # Load config
-        with open('utils/config.json', 'r') as f:
+        with open('fdd_utils/config.json', 'r') as f:
             config = json.load(f)
         
         # Initialize client
@@ -162,7 +162,7 @@ def test_enhanced_prompt_features():
         import httpx
         
         # Load config
-        with open('utils/config.json', 'r') as f:
+        with open('fdd_utils/config.json', 'r') as f:
             config = json.load(f)
         
         # Initialize client

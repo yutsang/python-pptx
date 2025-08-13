@@ -7,7 +7,7 @@ from tqdm import tqdm
 from typing import Dict, List, Optional
 import numpy as np
 import openpyxl
-from utils.cache import get_cache_manager, cached_function
+from fdd_utils.cache import get_cache_manager, cached_function
 import logging
 
 # Suppress httpx logging
@@ -97,7 +97,7 @@ def get_openai_client(config_details=None, use_local=False, use_openai=False):
     """Get the appropriate OpenAI client based on model selection."""
     if config_details is None:
         # Load config if not provided
-        config_path = os.path.join(os.path.dirname(__file__), '..', 'utils', 'config.json')
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'fdd_utils', 'config.json')
         config_details = load_config(config_path)
     
     client, _ = initialize_ai_services(config_details, use_local=use_local, use_openai=use_openai)
@@ -107,7 +107,7 @@ def get_chat_model(config_details=None, use_local=False, use_openai=False):
     """Get the appropriate chat model name based on selection."""
     if config_details is None:
         # Load config if not provided
-        config_path = os.path.join(os.path.dirname(__file__), '..', 'utils', 'config.json')
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'fdd_utils', 'config.json')
         config_details = load_config(config_path)
     
     # Allow session-level override of provider and model
@@ -144,7 +144,7 @@ def get_chat_model(config_details=None, use_local=False, use_openai=False):
 def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model, entity_name="default", use_local_ai=False):
     """Generate a response from the AI model given a user query and system prompt with simple caching."""
     # Use simple cache instead of complex hash-based cache
-    from utils.simple_cache import get_simple_cache
+    from fdd_utils.simple_cache import get_simple_cache
     cache = get_simple_cache()
     
     # Create a simple cache key from the query
@@ -911,7 +911,7 @@ class QualityAssuranceAgent:
 # --- Data Validation Agent ---
 class DataValidationAgent:
     def __init__(self):
-        self.config_file = 'utils/config.json'
+        self.config_file = 'fdd_utils/config.json'
         self.financial_figure_map = {
             "Cash": "Cash at bank",
             "AR": "Accounts receivable",
@@ -949,7 +949,7 @@ class DataValidationAgent:
             
             # Load system prompt from prompts.json
             try:
-                with open('utils/prompts.json', 'r') as f:
+                with open('fdd_utils/prompts.json', 'r') as f:
                     prompts_config = json.load(f)
                 system_prompt = prompts_config.get('system_prompts', {}).get('Agent 2', '')
                 
@@ -1120,8 +1120,8 @@ class DataValidationAgent:
 # --- Pattern Validation Agent ---
 class PatternValidationAgent:
     def __init__(self, use_local_ai=False, use_openai=False):
-        self.config_file = 'utils/config.json'
-        self.pattern_file = 'utils/pattern.json'
+        self.config_file = 'fdd_utils/config.json'
+        self.pattern_file = 'fdd_utils/pattern.json'
         self.use_local_ai = use_local_ai
         self.use_openai = use_openai
     
@@ -1142,7 +1142,7 @@ class PatternValidationAgent:
             
             # Load system prompt from prompts.json
             try:
-                with open('utils/prompts.json', 'r') as f:
+                with open('fdd_utils/prompts.json', 'r') as f:
                     prompts_config = json.load(f)
                 system_prompt = prompts_config.get('system_prompts', {}).get('Agent 3', '')
                 
@@ -1328,8 +1328,8 @@ class PatternValidationAgent:
 class ProofreadingAgent:
     """AI Proofreader for compliance, figure formatting, entity matching, and grammar/style."""
     def __init__(self, use_local_ai: bool = False, use_openai: bool = False):
-        self.config_file = 'utils/config.json'
-        self.pattern_file = 'utils/pattern.json'
+        self.config_file = 'fdd_utils/config.json'
+        self.pattern_file = 'fdd_utils/pattern.json'
         self.use_local_ai = use_local_ai
         self.use_openai = use_openai
 
@@ -1349,7 +1349,7 @@ class ProofreadingAgent:
 
             # Load system prompt
             try:
-                with open('utils/prompts.json', 'r') as f:
+                with open('fdd_utils/prompts.json', 'r') as f:
                     prompts_config = json.load(f)
                 system_prompt = prompts_config.get('system_prompts', {}).get('AI Proofreader', '')
             except (FileNotFoundError, json.JSONDecodeError):
