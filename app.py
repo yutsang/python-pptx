@@ -966,15 +966,25 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         if debug:
                             st.write(f"✅ Assigned to key: {best_key} (score: {best_score})")
                         
-                        # Check if it matches entity filter (but be less restrictive)
-                        entity_mask = data_frame.apply(
+                        # Check entity filter (relaxed for Ningbo/Nanjing)
+                        strict_mask = data_frame.apply(
                             lambda row: row.astype(str).str.contains(
                                 combined_pattern, case=False, regex=True, na=False
                             ).any(),
                             axis=1
                         )
+                        # Relaxed match: allow base entity token without city prefix
+                        loose_tokens = [s.strip() for s in entity_suffixes if s.strip()]
+                        loose_mask = False
+                        if loose_tokens:
+                            loose_pattern = '|'.join(re.escape(tok) for tok in loose_tokens)
+                            loose_mask = data_frame.apply(
+                                lambda row: row.astype(str).str.contains(loose_pattern, case=False, regex=True, na=False).any(),
+                                axis=1
+                            )
+                        entity_mask = strict_mask | loose_mask if isinstance(loose_mask, pd.Series) else strict_mask
                         
-                        # If entity filter matches or no entity helpers provided, process with new parser
+                        # If entity filter matches or helpers are empty, process
                         if entity_mask.any() or not entity_suffixes or all(s.strip() == '' for s in entity_suffixes):
                             # Use new accounting table parser
                             parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name)
@@ -1362,9 +1372,9 @@ def main():
                 # Get keys with data
                 keys_with_data = [key for key, sections in sections_by_key.items() if sections]
                 
-                # Filter keys based on statement type
+                # Filter keys based on statement type (include synonyms for non-Haining)
                 bs_keys = [
-                    "Cash", "AR", "Prepayments", "OR", "Other CA", "IP", "Other NCA",
+                    "Cash", "AR", "Prepayments", "OR", "Other CA", "IP", "Other NCA", "NCA",
                     "AP", "Taxes payable", "OP", "Capital", "Reserve"
                 ]
                 is_keys = [
@@ -1435,7 +1445,7 @@ def main():
                         progress_bar.progress(10)
                         # Disable cache for this run
                         st.session_state['force_refresh'] = True
-                        ext = {'bar': progress_bar, 'status': status_text}
+                        ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 1, 'stage_index': 0, 'start_time': time.time()}}
                         agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
                         agent1_success = bool(agent1_results and any(agent1_results.values()))
                         st.session_state['agent_states']['agent1_results'] = agent1_results
@@ -1488,13 +1498,15 @@ def main():
                         status_text.text("🤖 Initializing…")
                         progress_bar.progress(10)
                         st.session_state['force_refresh'] = True
-                        ext = {'bar': progress_bar, 'status': status_text}
+                        ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
                         agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
                         st.session_state['agent_states']['agent1_results'] = agent1_results
                         st.session_state['agent_states']['agent1_completed'] = True
                         st.session_state['agent_states']['agent1_success'] = bool(agent1_results)
                         # Proofreader
                         status_text.text("🧐 Running…")
+                        # Switch to PROOF stage index for combined ETA/progress
+                        ext['combined']['stage_index'] = 1
                         proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
                         st.session_state['agent_states']['agent3_results'] = proof_results
                         st.session_state['agent_states']['agent3_completed'] = True
@@ -3001,21 +3013,39 @@ IMPORTANT ENTITY INSTRUCTIONS:
             progress_bar = st.progress(0)
             status_text = st.empty()
         
-        # Create progress callback for Streamlit with ETA
+        # Create progress callback for Streamlit with ETA (supports combined 2-stage runs)
         start_time = time.time()
         total = max(1, len(filtered_keys))
         def update_progress(progress, message):
             try:
-                progress_bar.progress(progress)
+                # If running in combined mode, map this stage's progress into overall combined progress
+                combined = external_progress.get('combined') if external_progress else None
+                if combined and isinstance(combined, dict):
+                    stages = combined.get('stages', 2)
+                    stage_index = combined.get('stage_index', 0)
+                    stage_weight = 1.0 / max(1, stages)
+                    combined_progress = min(1.0, max(0.0, stage_index * stage_weight + progress * stage_weight))
+                    progress_bar.progress(combined_progress)
+                else:
+                    progress_bar.progress(progress)
             except Exception:
                 pass
             try:
                 # Estimate ETA from progress
-                elapsed = time.time() - start_time
-                if progress > 0:
-                    remaining = int(elapsed * (1 - progress) / progress)
+                combined = external_progress.get('combined') if external_progress else None
+                now = time.time()
+                if combined and isinstance(combined, dict):
+                    # Combined ETA from overall combined progress
+                    start_all = combined.get('start_time') or start_time
+                    stages = combined.get('stages', 2)
+                    stage_index = combined.get('stage_index', 0)
+                    stage_weight = 1.0 / max(1, stages)
+                    overall_progress = max(0.001, min(0.999, stage_index * stage_weight + progress * stage_weight))
+                    elapsed_all = now - start_all
+                    remaining = int(elapsed_all * (1 - overall_progress) / overall_progress)
                 else:
-                    remaining = 0
+                    elapsed = now - start_time
+                    remaining = int(elapsed * (1 - progress) / max(progress, 0.001))
                 mins, secs = divmod(max(0, remaining), 60)
                 eta_str = f"ETA {mins:02d}:{secs:02d}" if progress < 1 else "ETA 00:00"
                 status_text.text(f"📝 Agent 1 — {message} — {eta_str}")
@@ -3159,7 +3189,16 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
             eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else "ETA --:--"
             status_text.text(f"🧐 Proofreader — {key} ({idx+1}/{total}) — {eta_str}")
             try:
-                progress_bar.progress((idx+1)/len(filtered_keys))
+                combined = external_progress.get('combined') if external_progress else None
+                if combined and isinstance(combined, dict):
+                    stages = combined.get('stages', 2)
+                    stage_index = combined.get('stage_index', 1)
+                    stage_weight = 1.0 / max(1, stages)
+                    progress = (idx+1)/len(filtered_keys)
+                    combined_progress = min(1.0, max(0.0, stage_index * stage_weight + progress * stage_weight))
+                    progress_bar.progress(combined_progress)
+                else:
+                    progress_bar.progress((idx+1)/len(filtered_keys))
             except Exception:
                 pass
             try:
