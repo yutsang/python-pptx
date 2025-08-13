@@ -1431,7 +1431,7 @@ def main():
                     status_text = st.empty()
                     eta_text = st.empty()
                     try:
-                        status_text.text("🤖 AI: Initializing...")
+                        status_text.text("🤖 Initializing…")
                         progress_bar.progress(10)
                         # Disable cache for this run
                         st.session_state['force_refresh'] = True
@@ -1457,7 +1457,7 @@ def main():
                     status_text = st.empty()
                     eta_text = st.empty()
                     try:
-                        status_text.text("🧐 Proofreader: Initializing...")
+                        status_text.text("🧐 Initializing…")
                         progress_bar.progress(10)
                         # Disable cache for this run
                         st.session_state['force_refresh'] = True
@@ -1485,7 +1485,7 @@ def main():
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     try:
-                        status_text.text("🤖 AI: Initializing...")
+                        status_text.text("🤖 Initializing…")
                         progress_bar.progress(10)
                         st.session_state['force_refresh'] = True
                         ext = {'bar': progress_bar, 'status': status_text}
@@ -1494,7 +1494,7 @@ def main():
                         st.session_state['agent_states']['agent1_completed'] = True
                         st.session_state['agent_states']['agent1_success'] = bool(agent1_results)
                         # Proofreader
-                        status_text.text("🧐 Proofreader: Running...")
+                        status_text.text("🧐 Running…")
                         proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
                         st.session_state['agent_states']['agent3_results'] = proof_results
                         st.session_state['agent_states']['agent3_completed'] = True
@@ -1569,6 +1569,20 @@ def main():
                                     st.metric("Status", "✅ Generated" if content else "❌ Failed")
                             else:
                                 st.info("No AI results available. Run AI first.")
+
+                        # If Proofreader made changes or found issues, show a compact summary
+                        if key in agent3_results_all:
+                            pr = agent3_results_all[key]
+                            issues = pr.get('issues', []) or []
+                            changed = bool(pr.get('corrected_content'))
+                            if issues or changed:
+                                with st.expander("🧐 AI Proofreader: Changes & Notes", expanded=False):
+                                    if changed:
+                                        st.markdown("- Corrected content applied")
+                                    if issues:
+                                        st.markdown("- Detected issues (reference only):")
+                                        for issue in issues:
+                                            st.write(f"  • {issue}")
                         if key not in agent3_results_all:
                             st.info("No compliance results available. Run AI Proofreader.")
             else:
@@ -2978,7 +2992,6 @@ IMPORTANT ENTITY INSTRUCTIONS:
         
         # Process ALL keys at once with proper tqdm progress (1/9, 2/9, etc.)
         start_time = time.time()
-        st.write(f"🤖 Processing {len(filtered_keys)} keys with Agent 1...")
         
         # Create/Reuse a single progress bar and status text
         if external_progress:
@@ -2988,14 +3001,24 @@ IMPORTANT ENTITY INSTRUCTIONS:
             progress_bar = st.progress(0)
             status_text = st.empty()
         
-        # Create progress callback for Streamlit
+        # Create progress callback for Streamlit with ETA
+        start_time = time.time()
+        total = max(1, len(filtered_keys))
         def update_progress(progress, message):
             try:
                 progress_bar.progress(progress)
             except Exception:
                 pass
             try:
-                status_text.text(message)
+                # Estimate ETA from progress
+                elapsed = time.time() - start_time
+                if progress > 0:
+                    remaining = int(elapsed * (1 - progress) / progress)
+                else:
+                    remaining = 0
+                mins, secs = divmod(max(0, remaining), 60)
+                eta_str = f"ETA {mins:02d}:{secs:02d}" if progress < 1 else "ETA 00:00"
+                status_text.text(f"{message} — {eta_str}")
             except Exception:
                 pass
         
@@ -3088,8 +3111,6 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
     try:
         import json
         logger = st.session_state.ai_logger
-        st.markdown("## 🧐 AI Proofreader: Compliance & Polish")
-        st.write(f"Starting AI Proofreader for {len(filtered_keys)} keys...")
 
         # Model/provider selection
         use_local_ai = st.session_state.get('use_local_ai', False)
@@ -3126,8 +3147,17 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
         else:
             progress_bar = st.progress(0)
             status_text = st.empty()
+        start_time = time.time()
+        total = len(filtered_keys)
         for idx, key in enumerate(filtered_keys):
-            status_text.text(f"Proofreading {key} ({idx+1}/{len(filtered_keys)})")
+            elapsed = time.time() - start_time
+            # Simple ETA: average time per processed item * remaining
+            avg = (elapsed / (idx or 1)) if idx else 0
+            remaining = total - idx
+            eta_seconds = int(avg * remaining) if idx else 0
+            mins, secs = divmod(eta_seconds, 60)
+            eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else "ETA --:--"
+            status_text.text(f"🧐 Proofreading {key} ({idx+1}/{total}) — {eta_str}")
             try:
                 progress_bar.progress((idx+1)/len(filtered_keys))
             except Exception:
