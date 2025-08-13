@@ -17,7 +17,7 @@ def render_balance_sheet_sections(
     - format_date_to_dd_mmm_yyyy: callable to format dates
     """
 
-    st.subheader("View Table by Key")
+    st.markdown("#### View Table by Key")
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
     if not keys_with_data:
         st.warning("No data found for any financial keys.")

@@ -1146,8 +1146,24 @@ def main():
             options=entity_options,
             help="Choose the entity for data processing"
         )
-        # Entity helpers are now hidden/hardcoded
-        entity_helpers = "Wanpu,Limited,"  # Hidden from UI but still functional
+        # Auto-adjust entity helpers by selected entity; hide from UI
+        if selected_entity == 'Haining':
+            entity_helpers = "Wanpu,Limited,"
+        elif selected_entity in ['Nanjing', 'Ningbo']:
+            # Known suffix/entity tokens for these cities
+            entity_helpers = "Wanchen,Limited,Logistics,Development,Supply,Chain," 
+        else:
+            entity_helpers = "Limited,"
+
+        # Auto-invalidate Excel cache when entity changes
+        last_entity = st.session_state.get('last_selected_entity')
+        if last_entity is None:
+            st.session_state['last_selected_entity'] = selected_entity
+        elif last_entity != selected_entity:
+            keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
+            for key in keys_to_remove:
+                del st.session_state[key]
+            st.session_state['last_selected_entity'] = selected_entity
         
         # Financial Statement Type Selection
         st.markdown("---")
@@ -1266,7 +1282,7 @@ def main():
             
             if cache_key not in st.session_state:
                 # Original BS logic - only run if not cached
-                with st.spinner("🔄 Processing Excel file (first time)..."):
+                with st.spinner("🔄 Processing Excel file..."):
                     sections_by_key = get_worksheet_sections_by_keys(
                         uploaded_file=uploaded_file,
                         tab_name_mapping=mapping,
@@ -1275,7 +1291,6 @@ def main():
                         debug=False  # Set to True for debugging
                     )
                     st.session_state[cache_key] = sections_by_key
-                st.success("✅ Excel processing completed and cached")
             else:
                 sections_by_key = st.session_state[cache_key]
             from common.ui_sections import render_balance_sheet_sections
@@ -1288,7 +1303,7 @@ def main():
         
         elif statement_type == "IS":
             # Income Statement placeholder
-            st.subheader("Income Statement")
+            st.markdown("### Income Statement")
             st.info("📊 Income Statement processing will be implemented here.")
             st.markdown("""
             **Placeholder for Income Statement sections:**
@@ -1303,7 +1318,7 @@ def main():
         
         elif statement_type == "ALL":
             # Combined view placeholder
-            st.subheader("Combined Financial Statements")
+            st.markdown("### Combined Financial Statements")
             st.info("📊 Combined BS and IS processing will be implemented here.")
             st.markdown("""
             **Placeholder for Combined sections:**
@@ -1612,7 +1627,7 @@ def main():
         col1, col2 = st.columns([1, 1])
         
         with col1:
-            if st.button("📊 Export to PowerPoint", type="secondary", use_container_width=True):
+            if st.button("📊 Prepare PowerPoint", type="secondary", use_container_width=True):
                 try:
                     # Get the project name based on selected entity
                     project_name = selected_entity
@@ -1679,8 +1694,7 @@ def main():
                         st.session_state['pptx_exported'] = True
                         st.session_state['pptx_filename'] = output_filename
                         st.session_state['pptx_path'] = output_path
-                        st.success(f"✅ PowerPoint exported successfully: {output_filename}")
-                        st.rerun()
+                        st.success(f"✅ PowerPoint is ready for download: {output_filename}")
                         
                 except FileNotFoundError as e:
                     st.error(f"❌ Template file not found: {e}")
