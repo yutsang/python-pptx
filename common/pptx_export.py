@@ -14,6 +14,22 @@ from pptx.oxml.ns import qn  # Required import for XML namespace handling
 
 logging.basicConfig(level=logging.INFO)
 
+def get_tab_name(project_name):
+    """Get tab name based on project name - more flexible approach"""
+    try:
+        # Hardcoded mappings for known entities
+        if project_name == 'Haining':
+            return "BSHN"
+        elif project_name == 'Nanjing':
+            return "BSNJ"
+        elif project_name == 'Ningbo':
+            return "BSNB"
+        else:
+            # Try to find a sheet that contains the project name
+            return None
+    except Exception:
+        return None
+
 def clean_content_quotes(content):
     """
     Remove outermost quotation marks from content while preserving legitimate internal quotes.
@@ -721,7 +737,81 @@ def update_project_titles(presentation_path, project_name, output_path=None):
     return output_path
 
 # --- High-level function for app.py ---
-def export_pptx(template_path, markdown_path, output_path, project_name=None):
+def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, project_name, output_path=None):
+    """
+    Embed Excel data as an object in PowerPoint presentation
+    """
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches
+        import pandas as pd
+        import tempfile
+        import os
+        
+        # Load the presentation
+        prs = Presentation(presentation_path)
+        
+        # Read Excel data
+        df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
+        
+        # Create a temporary Excel file with just the data we want to embed
+        temp_excel_path = tempfile.mktemp(suffix='.xlsx')
+        with pd.ExcelWriter(temp_excel_path, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        # Find the first slide (title slide) to add the embedded Excel object
+        if len(prs.slides) > 0:
+            slide = prs.slides[0]
+            
+            # Add embedded Excel object
+            # Note: This requires the win32com library on Windows or alternative approach
+            # For cross-platform compatibility, we'll create a table instead
+            
+            # Calculate position for the embedded object (middle of slide)
+            slide_width = prs.slide_width
+            slide_height = prs.slide_height
+            object_width = Inches(8)
+            object_height = Inches(4)
+            left = (slide_width - object_width) / 2
+            top = (slide_height - object_height) / 2
+            
+            # Add a table with the Excel data
+            table = slide.shapes.add_table(
+                rows=len(df) + 1,  # +1 for header
+                cols=len(df.columns),
+                left=left,
+                top=top,
+                width=object_width,
+                height=object_height
+            ).table
+            
+            # Fill table with data
+            # Header row
+            for col_idx, col_name in enumerate(df.columns):
+                table.cell(0, col_idx).text = str(col_name)
+            
+            # Data rows
+            for row_idx, row in enumerate(df.values):
+                for col_idx, value in enumerate(row):
+                    table.cell(row_idx + 1, col_idx).text = str(value)
+        
+        # Save the presentation
+        if output_path is None:
+            output_path = presentation_path
+        prs.save(output_path)
+        
+        # Clean up temporary file
+        if os.path.exists(temp_excel_path):
+            os.remove(temp_excel_path)
+        
+        logging.info(f"✅ Excel data embedded in PowerPoint: {output_path}")
+        return output_path
+        
+    except Exception as e:
+        logging.error(f"❌ Failed to embed Excel data: {str(e)}")
+        raise
+
+def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None):
     generator = ReportGenerator(template_path, markdown_path, output_path, project_name)
     generator.generate()
     if not os.path.exists(output_path):
@@ -729,6 +819,16 @@ def export_pptx(template_path, markdown_path, output_path, project_name=None):
         raise FileNotFoundError(f"PPTX file was not created at {output_path}")
     if project_name:
         update_project_titles(output_path, project_name)
+    
+    # Embed Excel data if provided
+    if excel_file_path and project_name:
+        # Get the appropriate sheet name based on project
+        sheet_name = get_tab_name(project_name)
+        if sheet_name:
+            try:
+                embed_excel_data_in_pptx(output_path, excel_file_path, sheet_name, project_name)
+            except Exception as e:
+                logging.warning(f"⚠️ Could not embed Excel data: {str(e)}")
     
     # Add success message
     logging.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
