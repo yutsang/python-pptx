@@ -1,0 +1,6 @@
+{
+  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Content exceeds Pattern 1's 2-item limit\",\n    \"Chinese entity names not fully translated\",\n    \"Inconsistent figure formatting (K/M mixed with decimals)\"\n  ],\n  \"corrected_content\": \"balance as at 30 September 2022 mainly entailed consulting fees to Jones Lang LaSalle Beijing Consulting Co. of CNY13K and audit fees to Credit Zhonghe Accounting Firm (Special General Partnership) of CNY14K\",\n  \"figure_checks\": [\n    \"CNY13K verified (仲量聯行北京諮詢公司: 13)\",\n    \"CNY14K verified (信用中和會計師事務所: 14)\"\n  ],\n  \"entity_checks\": [\n    \"Jones Lang LaSalle matches 仲量聯行北京諮詢公司\",\n    \"Credit Zhonghe matches 信用中和會計師事務所\"\n  ],\n  \"grammar_notes\": [\n    \"Standardized VAT/CIT terms\",\n    \"Removed outer quotes\",\n    \"Simplified from 5 to 2 items per pattern\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
+  "timestamp": 1755189983.804718,
+  "key": "586044_789839",
+  "entity_name": "Haining"
+}

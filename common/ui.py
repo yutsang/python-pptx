@@ -8,6 +8,15 @@ def configure_streamlit_page():
     # Clean any deprecated/invalid options that might be in session
     if 'client.caching' in st.session_state:
         del st.session_state['client.caching']
+    # Reduce top padding/margin for a tighter header area
+    st.markdown(
+        """
+        <style>
+        .block-container {padding-top: 1rem;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def select_ai_provider_and_model(config: dict):

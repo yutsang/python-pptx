@@ -1,0 +1,6 @@
+{
+  "content": "```json\n{\n  \"is_compliant\": true,\n  \"issues\": [],\n  \"corrected_content\": \"Balance as at 30-Sep-2022 represented:\\n\\nCNY2.2M of deposit subtotal, including Company #10 (CNY985K) and Company #14 (CNY610K)\\nCNY69.8M of related party payables subtotal, primarily comprising Equity Investment Fund Partnership (Limited Partnership) (CNY68.6M) and Logistics Storage Co., Ltd. (CNY1.2M)\",\n  \"figure_checks\": [\n    \"CNY2.2M matches deposit subtotal of CNY2,199,000 (CNY'000: 2199)\",\n    \"CNY69.8M matches related party payables subtotal of CNY69,784,000 (CNY'000: 69784)\",\n    \"CNY985K matches Company #10 value\",\n    \"CNY610K matches Company #14 value\",\n    \"CNY68.6M matches 股權投資基金合夥企業(有限合夥) value\",\n    \"CNY1.2M matches 物流倉儲有限公司 value (rounded from CNY1,155,000)\"\n  ],\n  \"entity_checks\": [\n    \"All entities exist in source table\",\n    \"Chinese names translated to English per normalization rules\"\n  ],\n  \"grammar_notes\": [\n    \"Removed outer quotes\",\n    \"Standardized capitalization ('deposit subtotal', 'related party payables subtotal')\",\n    \"Shortened list to top 2 items per category\",\n    \"Removed SUMMARY section as it's redundant with the pattern\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
+  "timestamp": 1755210669.3388631,
+  "key": "68291_122599",
+  "entity_name": "Ningbo"
+}

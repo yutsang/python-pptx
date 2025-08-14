@@ -1,0 +1,6 @@
+{
+  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Entity name 'Business Management Consulting Co.' should be '企業管理諮詢公司' (Business Management Consulting Company)\",\n    \"Entity name 'Logistics Development Co., Ltd.' should be '物流發展有限公司' (Logistics Development Co., Ltd.)\",\n    \"Figure formatting should use 1 decimal place (2.3M → 2.3)\",\n    \"Missing fee types in pattern structure\"\n  ],\n  \"corrected_content\": \"balance as at 30 September 2022 mainly entailed consulting fees to 企業管理諮詢公司 (Business Management Consulting Company) of CNY2.3 and logistics services to 物流發展有限公司 (Logistics Development Co., Ltd.) of CNY8.3\",\n  \"figure_checks\": [\n    \"CNY2.3M → CNY2.3 (1 decimal place)\",\n    \"CNY8.3M → CNY8.3 (1 decimal place)\"\n  ],\n  \"entity_checks\": [\n    \"企業管理諮詢公司 matches table data (CNY2,295 → CNY2.3)\",\n    \"物流發展有限公司 matches table data (CNY8,313 → CNY8.3)\"\n  ],\n  \"grammar_notes\": [\n    \"Chinese entity names should be presented with English translations in parentheses\",\n    \"Removed outer quotes from content\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
+  "timestamp": 1755211741.4187741,
+  "key": "17907_678133",
+  "entity_name": "Haining"
+}

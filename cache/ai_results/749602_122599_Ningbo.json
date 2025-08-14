@@ -1,0 +1,6 @@
+{
+  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Incorrect figure formatting (should be 1,311K, 241K, 204K)\",\n    \"Inconsistent tax type naming (should use 'Property tax', 'Land use tax', 'VAT')\",\n    \"Missing total amount mention\"\n  ],\n  \"corrected_content\": \"Balance as at 30 September 2022 represented Property tax payable of CNY1,311K, Land use tax payable of CNY241K and VAT payable of CNY204K (total: CNY1,577K).\",\n  \"figure_checks\": [\n    \"Property tax: 1,311K matches source (1,311)\",\n    \"Land use tax: 241K matches source (241)\",\n    \"VAT: 204K matches source (204)\",\n    \"Total: 1,577K matches source (1,577)\"\n  ],\n  \"entity_checks\": [\n    \"Property tax matches 房產稅\",\n    \"Land use tax matches 土地使用稅\",\n    \"VAT matches 增值稅\"\n  ],\n  \"grammar_notes\": [\n    \"Removed inconsistent capitalization in tax names\",\n    \"Standardized tax terminology\",\n    \"Added total amount for completeness\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
+  "timestamp": 1755210652.365624,
+  "key": "749602_122599",
+  "entity_name": "Ningbo"
+}
