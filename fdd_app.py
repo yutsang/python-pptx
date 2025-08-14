@@ -1166,7 +1166,7 @@ def main():
                 st.stop()
 
         # (Removed duplicate provider/model UI to avoid two model selectors)
-        
+
         # Entity name input with auto-mapping
         entity_input = st.text_input(
             "Enter Entity Name",
@@ -1743,11 +1743,20 @@ def main():
 
                         # 2. Use bs_content.md as-is for export (do NOT overwrite it)
                         # Note: bs_content.md should contain narrative content from AI processing, not table data
+                        
+                        # Get the Excel file path for embedding data
+                        excel_file_path = None
+                        if hasattr(uploaded_file, 'file_path'):
+                            excel_file_path = uploaded_file.file_path
+                        elif hasattr(uploaded_file, 'name'):
+                            excel_file_path = uploaded_file.name
+                        
                         export_pptx(
                             template_path=template_path,
                             markdown_path="fdd_utils/bs_content.md",
                             output_path=output_path,
-                            project_name=project_name
+                            project_name=project_name,
+                            excel_file_path=excel_file_path
                         )
                         
                         st.session_state['pptx_exported'] = True
