@@ -1,0 +1,6 @@
+{
+  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Incorrect figure formatting (should be 1 decimal place without 'K')\",\n    \"Entity names should use exact match from table\",\n    \"Missing fee type specification in pattern\"\n  ],\n  \"corrected_content\": \"balance as at 30 September 2022 mainly entailed consulting fees to 仲量聯行北京諮詢公司 of CNY13.0 and audit fees to 信用中和會計師事務所(特殊普通合夥) of CNY14.0\",\n  \"figure_checks\": [\n    \"CNY13.0K → CNY13.0 (table shows 13 in '000s = 13,000)\",\n    \"CNY14.0K → CNY14.0 (table shows 14 in '000s = 14,000)\"\n  ],\n  \"entity_checks\": [\n    \"Jones Lang LaSalle Beijing Consulting Co. → 仲量聯行北京諮詢公司 (exact match)\",\n    \"Credit Zhonghe Accounting Firm(Special General Partnership) → 信用中和會計師事務所(特殊普通合夥) (exact match)\"\n  ],\n  \"grammar_notes\": [\n    \"Removed outer quotes\",\n    \"Standardized entity naming from Chinese characters\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
+  "timestamp": 1755190202.828236,
+  "key": "18583_789839",
+  "entity_name": "Ningbo"
+}

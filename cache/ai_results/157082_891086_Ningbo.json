@@ -1,0 +1,6 @@
+{
+  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Figure formatting should use K/M with 1 decimal place\",\n    \"Entity names should use English translations where available\",\n    \"Pattern structure not fully followed\"\n  ],\n  \"corrected_content\": \"The accounts payable balance as at 30 September 2022 mainly entailed consulting fees to Jones Lang LaSalle Beijing Consulting Co. of CNY13.0K and audit fees to Credit Zhonghe Accounting Firm (Special General Partnership) of CNY14.0K.\",\n  \"figure_checks\": [\n    \"CNY13.0K matches source value 13 (CNY'000)\",\n    \"CNY14.0K matches source value 14 (CNY'000)\"\n  ],\n  \"entity_checks\": [\n    \"Jones Lang LaSalle Beijing Consulting Co. matches 仲量聯行北京諮詢公司\",\n    \"Credit Zhonghe Accounting Firm (Special General Partnership) matches 信用中和會計師事務所(特殊普通合夥)\"\n  ],\n  \"grammar_notes\": [\n    \"Removed outer quotes\",\n    \"Standardized entity naming\",\n    \"Maintained professional tone\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
+  "timestamp": 1755188511.735177,
+  "key": "157082_891086",
+  "entity_name": "Ningbo"
+}

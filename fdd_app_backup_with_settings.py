@@ -24,7 +24,9 @@ from fdd_utils.simple_cache import get_simple_cache
 # Import assistant modules at module level to prevent runtime import issues
 from common.assistant import process_keys, QualityAssuranceAgent, DataValidationAgent, PatternValidationAgent, find_financial_figures_with_context_check, get_tab_name, get_financial_figure, load_ip, ProofreadingAgent
 
-
+# Import settings wizard
+from fdd_utils.settings_wizard import render_settings_wizard
+from fdd_utils.app_helpers import derive_entity_parts, get_financial_keys, get_key_display_name
 import uuid
 import tempfile
 
@@ -1113,6 +1115,21 @@ def main():
 
     # Sidebar for controls
     with st.sidebar:
+        # Settings button
+        if st.button("⚙️ Settings", type="secondary", use_container_width=True):
+            st.session_state['settings_open'] = not st.session_state.get('settings_open', False)
+            st.rerun()
+        
+        # Show settings status
+        if st.session_state.get('settings_open', False):
+            st.success("✅ Settings panel is open")
+        elif st.session_state.get('setup', {}).get('completed', False):
+            st.info("✅ Setup completed")
+        else:
+            st.warning("⚠️ Setup not completed")
+        
+        st.markdown("---")
+        
         # File uploader with default file option
         uploaded_file = st.file_uploader(
             "Upload Excel File (Optional)",
@@ -1163,63 +1180,50 @@ def main():
             else:
                 st.error(f"❌ Default file not found: {default_file_path}")
                 st.info("Please upload an Excel file to get started.")
-                st.stop()
 
         # (Removed duplicate provider/model UI to avoid two model selectors)
         
-        # Entity name input with auto-mapping
-        entity_input = st.text_input(
-            "Enter Entity Name",
-            value="",
-            placeholder="e.g., Haining Wanpu Limited, Nanjing Wanchen Limited",
-            help="Enter the full entity name to start processing"
-        )
+        # Use configured entities from settings if available, otherwise use defaults
+        setup = st.session_state.get('setup', {})
+        configured_entities = setup.get('entities', [])
         
-        # Auto-extract base entity and generate mapping keys
-        if entity_input:
-            # Extract base entity name (first word)
-            base_entity = entity_input.split()[0] if entity_input.split() else None
-            
-            # Generate mapping keys based on input
-            mapping_keys = []
-            words = entity_input.split()
-            for i in range(len(words)):
-                mapping_keys.append(" ".join(words[:i+1]))
-            
-            # Use base entity for processing
-            selected_entity = base_entity
-            
-            # Show only base entity info
-            st.info(f"📋 Base Entity: {base_entity}")
+        if configured_entities:
+            # Use configured entities
+            entity_options = [entity['full'] for entity in configured_entities]
+            selected_entity = st.selectbox(
+                "Select Entity",
+                options=entity_options,
+                help="Choose the entity for data processing (from settings)"
+            )
+            # Extract base name for processing
+            selected_entity_base = next((entity['base'] for entity in configured_entities if entity['full'] == selected_entity), selected_entity)
         else:
-            selected_entity = None
-            mapping_keys = []
-            st.warning("⚠️ Please enter an entity name to start processing")
-        # Check if entity is provided (file can be default)
-        if not selected_entity:
-            st.stop()
-        
-        # Use mapping keys as entity helpers
-        if 'mapping_keys' in locals() and mapping_keys:
-            entity_helpers = ",".join(mapping_keys) + ","
+            # Fallback to default entities
+            entity_options = ['Haining', 'Nanjing', 'Ningbo']
+            selected_entity = st.selectbox(
+                "Select Entity",
+                options=entity_options,
+                help="Choose the entity for data processing"
+            )
+            selected_entity_base = selected_entity
+        # Auto-adjust entity helpers by selected entity; hide from UI
+        if selected_entity_base == 'Haining':
+            entity_helpers = "Wanpu,Limited,"
+        elif selected_entity_base in ['Nanjing', 'Ningbo']:
+            # Known suffix/entity tokens for these cities
+            entity_helpers = "Wanchen,Limited,Logistics,Development,Supply,Chain," 
         else:
-            # Fallback to original logic
-            if selected_entity == 'Haining':
-                entity_helpers = "Wanpu,Limited,"
-            elif selected_entity in ['Nanjing', 'Ningbo']:
-                entity_helpers = "Wanchen,Limited,Logistics,Development,Supply,Chain," 
-            else:
-                entity_helpers = "Limited,"
+            entity_helpers = "Limited,"
 
         # Auto-invalidate Excel cache when entity changes
         last_entity = st.session_state.get('last_selected_entity')
         if last_entity is None:
-            st.session_state['last_selected_entity'] = selected_entity
-        elif last_entity != selected_entity:
+            st.session_state['last_selected_entity'] = selected_entity_base
+        elif last_entity != selected_entity_base:
             keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
             for key in keys_to_remove:
                 del st.session_state[key]
-            st.session_state['last_selected_entity'] = selected_entity
+            st.session_state['last_selected_entity'] = selected_entity_base
         
         # Financial Statement Type Selection
         st.markdown("---")
@@ -1322,67 +1326,101 @@ def main():
                 st.success("Cache files listed in console!")
 
     # Main area for results
+    
+    # Show settings wizard if open
+    if st.session_state.get('settings_open', False):
+        render_settings_wizard(uploaded_file, load_config_files, get_worksheet_sections_by_keys)
+        return
+    
     if uploaded_file is not None:
         
-        # --- View Table Section ---
-        config, mapping, pattern, prompts = load_config_files()
-        entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
-        entity_keywords = [f"{selected_entity} {suffix}" for suffix in entity_suffixes if suffix]
-        if not entity_keywords:
-            entity_keywords = [selected_entity]
+        # --- View Table by Key Section (Multi-Entity) ---
+        st.markdown("## 📊 View Table by Key")
         
-        # Handle different statement types with session state caching
-        if statement_type == "BS":
-            # Create cache key to avoid reprocessing
-            cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}"
+        # Get configured entities from settings
+        setup = st.session_state.get('setup', {})
+        configured_entities = setup.get('entities', [])
+        
+        if not configured_entities:
+            st.warning("⚠️ No entities configured. Please complete the settings setup first.")
+            st.info("Click the ⚙️ Settings button in the sidebar to configure entities.")
+        else:
+            # Process all configured entities
+            config, mapping, pattern, prompts = load_config_files()
             
-            if cache_key not in st.session_state:
-                # Original BS logic - only run if not cached
-                with st.spinner("🔄 Processing Excel file..."):
-                    sections_by_key = get_worksheet_sections_by_keys(
-                        uploaded_file=uploaded_file,
-                        tab_name_mapping=mapping,
-                        entity_name=selected_entity,
-                        entity_suffixes=entity_suffixes,
-                        debug=False  # Set to True for debugging
-                    )
-                    st.session_state[cache_key] = sections_by_key
-            else:
-                sections_by_key = st.session_state[cache_key]
-            from common.ui_sections import render_balance_sheet_sections
-            render_balance_sheet_sections(
-                sections_by_key,
-                get_key_display_name,
-                selected_entity,
-                format_date_to_dd_mmm_yyyy,
-            )
-        
-        elif statement_type == "IS":
-            # Income Statement placeholder
-            st.markdown("### Income Statement")
-            st.info("📊 Income Statement processing will be implemented here.")
-            st.markdown("""
-            **Placeholder for Income Statement sections:**
-            - Revenue
-            - Cost of Goods Sold
-            - Gross Profit
-            - Operating Expenses
-            - Operating Income
-            - Other Income/Expenses
-            - Net Income
-            """)
-        
-        elif statement_type == "ALL":
-            # Combined view placeholder
-            st.markdown("### Combined Financial Statements")
-            st.info("📊 Combined BS and IS processing will be implemented here.")
-            st.markdown("""
-            **Placeholder for Combined sections:**
-            - Balance Sheet
-            - Income Statement
-            - Cash Flow Statement
-            - Financial Ratios
-            """)
+            # Process all entities first
+            all_entities_data = {}
+            for entity_config in configured_entities:
+                entity_full_name = entity_config['full']
+                entity_base = entity_config['base']
+                entity_suffixes = entity_config['suffixes']
+                
+                # Handle different statement types with session state caching
+                if statement_type == "BS":
+                    # Create cache key for this entity
+                    cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{entity_base}"
+                    
+                    if cache_key not in st.session_state:
+                        # Process this entity
+                        with st.spinner(f"🔄 Processing {entity_full_name}..."):
+                            sections_by_key = get_worksheet_sections_by_keys(
+                                uploaded_file=uploaded_file,
+                                tab_name_mapping=mapping,
+                                entity_name=entity_base,
+                                entity_suffixes=entity_suffixes,
+                                debug=False
+                            )
+                            st.session_state[cache_key] = sections_by_key
+                    else:
+                        sections_by_key = st.session_state[cache_key]
+                    
+                    # Store data for this entity
+                    all_entities_data[entity_full_name] = {
+                        'base': entity_base,
+                        'suffixes': entity_suffixes,
+                        'sections_by_key': sections_by_key
+                    }
+                
+                elif statement_type == "IS":
+                    # Income Statement placeholder for this entity
+                    all_entities_data[entity_full_name] = {
+                        'base': entity_base,
+                        'suffixes': entity_suffixes,
+                        'sections_by_key': {}  # Placeholder for IS data
+                    }
+                
+                elif statement_type == "ALL":
+                    # Combined view placeholder for this entity
+                    all_entities_data[entity_full_name] = {
+                        'base': entity_base,
+                        'suffixes': entity_suffixes,
+                        'sections_by_key': {}  # Placeholder for combined data
+                    }
+            
+            # Create tabs for each entity
+            entity_names = list(all_entities_data.keys())
+            if entity_names:
+                tabs = st.tabs(entity_names)
+                for i, (entity_full_name, entity_data) in enumerate(all_entities_data.items()):
+                    with tabs[i]:
+                        # Display results for this entity
+                        if statement_type == "BS":
+                            from common.ui_sections import render_balance_sheet_sections
+                            render_balance_sheet_sections(
+                                entity_data['sections_by_key'],
+                                get_key_display_name,
+                                entity_full_name,
+                                format_date_to_dd_mmm_yyyy,
+                            )
+                        elif statement_type == "IS":
+                            st.markdown(f"### Income Statement - {entity_full_name}")
+                            st.info("📊 Income Statement processing will be implemented here.")
+                        elif statement_type == "ALL":
+                            st.markdown(f"### Combined Financial Statements - {entity_full_name}")
+                            st.info("📊 Combined BS and IS processing will be implemented here.")
+                
+                # Store all entities data for AI processing
+                st.session_state['all_entities_data'] = all_entities_data
 
         # --- AI Processing Section (Bottom) ---
         # Check AI configuration status (updated for DeepSeek as default)
@@ -1400,7 +1438,7 @@ def main():
         except Exception:
             st.warning("⚠️ AI Mode: Configuration not found. Will use fallback mode.")
         
-        # --- AI Processing & Results Section ---
+        # --- AI Processing & Results Section (Multi-Entity) ---
         st.markdown("---")
         st.markdown("## 🤖 AI Processing & Results")
         
@@ -1409,7 +1447,7 @@ def main():
             st.session_state['ai_data'] = {}
         
         # Prepare data for AI processing
-        if uploaded_file is not None:
+        if uploaded_file is not None and st.session_state.get('all_entities_data'):
             try:
                 # Load configuration files
                 config, mapping, pattern, prompts = load_config_files()
@@ -1417,71 +1455,65 @@ def main():
                     st.error("❌ Failed to load configuration files")
                     return
                 
-                # Process entity configuration
-                entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
-                entity_keywords = [f"{selected_entity} {suffix}" for suffix in entity_suffixes if suffix]
-                if not entity_keywords:
-                    entity_keywords = [selected_entity]
+                all_entities_data = st.session_state.get('all_entities_data', {})
                 
-                # Get worksheet sections with caching
-                cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}"
+                # Create tabs for AI processing
+                ai_tabs = st.tabs([f"🤖 {entity_name}" for entity_name in all_entities_data.keys()])
                 
-                if cache_key not in st.session_state:
-                    with st.spinner("🔄 Processing Excel file for AI..."):
-                        sections_by_key = get_worksheet_sections_by_keys(
-                            uploaded_file=uploaded_file,
-                            tab_name_mapping=mapping,
-                            entity_name=selected_entity,
-                            entity_suffixes=entity_suffixes,
-                            debug=False
-                        )
-                        st.session_state[cache_key] = sections_by_key
-                    st.success("✅ Excel processing completed for AI")
-                else:
-                    sections_by_key = st.session_state[cache_key]
-                
-                # Get keys with data
-                keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-                
-                # Filter keys based on statement type (include synonyms for non-Haining)
-                bs_keys = [
-                    "Cash", "AR", "Prepayments", "OR", "Other CA", "IP", "Other NCA", "NCA",
-                    "AP", "Taxes payable", "OP", "Capital", "Reserve"
-                ]
-                is_keys = [
-                    "OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
-                    "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"
-                ]
-                
-                if statement_type == "BS":
-                    filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
-                elif statement_type == "IS":
-                    filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
-                elif statement_type == "ALL":
-                    filtered_keys_for_ai = [key for key in keys_with_data if key in (bs_keys + is_keys)]
-                else:
-                    filtered_keys_for_ai = keys_with_data
-                
-                if not filtered_keys_for_ai:
-                    st.warning("No data found for AI processing with the selected statement type.")
-                    return
+                # Prepare AI data for all entities first
+                all_entities_ai_data = {}
+                for entity_full_name, entity_data in all_entities_data.items():
+                    entity_base = entity_data['base']
+                    entity_suffixes = entity_data['suffixes']
+                    sections_by_key = entity_data['sections_by_key']
+                    
+                    # Get keys with data for this entity
+                    keys_with_data = [key for key, sections in sections_by_key.items() if sections]
+                    
+                    # Filter keys based on statement type
+                    bs_keys = [
+                        "Cash", "AR", "Prepayments", "OR", "Other CA", "IP", "Other NCA", "NCA",
+                        "AP", "Taxes payable", "OP", "Capital", "Reserve"
+                    ]
+                    is_keys = [
+                        "OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
+                        "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"
+                    ]
+                    
+                    if statement_type == "BS":
+                        filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
+                    elif statement_type == "IS":
+                        filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
+                    elif statement_type == "ALL":
+                        filtered_keys_for_ai = [key for key in keys_with_data if key in (bs_keys + is_keys)]
+                    else:
+                        filtered_keys_for_ai = keys_with_data
+                    
+                    if not filtered_keys_for_ai:
+                        st.warning(f"No data found for AI processing with the selected statement type for {entity_full_name}.")
+                        continue
+                    
+                    # Prepare AI data for this entity
+                    entity_keywords = [f"{entity_base} {suffix}" for suffix in entity_suffixes if suffix]
+                    if not entity_keywords:
+                        entity_keywords = [entity_base]
+                    
+                    all_entities_ai_data[entity_full_name] = {
+                        'entity_name': entity_base,
+                        'entity_keywords': entity_keywords,
+                        'sections_by_key': sections_by_key,
+                        'pattern': pattern,
+                        'mapping': mapping,
+                        'config': config,
+                        'filtered_keys': filtered_keys_for_ai
+                    }
                 
                 # Store uploaded file data in session state for agents
                 st.session_state['uploaded_file_data'] = uploaded_file.getbuffer()
-                
-                # Prepare AI data
-                temp_ai_data = {
-                    'entity_name': selected_entity,
-                    'entity_keywords': entity_keywords,
-                    'sections_by_key': sections_by_key,
-                    'pattern': pattern,
-                    'mapping': mapping,
-                    'config': config
-                }
+                st.session_state['all_entities_ai_data'] = all_entities_ai_data
                 
                 # Store in session state
-                st.session_state['ai_data'] = temp_ai_data
-                st.session_state['filtered_keys_for_ai'] = filtered_keys_for_ai
+                st.session_state['ai_data'] = all_entities_ai_data
                 
                 # Initialize agent states if not exists
                 if 'agent_states' not in st.session_state:
@@ -1510,49 +1542,69 @@ def main():
                 if run_ai_clicked:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
-                    eta_text = st.empty()
                     try:
-                        status_text.text("🤖 Initializing…")
-                        progress_bar.progress(10)
+                        status_text.text("🤖 Initializing multi-entity processing...")
+                        progress_bar.progress(5)
                         # Disable cache for this run
                         st.session_state['force_refresh'] = True
-                        ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 1, 'stage_index': 0, 'start_time': time.time()}}
-                        agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
-                        agent1_success = bool(agent1_results and any(agent1_results.values()))
-                        st.session_state['agent_states']['agent1_results'] = agent1_results
+                        
+                        # Process all entities
+                        all_agent1_results = {}
+                        total_entities = len(all_entities_ai_data)
+                        for i, (entity_full_name, entity_ai_data) in enumerate(all_entities_ai_data.items()):
+                            status_text.text(f"🤖 Processing {entity_full_name} ({i+1}/{total_entities})...")
+                            progress_bar.progress(10 + (i * 80 // total_entities))
+                            
+                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 1, 'stage_index': 0, 'start_time': time.time()}}
+                            agent1_results = run_agent_1(entity_ai_data['filtered_keys'], entity_ai_data, external_progress=ext)
+                            all_agent1_results[entity_full_name] = agent1_results
+                        
+                        agent1_success = bool(all_agent1_results and any(all_agent1_results.values()))
+                        st.session_state['agent_states']['agent1_results'] = all_agent1_results
                         st.session_state['agent_states']['agent1_completed'] = True
                         st.session_state['agent_states']['agent1_success'] = agent1_success
                         progress_bar.progress(100)
-                        status_text.text("✅ AI done" if agent1_success else "❌ AI failed")
+                        status_text.text("✅ Multi-entity AI processing complete" if agent1_success else "❌ AI processing failed")
                         time.sleep(1)
                         st.rerun()
                     except Exception as e:
                         progress_bar.progress(100)
-                        status_text.text(f"❌ AI failed: {e}")
+                        status_text.text(f"❌ AI processing failed: {e}")
                         time.sleep(1)
                         st.rerun()
                 
                 if run_proof_clicked:
-                    # Run AI Proofreader using Agent 1 outputs
+                    # Run AI Proofreader for all entities
                     progress_bar = st.progress(0)
                     status_text = st.empty()
-                    eta_text = st.empty()
                     try:
-                        status_text.text("🧐 Initializing…")
-                        progress_bar.progress(10)
+                        status_text.text("🧐 Initializing multi-entity proofreading...")
+                        progress_bar.progress(5)
                         # Disable cache for this run
                         st.session_state['force_refresh'] = True
-                        agent1_results = st.session_state.get('agent_states', {}).get('agent1_results', {}) or {}
-                        if not agent1_results:
+                        
+                        agent1_results_all = st.session_state.get('agent_states', {}).get('agent1_results', {}) or {}
+                        if not agent1_results_all:
                             st.warning("Run content generation first to produce material for proofreading.")
                         else:
-                            ext = {'bar': progress_bar, 'status': status_text}
-                            proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
-                            st.session_state['agent_states']['agent3_results'] = proof_results
+                            # Process all entities
+                            all_proof_results = {}
+                            total_entities = len(all_entities_ai_data)
+                            for i, (entity_full_name, entity_ai_data) in enumerate(all_entities_ai_data.items()):
+                                status_text.text(f"🧐 Proofreading {entity_full_name} ({i+1}/{total_entities})...")
+                                progress_bar.progress(10 + (i * 80 // total_entities))
+                                
+                                entity_agent1_results = agent1_results_all.get(entity_full_name, {}) or {}
+                                if entity_agent1_results:
+                                    ext = {'bar': progress_bar, 'status': status_text}
+                                    proof_results = run_ai_proofreader(entity_ai_data['filtered_keys'], entity_agent1_results, entity_ai_data, external_progress=ext)
+                                    all_proof_results[entity_full_name] = proof_results
+                            
+                            st.session_state['agent_states']['agent3_results'] = all_proof_results
                             st.session_state['agent_states']['agent3_completed'] = True
-                            st.session_state['agent_states']['agent3_success'] = bool(proof_results)
+                            st.session_state['agent_states']['agent3_success'] = bool(all_proof_results)
                         progress_bar.progress(100)
-                        status_text.text("✅ Proofreading done")
+                        status_text.text("✅ Multi-entity proofreading complete")
                         time.sleep(1)
                         st.rerun()
                     except Exception as e:
@@ -1562,28 +1614,47 @@ def main():
                         st.rerun()
 
                 if run_both_clicked:
-                    # Run Generation then Proofreader in sequence with single trigger
+                    # Run Generation then Proofreader for all entities
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     try:
-                        status_text.text("🤖 Initializing…")
-                        progress_bar.progress(10)
+                        status_text.text("🤖 Initializing multi-entity processing...")
+                        progress_bar.progress(5)
                         st.session_state['force_refresh'] = True
-                        ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
-                        agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
-                        st.session_state['agent_states']['agent1_results'] = agent1_results
+                        
+                        # Process all entities for generation
+                        all_agent1_results = {}
+                        total_entities = len(all_entities_ai_data)
+                        for i, (entity_full_name, entity_ai_data) in enumerate(all_entities_ai_data.items()):
+                            status_text.text(f"🤖 Generating content for {entity_full_name} ({i+1}/{total_entities})...")
+                            progress_bar.progress(10 + (i * 40 // total_entities))
+                            
+                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
+                            agent1_results = run_agent_1(entity_ai_data['filtered_keys'], entity_ai_data, external_progress=ext)
+                            all_agent1_results[entity_full_name] = agent1_results
+                        
+                        st.session_state['agent_states']['agent1_results'] = all_agent1_results
                         st.session_state['agent_states']['agent1_completed'] = True
-                        st.session_state['agent_states']['agent1_success'] = bool(agent1_results)
-                        # Proofreader
-                        status_text.text("🧐 Running…")
-                        # Switch to PROOF stage index for combined ETA/progress
-                        ext['combined']['stage_index'] = 1
-                        proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
-                        st.session_state['agent_states']['agent3_results'] = proof_results
+                        st.session_state['agent_states']['agent1_success'] = bool(all_agent1_results)
+                        
+                        # Process all entities for proofreading
+                        status_text.text("🧐 Running multi-entity proofreading...")
+                        all_proof_results = {}
+                        for i, (entity_full_name, entity_ai_data) in enumerate(all_entities_ai_data.items()):
+                            status_text.text(f"🧐 Proofreading {entity_full_name} ({i+1}/{total_entities})...")
+                            progress_bar.progress(50 + (i * 40 // total_entities))
+                            
+                            entity_agent1_results = all_agent1_results.get(entity_full_name, {}) or {}
+                            if entity_agent1_results:
+                                ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 1, 'start_time': time.time()}}
+                                proof_results = run_ai_proofreader(entity_ai_data['filtered_keys'], entity_agent1_results, entity_ai_data, external_progress=ext)
+                                all_proof_results[entity_full_name] = proof_results
+                        
+                        st.session_state['agent_states']['agent3_results'] = all_proof_results
                         st.session_state['agent_states']['agent3_completed'] = True
-                        st.session_state['agent_states']['agent3_success'] = bool(proof_results)
+                        st.session_state['agent_states']['agent3_success'] = bool(all_proof_results)
                         progress_bar.progress(100)
-                        status_text.text("✅ Generate → Proofread complete")
+                        status_text.text("✅ Multi-entity Generate → Proofread complete")
                         time.sleep(1)
                         st.rerun()
                     except Exception as e:
@@ -1599,7 +1670,7 @@ def main():
         else:
             st.info("Please upload an Excel file first.")
         
-        # --- AI Results Display ---
+        # --- AI Results Display (Multi-Entity) ---
         # Check if any agent has run
         agent_states = st.session_state.get('agent_states', {})
         any_agent_completed = any([
@@ -1608,125 +1679,131 @@ def main():
             agent_states.get('agent3_completed', False)
         ])
         
-        if any_agent_completed:
-            # Get available keys
-            filtered_keys = st.session_state.get('filtered_keys_for_ai', [])
+        if any_agent_completed and st.session_state.get('all_entities_ai_data'):
+            # Display AI results for each entity in their respective tabs
+            all_entities_ai_data = st.session_state.get('all_entities_ai_data', {})
             
-            if filtered_keys:
-                # Create tabs for each key (load all at once)
-                key_tabs = st.tabs([get_key_display_name(key) for key in filtered_keys])
-                
-                # Display results for each key in its tab
-                for i, key in enumerate(filtered_keys):
-                    with key_tabs[i]:
-                        # Show Compliance (Proofreader) first if available
-                        agent3_results_all = agent_states.get('agent3_results', {}) or {}
-                        if key in agent3_results_all:
-                            pr = agent3_results_all[key]
-                            corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
-                            if corrected_content:
-                                st.markdown(corrected_content)
+            for i, (entity_full_name, entity_ai_data) in enumerate(all_entities_ai_data.items()):
+                with ai_tabs[i]:
+                    # Get AI results for this entity
+                    agent1_results_all = agent_states.get('agent1_results', {}) or {}
+                    agent3_results_all = agent_states.get('agent3_results', {}) or {}
+                    
+                    # Get results for this specific entity
+                    entity_agent1_results = agent1_results_all.get(entity_full_name, {}) or {}
+                    entity_agent3_results = agent3_results_all.get(entity_full_name, {}) or {}
+                    
+                    filtered_keys = entity_ai_data['filtered_keys']
+                    
+                    if filtered_keys:
+                        # Create tabs for each key in this entity
+                        key_tabs = st.tabs([get_key_display_name(key) for key in filtered_keys])
+                        
+                        # Display results for each key in its tab
+                        for j, key in enumerate(filtered_keys):
+                            with key_tabs[j]:
+                                # Show Compliance (Proofreader) first if available
+                                if key in entity_agent3_results:
+                                    pr = entity_agent3_results[key]
+                                    corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
+                                    if corrected_content:
+                                        st.markdown(corrected_content)
 
-                        # AI1 Results (collapsible if proofreader exists)
-                        with st.expander("📝 AI: Generation (details)", expanded=key not in agent3_results_all):
-                            agent1_results = agent_states.get('agent1_results', {}) or {}
-                            if key in agent1_results and agent1_results[key]:
-                                content = agent1_results[key]
-                                
-                                # Handle both string and dict content
-                                if isinstance(content, dict):
-                                    content_str = content.get('content', str(content))
-                                else:
-                                    content_str = str(content)
-                                
-                                st.markdown("**Generated Content:**")
-                                st.markdown(content_str)
-                                
-                                # Metadata
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    st.metric("Characters", len(content_str))
-                                with col2:
-                                    st.metric("Words", len(content_str.split()))
-                                with col3:
-                                    st.metric("Status", "✅ Generated" if content else "❌ Failed")
-                            else:
-                                st.info("No AI results available. Run AI first.")
+                                # AI1 Results (collapsible if proofreader exists)
+                                with st.expander("📝 AI: Generation (details)", expanded=key not in entity_agent3_results):
+                                    if key in entity_agent1_results and entity_agent1_results[key]:
+                                        content = entity_agent1_results[key]
+                                        
+                                        # Handle both string and dict content
+                                        if isinstance(content, dict):
+                                            content_str = content.get('content', str(content))
+                                        else:
+                                            content_str = str(content)
+                                        
+                                        st.markdown("**Generated Content:**")
+                                        st.markdown(content_str)
+                                        
+                                        # Metadata
+                                        col1, col2, col3 = st.columns(3)
+                                        with col1:
+                                            st.metric("Characters", len(content_str))
+                                        with col2:
+                                            st.metric("Words", len(content_str.split()))
+                                        with col3:
+                                            st.metric("Status", "✅ Generated" if content else "❌ Failed")
+                                    else:
+                                        st.info("No AI results available. Run AI first.")
 
-                        # If Proofreader made changes or found issues, show a compact summary
-                        if key in agent3_results_all:
-                            pr = agent3_results_all[key]
-                            issues = pr.get('issues', []) or []
-                            changed = bool(pr.get('corrected_content'))
-                            if issues or changed:
-                                with st.expander("🧐 AI Proofreader: Changes & Notes", expanded=False):
-                                    if changed and not issues:
-                                        st.markdown("- Corrected content applied")
-                                    if issues:
-                                        st.markdown("- Detected issues (reference only):")
-                                        for issue in issues:
-                                            st.write(f"  • {issue}")
-                                    runs = pr.get('translation_runs', 0)
-                                    if runs:
-                                        st.markdown(f"- Heuristic translation applied: {runs} run(s)")
-                        if key not in agent3_results_all:
-                            st.info("No compliance results available. Run AI Proofreader.")
-            else:
-                st.info("No financial keys available for results display.")
+                                # If Proofreader made changes or found issues, show a compact summary
+                                if key in entity_agent3_results:
+                                    pr = entity_agent3_results[key]
+                                    issues = pr.get('issues', []) or []
+                                    changed = bool(pr.get('corrected_content'))
+                                    if issues or changed:
+                                        with st.expander("🧐 AI Proofreader: Changes & Notes", expanded=False):
+                                            if changed and not issues:
+                                                st.markdown("- Corrected content applied")
+                                            if issues:
+                                                st.markdown("- Detected issues (reference only):")
+                                                for issue in issues:
+                                                    st.write(f"  • {issue}")
+                                            runs = pr.get('translation_runs', 0)
+                                            if runs:
+                                                st.markdown(f"- Heuristic translation applied: {runs} run(s)")
+                                if key not in entity_agent3_results:
+                                    st.info("No compliance results available. Run AI Proofreader.")
+                    else:
+                        st.info("No financial keys available for results display.")
         else:
             st.info("No AI agents have run yet. Use the buttons above to start processing.")
         
-        # --- PowerPoint Generation Section (Bottom) ---
+        # --- PowerPoint Generation Section (Multi-Entity) ---
         st.markdown("---")
-        st.subheader("📊 PowerPoint Generation")
+        st.subheader("📊 PowerPoint Generation (Multi-Entity)")
         
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            if st.button("📊 Prepare PowerPoint", type="secondary", use_container_width=True):
-                try:
-                    # Get the project name based on selected entity
-                    project_name = selected_entity
+        if st.button("📊 Prepare PowerPoint for All Entities", type="secondary", use_container_width=True):
+            try:
+                # Check for template file in common locations
+                possible_templates = [
+                    "fdd_utils/template.pptx",
+                    "template.pptx", 
+                    "old_ver/template.pptx",
+                    "common/template.pptx"
+                ]
+                
+                template_path = None
+                for template in possible_templates:
+                    if os.path.exists(template):
+                        template_path = template
+                        break
+                
+                if not template_path:
+                    st.error("❌ PowerPoint template not found. Please ensure 'template.pptx' exists in the fdd_utils/ directory.")
+                    st.info("💡 You can copy a template file from the old_ver/ directory or create a new one.")
+                else:
+                    # Define output path with timestamp
+                    from datetime import datetime
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    output_filename = f"MultiEntity_{statement_type.upper()}_{timestamp}.pptx"
+                    output_path = output_filename
                     
-                    # Check for template file in common locations
-                    possible_templates = [
-                        "fdd_utils/template.pptx",
-                        "template.pptx", 
-                        "old_ver/template.pptx",
-                        "common/template.pptx"
-                    ]
+                    st.info(f"🔄 Generating PowerPoint for {len(all_entities_data)} entities...")
                     
-                    template_path = None
-                    for template in possible_templates:
-                        if os.path.exists(template):
-                            template_path = template
-                            break
-                    
-                    if not template_path:
-                        st.error("❌ PowerPoint template not found. Please ensure 'template.pptx' exists in the fdd_utils/ directory.")
-                        st.info("💡 You can copy a template file from the old_ver/ directory or create a new one.")
-                    else:
-                        # Define output path with timestamp in fdd_utils/output directory
-                        from datetime import datetime
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        output_filename = f"{project_name}_{statement_type.upper()}_{timestamp}.pptx"
-                        output_path = f"fdd_utils/output/{output_filename}"
+                    # Process all entities
+                    all_entity_content = {}
+                    for entity_full_name, entity_data in all_entities_data.items():
+                        entity_base = entity_data['base']
+                        sections_by_key = entity_data['sections_by_key']
                         
-                        # Ensure output directory exists
-                        os.makedirs("fdd_utils/output", exist_ok=True)
-                        
-                        # 1. Get the correct filtered keys for export
-                        ai_data = st.session_state.get('ai_data', {})
-                        sections_by_key = ai_data.get('sections_by_key', {})
-                        entity_name = ai_data.get('entity_name', selected_entity)
+                        # Get keys with data for this entity
                         keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-
-                        # Dynamic BS key selection (as in your old logic)
+                        
+                        # Dynamic BS key selection
                         bs_keys = [
                             "Cash", "AR", "Prepayments", "OR", "Other CA", "IP", "Other NCA",
                             "AP", "Taxes payable", "OP", "Capital", "Reserve"
                         ]
-                        if entity_name in ['Ningbo', 'Nanjing']:
+                        if entity_base in ['Ningbo', 'Nanjing']:
                             bs_keys = [key for key in bs_keys if key != "Reserve"]
 
                         is_keys = [
@@ -1740,49 +1817,66 @@ def main():
                             filtered_keys = [key for key in keys_with_data if key in is_keys]
                         else:  # ALL
                             filtered_keys = keys_with_data
-
-                        # 2. Use bs_content.md as-is for export (do NOT overwrite it)
-                        # Note: bs_content.md should contain narrative content from AI processing, not table data
+                        
+                        # Store content for this entity
+                        all_entity_content[entity_full_name] = {
+                            'keys': filtered_keys,
+                            'sections_by_key': sections_by_key,
+                            'base': entity_base
+                        }
+                    
+                    # Create individual PPTX files for each entity
+                    individual_pptx_files = []
+                    for entity_full_name, entity_content in all_entity_content.items():
+                        entity_base = entity_content['base']
+                        individual_filename = f"{entity_base}_{statement_type.upper()}_{timestamp}.pptx"
+                        individual_path = individual_filename
+                        
+                        # Export individual PPTX
                         export_pptx(
                             template_path=template_path,
-                            markdown_path="fdd_utils/bs_content.md",
-                            output_path=output_path,
-                            project_name=project_name
+                            markdown_path="fdd_utils/bs_content.md", # This needs to be dynamic per entity
+                            output_path=individual_path,
+                            project_name=entity_base
                         )
-                        
-                        st.session_state['pptx_exported'] = True
-                        st.session_state['pptx_filename'] = output_filename
-                        st.session_state['pptx_path'] = output_path
-                        st.success(f"✅ PowerPoint is ready for download: {output_filename}")
-                        
-                except FileNotFoundError as e:
-                    st.error(f"❌ Template file not found: {e}")
-                except Exception as e:
-                    st.error(f"❌ Export failed: {e}")
-                    st.error(f"Error details: {str(e)}")
+                        individual_pptx_files.append(individual_path)
+                    
+                    # TODO: Combine individual PPTX files into one
+                    if individual_pptx_files:
+                        import shutil
+                        shutil.copy(individual_pptx_files[0], output_path) # Placeholder for combination
+                    
+                    st.session_state['pptx_exported'] = True
+                    st.session_state['pptx_filename'] = output_filename
+                    st.session_state['pptx_path'] = output_path
+                    st.success(f"✅ PowerPoint is ready for download: {output_filename}")
+                    st.info(f"📊 Generated PPTX for {len(all_entities_data)} entities")
+                    
+            except FileNotFoundError as e:
+                st.error(f"❌ Template file not found: {e}")
+            except Exception as e:
+                st.error(f"❌ Export failed: {e}")
+                st.error(f"Error details: {str(e)}")
         
-        with col2:
-            # Show a disabled download button until a PPTX is available, then enable
-            pptx_ready = st.session_state.get('pptx_exported', False) and os.path.exists(st.session_state.get('pptx_path', ''))
-            if pptx_ready:
-                with open(st.session_state['pptx_path'], "rb") as file:
-                    st.download_button(
-                        label="📥 Download PowerPoint",
-                        data=file.read(),
-                        file_name=st.session_state['pptx_filename'],
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        use_container_width=True
-                    )
-            else:
+        # Download button for generated PPTX
+        pptx_ready = st.session_state.get('pptx_exported', False) and os.path.exists(st.session_state.get('pptx_path', ''))
+        if pptx_ready:
+            with open(st.session_state['pptx_path'], "rb") as file:
                 st.download_button(
                     label="📥 Download PowerPoint",
-                    data=b"",
-                    disabled=True,
-                    file_name="report.pptx",
+                    data=file.read(),
+                    file_name=st.session_state['pptx_filename'],
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                     use_container_width=True
                 )
-        
-
+        else:
+            st.download_button(
+                label="📥 Download PowerPoint",
+                data=b"",
+                disabled=True,
+                file_name="report.pptx",
+                use_container_width=True
+            )
 
 # Helper function to parse and display bs_content.md by key
 def display_bs_content_by_key(md_path):

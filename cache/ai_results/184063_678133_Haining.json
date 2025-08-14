@@ -1,0 +1,6 @@
+{
+  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Figure formatting issue: 'CNY9.1M' should be 'CNY9.1m' (lowercase 'm') or 'CNY9.1 million' for consistency.\",\n    \"Grammar issue: 'read/obtained/check' should be 'read, obtained, and checked' for proper grammar.\"\n  ],\n  \"corrected_content\": \"balance as at 30 September 2022 represented CNY9.1m of cash at bank.\\n\\nManagement indicated that cash at bank was under supervision by the bank but had no related use restrictions imposed.\\nWe read, obtained, and checked all bank statements and found no exceptions or discrepancies.\",\n  \"figure_checks\": [\n    \"Original figure: 9,076,000.00 (CNY'000) rounded to 9.1m for narrative.\"\n  ],\n  \"entity_checks\": [\n    \"Entity 'Deposits with banks' correctly matches table data.\"\n  ],\n  \"grammar_notes\": [\n    \"Fixed mixed verb forms in 'read/obtained/check' to parallel structure.\",\n    \"Removed slash notation for professional tone.\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
+  "timestamp": 1755211653.84606,
+  "key": "184063_678133",
+  "entity_name": "Haining"
+}

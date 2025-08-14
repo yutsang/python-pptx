@@ -1,0 +1,6 @@
+{
+  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Figure formatting incorrect (should be '336' instead of '336K')\",\n    \"Chinese entities not translated\",\n    \"Incorrect pattern usage (should use Pattern 1)\"\n  ],\n  \"corrected_content\": \"Balance as at 30 September 2022 represented CNY336 of upfront utility expense payments for the next one to three months of prepaid utility expenses including water and electricity with Haining Power Supply Co., Ltd (electricity) and Haining Qiantang Water Co., Ltd (water).\",\n  \"figure_checks\": [\n    \"CNY336 (electricity)\",\n    \"CNY10 (water)\"\n  ],\n  \"entity_checks\": [\n    \"Haining Power Supply Co., Ltd (electricity)\",\n    \"Haining Qiantang Water Co., Ltd (water)\"\n  ],\n  \"grammar_notes\": [\n    \"Removed 'K' from figures\",\n    \"Translated Chinese entity names to English\",\n    \"Simplified language for professional tone\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
+  "timestamp": 1755212491.492795,
+  "key": "74924_465620",
+  "entity_name": "Haining"
+}

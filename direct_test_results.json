@@ -1,8 +1,0 @@
-{
-  "api_success": true,
-  "agent_success": true,
-  "api_time": 3.3902361392974854,
-  "agent_time": 6.264092922210693,
-  "api_details": "API working",
-  "agent_details": "Real AI working"
-}
