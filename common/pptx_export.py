@@ -769,29 +769,78 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
         if financial_data_shape:
             # Found the financialData shape - update its content
             if hasattr(financial_data_shape, 'table'):
-                # It's a table shape - update the table data
+                # It's a table shape - update the table data while preserving formatting
                 table = financial_data_shape.table
                 
-                # Clear existing content
+                # Store original formatting for each cell
+                original_formats = {}
+                for row_idx in range(len(table.rows)):
+                    for col_idx in range(len(table.columns)):
+                        cell = table.cell(row_idx, col_idx)
+                        # Store font properties
+                        if cell.text_frame.paragraphs[0].runs:
+                            run = cell.text_frame.paragraphs[0].runs[0]
+                            original_formats[(row_idx, col_idx)] = {
+                                'font_name': run.font.name,
+                                'font_size': run.font.size,
+                                'font_bold': run.font.bold,
+                                'font_italic': run.font.italic,
+                                'font_color': run.font.color.rgb if run.font.color.rgb else None
+                            }
+                
+                # Clear existing content but preserve formatting
                 for row in range(len(table.rows)):
                     for col in range(len(table.columns)):
                         if row < len(table.rows) and col < len(table.columns):
-                            table.cell(row, col).text = ""
+                            cell = table.cell(row, col)
+                            cell.text = ""
                 
-                # Update with new data
+                # Update with new data and apply original formatting
                 # Header row
                 for col_idx, col_name in enumerate(df.columns):
                     if col_idx < len(table.columns):
-                        table.cell(0, col_idx).text = str(col_name)
+                        cell = table.cell(0, col_idx)
+                        cell.text = str(col_name)
+                        # Apply header formatting (usually bold, different color)
+                        if (0, col_idx) in original_formats:
+                            format_info = original_formats[(0, col_idx)]
+                            if cell.text_frame.paragraphs[0].runs:
+                                run = cell.text_frame.paragraphs[0].runs[0]
+                                if format_info['font_name']:
+                                    run.font.name = format_info['font_name']
+                                if format_info['font_size']:
+                                    run.font.size = format_info['font_size']
+                                if format_info['font_bold'] is not None:
+                                    run.font.bold = format_info['font_bold']
+                                if format_info['font_italic'] is not None:
+                                    run.font.italic = format_info['font_italic']
+                                if format_info['font_color']:
+                                    run.font.color.rgb = format_info['font_color']
                 
                 # Data rows
                 for row_idx, row in enumerate(df.values):
                     if row_idx + 1 < len(table.rows):
                         for col_idx, value in enumerate(row):
                             if col_idx < len(table.columns):
-                                table.cell(row_idx + 1, col_idx).text = str(value)
+                                cell = table.cell(row_idx + 1, col_idx)
+                                cell.text = str(value)
+                                # Apply data row formatting
+                                if (row_idx + 1, col_idx) in original_formats:
+                                    format_info = original_formats[(row_idx + 1, col_idx)]
+                                    if cell.text_frame.paragraphs[0].runs:
+                                        run = cell.text_frame.paragraphs[0].runs[0]
+                                        if format_info['font_name']:
+                                            run.font.name = format_info['font_name']
+                                        if format_info['font_size']:
+                                            run.font.size = format_info['font_size']
+                                        if format_info['font_bold'] is not None:
+                                            run.font.bold = format_info['font_bold']
+                                        if format_info['font_italic'] is not None:
+                                            run.font.italic = format_info['font_italic']
+                                        if format_info['font_color']:
+                                            run.font.color.rgb = format_info['font_color']
                 
-                logging.info(f"✅ Updated financialData table with Excel data")
+                logging.info(f"✅ Updated financialData table with Excel data (formatting preserved)")
                 
             elif hasattr(financial_data_shape, 'text_frame'):
                 # It's a text shape - convert to table or update text
@@ -855,13 +904,36 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                 # Name the table
                 table._element.getparent().getparent().set('name', 'financialData')
                 
-                # Fill table with data
+                # Apply professional formatting to the new table
+                from pptx.dml.color import RGBColor
+                
+                # Fill table with data and apply formatting
                 for col_idx, col_name in enumerate(df.columns):
-                    table.cell(0, col_idx).text = str(col_name)
+                    cell = table.cell(0, col_idx)
+                    cell.text = str(col_name)
+                    # Header formatting
+                    if cell.text_frame.paragraphs[0].runs:
+                        run = cell.text_frame.paragraphs[0].runs[0]
+                        run.font.bold = True
+                        run.font.size = Pt(12)
+                        run.font.name = 'Arial'
+                        # Header background color (light blue)
+                        cell.fill.solid()
+                        cell.fill.fore_color.rgb = RGBColor(217, 225, 242)
                 
                 for row_idx, row in enumerate(df.values):
                     for col_idx, value in enumerate(row):
-                        table.cell(row_idx + 1, col_idx).text = str(value)
+                        cell = table.cell(row_idx + 1, col_idx)
+                        cell.text = str(value)
+                        # Data row formatting
+                        if cell.text_frame.paragraphs[0].runs:
+                            run = cell.text_frame.paragraphs[0].runs[0]
+                            run.font.size = Pt(10)
+                            run.font.name = 'Arial'
+                            # Alternate row colors for readability
+                            if row_idx % 2 == 0:
+                                cell.fill.solid()
+                                cell.fill.fore_color.rgb = RGBColor(242, 242, 242)
         
         # Save the presentation
         if output_path is None:
