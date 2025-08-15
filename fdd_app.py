@@ -1027,12 +1027,12 @@ def get_tab_name(project_name):
                         return sheet
                 
                 # Fallback to hardcoded names if no match found
-    if project_name == 'Haining':
-        return "BSHN"
-    elif project_name == 'Nanjing':
-        return "BSNJ"
-    elif project_name == 'Ningbo':
-        return "BSNB"
+                if project_name == 'Haining':
+                    return "BSHN"
+                elif project_name == 'Nanjing':
+                    return "BSNJ"
+                elif project_name == 'Ningbo':
+                    return "BSNB"
                 
                 # If still no match, return the first sheet
                 return available_sheets[0] if available_sheets else None
