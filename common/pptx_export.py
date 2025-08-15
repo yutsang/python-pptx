@@ -739,13 +739,12 @@ def update_project_titles(presentation_path, project_name, output_path=None):
 # --- High-level function for app.py ---
 def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, project_name, output_path=None):
     """
-    Embed Excel data as an object in PowerPoint presentation
+    Update existing financialData shape in PowerPoint with Excel data
     """
     try:
         from pptx import Presentation
         from pptx.util import Inches
         import pandas as pd
-        import tempfile
         import os
         
         # Load the presentation
@@ -754,61 +753,126 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
         # Read Excel data
         df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
         
-        # Create a temporary Excel file with just the data we want to embed
-        temp_excel_path = tempfile.mktemp(suffix='.xlsx')
-        with pd.ExcelWriter(temp_excel_path, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
+        # Find the financialData shape in all slides
+        financial_data_shape = None
+        target_slide = None
         
-        # Find the first slide (title slide) to add the embedded Excel object
-        if len(prs.slides) > 0:
-            slide = prs.slides[0]
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if shape.name == "financialData":
+                    financial_data_shape = shape
+                    target_slide = slide
+                    break
+            if financial_data_shape:
+                break
+        
+        if financial_data_shape:
+            # Found the financialData shape - update its content
+            if hasattr(financial_data_shape, 'table'):
+                # It's a table shape - update the table data
+                table = financial_data_shape.table
+                
+                # Clear existing content
+                for row in range(len(table.rows)):
+                    for col in range(len(table.columns)):
+                        if row < len(table.rows) and col < len(table.columns):
+                            table.cell(row, col).text = ""
+                
+                # Update with new data
+                # Header row
+                for col_idx, col_name in enumerate(df.columns):
+                    if col_idx < len(table.columns):
+                        table.cell(0, col_idx).text = str(col_name)
+                
+                # Data rows
+                for row_idx, row in enumerate(df.values):
+                    if row_idx + 1 < len(table.rows):
+                        for col_idx, value in enumerate(row):
+                            if col_idx < len(table.columns):
+                                table.cell(row_idx + 1, col_idx).text = str(value)
+                
+                logging.info(f"✅ Updated financialData table with Excel data")
+                
+            elif hasattr(financial_data_shape, 'text_frame'):
+                # It's a text shape - convert to table or update text
+                # For now, let's create a table in its place
+                left = financial_data_shape.left
+                top = financial_data_shape.top
+                width = financial_data_shape.width
+                height = financial_data_shape.height
+                
+                # Remove the old shape
+                target_slide.shapes._spTree.remove(financial_data_shape._element)
+                
+                # Add new table with same position and size
+                table = target_slide.shapes.add_table(
+                    rows=len(df) + 1,  # +1 for header
+                    cols=len(df.columns),
+                    left=left,
+                    top=top,
+                    width=width,
+                    height=height
+                ).table
+                
+                # Name the new table
+                table._element.getparent().getparent().set('name', 'financialData')
+                
+                # Fill table with data
+                for col_idx, col_name in enumerate(df.columns):
+                    table.cell(0, col_idx).text = str(col_name)
+                
+                for row_idx, row in enumerate(df.values):
+                    for col_idx, value in enumerate(row):
+                        table.cell(row_idx + 1, col_idx).text = str(value)
+                
+                logging.info(f"✅ Replaced financialData text with table")
+                
+        else:
+            # financialData shape not found - create a new table in the middle
+            logging.warning("⚠️ financialData shape not found, creating new table")
             
-            # Add embedded Excel object
-            # Note: This requires the win32com library on Windows or alternative approach
-            # For cross-platform compatibility, we'll create a table instead
-            
-            # Calculate position for the embedded object (middle of slide)
-            slide_width = prs.slide_width
-            slide_height = prs.slide_height
-            object_width = Inches(8)
-            object_height = Inches(4)
-            left = (slide_width - object_width) / 2
-            top = (slide_height - object_height) / 2
-            
-            # Add a table with the Excel data
-            table = slide.shapes.add_table(
-                rows=len(df) + 1,  # +1 for header
-                cols=len(df.columns),
-                left=left,
-                top=top,
-                width=object_width,
-                height=object_height
-            ).table
-            
-            # Fill table with data
-            # Header row
-            for col_idx, col_name in enumerate(df.columns):
-                table.cell(0, col_idx).text = str(col_name)
-            
-            # Data rows
-            for row_idx, row in enumerate(df.values):
-                for col_idx, value in enumerate(row):
-                    table.cell(row_idx + 1, col_idx).text = str(value)
+            if len(prs.slides) > 0:
+                slide = prs.slides[0]
+                
+                # Calculate position for the table (middle of slide)
+                slide_width = prs.slide_width
+                slide_height = prs.slide_height
+                object_width = Inches(8)
+                object_height = Inches(4)
+                left = (slide_width - object_width) / 2
+                top = (slide_height - object_height) / 2
+                
+                # Add a table with the Excel data
+                table = slide.shapes.add_table(
+                    rows=len(df) + 1,  # +1 for header
+                    cols=len(df.columns),
+                    left=left,
+                    top=top,
+                    width=object_width,
+                    height=object_height
+                ).table
+                
+                # Name the table
+                table._element.getparent().getparent().set('name', 'financialData')
+                
+                # Fill table with data
+                for col_idx, col_name in enumerate(df.columns):
+                    table.cell(0, col_idx).text = str(col_name)
+                
+                for row_idx, row in enumerate(df.values):
+                    for col_idx, value in enumerate(row):
+                        table.cell(row_idx + 1, col_idx).text = str(value)
         
         # Save the presentation
         if output_path is None:
             output_path = presentation_path
         prs.save(output_path)
         
-        # Clean up temporary file
-        if os.path.exists(temp_excel_path):
-            os.remove(temp_excel_path)
-        
-        logging.info(f"✅ Excel data embedded in PowerPoint: {output_path}")
+        logging.info(f"✅ Excel data updated in PowerPoint: {output_path}")
         return output_path
         
     except Exception as e:
-        logging.error(f"❌ Failed to embed Excel data: {str(e)}")
+        logging.error(f"❌ Failed to update Excel data: {str(e)}")
         raise
 
 def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None):
