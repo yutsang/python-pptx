@@ -594,10 +594,11 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         print("An error occurred while processing the Excel file:", e)
         return ""
 
-def detect_latest_date_column(df):
+def detect_latest_date_column(df, sheet_name=None, excel_file=None):
     """Detect the latest date column from a DataFrame, including xMxx format dates and merged cell structures."""
     import re
     from datetime import datetime
+    import openpyxl
     
     def parse_date(date_str):
         """Parse date string in various formats including xMxx."""
@@ -606,12 +607,24 @@ def detect_latest_date_column(df):
         
         date_str = str(date_str).strip()
         
-        # Handle xMxx format (e.g., 9M22, 12M23)
+        # Handle xMxx format (e.g., 9M22, 12M23) - END OF MONTH
         xmxx_match = re.match(r'^(\d+)M(\d{2})$', date_str)
         if xmxx_match:
             month = int(xmxx_match.group(1))
             year = 2000 + int(xmxx_match.group(2))  # Assume 20xx for 2-digit years
-            return datetime(year, month, 1)
+            # Use end of month, not beginning (last day of the month)
+            if month == 12:
+                return datetime(year, 12, 31)  # December 31st
+            elif month in [1, 3, 5, 7, 8, 10]:
+                return datetime(year, month, 31)  # 31-day months
+            elif month in [4, 6, 9, 11]:
+                return datetime(year, month, 30)  # 30-day months
+            elif month == 2:
+                # February - handle leap years
+                if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+                    return datetime(year, 2, 29)  # Leap year
+                else:
+                    return datetime(year, 2, 28)  # Non-leap year
         
         # Handle standard date formats
         date_formats = [
@@ -819,7 +832,7 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
             return {}
         
         # Detect latest date column automatically
-        latest_date_col = detect_latest_date_column(df)
+        latest_date_col = detect_latest_date_column(df, sheet_name, filename)
         if latest_date_col:
             # Use the latest date column instead of the requested date
             date_column = latest_date_col
