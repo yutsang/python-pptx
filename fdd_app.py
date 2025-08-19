@@ -954,11 +954,44 @@ def detect_latest_date_column(df):
                             all_found_dates.append((parsed_date, col, check_row, col_idx))
                             print(f"📅 Found parsed date: Row {check_row}, Col {col_idx} ({col}) = {parsed_date}")
         
-        # Pick the latest date from all found dates
+        # Pick the latest date from all found dates, prioritizing "Indicative adjusted" column
         if all_found_dates:
-            latest_date_info = max(all_found_dates, key=lambda x: x[0])
-            latest_date, latest_column, latest_row, latest_col_idx = latest_date_info
-            print(f"🎯 Selected LATEST date: {latest_column} ({latest_date}) from {len(all_found_dates)} options")
+            # Find the actual latest date value
+            max_date = max(all_found_dates, key=lambda x: x[0])[0]
+            
+            # Find all columns with the latest date
+            latest_date_columns = [item for item in all_found_dates if item[0] == max_date]
+            
+            print(f"📊 Found {len(latest_date_columns)} columns with latest date {max_date}:")
+            for date_val, col, row, col_idx in latest_date_columns:
+                print(f"  - {col} (Row {row}, Col {col_idx})")
+            
+            # Prioritize "Indicative adjusted" column if multiple columns have the same latest date
+            selected_column = None
+            for date_val, col, row, col_idx in latest_date_columns:
+                # Check if this column is under "Indicative adjusted"
+                # Look for "Indicative adjusted" in the same column or nearby
+                is_indicative_column = False
+                
+                # Check if "Indicative adjusted" is in this column
+                for check_row in range(max(0, row - 3), min(row + 3, len(df))):
+                    val = df.iloc[check_row, col_idx]
+                    if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
+                        is_indicative_column = True
+                        print(f"  ✅ {col} is under 'Indicative adjusted' (found at Row {check_row})")
+                        break
+                
+                if is_indicative_column:
+                    selected_column = (date_val, col, row, col_idx)
+                    break
+            
+            # If no "Indicative adjusted" column found, use the first one with latest date
+            if selected_column is None:
+                selected_column = latest_date_columns[0]
+                print(f"  ⚠️  No 'Indicative adjusted' column found, using first column with latest date")
+            
+            latest_date, latest_column, latest_row, latest_col_idx = selected_column
+            print(f"🎯 Selected column: {latest_column} ({latest_date}) - PRIORITIZED 'Indicative adjusted'")
     
     # Strategy 2: If no "Indicative adjusted" found, use original logic
     if latest_column is None:
@@ -1386,12 +1419,12 @@ def main():
         cache_version = st.session_state.get('cache_version', 'v1')
         
         # Clear cache if entity changes or if we need to update for date detection
-        if (last_entity is None or last_entity != selected_entity or cache_version != 'v5'):
+        if (last_entity is None or last_entity != selected_entity or cache_version != 'v6'):
             keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
             for key in keys_to_remove:
                 del st.session_state[key]
             st.session_state['last_selected_entity'] = selected_entity
-            st.session_state['cache_version'] = 'v5'  # Update cache version for date detection
+            st.session_state['cache_version'] = 'v6'  # Update cache version for date detection
         
         # Financial Statement Type Selection
         st.markdown("---")
