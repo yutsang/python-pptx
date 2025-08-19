@@ -6,6 +6,7 @@ import re
 import os
 import datetime
 import time
+from tqdm import tqdm
 from fdd_utils.mappings import (
     KEY_TO_SECTION_MAPPING,
     KEY_TERMS_BY_KEY,
@@ -1175,6 +1176,30 @@ def main():
             help="Enter the full entity name to start processing"
         )
         
+        # Entity Selection Mode (Single vs Multiple)
+        st.markdown("---")
+        entity_mode_options = ["Multiple Entities", "Single Entity"]
+        entity_mode_display = st.radio(
+            "Entity in Databook",
+            entity_mode_options,
+            index=0,  # Default to Multiple
+            help="Select whether your databook contains multiple entities (like Haining, Ningbo, Nanjing) or a single entity"
+        )
+        
+        # Map display names back to internal codes
+        entity_mode_mapping = {
+            "Multiple Entities": "multiple",
+            "Single Entity": "single"
+        }
+        entity_mode = entity_mode_mapping[entity_mode_display]
+        st.session_state['entity_mode'] = entity_mode
+        
+        # Show helpful info based on selection
+        if entity_mode == 'single':
+            st.info("📋 **Single Entity Mode**: Your databook contains data for one entity only. Mapping will be simplified.")
+        else:
+            st.info("📋 **Multiple Entities Mode**: Your databook contains data for multiple entities (like Haining, Ningbo, Nanjing). Full mapping will be used.")
+        
         # Auto-extract base entity and generate mapping keys
         if entity_input:
             # Extract base entity name (first word)
@@ -1326,10 +1351,20 @@ def main():
         
         # --- View Table Section ---
         config, mapping, pattern, prompts = load_config_files()
-        entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
-        entity_keywords = [f"{selected_entity} {suffix}" for suffix in entity_suffixes if suffix]
-        if not entity_keywords:
+        
+        # Process entity configuration based on mode
+        entity_mode = st.session_state.get('entity_mode', 'multiple')
+        
+        if entity_mode == 'single':
+            # For single entity mode, use only the base entity name
+            entity_suffixes = []
             entity_keywords = [selected_entity]
+        else:
+            # For multiple entity mode, use the full entity helpers
+            entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
+            entity_keywords = [f"{selected_entity} {suffix}" for suffix in entity_suffixes if suffix]
+            if not entity_keywords:
+                entity_keywords = [selected_entity]
         
         # Handle different statement types with session state caching
         if statement_type == "BS":
@@ -1417,11 +1452,19 @@ def main():
                     st.error("❌ Failed to load configuration files")
                     return
                 
-                # Process entity configuration
-                entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
-                entity_keywords = [f"{selected_entity} {suffix}" for suffix in entity_suffixes if suffix]
-                if not entity_keywords:
+                # Process entity configuration based on mode
+                entity_mode = st.session_state.get('entity_mode', 'multiple')
+                
+                if entity_mode == 'single':
+                    # For single entity mode, use only the base entity name
+                    entity_suffixes = []
                     entity_keywords = [selected_entity]
+                else:
+                    # For multiple entity mode, use the full entity helpers
+                    entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
+                    entity_keywords = [f"{selected_entity} {suffix}" for suffix in entity_suffixes if suffix]
+                    if not entity_keywords:
+                        entity_keywords = [selected_entity]
                 
                 # Get worksheet sections with caching
                 cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}"
@@ -3258,36 +3301,48 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                     parts.append(str(section))
             return "\n".join(parts)
 
-        if external_progress:
-            progress_bar = external_progress.get('bar')
-            status_text = external_progress.get('status')
+        # Check if we're in a command-line environment (no Streamlit)
+        is_cli = not hasattr(st, 'session_state')
+        
+        if is_cli:
+            # Use tqdm for command-line progress
+            progress_bar = tqdm(total=len(filtered_keys), desc="🤖 AI Proofreader", unit="key")
         else:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            # Use Streamlit progress
+            if external_progress:
+                progress_bar = external_progress.get('bar')
+                status_text = external_progress.get('status')
+            else:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+        
         start_time = time.time()
         total = len(filtered_keys)
+        
         for idx, key in enumerate(filtered_keys):
-            elapsed = time.time() - start_time
-            # Simple ETA: average time per processed item * remaining
-            avg = (elapsed / (idx or 1)) if idx else 0
-            remaining = total - idx
-            eta_seconds = int(avg * remaining) if idx else 0
-            mins, secs = divmod(eta_seconds, 60)
-            eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else "ETA --:--"
-            status_text.text(f"🧐 Proofreader — {key} ({idx+1}/{total}) — {eta_str}")
-            try:
-                combined = external_progress.get('combined') if external_progress else None
-                if combined and isinstance(combined, dict):
-                    stages = combined.get('stages', 2)
-                    stage_index = combined.get('stage_index', 1)
-                    stage_weight = 1.0 / max(1, stages)
-                    progress = (idx+1)/len(filtered_keys)
-                    combined_progress = min(1.0, max(0.0, stage_index * stage_weight + progress * stage_weight))
-                    progress_bar.progress(combined_progress)
-                else:
-                    progress_bar.progress((idx+1)/len(filtered_keys))
-            except Exception:
-                pass
+            if not is_cli:
+                elapsed = time.time() - start_time
+                # Simple ETA: average time per processed item * remaining
+                avg = (elapsed / (idx or 1)) if idx else 0
+                remaining = total - idx
+                eta_seconds = int(avg * remaining) if idx else 0
+                mins, secs = divmod(eta_seconds, 60)
+                eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else "ETA --:--"
+                status_text.text(f"🧐 Proofreader — {key} ({idx+1}/{total}) — {eta_str}")
+                try:
+                    combined = external_progress.get('combined') if external_progress else None
+                    if combined and isinstance(combined, dict):
+                        stages = combined.get('stages', 2)
+                        stage_index = combined.get('stage_index', 1)
+                        stage_weight = 1.0 / max(1, stages)
+                        progress = (idx+1)/len(filtered_keys)
+                        combined_progress = min(1.0, max(0.0, stage_index * stage_weight + progress * stage_weight))
+                        progress_bar.progress(combined_progress)
+                    else:
+                        progress_bar.progress((idx+1)/len(filtered_keys))
+                except Exception:
+                    pass
+            
             try:
                 content = agent1_results.get(key, '')
                 if isinstance(content, dict):
@@ -3299,9 +3354,12 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
 
                 if not content_text:
                     results[key] = {'is_compliant': False, 'issues': ["No Agent 1 content"], 'corrected_content': ''}
+                    if is_cli:
+                        progress_bar.update(1)
                     continue
 
-                result = proof_agent.proofread(content_text, key, tables_md, entity_name)
+                # Pass progress_bar to proofread method
+                result = proof_agent.proofread(content_text, key, tables_md, entity_name, progress_bar if is_cli else None)
                 results[key] = result
 
                 # Log output
@@ -3311,17 +3369,24 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                     pass
 
                 # Update session store with corrected content
-                content_store = st.session_state.get('ai_content_store', {})
-                if key not in content_store:
-                    content_store[key] = {}
-                corrected = result.get('corrected_content') or content_text
-                content_store[key]['agent3_content'] = corrected
-                content_store[key]['current_content'] = corrected
-                st.session_state['ai_content_store'] = content_store
+                if not is_cli:
+                    content_store = st.session_state.get('ai_content_store', {})
+                    if key not in content_store:
+                        content_store[key] = {}
+                    corrected = result.get('corrected_content') or content_text
+                    content_store[key]['agent3_content'] = corrected
+                    content_store[key]['current_content'] = corrected
+                    st.session_state['ai_content_store'] = content_store
             except Exception as e:
                 results[key] = {'is_compliant': False, 'issues': [str(e)], 'corrected_content': ''}
+                if is_cli:
+                    progress_bar.update(1)
 
-        st.success("✅ AI Proofreader completed")
+        if is_cli:
+            progress_bar.close()
+        else:
+            st.success("✅ AI Proofreader completed")
+        
         return results
     except Exception as e:
         st.error(f"❌ AI Proofreader Error: {e}")
