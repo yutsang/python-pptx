@@ -9,6 +9,7 @@ import numpy as np
 import openpyxl
 from fdd_utils.cache import get_cache_manager, cached_function
 import logging
+import streamlit as st
 
 # Suppress httpx logging
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -1333,10 +1334,16 @@ class ProofreadingAgent:
         self.use_local_ai = use_local_ai
         self.use_openai = use_openai
 
-    def proofread(self, content: str, key: str, tables_markdown: str, entity: str) -> Dict:
+    def proofread(self, content: str, key: str, tables_markdown: str, entity: str, progress_bar: Optional[tqdm] = None) -> Dict:
         try:
             import json
             import re
+            
+            # Update progress bar if provided
+            if progress_bar:
+                progress_bar.set_description(f"Proofreading {key}")
+                progress_bar.update(1)
+            
             # Load patterns for the key
             patterns = load_ip(self.pattern_file, key)
 
