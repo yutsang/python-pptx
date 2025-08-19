@@ -8,6 +8,11 @@ def configure_streamlit_page():
     # Clean any deprecated/invalid options that might be in session
     if 'client.caching' in st.session_state:
         del st.session_state['client.caching']
+    # Also clean up any other deprecated config options
+    deprecated_options = ['client.caching', 'client.showErrorDetails', 'client.toolbarMode']
+    for option in deprecated_options:
+        if option in st.session_state:
+            del st.session_state[option]
     # Reduce top padding/margin for a tighter header area
     st.markdown(
         """

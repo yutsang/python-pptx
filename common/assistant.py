@@ -594,6 +594,55 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         print("An error occurred while processing the Excel file:", e)
         return ""
 
+def detect_latest_date_column(df):
+    """Detect the latest date column from a DataFrame, including xMxx format dates."""
+    import re
+    from datetime import datetime
+    
+    def parse_date(date_str):
+        """Parse date string in various formats including xMxx."""
+        if not date_str or pd.isna(date_str):
+            return None
+        
+        date_str = str(date_str).strip()
+        
+        # Handle xMxx format (e.g., 9M22, 12M23)
+        xmxx_match = re.match(r'(\d+)M(\d{2})', date_str)
+        if xmxx_match:
+            month = int(xmxx_match.group(1))
+            year = 2000 + int(xmxx_match.group(2))  # Assume 20xx for 2-digit years
+            return datetime(year, month, 1)
+        
+        # Handle standard date formats
+        date_formats = [
+            '%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y',
+            '%Y-%m-%d', '%m/%d/%Y', '%m-%d-%Y',
+            '%d/%b/%Y', '%d-%b-%Y', '%b/%d/%Y', '%b-%d-%Y',
+            '%d/%B/%Y', '%d-%B-%Y', '%B/%d/%Y', '%B-%d-%Y'
+        ]
+        
+        for fmt in date_formats:
+            try:
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+        
+        return None
+    
+    # Get column names
+    columns = df.columns.tolist()
+    latest_date = None
+    latest_column = None
+    
+    for col in columns:
+        col_str = str(col)
+        parsed_date = parse_date(col_str)
+        if parsed_date and (latest_date is None or parsed_date > latest_date):
+            latest_date = parsed_date
+            latest_column = col
+    
+    return latest_column
+
 def find_financial_figures_with_context_check(filename, sheet_name, date_str, convert_thousands=False):
     try:
         file_path = Path(filename)
@@ -604,27 +653,36 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
             df = xl.parse(sheet_name)
         if not isinstance(df, pd.DataFrame):
             return {}
-        # Handle different sheet formats
-        if sheet_name == 'BSHN':
-            # BSHN sheet has different column structure
-            df.columns = ['Description', 'Column1', 'Column2', 'Column3']
-            date_column_map = {
-                '31/12/2020': 'Column1',
-                '31/12/2021': 'Column2', 
-                '30/09/2022': 'Column3'
-            }
+        
+        # Detect latest date column automatically
+        latest_date_col = detect_latest_date_column(df)
+        if latest_date_col:
+            # Use the latest date column instead of the requested date
+            date_column = latest_date_col
+            print(f"Using latest date column: {latest_date_col}")
         else:
-            # Standard sheet format
-            df.columns = ['Description', 'Date_2020', 'Date_2021', 'Date_2022']
-            date_column_map = {
-                '31/12/2020': 'Date_2020',
-                '31/12/2021': 'Date_2021',
-                '30/09/2022': 'Date_2022'
-            }
-        if date_str not in date_column_map:
-            print(f"Date '{date_str}' not recognized.")
-            return {}
-        date_column = date_column_map[date_str]
+            # Fallback to original logic
+            # Handle different sheet formats
+            if sheet_name == 'BSHN':
+                # BSHN sheet has different column structure
+                df.columns = ['Description', 'Column1', 'Column2', 'Column3']
+                date_column_map = {
+                    '31/12/2020': 'Column1',
+                    '31/12/2021': 'Column2', 
+                    '30/09/2022': 'Column3'
+                }
+            else:
+                # Standard sheet format
+                df.columns = ['Description', 'Date_2020', 'Date_2021', 'Date_2022']
+                date_column_map = {
+                    '31/12/2020': 'Date_2020',
+                    '31/12/2021': 'Date_2021',
+                    '30/09/2022': 'Date_2022'
+                }
+            if date_str not in date_column_map:
+                print(f"Date '{date_str}' not recognized.")
+                return {}
+            date_column = date_column_map[date_str]
         # If convert_thousands and '000' in columns or first row, multiply numeric values by 1000 for AI processing
         # For BSHN sheet, always apply scale factor since it's in '000 format
         if sheet_name == 'BSHN':

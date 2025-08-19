@@ -851,6 +851,55 @@ def create_improved_table_markdown(parsed_table):
     except Exception as e:
         return f"Error creating table markdown: {e}"
 
+def detect_latest_date_column(df):
+    """Detect the latest date column from a DataFrame, including xMxx format dates."""
+    import re
+    from datetime import datetime
+    
+    def parse_date(date_str):
+        """Parse date string in various formats including xMxx."""
+        if not date_str or pd.isna(date_str):
+            return None
+        
+        date_str = str(date_str).strip()
+        
+        # Handle xMxx format (e.g., 9M22, 12M23)
+        xmxx_match = re.match(r'(\d+)M(\d{2})', date_str)
+        if xmxx_match:
+            month = int(xmxx_match.group(1))
+            year = 2000 + int(xmxx_match.group(2))  # Assume 20xx for 2-digit years
+            return datetime(year, month, 1)
+        
+        # Handle standard date formats
+        date_formats = [
+            '%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y',
+            '%Y-%m-%d', '%m/%d/%Y', '%m-%d-%Y',
+            '%d/%b/%Y', '%d-%b-%Y', '%b/%d/%Y', '%b-%d-%Y',
+            '%d/%B/%Y', '%d-%B-%Y', '%B/%d/%Y', '%B-%d-%Y'
+        ]
+        
+        for fmt in date_formats:
+            try:
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+        
+        return None
+    
+    # Get column names
+    columns = df.columns.tolist()
+    latest_date = None
+    latest_column = None
+    
+    for col in columns:
+        col_str = str(col)
+        parsed_date = parse_date(col_str)
+        if parsed_date and (latest_date is None or parsed_date > latest_date):
+            latest_date = parsed_date
+            latest_column = col
+    
+    return latest_column
+
 def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, debug=False):
     """
     Get worksheet sections organized by financial keys following the mapping
@@ -905,6 +954,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                 
                 # Organize sections by key - make it less restrictive
                 for data_frame in dataframes:
+                    # Detect latest date column for this dataframe
+                    latest_date_col = detect_latest_date_column(data_frame)
+                    if debug and latest_date_col:
+                        st.write(f"📅 Latest date column detected: {latest_date_col}")
+                    
                     # Check if this section contains any of the financial keys
                     matched_keys = []  # Track which keys this data_frame matches
                     
@@ -3302,7 +3356,12 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
             return "\n".join(parts)
 
         # Check if we're in a command-line environment (no Streamlit)
-        is_cli = not hasattr(st, 'session_state')
+        try:
+            # Try to access Streamlit session state - if it fails, we're in CLI
+            _ = st.session_state
+            is_cli = False
+        except Exception:
+            is_cli = True
         
         if is_cli:
             # Use tqdm for command-line progress
