@@ -598,7 +598,6 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
     """Detect the latest date column from a DataFrame, including xMxx format dates and merged cell structures."""
     import re
     from datetime import datetime
-    import openpyxl
     
     def parse_date(date_str):
         """Parse date string in various formats including xMxx."""
