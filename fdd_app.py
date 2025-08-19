@@ -3061,7 +3061,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
             
             # Get financial figure for this key
     
-            financial_figures = find_financial_figures_with_context_check(temp_file_path, get_tab_name(entity_name), '30/09/2022', convert_thousands=False)
+            financial_figures = find_financial_figures_with_context_check(temp_file_path, get_tab_name(entity_name), None, convert_thousands=False)
             financial_figure_info = f"{key}: {get_financial_figure(financial_figures, key)}"
             
             # Build the actual user prompt using templates from prompts.json, then inject dynamic data
