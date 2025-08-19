@@ -607,7 +607,7 @@ def detect_latest_date_column(df):
         date_str = str(date_str).strip()
         
         # Handle xMxx format (e.g., 9M22, 12M23)
-        xmxx_match = re.match(r'(\d+)M(\d{2})', date_str)
+        xmxx_match = re.match(r'^(\d+)M(\d{2})$', date_str)
         if xmxx_match:
             month = int(xmxx_match.group(1))
             year = 2000 + int(xmxx_match.group(2))  # Assume 20xx for 2-digit years

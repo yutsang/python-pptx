@@ -864,7 +864,7 @@ def detect_latest_date_column(df):
         date_str = str(date_str).strip()
         
         # Handle xMxx format (e.g., 9M22, 12M23)
-        xmxx_match = re.match(r'(\d+)M(\d{2})', date_str)
+        xmxx_match = re.match(r'^(\d+)M(\d{2})$', date_str)
         if xmxx_match:
             month = int(xmxx_match.group(1))
             year = 2000 + int(xmxx_match.group(2))  # Assume 20xx for 2-digit years
@@ -1248,11 +1248,7 @@ def main():
         entity_mode = entity_mode_mapping[entity_mode_display]
         st.session_state['entity_mode'] = entity_mode
         
-        # Show helpful info based on selection
-        if entity_mode == 'single':
-            st.info("📋 **Single Entity Mode**: Your databook contains data for one entity only. Mapping will be simplified.")
-        else:
-            st.info("📋 **Multiple Entities Mode**: Your databook contains data for multiple entities (like Haining, Ningbo, Nanjing). Full mapping will be used.")
+
         
         # Auto-extract base entity and generate mapping keys
         if entity_input:
