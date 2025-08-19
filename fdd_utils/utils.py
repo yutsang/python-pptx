@@ -205,22 +205,26 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str):
                 date_column = latest_date_col
                 print(f"Using latest date column: {latest_date_col}")
             else:
-                # Fallback to original logic
-                # Rename columns if seeing usual headers following context title
-                df.columns = ['Description', 'Date_2020', 'Date_2021', 'Date_2022']
-                
-                # Filter for the specific date column
-                date_column_map = {
-                    '31/12/2020': 'Date_2020',
-                    '31/12/2021': 'Date_2021',
-                    '30/09/2022': 'Date_2022'
-                }
-                
-                if date_str not in date_column_map:
-                    print(f"Date '{date_str}' not recognized.")
+                # Fallback to original logic only if date_str is provided
+                if date_str is not None:
+                    # Rename columns if seeing usual headers following context title
+                    df.columns = ['Description', 'Date_2020', 'Date_2021', 'Date_2022']
+                    
+                    # Filter for the specific date column
+                    date_column_map = {
+                        '31/12/2020': 'Date_2020',
+                        '31/12/2021': 'Date_2021',
+                        '30/09/2022': 'Date_2022'
+                    }
+                    
+                    if date_str not in date_column_map:
+                        print(f"Date '{date_str}' not recognized.")
+                        return {}
+                    
+                    date_column = date_column_map[date_str]
+                else:
+                    print("No date column detected and no fallback date provided.")
                     return {}
-                
-                date_column = date_column_map[date_str]
             
             # Scale factor based on the '000 notation
             scale_factor = 1000

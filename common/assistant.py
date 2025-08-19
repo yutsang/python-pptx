@@ -661,28 +661,32 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
             date_column = latest_date_col
             print(f"Using latest date column: {latest_date_col}")
         else:
-            # Fallback to original logic
-            # Handle different sheet formats
-            if sheet_name == 'BSHN':
-                # BSHN sheet has different column structure
-                df.columns = ['Description', 'Column1', 'Column2', 'Column3']
-                date_column_map = {
-                    '31/12/2020': 'Column1',
-                    '31/12/2021': 'Column2', 
-                    '30/09/2022': 'Column3'
-                }
+            # Fallback to original logic only if date_str is provided
+            if date_str is not None:
+                # Handle different sheet formats
+                if sheet_name == 'BSHN':
+                    # BSHN sheet has different column structure
+                    df.columns = ['Description', 'Column1', 'Column2', 'Column3']
+                    date_column_map = {
+                        '31/12/2020': 'Column1',
+                        '31/12/2021': 'Column2', 
+                        '30/09/2022': 'Column3'
+                    }
+                else:
+                    # Standard sheet format
+                    df.columns = ['Description', 'Date_2020', 'Date_2021', 'Date_2022']
+                    date_column_map = {
+                        '31/12/2020': 'Date_2020',
+                        '31/12/2021': 'Date_2021',
+                        '30/09/2022': 'Date_2022'
+                    }
+                if date_str not in date_column_map:
+                    print(f"Date '{date_str}' not recognized.")
+                    return {}
+                date_column = date_column_map[date_str]
             else:
-                # Standard sheet format
-                df.columns = ['Description', 'Date_2020', 'Date_2021', 'Date_2022']
-                date_column_map = {
-                    '31/12/2020': 'Date_2020',
-                    '31/12/2021': 'Date_2021',
-                    '30/09/2022': 'Date_2022'
-                }
-            if date_str not in date_column_map:
-                print(f"Date '{date_str}' not recognized.")
+                print("No date column detected and no fallback date provided.")
                 return {}
-            date_column = date_column_map[date_str]
         # If convert_thousands and '000' in columns or first row, multiply numeric values by 1000 for AI processing
         # For BSHN sheet, always apply scale factor since it's in '000 format
         if sheet_name == 'BSHN':
@@ -773,7 +777,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     system_prompt = prompts_config['system_prompts']['Agent 1']
     
     # Initialize financial figures without pre-processing (will check '000 per key)
-    financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), '30/09/2022', convert_thousands=False)
+    financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), None, convert_thousands=False)
     results = {}
     
     # Fix tqdm progress bar to show proper total
@@ -995,7 +999,7 @@ class DataValidationAgent:
             financial_figures = find_financial_figures_with_context_check(
                 excel_file, 
                 get_tab_name(entity), 
-                '30/09/2022'
+                None
             )
             expected_figure = financial_figures.get(key)
             
