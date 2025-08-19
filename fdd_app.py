@@ -1311,12 +1311,12 @@ def main():
         cache_version = st.session_state.get('cache_version', 'v1')
         
         # Clear cache if entity changes or if we need to update for date detection
-        if (last_entity is None or last_entity != selected_entity or cache_version != 'v2'):
+        if (last_entity is None or last_entity != selected_entity or cache_version != 'v3'):
             keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
             for key in keys_to_remove:
                 del st.session_state[key]
             st.session_state['last_selected_entity'] = selected_entity
-            st.session_state['cache_version'] = 'v2'  # Update cache version for date detection
+            st.session_state['cache_version'] = 'v3'  # Update cache version for date detection
         
         # Financial Statement Type Selection
         st.markdown("---")
