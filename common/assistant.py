@@ -595,7 +595,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         return ""
 
 def detect_latest_date_column(df):
-    """Detect the latest date column from a DataFrame, including xMxx format dates."""
+    """Detect the latest date column from a DataFrame, including xMxx format dates and merged cell structures."""
     import re
     from datetime import datetime
     
@@ -634,34 +634,76 @@ def detect_latest_date_column(df):
     latest_date = None
     latest_column = None
     
-    # First, try to find dates in column names
-    for col in columns:
-        col_str = str(col)
-        parsed_date = parse_date(col_str)
-        if parsed_date and (latest_date is None or parsed_date > latest_date):
-            latest_date = parsed_date
-            latest_column = col
+    # Strategy 1: Look for "Indicative adjusted" and find ALL dates under it, then pick the latest
+    indicative_positions = []
     
-    # If no dates found in column names, check the first few rows for datetime values
-    if latest_column is None and len(df) > 0:
-        # Check first 5 rows for date values (dates can be in different rows)
-        for row_idx in range(min(5, len(df))):
-            row = df.iloc[row_idx]
-            for col in columns:
-                val = row[col]
-                
-                # Check if it's already a datetime object
-                if isinstance(val, (pd.Timestamp, datetime)):
-                    date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                    if latest_date is None or date_val > latest_date:
-                        latest_date = date_val
-                        latest_column = col
-                # Check if it's a string that can be parsed as a date
-                elif pd.notna(val):
-                    parsed_date = parse_date(str(val))
-                    if parsed_date and (latest_date is None or parsed_date > latest_date):
-                        latest_date = parsed_date
-                        latest_column = col
+    # Find ALL "Indicative adjusted" text positions
+    for row_idx in range(min(10, len(df))):
+        for col_idx, col in enumerate(columns):
+            val = df.iloc[row_idx, col_idx]
+            if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
+                indicative_positions.append((row_idx, col_idx))
+                print(f"📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx}")
+    
+    # If we found "Indicative adjusted", look for ALL dates in the area around it
+    if indicative_positions:
+        all_found_dates = []
+        
+        for indicative_row, indicative_col in indicative_positions:
+            # Check a wider area around the "Indicative adjusted" position
+            # Look in the same row and next few rows
+            for check_row in range(max(0, indicative_row - 1), min(indicative_row + 5, len(df))):
+                # Check all columns from the indicative column onwards (merged cell might span multiple columns)
+                for col_idx in range(indicative_col, min(indicative_col + 10, len(columns))):
+                    col = columns[col_idx]
+                    val = df.iloc[check_row, col_idx]
+                    
+                    if isinstance(val, (pd.Timestamp, datetime)):
+                        date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                        all_found_dates.append((date_val, col, check_row, col_idx))
+                        print(f"📅 Found date: Row {check_row}, Col {col_idx} ({col}) = {date_val}")
+                    elif pd.notna(val):
+                        parsed_date = parse_date(str(val))
+                        if parsed_date:
+                            all_found_dates.append((parsed_date, col, check_row, col_idx))
+                            print(f"📅 Found parsed date: Row {check_row}, Col {col_idx} ({col}) = {parsed_date}")
+        
+        # Pick the latest date from all found dates
+        if all_found_dates:
+            latest_date_info = max(all_found_dates, key=lambda x: x[0])
+            latest_date, latest_column, latest_row, latest_col_idx = latest_date_info
+            print(f"🎯 Selected LATEST date: {latest_column} ({latest_date}) from {len(all_found_dates)} options")
+    
+    # Strategy 2: If no "Indicative adjusted" found, use original logic
+    if latest_column is None:
+        # First, try to find dates in column names
+        for col in columns:
+            col_str = str(col)
+            parsed_date = parse_date(col_str)
+            if parsed_date and (latest_date is None or parsed_date > latest_date):
+                latest_date = parsed_date
+                latest_column = col
+        
+        # If still no dates found, check the first few rows for datetime values
+        if latest_column is None and len(df) > 0:
+            # Check first 5 rows for date values (dates can be in different rows)
+            for row_idx in range(min(5, len(df))):
+                row = df.iloc[row_idx]
+                for col in columns:
+                    val = row[col]
+                    
+                    # Check if it's already a datetime object
+                    if isinstance(val, (pd.Timestamp, datetime)):
+                        date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                        if latest_date is None or date_val > latest_date:
+                            latest_date = date_val
+                            latest_column = col
+                    # Check if it's a string that can be parsed as a date
+                    elif pd.notna(val):
+                        parsed_date = parse_date(str(val))
+                        if parsed_date and (latest_date is None or parsed_date > latest_date):
+                            latest_date = parsed_date
+                            latest_column = col
     
     return latest_column
 
