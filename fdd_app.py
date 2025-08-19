@@ -376,7 +376,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 
                 # Detect latest date column for this sheet
                 print(f"\n📊 Processing sheet: {sheet_name}")
-                latest_date_col = detect_latest_date_column(df)
+                latest_date_col = detect_latest_date_column(df, sheet_name, filename)
                 if latest_date_col:
                     print(f"✅ Sheet {sheet_name}: Selected column {latest_date_col}")
                 else:
@@ -883,10 +883,11 @@ def create_improved_table_markdown(parsed_table):
     except Exception as e:
         return f"Error creating table markdown: {e}"
 
-def detect_latest_date_column(df):
+def detect_latest_date_column(df, sheet_name=None, excel_file=None):
     """Detect the latest date column from a DataFrame, including xMxx format dates and merged cell structures."""
     import re
     from datetime import datetime
+    import openpyxl
     
     def parse_date(date_str):
         """Parse date string in various formats including xMxx."""
@@ -895,12 +896,24 @@ def detect_latest_date_column(df):
         
         date_str = str(date_str).strip()
         
-        # Handle xMxx format (e.g., 9M22, 12M23)
+        # Handle xMxx format (e.g., 9M22, 12M23) - END OF MONTH
         xmxx_match = re.match(r'^(\d+)M(\d{2})$', date_str)
         if xmxx_match:
             month = int(xmxx_match.group(1))
             year = 2000 + int(xmxx_match.group(2))  # Assume 20xx for 2-digit years
-            return datetime(year, month, 1)
+            # Use end of month, not beginning (last day of the month)
+            if month == 12:
+                return datetime(year, 12, 31)  # December 31st
+            elif month in [1, 3, 5, 7, 8, 10]:
+                return datetime(year, month, 31)  # 31-day months
+            elif month in [4, 6, 9, 11]:
+                return datetime(year, month, 30)  # 30-day months
+            elif month == 2:
+                # February - handle leap years
+                if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+                    return datetime(year, 2, 29)  # Leap year
+                else:
+                    return datetime(year, 2, 28)  # Non-leap year
         
         # Handle standard date formats
         date_formats = [
@@ -923,29 +936,82 @@ def detect_latest_date_column(df):
     latest_date = None
     latest_column = None
     
-    # Strategy 1: Look for "Indicative adjusted" and find ALL dates under it, then pick the latest
-    indicative_positions = []
+    # Strategy 1: Use Excel merged cell information to find "Indicative adjusted" range
+    indicative_merged_range = None
     
-    # Find ALL "Indicative adjusted" text positions
-    for row_idx in range(min(10, len(df))):
-        for col_idx, col in enumerate(columns):
-            val = df.iloc[row_idx, col_idx]
-            if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
-                indicative_positions.append((row_idx, col_idx))
-                print(f"📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx}")
+    # Try to get merged cell information from the original Excel file
+    if excel_file and sheet_name:
+        try:
+            wb = openpyxl.load_workbook(excel_file, data_only=False)
+            ws = wb[sheet_name]
+            
+            # Find "Indicative adjusted" merged cell
+            for merged_range in ws.merged_cells.ranges:
+                # Check if this merged cell contains "Indicative adjusted"
+                top_left_cell = ws.cell(merged_range.min_row, merged_range.min_col)
+                if (top_left_cell.value and 
+                    'indicative' in str(top_left_cell.value).lower() and 
+                    'adjust' in str(top_left_cell.value).lower()):
+                    
+                    # Convert Excel coordinates to pandas coordinates (0-based)
+                    start_col = merged_range.min_col - 1  # Excel is 1-based, pandas is 0-based
+                    end_col = merged_range.max_col - 1
+                    
+                    indicative_merged_range = (start_col, end_col)
+                    print(f"📋 Found 'Indicative adjusted' merged cell: Excel cols {merged_range.min_col}-{merged_range.max_col}, pandas cols {start_col}-{end_col}")
+                    break
+            
+            wb.close()
+        except Exception as e:
+            print(f"📋 Could not read merged cell info: {e}")
     
-    # If we found "Indicative adjusted", look for ALL dates in columns under the merged cell
-    if indicative_positions:
-        all_found_dates = []
+    # Fallback: Find "Indicative adjusted" text positions manually
+    if indicative_merged_range is None:
+        indicative_positions = []
+        for row_idx in range(min(10, len(df))):
+            for col_idx, col in enumerate(columns):
+                val = df.iloc[row_idx, col_idx]
+                if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
+                    indicative_positions.append((row_idx, col_idx))
+                    print(f"📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx}")
+    
+    # Process based on whether we have merged cell information or not
+    all_found_dates = []
+    
+    if indicative_merged_range:
+        # Use precise merged cell range
+        start_col, end_col = indicative_merged_range
+        print(f"🔍 Using merged cell range: columns {start_col} to {end_col}")
+        
+        # Look for dates in the columns under this merged cell
+        for row_idx in range(min(10, len(df))):
+            for col_idx in range(start_col, end_col + 1):
+                if col_idx < len(columns):
+                    col = columns[col_idx]
+                    val = df.iloc[row_idx, col_idx]
+                    
+                    if isinstance(val, (pd.Timestamp, datetime)):
+                        date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                        all_found_dates.append((date_val, col, row_idx, col_idx))
+                        print(f"  📅 Date found: {col} = {date_val.strftime('%Y-%m-%d')}")
+                    elif pd.notna(val):
+                        parsed_date = parse_date(str(val))
+                        if parsed_date:
+                            all_found_dates.append((parsed_date, col, row_idx, col_idx))
+                            print(f"  📅 Parsed date: {col} = {parsed_date.strftime('%Y-%m-%d')}")
+    
+    elif indicative_positions:
+        # Fallback to manual detection
+        print(f"🔍 Using manual detection (no merged cell info available)")
         
         for indicative_row, indicative_col in indicative_positions:
             print(f"🔍 Searching for dates under 'Indicative adjusted' merged cell...")
             
-            # The merged cell spans multiple columns, so check all columns to the right
+            # Only look for dates in the specific area around "Indicative adjusted"
             # Look in the next few rows below the "Indicative adjusted" text for dates
             for check_row in range(indicative_row + 1, min(indicative_row + 5, len(df))):
-                # Check all columns starting from the indicative column (merged cell spans multiple columns)
-                for col_idx in range(max(0, indicative_col - 1), min(indicative_col + 10, len(columns))):
+                # Only check columns starting from the indicative column position (not before)
+                for col_idx in range(indicative_col, min(indicative_col + 6, len(columns))):
                     col = columns[col_idx]
                     val = df.iloc[check_row, col_idx]
                     
@@ -1151,7 +1217,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                 # Organize sections by key - make it less restrictive
                 for data_frame in dataframes:
                     # Detect latest date column for this dataframe
-                    latest_date_col = detect_latest_date_column(data_frame)
+                    latest_date_col = detect_latest_date_column(data_frame, sheet_name, excel_source)
                     if debug and latest_date_col:
                         st.write(f"📅 Latest date column detected: {latest_date_col}")
                     
