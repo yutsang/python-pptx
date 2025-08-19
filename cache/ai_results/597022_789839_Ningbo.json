@@ -1,6 +1,0 @@
-{
-  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Figure formatting issue: 'CNY6.5M' should be 'CNY6.5 million' or 'CNY6,487,000'\",\n    \"Pattern deviation: Content mixes elements from both patterns without clear structure\"\n  ],\n  \"corrected_content\": \"The balance as at 30 September 2022 represented CNY6.5 million of bank deposits.\\n\\nThe cash was under supervision with no restricted use.\\nWe have obtained the bank statements as at 30 September 2022 and found no discrepancies.\",\n  \"figure_checks\": [\n    \"Original figure: 6,487,000\",\n    \"Rounded figure used: 6.5 million (acceptable rounding)\"\n  ],\n  \"entity_checks\": [\n    \"Correct entity 'Deposits with banks' used\",\n    \"Matches table data for Ningbo entity\"\n  ],\n  \"grammar_notes\": [\n    \"Removed quotes from narrative\",\n    \"Standardized financial terminology\"\n  ],\n  \"pattern_used\": \"Pattern 2\"\n}\n```",
-  "timestamp": 1755190097.1570518,
-  "key": "597022_789839",
-  "entity_name": "Ningbo"
-}

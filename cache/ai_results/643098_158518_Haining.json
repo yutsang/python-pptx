@@ -1,6 +1,0 @@
-{
-  "content": "```json\n{\n  \"is_compliant\": true,\n  \"issues\": [],\n  \"corrected_content\": \"The accounts payable balance as at 30 September 2022 mainly entailed consulting fees to Business Management Consulting Co. of CNY2.3M and professional fees to Credit Zhonghe Accounting Firm (Special General Partnership) of CNY14.0K.\",\n  \"figure_checks\": [\n    \"CNY2.3M matches 企業管理諮詢公司 value of 2,295,000 (CNY'000)\",\n    \"CNY14.0K matches 信用中和會計師事務所(特殊普通合夥) value of 14,000 (CNY'000)\"\n  ],\n  \"entity_checks\": [\n    \"Business Management Consulting Co. correctly matches 企業管理諮詢公司\",\n    \"Credit Zhonghe Accounting Firm (Special General Partnership) correctly matches 信用中和會計師事務所(特殊普通合夥)\"\n  ],\n  \"grammar_notes\": [\n    \"Removed outer quotes\",\n    \"Standardized entity names to English\",\n    \"Formatted figures with 1 decimal place (K/M)\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
-  "timestamp": 1755209687.3564632,
-  "key": "643098_158518",
-  "entity_name": "Haining"
-}

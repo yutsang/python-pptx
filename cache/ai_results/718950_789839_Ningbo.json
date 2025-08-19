@@ -1,6 +1,0 @@
-{
-  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Figure formatting inconsistency (should use 'K' for thousands and 1 decimal place)\",\n    \"Entity list too long (should keep top 2 items)\",\n    \"Chinese terms not translated (代墊水電費 should be 'utilities paid on behalf')\"\n  ],\n  \"corrected_content\": \"Balance as at 30 September 2022 CNY51.0K of utilities paid on behalf of Company ABC (CNY13.0K) and Company JKL (CNY20.0K).\\nAs indicated by management, the Target accrued 2.0% bad debt provision for utilities receivables aged within 1 year.\",\n  \"figure_checks\": [\n    \"CNY51.0K matches total from table (51,000)\",\n    \"CNY1.0K provision matches table (-1,000)\",\n    \"2.0% provision rate calculated correctly (1,000/51,000)\"\n  ],\n  \"entity_checks\": [\n    \"Company ABC (CNY13.0K) exists in table\",\n    \"Company JKL (CNY20.0K) exists in table\",\n    \"Company MNO removed to shorten list\"\n  ],\n  \"grammar_notes\": [\n    \"Removed outer quotes\",\n    \"Standardized capitalization\",\n    \"Translated Chinese terms\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
-  "timestamp": 1755190157.484958,
-  "key": "718950_789839",
-  "entity_name": "Ningbo"
-}

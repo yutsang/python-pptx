@@ -1,6 +1,0 @@
-{
-  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Incorrect figure formatting (should be 1 decimal place for K/M)\",\n    \"Entities not translated to English\",\n    \"Inconsistent pattern usage (mixed elements from Pattern 1)\"\n  ],\n  \"corrected_content\": \"The balance as at 30 September 2022 represented CNY0.3m of upfront utility expense payments, comprising CNY0.3m to Haining Power Supply Co., Ltd. for electricity and CNY0.01m to Haining Qiantang Water Co., Ltd. for water, covering the next one to three months.\",\n  \"figure_checks\": [\n    \"CNY336K → CNY0.3m (336/1000 rounded to 1dp)\",\n    \"CNY10K → CNY0.01m (10/1000 to 2dp as <0.1m)\",\n    \"Total matches source (CNY346K)\"\n  ],\n  \"entity_checks\": [\n    \"海寧市供電有限公司 → Haining Power Supply Co., Ltd.\",\n    \"海寧錢塘水務有限公司 → Haining Qiantang Water Co., Ltd.\",\n    \"Correctly excluded zero-balance item (珠海市物業服務有限公司)\"\n  ],\n  \"grammar_notes\": [\n    \"Removed square brackets from translations\",\n    \"Standardized 'Co., Ltd.' formatting\",\n    \"Simplified list to top 2 items\"\n  ],\n  \"pattern_used\": \"Pattern 1 (modified)\"\n}\n```",
-  "timestamp": 1755211685.944053,
-  "key": "442164_678133",
-  "entity_name": "Haining"
-}
