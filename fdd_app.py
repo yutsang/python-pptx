@@ -1286,15 +1286,17 @@ def main():
             else:
                 entity_helpers = "Limited,"
 
-        # Auto-invalidate Excel cache when entity changes
+        # Auto-invalidate Excel cache when entity changes or when date detection is updated
         last_entity = st.session_state.get('last_selected_entity')
-        if last_entity is None:
-            st.session_state['last_selected_entity'] = selected_entity
-        elif last_entity != selected_entity:
+        cache_version = st.session_state.get('cache_version', 'v1')
+        
+        # Clear cache if entity changes or if we need to update for date detection
+        if (last_entity is None or last_entity != selected_entity or cache_version != 'v2'):
             keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
             for key in keys_to_remove:
                 del st.session_state[key]
             st.session_state['last_selected_entity'] = selected_entity
+            st.session_state['cache_version'] = 'v2'  # Update cache version for date detection
         
         # Financial Statement Type Selection
         st.markdown("---")
@@ -1376,6 +1378,9 @@ def main():
                 keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
                 for key in keys_to_remove:
                     del st.session_state[key]
+                # Clear cache version to force refresh
+                if 'cache_version' in st.session_state:
+                    del st.session_state['cache_version']
                 st.success("All cache cleared!")
             
             if st.button("📊 Clear Excel Cache"):
