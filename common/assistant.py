@@ -695,23 +695,41 @@ def detect_latest_date_column(df):
                 if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
                     indicative_text_positions.append((pos_row, pos_col))
             
-            # For each column with latest date, check if it's under an "Indicative adjusted" merged cell
-            for date_val, col, row, col_idx in latest_date_columns:
-                is_under_indicative = False
-                
-                # Check if this column is spatially under any "Indicative adjusted" text
-                for indic_row, indic_col in indicative_text_positions:
-                    # A column is "under" the merged cell if:
-                    # 1. The date row is below the indicative text row
-                    # 2. The column is at or after the indicative text column
-                    if row > indic_row and col_idx >= indic_col:
-                        is_under_indicative = True
-                        print(f"    ✅ {col} is under 'Indicative adjusted' merged cell - SELECTED")
+            # Find which columns are under "Indicative adjusted" merged cell specifically
+            indicative_start_col = None
+            indicative_end_col = None
+            
+            # Find the "Indicative adjusted" header that's NOT in the description column
+            for indic_row, indic_col in indicative_text_positions:
+                if indic_col > 0:  # Not in description column
+                    val = df.iloc[indic_row, indic_col]
+                    if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
+                        # This is the "Indicative adjusted" merged cell header
+                        indicative_start_col = indic_col
+                        
+                        # Find the rightmost column that has dates under this header
+                        indicative_end_col = indicative_start_col
+                        for check_col_idx in range(indicative_start_col, min(indicative_start_col + 5, len(columns))):
+                            has_date_below = False
+                            for check_row in range(indic_row + 1, min(indic_row + 3, len(df))):
+                                val = df.iloc[check_row, check_col_idx]
+                                if isinstance(val, (pd.Timestamp, datetime)) or (pd.notna(val) and parse_date(str(val))):
+                                    has_date_below = True
+                                    indicative_end_col = check_col_idx
+                                    break
+                            if not has_date_below:
+                                break
+                        
+                        print(f"    📍 'Indicative adjusted' merged cell: columns {indicative_start_col} to {indicative_end_col}")
                         break
-                
-                if is_under_indicative:
-                    selected_column = (date_val, col, row, col_idx)
-                    break
+            
+            # Now find columns under "Indicative adjusted" that have the latest date
+            if indicative_start_col is not None:
+                for date_val, col, row, col_idx in latest_date_columns:
+                    if indicative_start_col <= col_idx <= indicative_end_col:
+                        selected_column = (date_val, col, row, col_idx)
+                        print(f"    ✅ SELECTED: {col} (latest date under 'Indicative adjusted' merged cell)")
+                        break
             
             # If no "Indicative adjusted" column found, use the first one with latest date
             if selected_column is None:
