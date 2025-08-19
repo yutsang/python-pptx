@@ -1029,44 +1029,13 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
                         all_found_dates.append((parsed_date, col, row_idx, col_idx))
                         print(f"  📅 Parsed date: {col} = {parsed_date.strftime('%Y-%m-%d')}")
         
-        # Select the latest date, prioritizing "Indicative adjusted" columns if multiple have same date
+        # Select the latest date using standard logic
         if all_found_dates:
             latest_date_info = max(all_found_dates, key=lambda x: x[0])
             latest_date, latest_column, latest_row, latest_col_idx = latest_date_info
             print(f"🎯 SELECTED: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
-        
-        # Pick the latest date from all found dates, prioritizing "Indicative adjusted" column
-        if all_found_dates:
-            # Find the actual latest date value
-            max_date = max(all_found_dates, key=lambda x: x[0])[0]
-            
-            # Find all columns with the latest date
-            latest_date_columns = [item for item in all_found_dates if item[0] == max_date]
-            
-            if len(latest_date_columns) > 1:
-                print(f"  📊 Multiple columns with latest date {max_date.strftime('%Y-%m-%d')}:")
-                for date_val, col, row, col_idx in latest_date_columns:
-                    print(f"    • {col}")
-            else:
-                print(f"  📅 Single column with latest date: {max_date.strftime('%Y-%m-%d')}")
-            
-            # Prioritize "Indicative adjusted" column if multiple columns have the same latest date
-            selected_column = None
-            
-            # Find the position of "Indicative adjusted" text
-            indicative_text_positions = []
-            for pos_row, pos_col in indicative_positions:
-                val = df.iloc[pos_row, pos_col]
-                if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
-                    indicative_text_positions.append((pos_row, pos_col))
-            
-            # For each column with latest date, check if it's under an "Indicative adjusted" merged cell
-            indicative_columns = set()
-            
-            # Find which columns are under "Indicative adjusted" merged cell specifically
-            # Strategy: Find "Indicative adjusted" text, then find the range of columns it spans
-            indicative_start_col = None
-            indicative_end_col = None
+
+
             
             # Find the "Indicative adjusted" header that's NOT in the description column
             for indic_row, indic_col in indicative_text_positions:
