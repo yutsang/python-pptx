@@ -899,24 +899,26 @@ def detect_latest_date_column(df):
             latest_date = parsed_date
             latest_column = col
     
-    # If no dates found in column names, check the first row for datetime values
+    # If no dates found in column names, check the first few rows for datetime values
     if latest_column is None and len(df) > 0:
-        first_row = df.iloc[0]
-        for col in columns:
-            val = first_row[col]
-            
-            # Check if it's already a datetime object
-            if isinstance(val, (pd.Timestamp, datetime)):
-                date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                if latest_date is None or date_val > latest_date:
-                    latest_date = date_val
-                    latest_column = col
-            # Check if it's a string that can be parsed as a date
-            elif pd.notna(val):
-                parsed_date = parse_date(str(val))
-                if parsed_date and (latest_date is None or parsed_date > latest_date):
-                    latest_date = parsed_date
-                    latest_column = col
+        # Check first 5 rows for date values (dates can be in different rows)
+        for row_idx in range(min(5, len(df))):
+            row = df.iloc[row_idx]
+            for col in columns:
+                val = row[col]
+                
+                # Check if it's already a datetime object
+                if isinstance(val, (pd.Timestamp, datetime)):
+                    date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                    if latest_date is None or date_val > latest_date:
+                        latest_date = date_val
+                        latest_column = col
+                # Check if it's a string that can be parsed as a date
+                elif pd.notna(val):
+                    parsed_date = parse_date(str(val))
+                    if parsed_date and (latest_date is None or parsed_date > latest_date):
+                        latest_date = parsed_date
+                        latest_column = col
     
     return latest_column
 
@@ -1311,12 +1313,12 @@ def main():
         cache_version = st.session_state.get('cache_version', 'v1')
         
         # Clear cache if entity changes or if we need to update for date detection
-        if (last_entity is None or last_entity != selected_entity or cache_version != 'v3'):
+        if (last_entity is None or last_entity != selected_entity or cache_version != 'v4'):
             keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
             for key in keys_to_remove:
                 del st.session_state[key]
             st.session_state['last_selected_entity'] = selected_entity
-            st.session_state['cache_version'] = 'v3'  # Update cache version for date detection
+            st.session_state['cache_version'] = 'v4'  # Update cache version for date detection
         
         # Financial Statement Type Selection
         st.markdown("---")
