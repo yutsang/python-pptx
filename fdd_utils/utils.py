@@ -36,14 +36,21 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
             for key, values in tab_name_mapping.items():
                 for value in values:
                     reverse_mapping[value] = key
+                # Also map the key name directly to itself (for sheet names like "Cash", "AR")
+                reverse_mapping[key] = key
             
             # Initialize a string to store markdown content
             markdown_content = ""
             
-            # Process each sheet according to the mapping
+                        # Process each sheet according to the mapping
             for sheet_name in xl.sheet_names:
                 if sheet_name in reverse_mapping:
                     df = xl.parse(sheet_name)
+                    
+                    # Detect latest date column for this sheet
+                    latest_date_col = detect_latest_date_column(df)
+                    if latest_date_col:
+                        print(f"📅 Sheet {sheet_name}: Using latest date column {latest_date_col}")
                     
                     # Split dataframes on empty rows
                     empty_rows = df.index[df.isnull().all(1)]
@@ -54,7 +61,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                             split_df = df[start_idx:end_idx]
                             if not split_df.dropna(how='all').empty:
                                 dataframes.append(split_df)
-                            start_idx = end_idx + 1
+                        start_idx = end_idx + 1
                     if start_idx < len(df):
                         dataframes.append(df[start_idx:])
                     
@@ -70,7 +77,16 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                             axis=1
                         )
                         if mask.any():
-                            markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
+                            # Filter dataframe to show only description column and latest date column
+                            filtered_df = data_frame.copy()
+                            if latest_date_col and latest_date_col in filtered_df.columns:
+                                # Keep only description column (first) and latest date column
+                                desc_col = filtered_df.columns[0]
+                                cols_to_keep = [desc_col, latest_date_col]
+                                filtered_df = filtered_df[cols_to_keep]
+                                print(f"📊 Sheet {sheet_name}: Filtered to show {desc_col} and {latest_date_col}")
+                            
+                            markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
                         
                         if any(
                             data_frame.apply(

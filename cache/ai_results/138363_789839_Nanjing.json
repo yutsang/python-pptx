@@ -1,6 +1,0 @@
-{
-  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Entity name '[Translate: 代墊水電費]' should be translated to 'utilities paid on behalf'\",\n    \"Figure format should be '12.0K' (1 decimal place) instead of '12.0K'\",\n    \"Percentage format should be '0%' instead of '0.0%'\"\n  ],\n  \"corrected_content\": \"The balance as at 30 September 2022 CNY12.0K of utilities paid on behalf of Nanjing Jingya. As indicated by management, the Target accrued 0% bad debt provision for utilities receivables aged within 1 year.\",\n  \"figure_checks\": [\n    \"CNY12.0K matches source data (12,000 CNY)\",\n    \"0% matches source data (0 bad debt provision)\"\n  ],\n  \"entity_checks\": [\n    \"Corrected entity name to 'Nanjing Jingya' per source data\"\n  ],\n  \"grammar_notes\": [\n    \"Removed brackets from translated text\",\n    \"Simplified percentage format\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
-  "timestamp": 1755190082.002787,
-  "key": "138363_789839",
-  "entity_name": "Nanjing"
-}

@@ -363,6 +363,8 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
             for key, values in tab_name_mapping.items():
                 for value in values:
                     reverse_mapping[value] = key
+                # Also map the key name directly to itself (for sheet names like "Cash", "AR")
+                reverse_mapping[key] = key
                 
         # Initialize a string to store markdown content
         markdown_content = ""
@@ -371,6 +373,11 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         for sheet_name in xl.sheet_names:
             if sheet_name in reverse_mapping:
                 df = xl.parse(sheet_name)
+                
+                # Detect latest date column for this sheet
+                latest_date_col = detect_latest_date_column(df)
+                if latest_date_col:
+                    print(f"📅 Sheet {sheet_name}: Using latest date column {latest_date_col}")
                 
                 # Split dataframes on empty rows
                 empty_rows = df.index[df.isnull().all(1)]
@@ -393,18 +400,40 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
                 
                 for data_frame in dataframes:
-                    mask = data_frame.apply(
-                        lambda row: row.astype(str).str.contains(
-                            combined_pattern, case=False, regex=True, na=False
-                        ).any(),
-                        axis=1
-                    )
-                    if mask.any():
-                        markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
+                    # Check if this dataframe contains entity keywords
+                    entity_match_found = False
+                    for keyword in entity_keywords:
+                        if data_frame.apply(
+                            lambda row: row.astype(str).str.contains(
+                                keyword, case=False, regex=True, na=False
+                            ).any(),
+                            axis=1
+                        ).any():
+                            entity_match_found = True
+                            break
                     
-                    if any(data_frame.apply(lambda row: row.astype(str).str.contains(keyword, case=False, na=False).any(), axis=1).any() for keyword in entity_keywords):
-                        markdown_content += tabulate(data_frame, headers='keys', tablefmt='pipe', showindex=False)
-                        markdown_content += "\n\n" 
+                    if entity_match_found:
+                        # Filter dataframe to show only description column and latest date column
+                        filtered_df = data_frame.copy()
+                        if latest_date_col and latest_date_col in filtered_df.columns:
+                            # Keep only description column (usually first non-empty) and latest date column
+                            desc_col = None
+                            for col in filtered_df.columns:
+                                if filtered_df[col].notna().any():
+                                    desc_col = col
+                                    break
+                            
+                            if desc_col:
+                                cols_to_keep = [desc_col, latest_date_col]
+                                filtered_df = filtered_df[cols_to_keep]
+                                print(f"📊 Sheet {sheet_name}: Filtered to show {desc_col} and {latest_date_col}")
+                        
+                        # Remove empty rows
+                        filtered_df = filtered_df.dropna(how='all')
+                        
+                        if not filtered_df.empty:
+                            markdown_content += f"## {sheet_name}\n"
+                            markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n' 
         
         # Cache the processed result using simple cache
         cache.cache_excel_data(filename, entity_name, markdown_content)
@@ -939,6 +968,8 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
             for key, values in tab_name_mapping.items():
                 for value in values:
                     reverse_mapping[value] = key
+                # Also map the key name directly to itself (for sheet names like "Cash", "AR")
+                reverse_mapping[key] = key
         
         # Get financial keys
         financial_keys = get_financial_keys()
@@ -1313,12 +1344,12 @@ def main():
         cache_version = st.session_state.get('cache_version', 'v1')
         
         # Clear cache if entity changes or if we need to update for date detection
-        if (last_entity is None or last_entity != selected_entity or cache_version != 'v4'):
+        if (last_entity is None or last_entity != selected_entity or cache_version != 'v5'):
             keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
             for key in keys_to_remove:
                 del st.session_state[key]
             st.session_state['last_selected_entity'] = selected_entity
-            st.session_state['cache_version'] = 'v4'  # Update cache version for date detection
+            st.session_state['cache_version'] = 'v5'  # Update cache version for date detection
         
         # Financial Statement Type Selection
         st.markdown("---")

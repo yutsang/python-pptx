@@ -1,6 +1,0 @@
-{
-  "content": "```json\n{\n  \"is_compliant\": true,\n  \"issues\": [],\n  \"corrected_content\": \"Share capital of circa CNY92.0M was paid up as at 30-Sep-2022, comprising CNY91.1M from Equity Investment Fund Partnership (Limited Partnership) and CNY0.9M from Logistics Storage Co., Ltd.\",\n  \"figure_checks\": [\n    \"CNY92.0M matches total share capital of CNY92,000,000 (CNY'000: 92,000)\",\n    \"CNY91.1M matches Equity Investment Fund Partnership's contribution of CNY91,080,000 (CNY'000: 91,080)\",\n    \"CNY0.9M matches Logistics Storage Co., Ltd.'s contribution of CNY920,000 (CNY'000: 920)\"\n  ],\n  \"entity_checks\": [\n    \"Entity names match: 'Equity Investment Fund Partnership (Limited Partnership)' and 'Logistics Storage Co., Ltd.'\"\n  ],\n  \"grammar_notes\": [\n    \"Removed outer quotes\",\n    \"Standardized entity naming\",\n    \"Adjusted 'CNY920K' to 'CNY0.9M' for consistency with other figures\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
-  "timestamp": 1755211792.516545,
-  "key": "188477_678133",
-  "entity_name": "Haining"
-}

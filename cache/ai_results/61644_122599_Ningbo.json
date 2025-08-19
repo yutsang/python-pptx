@@ -1,6 +1,0 @@
-{
-  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Incorrect figure formatting (should be 1 decimal place for amounts in thousands)\",\n    \"List of companies is too long (should keep top 2 items)\",\n    \"Chinese terms should be translated to English\"\n  ],\n  \"corrected_content\": \"Balance as at 30 September 2022 represented CNY89k of upfront utility expense payments including CNY80k from Company GHI for electricity expenses and CNY6k from Company ABC for water expenses for the next one to three months of prepaid utility expenses.\",\n  \"figure_checks\": [\n    \"CNY89.0 → CNY89k\",\n    \"CNY80.0 → CNY80k\",\n    \"CNY6.0 → CNY6k\"\n  ],\n  \"entity_checks\": [\n    \"Kept top 2 entities by amount (Company GHI and Company ABC)\",\n    \"Removed Company JKL (CNY3k) to keep list concise\"\n  ],\n  \"grammar_notes\": [\n    \"Removed redundant 'including' after 'represented'\",\n    \"Standardized 'prepaid utility expenses' phrasing\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
-  "timestamp": 1755210586.334899,
-  "key": "61644_122599",
-  "entity_name": "Ningbo"
-}

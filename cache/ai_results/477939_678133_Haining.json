@@ -1,6 +1,0 @@
-{
-  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Figure formatting inconsistency (CNY738.0K should be CNY738K)\",\n    \"Percentage calculation not explicitly shown in data (6.9% provision rate derived from 51/738)\",\n    \"Chinese term '代墊水電費' should be translated to 'utilities paid on behalf'\"\n  ],\n  \"corrected_content\": \"Balance as at 30 September 2022 CNY738K of utilities paid on behalf of Haining Wanpu. As indicated by management, the Target accrued 6.9% bad debt provision (CNY51K) for utilities receivables aged within 1 year.\",\n  \"figure_checks\": [\n    \"CNY738K matches source data (738 in '000)\",\n    \"CNY51K matches provision amount (-51 in '000)\",\n    \"Total CNY687K matches sum in source\"\n  ],\n  \"entity_checks\": [\n    \"Correctly references Haining Wanpu as per source data\"\n  ],\n  \"grammar_notes\": [\n    \"Removed outer quotes\",\n    \"Standardized VAT/CIT terminology not applicable here\",\n    \"Converted Chinese term to English\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
-  "timestamp": 1755211700.7682729,
-  "key": "477939_678133",
-  "entity_name": "Haining"
-}

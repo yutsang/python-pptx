@@ -1,6 +1,0 @@
-{
-  "content": "```json\n{\n  \"is_compliant\": false,\n  \"issues\": [\n    \"Incorrect figure formatting (should be 1 decimal place)\",\n    \"Percentage calculation appears incorrect (51/738=6.9% but should be 51/687=7.4%)\",\n    \"Entity name should be 'Haining Wanpu' per data tables\"\n  ],\n  \"corrected_content\": \"Balance as at 30 September 2022 CNY687.0K of utilities paid on behalf of Haining Wanpu. As indicated by management, the Target accrued 7.4% bad debt provision for utilities receivables aged within 1 year.\",\n  \"figure_checks\": [\n    \"CNY687K → CNY687.0K (1 decimal place)\",\n    \"Bad debt provision percentage corrected from 6.9% to 7.4% (51/687)\"\n  ],\n  \"entity_checks\": [\n    \"Confirmed entity name 'Haining Wanpu' matches data tables\"\n  ],\n  \"grammar_notes\": [\n    \"Removed extra space before period\",\n    \"Standardized capitalization\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
-  "timestamp": 1755209649.5469382,
-  "key": "159526_158518",
-  "entity_name": "Haining"
-}

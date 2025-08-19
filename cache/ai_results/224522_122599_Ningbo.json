@@ -1,6 +1,0 @@
-{
-  "content": "```json\n{\n  \"is_compliant\": true,\n  \"issues\": [],\n  \"corrected_content\": \"Share capital of circa CNY60.0M was paid up as at 30-Sep-2022, comprising CNY59.4M from Equity Investment Fund Partnership (Limited Partnership) and CNY600.0K from Logistics Storage Co., Ltd.\",\n  \"figure_checks\": [\n    \"Total share capital of CNY60.0M matches source data (CNY60,000,000)\",\n    \"CNY59.4M matches 股權投資基金合夥企業(有限合夥) amount (CNY59,400,000)\",\n    \"CNY600.0K matches 物流倉儲有限公司 amount (CNY600,000)\"\n  ],\n  \"entity_checks\": [\n    \"Equity Investment Fund Partnership (Limited Partnership) correctly matches 股權投資基金合夥企業(有限合夥)\",\n    \"Logistics Storage Co., Ltd. correctly matches 物流倉儲有限公司\"\n  ],\n  \"grammar_notes\": [\n    \"Removed outer quotes\",\n    \"Standardized entity naming format\",\n    \"Maintained professional tone\"\n  ],\n  \"pattern_used\": \"Pattern 1\"\n}\n```",
-  "timestamp": 1755210682.18149,
-  "key": "224522_122599",
-  "entity_name": "Ningbo"
-}
