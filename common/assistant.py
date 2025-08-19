@@ -634,12 +634,32 @@ def detect_latest_date_column(df):
     latest_date = None
     latest_column = None
     
+    # First, try to find dates in column names
     for col in columns:
         col_str = str(col)
         parsed_date = parse_date(col_str)
         if parsed_date and (latest_date is None or parsed_date > latest_date):
             latest_date = parsed_date
             latest_column = col
+    
+    # If no dates found in column names, check the first row for datetime values
+    if latest_column is None and len(df) > 0:
+        first_row = df.iloc[0]
+        for col in columns:
+            val = first_row[col]
+            
+            # Check if it's already a datetime object
+            if isinstance(val, (pd.Timestamp, datetime)):
+                date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                if latest_date is None or date_val > latest_date:
+                    latest_date = date_val
+                    latest_column = col
+            # Check if it's a string that can be parsed as a date
+            elif pd.notna(val):
+                parsed_date = parse_date(str(val))
+                if parsed_date and (latest_date is None or parsed_date > latest_date):
+                    latest_date = parsed_date
+                    latest_column = col
     
     return latest_column
 
@@ -704,13 +724,21 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
             "AP": "Accounts payable",
             "Taxes payable": "Taxes payable",
             "OP": "Other payables",
-            "Capital": "Share capital",
-            "Reserve": "Reserve"
+            "Capital": "Paid-in capital",
+            "Reserve": "Surplus reserve"
         }
         financial_figures = {}
+        
+        # Find the description column (usually the first column)
+        desc_column = None
+        if 'Description' in df.columns:
+            desc_column = 'Description'
+        elif len(df.columns) > 0:
+            desc_column = df.columns[0]  # Use first column as description column
+        
         for key, desc in financial_figure_map.items():
-            if 'Description' in df.columns and date_column in df.columns:
-                value = df.loc[df['Description'].str.contains(desc, case=False, na=False), date_column].values
+            if desc_column and date_column in df.columns:
+                value = df.loc[df[desc_column].str.contains(desc, case=False, na=False), date_column].values
                 if value.size > 0:
                     # Apply scale factor: multiply by 1000 if '000 notation detected
                     financial_figures[key] = float(value[0]) * scale_factor
