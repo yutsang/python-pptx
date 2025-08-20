@@ -1026,10 +1026,7 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
     if indicative_merged_range:
         # Use the detected merged cell range
         start_col, end_col = indicative_merged_range
-        if sheet_name:
-            print(f"🔍 [{sheet_name}] Searching for dates in columns {start_col} to {end_col}")
-        
-        # Look for dates in the rows below the merged cell
+        # Look for dates in the rows below the merged cell (simplified logging)
         for row_idx in range(min(10, len(df))):
             for col_idx in range(start_col, end_col + 1):
                 if col_idx < len(columns):
@@ -1039,14 +1036,10 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
                     if isinstance(val, (pd.Timestamp, datetime)):
                         date_val = val if isinstance(val, datetime) else val.to_pydatetime()
                         all_found_dates.append((date_val, col, row_idx, col_idx))
-                        if sheet_name:
-                            print(f"  📅 [{sheet_name}] Date: {col} = {date_val.strftime('%Y-%m-%d')}")
                     elif pd.notna(val):
                         parsed_date = parse_date(str(val))
                         if parsed_date:
                             all_found_dates.append((parsed_date, col, row_idx, col_idx))
-                            if sheet_name:
-                                print(f"  📅 [{sheet_name}] Parsed date: {col} = {parsed_date.strftime('%Y-%m-%d')}")
         
         # Select the latest date from within the merged cell range
         if all_found_dates:
@@ -1058,65 +1051,31 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
                 print(f"🎯 SELECTED from merged cell: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
     
     else:
-        # Strategy 2: No "Indicative adjusted" found, use original logic
+        # Strategy 2: No "Indicative adjusted" found, use standard date detection
         if sheet_name:
             print(f"🔍 [{sheet_name}] No 'Indicative adjusted' found, using standard date detection")
         
         # Use standard date detection for all columns
+        latest_date = None
         for row_idx in range(min(5, len(df))):
             for col_idx, col in enumerate(columns):
                 val = df.iloc[row_idx, col_idx]
                 
                 if isinstance(val, (pd.Timestamp, datetime)):
                     date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                    all_found_dates.append((date_val, col, row_idx, col_idx))
-                    if sheet_name:
-                        print(f"  📅 [{sheet_name}] Date: {col} = {date_val.strftime('%Y-%m-%d')}")
+                    if latest_date is None or date_val > latest_date:
+                        latest_date = date_val
+                        latest_column = col
                 elif pd.notna(val):
                     parsed_date = parse_date(str(val))
-                    if parsed_date:
-                        all_found_dates.append((parsed_date, col, row_idx, col_idx))
-                        if sheet_name:
-                            print(f"  📅 [{sheet_name}] Parsed date: {col} = {parsed_date.strftime('%Y-%m-%d')}")
+                    if parsed_date and (latest_date is None or parsed_date > latest_date):
+                        latest_date = parsed_date
+                        latest_column = col
         
-        # Select the latest date using standard logic
-        if all_found_dates:
-            latest_date_info = max(all_found_dates, key=lambda x: x[0])
-            latest_date, latest_column, latest_row, latest_col_idx = latest_date_info
-            if sheet_name:
-                print(f"🎯 [{sheet_name}] SELECTED: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
-            else:
-                print(f"🎯 SELECTED: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
+        if latest_column and sheet_name:
+            print(f"🎯 [{sheet_name}] SELECTED: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
     
-    # Step 4: If we found "Indicative adjusted" range, implement your exact approach
-    if indicative_merged_range and all_found_dates:
-        start_col, end_col = indicative_merged_range
-        
-        # Find the latest date specifically within the "Indicative adjusted" range
-        indicative_dates = []
-        
-        # Look in the next few rows after the header for dates
-        for row_idx in range(min(10, len(df))):
-            for col_idx in range(start_col, end_col + 1):
-                if col_idx < len(columns):
-                    val = df.iloc[row_idx, col_idx]
-                    
-                    if isinstance(val, (pd.Timestamp, datetime)):
-                        date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                        indicative_dates.append((date_val, columns[col_idx], col_idx))
-                    elif pd.notna(val):
-                        parsed_date = parse_date(str(val))
-                        if parsed_date:
-                            indicative_dates.append((parsed_date, columns[col_idx], col_idx))
-        
-        # Select the latest date from the "Indicative adjusted" range
-        if indicative_dates:
-            latest_in_range = max(indicative_dates, key=lambda x: x[0])
-            latest_date, latest_column, latest_col_idx = latest_in_range
-            if sheet_name:
-                print(f"🎯 [{sheet_name}] FINAL: {latest_column} (latest in range {start_col}-{end_col})")
-            else:
-                print(f"🎯 FINAL: {latest_column} (latest in 'Indicative adjusted' range {start_col}-{end_col})")
+
     
     return latest_column
 
@@ -1174,10 +1133,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                 
                 combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
                 
+                # Detect latest date column once per sheet (not per dataframe)
+                latest_date_col = detect_latest_date_column(df, sheet_name, excel_source)
+                
                 # Organize sections by key - make it less restrictive
                 for data_frame in dataframes:
-                    # Detect latest date column for this dataframe
-                    latest_date_col = detect_latest_date_column(data_frame, sheet_name, excel_source)
                     if debug and latest_date_col:
                         st.write(f"📅 Latest date column detected: {latest_date_col}")
                     
