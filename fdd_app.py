@@ -384,7 +384,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 
                 # Detect latest date column for this sheet
                 print(f"\n📊 Processing sheet: {sheet_name}")
-                latest_date_col = detect_latest_date_column(df, sheet_name, filename)
+                latest_date_col = detect_latest_date_column(df)
                 if latest_date_col:
                     print(f"✅ Sheet {sheet_name}: Selected column {latest_date_col}")
                 else:
@@ -897,17 +897,10 @@ def create_improved_table_markdown(parsed_table):
     except Exception as e:
         return f"Error creating table markdown: {e}"
 
-def detect_latest_date_column(df, sheet_name=None, excel_file=None):
-    """Detect the latest date column from a DataFrame, including xMxx format dates and merged cell structures."""
+def detect_latest_date_column(df):
+    """Detect the latest date column from a DataFrame, including xMxx format dates."""
     import re
     from datetime import datetime
-    
-    # Show which sheet we're processing
-    if sheet_name:
-        print(f"🔍 [{sheet_name}] Detecting latest date column...")
-    
-    # Performance optimization: limit search area for very large sheets
-    max_search_rows = min(20, len(df)) if len(df) > 100 else min(10, len(df))
     
     def parse_date(date_str):
         """Parse date string in various formats including xMxx."""
@@ -920,20 +913,19 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
         xmxx_match = re.match(r'^(\d+)M(\d{2})$', date_str)
         if xmxx_match:
             month = int(xmxx_match.group(1))
-            year = 2000 + int(xmxx_match.group(2))  # Assume 20xx for 2-digit years
-            # Use end of month, not beginning (last day of the month)
+            year = 2000 + int(xmxx_match.group(2))
+            # Use end of month
             if month == 12:
-                return datetime(year, 12, 31)  # December 31st
+                return datetime(year, 12, 31)
             elif month in [1, 3, 5, 7, 8, 10]:
-                return datetime(year, month, 31)  # 31-day months
+                return datetime(year, month, 31)
             elif month in [4, 6, 9, 11]:
-                return datetime(year, month, 30)  # 30-day months
+                return datetime(year, month, 30)
             elif month == 2:
-                # February - handle leap years
                 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
-                    return datetime(year, 2, 29)  # Leap year
+                    return datetime(year, 2, 29)
                 else:
-                    return datetime(year, 2, 28)  # Non-leap year
+                    return datetime(year, 2, 28)
         
         # Handle standard date formats
         date_formats = [
@@ -956,143 +948,34 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
     latest_date = None
     latest_column = None
     
-    # Strategy 1: Detect merged cells by NaN pattern - much faster than openpyxl
-    indicative_merged_range = None
+    # First, try to find dates in column names
+    for col in columns:
+        col_str = str(col)
+        parsed_date = parse_date(col_str)
+        if parsed_date and (latest_date is None or parsed_date > latest_date):
+            latest_date = parsed_date
+            latest_column = col
     
-    # Step 1: Find ALL "Indicative adjusted" text positions first
-    indicative_positions = []
-    for row_idx in range(max_search_rows):
-        for col_idx in range(1, len(columns)):  # Skip description column
-            val = df.iloc[row_idx, col_idx]
-            if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
-                indicative_positions.append((row_idx, col_idx))
-                if sheet_name:
-                    print(f"📋 [{sheet_name}] Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx}")
-                else:
-                    print(f"📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx}")
-    
-    # Step 2: Find the MAIN "Indicative adjusted" header (the one that's actually a merged cell)
-    if indicative_positions:
-        # Find the "Indicative adjusted" that has NaN values to its right (indicating a merged cell)
-        target_row, target_col = None, None
-        
-        for row_idx, col_idx in indicative_positions:
-            val = df.iloc[row_idx, col_idx]
-            val_str = str(val).lower()
-            
-            # Prioritize exact match "indicative adjusted" over partial matches like "indicative adjustment"
-            is_exact_match = ('indicative adjusted' in val_str)
-            
-            # Check if this has NaN values to the right (merged cell pattern)
-            has_nan_right = False
-            for check_col in range(col_idx + 1, min(col_idx + 5, len(columns))):
-                if pd.isna(df.iloc[row_idx, check_col]):
-                    has_nan_right = True
-                    break
-            
-            # Prefer exact matches with merged cell pattern
-            if is_exact_match and has_nan_right:
-                target_row, target_col = row_idx, col_idx
-                if sheet_name:
-                    print(f"🎯 [{sheet_name}] Selected exact 'Indicative adjusted' at Row {row_idx}, Col {col_idx} (merged cell)")
-                break
-            # Fallback to any match with merged cell pattern
-            elif has_nan_right and target_row is None:
-                target_row, target_col = row_idx, col_idx
-                if sheet_name:
-                    print(f"🎯 [{sheet_name}] Found 'Indicative' variant at Row {row_idx}, Col {col_idx} (merged cell)")
-        
-        # If no merged cell pattern found, use the last "Indicative adjusted" (often the main header)
-        if target_row is None and indicative_positions:
-            target_row, target_col = indicative_positions[-1]
-            if sheet_name:
-                print(f"🎯 [{sheet_name}] Using last 'Indicative adjusted' at Row {target_row}, Col {target_col}")
-        
-        # Detect the merged cell range for THIS specific "Indicative adjusted"
-        merge_start_col = target_col
-        merge_end_col = target_col
-        
-        # Look to the right in the SAME ROW for NaN values (merged cell continuation)
-        for right_col in range(target_col + 1, min(target_col + 10, len(columns))):
-            right_val = df.iloc[target_row, right_col]
-            
-            # If we find NaN in the same row, this merged cell continues
-            if pd.isna(right_val):
-                merge_end_col = right_col
-                if sheet_name:
-                    print(f"  📍 [{sheet_name}] Merged cell continues to col {right_col} (NaN)")
-            # If we find ANY non-NaN value in the same row, this merged cell ends
-            else:
-                if sheet_name:
-                    print(f"  📍 [{sheet_name}] Merged cell ends before col {right_col} (found: '{right_val}')")
-                break
-        
-        indicative_merged_range = (merge_start_col, merge_end_col)
-        range_cols = [columns[i] for i in range(merge_start_col, min(merge_end_col + 1, len(columns)))]
-        
-        if sheet_name:
-            print(f"📍 [{sheet_name}] 'Indicative adjusted' merged cell: columns {merge_start_col}-{merge_end_col}")
-            print(f"📋 [{sheet_name}] Columns in range: {range_cols}")
-        else:
-            print(f"📍 'Indicative adjusted' merged cell: columns {merge_start_col}-{merge_end_col}")
-            print(f"📋 Columns in range: {range_cols}")
-    
-    # Process based on whether we have merged cell information or not
-    all_found_dates = []
-    
-    if indicative_merged_range:
-        # Use the detected merged cell range
-        start_col, end_col = indicative_merged_range
-        # Look for dates in the rows below the merged cell (optimized search)
-        for row_idx in range(max_search_rows):
-            for col_idx in range(start_col, end_col + 1):
-                if col_idx < len(columns):
-                    col = columns[col_idx]
-                    val = df.iloc[row_idx, col_idx]
-                    
-                    if isinstance(val, (pd.Timestamp, datetime)):
-                        date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                        all_found_dates.append((date_val, col, row_idx, col_idx))
-                    elif pd.notna(val):
-                        parsed_date = parse_date(str(val))
-                        if parsed_date:
-                            all_found_dates.append((parsed_date, col, row_idx, col_idx))
-        
-        # Select the latest date from within the merged cell range
-        if all_found_dates:
-            latest_date_info = max(all_found_dates, key=lambda x: x[0])
-            latest_date, latest_column, latest_row, latest_col_idx = latest_date_info
-            if sheet_name:
-                print(f"🎯 [{sheet_name}] SELECTED: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
-            else:
-                print(f"🎯 SELECTED from merged cell: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
-    
-    else:
-        # Strategy 2: No "Indicative adjusted" found, use standard date detection
-        if sheet_name:
-            print(f"🔍 [{sheet_name}] No 'Indicative adjusted' found, using standard date detection")
-        
-        # Use standard date detection for all columns
-        latest_date = None
+    # If no dates found in column names, check the first few rows for datetime values
+    if latest_column is None and len(df) > 0:
+        # Check first 5 rows for date values (dates can be in different rows)
         for row_idx in range(min(5, len(df))):
-            for col_idx, col in enumerate(columns):
-                val = df.iloc[row_idx, col_idx]
+            row = df.iloc[row_idx]
+            for col in columns:
+                val = row[col]
                 
+                # Check if it's already a datetime object
                 if isinstance(val, (pd.Timestamp, datetime)):
                     date_val = val if isinstance(val, datetime) else val.to_pydatetime()
                     if latest_date is None or date_val > latest_date:
                         latest_date = date_val
                         latest_column = col
+                # Check if it's a string that can be parsed as a date
                 elif pd.notna(val):
                     parsed_date = parse_date(str(val))
                     if parsed_date and (latest_date is None or parsed_date > latest_date):
                         latest_date = parsed_date
                         latest_column = col
-        
-        if latest_column and sheet_name:
-            print(f"🎯 [{sheet_name}] SELECTED: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
-    
-
     
     return latest_column
 
@@ -1151,7 +1034,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                 combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
                 
                 # Detect latest date column once per sheet (not per dataframe)
-                latest_date_col = detect_latest_date_column(df, sheet_name, excel_source)
+                latest_date_col = detect_latest_date_column(df)
                 
                 # Organize sections by key - make it less restrictive
                 for data_frame in dataframes:
@@ -1494,12 +1377,12 @@ def main():
         cache_version = st.session_state.get('cache_version', 'v1')
         
         # Clear cache if entity changes or if we need to update for date detection
-        if (last_entity is None or last_entity != selected_entity or cache_version != 'v8'):
+        if (last_entity is None or last_entity != selected_entity or cache_version != 'v9'):
             keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
             for key in keys_to_remove:
                 del st.session_state[key]
             st.session_state['last_selected_entity'] = selected_entity
-            st.session_state['cache_version'] = 'v8'  # Update cache version for date detection
+            st.session_state['cache_version'] = 'v9'  # Update cache version for date detection
         
         # Financial Statement Type Selection
         st.markdown("---")

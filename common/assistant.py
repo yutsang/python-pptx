@@ -594,8 +594,8 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         print("An error occurred while processing the Excel file:", e)
         return ""
 
-def detect_latest_date_column(df, sheet_name=None, excel_file=None):
-    """Detect the latest date column from a DataFrame, including xMxx format dates and merged cell structures."""
+def detect_latest_date_column(df):
+    """Detect the latest date column from a DataFrame, including xMxx format dates."""
     import re
     from datetime import datetime
     
@@ -831,7 +831,7 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
             return {}
         
         # Detect latest date column automatically
-        latest_date_col = detect_latest_date_column(df, sheet_name, filename)
+        latest_date_col = detect_latest_date_column(df)
         if latest_date_col:
             # Use the latest date column instead of the requested date
             date_column = latest_date_col
