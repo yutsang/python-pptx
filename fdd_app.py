@@ -465,7 +465,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         st.error(f"An error occurred while processing the Excel file: {e}")
         return ""
 
-def parse_accounting_table(df, key, entity_name, sheet_name, debug=False):
+def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=None, debug=False):
     """
     Parse accounting table with proper header detection and figure column identification
     Returns structured table data with metadata
@@ -528,22 +528,30 @@ def parse_accounting_table(df, key, entity_name, sheet_name, debug=False):
                     currency_info = "CNY'000,000"
                     break
         
-        # Find the value column - look for "Indicative adjusted" first, then "Total"
+        # Find the value column - use detected latest_date_col if provided
         value_col_idx = None
         value_col_name = ""
         
-        for i in range(min(3, len(df_str))):  # Check first 3 rows for headers
-            for j in range(len(df_str.columns)):
-                cell_value = str(df_str.iloc[i, j]).lower()
-                if "indicative adjusted" in cell_value:
-                    value_col_idx = j
-                    value_col_name = "Indicative adjusted"
-                    # Found value column indicator
-                    break
-                elif "total" in cell_value and value_col_idx is None:
-                    value_col_idx = j
-                    value_col_name = "Total"
-                    # Found total column
+        if latest_date_col and latest_date_col in df_str.columns:
+            # Use the detected latest date column
+            value_col_idx = df_str.columns.get_loc(latest_date_col)
+            value_col_name = "Indicative adjusted"  # This is the detected column
+            print(f"   🎯 Using detected latest date column: {latest_date_col} (col {value_col_idx})")
+        else:
+            # Fallback to original logic
+            print(f"   ⚠️  No latest_date_col provided, using fallback detection")
+            for i in range(min(3, len(df_str))):  # Check first 3 rows for headers
+                for j in range(len(df_str.columns)):
+                    cell_value = str(df_str.iloc[i, j]).lower()
+                    if "indicative adjusted" in cell_value:
+                        value_col_idx = j
+                        value_col_name = "Indicative adjusted"
+                        # Found value column indicator
+                        break
+                    elif "total" in cell_value and value_col_idx is None:
+                        value_col_idx = j
+                        value_col_name = "Total"
+                        # Found total column
         
         # If still no specific column found, look for any column with financial data patterns
         if value_col_idx is None:
@@ -653,8 +661,25 @@ def parse_accounting_table(df, key, entity_name, sheet_name, debug=False):
             else:
                 return None
         
-        # Extract date from the table - look for date patterns in the first few rows
+        # Extract date from the detected latest date column
         extracted_date = None
+        
+        if latest_date_col and latest_date_col in df_str.columns and value_col_idx is not None:
+            # Look for date in the detected latest date column
+            from datetime import datetime
+            col_idx = df_str.columns.get_loc(latest_date_col)
+            for i in range(min(5, len(df_str))):
+                val = df_str.iloc[i, col_idx]
+                if isinstance(val, (pd.Timestamp, datetime)):
+                    date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                    extracted_date = date_val.strftime('%Y-%m-%d')
+                    print(f"   📅 Extracted date from detected column {latest_date_col}: {extracted_date}")
+                    break
+        
+        # Fallback: Extract date using pattern matching if not found in detected column
+        if not extracted_date:
+            print(f"   🔍 Fallback: Searching for date patterns in table")
+            extracted_date = None
         date_patterns = [
             r'(\d{4})-(\d{1,2})-(\d{1,2})',  # YYYY-MM-DD
             r'(\d{1,2})/(\d{1,2})/(\d{4})',  # DD/MM/YYYY
@@ -1313,8 +1338,8 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         
                         # If entity filter matches or helpers are empty, process
                         if entity_mask.any() or not entity_suffixes or all(s.strip() == '' for s in entity_suffixes):
-                            # Use new accounting table parser
-                            parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name)
+                            # Use new accounting table parser with detected latest date column
+                            parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col)
                             
                             if parsed_table:
                                 sections_by_key[best_key].append({
@@ -1697,8 +1722,9 @@ def main():
         
         # Handle different statement types with session state caching
         if statement_type == "BS":
-            # Create cache key to avoid reprocessing
-            cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}"
+            # Create cache key to avoid reprocessing (include version for cache invalidation)
+            cache_version = "v10_entity_focused_indicative_adjusted"  # Increment when logic changes
+            cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
             
             if cache_key not in st.session_state:
                 # Original BS logic - only run if not cached
@@ -1795,8 +1821,9 @@ def main():
                     if not entity_keywords:
                         entity_keywords = [selected_entity]
                 
-                # Get worksheet sections with caching
-                cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}"
+                # Get worksheet sections with caching (include version for cache invalidation)
+                cache_version = "v10_entity_focused_indicative_adjusted"  # Increment when logic changes
+                cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
                 
                 if cache_key not in st.session_state:
                     with st.spinner("🔄 Processing Excel file for AI..."):
