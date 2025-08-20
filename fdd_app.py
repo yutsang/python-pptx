@@ -3451,4 +3451,3 @@ def show_text_differences(text1, text2):
 
 if __name__ == "__main__":
     main() 
-    main() 

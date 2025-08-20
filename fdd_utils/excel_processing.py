@@ -6,6 +6,7 @@ Moved from fdd_app.py for better organization.
 
 import pandas as pd
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 import streamlit as st
@@ -585,15 +586,18 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         
         # Check cache first (with force refresh option)
         try:
-            force_refresh = st.session_state.get('force_refresh', False)
+            force_refresh = st.session_state.get('force_refresh', False) if 'streamlit' in sys.modules else False
         except Exception:
             force_refresh = False
         
         cached_result = cache.get_cached_excel_data(filename, entity_name, force_refresh)
         if cached_result is not None:
             # Clear force refresh flag after using it
-            if force_refresh:
-                st.session_state['force_refresh'] = False
+            try:
+                if force_refresh and 'streamlit' in sys.modules:
+                    st.session_state['force_refresh'] = False
+            except Exception:
+                pass
             return cached_result
         
         # Load the Excel file
@@ -763,8 +767,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                 
                 # Organize sections by key - make it less restrictive
                 for data_frame in dataframes:
-                    if debug and latest_date_col:
-                        st.write(f"📅 Latest date column detected: {latest_date_col}")
+                    if debug and latest_date_col and 'streamlit' in sys.modules:
+                        try:
+                            st.write(f"📅 Latest date column detected: {latest_date_col}")
+                        except Exception:
+                            pass
                     
                     # Check if this section contains any of the financial keys
                     matched_keys = []  # Track which keys this data_frame matches
