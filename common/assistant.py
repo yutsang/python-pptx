@@ -649,140 +649,151 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
     print(f"🔍 {sheet_name}: Searching for latest date column...")
     print(f"   Available columns: {columns}")
     
-    # Strategy 1: Look for "Indicative adjusted" merged cell and prioritize dates under it
-    # But only in sections that contain the entity
+    # Strategy 1: Extract entity-related tables first, then find "Indicative adjusted" columns
+    print(f"   🎯 STEP 1: Extracting entity-related tables from {sheet_name}")
+    
+    # Extract entity-related tables using the same logic as the main processing
+    entity_tables = []
+    entity_keywords_list = entity_keywords or []
+    
+    # Split dataframe into sections based on empty rows
+    empty_rows = df.index[df.isnull().all(1)]
+    start_idx = 0
+    sections = []
+    
+    for end_idx in empty_rows:
+        if end_idx > start_idx:
+            section_df = df[start_idx:end_idx]
+            if not section_df.dropna(how='all').empty:
+                sections.append((start_idx, end_idx, section_df))
+            start_idx = end_idx + 1
+    
+    if start_idx < len(df):
+        sections.append((start_idx, len(df), df[start_idx:]))
+    
+    # Filter sections to only those containing entity keywords
+    for start_row, end_row, section_df in sections:
+        # Check if this section contains entity keywords
+        section_has_entity = False
+        all_cells = [str(cell).lower() for cell in section_df.values.flatten()]
+        
+        for keyword in entity_keywords_list:
+            if any(keyword.lower() in cell for cell in all_cells):
+                section_has_entity = True
+                entity_tables.append((start_row, end_row, section_df))
+                print(f"   ✅ Entity table found: Rows {start_row}-{end_row} (contains '{keyword}')")
+                break
+    
+    if not entity_tables:
+        print(f"   ⚠️  No entity-specific tables found, using first section as fallback")
+        if sections:
+            entity_tables = [sections[0]]
+    
+    print(f"   📊 Found {len(entity_tables)} entity-related tables")
+    
+    # Strategy 2: Within entity tables, find "Indicative adjusted" and get the correct column
     indicative_positions = []
+    all_found_dates = []
     
-    # First, find sections that contain the entity
-    entity_sections = []
-    current_section_start = 0
+    for start_row, end_row, entity_df in entity_tables:
+        print(f"   🔍 STEP 2: Searching entity table (rows {start_row}-{end_row}) for 'Indicative adjusted'")
+        
+        # Find "Indicative adjusted" positions within this entity table
+        for local_row_idx in range(len(entity_df)):
+            global_row_idx = start_row + local_row_idx
+            for col_idx, col in enumerate(columns):
+                val = entity_df.iloc[local_row_idx, col_idx]
+                if pd.notna(val) and 'indicative' in str(val).lower() and 'adjusted' in str(val).lower():
+                    indicative_positions.append((global_row_idx, col_idx))
+                    print(f"     📋 Found 'Indicative adjusted' at Row {global_row_idx}, Col {col_idx} ({col})")
+        
+        # Find dates within this entity table
+        for local_row_idx in range(len(entity_df)):
+            global_row_idx = start_row + local_row_idx
+            for col_idx, col in enumerate(columns):
+                val = entity_df.iloc[local_row_idx, col_idx]
+                
+                if isinstance(val, (pd.Timestamp, datetime)):
+                    date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                    all_found_dates.append((date_val, col, global_row_idx, col_idx, "datetime"))
+                    print(f"     📅 Found datetime in {col}[{global_row_idx}]: {date_val.strftime('%Y-%m-%d')}")
+                elif pd.notna(val):
+                    parsed_date = parse_date(str(val))
+                    if parsed_date:
+                        all_found_dates.append((parsed_date, col, global_row_idx, col_idx, "parsed"))
+                        print(f"     📅 Parsed date in {col}[{global_row_idx}]: '{val}' -> {parsed_date.strftime('%Y-%m-%d')}")
     
-    # Split sheet into sections based on empty rows or section headers
-    for row_idx in range(len(df)):
-        # Check if this row contains entity keywords
-        row_has_entity = False
-        for col_idx, col in enumerate(columns):
-            val = df.iloc[row_idx, col_idx]
-            if pd.notna(val):
-                val_str = str(val).lower()
-                # Check if this cell contains entity name or suffixes (but not just sheet name)
-                keywords_to_check = entity_keywords or []
-                if any(keyword.lower() in val_str for keyword in keywords_to_check):
-                    row_has_entity = True
+    # Strategy 3: Prioritize "Indicative adjusted" columns with latest dates
+    if indicative_positions and all_found_dates:
+        print(f"   🎯 STEP 3: Prioritizing 'Indicative adjusted' columns with latest dates")
+        
+        # Find the latest date
+        max_date = max(all_found_dates, key=lambda x: x[0])[0]
+        latest_date_columns = [item for item in all_found_dates if item[0] == max_date]
+        
+        print(f"   📊 Latest date found: {max_date.strftime('%Y-%m-%d')}")
+        if len(latest_date_columns) > 1:
+            print(f"   📊 Multiple columns with latest date:")
+            for date_val, col, row, col_idx, source in latest_date_columns:
+                print(f"      • {col} (col {col_idx})")
+        
+        # Find which "Indicative adjusted" positions have the latest date
+        selected_column = None
+        
+        for indic_row, indic_col in indicative_positions:
+            print(f"   🔍 Checking 'Indicative adjusted' at col {indic_col}")
+            
+            # Check if this exact column has the latest date
+            exact_match = None
+            for date_val, col, row, col_idx, source in latest_date_columns:
+                if col_idx == indic_col:
+                    exact_match = (date_val, col, row, col_idx, source)
+                    print(f"     ✅ EXACT match: {col} (col {col_idx}) has latest date")
+                    break
+            
+            if exact_match:
+                selected_column = exact_match
+                print(f"   🎯 SELECTED: {selected_column[1]} (EXACT 'Indicative adjusted' column with latest date)")
+                break
+            else:
+                # Check merged range for this "Indicative adjusted"
+                print(f"     🔍 EXACT column doesn't have latest date, checking merged range...")
+                
+                # Detect merged range
+                merge_start = indic_col
+                merge_end = indic_col
+                
+                for check_col in range(indic_col + 1, len(columns)):
+                    val = df.iloc[indic_row, check_col]
+                    if pd.isna(val):
+                        merge_end = check_col
+                    else:
+                        merge_end = check_col - 1
+                        break
+                else:
+                    merge_end = len(columns) - 1
+                
+                print(f"     📍 Merged range: columns {merge_start}-{merge_end}")
+                
+                # Find latest date within this merged range
+                range_matches = []
+                for date_val, col, row, col_idx, source in latest_date_columns:
+                    if merge_start <= col_idx <= merge_end:
+                        range_matches.append((date_val, col, row, col_idx, source))
+                        print(f"     ✅ {col} (col {col_idx}) is in merged range with latest date")
+                
+                if range_matches:
+                    selected_column = range_matches[0]  # Use first match in range
+                    print(f"   🎯 SELECTED: {selected_column[1]} (latest date in 'Indicative adjusted' merged range)")
                     break
         
-        if row_has_entity:
-            entity_sections.append((current_section_start, row_idx + 10))  # Include some context after
-            current_section_start = row_idx + 10
-    
-    # If no entity-specific sections found, search limited area around headers
-    if not entity_sections:
-        entity_sections = [(0, min(20, len(df)))]  # Search first 20 rows as fallback
-    
-    print(f"   🎯 Searching for 'Indicative adjusted' only in entity-relevant sections: {len(entity_sections)} sections")
-    
-    # Find "Indicative adjusted" text positions only in entity-relevant sections
-    for start_row, end_row in entity_sections:
-        for row_idx in range(start_row, min(end_row, len(df))):
-            for col_idx, col in enumerate(columns):
-                val = df.iloc[row_idx, col_idx]
-                if pd.notna(val) and 'indicative' in str(val).lower() and 'adjusted' in str(val).lower():
-                    indicative_positions.append((row_idx, col_idx))
-                    print(f"   📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx} ({col}) in entity section")
-    
-    # If we found "Indicative adjusted", use enhanced logic
-    if indicative_positions:
-        print(f"   🎯 Using 'Indicative adjusted' prioritization logic")
-        all_found_dates = []
-        
-        # First, collect dates only from entity-relevant sections
-        for start_row, end_row in entity_sections:
-            for row_idx in range(start_row, min(end_row, len(df))):
-                for col_idx, col in enumerate(columns):
-                    val = df.iloc[row_idx, col_idx]
-                    
-                    if isinstance(val, (pd.Timestamp, datetime)):
-                        date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                        all_found_dates.append((date_val, col, row_idx, col_idx, "datetime"))
-                        print(f"   📅 Found datetime in {col}[{row_idx}]: {date_val.strftime('%Y-%m-%d')} (entity section {start_row}-{end_row})")
-                    elif pd.notna(val):
-                        parsed_date = parse_date(str(val))
-                        if parsed_date:
-                            all_found_dates.append((parsed_date, col, row_idx, col_idx, "parsed"))
-                            print(f"   📅 Parsed date in {col}[{row_idx}]: '{val}' -> {parsed_date.strftime('%Y-%m-%d')} (entity section {start_row}-{end_row})")
-        
-        if all_found_dates:
-            # Find the latest date
-            max_date = max(all_found_dates, key=lambda x: x[0])[0]
-            latest_date_columns = [item for item in all_found_dates if item[0] == max_date]
-            
-            print(f"   📊 Latest date found: {max_date.strftime('%Y-%m-%d')}")
-            if len(latest_date_columns) > 1:
-                print(f"   📊 Multiple columns with latest date:")
-                for date_val, col, row, col_idx, source in latest_date_columns:
-                    print(f"      • {col} (col {col_idx})")
-            
-            # Now find which columns are under "Indicative adjusted" merged cell
-            selected_column = None
-            
-            for indic_row, indic_col in indicative_positions:
-                if indic_col > 0:  # Not in description column
-                    print(f"   🔍 Analyzing 'Indicative adjusted' merged cell at col {indic_col}")
-                    
-                    # Use NaN-based merged cell detection
-                    # Find the range by looking for NaN values to the right
-                    merge_start = indic_col
-                    merge_end = indic_col
-                    
-                    # Look right for NaN values (indicating merged cells)
-                    # In Excel merged cells, the leftmost cell has the value, others are NaN
-                    for check_col in range(indic_col + 1, len(columns)):
-                        val = df.iloc[indic_row, check_col]
-                        if pd.isna(val):
-                            merge_end = check_col
-                        else:
-                            # Found non-NaN value, this is the end of the merged range
-                            merge_end = check_col - 1
-                            break
-                    else:
-                        # If we reached the end without finding non-NaN, merge goes to the last column
-                        merge_end = len(columns) - 1
-                    
-                    print(f"   📍 'Indicative adjusted' merged cell range: columns {merge_start}-{merge_end}")
-                    print(f"   📋 Columns under 'Indicative adjusted': {[columns[i] for i in range(merge_start, merge_end + 1)]}")
-                    
-                    # Find latest date columns that match the EXACT "Indicative adjusted" column
-                    # Don't consider the entire merged range - only the column where "Indicative adjusted" actually appears
-                    indicative_latest_columns = []
-                    for date_val, col, row, col_idx, source in latest_date_columns:
-                        if col_idx == indic_col:  # Only the exact column with "Indicative adjusted" text
-                            indicative_latest_columns.append((date_val, col, row, col_idx, source))
-                            print(f"   ✅ {col} (col {col_idx}) is the EXACT 'Indicative adjusted' column with latest date")
-                    
-                    if indicative_latest_columns:
-                        # Use the "Indicative adjusted" column with latest date
-                        selected_column = indicative_latest_columns[0]
-                        print(f"   🎯 PRIORITIZED: {selected_column[1]} (latest date in EXACT 'Indicative adjusted' column)")
-                        break
-                    else:
-                        print(f"   ⚠️  'Indicative adjusted' column {indic_col} doesn't have the latest date, checking merged range...")
-                        # Fallback: check if any column in the merged range has the latest date
-                        for date_val, col, row, col_idx, source in latest_date_columns:
-                            if merge_start <= col_idx <= merge_end:
-                                indicative_latest_columns.append((date_val, col, row, col_idx, source))
-                                print(f"   ✅ {col} (col {col_idx}) is in merged range with latest date")
-                        
-                        if indicative_latest_columns:
-                            selected_column = indicative_latest_columns[0]
-                            print(f"   🎯 FALLBACK: {selected_column[1]} (latest date in merged range)")
-                            break
-            
-            # If no column found under "Indicative adjusted", use first column with latest date
-            if selected_column is None:
-                selected_column = latest_date_columns[0]
-                print(f"   ⚠️  Using first column with latest date: {selected_column[1]} (no 'Indicative adjusted' match)")
-            
+        if selected_column:
             latest_date, latest_column = selected_column[0], selected_column[1]
+        else:
+            # No "Indicative adjusted" column found with latest date, use first latest
+            selected_column = latest_date_columns[0]
+            latest_date, latest_column = selected_column[0], selected_column[1]
+            print(f"   ⚠️  No 'Indicative adjusted' match, using: {latest_column}")
     
     # Strategy 2: Fallback to simple logic if no "Indicative adjusted" found
     else:
