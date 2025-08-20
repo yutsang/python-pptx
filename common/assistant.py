@@ -594,7 +594,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         print("An error occurred while processing the Excel file:", e)
         return ""
 
-def detect_latest_date_column(df):
+def detect_latest_date_column(df, sheet_name="Sheet"):
     """Detect the latest date column from a DataFrame, including xMxx format dates."""
     import re
     from datetime import datetime
@@ -646,16 +646,27 @@ def detect_latest_date_column(df):
     latest_date = None
     latest_column = None
     
+    print(f"🔍 Searching for latest date column...")
+    print(f"   Available columns: {columns}")
+    
     # First, try to find dates in column names
+    column_dates_found = []
     for col in columns:
         col_str = str(col)
         parsed_date = parse_date(col_str)
-        if parsed_date and (latest_date is None or parsed_date > latest_date):
-            latest_date = parsed_date
-            latest_column = col
+        if parsed_date:
+            column_dates_found.append((parsed_date, col, "column_name"))
+            print(f"   📅 Found date in column name '{col}': {parsed_date.strftime('%Y-%m-%d')}")
+            if latest_date is None or parsed_date > latest_date:
+                latest_date = parsed_date
+                latest_column = col
+                print(f"   ✅ New latest: {col} ({parsed_date.strftime('%Y-%m-%d')})")
     
     # If no dates found in column names, check the first few rows for datetime values
     if latest_column is None and len(df) > 0:
+        print(f"   🔍 No dates in column names, checking row values...")
+        cell_dates_found = []
+        
         # Check first 5 rows for date values (dates can be in different rows)
         for row_idx in range(min(5, len(df))):
             row = df.iloc[row_idx]
@@ -665,15 +676,39 @@ def detect_latest_date_column(df):
                 # Check if it's already a datetime object
                 if isinstance(val, (pd.Timestamp, datetime)):
                     date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                    cell_dates_found.append((date_val, col, f"row_{row_idx}"))
+                    print(f"   📅 Found datetime in {col}[{row_idx}]: {date_val.strftime('%Y-%m-%d')}")
                     if latest_date is None or date_val > latest_date:
                         latest_date = date_val
                         latest_column = col
+                        print(f"   ✅ New latest: {col} ({date_val.strftime('%Y-%m-%d')}) from row {row_idx}")
                 # Check if it's a string that can be parsed as a date
                 elif pd.notna(val):
                     parsed_date = parse_date(str(val))
-                    if parsed_date and (latest_date is None or parsed_date > latest_date):
-                        latest_date = parsed_date
-                        latest_column = col
+                    if parsed_date:
+                        cell_dates_found.append((parsed_date, col, f"row_{row_idx}_parsed"))
+                        print(f"   📅 Parsed date in {col}[{row_idx}]: '{val}' -> {parsed_date.strftime('%Y-%m-%d')}")
+                        if latest_date is None or parsed_date > latest_date:
+                            latest_date = parsed_date
+                            latest_column = col
+                            print(f"   ✅ New latest: {col} ({parsed_date.strftime('%Y-%m-%d')}) from row {row_idx}")
+        
+        if not cell_dates_found:
+            print(f"   ❌ No dates found in cell values")
+    
+    # Summary of selection
+    if latest_column:
+        print(f"   🎯 FINAL SELECTION: Column '{latest_column}' with date {latest_date.strftime('%Y-%m-%d')}")
+        
+        # Show all dates found for comparison
+        all_dates = column_dates_found + (cell_dates_found if 'cell_dates_found' in locals() else [])
+        if len(all_dates) > 1:
+            print(f"   📊 All dates found (for comparison):")
+            for date_val, col, source in sorted(all_dates, key=lambda x: x[0], reverse=True):
+                marker = "👑" if col == latest_column else "  "
+                print(f"   {marker} {col}: {date_val.strftime('%Y-%m-%d')} (from {source})")
+    else:
+        print(f"   ❌ No date column detected")
     
     return latest_column
 
@@ -689,7 +724,7 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
             return {}
         
         # Detect latest date column automatically
-        latest_date_col = detect_latest_date_column(df)
+        latest_date_col = detect_latest_date_column(df, sheet_name)
         if latest_date_col:
             # Use the latest date column instead of the requested date
             date_column = latest_date_col
