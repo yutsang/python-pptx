@@ -670,11 +670,27 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             col_idx = df_str.columns.get_loc(latest_date_col)
             for i in range(min(5, len(df_str))):
                 val = df_str.iloc[i, col_idx]
-                if isinstance(val, (pd.Timestamp, datetime)):
-                    date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                    extracted_date = date_val.strftime('%Y-%m-%d')
+                print(f"   🔍 Checking row {i}, value: {repr(val)} (type: {type(val)})")
+                
+                if isinstance(val, datetime):
+                    extracted_date = val.strftime('%Y-%m-%d')
                     print(f"   📅 Extracted date from detected column {latest_date_col}: {extracted_date}")
                     break
+                elif isinstance(val, pd.Timestamp):
+                    date_val = val.to_pydatetime()
+                    extracted_date = date_val.strftime('%Y-%m-%d')
+                    print(f"   📅 Extracted timestamp from detected column {latest_date_col}: {extracted_date}")
+                    break
+                elif pd.notna(val):
+                    # Try to convert to datetime if it's a different type
+                    try:
+                        date_val = pd.to_datetime(val)
+                        extracted_date = date_val.strftime('%Y-%m-%d')
+                        print(f"   📅 Converted and extracted date from detected column {latest_date_col}: {extracted_date}")
+                        break
+                    except:
+                        print(f"   ⚠️  Could not convert {repr(val)} to date")
+                        continue
         
         # Fallback: Extract date using pattern matching if not found in detected column
         if not extracted_date:
@@ -4600,4 +4616,5 @@ def show_text_differences(text1, text2):
         st.info("Changes are mostly within existing sentences (minor edits)")
 
 if __name__ == "__main__":
+    main() 
     main() 
