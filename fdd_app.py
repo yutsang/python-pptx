@@ -954,8 +954,8 @@ def detect_latest_date_column(df, sheet_name="Sheet"):
     # Strategy 1: Look for "Indicative adjusted" merged cell and prioritize dates under it
     indicative_positions = []
     
-    # Find "Indicative adjusted" text positions
-    for row_idx in range(min(10, len(df))):
+    # Find "Indicative adjusted" text positions (search entire sheet)
+    for row_idx in range(len(df)):
         for col_idx, col in enumerate(columns):
             val = df.iloc[row_idx, col_idx]
             if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
@@ -967,8 +967,8 @@ def detect_latest_date_column(df, sheet_name="Sheet"):
         print(f"   🎯 Using 'Indicative adjusted' prioritization logic")
         all_found_dates = []
         
-        # First, collect ALL dates from the sheet
-        for row_idx in range(min(10, len(df))):
+        # First, collect ALL dates from the sheet (search entire sheet)
+        for row_idx in range(len(df)):
             for col_idx, col in enumerate(columns):
                 val = df.iloc[row_idx, col_idx]
                 
