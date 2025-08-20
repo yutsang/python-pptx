@@ -646,176 +646,34 @@ def detect_latest_date_column(df):
     latest_date = None
     latest_column = None
     
-    # Strategy 1: Look for "Indicative adjusted" and find ALL dates under it, then pick the latest
-    indicative_positions = []
+    # First, try to find dates in column names
+    for col in columns:
+        col_str = str(col)
+        parsed_date = parse_date(col_str)
+        if parsed_date and (latest_date is None or parsed_date > latest_date):
+            latest_date = parsed_date
+            latest_column = col
     
-    # Find ALL "Indicative adjusted" text positions
-    for row_idx in range(min(10, len(df))):
-        for col_idx, col in enumerate(columns):
-            val = df.iloc[row_idx, col_idx]
-            if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
-                indicative_positions.append((row_idx, col_idx))
-                print(f"📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx}")
-    
-    # If we found "Indicative adjusted", look for ALL dates in columns under the merged cell
-    if indicative_positions:
-        all_found_dates = []
-        
-        for indicative_row, indicative_col in indicative_positions:
-            print(f"🔍 Searching for dates under 'Indicative adjusted' merged cell...")
-            
-            # The merged cell spans multiple columns, so check all columns to the right
-            # Look in the next few rows below the "Indicative adjusted" text for dates
-            for check_row in range(indicative_row + 1, min(indicative_row + 5, len(df))):
-                # Check all columns starting from the indicative column (merged cell spans multiple columns)
-                for col_idx in range(max(0, indicative_col - 1), min(indicative_col + 10, len(columns))):
-                    col = columns[col_idx]
-                    val = df.iloc[check_row, col_idx]
-                    
-                    if isinstance(val, (pd.Timestamp, datetime)):
-                        date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                        all_found_dates.append((date_val, col, check_row, col_idx))
-                        print(f"  📅 Date found: {col} = {date_val.strftime('%Y-%m-%d')}")
-                    elif pd.notna(val):
-                        parsed_date = parse_date(str(val))
-                        if parsed_date:
-                            all_found_dates.append((parsed_date, col, check_row, col_idx))
-                            print(f"  📅 Parsed date: {col} = {parsed_date.strftime('%Y-%m-%d')}")
-        
-        # Pick the latest date from all found dates, prioritizing "Indicative adjusted" column
-        if all_found_dates:
-            # Find the actual latest date value
-            max_date = max(all_found_dates, key=lambda x: x[0])[0]
-            
-            # Find all columns with the latest date
-            latest_date_columns = [item for item in all_found_dates if item[0] == max_date]
-            
-            if len(latest_date_columns) > 1:
-                print(f"  📊 Multiple columns with latest date {max_date.strftime('%Y-%m-%d')}:")
-                for date_val, col, row, col_idx in latest_date_columns:
-                    print(f"    • {col}")
-            else:
-                print(f"  📅 Single column with latest date: {max_date.strftime('%Y-%m-%d')}")
-            
-            # Prioritize "Indicative adjusted" column if multiple columns have the same latest date
-            selected_column = None
-            
-            # Find the position of "Indicative adjusted" text
-            indicative_text_positions = []
-            for pos_row, pos_col in indicative_positions:
-                val = df.iloc[pos_row, pos_col]
-                if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
-                    indicative_text_positions.append((pos_row, pos_col))
-            
-            # Find which columns are under "Indicative adjusted" merged cell specifically
-            indicative_start_col = None
-            indicative_end_col = None
-            
-            # Find the "Indicative adjusted" header that's NOT in the description column
-            for indic_row, indic_col in indicative_text_positions:
-                if indic_col > 0:  # Not in description column
-                    val = df.iloc[indic_row, indic_col]
-                    if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
-                        # This is the "Indicative adjusted" merged cell header
-                        indicative_start_col = indic_col
-                        
-                        # Find the exact range of the "Indicative adjusted" merged cell
-                        # Strategy: Look for other header text to determine boundaries
-                        
-                        # Find the start: look left for other headers
-                        for left_col in range(indic_col - 1, -1, -1):
-                            found_other_header = False
-                            for check_row in range(max(0, indic_row - 2), min(indic_row + 2, len(df))):
-                                left_val = df.iloc[check_row, left_col]
-                                if (pd.notna(left_val) and isinstance(left_val, str) and 
-                                    len(str(left_val).strip()) > 2 and
-                                    str(left_val).lower() not in ["cny'000", "cny'000"] and
-                                    'indicative' not in str(left_val).lower()):
-                                    found_other_header = True
-                                    indicative_start_col = left_col + 1
-                                    print(f"    📍 Found boundary header '{left_val}' at col {left_col}")
-                                    break
-                            if found_other_header:
-                                break
-                            else:
-                                indicative_start_col = left_col
-                        
-                        # Find the end: look right for other headers  
-                        indicative_end_col = len(columns) - 1  # Default to end
-                        for right_col in range(indic_col + 1, len(columns)):
-                            found_other_header = False
-                            for check_row in range(max(0, indic_row - 2), min(indic_row + 2, len(df))):
-                                right_val = df.iloc[check_row, right_col]
-                                if (pd.notna(right_val) and isinstance(right_val, str) and 
-                                    len(str(right_val).strip()) > 2 and
-                                    str(right_val).lower() not in ["cny'000", "cny'000"] and
-                                    'indicative' not in str(right_val).lower()):
-                                    found_other_header = True
-                                    indicative_end_col = right_col - 1
-                                    print(f"    📍 Found boundary header '{right_val}' at col {right_col}")
-                                    break
-                            if found_other_header:
-                                break
-                        
-                        print(f"    📍 'Indicative adjusted' merged cell range: columns {indicative_start_col}-{indicative_end_col}")
-                        
-                        # Verify by showing which columns are in this range
-                        range_cols = [columns[i] for i in range(indicative_start_col, min(indicative_end_col + 1, len(columns)))]
-                        print(f"    📋 Columns under 'Indicative adjusted': {range_cols}")
-                        break
-            
-            # Now find columns under "Indicative adjusted" that have the latest date
-            if indicative_start_col is not None:
-                indicative_latest_columns = []
-                for date_val, col, row, col_idx in latest_date_columns:
-                    if indicative_start_col <= col_idx <= indicative_end_col:
-                        indicative_latest_columns.append((date_val, col, row, col_idx))
-                        print(f"    ✅ {col} (col {col_idx}) is under 'Indicative adjusted' with latest date")
+    # If no dates found in column names, check the first few rows for datetime values
+    if latest_column is None and len(df) > 0:
+        # Check first 5 rows for date values (dates can be in different rows)
+        for row_idx in range(min(5, len(df))):
+            row = df.iloc[row_idx]
+            for col in columns:
+                val = row[col]
                 
-                if indicative_latest_columns:
-                    # Use the first (leftmost) column under "Indicative adjusted" with latest date
-                    selected_column = indicative_latest_columns[0]
-                    print(f"    🎯 SELECTED: {selected_column[1]} (latest date under 'Indicative adjusted')")
-                else:
-                    print(f"    ❌ No columns under 'Indicative adjusted' have the latest date")
-            
-            # If no "Indicative adjusted" column found, use the first one with latest date
-            if selected_column is None:
-                selected_column = latest_date_columns[0]
-                print(f"    ⚠️  Using first column with latest date: {selected_column[1]}")
-            
-            latest_date, latest_column, latest_row, latest_col_idx = selected_column
-    
-    # Strategy 2: If no "Indicative adjusted" found, use original logic
-    if latest_column is None:
-        # First, try to find dates in column names
-        for col in columns:
-            col_str = str(col)
-            parsed_date = parse_date(col_str)
-            if parsed_date and (latest_date is None or parsed_date > latest_date):
-                latest_date = parsed_date
-                latest_column = col
-        
-        # If still no dates found, check the first few rows for datetime values
-        if latest_column is None and len(df) > 0:
-            # Check first 5 rows for date values (dates can be in different rows)
-            for row_idx in range(min(5, len(df))):
-                row = df.iloc[row_idx]
-                for col in columns:
-                    val = row[col]
-                    
-                    # Check if it's already a datetime object
-                    if isinstance(val, (pd.Timestamp, datetime)):
-                        date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                        if latest_date is None or date_val > latest_date:
-                            latest_date = date_val
-                            latest_column = col
-                    # Check if it's a string that can be parsed as a date
-                    elif pd.notna(val):
-                        parsed_date = parse_date(str(val))
-                        if parsed_date and (latest_date is None or parsed_date > latest_date):
-                            latest_date = parsed_date
-                            latest_column = col
+                # Check if it's already a datetime object
+                if isinstance(val, (pd.Timestamp, datetime)):
+                    date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                    if latest_date is None or date_val > latest_date:
+                        latest_date = date_val
+                        latest_column = col
+                # Check if it's a string that can be parsed as a date
+                elif pd.notna(val):
+                    parsed_date = parse_date(str(val))
+                    if parsed_date and (latest_date is None or parsed_date > latest_date):
+                        latest_date = parsed_date
+                        latest_column = col
     
     return latest_column
 
@@ -894,7 +752,9 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
         
         for key, desc in financial_figure_map.items():
             if desc_column and date_column in df.columns:
-                value = df.loc[df[desc_column].str.contains(desc, case=False, na=False), date_column].values
+                # Convert description column to string to avoid .str accessor error
+                desc_series = df[desc_column].astype(str)
+                value = df.loc[desc_series.str.contains(desc, case=False, na=False), date_column].values
                 if value.size > 0:
                     # Apply scale factor: multiply by 1000 if '000 notation detected
                     financial_figures[key] = float(value[0]) * scale_factor
