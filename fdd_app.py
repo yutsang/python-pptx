@@ -992,7 +992,7 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
         for row_idx in range(start_row, min(end_row, len(df))):
             for col_idx, col in enumerate(columns):
                 val = df.iloc[row_idx, col_idx]
-                if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
+                if pd.notna(val) and 'indicative' in str(val).lower() and 'adjusted' in str(val).lower():
                     indicative_positions.append((row_idx, col_idx))
                     print(f"   📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx} ({col}) in entity section")
     
@@ -1001,20 +1001,21 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
         print(f"   🎯 Using 'Indicative adjusted' prioritization logic")
         all_found_dates = []
         
-        # First, collect ALL dates from the sheet (search entire sheet)
-        for row_idx in range(len(df)):
-            for col_idx, col in enumerate(columns):
-                val = df.iloc[row_idx, col_idx]
-                
-                if isinstance(val, (pd.Timestamp, datetime)):
-                    date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                    all_found_dates.append((date_val, col, row_idx, col_idx, "datetime"))
-                    print(f"   📅 Found datetime in {col}[{row_idx}]: {date_val.strftime('%Y-%m-%d')}")
-                elif pd.notna(val):
-                    parsed_date = parse_date(str(val))
-                    if parsed_date:
-                        all_found_dates.append((parsed_date, col, row_idx, col_idx, "parsed"))
-                        print(f"   📅 Parsed date in {col}[{row_idx}]: '{val}' -> {parsed_date.strftime('%Y-%m-%d')}")
+        # First, collect dates only from entity-relevant sections
+        for start_row, end_row in entity_sections:
+            for row_idx in range(start_row, min(end_row, len(df))):
+                for col_idx, col in enumerate(columns):
+                    val = df.iloc[row_idx, col_idx]
+                    
+                    if isinstance(val, (pd.Timestamp, datetime)):
+                        date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                        all_found_dates.append((date_val, col, row_idx, col_idx, "datetime"))
+                        print(f"   📅 Found datetime in {col}[{row_idx}]: {date_val.strftime('%Y-%m-%d')} (entity section {start_row}-{end_row})")
+                    elif pd.notna(val):
+                        parsed_date = parse_date(str(val))
+                        if parsed_date:
+                            all_found_dates.append((parsed_date, col, row_idx, col_idx, "parsed"))
+                            print(f"   📅 Parsed date in {col}[{row_idx}]: '{val}' -> {parsed_date.strftime('%Y-%m-%d')} (entity section {start_row}-{end_row})")
         
         if all_found_dates:
             # Find the latest date

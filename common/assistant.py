@@ -656,7 +656,7 @@ def detect_latest_date_column(df, sheet_name="Sheet"):
     for row_idx in range(len(df)):
         for col_idx, col in enumerate(columns):
             val = df.iloc[row_idx, col_idx]
-            if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
+            if pd.notna(val) and 'indicative' in str(val).lower() and 'adjusted' in str(val).lower():
                 indicative_positions.append((row_idx, col_idx))
                 print(f"   📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx} ({col})")
     
