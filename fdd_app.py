@@ -952,21 +952,19 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
                 merge_start_col = col_idx
                 merge_end_col = col_idx
                 
-                # Look to the right for NaN values (indicating merged cell continuation)
+                # Look to the right for NaN values (indicating THIS merged cell's continuation)
+                # Stop when we find any non-NaN value (could be another header, data, or end)
                 for right_col in range(col_idx + 1, min(col_idx + 10, len(columns))):
                     right_val = df.iloc[row_idx, right_col]
                     
-                    # If we find NaN, this is part of the merged cell
+                    # If we find NaN, this merged cell continues
                     if pd.isna(right_val):
                         merge_end_col = right_col
                         print(f"  📍 Merged cell continues to col {right_col} (NaN)")
-                    # If we find another header text, the merged cell ends
-                    elif pd.notna(right_val) and isinstance(right_val, str) and len(str(right_val).strip()) > 2:
-                        print(f"  📍 Merged cell ends at col {right_col} (found header: '{right_val}')")
-                        break
-                    # If we find data or dates, the merged cell might continue or end
+                    # If we find ANY non-NaN value, this merged cell ends
                     else:
-                        merge_end_col = right_col
+                        print(f"  📍 Merged cell ends before col {right_col} (found: '{right_val}')")
+                        break
                 
                 indicative_merged_range = (merge_start_col, merge_end_col)
                 print(f"📍 'Indicative adjusted' merged cell: columns {merge_start_col} to {merge_end_col}")
