@@ -954,13 +954,42 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
                 else:
                     print(f"📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx}")
     
-    # Step 2: For each "Indicative adjusted", find its specific merged cell range
+    # Step 2: Find the MAIN "Indicative adjusted" header (the one that's actually a merged cell)
     if indicative_positions:
-        # Use the first "Indicative adjusted" found (usually the main one)
-        target_row, target_col = indicative_positions[0]
+        # Find the "Indicative adjusted" that has NaN values to its right (indicating a merged cell)
+        target_row, target_col = None, None
         
-        if sheet_name:
-            print(f"🔍 [{sheet_name}] Using 'Indicative adjusted' at Row {target_row}, Col {target_col}")
+        for row_idx, col_idx in indicative_positions:
+            val = df.iloc[row_idx, col_idx]
+            val_str = str(val).lower()
+            
+            # Prioritize exact match "indicative adjusted" over partial matches like "indicative adjustment"
+            is_exact_match = ('indicative adjusted' in val_str)
+            
+            # Check if this has NaN values to the right (merged cell pattern)
+            has_nan_right = False
+            for check_col in range(col_idx + 1, min(col_idx + 5, len(columns))):
+                if pd.isna(df.iloc[row_idx, check_col]):
+                    has_nan_right = True
+                    break
+            
+            # Prefer exact matches with merged cell pattern
+            if is_exact_match and has_nan_right:
+                target_row, target_col = row_idx, col_idx
+                if sheet_name:
+                    print(f"🎯 [{sheet_name}] Selected exact 'Indicative adjusted' at Row {row_idx}, Col {col_idx} (merged cell)")
+                break
+            # Fallback to any match with merged cell pattern
+            elif has_nan_right and target_row is None:
+                target_row, target_col = row_idx, col_idx
+                if sheet_name:
+                    print(f"🎯 [{sheet_name}] Found 'Indicative' variant at Row {row_idx}, Col {col_idx} (merged cell)")
+        
+        # If no merged cell pattern found, use the last "Indicative adjusted" (often the main header)
+        if target_row is None and indicative_positions:
+            target_row, target_col = indicative_positions[-1]
+            if sheet_name:
+                print(f"🎯 [{sheet_name}] Using last 'Indicative adjusted' at Row {target_row}, Col {target_col}")
         
         # Detect the merged cell range for THIS specific "Indicative adjusted"
         merge_start_col = target_col
