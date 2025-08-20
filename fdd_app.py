@@ -888,6 +888,10 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
     import re
     from datetime import datetime
     
+    # Show which sheet we're processing
+    if sheet_name:
+        print(f"🔍 [{sheet_name}] Detecting latest date column...")
+    
     def parse_date(date_str):
         """Parse date string in various formats including xMxx."""
         if not date_str or pd.isna(date_str):
@@ -938,44 +942,54 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
     # Strategy 1: Detect merged cells by NaN pattern - much faster than openpyxl
     indicative_merged_range = None
     
-    # Find "Indicative adjusted" text and detect merged cell range by NaN pattern
-    # Skip the description column (col 0) - look for header columns only
+    # Step 1: Find ALL "Indicative adjusted" text positions first
+    indicative_positions = []
     for row_idx in range(min(10, len(df))):
-        for col_idx in range(1, len(columns)):  # Start from column 1, skip description
-            col = columns[col_idx]
+        for col_idx in range(1, len(columns)):  # Skip description column
             val = df.iloc[row_idx, col_idx]
-            
             if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
-                print(f"📋 Found 'Indicative adjusted' header at Row {row_idx}, Col {col_idx}")
-                
-                # This is the leftmost cell of the merged cell
-                merge_start_col = col_idx
-                merge_end_col = col_idx
-                
-                # Look to the right for NaN values (indicating THIS merged cell's continuation)
-                # Stop when we find any non-NaN value (could be another header, data, or end)
-                for right_col in range(col_idx + 1, min(col_idx + 10, len(columns))):
-                    right_val = df.iloc[row_idx, right_col]
-                    
-                    # If we find NaN, this merged cell continues
-                    if pd.isna(right_val):
-                        merge_end_col = right_col
-                        print(f"  📍 Merged cell continues to col {right_col} (NaN)")
-                    # If we find ANY non-NaN value, this merged cell ends
-                    else:
-                        print(f"  📍 Merged cell ends before col {right_col} (found: '{right_val}')")
-                        break
-                
-                indicative_merged_range = (merge_start_col, merge_end_col)
-                print(f"📍 'Indicative adjusted' merged cell: columns {merge_start_col} to {merge_end_col}")
-                
-                # Show which columns are in this range
-                range_cols = [columns[i] for i in range(merge_start_col, min(merge_end_col + 1, len(columns)))]
-                print(f"📋 Columns under 'Indicative adjusted': {range_cols}")
+                indicative_positions.append((row_idx, col_idx))
+                if sheet_name:
+                    print(f"📋 [{sheet_name}] Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx}")
+                else:
+                    print(f"📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx}")
+    
+    # Step 2: For each "Indicative adjusted", find its specific merged cell range
+    if indicative_positions:
+        # Use the first "Indicative adjusted" found (usually the main one)
+        target_row, target_col = indicative_positions[0]
+        
+        if sheet_name:
+            print(f"🔍 [{sheet_name}] Using 'Indicative adjusted' at Row {target_row}, Col {target_col}")
+        
+        # Detect the merged cell range for THIS specific "Indicative adjusted"
+        merge_start_col = target_col
+        merge_end_col = target_col
+        
+        # Look to the right in the SAME ROW for NaN values (merged cell continuation)
+        for right_col in range(target_col + 1, min(target_col + 10, len(columns))):
+            right_val = df.iloc[target_row, right_col]
+            
+            # If we find NaN in the same row, this merged cell continues
+            if pd.isna(right_val):
+                merge_end_col = right_col
+                if sheet_name:
+                    print(f"  📍 [{sheet_name}] Merged cell continues to col {right_col} (NaN)")
+            # If we find ANY non-NaN value in the same row, this merged cell ends
+            else:
+                if sheet_name:
+                    print(f"  📍 [{sheet_name}] Merged cell ends before col {right_col} (found: '{right_val}')")
                 break
         
-        if indicative_merged_range:
-            break
+        indicative_merged_range = (merge_start_col, merge_end_col)
+        range_cols = [columns[i] for i in range(merge_start_col, min(merge_end_col + 1, len(columns)))]
+        
+        if sheet_name:
+            print(f"📍 [{sheet_name}] 'Indicative adjusted' merged cell: columns {merge_start_col}-{merge_end_col}")
+            print(f"📋 [{sheet_name}] Columns in range: {range_cols}")
+        else:
+            print(f"📍 'Indicative adjusted' merged cell: columns {merge_start_col}-{merge_end_col}")
+            print(f"📋 Columns in range: {range_cols}")
     
     # Process based on whether we have merged cell information or not
     all_found_dates = []
@@ -983,7 +997,8 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
     if indicative_merged_range:
         # Use the detected merged cell range
         start_col, end_col = indicative_merged_range
-        print(f"🔍 Searching for dates in 'Indicative adjusted' columns {start_col} to {end_col}")
+        if sheet_name:
+            print(f"🔍 [{sheet_name}] Searching for dates in columns {start_col} to {end_col}")
         
         # Look for dates in the rows below the merged cell
         for row_idx in range(min(10, len(df))):
@@ -995,22 +1010,28 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
                     if isinstance(val, (pd.Timestamp, datetime)):
                         date_val = val if isinstance(val, datetime) else val.to_pydatetime()
                         all_found_dates.append((date_val, col, row_idx, col_idx))
-                        print(f"  📅 Date in merged cell: {col} = {date_val.strftime('%Y-%m-%d')}")
+                        if sheet_name:
+                            print(f"  📅 [{sheet_name}] Date: {col} = {date_val.strftime('%Y-%m-%d')}")
                     elif pd.notna(val):
                         parsed_date = parse_date(str(val))
                         if parsed_date:
                             all_found_dates.append((parsed_date, col, row_idx, col_idx))
-                            print(f"  📅 Parsed date in merged cell: {col} = {parsed_date.strftime('%Y-%m-%d')}")
+                            if sheet_name:
+                                print(f"  📅 [{sheet_name}] Parsed date: {col} = {parsed_date.strftime('%Y-%m-%d')}")
         
         # Select the latest date from within the merged cell range
         if all_found_dates:
             latest_date_info = max(all_found_dates, key=lambda x: x[0])
             latest_date, latest_column, latest_row, latest_col_idx = latest_date_info
-            print(f"🎯 SELECTED from merged cell: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
+            if sheet_name:
+                print(f"🎯 [{sheet_name}] SELECTED: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
+            else:
+                print(f"🎯 SELECTED from merged cell: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
     
     else:
         # Strategy 2: No "Indicative adjusted" found, use original logic
-        print(f"🔍 No 'Indicative adjusted' found, using standard date detection")
+        if sheet_name:
+            print(f"🔍 [{sheet_name}] No 'Indicative adjusted' found, using standard date detection")
         
         # Use standard date detection for all columns
         for row_idx in range(min(5, len(df))):
@@ -1020,18 +1041,23 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
                 if isinstance(val, (pd.Timestamp, datetime)):
                     date_val = val if isinstance(val, datetime) else val.to_pydatetime()
                     all_found_dates.append((date_val, col, row_idx, col_idx))
-                    print(f"  📅 Date found: {col} = {date_val.strftime('%Y-%m-%d')}")
+                    if sheet_name:
+                        print(f"  📅 [{sheet_name}] Date: {col} = {date_val.strftime('%Y-%m-%d')}")
                 elif pd.notna(val):
                     parsed_date = parse_date(str(val))
                     if parsed_date:
                         all_found_dates.append((parsed_date, col, row_idx, col_idx))
-                        print(f"  📅 Parsed date: {col} = {parsed_date.strftime('%Y-%m-%d')}")
+                        if sheet_name:
+                            print(f"  📅 [{sheet_name}] Parsed date: {col} = {parsed_date.strftime('%Y-%m-%d')}")
         
         # Select the latest date using standard logic
         if all_found_dates:
             latest_date_info = max(all_found_dates, key=lambda x: x[0])
             latest_date, latest_column, latest_row, latest_col_idx = latest_date_info
-            print(f"🎯 SELECTED: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
+            if sheet_name:
+                print(f"🎯 [{sheet_name}] SELECTED: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
+            else:
+                print(f"🎯 SELECTED: {latest_column} ({latest_date.strftime('%Y-%m-%d')})")
     
     # Step 4: If we found "Indicative adjusted" range, implement your exact approach
     if indicative_merged_range and all_found_dates:
@@ -1058,7 +1084,10 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
         if indicative_dates:
             latest_in_range = max(indicative_dates, key=lambda x: x[0])
             latest_date, latest_column, latest_col_idx = latest_in_range
-            print(f"🎯 FINAL: {latest_column} (latest in 'Indicative adjusted' range {start_col}-{end_col})")
+            if sheet_name:
+                print(f"🎯 [{sheet_name}] FINAL: {latest_column} (latest in range {start_col}-{end_col})")
+            else:
+                print(f"🎯 FINAL: {latest_column} (latest in 'Indicative adjusted' range {start_col}-{end_col})")
     
     return latest_column
 
@@ -1455,12 +1484,12 @@ def main():
         cache_version = st.session_state.get('cache_version', 'v1')
         
         # Clear cache if entity changes or if we need to update for date detection
-        if (last_entity is None or last_entity != selected_entity or cache_version != 'v7'):
+        if (last_entity is None or last_entity != selected_entity or cache_version != 'v8'):
             keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
             for key in keys_to_remove:
                 del st.session_state[key]
             st.session_state['last_selected_entity'] = selected_entity
-            st.session_state['cache_version'] = 'v7'  # Update cache version for date detection
+            st.session_state['cache_version'] = 'v8'  # Update cache version for date detection
         
         # Financial Statement Type Selection
         st.markdown("---")
