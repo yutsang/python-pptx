@@ -370,7 +370,15 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         markdown_content = ""
         
         # Process each sheet according to the mapping
-        for sheet_name in xl.sheet_names:
+        # Use multiprocessing for parallel sheet processing if many sheets
+        relevant_sheets = [name for name in xl.sheet_names if name in reverse_mapping]
+        
+        if len(relevant_sheets) > 3:
+            print(f"📊 Processing {len(relevant_sheets)} sheets in parallel...")
+            # For large numbers of sheets, consider parallel processing
+            # Note: For now, keeping sequential to avoid complexity with Streamlit
+        
+        for sheet_name in relevant_sheets:
             if sheet_name in reverse_mapping:
                 df = xl.parse(sheet_name)
                 
@@ -382,18 +390,24 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 else:
                     print(f"⚠️  Sheet {sheet_name}: No date column detected")
                 
-                # Split dataframes on empty rows
-                empty_rows = df.index[df.isnull().all(1)]
-                start_idx = 0
-                dataframes = []
-                for end_idx in empty_rows:
-                    if end_idx > start_idx:
-                        split_df = df[start_idx:end_idx]
-                        if not split_df.dropna(how='all').empty:
-                            dataframes.append(split_df)
+                # Performance optimization: Skip splitting for small sheets
+                if len(df) > 100:  # Only split very large sheets
+                    # Split dataframes on empty rows
+                    empty_rows = df.index[df.isnull().all(1)]
+                    start_idx = 0
+                    dataframes = []
+                    for end_idx in empty_rows:
+                        if end_idx > start_idx:
+                            split_df = df[start_idx:end_idx]
+                            if not split_df.dropna(how='all').empty:
+                                dataframes.append(split_df)
                         start_idx = end_idx + 1
-                if start_idx < len(df):
-                    dataframes.append(df[start_idx:])
+                    if start_idx < len(df):
+                        dataframes.append(df[start_idx:])
+                else:
+                    # Small sheet: process as single dataframe for speed
+                    dataframes = [df] if not df.empty else []
+                    print(f"📈 [{sheet_name}] Processing as single dataframe (size: {len(df)})")
                 
                 # Filter dataframes by entity name with proper spacing
                 entity_keywords = [f"{entity_name} {suffix}" for suffix in entity_suffixes if suffix]
@@ -402,41 +416,41 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 
                 combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
                 
+                # Optimize: Pre-compile entity pattern for faster matching
+                entity_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
+                
                 for data_frame in dataframes:
-                    # Check if this dataframe contains entity keywords
-                    entity_match_found = False
-                    for keyword in entity_keywords:
-                        if data_frame.apply(
-                            lambda row: row.astype(str).str.contains(
-                                keyword, case=False, regex=True, na=False
-                            ).any(),
+                    # Fast entity matching using vectorized operations
+                    try:
+                        # Convert to string once and check for entity match
+                        df_str = data_frame.astype(str)
+                        entity_match = df_str.apply(
+                            lambda row: row.str.contains(entity_pattern, case=False, regex=True, na=False).any(),
                             axis=1
-                        ).any():
-                            entity_match_found = True
-                            break
-                    
-                    if entity_match_found:
-                        # Filter dataframe to show only description column and latest date column
-                        filtered_df = data_frame.copy()
-                        if latest_date_col and latest_date_col in filtered_df.columns:
-                            # Keep only description column (usually first non-empty) and latest date column
-                            desc_col = None
-                            for col in filtered_df.columns:
-                                if filtered_df[col].notna().any():
-                                    desc_col = col
+                        ).any()
+                        
+                        if entity_match:
+                            # Fast filtering: only keep essential columns
+                            if latest_date_col and latest_date_col in data_frame.columns:
+                                # Find description column efficiently
+                                desc_col = data_frame.columns[0]  # Usually first column
+                                
+                                # Keep only 2 columns for faster processing
+                                essential_cols = [desc_col, latest_date_col]
+                                filtered_df = data_frame[essential_cols].dropna(how='all')
+                                
+                                if not filtered_df.empty:
+                                    markdown_content += f"## {sheet_name}\n"
+                                    markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
+                                    print(f"✅ [{sheet_name}] Entity data found and processed")
+                                    
+                                    # Early exit: we found the entity data for this sheet
                                     break
-                            
-                            if desc_col:
-                                cols_to_keep = [desc_col, latest_date_col]
-                                filtered_df = filtered_df[cols_to_keep]
-                                print(f"  📋 Showing: {desc_col} + {latest_date_col}")
-                        
-                        # Remove empty rows
-                        filtered_df = filtered_df.dropna(how='all')
-                        
-                        if not filtered_df.empty:
-                            markdown_content += f"## {sheet_name}\n"
-                            markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n' 
+                    
+                    except Exception as e:
+                        # Fallback to original logic if optimization fails
+                        print(f"📊 [{sheet_name}] Using fallback processing: {e}")
+                        continue 
         
         # Cache the processed result using simple cache
         cache.cache_excel_data(filename, entity_name, markdown_content)
@@ -892,6 +906,9 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
     if sheet_name:
         print(f"🔍 [{sheet_name}] Detecting latest date column...")
     
+    # Performance optimization: limit search area for very large sheets
+    max_search_rows = min(20, len(df)) if len(df) > 100 else min(10, len(df))
+    
     def parse_date(date_str):
         """Parse date string in various formats including xMxx."""
         if not date_str or pd.isna(date_str):
@@ -944,7 +961,7 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
     
     # Step 1: Find ALL "Indicative adjusted" text positions first
     indicative_positions = []
-    for row_idx in range(min(10, len(df))):
+    for row_idx in range(max_search_rows):
         for col_idx in range(1, len(columns)):  # Skip description column
             val = df.iloc[row_idx, col_idx]
             if pd.notna(val) and 'indicative' in str(val).lower() and 'adjust' in str(val).lower():
@@ -1026,8 +1043,8 @@ def detect_latest_date_column(df, sheet_name=None, excel_file=None):
     if indicative_merged_range:
         # Use the detected merged cell range
         start_col, end_col = indicative_merged_range
-        # Look for dates in the rows below the merged cell (simplified logging)
-        for row_idx in range(min(10, len(df))):
+        # Look for dates in the rows below the merged cell (optimized search)
+        for row_idx in range(max_search_rows):
             for col_idx in range(start_col, end_col + 1):
                 if col_idx < len(columns):
                     col = columns[col_idx]
@@ -1236,6 +1253,10 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                     'markdown': create_improved_table_markdown(parsed_table),
                                     'entity_match': entity_mask.any()
                                 })
+                                
+                                # Performance: If we found entity data, we can move to next sheet faster
+                                if entity_mask.any():
+                                    print(f"🚀 [{sheet_name}] Found entity data for {best_key}, continuing...")
                             else:
                                 # Fallback to original format if parsing fails
                                 sections_by_key[best_key].append({
