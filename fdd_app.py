@@ -971,8 +971,8 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
             val = df.iloc[row_idx, col_idx]
             if pd.notna(val):
                 val_str = str(val).lower()
-                # Check if this cell contains entity name or suffixes
-                keywords_to_check = [sheet_name] + (entity_keywords or [])
+                # Check if this cell contains entity name or suffixes (but not just sheet name)
+                keywords_to_check = entity_keywords or []
                 if any(keyword.lower() in val_str for keyword in keywords_to_check):
                     row_has_entity = True
                     break
