@@ -1069,7 +1069,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                 combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
                 
                 # Detect latest date column once per sheet (not per dataframe)
-                latest_date_col = detect_latest_date_column(df, ws.title)
+                latest_date_col = detect_latest_date_column(df, sheet_name)
                 
                 # Organize sections by key - make it less restrictive
                 for data_frame in dataframes:
