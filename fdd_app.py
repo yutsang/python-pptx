@@ -1006,12 +1006,18 @@ def detect_latest_date_column(df, sheet_name="Sheet"):
                     merge_end = indic_col
                     
                     # Look right for NaN values (indicating merged cells)
+                    # In Excel merged cells, the leftmost cell has the value, others are NaN
                     for check_col in range(indic_col + 1, len(columns)):
                         val = df.iloc[indic_row, check_col]
                         if pd.isna(val):
                             merge_end = check_col
                         else:
+                            # Found non-NaN value, this is the end of the merged range
+                            merge_end = check_col - 1
                             break
+                    else:
+                        # If we reached the end without finding non-NaN, merge goes to the last column
+                        merge_end = len(columns) - 1
                     
                     print(f"   📍 'Indicative adjusted' merged cell range: columns {merge_start}-{merge_end}")
                     print(f"   📋 Columns under 'Indicative adjusted': {[columns[i] for i in range(merge_start, merge_end + 1)]}")
