@@ -10,6 +10,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 import streamlit as st
+from tabulate import tabulate
+from fdd_utils.simple_cache import get_simple_cache
 
 
 def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):

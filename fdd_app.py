@@ -573,8 +573,14 @@ def main():
         # Handle different statement types with session state caching
         if statement_type == "BS":
             # Create cache key to avoid reprocessing (include version for cache invalidation)
-            cache_version = "v10_entity_focused_indicative_adjusted"  # Increment when logic changes
+            cache_version = "v11_refactored_modules"  # Increment when logic changes
             cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
+            
+            # Force clear old cache versions
+            old_cache_keys = [k for k in st.session_state.keys() if k.startswith('sections_by_key_') and cache_version not in k]
+            for old_key in old_cache_keys:
+                del st.session_state[old_key]
+                print(f"🗑️ Cleared old cache: {old_key}")
             
             if cache_key not in st.session_state:
                 # Original BS logic - only run if not cached
@@ -672,8 +678,14 @@ def main():
                         entity_keywords = [selected_entity]
                 
                 # Get worksheet sections with caching (include version for cache invalidation)
-                cache_version = "v10_entity_focused_indicative_adjusted"  # Increment when logic changes
+                cache_version = "v11_refactored_modules"  # Increment when logic changes
                 cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
+                
+                # Force clear old cache versions
+                old_cache_keys = [k for k in st.session_state.keys() if k.startswith('sections_by_key_') and cache_version not in k]
+                for old_key in old_cache_keys:
+                    del st.session_state[old_key]
+                    print(f"🗑️ Cleared old cache: {old_key}")
                 
                 if cache_key not in st.session_state:
                     with st.spinner("🔄 Processing Excel file for AI..."):
