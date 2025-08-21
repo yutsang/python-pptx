@@ -596,11 +596,6 @@ def main():
             else:
                 sections_by_key = st.session_state[cache_key]
             from common.ui_sections import render_balance_sheet_sections
-            # Debug: Check what we're passing to the UI
-            keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-            print(f"🔍 DEBUG: Passing to UI - Keys with data: {len(keys_with_data)}")
-            print(f"🔍 DEBUG: Keys: {keys_with_data}")
-            
             render_balance_sheet_sections(
                 sections_by_key,
                 get_key_display_name,
