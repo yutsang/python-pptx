@@ -295,9 +295,13 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             print(f"DEBUG: DataFrame shape: {df.shape}")
         
         # Clean the DataFrame first - drop unnamed columns that are all NaN
+        # BUT preserve the detected latest_date_col if it's an "Unnamed:" column
         df_clean = df.copy()
         dropped_columns = []
         for col in df_clean.columns:
+            # Don't drop the detected latest_date_col even if it's "Unnamed:"
+            if col == latest_date_col:
+                continue
             if col.startswith('Unnamed:') or df_clean[col].isna().all():
                 dropped_columns.append(col)
                 df_clean = df_clean.drop(columns=[col])
@@ -312,6 +316,11 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
                 non_empty_count = (df_clean[col].astype(str).str.strip() != '').sum()
                 if non_null_count == 0 and non_empty_count == 0:
                     df_clean = df_clean.drop(columns=[col])
+        
+        # Ensure the latest_date_col is in the cleaned DataFrame
+        if latest_date_col and latest_date_col not in df_clean.columns:
+            # Add the column back from the original DataFrame
+            df_clean[latest_date_col] = df[latest_date_col]
         
         # Convert to string for easier processing
         df_str = df_clean.astype(str)
