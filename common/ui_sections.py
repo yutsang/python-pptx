@@ -18,7 +18,13 @@ def render_balance_sheet_sections(
     """
 
     st.markdown("#### View Table by Key")
+    
+    # Debug: Check what we received
+    print(f"🔍 DEBUG: UI received - Total keys: {len(sections_by_key)}")
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
+    print(f"🔍 DEBUG: UI received - Keys with data: {len(keys_with_data)}")
+    print(f"🔍 DEBUG: UI received - Keys: {keys_with_data}")
+    
     if not keys_with_data:
         st.warning("No data found for any financial keys.")
         return
