@@ -767,7 +767,16 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                     dataframes.append(df[start_idx:])
                 
                 # Filter dataframes by entity name with proper spacing
-                entity_keywords = [f"{entity_name} {suffix}" for suffix in entity_suffixes if suffix]
+                # FIX: Don't duplicate the entity name if it's already in the suffix
+                entity_keywords = []
+                for suffix in entity_suffixes:
+                    if suffix == entity_name:
+                        # If suffix is the same as entity_name, just use entity_name
+                        entity_keywords.append(entity_name)
+                    else:
+                        # Otherwise, combine them
+                        entity_keywords.append(f"{entity_name} {suffix}")
+                
                 if not entity_keywords:  # If no helpers, just use entity name
                     entity_keywords = [entity_name]
                 
