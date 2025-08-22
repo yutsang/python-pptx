@@ -538,7 +538,10 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         # Extract data rows
         data_rows = []
         for i in range(data_start_row, len(df_str)):
-            desc_cell = str(df_str.iloc[i, 0]).strip()
+            # Get description from the second column (index 1) which typically contains the actual descriptions
+            # The first column (index 0) often contains row numbers or empty cells
+            desc_col_idx = 1 if len(df_str.columns) > 1 else 0
+            desc_cell = str(df_str.iloc[i, desc_col_idx]).strip()
             value_cell = str(df_str.iloc[i, value_col_idx]).strip()
             
             # Skip empty rows
@@ -799,17 +802,23 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                     # Get all text from the dataframe for searching
                     all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
                     
-                    # Check each financial key
+                    # Check each financial key - prioritize exact sheet name matches
                     for financial_key in financial_keys:
-                        # Get the key terms for this financial key
-                        from fdd_utils.mappings import KEY_TERMS_BY_KEY
-                        key_terms = KEY_TERMS_BY_KEY.get(financial_key, [financial_key.lower()])
-                        
-                        # Check if any key terms appear in the dataframe
-                        key_found = any(term.lower() in all_text for term in key_terms)
-                        
-                        if key_found:
+                        # First, check if the sheet name exactly matches this key
+                        if sheet_name.lower() == financial_key.lower():
                             matched_keys.append(financial_key)
+                            continue
+                        
+                        # Check if the sheet name matches any of the key's sheet patterns
+                        if financial_key in tab_name_mapping:
+                            sheet_patterns = tab_name_mapping[financial_key]
+                            if any(pattern.lower() in sheet_name.lower() for pattern in sheet_patterns):
+                                matched_keys.append(financial_key)
+                                continue
+                        
+                        # Only use exact sheet name matching - no fallback to KEY_TERMS_BY_KEY
+                        # This prevents multiple keys from matching the same sheet
+                        pass
                     
                     # Process this dataframe for each matched key
                     for best_key in matched_keys:
@@ -833,7 +842,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         # entity_mask is already defined above as mask_series
                         
                         # If entity filter matches or helpers are empty, process
-                        if entity_mask.any() or not entity_suffixes or all(s.strip() == '' for s in entity_suffixes):
+                        # Also process if this is an exact sheet name match (like Cash, AR, etc.)
+                        if (entity_mask.any() or 
+                            not entity_suffixes or 
+                            all(s.strip() == '' for s in entity_suffixes) or
+                            sheet_name.lower() == best_key.lower()):
                             # Use new accounting table parser with detected latest date column
                             parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col)
                             
