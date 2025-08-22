@@ -882,11 +882,10 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         # entity_mask is already defined above as mask_series
                         
                         # If entity filter matches or helpers are empty, process
-                        # Also process if this is an exact sheet name match (like Cash, AR, etc.)
+                        # Only process if entity filtering passes (no fallback for exact sheet matches)
                         if (entity_mask.any() or 
                             not entity_suffixes or 
-                            all(s.strip() == '' for s in entity_suffixes) or
-                            sheet_name.lower() == best_key.lower()):
+                            all(s.strip() == '' for s in entity_suffixes)):
                             # Use new accounting table parser with detected latest date column
                             parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col)
                             
