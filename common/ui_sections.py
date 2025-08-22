@@ -39,17 +39,28 @@ def render_balance_sheet_sections(
                 parsed_data = first_section['parsed_data']
                 metadata = parsed_data['metadata']
                 data_rows = parsed_data['data']
+                
+                # REAL DEBUG: Show metadata for AR specifically
+                if key == "AR":
+                    st.markdown(f"**AR DEBUG:** Full metadata = {metadata}")
 
                 # Metadata summary row
                 col1, col2, col3, col4, col5, col6 = st.columns(6)
                 with col1:
                     st.markdown(f"**Table:** {metadata['table_name']}")
                 with col2:
-                    if metadata.get('date'):
-                        formatted_date = format_date_to_dd_mmm_yyyy(metadata['date'])
-                        st.markdown(f"**Date:** {formatted_date}")
+                    # REAL DEBUG: Show exactly what we're getting
+                    date_value = metadata.get('date')
+                    st.markdown(f"**DEBUG:** Date value = {date_value} (type: {type(date_value)})")
+                    
+                    if date_value:
+                        try:
+                            formatted_date = format_date_to_dd_mmm_yyyy(date_value)
+                            st.markdown(f"**Date:** {formatted_date}")
+                        except Exception as e:
+                            st.markdown(f"**Date:** Error formatting: {e}")
                     else:
-                        st.markdown("**Date:** Unknown")
+                        st.markdown("**Date:** Unknown (date_value is None/empty)")
                 with col3:
                     st.markdown(f"**Currency:** {metadata['currency_info']}")
                 with col4:
