@@ -20,6 +20,16 @@ def render_balance_sheet_sections(
     st.markdown("#### View Table by Key")
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
     
+    # REAL DEBUG: Show what keys we have and their section counts
+    st.markdown(f"**DEBUG:** Available keys = {keys_with_data}")
+    for key in keys_with_data:
+        sections = sections_by_key[key]
+        st.markdown(f"**DEBUG:** {key} has {len(sections)} sections")
+        for i, section in enumerate(sections):
+            if 'parsed_data' in section and section['parsed_data']:
+                metadata = section['parsed_data']['metadata']
+                st.markdown(f"  {key} Section {i}: Sheet = {metadata.get('sheet_name', 'Unknown')}, Date = {metadata.get('date', 'None')}")
+    
     if not keys_with_data:
         st.warning("No data found for any financial keys.")
         return
@@ -31,6 +41,15 @@ def render_balance_sheet_sections(
             if not sections:
                 st.info("No sections found for this key.")
                 continue
+
+            # REAL DEBUG: Show what sections we have for this key
+            st.markdown(f"**DEBUG for {key}:** Number of sections = {len(sections)}")
+            for j, section in enumerate(sections):
+                if 'parsed_data' in section and section['parsed_data']:
+                    metadata = section['parsed_data']['metadata']
+                    st.markdown(f"  Section {j}: Sheet = {metadata.get('sheet_name', 'Unknown')}, Date = {metadata.get('date', 'None')}")
+                else:
+                    st.markdown(f"  Section {j}: No parsed_data")
 
             first_section = sections[0]
 
