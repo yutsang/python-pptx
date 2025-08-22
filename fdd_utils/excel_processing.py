@@ -838,11 +838,23 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             continue
                         
                         # Check if the sheet name matches any of the key's sheet patterns
+                        # Use more restrictive matching to avoid substring conflicts
                         if financial_key in tab_name_mapping:
                             sheet_patterns = tab_name_mapping[financial_key]
-                            if any(pattern.lower() in sheet_name.lower() for pattern in sheet_patterns):
-                                matched_keys.append(financial_key)
-                                continue
+                            for pattern in sheet_patterns:
+                                # Use word boundary matching to avoid substring conflicts
+                                # e.g., "AR" should not match "Share capital" which contains "AR"
+                                pattern_lower = pattern.lower()
+                                sheet_lower = sheet_name.lower()
+                                
+                                # Check for exact word match or exact pattern match
+                                if (pattern_lower == sheet_lower or 
+                                    pattern_lower in sheet_lower.split() or
+                                    sheet_lower.startswith(pattern_lower + ' ') or
+                                    sheet_lower.endswith(' ' + pattern_lower) or
+                                    ' ' + pattern_lower + ' ' in ' ' + sheet_lower + ' '):
+                                    matched_keys.append(financial_key)
+                                    break
                         
                         # Only use exact sheet name matching - no fallback to KEY_TERMS_BY_KEY
                         # This prevents multiple keys from matching the same sheet
