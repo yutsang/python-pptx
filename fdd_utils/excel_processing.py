@@ -883,6 +883,15 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                 section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
                                 is_preferred_entity = 'haining wanpu' in section_text
                                 
+                                # VALIDATION: Check for content mismatch (e.g., AR key showing taxes content)
+                                if best_key == 'AR':
+                                    # Check if this section contains taxes content
+                                    if 'tax' in section_text or 'surcharge' in section_text:
+                                        print(f"⚠️ WARNING: AR key matched to sheet '{sheet_name}' but contains taxes content!")
+                                        print(f"   Section text sample: {section_text[:200]}...")
+                                        # Skip this section to avoid incorrect mapping
+                                        continue
+                                
                                 section_data = {
                                     'sheet': sheet_name,
                                     'data': data_frame,  # Keep original for compatibility

@@ -36,13 +36,25 @@ def render_balance_sheet_sections(
 
 
 
-            # TEMPORARY DEBUG: Show what section we're about to display
+            # ENHANCED DEBUG: Show detailed information about what section we're about to display
             st.markdown(f"**DEBUG:** Displaying section 0 for {key}")
             st.markdown(f"**DEBUG:** Section sheet = {sections[0].get('sheet', 'Unknown')}")
+            st.markdown(f"**DEBUG:** Expected sheet for {key} should be '{key}' or related patterns")
+            
+            # Validate that the sheet name matches the key
+            actual_sheet = sections[0].get('sheet', 'Unknown')
+            if actual_sheet.lower() != key.lower() and not any(pattern.lower() in actual_sheet.lower() for pattern in ['accounts receivable', 'ar', 'receivable'] if key == 'AR'):
+                st.warning(f"⚠️ **SHEET MISMATCH DETECTED:** Key '{key}' is showing sheet '{actual_sheet}' instead of expected '{key}' or related patterns")
+            
             if 'parsed_data' in sections[0] and sections[0]['parsed_data']:
                 metadata = sections[0]['parsed_data']['metadata']
                 st.markdown(f"**DEBUG:** Section table = {metadata.get('table_name', 'Unknown')}")
                 st.markdown(f"**DEBUG:** Section date = {metadata.get('date', 'None')}")
+                
+                # Additional validation for table name
+                table_name = metadata.get('table_name', 'Unknown')
+                if key == 'AR' and 'tax' in table_name.lower():
+                    st.error(f"❌ **CONTENT MISMATCH DETECTED:** AR key is showing table '{table_name}' which contains 'tax' - this is incorrect!")
             
             first_section = sections[0]
 
