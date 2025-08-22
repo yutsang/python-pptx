@@ -566,7 +566,17 @@ def main():
         else:
             # For multiple entity mode, use the full entity helpers
             entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
-            entity_keywords = [f"{selected_entity} {suffix}" for suffix in entity_suffixes if suffix]
+            
+            # FIX: Don't duplicate the entity name if it's already in the suffix
+            entity_keywords = []
+            for suffix in entity_suffixes:
+                if suffix == selected_entity:
+                    # If suffix is the same as selected_entity, just use selected_entity
+                    entity_keywords.append(selected_entity)
+                else:
+                    # Otherwise, combine them
+                    entity_keywords.append(f"{selected_entity} {suffix}")
+            
             if not entity_keywords:
                 entity_keywords = [selected_entity]
         
@@ -673,7 +683,17 @@ def main():
                 else:
                     # For multiple entity mode, use the full entity helpers
                     entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
-                    entity_keywords = [f"{selected_entity} {suffix}" for suffix in entity_suffixes if suffix]
+                    
+                    # FIX: Don't duplicate the entity name if it's already in the suffix
+                    entity_keywords = []
+                    for suffix in entity_suffixes:
+                        if suffix == selected_entity:
+                            # If suffix is the same as selected_entity, just use selected_entity
+                            entity_keywords.append(selected_entity)
+                        else:
+                            # Otherwise, combine them
+                            entity_keywords.append(f"{selected_entity} {suffix}")
+                    
                     if not entity_keywords:
                         entity_keywords = [selected_entity]
                 
