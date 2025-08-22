@@ -584,18 +584,6 @@ def main():
         if statement_type == "BS":
             st.markdown("### Balance Sheet")
             
-            # Add cache clearing button for debugging
-            if st.button("🗑️ Clear Cache & Refresh Data"):
-                # Clear all cached data
-                cache_keys_to_clear = [k for k in st.session_state.keys() if k.startswith('sections_by_key_')]
-                for key in cache_keys_to_clear:
-                    del st.session_state[key]
-                    st.success(f"✅ Cleared cache: {key}")
-                st.rerun()
-            
-            # Enhanced debug information
-            st.info("🔍 **Debug Info:** If you see 'Taxes and surcharges' for AR, click 'Clear Cache & Refresh Data' above")
-            
             # Create cache key to avoid reprocessing (include version for cache invalidation)
             cache_version = "v20_ar_fix"  # Increment when logic changes
             cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
@@ -617,30 +605,8 @@ def main():
                         debug=False  # Set to True for debugging
                     )
                     st.session_state[cache_key] = sections_by_key
-                    
-                    # Debug: Show what sections were found for AR
-                    if 'AR' in sections_by_key and sections_by_key['AR']:
-                        st.info(f"🔍 **AR Debug:** Found {len(sections_by_key['AR'])} sections for AR")
-                        for i, section in enumerate(sections_by_key['AR'][:3]):  # Show first 3 sections
-                            sheet_name = section.get('sheet', 'Unknown')
-                            st.info(f"  Section {i}: Sheet = '{sheet_name}'")
-                            if 'parsed_data' in section and section['parsed_data']:
-                                metadata = section['parsed_data']['metadata']
-                                table_name = metadata.get('table_name', 'Unknown')
-                                st.info(f"    Table = '{table_name}'")
             else:
                 sections_by_key = st.session_state[cache_key]
-                
-                # Debug: Show cached data info
-                if 'AR' in sections_by_key and sections_by_key['AR']:
-                    st.info(f"🔍 **AR Debug (Cached):** Using cached data with {len(sections_by_key['AR'])} sections for AR")
-                    for i, section in enumerate(sections_by_key['AR'][:3]):  # Show first 3 sections
-                        sheet_name = section.get('sheet', 'Unknown')
-                        st.info(f"  Section {i}: Sheet = '{sheet_name}'")
-                        if 'parsed_data' in section and section['parsed_data']:
-                            metadata = section['parsed_data']['metadata']
-                            table_name = metadata.get('table_name', 'Unknown')
-                            st.info(f"    Table = '{table_name}'")
             
             from common.ui_sections import render_balance_sheet_sections
             render_balance_sheet_sections(
