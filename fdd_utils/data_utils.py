@@ -69,6 +69,13 @@ def format_date_to_dd_mmm_yyyy(date_str):
     if not date_str:
         return 'Unknown'
     
+    # Handle datetime objects directly
+    if hasattr(date_str, 'strftime'):
+        try:
+            return date_str.strftime('%d-%b-%Y')
+        except:
+            pass
+    
     date_str = str(date_str).strip()
     
     # Common date patterns
