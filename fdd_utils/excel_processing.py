@@ -879,13 +879,24 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col)
                             
                             if parsed_table:
-                                sections_by_key[best_key].append({
+                                # Check if this section contains "Haining Wanpu" (the preferred entity for 2022 data)
+                                section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
+                                is_preferred_entity = 'haining wanpu' in section_text
+                                
+                                section_data = {
                                     'sheet': sheet_name,
                                     'data': data_frame,  # Keep original for compatibility
                                     'parsed_data': parsed_table,
                                     'markdown': create_improved_table_markdown(parsed_table),
-                                    'entity_match': True
-                                })
+                                    'entity_match': True,
+                                    'is_preferred_entity': is_preferred_entity
+                                }
+                                
+                                # If this is the preferred entity, insert it at the beginning
+                                if is_preferred_entity:
+                                    sections_by_key[best_key].insert(0, section_data)
+                                else:
+                                    sections_by_key[best_key].append(section_data)
                             else:
                                 # Fallback to original format if parsing fails
                                 try:
