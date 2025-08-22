@@ -585,7 +585,7 @@ def main():
             st.markdown("### Balance Sheet")
             
             # Create cache key to avoid reprocessing (include version for cache invalidation)
-            cache_version = "v22_entity_fix"  # Increment when logic changes
+            cache_version = "v23_entity_filter_fix"  # Increment when logic changes
             cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
             
             # Force clear old cache versions
