@@ -583,7 +583,7 @@ def main():
         # Handle different statement types with session state caching
         if statement_type == "BS":
             # Create cache key to avoid reprocessing (include version for cache invalidation)
-            cache_version = "v16_debug_date_issue"  # Increment when logic changes
+            cache_version = "v17_final_date_fix"  # Increment when logic changes
             cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
             
             # Force clear old cache versions
@@ -698,7 +698,7 @@ def main():
                         entity_keywords = [selected_entity]
                 
                 # Get worksheet sections with caching (include version for cache invalidation)
-                cache_version = "v16_debug_date_issue"  # Increment when logic changes
+                cache_version = "v17_final_date_fix"  # Increment when logic changes
                 cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
                 
                 # Force clear old cache versions
