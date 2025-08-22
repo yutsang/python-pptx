@@ -36,6 +36,14 @@ def render_balance_sheet_sections(
 
 
 
+            # TEMPORARY DEBUG: Show what section we're about to display
+            st.markdown(f"**DEBUG:** Displaying section 0 for {key}")
+            st.markdown(f"**DEBUG:** Section sheet = {sections[0].get('sheet', 'Unknown')}")
+            if 'parsed_data' in sections[0] and sections[0]['parsed_data']:
+                metadata = sections[0]['parsed_data']['metadata']
+                st.markdown(f"**DEBUG:** Section table = {metadata.get('table_name', 'Unknown')}")
+                st.markdown(f"**DEBUG:** Section date = {metadata.get('date', 'None')}")
+            
             first_section = sections[0]
 
             # If we have structured data, prefer it
