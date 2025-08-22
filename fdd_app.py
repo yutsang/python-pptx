@@ -410,11 +410,11 @@ def main():
             for i in range(len(words)):
                 mapping_keys.append(" ".join(words[:i+1]))
             
-            # Use base entity for processing
-            selected_entity = base_entity
+            # Use full entity name for processing
+            selected_entity = entity_input
             
-            # Show only base entity info
-            st.info(f"📋 Base Entity: {base_entity}")
+            # Show entity info
+            st.info(f"📋 Entity: {selected_entity}")
         else:
             selected_entity = None
             mapping_keys = []
@@ -585,7 +585,7 @@ def main():
             st.markdown("### Balance Sheet")
             
             # Create cache key to avoid reprocessing (include version for cache invalidation)
-            cache_version = "v21_force_fresh_mapping"  # Increment when logic changes
+            cache_version = "v22_entity_fix"  # Increment when logic changes
             cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
             
             # Force clear old cache versions
