@@ -20,15 +20,7 @@ def render_balance_sheet_sections(
     st.markdown("#### View Table by Key")
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
     
-    # REAL DEBUG: Show what keys we have and their section counts
-    st.markdown(f"**DEBUG:** Available keys = {keys_with_data}")
-    for key in keys_with_data:
-        sections = sections_by_key[key]
-        st.markdown(f"**DEBUG:** {key} has {len(sections)} sections")
-        for i, section in enumerate(sections):
-            if 'parsed_data' in section and section['parsed_data']:
-                metadata = section['parsed_data']['metadata']
-                st.markdown(f"  {key} Section {i}: Sheet = {metadata.get('sheet_name', 'Unknown')}, Date = {metadata.get('date', 'None')}")
+
     
     if not keys_with_data:
         st.warning("No data found for any financial keys.")
@@ -42,14 +34,7 @@ def render_balance_sheet_sections(
                 st.info("No sections found for this key.")
                 continue
 
-            # REAL DEBUG: Show what sections we have for this key
-            st.markdown(f"**DEBUG for {key}:** Number of sections = {len(sections)}")
-            for j, section in enumerate(sections):
-                if 'parsed_data' in section and section['parsed_data']:
-                    metadata = section['parsed_data']['metadata']
-                    st.markdown(f"  Section {j}: Sheet = {metadata.get('sheet_name', 'Unknown')}, Date = {metadata.get('date', 'None')}")
-                else:
-                    st.markdown(f"  Section {j}: No parsed_data")
+
 
             first_section = sections[0]
 
@@ -59,19 +44,14 @@ def render_balance_sheet_sections(
                 metadata = parsed_data['metadata']
                 data_rows = parsed_data['data']
                 
-                # REAL DEBUG: Show metadata for AR specifically
-                if key == "AR":
-                    st.markdown(f"**AR DEBUG:** Full metadata = {metadata}")
+
 
                 # Metadata summary row
                 col1, col2, col3, col4, col5, col6 = st.columns(6)
                 with col1:
                     st.markdown(f"**Table:** {metadata['table_name']}")
                 with col2:
-                    # REAL DEBUG: Show exactly what we're getting
                     date_value = metadata.get('date')
-                    st.markdown(f"**DEBUG:** Date value = {date_value} (type: {type(date_value)})")
-                    
                     if date_value:
                         try:
                             formatted_date = format_date_to_dd_mmm_yyyy(date_value)
@@ -79,7 +59,7 @@ def render_balance_sheet_sections(
                         except Exception as e:
                             st.markdown(f"**Date:** Error formatting: {e}")
                     else:
-                        st.markdown("**Date:** Unknown (date_value is None/empty)")
+                        st.markdown("**Date:** Unknown")
                 with col3:
                     st.markdown(f"**Currency:** {metadata['currency_info']}")
                 with col4:
