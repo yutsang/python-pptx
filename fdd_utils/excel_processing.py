@@ -892,11 +892,17 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                     'is_preferred_entity': is_preferred_entity
                                 }
                                 
-                                # If this is the preferred entity, insert it at the beginning
-                                if is_preferred_entity:
-                                    sections_by_key[best_key].insert(0, section_data)
-                                else:
-                                    sections_by_key[best_key].append(section_data)
+                                # Only add this section if it's the correct sheet for this key
+                                # This prevents wrong sheets from being assigned to keys
+                                if (sheet_name.lower() == best_key.lower() or 
+                                    (best_key in tab_name_mapping and 
+                                     any(pattern.lower() in sheet_name.lower() for pattern in tab_name_mapping[best_key]))):
+                                    
+                                    # If this is the preferred entity, insert it at the beginning
+                                    if is_preferred_entity:
+                                        sections_by_key[best_key].insert(0, section_data)
+                                    else:
+                                        sections_by_key[best_key].append(section_data)
                             else:
                                 # Fallback to original format if parsing fails
                                 try:
