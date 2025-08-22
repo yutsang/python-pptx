@@ -294,17 +294,20 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         if debug:  # Only show if explicitly debugging
             print(f"DEBUG: DataFrame shape: {df.shape}")
         
-        # Clean the DataFrame first - drop unnamed columns that are all NaN
-        # BUT preserve the detected latest_date_col if it's an "Unnamed:" column
+        # Keep the original dataframe structure - don't filter columns
         df_clean = df.copy()
-        dropped_columns = []
-        for col in df_clean.columns:
-            # Don't drop the detected latest_date_col even if it's "Unnamed:"
-            if col == latest_date_col:
-                continue
-            if col.startswith('Unnamed:') or df_clean[col].isna().all():
-                dropped_columns.append(col)
-                df_clean = df_clean.drop(columns=[col])
+        
+        # Debug: Print the original and cleaned dataframe info
+        # print(f"   🔍 DEBUG: Original df shape: {df.shape}")
+        # print(f"   🔍 DEBUG: Cleaned df_clean shape: {df_clean.shape}")
+        # print(f"   🔍 DEBUG: Original df columns: {list(df.columns)}")
+        # print(f"   🔍 DEBUG: Cleaned df_clean columns: {list(df_clean.columns)}")
+        # print(f"   🔍 DEBUG: Original df first few rows:")
+        # for i in range(min(5, len(df))):
+        #     print(f"      Row {i}: {list(df.iloc[i])}")
+        # print(f"   🔍 DEBUG: Cleaned df_clean first few rows:")
+        # for i in range(min(5, len(df_clean))):
+        #     print(f"      Row {i}: {list(df_clean.iloc[i])}")
         
         # If all columns were dropped, try a different approach
         if len(df_clean.columns) == 0:
@@ -354,6 +357,9 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             value_col_idx = df_str.columns.get_loc(latest_date_col)
             value_col_name = "Indicative adjusted"  # This is the detected column
             print(f"   🎯 Using detected latest date column: {latest_date_col} (col {value_col_idx})")
+            # print(f"   🔍 DEBUG: Column names: {list(df_str.columns)}")
+            # print(f"   🔍 DEBUG: latest_date_col: {latest_date_col}")
+            # print(f"   🔍 DEBUG: value_col_idx: {value_col_idx}")
         else:
             # Fallback to original logic
             print(f"   ⚠️  No latest_date_col provided, using fallback detection")
@@ -440,17 +446,36 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
                 # Check if this looks like a data row (has both description and value)
                 desc_cell = str(df_str.iloc[i, 0]).strip()
                 if desc_cell and desc_cell.lower() not in ['nan', '']:
-                    # Additional check: skip if the description is a pure number (like 1000, 1001, etc.)
-                    if not re.match(r'^\d+\.?\d*$', desc_cell):
+                    # Simplified check: just make sure it's not a pure number and not a header
+                    if (not re.match(r'^\d+\.?\d*$', desc_cell) and 
+                        desc_cell.lower() not in ['cny\'000', 'audited', 'mgt acc', 'indicative adjusted', 'indicative adjustment']):
                         data_start_row = i
                         break
         
+        # Debug: Print the data start row and first few rows for verification
+        # print(f"   🔍 DEBUG: data_start_row = {data_start_row}")
+        # if data_start_row is not None:
+        #     for i in range(data_start_row, min(data_start_row + 5, len(df_str))):
+        #         desc_cell = str(df_str.iloc[i, 0]).strip()
+        #         value_cell = str(df_str.iloc[i, value_col_idx]).strip()
+        #         print(f"   🔍 DEBUG: Row {i}: desc='{desc_cell}', value='{value_cell}'")
+        
         if data_start_row is None:
-            # Fallback: start from row 2 if we have at least 3 rows
-            if len(df_str) >= 3:
+            # Fallback: start from row 3 if we have at least 4 rows (typical structure)
+            if len(df_str) >= 4:
+                data_start_row = 3
+            elif len(df_str) >= 3:
                 data_start_row = 2
             else:
                 return None
+        
+        # Debug: Print the data start row and first few rows for verification
+        # print(f"   🔍 DEBUG: Final data_start_row = {data_start_row}")
+        # if data_start_row is not None:
+        #     for i in range(data_start_row, min(data_start_row + 5, len(df_str))):
+        #         desc_cell = str(df_str.iloc[i, 0]).strip()
+        #         value_cell = str(df_str.iloc[i, value_col_idx]).strip()
+        #         print(f"   🔍 DEBUG: Final Row {i}: desc='{desc_cell}', value='{value_cell}'")
         
         # Extract date from the detected latest date column
         extracted_date = None
@@ -538,11 +563,14 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         # Extract data rows
         data_rows = []
         for i in range(data_start_row, len(df_str)):
-            # Get description from the second column (index 1) which typically contains the actual descriptions
-            # The first column (index 0) often contains row numbers or empty cells
-            desc_col_idx = 1 if len(df_str.columns) > 1 else 0
+            # Get description from column 1 (index 1) which contains the actual descriptions
+            # Based on the Excel structure, descriptions are in column 1, not column 0
+            desc_col_idx = 1
             desc_cell = str(df_str.iloc[i, desc_col_idx]).strip()
             value_cell = str(df_str.iloc[i, value_col_idx]).strip()
+            
+            # Debug: Print what we're extracting
+            # print(f"   🔍 DEBUG: Extracting from row {i}: desc_col={desc_col_idx}='{desc_cell}', value_col={value_col_idx}='{value_cell}'")
             
             # Skip empty rows
             if desc_cell.lower() in ['nan', ''] and value_cell.lower() in ['nan', '']:
