@@ -45,9 +45,16 @@ def render_balance_sheet_sections(
                 with col1:
                     st.markdown(f"**Table:** {metadata['table_name']}")
                 with col2:
-                    if metadata.get('date'):
-                        formatted_date = format_date_to_dd_mmm_yyyy(metadata['date'])
-                        st.markdown(f"**Date:** {formatted_date}")
+                    # Debug: Show what we're getting
+                    date_value = metadata.get('date')
+                    st.markdown(f"**Debug Date:** {date_value} (type: {type(date_value)})")
+                    
+                    if date_value:
+                        try:
+                            formatted_date = format_date_to_dd_mmm_yyyy(date_value)
+                            st.markdown(f"**Date:** {formatted_date}")
+                        except Exception as e:
+                            st.markdown(f"**Date:** Error: {e}")
                     else:
                         st.markdown("**Date:** Unknown")
                 with col3:
