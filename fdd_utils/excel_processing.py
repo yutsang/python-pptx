@@ -780,6 +780,10 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             # Use new accounting table parser with detected latest date column
                             parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found)
                             
+                            print(f"   🔍 parse_accounting_table returned: {parsed_table is not None}")
+                            if parsed_table:
+                                print(f"   🔍 parsed_table keys: {list(parsed_table.keys()) if isinstance(parsed_table, dict) else 'not a dict'}")
+                            
                             if parsed_table:
                                 # Check if this section contains the selected entity
                                 section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
@@ -816,13 +820,14 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                      any(pattern.lower() in sheet_name.lower() for pattern in tab_name_mapping[best_key]))):
                                     
                                     # Only add sections that match the selected entity
-                                    if is_selected_entity:
-                                        sections_by_key[best_key].append(section_data)
-                                        print(f"   ✅ Added section for {best_key} with entity: {actual_entity_found}")
-                                    else:
-                                        print(f"   ⚠️  Skipped section for {best_key} - entity mismatch (found: {actual_entity_found}, expected: {entity_keywords})")
+                                    # Temporarily disable entity matching to debug
+                                    sections_by_key[best_key].append(section_data)
+                                    print(f"   ✅ Added section for {best_key} with entity: {actual_entity_found}")
+                                    if not is_selected_entity:
+                                        print(f"   ⚠️  Note: entity mismatch (found: {actual_entity_found}, expected: {entity_keywords})")
                             else:
                                 # Fallback to original format if parsing fails
+                                print(f"   ⚠️  parse_accounting_table failed for {best_key}, using fallback")
                                 try:
                                     markdown_content = tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
                                 except Exception:
@@ -832,7 +837,8 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                     'sheet': sheet_name,
                                     'data': data_frame,
                                     'markdown': markdown_content,
-                                    'entity_match': True
+                                    'entity_match': True,
+                                    'is_selected_entity': True  # Force this to True for fallback
                                 })
         
         return sections_by_key

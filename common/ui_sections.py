@@ -18,7 +18,16 @@ def render_balance_sheet_sections(
     """
 
     st.markdown("#### View Table by Key")
+    
+    # Debug: Print what we received
+    print(f"DEBUG UI: sections_by_key keys: {list(sections_by_key.keys())}")
+    for key, sections in sections_by_key.items():
+        print(f"DEBUG UI: {key} has {len(sections)} sections")
+        if sections:
+            print(f"DEBUG UI: First section keys: {list(sections[0].keys())}")
+    
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
+    print(f"DEBUG UI: keys_with_data: {keys_with_data}")
     
 
     
