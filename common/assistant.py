@@ -7,7 +7,7 @@ from tqdm import tqdm
 from typing import Dict, List, Optional
 import numpy as np
 import openpyxl
-from fdd_utils.cache import get_cache_manager, cached_function
+
 import logging
 import streamlit as st
 
@@ -143,32 +143,7 @@ def get_chat_model(config_details=None, use_local=False, use_openai=False):
         return config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
 
 def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model, entity_name="default", use_local_ai=False):
-    """Generate a response from the AI model given a user query and system prompt with simple caching."""
-    # Use simple cache instead of complex hash-based cache
-    from fdd_utils.simple_cache import get_simple_cache
-    cache = get_simple_cache()
-    
-    # Create a simple cache key from the query
-    cache_key = f"{hash(user_query) % 1000000}_{hash(system_prompt) % 1000000}"
-    
-    # Check cache first (with force refresh option)
-    try:
-        import streamlit as st
-        force_refresh = st.session_state.get('force_refresh', False)
-    except Exception:
-        force_refresh = False
-        
-    cached_response = cache.get_cached_ai_result(cache_key, entity_name, force_refresh)
-    if cached_response is not None:
-        return cached_response
-    else:
-        # Reset force refresh after use
-        try:
-            import streamlit as st
-            if force_refresh:
-                st.session_state['force_refresh'] = False
-        except Exception:
-            pass
+    """Generate a response from the AI model given a user query and system prompt."""
     
     # Include context data in the user query instead of as a separate assistant message
     enhanced_user_query = f"Context data:\n{context_content}\n\nUser query:\n{user_query}"
@@ -203,9 +178,6 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
     # If model returns thinking tags anyway, strip them and keep final answer only
     if "<thinking>" in response_content and "</thinking>" in response_content:
         response_content = response_content.split("</thinking>")[-1].strip()
-    
-    # Cache the response using simple cache
-    cache.cache_ai_result(cache_key, entity_name, response_content)
     
     return response_content
 
@@ -481,16 +453,8 @@ def extract_tables_robust(worksheet, entity_keywords):
 
 
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
-    """Process and filter Excel file with simple caching"""
+    """Process and filter Excel file"""
     try:
-        # Use simple cache instead of complex cache manager
-        from utils.simple_cache import get_simple_cache
-        cache = get_simple_cache()
-        
-        # Check cache first
-        cached_result = cache.get_cached_excel_data(filename, entity_name)
-        if cached_result is not None:
-            return cached_result
             
         main_dir = Path(__file__).parent.parent
         file_path = main_dir / filename
@@ -584,10 +548,6 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
             except Exception:
                 pass
 
-        # Cache the processed result using simple cache
-        cache.cache_excel_data(filename, entity_name, markdown_content)
-        print(f"📋 Cached result for {filename}")
-        
         return markdown_content
         
     except Exception as e:

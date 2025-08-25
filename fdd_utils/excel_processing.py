@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 import streamlit as st
 from tabulate import tabulate
-from fdd_utils.simple_cache import get_simple_cache
+
 
 
 def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
@@ -501,28 +501,10 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
 
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
     """
-    Process and filter Excel file to extract relevant worksheet sections with simple caching
+    Process and filter Excel file to extract relevant worksheet sections
     This is the core function from old_ver/utils/utils.py
     """
     try:
-        # Use simple cache instead of complex cache manager
-        cache = get_simple_cache()
-        
-        # Check cache first (with force refresh option)
-        try:
-            force_refresh = st.session_state.get('force_refresh', False) if 'streamlit' in sys.modules else False
-        except Exception:
-            force_refresh = False
-        
-        cached_result = cache.get_cached_excel_data(filename, entity_name, force_refresh)
-        if cached_result is not None:
-            # Clear force refresh flag after using it
-            try:
-                if force_refresh and 'streamlit' in sys.modules:
-                    st.session_state['force_refresh'] = False
-            except Exception:
-                pass
-            return cached_result
         
         # Load the Excel file
         main_dir = Path(__file__).parent.parent
@@ -619,10 +601,6 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 # Early exit if entity data found in this sheet
                 if entity_found_in_sheet:
                     print(f"✅ [{reverse_mapping[sheet_name]}] Entity data found and processed")
-        
-        # Cache the processed result using simple cache
-        cache.cache_excel_data(filename, entity_name, markdown_content)
-        print(f"💾 Cached Excel data for {filename}")
         
         return markdown_content
         

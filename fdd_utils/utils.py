@@ -6,7 +6,7 @@ import warnings
 import re, os, urllib3
 from tqdm import tqdm
 from pathlib import Path
-from fdd_utils.cache import get_cache_manager, cached_function
+
 
 urllib3.disable_warnings()
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
@@ -14,17 +14,9 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 warnings.filterwarnings('ignore', message='Data Validation extension is not supported and will be removed', category=UserWarning, module='openpyxl')
 
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
-    """Process and filter Excel file with simple caching"""
+    """Process and filter Excel file"""
     
     try:
-        # Use simple cache instead of complex cache manager
-        from fdd_utils.simple_cache import get_simple_cache
-        cache = get_simple_cache()
-        
-        # Check cache first
-        cached_result = cache.get_cached_excel_data(filename, entity_name)
-        if cached_result is not None:
-            return cached_result
             
         # Load the Excel file
         main_dir = Path(__file__).parent.parent
@@ -100,7 +92,6 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                             markdown_content += "\n\n"
         
         # Cache the processed result using simple cache
-        cache.cache_excel_data(filename, entity_name, markdown_content)
         return markdown_content
     except Exception as e:
         print("An error occurred while processing the Excel file:", e)

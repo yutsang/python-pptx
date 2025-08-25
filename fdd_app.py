@@ -35,7 +35,6 @@ import shutil
 # Disable Python bytecode generation to prevent __pycache__ issues
 os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 from common.pptx_export import export_pptx
-from fdd_utils.simple_cache import get_simple_cache
 # Import assistant modules at module level to prevent runtime import issues
 from common.assistant import process_keys, QualityAssuranceAgent, DataValidationAgent, PatternValidationAgent, find_financial_figures_with_context_check, get_tab_name, get_financial_figure, load_ip, ProofreadingAgent
 
@@ -435,17 +434,7 @@ def main():
             else:
                 entity_helpers = "Limited,"
 
-        # Auto-invalidate Excel cache when entity changes or when date detection is updated
-        last_entity = st.session_state.get('last_selected_entity')
-        cache_version = st.session_state.get('cache_version', 'v1')
-        
-        # Clear cache if entity changes or if we need to update for date detection
-        if (last_entity is None or last_entity != selected_entity or cache_version != 'v9'):
-            keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
-            for key in keys_to_remove:
-                del st.session_state[key]
-            st.session_state['last_selected_entity'] = selected_entity
-            st.session_state['cache_version'] = 'v9'  # Update cache version for date detection
+
         
         # Financial Statement Type Selection
         st.markdown("---")
@@ -518,37 +507,7 @@ def main():
             
             # Performance statistics - moved below Select Mode
             st.markdown("---")
-            st.markdown("### 🚀 Performance")
-            cache = get_simple_cache()
-            
-            if st.button("🧹 Clear All Cache"):
-                cache.clear_cache()
-                # Also clear session state cache for Excel processing
-                keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
-                for key in keys_to_remove:
-                    del st.session_state[key]
-                # Clear cache version to force refresh
-                if 'cache_version' in st.session_state:
-                    del st.session_state['cache_version']
-                st.success("All cache cleared!")
-            
-            if st.button("📊 Clear Excel Cache"):
-                # Clear only Excel processing cache
-                keys_to_remove = [key for key in st.session_state.keys() if key.startswith('sections_by_key_')]
-                if keys_to_remove:
-                    for key in keys_to_remove:
-                        del st.session_state[key]
-                    st.success(f"Excel cache cleared! ({len(keys_to_remove)} entries removed)")
-                else:
-                    st.info("No Excel cache to clear")
-            
-            if st.button("🔄 Force Refresh"):
-                st.session_state['force_refresh'] = True
-                st.success("Force refresh enabled! Next run will bypass cache.")
-            
-            if st.button("📁 List Cache Files"):
-                cache.list_cache_files()
-                st.success("Cache files listed in console!")
+
 
     # Main area for results
     if uploaded_file is not None:
@@ -579,34 +538,20 @@ def main():
                 # Fallback: use the selected entity as is
                 entity_keywords = [selected_entity]
         
-        # Handle different statement types with session state caching
+        # Handle different statement types
         if statement_type == "BS":
             st.markdown("### Balance Sheet")
             
-            # Create cache key to avoid reprocessing (include version for cache invalidation)
-            cache_version = "v27_entity_filtering_debug"  # Increment when logic changes
-            cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
-            
-            # Force clear old cache versions
-            old_cache_keys = [k for k in st.session_state.keys() if k.startswith('sections_by_key_') and cache_version not in k]
-            for old_key in old_cache_keys:
-                del st.session_state[old_key]
-                print(f"🗑️ Cleared old cache: {old_key}")
-            
-            if cache_key not in st.session_state:
-                # Original BS logic - only run if not cached
-                with st.spinner("🔄 Processing Excel file..."):
-                    sections_by_key = get_worksheet_sections_by_keys(
-                        uploaded_file=uploaded_file,
-                        tab_name_mapping=mapping,
-                        entity_name=selected_entity,
-                        entity_suffixes=entity_suffixes,
-                        entity_keywords=entity_keywords,
-                        debug=False  # Set to True for debugging
-                    )
-                    st.session_state[cache_key] = sections_by_key
-            else:
-                sections_by_key = st.session_state[cache_key]
+            # Process Excel file directly without caching
+            with st.spinner("🔄 Processing Excel file..."):
+                sections_by_key = get_worksheet_sections_by_keys(
+                    uploaded_file=uploaded_file,
+                    tab_name_mapping=mapping,
+                    entity_name=selected_entity,
+                    entity_suffixes=entity_suffixes,
+                    entity_keywords=entity_keywords,
+                    debug=False  # Set to True for debugging
+                )
             
             from common.ui_sections import render_balance_sheet_sections
             render_balance_sheet_sections(
@@ -700,29 +645,16 @@ def main():
                     if not entity_keywords:
                         entity_keywords = [selected_entity]
                 
-                # Get worksheet sections with caching (include version for cache invalidation)
-                cache_version = "v19_force_cache_clear"  # Increment when logic changes
-                cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
-                
-                # Force clear old cache versions
-                old_cache_keys = [k for k in st.session_state.keys() if k.startswith('sections_by_key_') and cache_version not in k]
-                for old_key in old_cache_keys:
-                    del st.session_state[old_key]
-                    print(f"🗑️ Cleared old cache: {old_key}")
-                
-                if cache_key not in st.session_state:
-                    with st.spinner("🔄 Processing Excel file for AI..."):
-                        sections_by_key = get_worksheet_sections_by_keys(
-                            uploaded_file=uploaded_file,
-                            tab_name_mapping=mapping,
-                            entity_name=selected_entity,
-                            entity_suffixes=entity_suffixes,
-                            debug=False
-                        )
-                        st.session_state[cache_key] = sections_by_key
-                    st.success("✅ Excel processing completed for AI")
-                else:
-                    sections_by_key = st.session_state[cache_key]
+                # Get worksheet sections directly without caching
+                with st.spinner("🔄 Processing Excel file for AI..."):
+                    sections_by_key = get_worksheet_sections_by_keys(
+                        uploaded_file=uploaded_file,
+                        tab_name_mapping=mapping,
+                        entity_name=selected_entity,
+                        entity_suffixes=entity_suffixes,
+                        debug=False
+                    )
+                st.success("✅ Excel processing completed for AI")
                 
                 # Get keys with data
                 keys_with_data = [key for key, sections in sections_by_key.items() if sections]
@@ -798,8 +730,6 @@ def main():
                     try:
                         status_text.text("🤖 Initializing…")
                         progress_bar.progress(10)
-                        # Disable cache for this run
-                        st.session_state['force_refresh'] = True
                         ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 1, 'stage_index': 0, 'start_time': time.time()}}
                         agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
                         agent1_success = bool(agent1_results and any(agent1_results.values()))
@@ -824,8 +754,6 @@ def main():
                     try:
                         status_text.text("🧐 Initializing…")
                         progress_bar.progress(10)
-                        # Disable cache for this run
-                        st.session_state['force_refresh'] = True
                         agent1_results = st.session_state.get('agent_states', {}).get('agent1_results', {}) or {}
                         if not agent1_results:
                             st.warning("Run content generation first to produce material for proofreading.")
@@ -852,7 +780,6 @@ def main():
                     try:
                         status_text.text("🤖 Initializing…")
                         progress_bar.progress(10)
-                        st.session_state['force_refresh'] = True
                         ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
                         agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
                         st.session_state['agent_states']['agent1_results'] = agent1_results
