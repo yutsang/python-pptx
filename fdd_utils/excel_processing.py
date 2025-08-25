@@ -280,7 +280,7 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
     return latest_column
 
 
-def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=None, debug=False):
+def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=None, actual_entity=None, debug=False):
     """
     Parse accounting table with proper header detection and figure column identification
     Returns structured table data with metadata
@@ -550,8 +550,10 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
                 break
         
         # Extract table metadata (first few rows before data)
+        # Use actual entity found in data if available, otherwise use entity_name
+        display_entity = actual_entity if actual_entity else entity_name
         table_metadata = {
-            'table_name': f"{key} - {entity_name}",
+            'table_name': f"{key} - {display_entity}",
             'sheet_name': sheet_name,
             'date': extracted_date,
             'currency_info': currency_info,
@@ -749,7 +751,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         return ""
 
 
-def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, debug=False):
+def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, entity_keywords=None, debug=False):
     """
     Get worksheet sections organized by financial keys with enhanced entity filtering and latest date detection.
     """
@@ -797,19 +799,18 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                 if start_idx < len(df):
                     dataframes.append(df[start_idx:])
                 
-                # Filter dataframes by entity name with proper spacing
-                # FIX: Don't duplicate the entity name if it's already in the suffix
-                entity_keywords = []
-                for suffix in entity_suffixes:
-                    if suffix == entity_name:
-                        # If suffix is the same as entity_name, just use entity_name
-                        entity_keywords.append(entity_name)
-                    else:
-                        # Otherwise, combine them
-                        entity_keywords.append(f"{entity_name} {suffix}")
-                
-                if not entity_keywords:  # If no helpers, just use entity name
-                    entity_keywords = [entity_name]
+                # Use entity_keywords passed from main app, or generate fallback
+                if entity_keywords is None:
+                    # Fallback: generate entity_keywords from entity_suffixes
+                    entity_keywords = []
+                    for suffix in entity_suffixes:
+                        if suffix == entity_name:
+                            entity_keywords.append(entity_name)
+                        else:
+                            entity_keywords.append(f"{entity_name} {suffix}")
+                    
+                    if not entity_keywords:
+                        entity_keywords = [entity_name]
                 
                 combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
                 
@@ -881,17 +882,26 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             )
                         # entity_mask is already defined above as mask_series
                         
-                        # Process data regardless of entity filtering for now
-                        # This allows showing data even if entity doesn't match exactly
-                        # TODO: Implement proper entity-specific data filtering in the future
-                        if True:  # Always process for now
+                        # Check if this section contains the selected entity
+                        section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
+                        entity_found = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
+                        
+                        # Only process if entity is found in this section
+                        if entity_found:
+                            # Find the actual entity name from the section text
+                            actual_entity_found = None
+                            for entity_keyword in entity_keywords:
+                                if entity_keyword.lower() in section_text:
+                                    actual_entity_found = entity_keyword
+                                    break
+                            
                             # Use new accounting table parser with detected latest date column
-                            parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col)
+                            parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found)
                             
                             if parsed_table:
-                                # Check if this section contains "Haining Wanpu" (the preferred entity for 2022 data)
+                                # Check if this section contains the selected entity
                                 section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
-                                is_preferred_entity = 'haining wanpu' in section_text
+                                is_selected_entity = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
                                 
                                 # VALIDATION: Check for content mismatch (e.g., AR key showing taxes content)
                                 if best_key == 'AR':
@@ -908,7 +918,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                     'parsed_data': parsed_table,
                                     'markdown': create_improved_table_markdown(parsed_table),
                                     'entity_match': True,
-                                    'is_preferred_entity': is_preferred_entity
+                                    'is_selected_entity': is_selected_entity
                                 }
                                 
                                 # Only add this section if it's the correct sheet for this key
@@ -917,8 +927,8 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                     (best_key in tab_name_mapping and 
                                      any(pattern.lower() in sheet_name.lower() for pattern in tab_name_mapping[best_key]))):
                                     
-                                    # If this is the preferred entity, insert it at the beginning
-                                    if is_preferred_entity:
+                                    # If this is the selected entity, insert it at the beginning
+                                    if is_selected_entity:
                                         sections_by_key[best_key].insert(0, section_data)
                                     else:
                                         sections_by_key[best_key].append(section_data)

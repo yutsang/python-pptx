@@ -567,17 +567,16 @@ def main():
             # For multiple entity mode, use the full entity helpers
             entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
             
-            # FIX: Don't duplicate the entity name if it's already in the suffix
+            # Create entity keywords based on the selected entity
             entity_keywords = []
-            for suffix in entity_suffixes:
-                if suffix == selected_entity:
-                    # If suffix is the same as selected_entity, just use selected_entity
-                    entity_keywords.append(selected_entity)
-                else:
-                    # Otherwise, combine them
-                    entity_keywords.append(f"{selected_entity} {suffix}")
-            
-            if not entity_keywords:
+            if selected_entity == 'Ningbo':
+                entity_keywords = ['Ningbo Wanchen Limited']
+            elif selected_entity == 'Haining':
+                entity_keywords = ['Haining Wanpu Limited']
+            elif selected_entity == 'Nanjing':
+                entity_keywords = ['Nanjing Wanchen Limited']
+            else:
+                # Fallback: use the selected entity as is
                 entity_keywords = [selected_entity]
         
         # Handle different statement types with session state caching
@@ -585,7 +584,7 @@ def main():
             st.markdown("### Balance Sheet")
             
             # Create cache key to avoid reprocessing (include version for cache invalidation)
-            cache_version = "v24_show_all_data"  # Increment when logic changes
+            cache_version = "v25_entity_filtering_fix"  # Increment when logic changes
             cache_key = f"sections_by_key_{uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'}_{selected_entity}_{cache_version}"
             
             # Force clear old cache versions
@@ -602,6 +601,7 @@ def main():
                         tab_name_mapping=mapping,
                         entity_name=selected_entity,
                         entity_suffixes=entity_suffixes,
+                        entity_keywords=entity_keywords,
                         debug=False  # Set to True for debugging
                     )
                     st.session_state[cache_key] = sections_by_key
