@@ -64,7 +64,7 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
     latest_date = None
     latest_column = None
     
-    print(f"🔍 {sheet_name}: Searching for 'Indicative adjusted' column...")
+    # print(f"🔍 {sheet_name}: Searching for 'Indicative adjusted' column...")
     
     # Step 1: Find "Indicative adjusted" positions
     indicative_positions = []
@@ -75,7 +75,7 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
             val = df.iloc[row_idx, col_idx]
             if pd.notna(val) and 'indicative' in str(val).lower() and 'adjusted' in str(val).lower():
                 indicative_positions.append((row_idx, col_idx))
-                print(f"   📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx} ({col})")
+                                                # print(f"   📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx} ({col})")
     
     if not indicative_positions:
         print(f"   ⚠️  No 'Indicative adjusted' found, using fallback date detection")
@@ -680,11 +680,6 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                 
                 # Organize sections by key - make it less restrictive
                 for data_frame in dataframes:
-                    if debug and latest_date_col and 'streamlit' in sys.modules:
-                        try:
-                            st.write(f"📅 Latest date column detected: {latest_date_col}")
-                        except Exception:
-                            pass
                     
                     # Check if this section contains any of the financial keys
                     matched_keys = []  # Track which keys this data_frame matches
@@ -692,11 +687,15 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                     # Get all text from the dataframe for searching
                     all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
                     
+                    print(f"   🔍 Processing sheet: {sheet_name}")
+                    print(f"   🔍 Available financial keys: {financial_keys}")
+                    
                     # Check each financial key - prioritize exact sheet name matches
                     for financial_key in financial_keys:
                         # First, check if the sheet name exactly matches this key
                         if sheet_name.lower() == financial_key.lower():
                             matched_keys.append(financial_key)
+                            print(f"   ✅ Exact match: {sheet_name} -> {financial_key}")
                             continue
                         
                         # Check if the sheet name matches any of the key's sheet patterns
@@ -746,6 +745,10 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         # Check if this section contains the selected entity
                         section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
                         entity_found = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
+                        
+                        print(f"   🔍 Entity check for {best_key}: entity_found={entity_found}")
+                        print(f"   🔍 Entity keywords: {entity_keywords}")
+                        print(f"   🔍 Section text sample: {section_text[:200]}...")
                         
                         # Only process if entity is found in this section
                         if entity_found:

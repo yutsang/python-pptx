@@ -547,33 +547,39 @@ def main():
         if statement_type == "BS":
             st.markdown("### Balance Sheet")
             
-            # Process Excel file directly without caching
-            with st.spinner("🔄 Processing Excel file..."):
-                sections_by_key = get_worksheet_sections_by_keys(
-                    uploaded_file=uploaded_file,
-                    tab_name_mapping=mapping,
-                    entity_name=selected_entity,
-                    entity_suffixes=entity_suffixes,
-                    entity_keywords=entity_keywords,
-                    debug=True  # Set to True for debugging
-                )
-                
-                # Debug: Print what we got back
-                print(f"DEBUG: sections_by_key keys: {list(sections_by_key.keys())}")
-                total_sections = 0
-                for key, sections in sections_by_key.items():
-                    print(f"DEBUG: {key} has {len(sections)} sections")
-                    total_sections += len(sections)
-                    if sections:
-                        print(f"DEBUG: First section keys: {list(sections[0].keys())}")
-                        if 'parsed_data' in sections[0]:
-                            print(f"DEBUG: parsed_data exists: {sections[0]['parsed_data'] is not None}")
-                        if 'data' in sections[0]:
-                            print(f"DEBUG: data shape: {sections[0]['data'].shape if hasattr(sections[0]['data'], 'shape') else 'not a DataFrame'}")
-                
-                print(f"DEBUG: Total sections found: {total_sections}")
-                if total_sections == 0:
-                    print("DEBUG: WARNING - No sections found at all!")
+            # Check if we already have processed data in session state
+            if 'ai_data' in st.session_state and 'sections_by_key' in st.session_state['ai_data']:
+                # Use the data that was already processed for AI
+                sections_by_key = st.session_state['ai_data']['sections_by_key']
+                print(f"DEBUG: Using existing processed data from AI section")
+            else:
+                # Process Excel file directly without caching
+                with st.spinner("🔄 Processing Excel file..."):
+                    sections_by_key = get_worksheet_sections_by_keys(
+                        uploaded_file=uploaded_file,
+                        tab_name_mapping=mapping,
+                        entity_name=selected_entity,
+                        entity_suffixes=entity_suffixes,
+                        entity_keywords=entity_keywords,
+                        debug=True  # Set to True for debugging
+                    )
+                    
+                    # Debug: Print what we got back
+                    print(f"DEBUG: sections_by_key keys: {list(sections_by_key.keys())}")
+                    total_sections = 0
+                    for key, sections in sections_by_key.items():
+                        print(f"DEBUG: {key} has {len(sections)} sections")
+                        total_sections += len(sections)
+                        if sections:
+                            print(f"DEBUG: First section keys: {list(sections[0].keys())}")
+                            if 'parsed_data' in sections[0]:
+                                print(f"DEBUG: parsed_data exists: {sections[0]['parsed_data'] is not None}")
+                            if 'data' in sections[0]:
+                                print(f"DEBUG: data shape: {sections[0]['data'].shape if hasattr(sections[0]['data'], 'shape') else 'not a DataFrame'}")
+                    
+                    print(f"DEBUG: Total sections found: {total_sections}")
+                    if total_sections == 0:
+                        print("DEBUG: WARNING - No sections found at all!")
             
             from common.ui_sections import render_balance_sheet_sections
             render_balance_sheet_sections(
