@@ -528,14 +528,15 @@ def main():
             
             # Create entity keywords based on the selected entity
             entity_keywords = []
-            if selected_entity == 'Ningbo':
-                entity_keywords = ['Ningbo Wanchen Limited']
-            elif selected_entity == 'Haining':
-                entity_keywords = ['Haining Wanpu Limited']
-            elif selected_entity == 'Nanjing':
-                entity_keywords = ['Nanjing Wanchen Limited']
-            else:
-                # Fallback: use the selected entity as is
+            for suffix in entity_suffixes:
+                if suffix == selected_entity:
+                    # If suffix is the same as selected_entity, just use selected_entity
+                    entity_keywords.append(selected_entity)
+                else:
+                    # Otherwise, combine them
+                    entity_keywords.append(f"{selected_entity} {suffix}")
+            
+            if not entity_keywords:
                 entity_keywords = [selected_entity]
         
         # Handle different statement types
@@ -652,6 +653,7 @@ def main():
                         tab_name_mapping=mapping,
                         entity_name=selected_entity,
                         entity_suffixes=entity_suffixes,
+                        entity_keywords=entity_keywords,
                         debug=False
                     )
                 st.success("✅ Excel processing completed for AI")

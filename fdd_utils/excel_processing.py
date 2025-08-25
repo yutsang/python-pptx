@@ -165,6 +165,7 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
     Parse accounting table with proper header detection and figure column identification
     Returns structured table data with metadata
     """
+    import re  # Import re inside function to avoid scope issues
     try:
         
         if df.empty or len(df) < 2:
@@ -504,6 +505,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
     Process and filter Excel file to extract relevant worksheet sections
     This is the core function from old_ver/utils/utils.py
     """
+    import re  # Import re inside function to avoid scope issues
     try:
         
         # Load the Excel file
@@ -613,6 +615,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
     """
     Get worksheet sections organized by financial keys with enhanced entity filtering and latest date detection.
     """
+    import re  # Import re inside function to avoid scope issues
     try:
         # Handle both uploaded files and default file using context manager to avoid file locks
         if hasattr(uploaded_file, 'name') and uploaded_file.name == "databook.xlsx":
