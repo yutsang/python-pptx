@@ -766,15 +766,35 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
                         entity_found = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
                         
-                        # Temporarily disable strict entity filtering for debugging
                         # Only process if entity is found in this section
-                        if True:  # entity_found:
+                        if entity_found:
                             # Find the actual entity name from the section text
                             actual_entity_found = None
+                            # First try to find the exact entity keyword
                             for entity_keyword in entity_keywords:
                                 if entity_keyword.lower() in section_text:
                                     actual_entity_found = entity_keyword
                                     break
+                            
+                            # If not found, try to extract the actual entity name from the data
+                            if actual_entity_found is None:
+                                # Look for entity patterns in the section text
+                                import re
+                                # Common patterns for entity names
+                                entity_patterns = [
+                                    r'(\w+\s+Wanpu(?:\s+Limited)?)',
+                                    r'(\w+\s+Wanchen(?:\s+Limited)?)',
+                                    r'(Ningbo\s+\w+(?:\s+Limited)?)',
+                                    r'(Haining\s+\w+(?:\s+Limited)?)',
+                                    r'(Nanjing\s+\w+(?:\s+Limited)?)'
+                                ]
+                                
+                                for pattern in entity_patterns:
+                                    matches = re.findall(pattern, section_text, re.IGNORECASE)
+                                    if matches:
+                                        actual_entity_found = matches[0]
+                                        print(f"   🔍 Extracted actual entity name: {actual_entity_found}")
+                                        break
                             
                             # Use new accounting table parser with detected latest date column
                             parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found)
@@ -783,6 +803,12 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                 # Check if this section contains the selected entity
                                 section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
                                 is_selected_entity = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
+                                
+                                # Debug: Print which entity was found
+                                print(f"   🔍 Section for {best_key}: entity_found={entity_found}, is_selected_entity={is_selected_entity}")
+                                print(f"   🔍 Looking for: {entity_keywords}")
+                                print(f"   🔍 Found entity: {actual_entity_found}")
+                                print(f"   🔍 Section text sample: {section_text[:100]}...")
                                 
                                 # VALIDATION: Check for content mismatch (e.g., AR key showing taxes content)
                                 if best_key == 'AR':
@@ -802,17 +828,18 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                     'is_selected_entity': is_selected_entity
                                 }
                                 
-                                # Only add this section if it's the correct sheet for this key
+                                # Only add this section if it's the correct sheet for this key AND matches the selected entity
                                 # This prevents wrong sheets from being assigned to keys
                                 if (sheet_name.lower() == best_key.lower() or 
                                     (best_key in tab_name_mapping and 
                                      any(pattern.lower() in sheet_name.lower() for pattern in tab_name_mapping[best_key]))):
                                     
-                                    # If this is the selected entity, insert it at the beginning
+                                    # Only add sections that match the selected entity
                                     if is_selected_entity:
-                                        sections_by_key[best_key].insert(0, section_data)
-                                    else:
                                         sections_by_key[best_key].append(section_data)
+                                        print(f"   ✅ Added section for {best_key} with entity: {actual_entity_found}")
+                                    else:
+                                        print(f"   ⚠️  Skipped section for {best_key} - entity mismatch (found: {actual_entity_found}, expected: {entity_keywords})")
                             else:
                                 # Fallback to original format if parsing fails
                                 try:
