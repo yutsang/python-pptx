@@ -5,7 +5,6 @@ from pptx import Presentation
 from pptx.util import Pt, Inches
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE, MSO_VERTICAL_ANCHOR
-from pptx.enum.dml import MSO_COLOR_TYPE
 from pptx.oxml.xmlchemy import OxmlElement
 from dataclasses import dataclass
 from typing import List, Tuple
@@ -14,22 +13,6 @@ import re
 from pptx.oxml.ns import qn  # Required import for XML namespace handling
 
 logging.basicConfig(level=logging.INFO)
-
-def get_tab_name(project_name):
-    """Get tab name based on project name - more flexible approach"""
-    try:
-        # Hardcoded mappings for known entities
-        if project_name == 'Haining':
-            return "BSHN"
-        elif project_name == 'Nanjing':
-            return "BSNJ"
-        elif project_name == 'Ningbo':
-            return "BSNB"
-        else:
-            # Try to find a sheet that contains the project name
-            return None
-    except Exception:
-        return None
 
 def clean_content_quotes(content):
     """
@@ -62,29 +45,9 @@ class PowerPointGenerator:
         self.prs = Presentation(template_path)
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
-        
-        # Find textMainBullets shape more robustly
+        self.ROWS_PER_SECTION = 30  # Use the same value for all sections
         slide = self.prs.slides[0]
-        shape = None
-        try:
-            shape = next(s for s in slide.shapes if s.name == "textMainBullets")
-        except StopIteration:
-            # Try to find any text shape if textMainBullets is not found
-            for s in slide.shapes:
-                if hasattr(s, 'text_frame'):
-                    shape = s
-                    break
-        
-        if not shape:
-            raise ValueError("No suitable text shape found in template")
-        
-        # Calculate ROWS_PER_SECTION based on shape dimensions
-        shape_height_inches = shape.height / 914400
-        if shape_height_inches <= 4.2:  # New template with 4.13" height
-            self.ROWS_PER_SECTION = 25  # Fewer rows for shorter shapes
-        else:
-            self.ROWS_PER_SECTION = 30  # Original value for taller shapes
-            
+        shape = next(s for s in slide.shapes if s.name == "textMainBullets")
         self.CHARS_PER_ROW = 50
         self.BULLET_CHAR = '■ '
         self.DARK_BLUE = RGBColor(0, 50, 150)
@@ -92,48 +55,14 @@ class PowerPointGenerator:
         self.prev_layer1 = None
         self.prev_layer2 = None
 
-    def _safe_set_font_color(self, run, color):
-        """Safely set font color with proper initialization"""
-        try:
-            if not run.font.color:
-                run.font.color.type = MSO_COLOR_TYPE.RGB
-            run.font.color.rgb = color
-        except Exception as e:
-            # If color setting fails, continue without color
-            pass
-
     def log_template_shapes(self):
         # Removed shape audit logging to reduce debug output
         pass
 
     def _calculate_max_rows(self):
         slide = self.prs.slides[0]
-        # Find textMainBullets shape more robustly
-        shape = None
-        try:
-            shape = next(s for s in slide.shapes if s.name == "textMainBullets")
-        except StopIteration:
-            # Try to find any text shape if textMainBullets is not found
-            for s in slide.shapes:
-                if hasattr(s, 'text_frame'):
-                    shape = s
-                    break
-        
-        if not shape:
-            return 25  # Default fallback
-        
-        # Calculate available height in inches
-        shape_height_inches = shape.height / 914400
-        
-        # For new template with 4.13" height, adjust calculation
-        if shape_height_inches <= 4.2:  # New template dimensions
-            # More conservative line calculation for shorter shapes
-            # 4.13" height with 12pt line height = approximately 33 lines
-            # Reduce by 6 to account for margins and spacing
-            return int(shape.height / self.LINE_HEIGHT) - 6
-        else:
-            # Original calculation for taller shapes
-            return int(shape.height / self.LINE_HEIGHT) - 4
+        shape = next(s for s in slide.shapes if s.name == "textMainBullets")
+        return int(shape.height / self.LINE_HEIGHT) - 3
 
     def parse_markdown(self, md_content: str) -> List[FinancialItem]:
         items = []
@@ -181,39 +110,28 @@ class PowerPointGenerator:
         distribution = []
         content_queue = items.copy()
         slide_idx = 0
-        
         while content_queue:
             if slide_idx == 0:
-                # First slide: only center section
                 sections = ['c']
             else:
-                # Subsequent slides: left then right sections
                 sections = ['b', 'c']
-            
             for section in sections:
                 if not content_queue:
                     break
-                    
                 section_items = []
                 lines_used = 0
-                
-                # Fill the current section
                 while content_queue and lines_used < self.ROWS_PER_SECTION:
                     item = content_queue[0]
                     item_lines = self._calculate_item_lines(item)
-                    
                     if lines_used + item_lines <= self.ROWS_PER_SECTION:
-                        # Item fits completely
                         section_items.append(item)
                         content_queue.pop(0)
                         lines_used += item_lines
                     else:
-                        # Item needs to be split
                         remaining_lines = self.ROWS_PER_SECTION - lines_used
                         if remaining_lines > 1:
                             split_item, remaining_item = self._split_item(item, remaining_lines)
                             section_items.append(split_item)
-                            
                             if remaining_item and remaining_item.descriptions and remaining_item.descriptions[0]:
                                 remaining_item.layer2_continued = True
                                 remaining_item.layer1_continued = True
@@ -221,132 +139,53 @@ class PowerPointGenerator:
                             else:
                                 content_queue.pop(0)
                         else:
-                            # Not enough space, move to next section
                             break
-                
-                # Add section to distribution if it has content
                 if section_items:
                     distribution.append((slide_idx, section, section_items))
-            
             slide_idx += 1
             if slide_idx >= len(self.prs.slides):
                 break
-                
         return distribution
 
     def _calculate_chars_per_line(self, shape):
-        """Calculate characters per line based on actual shape dimensions and text frame margins"""
-        if not shape:
-            return self.CHARS_PER_ROW
-        
-        # Get the actual available text width (shape width minus margins)
-        shape_width_inches = shape.width / 914400  # Convert EMU to inches
-        
-        # Get text frame margins if available
-        margin_left = 0
-        margin_right = 0
-        if hasattr(shape, 'text_frame'):
-            tf = shape.text_frame
-            margin_left = tf.margin_left / 914400 if tf.margin_left else 0
-            margin_right = tf.margin_right / 914400 if tf.margin_right else 0
-        
-        # Calculate available text width
-        available_width_inches = shape_width_inches - margin_left - margin_right
-        
-        # For the new template with 4.78" width shapes, use more conservative calculation
-        # The new shapes are narrower, so we need to adjust character width accordingly
-        if available_width_inches <= 4.8:  # New template dimensions
-            # More conservative character width for narrower shapes
-            avg_char_px = 8.0  # Wider character estimate for better fit
-        else:
-            # Original calculation for wider shapes
-            avg_char_px = 7.2
-        
-        # Convert to pixels (1 inch = 96 pixels)
-        available_width_px = available_width_inches * 96
-        
-        # Calculate characters per line
-        chars_per_line = int(available_width_px / avg_char_px)
-        
-        # Ensure reasonable bounds for new template
-        chars_per_line = max(25, min(chars_per_line, 80))  # More conservative bounds
-        
-        # Apply special handling for first page (more conservative)
-        if hasattr(self, 'current_slide_index') and self.current_slide_index == 0:
-            # Reduce characters per line for first page to prevent overflow
-            chars_per_line = min(chars_per_line, 70)
-        
+        # Convert EMU to pixels: 1 EMU = 1/914400 inches, 1 inch = 96 px
+        px_width = int(shape.width * 96 / 914400)
+        avg_char_px = 7  # Arial 9pt ~ 7px per char
+        chars_per_line = max(20, px_width // avg_char_px)
         return chars_per_line
 
     def _wrap_text_to_shape(self, text, shape):
-        """Wrap text to fit the actual shape dimensions with better control"""
+        # Use the actual shape width and font size to wrap text accurately
         chars_per_line = self._calculate_chars_per_line(shape)
-        
-        # Use more conservative wrapping for better control
-        # Reduce chars per line slightly to account for variable character widths
-        adjusted_chars = max(25, chars_per_line - 5)
-        
-        # Use textwrap with better settings
-        wrapped = textwrap.wrap(
-            text, 
-            width=adjusted_chars,
-            break_long_words=True,
-            break_on_hyphens=False,
-            replace_whitespace=False
-        )
-        
+        wrapped = textwrap.wrap(text, width=chars_per_line)
         return wrapped
 
     def _calculate_item_lines(self, item: FinancialItem) -> int:
-        """Calculate lines needed for an item with more accurate text wrapping"""
         shape = getattr(self, 'current_shape', None)
         chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
-        
         lines = 0
-        
-        # Header line
         header = f"{item.accounting_type} (continued)" if item.layer1_continued else item.accounting_type
-        header_lines = len(textwrap.wrap(header, width=chars_per_line, break_long_words=True)) or 1
+        header_lines = len(textwrap.wrap(header, width=chars_per_line))
         lines += header_lines
-        
-        # Description lines
         desc_lines = 0
         for desc in item.descriptions:
             for para in desc.split('\n'):
-                # Use the same wrapping logic as _wrap_text_to_shape
-                adjusted_chars = max(25, chars_per_line - 5)
-                para_lines = len(textwrap.wrap(
-                    para, 
-                    width=adjusted_chars,
-                    break_long_words=True,
-                    break_on_hyphens=False,
-                    replace_whitespace=False
-                )) or 1
+                para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
                 desc_lines += para_lines
-        
         lines += desc_lines
         return lines
 
     def _split_item(self, item: FinancialItem, max_lines: int) -> tuple[FinancialItem, FinancialItem | None]:
-        """Split item at paragraph boundaries with improved text wrapping"""
+        # Split at paragraph boundaries (not mid-paragraph) whenever possible
         shape = getattr(self, 'current_shape', None)
         chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
         header = f"{self.BULLET_CHAR}{item.account_title} - "
         desc_paras = item.descriptions
         lines_used = 0
         split_index = 0
-        
         # Try to fit as many whole paragraphs as possible
         for i, para in enumerate(desc_paras):
-            # Use the same wrapping logic as _wrap_text_to_shape
-            adjusted_chars = max(25, chars_per_line - 5)
-            para_lines = len(textwrap.wrap(
-                para, 
-                width=adjusted_chars,
-                break_long_words=True,
-                break_on_hyphens=False,
-                replace_whitespace=False
-            )) or 1
+            para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
             if lines_used + para_lines > max_lines:
                 break
             lines_used += para_lines
@@ -367,14 +206,7 @@ class PowerPointGenerator:
         # If no paragraph fits, split the first paragraph at line boundary
         if split_index == 0:
             para = desc_paras[0]
-            adjusted_chars = max(25, chars_per_line - 5)
-            wrapped = textwrap.wrap(
-                para, 
-                width=adjusted_chars,
-                break_long_words=True,
-                break_on_hyphens=False,
-                replace_whitespace=False
-            )
+            wrapped = textwrap.wrap(para, width=chars_per_line)
             first_part = wrapped[:max_lines]
             remaining_part = wrapped[max_lines:]
             split_item = FinancialItem(
@@ -454,11 +286,7 @@ class PowerPointGenerator:
     def _get_section_shape(self, slide, section: str):
         if self.current_slide_index == 0:
             if section == 'c':
-                shape = next((s for s in slide.shapes if s.name == "textMainBullets"), None)
-                # Apply special handling for first page
-                if shape:
-                    self._optimize_first_page_shape(shape)
-                return shape
+                return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
             return None  # No 'b' section on first slide
         # For subsequent slides
         target_name = "textMainBullets_L" if section == 'b' else "textMainBullets_R"
@@ -468,10 +296,6 @@ class PowerPointGenerator:
         tf = shape.text_frame
         tf.clear()
         tf.word_wrap = True
-        
-        # Optimize text frame for better control
-        self._optimize_text_frame(tf, shape)
-        
         self.prev_layer1 = None  # Reset for each new section
         self.current_shape = shape  # For dynamic line calculation
         prev_account_title = None
@@ -492,7 +316,7 @@ class PowerPointGenerator:
                 run.font.size = Pt(9)
                 run.font.bold = True
                 run.font.name = 'Arial'
-                self._safe_set_font_color(run, self.DARK_BLUE)
+                run.font.color.rgb = self.DARK_BLUE
                 self.prev_layer1 = item.accounting_type
                 paragraph_count += 1
             # Treat all items the same (no special handling for taxes payables)
@@ -509,7 +333,7 @@ class PowerPointGenerator:
                             except: pass
                         bullet_run = p.add_run()
                         bullet_run.text = self.BULLET_CHAR
-                        self._safe_set_font_color(bullet_run, self.DARK_GREY)
+                        bullet_run.font.color.rgb = self.DARK_GREY
                         bullet_run.font.name = 'Arial'
                         bullet_run.font.size = Pt(9)
                         title_run = p.add_run()
@@ -548,87 +372,6 @@ class PowerPointGenerator:
             prev_account_title = item.account_title
             prev_continued = item.layer1_continued or item.layer2_continued
         self.current_shape = None
-
-    def _optimize_text_frame(self, text_frame, shape):
-        """Optimize text frame properties for better text control"""
-        try:
-            # Set auto-size to none for better control
-            text_frame.auto_size = MSO_AUTO_SIZE.NONE
-            
-            # Set vertical anchor to top
-            text_frame.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
-            
-            # Adjust margins for better text control based on shape dimensions
-            shape_width_inches = shape.width / 914400
-            shape_height_inches = shape.height / 914400
-            
-            # For new template with 4.78" width and 4.13" height
-            if shape_width_inches <= 4.8 and shape_height_inches <= 4.2:
-                # New template: use smaller margins for better text utilization
-                margin_left = Inches(0.03)
-                margin_right = Inches(0.03)
-                margin_top = Inches(0.03)
-                margin_bottom = Inches(0.03)
-            elif shape_width_inches > 8:  # Wide template
-                margin_left = Inches(0.05)
-                margin_right = Inches(0.05)
-                margin_top = Inches(0.05)
-                margin_bottom = Inches(0.05)
-            else:  # Standard template
-                margin_left = Inches(0.1)
-                margin_right = Inches(0.1)
-                margin_top = Inches(0.05)
-                margin_bottom = Inches(0.05)
-            
-            text_frame.margin_left = margin_left
-            text_frame.margin_right = margin_right
-            text_frame.margin_top = margin_top
-            text_frame.margin_bottom = margin_bottom
-            
-        except Exception as e:
-            # If optimization fails, continue with default settings
-            pass
-
-    def _optimize_first_page_shape(self, shape):
-        """Apply special optimizations for the first page shape"""
-        try:
-            # For the first page, use more conservative text wrapping
-            # This helps prevent text from being too wide and uncontrollable
-            
-            # Adjust the shape's text frame for better control
-            if hasattr(shape, 'text_frame'):
-                tf = shape.text_frame
-                
-                # Get shape dimensions to determine appropriate margins
-                shape_width_inches = shape.width / 914400
-                shape_height_inches = shape.height / 914400
-                
-                # For new template with 4.78" width and 4.13" height
-                if shape_width_inches <= 4.8 and shape_height_inches <= 4.2:
-                    # New template: use very small margins for maximum text utilization
-                    tf.margin_left = Inches(0.02)
-                    tf.margin_right = Inches(0.02)
-                    tf.margin_top = Inches(0.02)
-                    tf.margin_bottom = Inches(0.02)
-                else:
-                    # Original template: use standard margins
-                    tf.margin_left = Inches(0.08)
-                    tf.margin_right = Inches(0.08)
-                    tf.margin_top = Inches(0.05)
-                    tf.margin_bottom = Inches(0.05)
-                
-                # Ensure word wrap is enabled
-                tf.word_wrap = True
-                
-                # Set auto-size to none for better control
-                tf.auto_size = MSO_AUTO_SIZE.NONE
-                
-                # Set vertical anchor to top
-                tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
-                
-        except Exception as e:
-            # If optimization fails, continue with default settings
-            pass
 
     def _detect_bullet_content(self, text):
         """
@@ -703,11 +446,20 @@ class PowerPointGenerator:
             items = self.parse_markdown(md_content)
             distribution = self._plan_content_distribution(items)
             self._validate_content_placement(distribution)
-            
-            # Remove summary processing - no longer needed
+            summary_text = self.parse_summary_markdown(summary_md)
             max_slide_used = max((slide_idx for slide_idx, _, _ in distribution), default=0)
             total_slides_needed = max_slide_used + 1
-            
+            wrapper = textwrap.TextWrapper(
+                width=self.CHARS_PER_ROW, 
+                break_long_words=True,
+                replace_whitespace=False
+            )
+            summary_chunks = wrapper.wrap(summary_text)
+            chunks_per_slide = len(summary_chunks) // total_slides_needed + 1
+            slide_summary_chunks = [
+                summary_chunks[i:i+chunks_per_slide] 
+                for i in range(0, len(summary_chunks), chunks_per_slide)
+            ]
             while len(self.prs.slides) < total_slides_needed:
                 self.prs.slides.add_slide(self.prs.slide_layouts[1])
             for slide_idx, section, section_items in distribution:
@@ -718,8 +470,14 @@ class PowerPointGenerator:
                 shape = self._get_section_shape(slide, section)
                 if shape:
                     self._populate_section(shape, section_items)
-            # Summary placement removed - no longer needed
-            pass
+            for slide_idx in range(total_slides_needed):
+                slide = self.prs.slides[slide_idx]
+                summary_shape = next((s for s in slide.shapes if s.name == "coSummaryShape"), None)
+                if summary_shape:
+                    self._populate_summary_section_safe(
+                        summary_shape, 
+                        slide_summary_chunks[slide_idx] if slide_idx < len(slide_summary_chunks) else []
+                    )
             unused_slides = self._detect_unused_slides(distribution)
             if unused_slides:
                 logging.info(f"Removing unused slides: {[idx+1 for idx in unused_slides]}")
@@ -821,7 +579,7 @@ class PowerPointGenerator:
         run.font.size = Pt(9)  # All text pt 9
         run.font.bold = True
         run.font.name = 'Arial'
-        self._safe_set_font_color(run, RGBColor(255, 255, 255))
+        run.font.color.rgb = RGBColor(255, 255, 255)
         # Set LEFT alignment
         try:
             p.alignment = PP_ALIGN.LEFT
@@ -870,7 +628,7 @@ class PowerPointGenerator:
         self._apply_paragraph_formatting(p, is_layer2_3=True)
         bullet_run = p.add_run()
         bullet_run.text = self.BULLET_CHAR
-        self._safe_set_font_color(bullet_run, self.DARK_GREY)
+        bullet_run.font.color.rgb = self.DARK_GREY
         bullet_run.font.name = 'Arial'
         bullet_run.font.size = Pt(9)
         title_run = p.add_run()
@@ -901,8 +659,24 @@ class ReportGenerator:
         self.project_name = project_name
         
     def generate(self):
-        # Remove summary content - no longer needed
-        summary_content = ""
+        location = self.project_name  # Use the provided project_name/entity
+        if location == "Haining":
+            summary_content = """
+            ## Summary
+            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
+            """
+        elif location == "Ningbo":
+            summary_content = """
+            ## Summary
+            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
+            """
+        elif location == "Nanjing":
+            summary_content = """
+            ## Summary
+            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
+            """
+        else:
+            summary_content = ""
         with open(self.markdown_file, 'r', encoding='utf-8') as f:
             md_content = f.read()
         generator = PowerPointGenerator(self.template_path)
@@ -931,15 +705,21 @@ def update_project_titles(presentation_path, project_name, output_path=None):
     prs = Presentation(presentation_path)
     total_slides = len(prs.slides)
     
-    # Extract base entity name (e.g., "Haining" from "Haining Wanpu Limited")
-    base_entity = project_name.split()[0] if project_name else project_name
+    # Extract base entity name (e.g., "Project Haining" from "Project Haining Wanpu Limited")
+    base_entity_name = project_name
+    if "Project" in project_name:
+        # Extract the part after "Project" and before any additional company info
+        parts = project_name.split()
+        if len(parts) >= 2:
+            # Take "Project" + first word after it
+            base_entity_name = f"{parts[0]} {parts[1]}"
     
     for slide_index, slide in enumerate(prs.slides):
         current_slide_number = slide_index + 1
         projTitle_shape = find_shape_by_name(slide.shapes, "projTitle")
         if projTitle_shape:
             replacements = {
-                "[PROJECT]": base_entity,  # Use base entity name instead of full project name
+                "[PROJECT]": base_entity_name,
                 "[Current]": str(current_slide_number),
                 "[Total]": str(total_slides)
             }
@@ -951,149 +731,230 @@ def update_project_titles(presentation_path, project_name, output_path=None):
     return output_path
 
 # --- High-level function for app.py ---
-def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, project_name, output_path=None):
+def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None):
+    generator = ReportGenerator(template_path, markdown_path, output_path, project_name)
+    generator.generate()
+    if not os.path.exists(output_path):
+        logging.error(f"PPTX file was not created at {output_path}")
+        raise FileNotFoundError(f"PPTX file was not created at {output_path}")
+    if project_name:
+        update_project_titles(output_path, project_name)
+    
+    # Embed Excel data if provided
+    if excel_file_path and project_name:
+        # Get the appropriate sheet name based on project
+        sheet_name = get_tab_name(project_name)
+        if sheet_name:
+            try:
+                embed_excel_data_in_pptx(output_path, excel_file_path, sheet_name, project_name)
+            except Exception as e:
+                logging.warning(f"⚠️ Could not embed Excel data: {str(e)}")
+        else:
+            logging.warning(f"⚠️ No valid sheet name found for project: {project_name}")
+            # Try to embed with first sheet as fallback
+            try:
+                embed_excel_data_in_pptx(output_path, excel_file_path, None, project_name)
+            except Exception as e:
+                logging.warning(f"⚠️ Could not embed Excel data with fallback: {str(e)}")
+    
+    # Add success message
+    logging.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
+    return output_path
+
+def get_tab_name(project_name):
+    """Get tab name based on project name - more flexible approach"""
+    try:
+        # Hardcoded mappings for known entities
+        if project_name == 'Haining':
+            return "BSHN"
+        elif project_name == 'Nanjing':
+            return "BSNJ"
+        elif project_name == 'Ningbo':
+            return "BSNB"
+        else:
+            # Try to find a sheet that contains the project name
+            return None
+    except Exception:
+        return None
+
+def merge_presentations(bs_presentation_path, is_presentation_path, output_path):
     """
-    Update existing financialData shape in PowerPoint with Excel data
+    Merge Balance Sheet and Income Statement presentations into a single presentation.
+    
+    Args:
+        bs_presentation_path: Path to the Balance Sheet presentation
+        is_presentation_path: Path to the Income Statement presentation  
+        output_path: Path for the merged output presentation
     """
     try:
         from pptx import Presentation
-        from pptx.util import Inches
-        import pandas as pd
-        import os
+        import logging
         
-        # Load the presentation
-        prs = Presentation(presentation_path)
+        logging.info(f"🔄 Starting presentation merge...")
+        
+        # Load the Balance Sheet presentation as the base
+        bs_prs = Presentation(bs_presentation_path)
+        is_prs = Presentation(is_presentation_path)
+        
+        logging.info(f"📊 BS presentation has {len(bs_prs.slides)} slides")
+        logging.info(f"📈 IS presentation has {len(is_prs.slides)} slides")
+        
+        # Add all slides from IS presentation to BS presentation
+        for slide in is_prs.slides:
+            bs_prs.slides.add_slide(slide)
+        
+        # Save the merged presentation
+        bs_prs.save(output_path)
+        
+        logging.info(f"✅ Presentations merged successfully: {output_path}")
+        return output_path
+        
+    except Exception as e:
+        logging.error(f"❌ Failed to merge presentations: {str(e)}")
+        raise
+
+def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, project_name):
+    """
+    Embed Excel data into PowerPoint presentation.
+    
+    Args:
+        presentation_path: Path to the PowerPoint presentation
+        excel_file_path: Path to the Excel file
+        sheet_name: Name of the sheet to read (can be None for first sheet)
+        project_name: Name of the project for logging
+    """
+    try:
+        import pandas as pd
+        from pptx import Presentation
+        from pptx.util import Inches
+        
+        logging.info(f"📊 Embedding Excel data for {project_name}...")
         
         # Read Excel data
         if sheet_name:
             df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
+            logging.info(f"📋 Read sheet '{sheet_name}' with {len(df)} rows")
         else:
-            # If no sheet name provided, read the first sheet
-            df = pd.read_excel(excel_file_path, sheet_name=0)
+            # Read first sheet if sheet_name is None
+            df = pd.read_excel(excel_file_path)
+            logging.info(f"📋 Read first sheet with {len(df)} rows")
         
-        # Find the financialData shape in all slides
+        # Load presentation
+        prs = Presentation(presentation_path)
+        
+        # Find the financialData shape in the first slide
+        target_slide = prs.slides[0]
         financial_data_shape = None
-        target_slide = None
         
-        for slide in prs.slides:
-            for shape in slide.shapes:
-                if shape.name == "financialData":
-                    financial_data_shape = shape
-                    target_slide = slide
-                    break
-            if financial_data_shape:
+        for shape in target_slide.shapes:
+            if shape.name == "financialData":
+                financial_data_shape = shape
                 break
         
-        if financial_data_shape:
-            # Found the financialData shape - update its content
-            if hasattr(financial_data_shape, 'table'):
-                # It's a table shape - update the table data while preserving formatting
-                table = financial_data_shape.table
-                
-                # Store original formatting for each cell
-                original_formats = {}
-                for row_idx in range(len(table.rows)):
-                    for col_idx in range(len(table.columns)):
-                        cell = table.cell(row_idx, col_idx)
-                        # Store font properties
+        if financial_data_shape and hasattr(financial_data_shape, 'table'):
+            # It's already a table - update the data
+            table = financial_data_shape.table
+            
+            # Store original formatting
+            original_formats = {}
+            for row_idx in range(len(table.rows)):
+                for col_idx in range(len(table.columns)):
+                    cell = table.cell(row_idx, col_idx)
+                    if cell.text_frame.paragraphs[0].runs:
+                        run = cell.text_frame.paragraphs[0].runs[0]
+                        original_formats[(row_idx, col_idx)] = {
+                            'font_name': run.font.name,
+                            'font_size': run.font.size,
+                            'font_bold': run.font.bold,
+                            'font_italic': run.font.italic,
+                            'font_color': run.font.color.rgb if run.font.color.rgb else None
+                        }
+            
+            # Clear existing data
+            for row_idx in range(len(table.rows)):
+                for col_idx in range(len(table.columns)):
+                    table.cell(row_idx, col_idx).text = ""
+            
+            # Add header row
+            for col_idx, col_name in enumerate(df.columns):
+                if col_idx < len(table.columns):
+                    cell = table.cell(0, col_idx)
+                    cell.text = str(col_name)
+                    # Apply header formatting (usually bold, different color)
+                    if (0, col_idx) in original_formats:
+                        format_info = original_formats[(0, col_idx)]
                         if cell.text_frame.paragraphs[0].runs:
                             run = cell.text_frame.paragraphs[0].runs[0]
-                            original_formats[(row_idx, col_idx)] = {
-                                'font_name': run.font.name,
-                                'font_size': run.font.size,
-                                'font_bold': run.font.bold,
-                                'font_italic': run.font.italic,
-                                'font_color': run.font.color.rgb if run.font.color.rgb else None
-                            }
-                
-                # Clear existing content but preserve formatting
-                for row in range(len(table.rows)):
-                    for col in range(len(table.columns)):
-                        if row < len(table.rows) and col < len(table.columns):
-                            cell = table.cell(row, col)
-                            cell.text = ""
-                
-                # Update with new data and apply original formatting
-                # Header row
-                for col_idx, col_name in enumerate(df.columns):
-                    if col_idx < len(table.columns):
-                        cell = table.cell(0, col_idx)
-                        cell.text = str(col_name)
-                        # Apply header formatting (usually bold, different color)
-                        if (0, col_idx) in original_formats:
-                            format_info = original_formats[(0, col_idx)]
-                            if cell.text_frame.paragraphs[0].runs:
-                                run = cell.text_frame.paragraphs[0].runs[0]
-                                if format_info['font_name']:
-                                    run.font.name = format_info['font_name']
-                                if format_info['font_size']:
-                                    run.font.size = format_info['font_size']
-                                if format_info['font_bold'] is not None:
-                                    run.font.bold = format_info['font_bold']
-                                if format_info['font_italic'] is not None:
-                                    run.font.italic = format_info['font_italic']
-                                if format_info['font_color']:
-                                    self._safe_set_font_color(run, format_info['font_color'])
-                
-                # Data rows
-                for row_idx, row in enumerate(df.values):
-                    if row_idx + 1 < len(table.rows):
-                        for col_idx, value in enumerate(row):
-                            if col_idx < len(table.columns):
-                                cell = table.cell(row_idx + 1, col_idx)
-                                cell.text = str(value)
-                                # Apply data row formatting
-                                if (row_idx + 1, col_idx) in original_formats:
-                                    format_info = original_formats[(row_idx + 1, col_idx)]
-                                    if cell.text_frame.paragraphs[0].runs:
-                                        run = cell.text_frame.paragraphs[0].runs[0]
-                                        if format_info['font_name']:
-                                            run.font.name = format_info['font_name']
-                                        if format_info['font_size']:
-                                            run.font.size = format_info['font_size']
-                                        if format_info['font_bold'] is not None:
-                                            run.font.bold = format_info['font_bold']
-                                        if format_info['font_italic'] is not None:
-                                            run.font.italic = format_info['font_italic']
-                                        if format_info['font_color']:
-                                            self._safe_set_font_color(run, format_info['font_color'])
-                
-                logging.info(f"✅ Updated financialData table with Excel data (formatting preserved)")
-                
-            elif hasattr(financial_data_shape, 'text_frame'):
-                # It's a text shape - convert to table or update text
-                # For now, let's create a table in its place
-                left = financial_data_shape.left
-                top = financial_data_shape.top
-                width = financial_data_shape.width
-                height = financial_data_shape.height
-                
-                # Remove the old shape
-                target_slide.shapes._spTree.remove(financial_data_shape._element)
-                
-                # Add new table with same position and size
-                table = target_slide.shapes.add_table(
-                    rows=len(df) + 1,  # +1 for header
-                    cols=len(df.columns),
-                    left=left,
-                    top=top,
-                    width=width,
-                    height=height
-                ).table
-                
-                # Name the new table
-                table._element.getparent().getparent().set('name', 'financialData')
-                
-                # Fill table with data
-                for col_idx, col_name in enumerate(df.columns):
-                    table.cell(0, col_idx).text = str(col_name)
-                
-                for row_idx, row in enumerate(df.values):
+                            if format_info['font_name']:
+                                run.font.name = format_info['font_name']
+                            if format_info['font_size']:
+                                run.font.size = format_info['font_size']
+                            if format_info['font_bold'] is not None:
+                                run.font.bold = format_info['font_bold']
+                            if format_info['font_italic'] is not None:
+                                run.font.italic = format_info['font_italic']
+                            if format_info['font_color']:
+                                run.font.color.rgb = format_info['font_color']
+            
+            # Data rows
+            for row_idx, row in enumerate(df.values):
+                if row_idx + 1 < len(table.rows):
                     for col_idx, value in enumerate(row):
-                        table.cell(row_idx + 1, col_idx).text = str(value)
-                
-                logging.info(f"✅ Replaced financialData text with table")
-                
+                        if col_idx < len(table.columns):
+                            cell = table.cell(row_idx + 1, col_idx)
+                            cell.text = str(value)
+                            # Apply data row formatting
+                            if (row_idx + 1, col_idx) in original_formats:
+                                format_info = original_formats[(row_idx + 1, col_idx)]
+                                if cell.text_frame.paragraphs[0].runs:
+                                    run = cell.text_frame.paragraphs[0].runs[0]
+                                    if format_info['font_name']:
+                                        run.font.name = format_info['font_name']
+                                    if format_info['font_size']:
+                                        run.font.size = format_info['font_size']
+                                    if format_info['font_bold'] is not None:
+                                        run.font.bold = format_info['font_bold']
+                                    if format_info['font_italic'] is not None:
+                                        run.font.italic = format_info['font_italic']
+                                    if format_info['font_color']:
+                                        run.font.color.rgb = format_info['font_color']
+            
+            logging.info(f"✅ Updated financialData table with Excel data (formatting preserved)")
+            
+        elif hasattr(financial_data_shape, 'text_frame'):
+            # It's a text shape - convert to table or update text
+            # For now, let's create a table in its place
+            left = financial_data_shape.left
+            top = financial_data_shape.top
+            width = financial_data_shape.width
+            height = financial_data_shape.height
+            
+            # Remove the old shape
+            target_slide.shapes._spTree.remove(financial_data_shape._element)
+            
+            # Add new table with same position and size
+            table = target_slide.shapes.add_table(
+                rows=len(df) + 1,  # +1 for header
+                cols=len(df.columns),
+                left=left,
+                top=top,
+                width=width,
+                height=height
+            ).table
+            
+            # Name the new table
+            table._element.getparent().getparent().set('name', 'financialData')
+            
+            # Fill table with data
+            for col_idx, col_name in enumerate(df.columns):
+                table.cell(0, col_idx).text = str(col_name)
+            
+            for row_idx, row in enumerate(df.values):
+                for col_idx, value in enumerate(row):
+                    table.cell(row_idx + 1, col_idx).text = str(value)
+            
+            logging.info(f"✅ Replaced financialData text with table")
+            
         else:
             # financialData shape not found - create a new table in the middle
             logging.warning("⚠️ financialData shape not found, creating new table")
@@ -1154,144 +1015,11 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                                 cell.fill.fore_color.rgb = RGBColor(242, 242, 242)
         
         # Save the presentation
-        if output_path is None:
-            output_path = presentation_path
-        prs.save(output_path)
+        prs.save(presentation_path)
         
-        logging.info(f"✅ Excel data updated in PowerPoint: {output_path}")
-        return output_path
+        logging.info(f"✅ Excel data updated in PowerPoint: {presentation_path}")
+        return presentation_path
         
     except Exception as e:
         logging.error(f"❌ Failed to update Excel data: {str(e)}")
-        raise
-
-def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None):
-    generator = ReportGenerator(template_path, markdown_path, output_path, project_name)
-    generator.generate()
-    if not os.path.exists(output_path):
-        logging.error(f"PPTX file was not created at {output_path}")
-        raise FileNotFoundError(f"PPTX file was not created at {output_path}")
-    if project_name:
-        update_project_titles(output_path, project_name)
-    
-    # Embed Excel data if provided
-    if excel_file_path and project_name:
-        # Get the appropriate sheet name based on project
-        sheet_name = get_tab_name(project_name)
-        if sheet_name:
-            try:
-                embed_excel_data_in_pptx(output_path, excel_file_path, sheet_name, project_name)
-            except Exception as e:
-                logging.warning(f"⚠️ Could not embed Excel data: {str(e)}")
-        else:
-            logging.warning(f"⚠️ No valid sheet name found for project: {project_name}")
-            # Try to embed with first sheet as fallback
-            try:
-                embed_excel_data_in_pptx(output_path, excel_file_path, None, project_name)
-            except Exception as e:
-                logging.warning(f"⚠️ Could not embed Excel data with fallback: {str(e)}")
-    
-    # Add success message
-    logging.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
-    return output_path
-
-def merge_presentations(bs_presentation_path, is_presentation_path, output_path):
-    """
-    Merge Balance Sheet and Income Statement presentations into a single presentation.
-    
-    Args:
-        bs_presentation_path: Path to the Balance Sheet presentation
-        is_presentation_path: Path to the Income Statement presentation  
-        output_path: Path for the merged output presentation
-    """
-    try:
-        from pptx import Presentation
-        import logging
-        
-        logging.info(f"🔄 Starting presentation merge...")
-        
-        # Load the Balance Sheet presentation as the base
-        bs_prs = Presentation(bs_presentation_path)
-        is_prs = Presentation(is_presentation_path)
-        
-        logging.info(f"📊 BS presentation has {len(bs_prs.slides)} slides")
-        logging.info(f"📈 IS presentation has {len(is_prs.slides)} slides")
-        
-        # Copy all slides from Income Statement to Balance Sheet presentation
-        for slide in is_prs.slides:
-            # Get the slide layout from the BS presentation
-            slide_layout = bs_prs.slide_layouts[0]  # Use first layout for all slides
-            
-            # Create new slide in BS presentation
-            new_slide = bs_prs.slides.add_slide(slide_layout)
-            
-            # Copy all shapes from IS slide to new slide
-            for shape in slide.shapes:
-                # Get shape position and size
-                left = shape.left
-                top = shape.top
-                width = shape.width
-                height = shape.height
-                
-                # Copy shape based on type
-                if shape.shape_type == 17:  # Text box
-                    # Copy text box
-                    textbox = new_slide.shapes.add_textbox(left, top, width, height)
-                    textbox.text_frame.text = shape.text_frame.text
-                    
-                    # Copy text formatting
-                    for i, paragraph in enumerate(shape.text_frame.paragraphs):
-                        if i < len(textbox.text_frame.paragraphs):
-                            new_paragraph = textbox.text_frame.paragraphs[i]
-                            new_paragraph.alignment = paragraph.alignment
-                            for j, run in enumerate(paragraph.runs):
-                                if j < len(new_paragraph.runs):
-                                    new_run = new_paragraph.runs[j]
-                                    new_run.font.bold = run.font.bold
-                                    new_run.font.italic = run.font.italic
-                                    new_run.font.size = run.font.size
-                                    new_run.font.name = run.font.name
-                                    if hasattr(run.font, 'color') and run.font.color.rgb:
-                                        self._safe_set_font_color(new_run, run.font.color.rgb)
-                
-                elif shape.shape_type == 19:  # Table
-                    # Copy table
-                    table = new_slide.shapes.add_table(
-                        rows=shape.table.rows.__len__(),
-                        cols=shape.table.columns.__len__(),
-                        left=left,
-                        top=top,
-                        width=width,
-                        height=height
-                    ).table
-                    
-                    # Copy table data
-                    for row_idx in range(shape.table.rows.__len__()):
-                        for col_idx in range(shape.table.columns.__len__()):
-                            if row_idx < table.rows.__len__() and col_idx < table.columns.__len__():
-                                table.cell(row_idx, col_idx).text = shape.table.cell(row_idx, col_idx).text
-                
-                else:
-                    # For other shape types, try to copy as picture
-                    try:
-                        new_slide.shapes.add_picture(
-                            shape.image.blob,
-                            left,
-                            top,
-                            width,
-                            height
-                        )
-                    except:
-                        # If copying as picture fails, skip this shape
-                        logging.warning(f"⚠️ Could not copy shape type {shape.shape_type}")
-                        continue
-        
-        # Save the merged presentation
-        bs_prs.save(output_path)
-        
-        logging.info(f"✅ Successfully merged presentations to: {output_path}")
-        logging.info(f"📊 Final presentation has {len(bs_prs.slides)} slides")
-        
-    except Exception as e:
-        logging.error(f"❌ Failed to merge presentations: {str(e)}")
         raise 
