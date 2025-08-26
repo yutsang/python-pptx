@@ -398,39 +398,57 @@ def main():
         
 
         
-        # Auto-extract base entity and generate mapping keys
+        # Auto-extract base entity and generate comprehensive entity keywords
         if entity_input:
             # Extract base entity name (first word)
             base_entity = entity_input.split()[0] if entity_input.split() else None
             
-            # Generate mapping keys based on input
-            mapping_keys = []
+            # Generate comprehensive entity keywords from the input
             words = entity_input.split()
-            for i in range(len(words)):
-                mapping_keys.append(" ".join(words[:i+1]))
+            entity_keywords = []
+            
+            # Always include the base entity
+            entity_keywords.append(base_entity)
+            
+            # Generate all possible combinations
+            if len(words) >= 2:
+                # Add two-word combinations
+                for i in range(1, len(words)):
+                    entity_keywords.append(f"{base_entity} {words[i]}")
+                
+                # Add three-word combinations if available
+                if len(words) >= 3:
+                    for i in range(1, len(words)-1):
+                        for j in range(i+1, len(words)):
+                            entity_keywords.append(f"{base_entity} {words[i]} {words[j]}")
             
             # Use full entity name for processing
             selected_entity = entity_input
             
             # Show entity info
             st.info(f"📋 Entity: {selected_entity}")
+            print(f"DEBUG: Generated entity keywords: {entity_keywords}")
         else:
             selected_entity = None
-            mapping_keys = []
+            entity_keywords = []
             st.warning("⚠️ Please enter an entity name to start processing")
+        
         # Check if entity is provided (file can be default)
         if not selected_entity:
             st.stop()
         
-        # Use mapping keys as entity helpers
-        if 'mapping_keys' in locals() and mapping_keys:
-            entity_helpers = ",".join(mapping_keys) + ","
+        # For backward compatibility, still generate entity_helpers but use entity_keywords directly
+        if selected_entity == 'Haining':
+            # Use the correct suffixes for Haining
+            entity_helpers = "Wanpu,Limited,"
+        elif selected_entity in ['Nanjing', 'Ningbo']:
+            # Use the correct suffixes for Nanjing/Ningbo
+            entity_helpers = "Wanchen,Limited,Logistics,Development,Supply,Chain,"
         else:
-            # Fallback to original logic
-            if selected_entity == 'Haining':
-                entity_helpers = "Wanpu,Limited,"
-            elif selected_entity in ['Nanjing', 'Ningbo']:
-                entity_helpers = "Wanchen,Limited,Logistics,Development,Supply,Chain," 
+            # For other entities, use the words from the input
+            words = selected_entity.split()
+            if len(words) > 1:
+                entity_helpers = ",".join(words[1:]) + ","
             else:
                 entity_helpers = "Limited,"
 
@@ -515,29 +533,27 @@ def main():
         # --- View Table Section ---
         config, mapping, pattern, prompts = load_config_files()
         
-        # Process entity configuration based on mode
-        entity_mode = st.session_state.get('entity_mode', 'multiple')
-        
-        if entity_mode == 'single':
-            # For single entity mode, use only the base entity name
-            entity_suffixes = []
-            entity_keywords = [selected_entity]
-        else:
-            # For multiple entity mode, use the full entity helpers
-            entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
+        # Use the pre-generated entity keywords
+        if 'entity_keywords' not in locals() or not entity_keywords:
+            # Fallback: generate entity keywords from entity_helpers
+            entity_mode = st.session_state.get('entity_mode', 'multiple')
             
-            # Create entity keywords based on the selected entity
-            entity_keywords = []
-            for suffix in entity_suffixes:
-                if suffix == selected_entity:
-                    # If suffix is the same as selected_entity, just use selected_entity
-                    entity_keywords.append(selected_entity)
-                else:
-                    # Otherwise, combine them
-                    entity_keywords.append(f"{selected_entity} {suffix}")
-            
-            if not entity_keywords:
+            if entity_mode == 'single':
+                # For single entity mode, use only the base entity name
+                entity_suffixes = []
                 entity_keywords = [selected_entity]
+            else:
+                # For multiple entity mode, use the full entity helpers
+                entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
+                
+                # Create entity keywords based on the selected entity
+                entity_keywords = [selected_entity]  # Always include the base entity name
+                for suffix in entity_suffixes:
+                    if suffix != selected_entity:  # Avoid duplicates
+                        entity_keywords.append(f"{selected_entity} {suffix}")
+                
+                if not entity_keywords:
+                    entity_keywords = [selected_entity]
             
             print(f"DEBUG: entity_keywords generated: {entity_keywords}")
             print(f"DEBUG: entity_suffixes: {entity_suffixes}")
