@@ -164,44 +164,114 @@ class PowerPointGenerator:
         return distribution
 
     def _calculate_chars_per_line(self, shape):
-        # Convert EMU to pixels: 1 EMU = 1/914400 inches, 1 inch = 96 px
-        px_width = int(shape.width * 96 / 914400)
-        avg_char_px = 7  # Arial 9pt ~ 7px per char
-        chars_per_line = max(20, px_width // avg_char_px)
+        """Calculate characters per line based on actual shape dimensions and text frame margins"""
+        if not shape:
+            return self.CHARS_PER_ROW
+        
+        # Get the actual available text width (shape width minus margins)
+        shape_width_inches = shape.width / 914400  # Convert EMU to inches
+        
+        # Get text frame margins if available
+        margin_left = 0
+        margin_right = 0
+        if hasattr(shape, 'text_frame'):
+            tf = shape.text_frame
+            margin_left = tf.margin_left / 914400 if tf.margin_left else 0
+            margin_right = tf.margin_right / 914400 if tf.margin_right else 0
+        
+        # Calculate available text width
+        available_width_inches = shape_width_inches - margin_left - margin_right
+        
+        # Convert to pixels (1 inch = 96 pixels)
+        available_width_px = available_width_inches * 96
+        
+        # More accurate character width calculation for Arial 9pt
+        # Arial 9pt is approximately 6.5-7.5 pixels per character depending on the character
+        # Use 7 pixels as average, but adjust based on actual measurements
+        avg_char_px = 7.2  # Slightly more conservative estimate
+        
+        # Calculate characters per line
+        chars_per_line = int(available_width_px / avg_char_px)
+        
+        # Ensure reasonable bounds
+        chars_per_line = max(30, min(chars_per_line, 120))
+        
+        # Apply special handling for first page (more conservative)
+        if hasattr(self, 'current_slide_index') and self.current_slide_index == 0:
+            # Reduce characters per line for first page to prevent overflow
+            chars_per_line = min(chars_per_line, 100)
+        
         return chars_per_line
 
     def _wrap_text_to_shape(self, text, shape):
-        # Use the actual shape width and font size to wrap text accurately
+        """Wrap text to fit the actual shape dimensions with better control"""
         chars_per_line = self._calculate_chars_per_line(shape)
-        wrapped = textwrap.wrap(text, width=chars_per_line)
+        
+        # Use more conservative wrapping for better control
+        # Reduce chars per line slightly to account for variable character widths
+        adjusted_chars = max(25, chars_per_line - 5)
+        
+        # Use textwrap with better settings
+        wrapped = textwrap.wrap(
+            text, 
+            width=adjusted_chars,
+            break_long_words=True,
+            break_on_hyphens=False,
+            replace_whitespace=False
+        )
+        
         return wrapped
 
     def _calculate_item_lines(self, item: FinancialItem) -> int:
+        """Calculate lines needed for an item with more accurate text wrapping"""
         shape = getattr(self, 'current_shape', None)
         chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
+        
         lines = 0
+        
+        # Header line
         header = f"{item.accounting_type} (continued)" if item.layer1_continued else item.accounting_type
-        header_lines = len(textwrap.wrap(header, width=chars_per_line))
+        header_lines = len(textwrap.wrap(header, width=chars_per_line, break_long_words=True)) or 1
         lines += header_lines
+        
+        # Description lines
         desc_lines = 0
         for desc in item.descriptions:
             for para in desc.split('\n'):
-                para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
+                # Use the same wrapping logic as _wrap_text_to_shape
+                adjusted_chars = max(25, chars_per_line - 5)
+                para_lines = len(textwrap.wrap(
+                    para, 
+                    width=adjusted_chars,
+                    break_long_words=True,
+                    break_on_hyphens=False,
+                    replace_whitespace=False
+                )) or 1
                 desc_lines += para_lines
+        
         lines += desc_lines
         return lines
 
     def _split_item(self, item: FinancialItem, max_lines: int) -> tuple[FinancialItem, FinancialItem | None]:
-        # Split at paragraph boundaries (not mid-paragraph) whenever possible
+        """Split item at paragraph boundaries with improved text wrapping"""
         shape = getattr(self, 'current_shape', None)
         chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
         header = f"{self.BULLET_CHAR}{item.account_title} - "
         desc_paras = item.descriptions
         lines_used = 0
         split_index = 0
+        
         # Try to fit as many whole paragraphs as possible
         for i, para in enumerate(desc_paras):
-            para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
+            # Use the same wrapping logic as _wrap_text_to_shape
+            adjusted_chars = max(25, chars_per_line - 5)
+            para_lines = len(textwrap.wrap(
+                para, 
+                width=adjusted_chars,
+                break_long_words=True,
+                break_on_hyphens=False,
+                replace_whitespace=False
+            )) or 1
             if lines_used + para_lines > max_lines:
                 break
             lines_used += para_lines
@@ -222,7 +292,14 @@ class PowerPointGenerator:
         # If no paragraph fits, split the first paragraph at line boundary
         if split_index == 0:
             para = desc_paras[0]
-            wrapped = textwrap.wrap(para, width=chars_per_line)
+            adjusted_chars = max(25, chars_per_line - 5)
+            wrapped = textwrap.wrap(
+                para, 
+                width=adjusted_chars,
+                break_long_words=True,
+                break_on_hyphens=False,
+                replace_whitespace=False
+            )
             first_part = wrapped[:max_lines]
             remaining_part = wrapped[max_lines:]
             split_item = FinancialItem(
@@ -302,7 +379,11 @@ class PowerPointGenerator:
     def _get_section_shape(self, slide, section: str):
         if self.current_slide_index == 0:
             if section == 'c':
-                return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
+                shape = next((s for s in slide.shapes if s.name == "textMainBullets"), None)
+                # Apply special handling for first page
+                if shape:
+                    self._optimize_first_page_shape(shape)
+                return shape
             return None  # No 'b' section on first slide
         # For subsequent slides
         target_name = "textMainBullets_L" if section == 'b' else "textMainBullets_R"
@@ -312,6 +393,10 @@ class PowerPointGenerator:
         tf = shape.text_frame
         tf.clear()
         tf.word_wrap = True
+        
+        # Optimize text frame for better control
+        self._optimize_text_frame(tf, shape)
+        
         self.prev_layer1 = None  # Reset for each new section
         self.current_shape = shape  # For dynamic line calculation
         prev_account_title = None
@@ -388,6 +473,64 @@ class PowerPointGenerator:
             prev_account_title = item.account_title
             prev_continued = item.layer1_continued or item.layer2_continued
         self.current_shape = None
+
+    def _optimize_text_frame(self, text_frame, shape):
+        """Optimize text frame properties for better text control"""
+        try:
+            # Set auto-size to none for better control
+            text_frame.auto_size = MSO_AUTO_SIZE.NONE
+            
+            # Set vertical anchor to top
+            text_frame.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
+            
+            # Adjust margins for better text control
+            # Use smaller margins for wider templates
+            shape_width_inches = shape.width / 914400
+            
+            if shape_width_inches > 8:  # Wide template
+                margin_left = Inches(0.05)
+                margin_right = Inches(0.05)
+            else:  # Standard template
+                margin_left = Inches(0.1)
+                margin_right = Inches(0.1)
+            
+            text_frame.margin_left = margin_left
+            text_frame.margin_right = margin_right
+            text_frame.margin_top = Inches(0.05)
+            text_frame.margin_bottom = Inches(0.05)
+            
+        except Exception as e:
+            # If optimization fails, continue with default settings
+            pass
+
+    def _optimize_first_page_shape(self, shape):
+        """Apply special optimizations for the first page shape"""
+        try:
+            # For the first page, use more conservative text wrapping
+            # This helps prevent text from being too wide and uncontrollable
+            
+            # Adjust the shape's text frame for better control
+            if hasattr(shape, 'text_frame'):
+                tf = shape.text_frame
+                
+                # Use smaller margins for first page to prevent text overflow
+                tf.margin_left = Inches(0.08)
+                tf.margin_right = Inches(0.08)
+                tf.margin_top = Inches(0.05)
+                tf.margin_bottom = Inches(0.05)
+                
+                # Ensure word wrap is enabled
+                tf.word_wrap = True
+                
+                # Set auto-size to none for better control
+                tf.auto_size = MSO_AUTO_SIZE.NONE
+                
+                # Set vertical anchor to top
+                tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
+                
+        except Exception as e:
+            # If optimization fails, continue with default settings
+            pass
 
     def _detect_bullet_content(self, text):
         """
