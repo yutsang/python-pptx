@@ -1053,6 +1053,23 @@ def main():
                         else:  # BS or ALL
                             markdown_path = "fdd_utils/bs_content.md"
                         
+                        # Check if the content file exists, create placeholder if not
+                        if not os.path.exists(markdown_path):
+                            st.warning(f"⚠️ Content file not found: {markdown_path}")
+                            st.info("💡 Creating placeholder content for PowerPoint export. Run AI processing for full content.")
+                            
+                            # Create placeholder content based on statement type
+                            if statement_type == "IS":
+                                placeholder_content = create_income_statement_placeholder(selected_entity)
+                            else:
+                                placeholder_content = create_balance_sheet_placeholder(selected_entity)
+                            
+                            # Write placeholder content
+                            with open(markdown_path, 'w', encoding='utf-8') as f:
+                                f.write(placeholder_content)
+                            
+                            st.success(f"✅ Created placeholder content file: {markdown_path}")
+                        
                         export_pptx(
                             template_path=template_path,
                             markdown_path=markdown_path,
@@ -1094,6 +1111,105 @@ def main():
                 )
         
 
+
+def create_income_statement_placeholder(entity_name):
+    """Create placeholder income statement content"""
+    base_entity = entity_name.split()[0] if entity_name else "Entity"
+    
+    placeholder_content = f"""# Income Statement Analysis
+
+## Revenue
+### Other Income
+Income statement analysis for {entity_name} will be generated after AI processing.
+
+### Other Income
+Additional income sources for {entity_name} will be analyzed.
+
+### Non-operating Income
+Non-operating income for {entity_name} will be reviewed.
+
+## Expenses
+### Other Costs
+Cost analysis for {entity_name} will be provided.
+
+### G&A expenses
+General and administrative expenses for {entity_name} will be detailed.
+
+### Finance Expenses
+Financial expenses for {entity_name} will be analyzed.
+
+### Credit Losses
+Credit loss provisions for {entity_name} will be reviewed.
+
+### Non-operating Expenses
+Non-operating expenses for {entity_name} will be detailed.
+
+## Taxes
+### Tax and Surcharges
+Tax and surcharge analysis for {entity_name} will be provided.
+
+### Income tax
+Income tax analysis for {entity_name} will be detailed.
+
+## Other
+### Long-term Deferred Tax Assets
+Deferred tax asset analysis for {entity_name} will be reviewed.
+
+---
+*This is placeholder content. Run AI processing to generate detailed analysis.*
+"""
+    return placeholder_content
+
+def create_balance_sheet_placeholder(entity_name):
+    """Create placeholder balance sheet content"""
+    base_entity = entity_name.split()[0] if entity_name else "Entity"
+    
+    placeholder_content = f"""# Balance Sheet Analysis
+
+## Current Assets
+### Cash at bank
+Cash position analysis for {entity_name} will be generated after AI processing.
+
+### Accounts receivables
+Accounts receivable analysis for {entity_name} will be provided.
+
+### Prepayments
+Prepayment analysis for {entity_name} will be detailed.
+
+### Other receivables
+Other receivable analysis for {entity_name} will be reviewed.
+
+### Other current assets
+Other current asset analysis for {entity_name} will be provided.
+
+## Non-current Assets
+### Investment properties
+Investment property analysis for {entity_name} will be detailed.
+
+### Other non-current assets
+Other non-current asset analysis for {entity_name} will be reviewed.
+
+## Liabilities
+### Accounts payable
+Accounts payable analysis for {entity_name} will be provided.
+
+### Taxes payables
+Tax payable analysis for {entity_name} will be detailed.
+
+### Other payables
+Other payable analysis for {entity_name} will be reviewed.
+
+## Equity
+### Capital
+Capital analysis for {entity_name} will be provided.
+
+### Surplus reserve
+Reserve analysis for {entity_name} will be detailed.
+
+---
+*This is placeholder content. Run AI processing to generate detailed analysis.*
+"""
+    return placeholder_content
 
 # Helper function to parse and display bs_content.md by key
 def display_bs_content_by_key(md_path):
