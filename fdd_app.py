@@ -856,6 +856,20 @@ def main():
                             bs_keys = [key for key in filtered_keys_for_ai if key in bs_key_list]
                             agent1_results_bs = run_agent_1(bs_keys, temp_ai_data, external_progress=ext)
                             
+                            # Store BS results in session state
+                            if agent1_results_bs:
+                                # Initialize content store if not exists
+                                if 'ai_content_store' not in st.session_state:
+                                    st.session_state['ai_content_store'] = {}
+                                
+                                # Store BS results
+                                for key, result in agent1_results_bs.items():
+                                    if key not in st.session_state['ai_content_store']:
+                                        st.session_state['ai_content_store'][key] = {}
+                                    st.session_state['ai_content_store'][key]['agent1_content'] = result
+                                    st.session_state['ai_content_store'][key]['current_content'] = result
+                                    st.session_state['ai_content_store'][key]['agent1_timestamp'] = datetime.datetime.now().isoformat()
+                            
                             # Generate BS content
                             if agent1_results_bs:
                                 status_text.text("📝 Generating Balance Sheet content...")
@@ -868,6 +882,20 @@ def main():
                             st.session_state['current_statement_type'] = 'IS'
                             is_keys = [key for key in filtered_keys_for_ai if key in is_key_list]
                             agent1_results_is = run_agent_1(is_keys, temp_ai_data, external_progress=ext)
+                            
+                            # Store IS results in session state (accumulate, don't overwrite)
+                            if agent1_results_is:
+                                # Initialize content store if not exists
+                                if 'ai_content_store' not in st.session_state:
+                                    st.session_state['ai_content_store'] = {}
+                                
+                                # Store IS results
+                                for key, result in agent1_results_is.items():
+                                    if key not in st.session_state['ai_content_store']:
+                                        st.session_state['ai_content_store'][key] = {}
+                                    st.session_state['ai_content_store'][key]['agent1_content'] = result
+                                    st.session_state['ai_content_store'][key]['current_content'] = result
+                                    st.session_state['ai_content_store'][key]['agent1_timestamp'] = datetime.datetime.now().isoformat()
                             
                             # Generate IS content
                             if agent1_results_is:
@@ -1912,6 +1940,9 @@ def generate_content_from_session_storage(entity_name):
     try:
         # Get content from session state storage (fastest method)
         content_store = st.session_state.get('ai_content_store', {})
+        current_statement_type = st.session_state.get('current_statement_type', 'BS')
+        
+
         
         if not content_store:
             st.warning("⚠️ No content in session storage. Using fallback method.")
@@ -1972,6 +2003,21 @@ def generate_content_from_session_storage(entity_name):
         
         st.info(f"📊 Generating content files from session storage for {len(content_store)} keys")
         
+        # Filter content store based on current statement type
+        if current_statement_type == "IS":
+            # For IS, only process IS-related keys
+            is_keys = ['OI', 'OC', 'Tax and Surcharges', 'GA', 'Fin Exp', 'Cr Loss', 'Other Income', 'Non-operating Income', 'Non-operating Exp', 'Income tax', 'LT DTA']
+            filtered_content_store = {k: v for k, v in content_store.items() if k in is_keys}
+        elif current_statement_type == "BS":
+            # For BS, only process BS-related keys
+            bs_keys = ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA', 'Other NCA', 'IP', 'NCA', 'AP', 'Taxes payable', 'OP', 'Capital', 'Reserve']
+            filtered_content_store = {k: v for k, v in content_store.items() if k in bs_keys}
+        else:
+            # For ALL, use all content
+            filtered_content_store = content_store
+        
+
+        
         # Process content by category
         for category, items in category_mapping.items():
             json_content['categories'][category] = []
@@ -1980,8 +2026,8 @@ def generate_content_from_session_storage(entity_name):
                 full_name = name_mapping[item]
                 
                 # Get latest content from session storage (could be Agent 1, 2, or 3 version)
-                if item in content_store:
-                    key_data = content_store[item]
+                if item in filtered_content_store:
+                    key_data = filtered_content_store[item]
                     latest_content = key_data.get('current_content', key_data.get('agent1_content', ''))
                     
                     # Determine content source
