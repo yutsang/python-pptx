@@ -61,12 +61,6 @@ class PowerPointGenerator:
         self.prs = Presentation(template_path)
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
-        # Calculate ROWS_PER_SECTION based on shape dimensions
-        shape_height_inches = shape.height / 914400
-        if shape_height_inches <= 4.2:  # New template with 4.13" height
-            self.ROWS_PER_SECTION = 25  # Fewer rows for shorter shapes
-        else:
-            self.ROWS_PER_SECTION = 30  # Original value for taller shapes
         
         # Find textMainBullets shape more robustly
         slide = self.prs.slides[0]
@@ -82,6 +76,13 @@ class PowerPointGenerator:
         
         if not shape:
             raise ValueError("No suitable text shape found in template")
+        
+        # Calculate ROWS_PER_SECTION based on shape dimensions
+        shape_height_inches = shape.height / 914400
+        if shape_height_inches <= 4.2:  # New template with 4.13" height
+            self.ROWS_PER_SECTION = 25  # Fewer rows for shorter shapes
+        else:
+            self.ROWS_PER_SECTION = 30  # Original value for taller shapes
             
         self.CHARS_PER_ROW = 50
         self.BULLET_CHAR = '■ '

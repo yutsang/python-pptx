@@ -2099,6 +2099,70 @@ def generate_content_from_session_storage(entity_name):
         
         markdown_text = "\n".join(markdown_lines)
         
+        # For ALL statement type, also create IS content file if IS keys are present
+        if current_statement_type == "ALL":
+            # Check if we have IS keys in the content store
+            is_keys = ['OI', 'OC', 'Tax and Surcharges', 'GA', 'Fin Exp', 'Cr Loss', 'Other Income', 'Non-operating Income', 'Non-operating Exp', 'Income tax', 'LT DTA']
+            is_content_store = {k: v for k, v in content_store.items() if k in is_keys}
+            
+            if is_content_store:
+                # Create IS content file
+                is_json_content = {
+                    'metadata': {
+                        'generated_at': datetime.datetime.now().strftime('%Y-%m-%d'),
+                        'format_version': '1.0',
+                        'description': 'Income Statement content data'
+                    },
+                    'categories': {},
+                    'keys': {}
+                }
+                
+                # Process IS content
+                for category, items in category_mapping.items():
+                    is_json_content['categories'][category] = []
+                    
+                    for item in items:
+                        if item in is_content_store:
+                            full_name = name_mapping[item]
+                            key_data = is_content_store[item]
+                            latest_content = key_data.get('current_content', key_data.get('agent1_content', ''))
+                            cleaned_content = clean_content_quotes(latest_content)
+                            
+                            key_info = {
+                                'key': item,
+                                'display_name': full_name,
+                                'content': cleaned_content,
+                                'content_source': 'agent1_original',
+                                'source_timestamp': key_data.get('agent1_timestamp'),
+                                'length': len(cleaned_content),
+                                'category': category
+                            }
+                            
+                            is_json_content['categories'][category].append(key_info)
+                            is_json_content['keys'][item] = key_info
+                
+                # Save IS content files
+                with open('fdd_utils/is_content.json', 'w', encoding='utf-8') as file:
+                    json.dump(is_json_content, file, indent=2, ensure_ascii=False)
+                
+                # Generate IS markdown
+                is_markdown_lines = []
+                for category, items in category_mapping.items():
+                    is_markdown_lines.append(f"## {category}\n")
+                    for item in items:
+                        if item in is_content_store:
+                            full_name = name_mapping[item]
+                            key_info = is_json_content['keys'].get(item)
+                            if key_info:
+                                cleaned_content = key_info['content']
+                            else:
+                                cleaned_content = f"No information available for {item}"
+                            is_markdown_lines.append(f"### {full_name}\n{cleaned_content}\n")
+                
+                is_markdown_text = "\n".join(is_markdown_lines)
+                with open('fdd_utils/is_content.md', 'w', encoding='utf-8') as file:
+                    file.write(is_markdown_text)
+        
         # Save markdown format (for PowerPoint export)
         with open(md_file_path, 'w', encoding='utf-8') as file:
             file.write(markdown_text)
