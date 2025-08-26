@@ -547,13 +547,9 @@ def main():
         if statement_type == "BS":
             st.markdown("### Balance Sheet")
             
-            # Check if we already have processed data in session state
-            if 'ai_data' in st.session_state and 'sections_by_key' in st.session_state['ai_data']:
-                # Use the data that was already processed for AI
-                sections_by_key = st.session_state['ai_data']['sections_by_key']
-                print(f"DEBUG: Using existing processed data from AI section")
-            else:
-                # Process Excel file directly without caching
+            # Always process the data first and store it in session state for both sections
+            if 'ai_data' not in st.session_state or 'sections_by_key' not in st.session_state['ai_data']:
+                # Process Excel file and store in session state
                 with st.spinner("🔄 Processing Excel file..."):
                     sections_by_key = get_worksheet_sections_by_keys(
                         uploaded_file=uploaded_file,
@@ -580,6 +576,18 @@ def main():
                     print(f"DEBUG: Total sections found: {total_sections}")
                     if total_sections == 0:
                         print("DEBUG: WARNING - No sections found at all!")
+                    
+                    # Store in session state for AI section to use
+                    if 'ai_data' not in st.session_state:
+                        st.session_state['ai_data'] = {}
+                    st.session_state['ai_data']['sections_by_key'] = sections_by_key
+                    st.session_state['ai_data']['entity_name'] = selected_entity
+                    st.session_state['ai_data']['entity_keywords'] = entity_keywords
+                    print(f"DEBUG: Stored data in session state for AI section")
+            else:
+                # Use the data that was already processed
+                sections_by_key = st.session_state['ai_data']['sections_by_key']
+                print(f"DEBUG: Using existing processed data from session state")
             
             from common.ui_sections import render_balance_sheet_sections
             render_balance_sheet_sections(
@@ -677,16 +685,22 @@ def main():
                     print(f"DEBUG AI: entity_suffixes: {entity_suffixes}")
                     print(f"DEBUG AI: selected_entity: {selected_entity}")
                 
-                # Get worksheet sections directly without caching
-                with st.spinner("🔄 Processing Excel file for AI..."):
-                    sections_by_key = get_worksheet_sections_by_keys(
-                        uploaded_file=uploaded_file,
-                        tab_name_mapping=mapping,
-                        entity_name=selected_entity,
-                        entity_suffixes=entity_suffixes,
-                        entity_keywords=entity_keywords,
-                        debug=False
-                    )
+                # Use the data that was already processed by the first section
+                if 'ai_data' in st.session_state and 'sections_by_key' in st.session_state['ai_data']:
+                    sections_by_key = st.session_state['ai_data']['sections_by_key']
+                    print(f"DEBUG AI: Using existing data from session state")
+                else:
+                    # Fallback: process data if not already done
+                    with st.spinner("🔄 Processing Excel file for AI..."):
+                        sections_by_key = get_worksheet_sections_by_keys(
+                            uploaded_file=uploaded_file,
+                            tab_name_mapping=mapping,
+                            entity_name=selected_entity,
+                            entity_suffixes=entity_suffixes,
+                            entity_keywords=entity_keywords,
+                            debug=False
+                        )
+                    print(f"DEBUG AI: Processed data as fallback")
                 st.success("✅ Excel processing completed for AI")
                 
                 # Get keys with data
