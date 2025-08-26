@@ -378,6 +378,19 @@ def main():
             help="Enter the full entity name to start processing"
         )
         
+        # Clear session state when entity changes
+        if 'last_entity_input' in st.session_state:
+            if st.session_state['last_entity_input'] != entity_input:
+                # Entity has changed, clear the cached data
+                if 'ai_data' in st.session_state:
+                    del st.session_state['ai_data']
+                if 'filtered_keys_for_ai' in st.session_state:
+                    del st.session_state['filtered_keys_for_ai']
+                print(f"DEBUG: Entity changed from '{st.session_state['last_entity_input']}' to '{entity_input}', cleared session state")
+        
+        # Store current entity input for next comparison
+        st.session_state['last_entity_input'] = entity_input
+        
         # Entity Selection Mode (Single vs Multiple)
         st.markdown("---")
         entity_mode_options = ["Multiple Entities", "Single Entity"]
