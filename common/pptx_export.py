@@ -5,6 +5,7 @@ from pptx import Presentation
 from pptx.util import Pt, Inches
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE, MSO_VERTICAL_ANCHOR
+from pptx.enum.dml import MSO_COLOR_TYPE
 from pptx.oxml.xmlchemy import OxmlElement
 from dataclasses import dataclass
 from typing import List, Tuple
@@ -90,6 +91,16 @@ class PowerPointGenerator:
         self.DARK_GREY = RGBColor(169, 169, 169)
         self.prev_layer1 = None
         self.prev_layer2 = None
+
+    def _safe_set_font_color(self, run, color):
+        """Safely set font color with proper initialization"""
+        try:
+            if not run.font.color:
+                run.font.color.type = MSO_COLOR_TYPE.RGB
+            run.font.color.rgb = color
+        except Exception as e:
+            # If color setting fails, continue without color
+            pass
 
     def log_template_shapes(self):
         # Removed shape audit logging to reduce debug output
@@ -481,7 +492,7 @@ class PowerPointGenerator:
                 run.font.size = Pt(9)
                 run.font.bold = True
                 run.font.name = 'Arial'
-                run.font.color.rgb = self.DARK_BLUE
+                self._safe_set_font_color(run, self.DARK_BLUE)
                 self.prev_layer1 = item.accounting_type
                 paragraph_count += 1
             # Treat all items the same (no special handling for taxes payables)
@@ -498,7 +509,7 @@ class PowerPointGenerator:
                             except: pass
                         bullet_run = p.add_run()
                         bullet_run.text = self.BULLET_CHAR
-                        bullet_run.font.color.rgb = self.DARK_GREY
+                        self._safe_set_font_color(bullet_run, self.DARK_GREY)
                         bullet_run.font.name = 'Arial'
                         bullet_run.font.size = Pt(9)
                         title_run = p.add_run()
@@ -810,7 +821,7 @@ class PowerPointGenerator:
         run.font.size = Pt(9)  # All text pt 9
         run.font.bold = True
         run.font.name = 'Arial'
-        run.font.color.rgb = RGBColor(255, 255, 255)
+        self._safe_set_font_color(run, RGBColor(255, 255, 255))
         # Set LEFT alignment
         try:
             p.alignment = PP_ALIGN.LEFT
@@ -859,7 +870,7 @@ class PowerPointGenerator:
         self._apply_paragraph_formatting(p, is_layer2_3=True)
         bullet_run = p.add_run()
         bullet_run.text = self.BULLET_CHAR
-        bullet_run.font.color.rgb = self.DARK_GREY
+        self._safe_set_font_color(bullet_run, self.DARK_GREY)
         bullet_run.font.name = 'Arial'
         bullet_run.font.size = Pt(9)
         title_run = p.add_run()
@@ -1022,7 +1033,7 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                                 if format_info['font_italic'] is not None:
                                     run.font.italic = format_info['font_italic']
                                 if format_info['font_color']:
-                                    run.font.color.rgb = format_info['font_color']
+                                    self._safe_set_font_color(run, format_info['font_color'])
                 
                 # Data rows
                 for row_idx, row in enumerate(df.values):
@@ -1045,7 +1056,7 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                                         if format_info['font_italic'] is not None:
                                             run.font.italic = format_info['font_italic']
                                         if format_info['font_color']:
-                                            run.font.color.rgb = format_info['font_color']
+                                            self._safe_set_font_color(run, format_info['font_color'])
                 
                 logging.info(f"✅ Updated financialData table with Excel data (formatting preserved)")
                 
@@ -1241,7 +1252,7 @@ def merge_presentations(bs_presentation_path, is_presentation_path, output_path)
                                     new_run.font.size = run.font.size
                                     new_run.font.name = run.font.name
                                     if hasattr(run.font, 'color') and run.font.color.rgb:
-                                        new_run.font.color.rgb = run.font.color.rgb
+                                        self._safe_set_font_color(new_run, run.font.color.rgb)
                 
                 elif shape.shape_type == 19:  # Table
                     # Copy table
