@@ -755,7 +755,11 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
         prs = Presentation(presentation_path)
         
         # Read Excel data
-        df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
+        if sheet_name:
+            df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
+        else:
+            # If no sheet name provided, read the first sheet
+            df = pd.read_excel(excel_file_path, sheet_name=0)
         
         # Find the financialData shape in all slides
         financial_data_shape = None
@@ -969,6 +973,13 @@ def export_pptx(template_path, markdown_path, output_path, project_name=None, ex
                 embed_excel_data_in_pptx(output_path, excel_file_path, sheet_name, project_name)
             except Exception as e:
                 logging.warning(f"⚠️ Could not embed Excel data: {str(e)}")
+        else:
+            logging.warning(f"⚠️ No valid sheet name found for project: {project_name}")
+            # Try to embed with first sheet as fallback
+            try:
+                embed_excel_data_in_pptx(output_path, excel_file_path, None, project_name)
+            except Exception as e:
+                logging.warning(f"⚠️ Could not embed Excel data with fallback: {str(e)}")
     
     # Add success message
     logging.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")

@@ -12,13 +12,22 @@ from pathlib import Path
 
 def get_tab_name(project_name):
     """Get tab name based on project name."""
+    if not project_name:
+        return None
+    
     if project_name == 'Haining':
         return "BSHN"
     elif project_name == 'Nanjing':
         return "BSNJ"
     elif project_name == 'Ningbo':
         return "BSNB"
-    return project_name
+    
+    # For other entities, try to extract a meaningful sheet name
+    # Remove common suffixes and use first word
+    clean_name = project_name.split()[0] if project_name else None
+    if clean_name:
+        return f"BS{clean_name.upper()[:3]}"  # Use first 3 letters
+    return None
 
 
 def get_financial_keys():

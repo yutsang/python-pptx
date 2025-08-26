@@ -137,6 +137,80 @@ def render_balance_sheet_sections(
                     st.json(first_section['parsed_data'])
 
 
+def render_combined_sections(
+    sections_by_key: dict,
+    get_key_display_name,
+    selected_entity: str,
+    format_date_to_dd_mmm_yyyy,
+):
+    """Render combined Balance Sheet and Income Statement sections UI."""
+    
+    st.markdown("#### View Combined Financial Statements by Key")
+    
+    # High-level debug only
+    keys_with_data = [key for key, sections in sections_by_key.items() if sections]
+    print(f"DEBUG UI Combined: Processing {len(keys_with_data)} combined keys with data")
+    
+    if not keys_with_data:
+        st.warning("No data found for any financial keys.")
+        return
+
+    key_tabs = st.tabs([get_key_display_name(key) for key in keys_with_data])
+    for i, key in enumerate(keys_with_data):
+        with key_tabs[i]:
+            sections = sections_by_key[key]
+            if not sections:
+                st.info("No sections found for this key.")
+                continue
+
+            # Debug information (only shown if needed)
+            if 'parsed_data' in sections[0] and sections[0]['parsed_data']:
+                metadata = sections[0]['parsed_data']['metadata']
+                # Keep minimal debug info for troubleshooting if needed
+                pass
+            
+            first_section = sections[0]
+
+            # If we have structured data, prefer it
+            if 'parsed_data' in first_section and first_section['parsed_data']:
+                parsed_data = first_section['parsed_data']
+                metadata = parsed_data['metadata']
+                data_rows = parsed_data['data']
+                
+                # Metadata summary row
+                col1, col2, col3, col4, col5, col6 = st.columns(6)
+                with col1:
+                    st.markdown(f"**Table:** {metadata['table_name']}")
+                with col2:
+                    date_value = metadata.get('date')
+                    if date_value:
+                        try:
+                            formatted_date = format_date_to_dd_mmm_yyyy(date_value)
+                            st.markdown(f"**Date:** {formatted_date}")
+                        except Exception as e:
+                            st.markdown(f"**Date:** Error formatting: {e}")
+                    else:
+                        st.markdown("**Date:** Unknown")
+                with col3:
+                    st.markdown(f"**Currency:** {metadata['currency_info']}")
+                with col4:
+                    st.markdown(f"**Multiplier:** {metadata['multiplier']}x")
+                with col5:
+                    st.markdown(f"**Value Column:** {metadata['value_column']}")
+                with col6:
+                    st.markdown(f"**Statement Type:** Combined")
+                
+                # Display the data table
+                if data_rows is not None and len(data_rows) > 0:
+                    st.markdown("**📊 Financial Data:**")
+                    st.dataframe(data_rows, use_container_width=True)
+                else:
+                    st.info("No structured data available for this key.")
+            else:
+                # Fallback to raw data display
+                st.markdown("**📋 Raw Data:**")
+                st.json(first_section)
+
 def render_income_statement_sections(
     sections_by_key: dict,
     get_key_display_name,

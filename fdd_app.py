@@ -647,16 +647,32 @@ def main():
             )
         
         elif statement_type == "ALL":
-            # Combined view placeholder
+            # Combined view - show both BS and IS data
             st.markdown("### Combined Financial Statements")
-            st.info("📊 Combined BS and IS processing will be implemented here.")
-            st.markdown("""
-            **Placeholder for Combined sections:**
-            - Balance Sheet
-            - Income Statement
-            - Cash Flow Statement
-            - Financial Ratios
-            """)
+            
+            # Use the data that was already processed
+            if 'ai_data' in st.session_state and 'sections_by_key' in st.session_state['ai_data']:
+                sections_by_key = st.session_state['ai_data']['sections_by_key']
+            else:
+                # Fallback: process data if not already done
+                with st.spinner("🔄 Processing Excel file for combined view..."):
+                    sections_by_key = get_worksheet_sections_by_keys(
+                        uploaded_file=uploaded_file,
+                        tab_name_mapping=mapping,
+                        entity_name=selected_entity,
+                        entity_suffixes=entity_suffixes,
+                        entity_keywords=entity_keywords,
+                        debug=False
+                    )
+            
+            # Show combined data using the combined rendering function
+            from common.ui_sections import render_combined_sections
+            render_combined_sections(
+                sections_by_key,
+                get_key_display_name,
+                selected_entity,
+                format_date_to_dd_mmm_yyyy,
+            )
 
         # --- AI Processing Section (Bottom) ---
         # Check AI configuration status (updated for DeepSeek as default)
@@ -858,6 +874,20 @@ def main():
                                 status_text.text("📝 Generating Income Statement content...")
                                 progress_bar.progress(90)
                                 generate_content_from_session_storage(selected_entity)
+                            
+                            # Ensure both content files exist for ALL statement type
+                            if agent1_results_bs or agent1_results_is:
+                                status_text.text("📝 Ensuring all content files are created...")
+                                progress_bar.progress(95)
+                                
+                                # Force creation of both content files if they don't exist
+                                if not os.path.exists('fdd_utils/bs_content.md') and agent1_results_bs:
+                                    st.session_state['current_statement_type'] = 'BS'
+                                    generate_content_from_session_storage(selected_entity)
+                                
+                                if not os.path.exists('fdd_utils/is_content.md') and agent1_results_is:
+                                    st.session_state['current_statement_type'] = 'IS'
+                                    generate_content_from_session_storage(selected_entity)
                             
                             # Combine results
                             agent1_results = {**agent1_results_bs, **agent1_results_is}
