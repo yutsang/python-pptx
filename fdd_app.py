@@ -374,7 +374,7 @@ def main():
         entity_input = st.text_input(
             "Enter Entity Name",
             value="",
-            placeholder="e.g., Haining Wanpu Limited, Nanjing Wanchen Limited",
+            placeholder="e.g., Company Name Limited, Entity Name Corp",
             help="Enter the full entity name to start processing"
         )
         
@@ -398,7 +398,7 @@ def main():
             "Entity in Databook",
             entity_mode_options,
             index=0,  # Default to Multiple
-            help="Select whether your databook contains multiple entities (like Haining, Ningbo, Nanjing) or a single entity"
+            help="Select whether your databook contains multiple entities or a single entity"
         )
         
         # Map display names back to internal codes
@@ -450,20 +450,14 @@ def main():
         if not selected_entity:
             st.stop()
         
-        # For backward compatibility, still generate entity_helpers but use entity_keywords directly
-        if selected_entity == 'Haining':
-            # Use the correct suffixes for Haining
-            entity_helpers = "Wanpu,Limited,"
-        elif selected_entity in ['Nanjing', 'Ningbo']:
-            # Use the correct suffixes for Nanjing/Ningbo
-            entity_helpers = "Wanchen,Limited,Logistics,Development,Supply,Chain,"
+        # Generate entity_helpers dynamically from the input entity name
+        words = selected_entity.split()
+        if len(words) > 1:
+            # Use all words after the first as potential suffixes
+            entity_helpers = ",".join(words[1:]) + ","
         else:
-            # For other entities, use the words from the input
-            words = selected_entity.split()
-            if len(words) > 1:
-                entity_helpers = ",".join(words[1:]) + ","
-            else:
-                entity_helpers = "Limited,"
+            # Default suffix for single-word entities
+            entity_helpers = "Limited,"
         
         # Generate entity_suffixes from entity_helpers for backward compatibility
         entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
@@ -1043,8 +1037,8 @@ def main():
                         else:  # ALL
                             filtered_keys = keys_with_data
 
-                        # 2. Use bs_content.md as-is for export (do NOT overwrite it)
-                        # Note: bs_content.md should contain narrative content from AI processing, not table data
+                        # 2. Use appropriate content file based on statement type
+                        # Note: Content files should contain narrative content from AI processing, not table data
                         
                         # Get the Excel file path for embedding data
                         excel_file_path = None
@@ -1053,9 +1047,15 @@ def main():
                         elif hasattr(uploaded_file, 'name'):
                             excel_file_path = uploaded_file.name
                         
+                        # Use appropriate markdown file based on statement type
+                        if statement_type == "IS":
+                            markdown_path = "fdd_utils/is_content.md"
+                        else:  # BS or ALL
+                            markdown_path = "fdd_utils/bs_content.md"
+                        
                         export_pptx(
                             template_path=template_path,
-                            markdown_path="fdd_utils/bs_content.md",
+                            markdown_path=markdown_path,
                             output_path=output_path,
                             project_name=project_name,
                             excel_file_path=excel_file_path
@@ -1842,8 +1842,17 @@ def generate_content_from_session_storage(entity_name):
                 json_content['categories'][category].append(key_info)
                 json_content['keys'][item] = key_info
         
+        # Get current statement type to determine file names
+        current_statement_type = st.session_state.get('current_statement_type', 'BS')
+        
         # Save JSON format (for AI2 easy access)
-        json_file_path = 'fdd_utils/bs_content.json'
+        if current_statement_type == "IS":
+            json_file_path = 'fdd_utils/is_content.json'
+            md_file_path = 'fdd_utils/is_content.md'
+        else:  # BS or ALL
+            json_file_path = 'fdd_utils/bs_content.json'
+            md_file_path = 'fdd_utils/bs_content.md'
+            
         with open(json_file_path, 'w', encoding='utf-8') as file:
             json.dump(json_content, file, indent=2, ensure_ascii=False)
         
@@ -1863,7 +1872,6 @@ def generate_content_from_session_storage(entity_name):
         markdown_text = "\n".join(markdown_lines)
         
         # Save markdown format (for PowerPoint export)
-        md_file_path = 'fdd_utils/bs_content.md'
         with open(md_file_path, 'w', encoding='utf-8') as file:
             file.write(markdown_text)
         
@@ -1933,8 +1941,15 @@ def generate_markdown_from_ai_results(ai_results, entity_name):
         
         markdown_text = "\n".join(markdown_lines)
         
-        # Write to file
-        file_path = 'fdd_utils/bs_content.md'
+        # Get current statement type to determine file name
+        current_statement_type = st.session_state.get('current_statement_type', 'BS')
+        
+        # Write to appropriate file
+        if current_statement_type == "IS":
+            file_path = 'fdd_utils/is_content.md'
+        else:  # BS or ALL
+            file_path = 'fdd_utils/bs_content.md'
+            
         with open(file_path, 'w', encoding='utf-8') as file:
             file.write(markdown_text)
         
@@ -2264,7 +2279,7 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None):
 
 IMPORTANT ENTITY INSTRUCTIONS:
 - Replace all [ENTITY_NAME] placeholders with the actual entity name from the provided financial data
-- Use the exact entity name as shown in the financial data tables (e.g., 'Haining Wanpu', 'Ningbo Wanchen')
+                - Use the exact entity name as shown in the financial data tables
 - Do not use the reporting entity name ({entity_name}) unless it matches the entity in the financial data
 - Ensure all entity references in your analysis are accurate according to the provided data
 """
