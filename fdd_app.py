@@ -630,19 +630,57 @@ def main():
             )
         
         elif statement_type == "IS":
-            # Income Statement placeholder
             st.markdown("### Income Statement")
-            st.info("📊 Income Statement processing will be implemented here.")
-            st.markdown("""
-            **Placeholder for Income Statement sections:**
-            - Revenue
-            - Cost of Goods Sold
-            - Gross Profit
-            - Operating Expenses
-            - Operating Income
-            - Other Income/Expenses
-            - Net Income
-            """)
+            
+            # Always process the data first and store it in session state for both sections
+            if 'ai_data' not in st.session_state or 'sections_by_key' not in st.session_state['ai_data']:
+                # Process Excel file and store in session state
+                with st.spinner("🔄 Processing Excel file for Income Statement..."):
+                    sections_by_key = get_worksheet_sections_by_keys(
+                        uploaded_file=uploaded_file,
+                        tab_name_mapping=mapping,
+                        entity_name=selected_entity,
+                        entity_suffixes=entity_suffixes,
+                        entity_keywords=entity_keywords,
+                        debug=True  # Set to True for debugging
+                    )
+                    
+                    # Debug: Print what we got back
+                    print(f"DEBUG IS: sections_by_key keys: {list(sections_by_key.keys())}")
+                    total_sections = 0
+                    for key, sections in sections_by_key.items():
+                        print(f"DEBUG IS: {key} has {len(sections)} sections")
+                        total_sections += len(sections)
+                        if sections:
+                            print(f"DEBUG IS: First section keys: {list(sections[0].keys())}")
+                            if 'parsed_data' in sections[0]:
+                                print(f"DEBUG IS: parsed_data exists: {sections[0]['parsed_data'] is not None}")
+                            if 'data' in sections[0]:
+                                print(f"DEBUG IS: data shape: {sections[0]['data'].shape if hasattr(sections[0]['data'], 'shape') else 'not a DataFrame'}")
+                    
+                    print(f"DEBUG IS: Total sections found: {total_sections}")
+                    if total_sections == 0:
+                        print("DEBUG IS: WARNING - No sections found at all!")
+                    
+                    # Store in session state for AI section to use
+                    if 'ai_data' not in st.session_state:
+                        st.session_state['ai_data'] = {}
+                    st.session_state['ai_data']['sections_by_key'] = sections_by_key
+                    st.session_state['ai_data']['entity_name'] = selected_entity
+                    st.session_state['ai_data']['entity_keywords'] = entity_keywords
+                    print(f"DEBUG IS: Stored data in session state for AI section")
+            else:
+                # Use the data that was already processed
+                sections_by_key = st.session_state['ai_data']['sections_by_key']
+                print(f"DEBUG IS: Using existing processed data from session state")
+            
+            from common.ui_sections import render_income_statement_sections
+            render_income_statement_sections(
+                sections_by_key,
+                get_key_display_name,
+                selected_entity,
+                format_date_to_dd_mmm_yyyy,
+            )
         
         elif statement_type == "ALL":
             # Combined view placeholder

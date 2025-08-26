@@ -41,5 +41,49 @@
     },
     "Reserve": {
         "Pattern 1": "balance as at {date} represented the surplus reserve {type} from {source}"
+    },
+    "OI": {
+        "Pattern 1": "total income for the period ended {date} was CNY{amount}, primarily comprising {details}. The income was mainly derived from {source}.",
+        "Pattern 2": "other income for the period totaled CNY{amount}, representing {details} from {source}."
+    },
+    "OC": {
+        "Pattern 1": "total costs for the period ended {date} amounted to CNY{amount}, primarily consisting of {details}. The costs were mainly attributable to {source}.",
+        "Pattern 2": "other costs for the period totaled CNY{amount}, representing {details}."
+    },
+    "Tax and Surcharges": {
+        "Pattern 1": "tax and surcharges for the period ended {date} amounted to CNY{amount}, including VAT of CNY{vat_amount}, urban maintenance and construction tax of CNY{umct_amount}, and education surcharge of CNY{edu_amount}.",
+        "Pattern 2": "the entity paid total taxes and surcharges of CNY{amount} during the period, comprising {details}."
+    },
+    "GA": {
+        "Pattern 1": "general and administrative expenses for the period ended {date} totaled CNY{amount}, primarily consisting of {details}.",
+        "Pattern 2": "G&A expenses amounted to CNY{amount} during the period, representing {details}."
+    },
+    "Fin Exp": {
+        "Pattern 1": "finance expenses for the period ended {date} amounted to CNY{amount}, primarily comprising {details}.",
+        "Pattern 2": "financial expenses totaled CNY{amount} during the period, representing {details}."
+    },
+    "Cr Loss": {
+        "Pattern 1": "credit losses for the period ended {date} amounted to CNY{amount}, representing {details}.",
+        "Pattern 2": "provisions for credit losses totaled CNY{amount} during the period, primarily for {details}."
+    },
+    "Other Income": {
+        "Pattern 1": "other income for the period ended {date} totaled CNY{amount}, primarily comprising {details}.",
+        "Pattern 2": "additional income sources amounted to CNY{amount} during the period, representing {details}."
+    },
+    "Non-operating Income": {
+        "Pattern 1": "non-operating income for the period ended {date} amounted to CNY{amount}, primarily comprising {details}.",
+        "Pattern 2": "other non-operating income sources totaled CNY{amount} during the period, representing {details}."
+    },
+    "Non-operating Exp": {
+        "Pattern 1": "non-operating expenses for the period ended {date} amounted to CNY{amount}, primarily comprising {details}.",
+        "Pattern 2": "other non-operating expenses totaled CNY{amount} during the period, representing {details}."
+    },
+    "Income tax": {
+        "Pattern 1": "income tax expense for the period ended {date} amounted to CNY{amount}, representing the estimated tax liability based on {tax_rate}% effective tax rate.",
+        "Pattern 2": "the entity recorded income tax expense of CNY{amount} during the period, based on {details}."
+    },
+    "LT DTA": {
+        "Pattern 1": "long-term deferred tax assets as at {date} amounted to CNY{amount}, primarily representing {details}.",
+        "Pattern 2": "deferred tax assets totaled CNY{amount} as at {date}, comprising {details}."
     }
 }
