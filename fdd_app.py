@@ -451,6 +451,9 @@ def main():
                 entity_helpers = ",".join(words[1:]) + ","
             else:
                 entity_helpers = "Limited,"
+        
+        # Generate entity_suffixes from entity_helpers for backward compatibility
+        entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
 
 
         
