@@ -61,9 +61,28 @@ class PowerPointGenerator:
         self.prs = Presentation(template_path)
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
-        self.ROWS_PER_SECTION = 30  # Use the same value for all sections
+        # Calculate ROWS_PER_SECTION based on shape dimensions
+        shape_height_inches = shape.height / 914400
+        if shape_height_inches <= 4.2:  # New template with 4.13" height
+            self.ROWS_PER_SECTION = 25  # Fewer rows for shorter shapes
+        else:
+            self.ROWS_PER_SECTION = 30  # Original value for taller shapes
+        
+        # Find textMainBullets shape more robustly
         slide = self.prs.slides[0]
-        shape = next(s for s in slide.shapes if s.name == "textMainBullets")
+        shape = None
+        try:
+            shape = next(s for s in slide.shapes if s.name == "textMainBullets")
+        except StopIteration:
+            # Try to find any text shape if textMainBullets is not found
+            for s in slide.shapes:
+                if hasattr(s, 'text_frame'):
+                    shape = s
+                    break
+        
+        if not shape:
+            raise ValueError("No suitable text shape found in template")
+            
         self.CHARS_PER_ROW = 50
         self.BULLET_CHAR = '■ '
         self.DARK_BLUE = RGBColor(0, 50, 150)
@@ -77,8 +96,32 @@ class PowerPointGenerator:
 
     def _calculate_max_rows(self):
         slide = self.prs.slides[0]
-        shape = next(s for s in slide.shapes if s.name == "textMainBullets")
-        return int(shape.height / self.LINE_HEIGHT) - 3
+        # Find textMainBullets shape more robustly
+        shape = None
+        try:
+            shape = next(s for s in slide.shapes if s.name == "textMainBullets")
+        except StopIteration:
+            # Try to find any text shape if textMainBullets is not found
+            for s in slide.shapes:
+                if hasattr(s, 'text_frame'):
+                    shape = s
+                    break
+        
+        if not shape:
+            return 25  # Default fallback
+        
+        # Calculate available height in inches
+        shape_height_inches = shape.height / 914400
+        
+        # For new template with 4.13" height, adjust calculation
+        if shape_height_inches <= 4.2:  # New template dimensions
+            # More conservative line calculation for shorter shapes
+            # 4.13" height with 12pt line height = approximately 33 lines
+            # Reduce by 6 to account for margins and spacing
+            return int(shape.height / self.LINE_HEIGHT) - 6
+        else:
+            # Original calculation for taller shapes
+            return int(shape.height / self.LINE_HEIGHT) - 4
 
     def parse_markdown(self, md_content: str) -> List[FinancialItem]:
         items = []
@@ -126,28 +169,39 @@ class PowerPointGenerator:
         distribution = []
         content_queue = items.copy()
         slide_idx = 0
+        
         while content_queue:
             if slide_idx == 0:
+                # First slide: only center section
                 sections = ['c']
             else:
+                # Subsequent slides: left then right sections
                 sections = ['b', 'c']
+            
             for section in sections:
                 if not content_queue:
                     break
+                    
                 section_items = []
                 lines_used = 0
+                
+                # Fill the current section
                 while content_queue and lines_used < self.ROWS_PER_SECTION:
                     item = content_queue[0]
                     item_lines = self._calculate_item_lines(item)
+                    
                     if lines_used + item_lines <= self.ROWS_PER_SECTION:
+                        # Item fits completely
                         section_items.append(item)
                         content_queue.pop(0)
                         lines_used += item_lines
                     else:
+                        # Item needs to be split
                         remaining_lines = self.ROWS_PER_SECTION - lines_used
                         if remaining_lines > 1:
                             split_item, remaining_item = self._split_item(item, remaining_lines)
                             section_items.append(split_item)
+                            
                             if remaining_item and remaining_item.descriptions and remaining_item.descriptions[0]:
                                 remaining_item.layer2_continued = True
                                 remaining_item.layer1_continued = True
@@ -155,12 +209,17 @@ class PowerPointGenerator:
                             else:
                                 content_queue.pop(0)
                         else:
+                            # Not enough space, move to next section
                             break
+                
+                # Add section to distribution if it has content
                 if section_items:
                     distribution.append((slide_idx, section, section_items))
+            
             slide_idx += 1
             if slide_idx >= len(self.prs.slides):
                 break
+                
         return distribution
 
     def _calculate_chars_per_line(self, shape):
@@ -182,24 +241,28 @@ class PowerPointGenerator:
         # Calculate available text width
         available_width_inches = shape_width_inches - margin_left - margin_right
         
+        # For the new template with 4.78" width shapes, use more conservative calculation
+        # The new shapes are narrower, so we need to adjust character width accordingly
+        if available_width_inches <= 4.8:  # New template dimensions
+            # More conservative character width for narrower shapes
+            avg_char_px = 8.0  # Wider character estimate for better fit
+        else:
+            # Original calculation for wider shapes
+            avg_char_px = 7.2
+        
         # Convert to pixels (1 inch = 96 pixels)
         available_width_px = available_width_inches * 96
-        
-        # More accurate character width calculation for Arial 9pt
-        # Arial 9pt is approximately 6.5-7.5 pixels per character depending on the character
-        # Use 7 pixels as average, but adjust based on actual measurements
-        avg_char_px = 7.2  # Slightly more conservative estimate
         
         # Calculate characters per line
         chars_per_line = int(available_width_px / avg_char_px)
         
-        # Ensure reasonable bounds
-        chars_per_line = max(30, min(chars_per_line, 120))
+        # Ensure reasonable bounds for new template
+        chars_per_line = max(25, min(chars_per_line, 80))  # More conservative bounds
         
         # Apply special handling for first page (more conservative)
         if hasattr(self, 'current_slide_index') and self.current_slide_index == 0:
             # Reduce characters per line for first page to prevent overflow
-            chars_per_line = min(chars_per_line, 100)
+            chars_per_line = min(chars_per_line, 70)
         
         return chars_per_line
 
@@ -483,21 +546,32 @@ class PowerPointGenerator:
             # Set vertical anchor to top
             text_frame.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
             
-            # Adjust margins for better text control
-            # Use smaller margins for wider templates
+            # Adjust margins for better text control based on shape dimensions
             shape_width_inches = shape.width / 914400
+            shape_height_inches = shape.height / 914400
             
-            if shape_width_inches > 8:  # Wide template
+            # For new template with 4.78" width and 4.13" height
+            if shape_width_inches <= 4.8 and shape_height_inches <= 4.2:
+                # New template: use smaller margins for better text utilization
+                margin_left = Inches(0.03)
+                margin_right = Inches(0.03)
+                margin_top = Inches(0.03)
+                margin_bottom = Inches(0.03)
+            elif shape_width_inches > 8:  # Wide template
                 margin_left = Inches(0.05)
                 margin_right = Inches(0.05)
+                margin_top = Inches(0.05)
+                margin_bottom = Inches(0.05)
             else:  # Standard template
                 margin_left = Inches(0.1)
                 margin_right = Inches(0.1)
+                margin_top = Inches(0.05)
+                margin_bottom = Inches(0.05)
             
             text_frame.margin_left = margin_left
             text_frame.margin_right = margin_right
-            text_frame.margin_top = Inches(0.05)
-            text_frame.margin_bottom = Inches(0.05)
+            text_frame.margin_top = margin_top
+            text_frame.margin_bottom = margin_bottom
             
         except Exception as e:
             # If optimization fails, continue with default settings
@@ -513,11 +587,23 @@ class PowerPointGenerator:
             if hasattr(shape, 'text_frame'):
                 tf = shape.text_frame
                 
-                # Use smaller margins for first page to prevent text overflow
-                tf.margin_left = Inches(0.08)
-                tf.margin_right = Inches(0.08)
-                tf.margin_top = Inches(0.05)
-                tf.margin_bottom = Inches(0.05)
+                # Get shape dimensions to determine appropriate margins
+                shape_width_inches = shape.width / 914400
+                shape_height_inches = shape.height / 914400
+                
+                # For new template with 4.78" width and 4.13" height
+                if shape_width_inches <= 4.8 and shape_height_inches <= 4.2:
+                    # New template: use very small margins for maximum text utilization
+                    tf.margin_left = Inches(0.02)
+                    tf.margin_right = Inches(0.02)
+                    tf.margin_top = Inches(0.02)
+                    tf.margin_bottom = Inches(0.02)
+                else:
+                    # Original template: use standard margins
+                    tf.margin_left = Inches(0.08)
+                    tf.margin_right = Inches(0.08)
+                    tf.margin_top = Inches(0.05)
+                    tf.margin_bottom = Inches(0.05)
                 
                 # Ensure word wrap is enabled
                 tf.word_wrap = True
@@ -605,20 +691,11 @@ class PowerPointGenerator:
             items = self.parse_markdown(md_content)
             distribution = self._plan_content_distribution(items)
             self._validate_content_placement(distribution)
-            summary_text = self.parse_summary_markdown(summary_md)
+            
+            # Remove summary processing - no longer needed
             max_slide_used = max((slide_idx for slide_idx, _, _ in distribution), default=0)
             total_slides_needed = max_slide_used + 1
-            wrapper = textwrap.TextWrapper(
-                width=self.CHARS_PER_ROW, 
-                break_long_words=True,
-                replace_whitespace=False
-            )
-            summary_chunks = wrapper.wrap(summary_text)
-            chunks_per_slide = len(summary_chunks) // total_slides_needed + 1
-            slide_summary_chunks = [
-                summary_chunks[i:i+chunks_per_slide] 
-                for i in range(0, len(summary_chunks), chunks_per_slide)
-            ]
+            
             while len(self.prs.slides) < total_slides_needed:
                 self.prs.slides.add_slide(self.prs.slide_layouts[1])
             for slide_idx, section, section_items in distribution:
@@ -629,14 +706,8 @@ class PowerPointGenerator:
                 shape = self._get_section_shape(slide, section)
                 if shape:
                     self._populate_section(shape, section_items)
-            for slide_idx in range(total_slides_needed):
-                slide = self.prs.slides[slide_idx]
-                summary_shape = next((s for s in slide.shapes if s.name == "coSummaryShape"), None)
-                if summary_shape:
-                    self._populate_summary_section_safe(
-                        summary_shape, 
-                        slide_summary_chunks[slide_idx] if slide_idx < len(slide_summary_chunks) else []
-                    )
+            # Summary placement removed - no longer needed
+            pass
             unused_slides = self._detect_unused_slides(distribution)
             if unused_slides:
                 logging.info(f"Removing unused slides: {[idx+1 for idx in unused_slides]}")
@@ -818,24 +889,8 @@ class ReportGenerator:
         self.project_name = project_name
         
     def generate(self):
-        location = self.project_name  # Use the provided project_name/entity
-        if location == "Haining":
-            summary_content = """
-            ## Summary
-            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
-            """
-        elif location == "Ningbo":
-            summary_content = """
-            ## Summary
-            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
-            """
-        elif location == "Nanjing":
-            summary_content = """
-            ## Summary
-            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
-            """
-        else:
-            summary_content = ""
+        # Remove summary content - no longer needed
+        summary_content = ""
         with open(self.markdown_file, 'r', encoding='utf-8') as f:
             md_content = f.read()
         generator = PowerPointGenerator(self.template_path)
