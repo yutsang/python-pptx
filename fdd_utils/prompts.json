@@ -174,15 +174,15 @@
       ]
     },
     "OI": {
-      "title": "Other Income Analysis for [ENTITY_NAME]",
-      "description": "Analyze the other income position for [ENTITY_NAME]",
-      "analysis_points": [
-        "Income Composition: Review the composition and sources of other income for [ENTITY_NAME]",
-        "Income Recognition: Assess the timing and recognition of other income for [ENTITY_NAME]",
-        "Income Trends: Analyze historical trends and patterns in other income for [ENTITY_NAME]",
-        "Income Quality: Evaluate the quality and sustainability of other income sources for [ENTITY_NAME]",
-        "Business Impact: Consider the impact of other income on overall profitability for [ENTITY_NAME]"
-      ],
+      "title": "Operating Income Analysis for [ENTITY_NAME]",
+      "description": "Analyze the operating income position for [ENTITY_NAME]",
+              "analysis_points": [
+          "Income Composition: Review the composition and sources of operating income for [ENTITY_NAME]",
+          "Income Recognition: Assess the timing and recognition of operating income for [ENTITY_NAME]",
+          "Income Trends: Analyze historical trends and patterns in operating income for [ENTITY_NAME]",
+          "Income Quality: Evaluate the quality and sustainability of operating income sources for [ENTITY_NAME]",
+          "Business Impact: Consider the impact of operating income on overall profitability for [ENTITY_NAME]"
+        ],
       "key_questions": [
         "What are the main sources of other income for [ENTITY_NAME]?",
         "How has other income changed over time for [ENTITY_NAME]?",
@@ -198,14 +198,14 @@
       ]
     },
     "OC": {
-      "title": "Other Costs Analysis for [ENTITY_NAME]",
-      "description": "Analyze the other costs position for [ENTITY_NAME]",
+      "title": "Operating Cost Analysis for [ENTITY_NAME]",
+      "description": "Analyze the operating cost position for [ENTITY_NAME]",
       "analysis_points": [
-        "Cost Composition: Review the composition and nature of other costs for [ENTITY_NAME]",
-        "Cost Recognition: Assess the timing and recognition of other costs for [ENTITY_NAME]",
-        "Cost Trends: Analyze historical trends and patterns in other costs for [ENTITY_NAME]",
+        "Cost Composition: Review the composition and nature of operating costs for [ENTITY_NAME]",
+        "Cost Recognition: Assess the timing and recognition of operating costs for [ENTITY_NAME]",
+        "Cost Trends: Analyze historical trends and patterns in operating costs for [ENTITY_NAME]",
         "Cost Control: Evaluate cost management and control measures for [ENTITY_NAME]",
-        "Business Impact: Consider the impact of other costs on overall profitability for [ENTITY_NAME]"
+        "Business Impact: Consider the impact of operating costs on overall profitability for [ENTITY_NAME]"
       ],
       "key_questions": [
         "What are the main components of other costs for [ENTITY_NAME]?",

@@ -49,8 +49,8 @@ def get_key_display_name(key):
         'Capital': 'Share Capital',
         'Reserve': 'Reserves',
         'Capital reserve': 'Capital Reserve',
-        'OI': 'Other Income',
-        'OC': 'Other Comprehensive Income',
+        'OI': 'Operating Income',
+        'OC': 'Operating Cost',
         'Tax and Surcharges': 'Tax and Surcharges',
         'GA': 'General and Administrative',
         'Fin Exp': 'Finance Expenses',
@@ -61,7 +61,9 @@ def get_key_display_name(key):
         'Income tax': 'Income Tax',
         'LT DTA': 'Long-term Deferred Tax Assets'
     }
-    return display_mapping.get(key, key)
+    # Apply proper case formatting
+    display_name = display_mapping.get(key, key)
+    return display_name.title()
 
 
 def format_date_to_dd_mmm_yyyy(date_str):

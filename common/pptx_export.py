@@ -972,4 +972,105 @@ def export_pptx(template_path, markdown_path, output_path, project_name=None, ex
     
     # Add success message
     logging.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
-    return output_path 
+    return output_path
+
+def merge_presentations(bs_presentation_path, is_presentation_path, output_path):
+    """
+    Merge Balance Sheet and Income Statement presentations into a single presentation.
+    
+    Args:
+        bs_presentation_path: Path to the Balance Sheet presentation
+        is_presentation_path: Path to the Income Statement presentation  
+        output_path: Path for the merged output presentation
+    """
+    try:
+        from pptx import Presentation
+        import logging
+        
+        logging.info(f"🔄 Starting presentation merge...")
+        
+        # Load the Balance Sheet presentation as the base
+        bs_prs = Presentation(bs_presentation_path)
+        is_prs = Presentation(is_presentation_path)
+        
+        logging.info(f"📊 BS presentation has {len(bs_prs.slides)} slides")
+        logging.info(f"📈 IS presentation has {len(is_prs.slides)} slides")
+        
+        # Copy all slides from Income Statement to Balance Sheet presentation
+        for slide in is_prs.slides:
+            # Get the slide layout from the BS presentation
+            slide_layout = bs_prs.slide_layouts[0]  # Use first layout for all slides
+            
+            # Create new slide in BS presentation
+            new_slide = bs_prs.slides.add_slide(slide_layout)
+            
+            # Copy all shapes from IS slide to new slide
+            for shape in slide.shapes:
+                # Get shape position and size
+                left = shape.left
+                top = shape.top
+                width = shape.width
+                height = shape.height
+                
+                # Copy shape based on type
+                if shape.shape_type == 17:  # Text box
+                    # Copy text box
+                    textbox = new_slide.shapes.add_textbox(left, top, width, height)
+                    textbox.text_frame.text = shape.text_frame.text
+                    
+                    # Copy text formatting
+                    for i, paragraph in enumerate(shape.text_frame.paragraphs):
+                        if i < len(textbox.text_frame.paragraphs):
+                            new_paragraph = textbox.text_frame.paragraphs[i]
+                            new_paragraph.alignment = paragraph.alignment
+                            for j, run in enumerate(paragraph.runs):
+                                if j < len(new_paragraph.runs):
+                                    new_run = new_paragraph.runs[j]
+                                    new_run.font.bold = run.font.bold
+                                    new_run.font.italic = run.font.italic
+                                    new_run.font.size = run.font.size
+                                    new_run.font.name = run.font.name
+                                    if hasattr(run.font, 'color') and run.font.color.rgb:
+                                        new_run.font.color.rgb = run.font.color.rgb
+                
+                elif shape.shape_type == 19:  # Table
+                    # Copy table
+                    table = new_slide.shapes.add_table(
+                        rows=shape.table.rows.__len__(),
+                        cols=shape.table.columns.__len__(),
+                        left=left,
+                        top=top,
+                        width=width,
+                        height=height
+                    ).table
+                    
+                    # Copy table data
+                    for row_idx in range(shape.table.rows.__len__()):
+                        for col_idx in range(shape.table.columns.__len__()):
+                            if row_idx < table.rows.__len__() and col_idx < table.columns.__len__():
+                                table.cell(row_idx, col_idx).text = shape.table.cell(row_idx, col_idx).text
+                
+                else:
+                    # For other shape types, try to copy as picture
+                    try:
+                        new_slide.shapes.add_picture(
+                            shape.image.blob,
+                            left,
+                            top,
+                            width,
+                            height
+                        )
+                    except:
+                        # If copying as picture fails, skip this shape
+                        logging.warning(f"⚠️ Could not copy shape type {shape.shape_type}")
+                        continue
+        
+        # Save the merged presentation
+        bs_prs.save(output_path)
+        
+        logging.info(f"✅ Successfully merged presentations to: {output_path}")
+        logging.info(f"📊 Final presentation has {len(bs_prs.slides)} slides")
+        
+    except Exception as e:
+        logging.error(f"❌ Failed to merge presentations: {str(e)}")
+        raise 

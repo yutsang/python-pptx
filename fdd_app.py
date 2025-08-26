@@ -34,7 +34,7 @@ import shutil
 
 # Disable Python bytecode generation to prevent __pycache__ issues
 os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
-from common.pptx_export import export_pptx
+from common.pptx_export import export_pptx, merge_presentations
 # Import assistant modules at module level to prevent runtime import issues
 from common.assistant import process_keys, QualityAssuranceAgent, DataValidationAgent, PatternValidationAgent, find_financial_figures_with_context_check, get_tab_name, get_financial_figure, load_ip, ProofreadingAgent
 
@@ -815,18 +815,72 @@ def main():
                     try:
                         status_text.text("🤖 Initializing…")
                         progress_bar.progress(10)
-                        ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 1, 'stage_index': 0, 'start_time': time.time()}}
-                        agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
-                        agent1_success = bool(agent1_results and any(agent1_results.values()))
+                        
+                        # Handle different statement types
+                        current_statement_type = st.session_state.get('current_statement_type', 'BS')
+                        
+                        if current_statement_type == "ALL":
+                            # For ALL, process both BS and IS
+                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
+                            
+                            # Define key lists for BS and IS
+                            bs_key_list = [
+                                "Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
+                                "AP", "Taxes payable", "OP", "Capital", "Reserve"
+                            ]
+                            is_key_list = [
+                                "OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
+                                "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"
+                            ]
+                            
+                            # Process Balance Sheet first
+                            status_text.text("📊 Processing Balance Sheet...")
+                            progress_bar.progress(20)
+                            st.session_state['current_statement_type'] = 'BS'
+                            bs_keys = [key for key in filtered_keys_for_ai if key in bs_key_list]
+                            agent1_results_bs = run_agent_1(bs_keys, temp_ai_data, external_progress=ext)
+                            
+                            # Generate BS content
+                            if agent1_results_bs:
+                                status_text.text("📝 Generating Balance Sheet content...")
+                                progress_bar.progress(50)
+                                generate_content_from_session_storage(selected_entity)
+                            
+                            # Process Income Statement
+                            status_text.text("📈 Processing Income Statement...")
+                            progress_bar.progress(70)
+                            st.session_state['current_statement_type'] = 'IS'
+                            is_keys = [key for key in filtered_keys_for_ai if key in is_key_list]
+                            agent1_results_is = run_agent_1(is_keys, temp_ai_data, external_progress=ext)
+                            
+                            # Generate IS content
+                            if agent1_results_is:
+                                status_text.text("📝 Generating Income Statement content...")
+                                progress_bar.progress(90)
+                                generate_content_from_session_storage(selected_entity)
+                            
+                            # Combine results
+                            agent1_results = {**agent1_results_bs, **agent1_results_is}
+                            agent1_success = bool(agent1_results and any(agent1_results.values()))
+                            
+                            # Reset to ALL for future operations
+                            st.session_state['current_statement_type'] = 'ALL'
+                            
+                        else:
+                            # Single statement type processing
+                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 1, 'stage_index': 0, 'start_time': time.time()}}
+                            agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
+                            agent1_success = bool(agent1_results and any(agent1_results.values()))
+                            
+                            # Generate content files after AI processing
+                            if agent1_success:
+                                status_text.text("📝 Generating content files...")
+                                progress_bar.progress(90)
+                                generate_content_from_session_storage(selected_entity)
+                        
                         st.session_state['agent_states']['agent1_results'] = agent1_results
                         st.session_state['agent_states']['agent1_completed'] = True
                         st.session_state['agent_states']['agent1_success'] = agent1_success
-                        
-                        # Generate content files after AI processing
-                        if agent1_success:
-                            status_text.text("📝 Generating content files...")
-                            progress_bar.progress(90)
-                            generate_content_from_session_storage(selected_entity)
                         
                         progress_bar.progress(100)
                         status_text.text("✅ AI done" if agent1_success else "❌ AI failed")
@@ -1068,25 +1122,89 @@ def main():
                         elif hasattr(uploaded_file, 'name'):
                             excel_file_path = uploaded_file.name
                         
-                        # Use appropriate markdown file based on statement type
+                        # Handle different statement types
                         if statement_type == "IS":
+                            # Income Statement only
                             markdown_path = "fdd_utils/is_content.md"
-                        else:  # BS or ALL
+                            if not os.path.exists(markdown_path):
+                                st.error(f"❌ Content file not found: {markdown_path}")
+                                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                                return
+                            
+                            export_pptx(
+                                template_path=template_path,
+                                markdown_path=markdown_path,
+                                output_path=output_path,
+                                project_name=project_name,
+                                excel_file_path=excel_file_path
+                            )
+                            
+                        elif statement_type == "BS":
+                            # Balance Sheet only
                             markdown_path = "fdd_utils/bs_content.md"
-                        
-                        # Check if the content file exists
-                        if not os.path.exists(markdown_path):
-                            st.error(f"❌ Content file not found: {markdown_path}")
-                            st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
-                            return
-                        
-                        export_pptx(
-                            template_path=template_path,
-                            markdown_path=markdown_path,
-                            output_path=output_path,
-                            project_name=project_name,
-                            excel_file_path=excel_file_path
-                        )
+                            if not os.path.exists(markdown_path):
+                                st.error(f"❌ Content file not found: {markdown_path}")
+                                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                                return
+                            
+                            export_pptx(
+                                template_path=template_path,
+                                markdown_path=markdown_path,
+                                output_path=output_path,
+                                project_name=project_name,
+                                excel_file_path=excel_file_path
+                            )
+                            
+                        else:  # ALL - Generate BS first, then IS, then merge
+                            st.info("🔄 Generating combined Balance Sheet and Income Statement presentation...")
+                            
+                            # Check if both content files exist
+                            bs_markdown_path = "fdd_utils/bs_content.md"
+                            is_markdown_path = "fdd_utils/is_content.md"
+                            
+                            if not os.path.exists(bs_markdown_path):
+                                st.error(f"❌ Balance Sheet content file not found: {bs_markdown_path}")
+                                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                                return
+                                
+                            if not os.path.exists(is_markdown_path):
+                                st.error(f"❌ Income Statement content file not found: {is_markdown_path}")
+                                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                                return
+                            
+                            # Generate temporary files for BS and IS
+                            import tempfile
+                            import shutil
+                            
+                            with tempfile.TemporaryDirectory() as temp_dir:
+                                bs_temp_path = os.path.join(temp_dir, "bs_temp.pptx")
+                                is_temp_path = os.path.join(temp_dir, "is_temp.pptx")
+                                
+                                # Generate BS presentation
+                                st.info("📊 Generating Balance Sheet section...")
+                                export_pptx(
+                                    template_path=template_path,
+                                    markdown_path=bs_markdown_path,
+                                    output_path=bs_temp_path,
+                                    project_name=project_name,
+                                    excel_file_path=excel_file_path
+                                )
+                                
+                                # Generate IS presentation
+                                st.info("📈 Generating Income Statement section...")
+                                export_pptx(
+                                    template_path=template_path,
+                                    markdown_path=is_markdown_path,
+                                    output_path=is_temp_path,
+                                    project_name=project_name,
+                                    excel_file_path=excel_file_path
+                                )
+                                
+                                # Merge the presentations
+                                st.info("🔗 Merging presentations...")
+                                merge_presentations(bs_temp_path, is_temp_path, output_path)
+                                
+                                st.success("✅ Combined presentation generated successfully!")
                         
                         st.session_state['pptx_exported'] = True
                         st.session_state['pptx_filename'] = output_filename
@@ -1878,7 +1996,12 @@ def generate_content_from_session_storage(entity_name):
         if current_statement_type == "IS":
             json_file_path = 'fdd_utils/is_content.json'
             md_file_path = 'fdd_utils/is_content.md'
-        else:  # BS or ALL
+        elif current_statement_type == "BS":
+            json_file_path = 'fdd_utils/bs_content.json'
+            md_file_path = 'fdd_utils/bs_content.md'
+        else:  # ALL - create both files
+            # For ALL, we need to create both BS and IS content files
+            # This will be handled by running AI processing for both statement types
             json_file_path = 'fdd_utils/bs_content.json'
             md_file_path = 'fdd_utils/bs_content.md'
             
