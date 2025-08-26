@@ -19,15 +19,9 @@ def render_balance_sheet_sections(
 
     st.markdown("#### View Table by Key")
     
-    # Debug: Print what we received
-    print(f"DEBUG UI: sections_by_key keys: {list(sections_by_key.keys())}")
-    for key, sections in sections_by_key.items():
-        print(f"DEBUG UI: {key} has {len(sections)} sections")
-        if sections:
-            print(f"DEBUG UI: First section keys: {list(sections[0].keys())}")
-    
+    # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-    print(f"DEBUG UI: keys_with_data: {keys_with_data}")
+    print(f"DEBUG UI: Processing {len(keys_with_data)} keys with data")
     
 
     
@@ -160,15 +154,9 @@ def render_income_statement_sections(
 
     st.markdown("#### View Income Statement by Key")
     
-    # Debug: Print what we received
-    print(f"DEBUG UI IS: sections_by_key keys: {list(sections_by_key.keys())}")
-    for key, sections in sections_by_key.items():
-        print(f"DEBUG UI IS: {key} has {len(sections)} sections")
-        if sections:
-            print(f"DEBUG UI IS: First section keys: {list(sections[0].keys())}")
-    
+    # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-    print(f"DEBUG UI IS: keys_with_data: {keys_with_data}")
+    print(f"DEBUG UI IS: Processing {len(keys_with_data)} income statement keys with data")
     
 
     

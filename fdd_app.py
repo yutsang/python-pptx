@@ -592,22 +592,9 @@ def main():
                         debug=True  # Set to True for debugging
                     )
                     
-                    # Debug: Print what we got back
-                    print(f"DEBUG: sections_by_key keys: {list(sections_by_key.keys())}")
-                    total_sections = 0
-                    for key, sections in sections_by_key.items():
-                        print(f"DEBUG: {key} has {len(sections)} sections")
-                        total_sections += len(sections)
-                        if sections:
-                            print(f"DEBUG: First section keys: {list(sections[0].keys())}")
-                            if 'parsed_data' in sections[0]:
-                                print(f"DEBUG: parsed_data exists: {sections[0]['parsed_data'] is not None}")
-                            if 'data' in sections[0]:
-                                print(f"DEBUG: data shape: {sections[0]['data'].shape if hasattr(sections[0]['data'], 'shape') else 'not a DataFrame'}")
-                    
-                    print(f"DEBUG: Total sections found: {total_sections}")
-                    if total_sections == 0:
-                        print("DEBUG: WARNING - No sections found at all!")
+                    # High-level debug only
+                    total_sections = sum(len(sections) for sections in sections_by_key.values())
+                    print(f"DEBUG: Processed {len(sections_by_key)} keys with {total_sections} total sections")
                     
                     # Store in session state for AI section to use
                     if 'ai_data' not in st.session_state:
@@ -615,11 +602,9 @@ def main():
                     st.session_state['ai_data']['sections_by_key'] = sections_by_key
                     st.session_state['ai_data']['entity_name'] = selected_entity
                     st.session_state['ai_data']['entity_keywords'] = entity_keywords
-                    print(f"DEBUG: Stored data in session state for AI section")
             else:
                 # Use the data that was already processed
                 sections_by_key = st.session_state['ai_data']['sections_by_key']
-                print(f"DEBUG: Using existing processed data from session state")
             
             from common.ui_sections import render_balance_sheet_sections
             render_balance_sheet_sections(
@@ -645,22 +630,9 @@ def main():
                         debug=True  # Set to True for debugging
                     )
                     
-                    # Debug: Print what we got back
-                    print(f"DEBUG IS: sections_by_key keys: {list(sections_by_key.keys())}")
-                    total_sections = 0
-                    for key, sections in sections_by_key.items():
-                        print(f"DEBUG IS: {key} has {len(sections)} sections")
-                        total_sections += len(sections)
-                        if sections:
-                            print(f"DEBUG IS: First section keys: {list(sections[0].keys())}")
-                            if 'parsed_data' in sections[0]:
-                                print(f"DEBUG IS: parsed_data exists: {sections[0]['parsed_data'] is not None}")
-                            if 'data' in sections[0]:
-                                print(f"DEBUG IS: data shape: {sections[0]['data'].shape if hasattr(sections[0]['data'], 'shape') else 'not a DataFrame'}")
-                    
-                    print(f"DEBUG IS: Total sections found: {total_sections}")
-                    if total_sections == 0:
-                        print("DEBUG IS: WARNING - No sections found at all!")
+                    # High-level debug only
+                    total_sections = sum(len(sections) for sections in sections_by_key.values())
+                    print(f"DEBUG IS: Processed {len(sections_by_key)} income statement keys with {total_sections} total sections")
                     
                     # Store in session state for AI section to use
                     if 'ai_data' not in st.session_state:
@@ -668,11 +640,9 @@ def main():
                     st.session_state['ai_data']['sections_by_key'] = sections_by_key
                     st.session_state['ai_data']['entity_name'] = selected_entity
                     st.session_state['ai_data']['entity_keywords'] = entity_keywords
-                    print(f"DEBUG IS: Stored data in session state for AI section")
             else:
                 # Use the data that was already processed
                 sections_by_key = st.session_state['ai_data']['sections_by_key']
-                print(f"DEBUG IS: Using existing processed data from session state")
             
             from common.ui_sections import render_income_statement_sections
             render_income_statement_sections(
@@ -794,6 +764,10 @@ def main():
                     filtered_keys_for_ai = [key for key in keys_with_data if key in (bs_keys + is_keys)]
                 else:
                     filtered_keys_for_ai = keys_with_data
+                
+                # Store the filtered keys in session state for use in other sections
+                st.session_state['filtered_keys_for_ai'] = filtered_keys_for_ai
+                st.session_state['current_statement_type'] = statement_type
                 
                 if not filtered_keys_for_ai:
                     st.warning("No data found for AI processing with the selected statement type.")
@@ -1763,26 +1737,49 @@ def generate_content_from_session_storage(entity_name):
         content_store = st.session_state.get('ai_content_store', {})
         
         if not content_store:
-            st.warning("⚠️ No content in session storage. Using fallback method.")
-            return generate_markdown_from_ai_results(st.session_state.get('ai_data', {}).get('ai_results', {}), entity_name)
+                    st.warning("⚠️ No content in session storage. Using fallback method.")
+        return generate_markdown_from_ai_results(st.session_state.get('ai_data', {}).get('ai_results', {}), entity_name)
         
-        # Define category mappings based on entity name
-        if entity_name in ['Ningbo', 'Nanjing']:
-            name_mapping = DISPLAY_NAME_MAPPING_NB_NJ
-            category_mapping = {
-                'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
-                'Non-current Assets': ['IP', 'Other NCA'],
-                'Liabilities': ['AP', 'Taxes payable', 'OP'],
-                'Equity': ['Capital']
-            }
-        else:  # Haining and others
-            name_mapping = DISPLAY_NAME_MAPPING_DEFAULT
-            category_mapping = {
-                'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
-                'Non-current Assets': ['IP', 'Other NCA'],
-                'Liabilities': ['AP', 'Taxes payable', 'OP'],
-                'Equity': ['Capital', 'Reserve']
-            }
+        # Get current statement type from session state
+        current_statement_type = st.session_state.get('current_statement_type', 'BS')
+        
+        # Define category mappings based on entity name and statement type
+        if current_statement_type == "IS":
+            # Income Statement categories
+            if entity_name in ['Ningbo', 'Nanjing']:
+                name_mapping = DISPLAY_NAME_MAPPING_NB_NJ
+                category_mapping = {
+                    'Revenue': ['OI', 'Other Income', 'Non-operating Income'],
+                    'Expenses': ['OC', 'GA', 'Fin Exp', 'Cr Loss', 'Non-operating Exp'],
+                    'Taxes': ['Tax and Surcharges', 'Income tax'],
+                    'Other': ['LT DTA']
+                }
+            else:  # Haining and others
+                name_mapping = DISPLAY_NAME_MAPPING_DEFAULT
+                category_mapping = {
+                    'Revenue': ['OI', 'Other Income', 'Non-operating Income'],
+                    'Expenses': ['OC', 'GA', 'Fin Exp', 'Cr Loss', 'Non-operating Exp'],
+                    'Taxes': ['Tax and Surcharges', 'Income tax'],
+                    'Other': ['LT DTA']
+                }
+        else:
+            # Balance Sheet categories (default)
+            if entity_name in ['Ningbo', 'Nanjing']:
+                name_mapping = DISPLAY_NAME_MAPPING_NB_NJ
+                category_mapping = {
+                    'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
+                    'Non-current Assets': ['IP', 'Other NCA'],
+                    'Liabilities': ['AP', 'Taxes payable', 'OP'],
+                    'Equity': ['Capital']
+                }
+            else:  # Haining and others
+                name_mapping = DISPLAY_NAME_MAPPING_DEFAULT
+                category_mapping = {
+                    'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
+                    'Non-current Assets': ['IP', 'Other NCA'],
+                    'Liabilities': ['AP', 'Taxes payable', 'OP'],
+                    'Equity': ['Capital', 'Reserve']
+                }
         
         # Generate JSON content from session storage (for AI2 easy access)
         json_content = {
@@ -1880,23 +1877,46 @@ def generate_content_from_session_storage(entity_name):
 def generate_markdown_from_ai_results(ai_results, entity_name):
     """Generate markdown content file from AI results following the old version pattern"""
     try:
-        # Define category mappings based on entity name
-        if entity_name in ['Ningbo', 'Nanjing']:
-            name_mapping = DISPLAY_NAME_MAPPING_NB_NJ
-            category_mapping = {
-                'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
-                'Non-current Assets': ['IP', 'Other NCA'],
-                'Liabilities': ['AP', 'Taxes payable', 'OP'],
-                'Equity': ['Capital']
-            }
-        else:  # Haining and others
-            name_mapping = DISPLAY_NAME_MAPPING_DEFAULT
-            category_mapping = {
-                'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
-                'Non-current Assets': ['IP', 'Other NCA'],
-                'Liabilities': ['AP', 'Taxes payable', 'OP'],
-                'Equity': ['Capital', 'Reserve']
-            }
+        # Get current statement type from session state
+        current_statement_type = st.session_state.get('current_statement_type', 'BS')
+        
+        # Define category mappings based on entity name and statement type
+        if current_statement_type == "IS":
+            # Income Statement categories
+            if entity_name in ['Ningbo', 'Nanjing']:
+                name_mapping = DISPLAY_NAME_MAPPING_NB_NJ
+                category_mapping = {
+                    'Revenue': ['OI', 'Other Income', 'Non-operating Income'],
+                    'Expenses': ['OC', 'GA', 'Fin Exp', 'Cr Loss', 'Non-operating Exp'],
+                    'Taxes': ['Tax and Surcharges', 'Income tax'],
+                    'Other': ['LT DTA']
+                }
+            else:  # Haining and others
+                name_mapping = DISPLAY_NAME_MAPPING_DEFAULT
+                category_mapping = {
+                    'Revenue': ['OI', 'Other Income', 'Non-operating Income'],
+                    'Expenses': ['OC', 'GA', 'Fin Exp', 'Cr Loss', 'Non-operating Exp'],
+                    'Taxes': ['Tax and Surcharges', 'Income tax'],
+                    'Other': ['LT DTA']
+                }
+        else:
+            # Balance Sheet categories (default)
+            if entity_name in ['Ningbo', 'Nanjing']:
+                name_mapping = DISPLAY_NAME_MAPPING_NB_NJ
+                category_mapping = {
+                    'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
+                    'Non-current Assets': ['IP', 'Other NCA'],
+                    'Liabilities': ['AP', 'Taxes payable', 'OP'],
+                    'Equity': ['Capital']
+                }
+            else:  # Haining and others
+                name_mapping = DISPLAY_NAME_MAPPING_DEFAULT
+                category_mapping = {
+                    'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
+                    'Non-current Assets': ['IP', 'Other NCA'],
+                    'Liabilities': ['AP', 'Taxes payable', 'OP'],
+                    'Equity': ['Capital', 'Reserve']
+                }
         
         # Generate markdown content
         markdown_lines = []
