@@ -14,6 +14,22 @@ from pptx.oxml.ns import qn  # Required import for XML namespace handling
 
 logging.basicConfig(level=logging.INFO)
 
+def get_tab_name(project_name):
+    """Get tab name based on project name - more flexible approach"""
+    try:
+        # Hardcoded mappings for known entities
+        if project_name == 'Haining':
+            return "BSHN"
+        elif project_name == 'Nanjing':
+            return "BSNJ"
+        elif project_name == 'Ningbo':
+            return "BSNB"
+        else:
+            # Try to find a sheet that contains the project name
+            return None
+    except Exception:
+        return None
+
 def clean_content_quotes(content):
     """
     Remove outermost quotation marks from content while preserving legitimate internal quotes.
@@ -704,22 +720,12 @@ def replace_text_preserve_formatting(shape, replacements):
 def update_project_titles(presentation_path, project_name, output_path=None):
     prs = Presentation(presentation_path)
     total_slides = len(prs.slides)
-    
-    # Extract base entity name (e.g., "Project Haining" from "Project Haining Wanpu Limited")
-    base_entity_name = project_name
-    if "Project" in project_name:
-        # Extract the part after "Project" and before any additional company info
-        parts = project_name.split()
-        if len(parts) >= 2:
-            # Take "Project" + first word after it
-            base_entity_name = f"{parts[0]} {parts[1]}"
-    
     for slide_index, slide in enumerate(prs.slides):
         current_slide_number = slide_index + 1
         projTitle_shape = find_shape_by_name(slide.shapes, "projTitle")
         if projTitle_shape:
             replacements = {
-                "[PROJECT]": base_entity_name,
+                "[PROJECT]": project_name,
                 "[Current]": str(current_slide_number),
                 "[Total]": str(total_slides)
             }
@@ -731,230 +737,145 @@ def update_project_titles(presentation_path, project_name, output_path=None):
     return output_path
 
 # --- High-level function for app.py ---
-def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None):
-    generator = ReportGenerator(template_path, markdown_path, output_path, project_name)
-    generator.generate()
-    if not os.path.exists(output_path):
-        logging.error(f"PPTX file was not created at {output_path}")
-        raise FileNotFoundError(f"PPTX file was not created at {output_path}")
-    if project_name:
-        update_project_titles(output_path, project_name)
-    
-    # Embed Excel data if provided
-    if excel_file_path and project_name:
-        # Get the appropriate sheet name based on project
-        sheet_name = get_tab_name(project_name)
-        if sheet_name:
-            try:
-                embed_excel_data_in_pptx(output_path, excel_file_path, sheet_name, project_name)
-            except Exception as e:
-                logging.warning(f"⚠️ Could not embed Excel data: {str(e)}")
-        else:
-            logging.warning(f"⚠️ No valid sheet name found for project: {project_name}")
-            # Try to embed with first sheet as fallback
-            try:
-                embed_excel_data_in_pptx(output_path, excel_file_path, None, project_name)
-            except Exception as e:
-                logging.warning(f"⚠️ Could not embed Excel data with fallback: {str(e)}")
-    
-    # Add success message
-    logging.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
-    return output_path
-
-def get_tab_name(project_name):
-    """Get tab name based on project name - more flexible approach"""
-    try:
-        # Hardcoded mappings for known entities
-        if project_name == 'Haining':
-            return "BSHN"
-        elif project_name == 'Nanjing':
-            return "BSNJ"
-        elif project_name == 'Ningbo':
-            return "BSNB"
-        else:
-            # Try to find a sheet that contains the project name
-            return None
-    except Exception:
-        return None
-
-def merge_presentations(bs_presentation_path, is_presentation_path, output_path):
+def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, project_name, output_path=None):
     """
-    Merge Balance Sheet and Income Statement presentations into a single presentation.
-    
-    Args:
-        bs_presentation_path: Path to the Balance Sheet presentation
-        is_presentation_path: Path to the Income Statement presentation  
-        output_path: Path for the merged output presentation
+    Update existing financialData shape in PowerPoint with Excel data
     """
     try:
-        from pptx import Presentation
-        import logging
-        
-        logging.info(f"🔄 Starting presentation merge...")
-        
-        # Load the Balance Sheet presentation as the base
-        bs_prs = Presentation(bs_presentation_path)
-        is_prs = Presentation(is_presentation_path)
-        
-        logging.info(f"📊 BS presentation has {len(bs_prs.slides)} slides")
-        logging.info(f"📈 IS presentation has {len(is_prs.slides)} slides")
-        
-        # Add all slides from IS presentation to BS presentation
-        for slide in is_prs.slides:
-            bs_prs.slides.add_slide(slide)
-        
-        # Save the merged presentation
-        bs_prs.save(output_path)
-        
-        logging.info(f"✅ Presentations merged successfully: {output_path}")
-        return output_path
-        
-    except Exception as e:
-        logging.error(f"❌ Failed to merge presentations: {str(e)}")
-        raise
-
-def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, project_name):
-    """
-    Embed Excel data into PowerPoint presentation.
-    
-    Args:
-        presentation_path: Path to the PowerPoint presentation
-        excel_file_path: Path to the Excel file
-        sheet_name: Name of the sheet to read (can be None for first sheet)
-        project_name: Name of the project for logging
-    """
-    try:
-        import pandas as pd
         from pptx import Presentation
         from pptx.util import Inches
+        import pandas as pd
+        import os
         
-        logging.info(f"📊 Embedding Excel data for {project_name}...")
-        
-        # Read Excel data
-        if sheet_name:
-            df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
-            logging.info(f"📋 Read sheet '{sheet_name}' with {len(df)} rows")
-        else:
-            # Read first sheet if sheet_name is None
-            df = pd.read_excel(excel_file_path)
-            logging.info(f"📋 Read first sheet with {len(df)} rows")
-        
-        # Load presentation
+        # Load the presentation
         prs = Presentation(presentation_path)
         
-        # Find the financialData shape in the first slide
-        target_slide = prs.slides[0]
-        financial_data_shape = None
+        # Read Excel data
+        df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
         
-        for shape in target_slide.shapes:
-            if shape.name == "financialData":
-                financial_data_shape = shape
+        # Find the financialData shape in all slides
+        financial_data_shape = None
+        target_slide = None
+        
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if shape.name == "financialData":
+                    financial_data_shape = shape
+                    target_slide = slide
+                    break
+            if financial_data_shape:
                 break
         
-        if financial_data_shape and hasattr(financial_data_shape, 'table'):
-            # It's already a table - update the data
-            table = financial_data_shape.table
-            
-            # Store original formatting
-            original_formats = {}
-            for row_idx in range(len(table.rows)):
-                for col_idx in range(len(table.columns)):
-                    cell = table.cell(row_idx, col_idx)
-                    if cell.text_frame.paragraphs[0].runs:
-                        run = cell.text_frame.paragraphs[0].runs[0]
-                        original_formats[(row_idx, col_idx)] = {
-                            'font_name': run.font.name,
-                            'font_size': run.font.size,
-                            'font_bold': run.font.bold,
-                            'font_italic': run.font.italic,
-                            'font_color': run.font.color.rgb if run.font.color.rgb else None
-                        }
-            
-            # Clear existing data
-            for row_idx in range(len(table.rows)):
-                for col_idx in range(len(table.columns)):
-                    table.cell(row_idx, col_idx).text = ""
-            
-            # Add header row
-            for col_idx, col_name in enumerate(df.columns):
-                if col_idx < len(table.columns):
-                    cell = table.cell(0, col_idx)
-                    cell.text = str(col_name)
-                    # Apply header formatting (usually bold, different color)
-                    if (0, col_idx) in original_formats:
-                        format_info = original_formats[(0, col_idx)]
+        if financial_data_shape:
+            # Found the financialData shape - update its content
+            if hasattr(financial_data_shape, 'table'):
+                # It's a table shape - update the table data while preserving formatting
+                table = financial_data_shape.table
+                
+                # Store original formatting for each cell
+                original_formats = {}
+                for row_idx in range(len(table.rows)):
+                    for col_idx in range(len(table.columns)):
+                        cell = table.cell(row_idx, col_idx)
+                        # Store font properties
                         if cell.text_frame.paragraphs[0].runs:
                             run = cell.text_frame.paragraphs[0].runs[0]
-                            if format_info['font_name']:
-                                run.font.name = format_info['font_name']
-                            if format_info['font_size']:
-                                run.font.size = format_info['font_size']
-                            if format_info['font_bold'] is not None:
-                                run.font.bold = format_info['font_bold']
-                            if format_info['font_italic'] is not None:
-                                run.font.italic = format_info['font_italic']
-                            if format_info['font_color']:
-                                run.font.color.rgb = format_info['font_color']
-            
-            # Data rows
-            for row_idx, row in enumerate(df.values):
-                if row_idx + 1 < len(table.rows):
+                            original_formats[(row_idx, col_idx)] = {
+                                'font_name': run.font.name,
+                                'font_size': run.font.size,
+                                'font_bold': run.font.bold,
+                                'font_italic': run.font.italic,
+                                'font_color': run.font.color.rgb if run.font.color.rgb else None
+                            }
+                
+                # Clear existing content but preserve formatting
+                for row in range(len(table.rows)):
+                    for col in range(len(table.columns)):
+                        if row < len(table.rows) and col < len(table.columns):
+                            cell = table.cell(row, col)
+                            cell.text = ""
+                
+                # Update with new data and apply original formatting
+                # Header row
+                for col_idx, col_name in enumerate(df.columns):
+                    if col_idx < len(table.columns):
+                        cell = table.cell(0, col_idx)
+                        cell.text = str(col_name)
+                        # Apply header formatting (usually bold, different color)
+                        if (0, col_idx) in original_formats:
+                            format_info = original_formats[(0, col_idx)]
+                            if cell.text_frame.paragraphs[0].runs:
+                                run = cell.text_frame.paragraphs[0].runs[0]
+                                if format_info['font_name']:
+                                    run.font.name = format_info['font_name']
+                                if format_info['font_size']:
+                                    run.font.size = format_info['font_size']
+                                if format_info['font_bold'] is not None:
+                                    run.font.bold = format_info['font_bold']
+                                if format_info['font_italic'] is not None:
+                                    run.font.italic = format_info['font_italic']
+                                if format_info['font_color']:
+                                    run.font.color.rgb = format_info['font_color']
+                
+                # Data rows
+                for row_idx, row in enumerate(df.values):
+                    if row_idx + 1 < len(table.rows):
+                        for col_idx, value in enumerate(row):
+                            if col_idx < len(table.columns):
+                                cell = table.cell(row_idx + 1, col_idx)
+                                cell.text = str(value)
+                                # Apply data row formatting
+                                if (row_idx + 1, col_idx) in original_formats:
+                                    format_info = original_formats[(row_idx + 1, col_idx)]
+                                    if cell.text_frame.paragraphs[0].runs:
+                                        run = cell.text_frame.paragraphs[0].runs[0]
+                                        if format_info['font_name']:
+                                            run.font.name = format_info['font_name']
+                                        if format_info['font_size']:
+                                            run.font.size = format_info['font_size']
+                                        if format_info['font_bold'] is not None:
+                                            run.font.bold = format_info['font_bold']
+                                        if format_info['font_italic'] is not None:
+                                            run.font.italic = format_info['font_italic']
+                                        if format_info['font_color']:
+                                            run.font.color.rgb = format_info['font_color']
+                
+                logging.info(f"✅ Updated financialData table with Excel data (formatting preserved)")
+                
+            elif hasattr(financial_data_shape, 'text_frame'):
+                # It's a text shape - convert to table or update text
+                # For now, let's create a table in its place
+                left = financial_data_shape.left
+                top = financial_data_shape.top
+                width = financial_data_shape.width
+                height = financial_data_shape.height
+                
+                # Remove the old shape
+                target_slide.shapes._spTree.remove(financial_data_shape._element)
+                
+                # Add new table with same position and size
+                table = target_slide.shapes.add_table(
+                    rows=len(df) + 1,  # +1 for header
+                    cols=len(df.columns),
+                    left=left,
+                    top=top,
+                    width=width,
+                    height=height
+                ).table
+                
+                # Name the new table
+                table._element.getparent().getparent().set('name', 'financialData')
+                
+                # Fill table with data
+                for col_idx, col_name in enumerate(df.columns):
+                    table.cell(0, col_idx).text = str(col_name)
+                
+                for row_idx, row in enumerate(df.values):
                     for col_idx, value in enumerate(row):
-                        if col_idx < len(table.columns):
-                            cell = table.cell(row_idx + 1, col_idx)
-                            cell.text = str(value)
-                            # Apply data row formatting
-                            if (row_idx + 1, col_idx) in original_formats:
-                                format_info = original_formats[(row_idx + 1, col_idx)]
-                                if cell.text_frame.paragraphs[0].runs:
-                                    run = cell.text_frame.paragraphs[0].runs[0]
-                                    if format_info['font_name']:
-                                        run.font.name = format_info['font_name']
-                                    if format_info['font_size']:
-                                        run.font.size = format_info['font_size']
-                                    if format_info['font_bold'] is not None:
-                                        run.font.bold = format_info['font_bold']
-                                    if format_info['font_italic'] is not None:
-                                        run.font.italic = format_info['font_italic']
-                                    if format_info['font_color']:
-                                        run.font.color.rgb = format_info['font_color']
-            
-            logging.info(f"✅ Updated financialData table with Excel data (formatting preserved)")
-            
-        elif hasattr(financial_data_shape, 'text_frame'):
-            # It's a text shape - convert to table or update text
-            # For now, let's create a table in its place
-            left = financial_data_shape.left
-            top = financial_data_shape.top
-            width = financial_data_shape.width
-            height = financial_data_shape.height
-            
-            # Remove the old shape
-            target_slide.shapes._spTree.remove(financial_data_shape._element)
-            
-            # Add new table with same position and size
-            table = target_slide.shapes.add_table(
-                rows=len(df) + 1,  # +1 for header
-                cols=len(df.columns),
-                left=left,
-                top=top,
-                width=width,
-                height=height
-            ).table
-            
-            # Name the new table
-            table._element.getparent().getparent().set('name', 'financialData')
-            
-            # Fill table with data
-            for col_idx, col_name in enumerate(df.columns):
-                table.cell(0, col_idx).text = str(col_name)
-            
-            for row_idx, row in enumerate(df.values):
-                for col_idx, value in enumerate(row):
-                    table.cell(row_idx + 1, col_idx).text = str(value)
-            
-            logging.info(f"✅ Replaced financialData text with table")
-            
+                        table.cell(row_idx + 1, col_idx).text = str(value)
+                
+                logging.info(f"✅ Replaced financialData text with table")
+                
         else:
             # financialData shape not found - create a new table in the middle
             logging.warning("⚠️ financialData shape not found, creating new table")
@@ -1015,11 +936,36 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                                 cell.fill.fore_color.rgb = RGBColor(242, 242, 242)
         
         # Save the presentation
-        prs.save(presentation_path)
+        if output_path is None:
+            output_path = presentation_path
+        prs.save(output_path)
         
-        logging.info(f"✅ Excel data updated in PowerPoint: {presentation_path}")
-        return presentation_path
+        logging.info(f"✅ Excel data updated in PowerPoint: {output_path}")
+        return output_path
         
     except Exception as e:
         logging.error(f"❌ Failed to update Excel data: {str(e)}")
-        raise 
+        raise
+
+def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None):
+    generator = ReportGenerator(template_path, markdown_path, output_path, project_name)
+    generator.generate()
+    if not os.path.exists(output_path):
+        logging.error(f"PPTX file was not created at {output_path}")
+        raise FileNotFoundError(f"PPTX file was not created at {output_path}")
+    if project_name:
+        update_project_titles(output_path, project_name)
+    
+    # Embed Excel data if provided
+    if excel_file_path and project_name:
+        # Get the appropriate sheet name based on project
+        sheet_name = get_tab_name(project_name)
+        if sheet_name:
+            try:
+                embed_excel_data_in_pptx(output_path, excel_file_path, sheet_name, project_name)
+            except Exception as e:
+                logging.warning(f"⚠️ Could not embed Excel data: {str(e)}")
+    
+    # Add success message
+    logging.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
+    return output_path 
