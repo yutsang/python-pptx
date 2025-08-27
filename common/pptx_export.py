@@ -175,9 +175,9 @@ class PowerPointGenerator:
         
         while content_queue:
             if slide_idx == 1:
-                sections = ['c']  # Only 'c' section on slide 1
+                sections = ['c']  # Only 'c' section on slide 1 (textMainBullets)
             else:
-                sections = ['c']  # For now, use only 'c' section until we have proper *_L and *_R shapes
+                sections = ['b', 'c']  # Left and right sections (textMainBullets_L and textMainBullets_R)
             
             for section in sections:
                 if not content_queue:
