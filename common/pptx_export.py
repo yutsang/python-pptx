@@ -166,16 +166,14 @@ class PowerPointGenerator:
     def _plan_content_distribution(self, items: List[FinancialItem]):
         distribution = []
         content_queue = items.copy()
-        slide_idx = 0
         
         # Start from slide 1 (index 1) since slide 0 is the title slide
-        # For this template, we'll use slide 1 and onwards for content
+        # For the current template structure:
+        # - Slide 1 (index 1): use only 'c' section (textMainBullets)
+        # - Slide 2+ (index 2+): use 'b' (left) and 'c' (right) sections if available
         slide_idx = 1
         
         while content_queue:
-            # For the current template structure:
-            # - Slide 1 (index 1): use only 'c' section (textMainBullets)
-            # - Slide 2+ (index 2+): use 'b' (left) and 'c' (right) sections if available
             if slide_idx == 1:
                 sections = ['c']  # Only 'c' section on slide 1
             else:
@@ -225,31 +223,6 @@ class PowerPointGenerator:
         chars_per_line = self._calculate_chars_per_line(shape)
         wrapped = textwrap.wrap(text, width=chars_per_line)
         return wrapped
-
-    def _add_wrapped_text_to_paragraph(self, paragraph, text, shape, is_bold=False):
-        """Add text to paragraph with proper line breaks based on shape width"""
-        if not text:
-            return
-        
-        # Calculate characters per line for this specific shape
-        chars_per_line = self._calculate_chars_per_line(shape)
-        
-        # Wrap the text
-        wrapped_lines = textwrap.wrap(text, width=chars_per_line)
-        
-        # Add each line as a separate run with line breaks
-        for i, line in enumerate(wrapped_lines):
-            if i > 0:
-                # Add line break for subsequent lines
-                paragraph.add_run().text = '\n'
-            
-            run = paragraph.add_run()
-            run.text = line
-            run.font.size = Pt(9)
-            run.font.bold = is_bold
-            run.font.name = 'Arial'
-            if is_bold:
-                run.font.color.rgb = self.DARK_BLUE
 
     def _calculate_item_lines(self, item: FinancialItem) -> int:
         shape = getattr(self, 'current_shape', None)
@@ -443,8 +416,13 @@ class PowerPointGenerator:
                 if paragraph_count > 0:
                     try: p.space_before = Pt(3)
                     except: pass
+                run = p.add_run()
                 cont_text = " (continued)" if item.layer1_continued else ""
-                self._add_wrapped_text_to_paragraph(p, f"{item.accounting_type}{cont_text}", shape, is_bold=True)
+                run.text = f"{item.accounting_type}{cont_text}"
+                run.font.size = Pt(9)
+                run.font.bold = True
+                run.font.name = 'Arial'
+                run.font.color.rgb = self.DARK_BLUE
                 self.prev_layer1 = item.accounting_type
                 paragraph_count += 1
             # Treat all items the same (no special handling for taxes payables)
@@ -459,17 +437,22 @@ class PowerPointGenerator:
                         if paragraph_count > 0:
                             try: p.space_before = Pt(3)
                             except: pass
-                        # Add bullet character
                         bullet_run = p.add_run()
                         bullet_run.text = self.BULLET_CHAR
                         bullet_run.font.color.rgb = self.DARK_GREY
                         bullet_run.font.name = 'Arial'
                         bullet_run.font.size = Pt(9)
-                        
-                        # Add title and description with proper wrapping
+                        title_run = p.add_run()
                         cont_text = " (continued)" if item.layer2_continued else ""
-                        full_text = f"{item.account_title}{cont_text} - {part}"
-                        self._add_wrapped_text_to_paragraph(p, full_text, shape, is_bold=False)
+                        title_run.text = f"{item.account_title}{cont_text}"
+                        title_run.font.bold = True
+                        title_run.font.name = 'Arial'
+                        title_run.font.size = Pt(9)
+                        desc_run = p.add_run()
+                        desc_run.text = f" - {part}"
+                        desc_run.font.bold = False
+                        desc_run.font.name = 'Arial'
+                        desc_run.font.size = Pt(9)
                         paragraph_count += 1
                     else:
                         # Continuation: visually subordinate (indented, no bullet)
@@ -482,7 +465,11 @@ class PowerPointGenerator:
                         except: pass
                         try: p.first_line_indent = Inches(-0.19)
                         except: pass
-                        self._add_wrapped_text_to_paragraph(p, part, shape, is_bold=False)
+                        cont_run = p.add_run()
+                        cont_run.text = part
+                        cont_run.font.bold = False
+                        cont_run.font.name = 'Arial'
+                        cont_run.font.size = Pt(9)
                         paragraph_count += 1
                     # Add an empty row between split parts (but not after the last)
                     if part_idx < len(desc_parts) - 1:
@@ -824,19 +811,15 @@ def update_project_titles(presentation_path, project_name, output_path=None):
     prs = Presentation(presentation_path)
     total_slides = len(prs.slides)
     
-    # Extract base entity name (e.g., "Project Haining" from "Project Haining Wanpu Limited")
-    base_entity_name = project_name
-    if "Project" in project_name:
-        parts = project_name.split()
-        if len(parts) >= 2:
-            base_entity_name = f"{parts[0]} {parts[1]}"
+    # Extract base entity name (e.g., "Haining" from "Haining Wanpu Limited")
+    base_entity = project_name.split()[0] if project_name else project_name
     
     for slide_index, slide in enumerate(prs.slides):
         current_slide_number = slide_index + 1
         projTitle_shape = find_shape_by_name(slide.shapes, "projTitle")
         if projTitle_shape:
             replacements = {
-                "[PROJECT]": base_entity_name,
+                "[PROJECT]": base_entity,  # Use base entity name instead of full project name
                 "[Current]": str(current_slide_number),
                 "[Total]": str(total_slides)
             }
@@ -1058,6 +1041,29 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
         logging.error(f"❌ Failed to update Excel data: {str(e)}")
         raise
 
+def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None):
+    generator = ReportGenerator(template_path, markdown_path, output_path, project_name)
+    generator.generate()
+    if not os.path.exists(output_path):
+        logging.error(f"PPTX file was not created at {output_path}")
+        raise FileNotFoundError(f"PPTX file was not created at {output_path}")
+    if project_name:
+        update_project_titles(output_path, project_name)
+    
+    # Embed Excel data if provided
+    if excel_file_path and project_name:
+        # Get the appropriate sheet name based on project
+        sheet_name = get_tab_name(project_name)
+        if sheet_name:
+            try:
+                embed_excel_data_in_pptx(output_path, excel_file_path, sheet_name, project_name)
+            except Exception as e:
+                logging.warning(f"⚠️ Could not embed Excel data: {str(e)}")
+    
+    # Add success message
+    logging.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
+    return output_path
+
 def merge_presentations(bs_presentation_path, is_presentation_path, output_path):
     """
     Merge Balance Sheet and Income Statement presentations into a single presentation.
@@ -1080,49 +1086,81 @@ def merge_presentations(bs_presentation_path, is_presentation_path, output_path)
         logging.info(f"📊 BS presentation has {len(bs_prs.slides)} slides")
         logging.info(f"📈 IS presentation has {len(is_prs.slides)} slides")
         
-        # Add all slides from IS presentation to BS presentation
+        # Copy all slides from Income Statement to Balance Sheet presentation
         for slide in is_prs.slides:
-            # Create a new slide with the same layout
-            new_slide = bs_prs.slides.add_slide(slide.slide_layout)
+            # Get the slide layout from the BS presentation
+            slide_layout = bs_prs.slide_layouts[0]  # Use first layout for all slides
             
-            # Copy content from the original slide
+            # Create new slide in BS presentation
+            new_slide = bs_prs.slides.add_slide(slide_layout)
+            
+            # Copy all shapes from IS slide to new slide
             for shape in slide.shapes:
-                if hasattr(shape, 'text_frame') and shape.text_frame:
-                    # Find corresponding shape in new slide
-                    for new_shape in new_slide.shapes:
-                        if new_shape.name == shape.name:
-                            new_shape.text_frame.text = shape.text_frame.text
-                            break
+                # Get shape position and size
+                left = shape.left
+                top = shape.top
+                width = shape.width
+                height = shape.height
+                
+                # Copy shape based on type
+                if shape.shape_type == 17:  # Text box
+                    # Copy text box
+                    textbox = new_slide.shapes.add_textbox(left, top, width, height)
+                    textbox.text_frame.text = shape.text_frame.text
+                    
+                    # Copy text formatting
+                    for i, paragraph in enumerate(shape.text_frame.paragraphs):
+                        if i < len(textbox.text_frame.paragraphs):
+                            new_paragraph = textbox.text_frame.paragraphs[i]
+                            new_paragraph.alignment = paragraph.alignment
+                            for j, run in enumerate(paragraph.runs):
+                                if j < len(new_paragraph.runs):
+                                    new_run = new_paragraph.runs[j]
+                                    new_run.font.bold = run.font.bold
+                                    new_run.font.italic = run.font.italic
+                                    new_run.font.size = run.font.size
+                                    new_run.font.name = run.font.name
+                                    if hasattr(run.font, 'color') and run.font.color.rgb:
+                                        new_run.font.color.rgb = run.font.color.rgb
+                
+                elif shape.shape_type == 19:  # Table
+                    # Copy table
+                    table = new_slide.shapes.add_table(
+                        rows=shape.table.rows.__len__(),
+                        cols=shape.table.columns.__len__(),
+                        left=left,
+                        top=top,
+                        width=width,
+                        height=height
+                    ).table
+                    
+                    # Copy table data
+                    for row_idx in range(shape.table.rows.__len__()):
+                        for col_idx in range(shape.table.columns.__len__()):
+                            if row_idx < table.rows.__len__() and col_idx < table.columns.__len__():
+                                table.cell(row_idx, col_idx).text = shape.table.cell(row_idx, col_idx).text
+                
+                else:
+                    # For other shape types, try to copy as picture
+                    try:
+                        new_slide.shapes.add_picture(
+                            shape.image.blob,
+                            left,
+                            top,
+                            width,
+                            height
+                        )
+                    except:
+                        # If copying as picture fails, skip this shape
+                        logging.warning(f"⚠️ Could not copy shape type {shape.shape_type}")
+                        continue
         
         # Save the merged presentation
         bs_prs.save(output_path)
         
-        logging.info(f"✅ Presentations merged successfully: {output_path}")
-        return output_path
+        logging.info(f"✅ Successfully merged presentations to: {output_path}")
+        logging.info(f"📊 Final presentation has {len(bs_prs.slides)} slides")
         
     except Exception as e:
         logging.error(f"❌ Failed to merge presentations: {str(e)}")
-        raise
-
-def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None):
-    generator = ReportGenerator(template_path, markdown_path, output_path, project_name)
-    generator.generate()
-    if not os.path.exists(output_path):
-        logging.error(f"PPTX file was not created at {output_path}")
-        raise FileNotFoundError(f"PPTX file was not created at {output_path}")
-    if project_name:
-        update_project_titles(output_path, project_name)
-    
-    # Embed Excel data if provided
-    if excel_file_path and project_name:
-        # Get the appropriate sheet name based on project
-        sheet_name = get_tab_name(project_name)
-        if sheet_name:
-            try:
-                embed_excel_data_in_pptx(output_path, excel_file_path, sheet_name, project_name)
-            except Exception as e:
-                logging.warning(f"⚠️ Could not embed Excel data: {str(e)}")
-    
-    # Add success message
-    logging.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
-    return output_path 
+        raise 
