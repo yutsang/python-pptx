@@ -167,15 +167,15 @@ class PowerPointGenerator:
         distribution = []
         content_queue = items.copy()
         
-        # Start from slide 1 (index 1) since slide 0 is the title slide
-        # For the current template structure:
-        # - Slide 1 (index 1): use only 'c' section (textMainBullets)
-        # - Slide 2+ (index 2+): use 'b' (left) and 'c' (right) sections if available
-        slide_idx = 1
+        # Start from slide 0 (index 0) for content slides
+        # For the server template structure:
+        # - Slide 0 (index 0): use only 'c' section (textMainBullets)
+        # - Slide 1+ (index 1+): use 'b' (left) and 'c' (right) sections (textMainBullets_L and textMainBullets_R)
+        slide_idx = 0
         
         while content_queue:
-            if slide_idx == 1:
-                sections = ['c']  # Only 'c' section on slide 1 (textMainBullets)
+            if slide_idx == 0:
+                sections = ['c']  # Only 'c' section on slide 0 (textMainBullets)
             else:
                 sections = ['b', 'c']  # Left and right sections (textMainBullets_L and textMainBullets_R)
             
@@ -348,24 +348,20 @@ class PowerPointGenerator:
         return summary_text
 
     def _get_section_shape(self, slide, section: str):
-        # For the current template structure:
-        # - Slide 0 (index 0): Title slide (no content shapes)
-        # - Slide 1 (index 1): Content slide with textMainBullets
-        # - Additional slides: Will be created with Content Placeholder 2
+        # For the server template structure:
+        # - Slide 0 (index 0): Content slide with textMainBullets
+        # - Slide 1+ (index 1+): Content slides with textMainBullets_L and textMainBullets_R
         
         if self.current_slide_index == 0:
-            # Slide 0 is title slide, no content shapes
-            return None
-        elif self.current_slide_index == 1:
-            # Slide 1 has textMainBullets
+            # Slide 0 has textMainBullets
             if section == 'c':
                 try:
                     return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
                 except StopIteration:
                     pass
-            return None  # No 'b' section on slide 1
+            return None  # No 'b' section on slide 0
         else:
-            # Additional slides (index 2+) - try to find textMainBullets_L and textMainBullets_R first
+            # Additional slides (index 1+) - try to find textMainBullets_L and textMainBullets_R
             if section == 'b':
                 # Left section
                 try:
