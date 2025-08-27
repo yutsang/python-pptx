@@ -168,13 +168,18 @@ class PowerPointGenerator:
         content_queue = items.copy()
         slide_idx = 0
         
-        # Start from slide 1 (index 0) since slide 0 doesn't have textMainBullets
+        # Start from slide 1 (index 1) since slide 0 is the title slide
         # For this template, we'll use slide 1 and onwards for content
         slide_idx = 1
         
         while content_queue:
-            # For this template, we only have 'c' section (textMainBullets) on each slide
-            sections = ['c']
+            # For the current template structure:
+            # - Slide 1 (index 1): use only 'c' section (textMainBullets)
+            # - Slide 2+ (index 2+): use 'b' (left) and 'c' (right) sections if available
+            if slide_idx == 1:
+                sections = ['c']  # Only 'c' section on slide 1
+            else:
+                sections = ['c']  # For now, use only 'c' section until we have proper *_L and *_R shapes
             
             for section in sections:
                 if not content_queue:
@@ -370,24 +375,38 @@ class PowerPointGenerator:
         return summary_text
 
     def _get_section_shape(self, slide, section: str):
-        # First, try to find the exact shape name
+        # For the current template structure:
+        # - Slide 0 (index 0): Title slide (no content shapes)
+        # - Slide 1 (index 1): Content slide with textMainBullets
+        # - Additional slides: Will be created with Content Placeholder 2
+        
         if self.current_slide_index == 0:
+            # Slide 0 is title slide, no content shapes
+            return None
+        elif self.current_slide_index == 1:
+            # Slide 1 has textMainBullets
             if section == 'c':
-                # Try to find textMainBullets on first slide
                 try:
                     return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
                 except StopIteration:
                     pass
-            return None  # No 'b' section on first slide
+            return None  # No 'b' section on slide 1
         else:
-            # For subsequent slides, try to find the specific shapes
-            target_name = "textMainBullets_L" if section == 'b' else "textMainBullets_R"
-            try:
-                return next((s for s in slide.shapes if s.name == target_name), None)
-            except StopIteration:
-                pass
+            # Additional slides (index 2+) - try to find textMainBullets_L and textMainBullets_R first
+            if section == 'b':
+                # Left section
+                try:
+                    return next((s for s in slide.shapes if s.name == "textMainBullets_L"), None)
+                except StopIteration:
+                    pass
+            elif section == 'c':
+                # Right section
+                try:
+                    return next((s for s in slide.shapes if s.name == "textMainBullets_R"), None)
+                except StopIteration:
+                    pass
         
-        # If exact shape not found, try to find any textMainBullets shape
+        # Fallback: try to find any textMainBullets shape
         try:
             return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
         except StopIteration:
