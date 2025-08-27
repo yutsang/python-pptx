@@ -108,19 +108,19 @@ class PowerPointGenerator:
         shape_height_pt = shape_height_emu * 72 / 914400
         
         # Account for margins and padding (typically 10-15% of shape height)
-        effective_height_pt = shape_height_pt * 0.85
+        effective_height_pt = shape_height_pt * 0.80  # More conservative margin
         
         # Calculate line height based on font size and line spacing
         # Default font size is 9pt, line spacing is typically 1.2x font size
         font_size_pt = 9
-        line_spacing = 1.2
+        line_spacing = 1.3  # Slightly more spacing for better readability
         line_height_pt = font_size_pt * line_spacing
         
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
         
         # Subtract a few rows for safety margin
-        max_rows = max(10, max_rows - 3)
+        max_rows = max(8, max_rows - 5)  # More conservative safety margin
         
         return max_rows
 
@@ -277,22 +277,33 @@ class PowerPointGenerator:
                 while content_queue and lines_used < max_lines:
                     item = content_queue[0]
                     item_lines = self._calculate_item_lines(item)
+                    
+                    # If the item fits completely, add it
                     if lines_used + item_lines <= max_lines:
                         section_items.append(item)
                         content_queue.pop(0)
                         lines_used += item_lines
                     else:
+                        # Try to split the item to fill remaining space
                         remaining_lines = max_lines - lines_used
-                        if remaining_lines > 1:
+                        if remaining_lines >= 3:  # Need at least 3 lines for meaningful content
                             split_item, remaining_item = self._split_item(item, remaining_lines)
-                            section_items.append(split_item)
-                            if remaining_item and remaining_item.descriptions and remaining_item.descriptions[0]:
-                                remaining_item.layer2_continued = True
-                                remaining_item.layer1_continued = True
-                                content_queue[0] = remaining_item
+                            if split_item and split_item.descriptions:
+                                section_items.append(split_item)
+                                lines_used = max_lines  # Mark as full
+                                
+                                # Put the remaining part back at the front of the queue
+                                if remaining_item and remaining_item.descriptions and remaining_item.descriptions[0]:
+                                    remaining_item.layer2_continued = True
+                                    remaining_item.layer1_continued = True
+                                    content_queue[0] = remaining_item
+                                else:
+                                    content_queue.pop(0)
                             else:
-                                content_queue.pop(0)
+                                # If splitting failed, move to next section
+                                break
                         else:
+                            # Not enough space for meaningful split, move to next section
                             break
                 if section_items:
                     distribution.append((slide_idx, section, section_items))
@@ -353,20 +364,26 @@ class PowerPointGenerator:
         return lines
 
     def _split_item(self, item: FinancialItem, max_lines: int) -> tuple[FinancialItem, FinancialItem | None]:
-        # Split at paragraph boundaries (not mid-paragraph) whenever possible
+        """Split an item to fit within max_lines, adding proper (cont'd) indicators"""
         shape = getattr(self, 'current_shape', None)
         chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
-        header = f"{self.BULLET_CHAR}{item.account_title} - "
+        
+        # Account for header line
+        header_lines = 1  # Account for section header
+        available_lines = max_lines - header_lines
+        
         desc_paras = item.descriptions
         lines_used = 0
         split_index = 0
+        
         # Try to fit as many whole paragraphs as possible
         for i, para in enumerate(desc_paras):
             para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
-            if lines_used + para_lines > max_lines:
+            if lines_used + para_lines > available_lines:
                 break
             lines_used += para_lines
             split_index = i + 1
+        
         # If all paragraphs fit, no split needed
         if split_index == len(desc_paras):
             return (
@@ -380,46 +397,53 @@ class PowerPointGenerator:
                 ),
                 None
             )
+        
         # If no paragraph fits, split the first paragraph at line boundary
         if split_index == 0:
             para = desc_paras[0]
             wrapped = textwrap.wrap(para, width=chars_per_line)
-            first_part = wrapped[:max_lines]
-            remaining_part = wrapped[max_lines:]
+            first_part = wrapped[:available_lines]
+            remaining_part = wrapped[available_lines:]
+            
             split_item = FinancialItem(
                 item.accounting_type,
                 item.account_title,
                 [' '.join(first_part)],
                 layer1_continued=item.layer1_continued,
-                layer2_continued=item.layer2_continued,
+                layer2_continued=False,  # First part is not continued
                 is_table=item.is_table
             )
+            
             remaining_item = FinancialItem(
                 item.accounting_type,
                 item.account_title,
                 [' '.join(remaining_part)] + desc_paras[1:],
                 layer1_continued=True,
-                layer2_continued=True,
+                layer2_continued=True,  # Remaining part is continued
                 is_table=item.is_table
             ) if remaining_part or len(desc_paras) > 1 else None
+            
             return split_item, remaining_item
+        
         # Otherwise, split at paragraph boundary
         split_item = FinancialItem(
             item.accounting_type,
             item.account_title,
             desc_paras[:split_index],
             layer1_continued=item.layer1_continued,
-            layer2_continued=item.layer2_continued,
+            layer2_continued=False,  # First part is not continued
             is_table=item.is_table
         )
+        
         remaining_item = FinancialItem(
             item.accounting_type,
             item.account_title,
             desc_paras[split_index:],
             layer1_continued=True,
-            layer2_continued=True,
+            layer2_continued=True,  # Remaining part is continued
             is_table=item.is_table
         ) if split_index < len(desc_paras) else None
+        
         return split_item, remaining_item
 
     def _format_table_text(self, text: str) -> str:
