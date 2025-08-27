@@ -184,15 +184,23 @@ class PowerPointGenerator:
                     break
                 section_items = []
                 lines_used = 0
-                while content_queue and lines_used < self.ROWS_PER_SECTION:
+                
+                # Use different line limits for left and right sections
+                # Left section (b) is smaller, so use fewer lines
+                if section == 'b':
+                    max_lines = self.ROWS_PER_SECTION - 5  # More conservative for left side
+                else:
+                    max_lines = self.ROWS_PER_SECTION
+                
+                while content_queue and lines_used < max_lines:
                     item = content_queue[0]
                     item_lines = self._calculate_item_lines(item)
-                    if lines_used + item_lines <= self.ROWS_PER_SECTION:
+                    if lines_used + item_lines <= max_lines:
                         section_items.append(item)
                         content_queue.pop(0)
                         lines_used += item_lines
                     else:
-                        remaining_lines = self.ROWS_PER_SECTION - lines_used
+                        remaining_lines = max_lines - lines_used
                         if remaining_lines > 1:
                             split_item, remaining_item = self._split_item(item, remaining_lines)
                             section_items.append(split_item)
@@ -214,8 +222,31 @@ class PowerPointGenerator:
     def _calculate_chars_per_line(self, shape):
         # Convert EMU to pixels: 1 EMU = 1/914400 inches, 1 inch = 96 px
         px_width = int(shape.width * 96 / 914400)
-        avg_char_px = 7  # Arial 9pt ~ 7px per char
-        chars_per_line = max(20, px_width // avg_char_px)
+        
+        # More conservative character width calculation for better visual fit
+        # Account for margins, padding, and visual rendering differences
+        effective_width = px_width * 0.85  # Reduce by 15% for margins/padding
+        
+        # Different character widths for different font sizes and styles
+        if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
+            # Check if text is bold (takes more space)
+            is_bold = False
+            for para in shape.text_frame.paragraphs:
+                for run in para.runs:
+                    if run.font.bold:
+                        is_bold = True
+                        break
+                if is_bold:
+                    break
+            
+            if is_bold:
+                avg_char_px = 8  # Bold text takes more space
+            else:
+                avg_char_px = 7  # Regular text
+        else:
+            avg_char_px = 7  # Default
+        
+        chars_per_line = max(15, int(effective_width // avg_char_px))
         return chars_per_line
 
     def _wrap_text_to_shape(self, text, shape):
