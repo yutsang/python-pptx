@@ -96,6 +96,34 @@ class PowerPointGenerator:
         # Removed shape audit logging to reduce debug output
         pass
 
+    def _calculate_max_rows_for_shape(self, shape):
+        """Calculate the actual maximum number of rows that can fit in a shape"""
+        if not shape or not hasattr(shape, 'height'):
+            return 25  # Default fallback
+        
+        # Get the actual shape height in EMU (English Metric Units)
+        shape_height_emu = shape.height
+        
+        # Convert EMU to points (1 EMU = 1/914400 inches, 1 inch = 72 points)
+        shape_height_pt = shape_height_emu * 72 / 914400
+        
+        # Account for margins and padding (typically 10-15% of shape height)
+        effective_height_pt = shape_height_pt * 0.85
+        
+        # Calculate line height based on font size and line spacing
+        # Default font size is 9pt, line spacing is typically 1.2x font size
+        font_size_pt = 9
+        line_spacing = 1.2
+        line_height_pt = font_size_pt * line_spacing
+        
+        # Calculate maximum rows that can fit
+        max_rows = int(effective_height_pt / line_height_pt)
+        
+        # Subtract a few rows for safety margin
+        max_rows = max(10, max_rows - 3)
+        
+        return max_rows
+
     def _calculate_max_rows(self):
         # Find a slide with textMainBullets shape
         shape = None
@@ -119,7 +147,61 @@ class PowerPointGenerator:
         if not shape:
             return 25  # Default fallback
         
-        return int(shape.height / self.LINE_HEIGHT) - 3
+        return self._calculate_max_rows_for_shape(shape)
+
+    def _get_target_shape_for_section(self, slide_idx, section):
+        """Get the target shape for a specific section on a specific slide"""
+        # Check if the slide exists
+        if slide_idx >= len(self.prs.slides):
+            return None
+        
+        slide = self.prs.slides[slide_idx]
+        
+        # For the server template structure:
+        # - Slide 0 (index 0): Content slide with textMainBullets
+        # - Slide 1+ (index 1+): Content slides with textMainBullets_L and textMainBullets_R
+        
+        if slide_idx == 0:
+            # Slide 0 has textMainBullets
+            if section == 'c':
+                try:
+                    return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
+                except StopIteration:
+                    pass
+            return None  # No 'b' section on slide 0
+        else:
+            # Additional slides (index 1+) - try to find textMainBullets_L and textMainBullets_R
+            if section == 'b':
+                # Left section
+                try:
+                    return next((s for s in slide.shapes if s.name == "textMainBullets_L"), None)
+                except StopIteration:
+                    pass
+            elif section == 'c':
+                # Right section
+                try:
+                    return next((s for s in slide.shapes if s.name == "textMainBullets_R"), None)
+                except StopIteration:
+                    pass
+        
+        # Fallback: try to find any textMainBullets shape
+        try:
+            return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
+        except StopIteration:
+            pass
+        
+        # If still not found, try to find Content Placeholder 2 (standard layout)
+        try:
+            return next((s for s in slide.shapes if s.name == "Content Placeholder 2"), None)
+        except StopIteration:
+            pass
+        
+        # If still not found, try to find any text shape
+        for shape in slide.shapes:
+            if hasattr(shape, 'text_frame'):
+                return shape
+        
+        return None
 
     def parse_markdown(self, md_content: str) -> List[FinancialItem]:
         items = []
@@ -185,12 +267,12 @@ class PowerPointGenerator:
                 section_items = []
                 lines_used = 0
                 
-                # Use different line limits for left and right sections
-                # Left section (b) is smaller, so use fewer lines
-                if section == 'b':
-                    max_lines = self.ROWS_PER_SECTION - 5  # More conservative for left side
+                # Get the actual shape for this section to calculate proper line limits
+                shape = self._get_target_shape_for_section(slide_idx, section)
+                if shape:
+                    max_lines = self._calculate_max_rows_for_shape(shape)
                 else:
-                    max_lines = self.ROWS_PER_SECTION
+                    max_lines = self.ROWS_PER_SECTION  # Fallback
                 
                 while content_queue and lines_used < max_lines:
                     item = content_queue[0]
