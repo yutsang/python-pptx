@@ -823,12 +823,20 @@ def replace_text_preserve_formatting(shape, replacements):
 def update_project_titles(presentation_path, project_name, output_path=None):
     prs = Presentation(presentation_path)
     total_slides = len(prs.slides)
+    
+    # Extract base entity name (e.g., "Project Haining" from "Project Haining Wanpu Limited")
+    base_entity_name = project_name
+    if "Project" in project_name:
+        parts = project_name.split()
+        if len(parts) >= 2:
+            base_entity_name = f"{parts[0]} {parts[1]}"
+    
     for slide_index, slide in enumerate(prs.slides):
         current_slide_number = slide_index + 1
         projTitle_shape = find_shape_by_name(slide.shapes, "projTitle")
         if projTitle_shape:
             replacements = {
-                "[PROJECT]": project_name,
+                "[PROJECT]": base_entity_name,
                 "[Current]": str(current_slide_number),
                 "[Total]": str(total_slides)
             }
