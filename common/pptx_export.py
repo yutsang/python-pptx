@@ -947,6 +947,42 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
         logging.error(f"❌ Failed to update Excel data: {str(e)}")
         raise
 
+def merge_presentations(bs_presentation_path, is_presentation_path, output_path):
+    """
+    Merge Balance Sheet and Income Statement presentations into a single presentation.
+    
+    Args:
+        bs_presentation_path: Path to the Balance Sheet presentation
+        is_presentation_path: Path to the Income Statement presentation  
+        output_path: Path for the merged output presentation
+    """
+    try:
+        from pptx import Presentation
+        import logging
+        
+        logging.info(f"🔄 Starting presentation merge...")
+        
+        # Load the Balance Sheet presentation as the base
+        bs_prs = Presentation(bs_presentation_path)
+        is_prs = Presentation(is_presentation_path)
+        
+        logging.info(f"📊 BS presentation has {len(bs_prs.slides)} slides")
+        logging.info(f"📈 IS presentation has {len(is_prs.slides)} slides")
+        
+        # Add all slides from IS presentation to BS presentation
+        for slide in is_prs.slides:
+            bs_prs.slides.add_slide(slide)
+        
+        # Save the merged presentation
+        bs_prs.save(output_path)
+        
+        logging.info(f"✅ Presentations merged successfully: {output_path}")
+        return output_path
+        
+    except Exception as e:
+        logging.error(f"❌ Failed to merge presentations: {str(e)}")
+        raise
+
 def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None):
     generator = ReportGenerator(template_path, markdown_path, output_path, project_name)
     generator.generate()
