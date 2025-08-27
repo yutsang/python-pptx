@@ -1,49 +1,55 @@
 ## Current Assets
 
 ### Cash at bank
-balance as at 30 September 2022 represented CNY9.1M bank deposit.
+The balance as at 30 September 2022 represented CNY9.1M of bank deposits.
 
-The cash was under supervision with no restricted use. We have obtained bank statements as at 30 September 2022 and found no discrepancy.
+Management indicated that the cash was under supervision by the bank but had no related use restrictions imposed.
+We obtained all bank statements and found no discrepancies.
 
 ### Accounts receivables
-As at 30 September 2022, accounts receivable represented receivables of rental income due from Zhejiang Jinghong Supply Chain Management Co., Ltd. The Target recognized revenue using the straight-line methodl we reclassified the leveling impact of revenue recignition in the rent-free period to other non-current assets at the end of September 2022. Management did not accrue bad debt provision for accounts receivables from Zhejiang Jinhong Supply Chain Mangement Co., Ltd., we indicatively accrued provision at the rate of 1% according to the Target's policy.
+The balance as at 30 September 2022 represented receivables of rental and property management income due from third-party customers. The Target recognised revenue using the straight-line method; we reclassified the levelling impact of revenue recognition in the rent-free period to other non-current assets at the end of September 2022. Management did not accrue bad debt provision for accounts receivable from third-party customers; we indicatively accrued provision at the rate of 1% according to the Target's policy.
 
 ### Prepayments
-balance as at 30 September 2022 represetned CNY336.0k of upfront construction cost and CNY10.1k of utility expense payments for the next one to three months of prepaid utility expenses including waterm electricity and internet.
+Balance as at 30 September 2022 represented CNY346.0K of upfront utility expense payments for the next one to three months of prepaid utility expenses including water and electricity with Haining Power Supply Co., Ltd. (CNY336.0K for electricity) and Haining Qiantang Water Services Co., Ltd. (CNY10.0K for water).
 
 ### Other receivables
-balance as at 30 September 2022 687K of utilities paid on behalf of Zhejiang Jinhong Supply Chain Management Co., Ltd. 
-As indicated by management, the Target accrued 7.4% bad debt provision for utilities receivables aged within 1 year.
+Balance as at 30 September 2022 CNY738.0K of utilities paid on behalf of Haining Wanpu Limited. As indicated by management, the Target accrued 6.9% bad debt provision for utilities receivables aged within 1 year.
 
 ### Other current assets
-balance as at 30/09/2022 mainly represented CNY7.8M of deductible input VAT derived from Other current assets - Haining Wanpu.
+No information available for Other CA
 
 ## Non-current Assets
 
 ### Investment properties
-balance as at 30 September 2022 comprised the net book value of investment properties (CNY197.5M). The original costs of buildings and land use rights did not charge over the period.
+Balance as at 30 September 2022 mainly represented the net book value of the targeted properties of CNY197.5M. The original value did not change over the period; the book value change represented the depreciation of properties.
 
-Project Haining Wanpu was located in Haining. Both land parcels were in commercial usage and acquired directly from the previous owner. Phase I land was acquited in 2022 at a consideration of CNY161.0M with LUR expired in 2022. Phase II land was acquired in 2022 at a consideration of CNY79.7M with LUR expired in 2022.
+Project Haining Wanpu was investment property that Haining Wanpu Limited previously acquired. The land was located in Haining, the construction of Project Haining Wanpu was completed and was leased over the period. The land use rights and buildings were depreciated using straight-line method of 50 years and 20 years of useful life, with the residual value rate of 0% and 4%, respectively.
 
-The land lots of Project Haining Wanpu were amortised using straight-line method with 50 years of useful life and zero residual value. Buildings were depreciated using strailight-line method with 20 years of useful life and 4% residual value. As at this report date, Project Haining Wanpu was completed but no final accounts had been conducted. Though management said that most of the primary contracts had been verified and accounted, the original costs may still not be finalised. Potential under-estimated construction payables and CAPEX commitments may still exist. Management said there was no CAPEX plan at current stage.
+As at this report date, Project Haining Wanpu did not conduct final accounts. Though management said that most of the primary contracts had been verified and accounted, the original costs may still not be finalised. Potential under-estimated construction payables and CAPEX commitments may still exist; you should confirm with management if there are any future CAPEX plans and factor the capital commitments (if any) into your valuation model.
 
-### Other non-Current assets
-"Other NCA represented the levelling impact arising from revenue recognition in the rent-free period of $2.1M."
+Total properties of Project Haining Wanpu were mortgaged as loan collateral.
+
+### Other non-current assets
+No information available for Other NCA
 
 ## Liabilities
 
 ### Accounts payable
-balance as at 30 September 2022 mainly entailed accounts payable to珠海萬維物流發展有限公司 of CNY11.8M.
+balance as at 30 September 2022 mainly entailed consulting fees to Jones Lang LaSalle Beijing Consulting Co. of CNY13.0K and audit fees to Credit Zhonghe Accounting Firm (Special General Partnership) of CNY14.0K
 
 ### Taxes payables
-"Taxes payable consist of Property Tax of $0.2M and Land Use Tax of $0.6M, totaling $0.8M as at 30/09/2022."
+Balance as at 30 September 2022 represented property tax payable of CNY216.0k and land use tax payable of CNY623.0k.
 
 ### Other payables
-balance as at 30/09/2022 represented:
-$25.5M of Project payables, including reclassified project costs of $25.5k
-$95.4M of Related party payables
+Balance as at 30-Sep-2022 represented:
+
+CNY30.5K of Others subtotal, including Company #2 (CNY4.8K) and Estimated costs (CNY25.5K)
+CNY85.2K of Related party payables Subtotal, including Equity Investment Fund Partnership (Limited Partnership) (CNY83.0K) and Logistics Storage Co., Ltd. (CNY2.2K)
 
 ## Equity
 
 ### Capital
-“Share capital of circa $92.0M was paid up as at 30/09/2022.”
+Share capital of circa CNY92.0m was paid up as at 30 September 2022, comprising CNY91.1m from Equity Investment Fund Partnership (Limited Partnership) and CNY0.9m from Logistics Storage Co., Ltd.
+
+### Surplus reserve
+No information available for Reserve

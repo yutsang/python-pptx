@@ -62,8 +62,29 @@ class PowerPointGenerator:
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
         self.ROWS_PER_SECTION = 30  # Use the same value for all sections
-        slide = self.prs.slides[0]
-        shape = next(s for s in slide.shapes if s.name == "textMainBullets")
+        
+        # Find a slide with textMainBullets shape
+        shape = None
+        for slide in self.prs.slides:
+            try:
+                shape = next(s for s in slide.shapes if s.name == "textMainBullets")
+                break
+            except StopIteration:
+                continue
+        
+        if not shape:
+            # If no textMainBullets found, try to find any text shape
+            for slide in self.prs.slides:
+                for s in slide.shapes:
+                    if hasattr(s, 'text_frame'):
+                        shape = s
+                        break
+                if shape:
+                    break
+        
+        if not shape:
+            raise ValueError("No suitable text shape found in template")
+        
         self.CHARS_PER_ROW = 50
         self.BULLET_CHAR = '■ '
         self.DARK_BLUE = RGBColor(0, 50, 150)
@@ -76,8 +97,28 @@ class PowerPointGenerator:
         pass
 
     def _calculate_max_rows(self):
-        slide = self.prs.slides[0]
-        shape = next(s for s in slide.shapes if s.name == "textMainBullets")
+        # Find a slide with textMainBullets shape
+        shape = None
+        for slide in self.prs.slides:
+            try:
+                shape = next(s for s in slide.shapes if s.name == "textMainBullets")
+                break
+            except StopIteration:
+                continue
+        
+        if not shape:
+            # If no textMainBullets found, try to find any text shape
+            for slide in self.prs.slides:
+                for s in slide.shapes:
+                    if hasattr(s, 'text_frame'):
+                        shape = s
+                        break
+                if shape:
+                    break
+        
+        if not shape:
+            return 25  # Default fallback
+        
         return int(shape.height / self.LINE_HEIGHT) - 3
 
     def parse_markdown(self, md_content: str) -> List[FinancialItem]:
@@ -126,11 +167,15 @@ class PowerPointGenerator:
         distribution = []
         content_queue = items.copy()
         slide_idx = 0
+        
+        # Start from slide 1 (index 0) since slide 0 doesn't have textMainBullets
+        # For this template, we'll use slide 1 and onwards for content
+        slide_idx = 1
+        
         while content_queue:
-            if slide_idx == 0:
-                sections = ['c']
-            else:
-                sections = ['b', 'c']
+            # For this template, we only have 'c' section (textMainBullets) on each slide
+            sections = ['c']
+            
             for section in sections:
                 if not content_queue:
                     break
@@ -158,9 +203,9 @@ class PowerPointGenerator:
                             break
                 if section_items:
                     distribution.append((slide_idx, section, section_items))
+            
             slide_idx += 1
-            if slide_idx >= len(self.prs.slides):
-                break
+            # Don't limit by existing slides since we'll create new ones as needed
         return distribution
 
     def _calculate_chars_per_line(self, shape):
@@ -175,6 +220,31 @@ class PowerPointGenerator:
         chars_per_line = self._calculate_chars_per_line(shape)
         wrapped = textwrap.wrap(text, width=chars_per_line)
         return wrapped
+
+    def _add_wrapped_text_to_paragraph(self, paragraph, text, shape, is_bold=False):
+        """Add text to paragraph with proper line breaks based on shape width"""
+        if not text:
+            return
+        
+        # Calculate characters per line for this specific shape
+        chars_per_line = self._calculate_chars_per_line(shape)
+        
+        # Wrap the text
+        wrapped_lines = textwrap.wrap(text, width=chars_per_line)
+        
+        # Add each line as a separate run with line breaks
+        for i, line in enumerate(wrapped_lines):
+            if i > 0:
+                # Add line break for subsequent lines
+                paragraph.add_run().text = '\n'
+            
+            run = paragraph.add_run()
+            run.text = line
+            run.font.size = Pt(9)
+            run.font.bold = is_bold
+            run.font.name = 'Arial'
+            if is_bold:
+                run.font.color.rgb = self.DARK_BLUE
 
     def _calculate_item_lines(self, item: FinancialItem) -> int:
         shape = getattr(self, 'current_shape', None)
@@ -300,13 +370,41 @@ class PowerPointGenerator:
         return summary_text
 
     def _get_section_shape(self, slide, section: str):
+        # First, try to find the exact shape name
         if self.current_slide_index == 0:
             if section == 'c':
-                return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
+                # Try to find textMainBullets on first slide
+                try:
+                    return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
+                except StopIteration:
+                    pass
             return None  # No 'b' section on first slide
-        # For subsequent slides
-        target_name = "textMainBullets_L" if section == 'b' else "textMainBullets_R"
-        return next((s for s in slide.shapes if s.name == target_name), None)
+        else:
+            # For subsequent slides, try to find the specific shapes
+            target_name = "textMainBullets_L" if section == 'b' else "textMainBullets_R"
+            try:
+                return next((s for s in slide.shapes if s.name == target_name), None)
+            except StopIteration:
+                pass
+        
+        # If exact shape not found, try to find any textMainBullets shape
+        try:
+            return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
+        except StopIteration:
+            pass
+        
+        # If still not found, try to find Content Placeholder 2 (standard layout)
+        try:
+            return next((s for s in slide.shapes if s.name == "Content Placeholder 2"), None)
+        except StopIteration:
+            pass
+        
+        # If still not found, try to find any text shape
+        for shape in slide.shapes:
+            if hasattr(shape, 'text_frame'):
+                return shape
+        
+        return None
 
     def _populate_section(self, shape, items: List[FinancialItem]):
         tf = shape.text_frame
@@ -326,13 +424,8 @@ class PowerPointGenerator:
                 if paragraph_count > 0:
                     try: p.space_before = Pt(3)
                     except: pass
-                run = p.add_run()
                 cont_text = " (continued)" if item.layer1_continued else ""
-                run.text = f"{item.accounting_type}{cont_text}"
-                run.font.size = Pt(9)
-                run.font.bold = True
-                run.font.name = 'Arial'
-                run.font.color.rgb = self.DARK_BLUE
+                self._add_wrapped_text_to_paragraph(p, f"{item.accounting_type}{cont_text}", shape, is_bold=True)
                 self.prev_layer1 = item.accounting_type
                 paragraph_count += 1
             # Treat all items the same (no special handling for taxes payables)
@@ -347,22 +440,17 @@ class PowerPointGenerator:
                         if paragraph_count > 0:
                             try: p.space_before = Pt(3)
                             except: pass
+                        # Add bullet character
                         bullet_run = p.add_run()
                         bullet_run.text = self.BULLET_CHAR
                         bullet_run.font.color.rgb = self.DARK_GREY
                         bullet_run.font.name = 'Arial'
                         bullet_run.font.size = Pt(9)
-                        title_run = p.add_run()
+                        
+                        # Add title and description with proper wrapping
                         cont_text = " (continued)" if item.layer2_continued else ""
-                        title_run.text = f"{item.account_title}{cont_text}"
-                        title_run.font.bold = True
-                        title_run.font.name = 'Arial'
-                        title_run.font.size = Pt(9)
-                        desc_run = p.add_run()
-                        desc_run.text = f" - {part}"
-                        desc_run.font.bold = False
-                        desc_run.font.name = 'Arial'
-                        desc_run.font.size = Pt(9)
+                        full_text = f"{item.account_title}{cont_text} - {part}"
+                        self._add_wrapped_text_to_paragraph(p, full_text, shape, is_bold=False)
                         paragraph_count += 1
                     else:
                         # Continuation: visually subordinate (indented, no bullet)
@@ -375,11 +463,7 @@ class PowerPointGenerator:
                         except: pass
                         try: p.first_line_indent = Inches(-0.19)
                         except: pass
-                        cont_run = p.add_run()
-                        cont_run.text = part
-                        cont_run.font.bold = False
-                        cont_run.font.name = 'Arial'
-                        cont_run.font.size = Pt(9)
+                        self._add_wrapped_text_to_paragraph(p, part, shape, is_bold=False)
                         paragraph_count += 1
                     # Add an empty row between split parts (but not after the last)
                     if part_idx < len(desc_parts) - 1:
@@ -971,7 +1055,17 @@ def merge_presentations(bs_presentation_path, is_presentation_path, output_path)
         
         # Add all slides from IS presentation to BS presentation
         for slide in is_prs.slides:
-            bs_prs.slides.add_slide(slide)
+            # Create a new slide with the same layout
+            new_slide = bs_prs.slides.add_slide(slide.slide_layout)
+            
+            # Copy content from the original slide
+            for shape in slide.shapes:
+                if hasattr(shape, 'text_frame') and shape.text_frame:
+                    # Find corresponding shape in new slide
+                    for new_shape in new_slide.shapes:
+                        if new_shape.name == shape.name:
+                            new_shape.text_frame.text = shape.text_frame.text
+                            break
         
         # Save the merged presentation
         bs_prs.save(output_path)

@@ -1137,10 +1137,17 @@ def main():
                         
                         # Get the Excel file path for embedding data
                         excel_file_path = None
-                        if hasattr(uploaded_file, 'file_path'):
-                            excel_file_path = uploaded_file.file_path
-                        elif hasattr(uploaded_file, 'name'):
-                            excel_file_path = uploaded_file.name
+                        # Get uploaded_file from session state or use default
+                        current_uploaded_file = st.session_state.get('uploaded_file', None)
+                        if current_uploaded_file is not None:
+                            if hasattr(current_uploaded_file, 'file_path'):
+                                excel_file_path = current_uploaded_file.file_path
+                            elif hasattr(current_uploaded_file, 'name'):
+                                excel_file_path = current_uploaded_file.name
+                        else:
+                            # Fallback to default file
+                            if os.path.exists("databook.xlsx"):
+                                excel_file_path = "databook.xlsx"
                         
                         # Handle different statement types
                         if statement_type == "IS":
