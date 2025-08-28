@@ -107,20 +107,20 @@ class PowerPointGenerator:
         # Convert EMU to points (1 EMU = 1/914400 inches, 1 inch = 72 points)
         shape_height_pt = shape_height_emu * 72 / 914400
         
-        # Account for margins and padding - use more space (95% of shape height)
-        effective_height_pt = shape_height_pt * 0.95  # Use almost all available height
+        # Account for margins and padding - use even more space (98% of shape height)
+        effective_height_pt = shape_height_pt * 0.98  # Use almost all available height
         
         # Calculate line height based on font size and line spacing
         # Default font size is 9pt, line spacing is typically 1.2x font size
         font_size_pt = 9
-        line_spacing = 1.15  # Slightly tighter spacing to fit more content
+        line_spacing = 1.1  # Even tighter spacing to fit more content
         line_height_pt = font_size_pt * line_spacing
         
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
         
         # Minimal safety margin to use maximum space
-        max_rows = max(15, max_rows - 1)  # Only subtract 1 line for safety
+        max_rows = max(18, max_rows)  # No subtraction, use all available space
         
         return max_rows
 
@@ -715,12 +715,14 @@ class PowerPointGenerator:
                 if shape:
                     self._populate_section(shape, section_items)
             
-            # Populate summary sections on all slides
+            # Populate summary sections on all slides with different content
+            summary_chunks = self._distribute_summary_across_slides(summary_content, total_slides_needed)
             for slide_idx in range(total_slides_needed):
                 slide = self.prs.slides[slide_idx]
                 summary_shape = next((s for s in slide.shapes if s.name == "coSummaryShape"), None)
                 if summary_shape:
-                    self._populate_summary_section_safe(summary_shape, summary_content)
+                    chunk_content = summary_chunks[slide_idx] if slide_idx < len(summary_chunks) else ""
+                    self._populate_summary_section_safe(summary_shape, chunk_content)
             
             unused_slides = self._detect_unused_slides(distribution)
             if unused_slides:
@@ -847,28 +849,22 @@ class PowerPointGenerator:
             run = p.add_run()
             run.text = line
             
-            # Try to get original font properties from the shape
+            # Apply white text, size 10, original font
             try:
-                # Get original font properties if available
+                # Get original font name if available
                 if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
                     original_para = shape.text_frame.paragraphs[0]
                     if original_para.runs:
                         original_run = original_para.runs[0]
                         if original_run.font.name:
                             run.font.name = original_run.font.name
-                        if original_run.font.size:
-                            run.font.size = original_run.font.size
-                        if original_run.font.bold is not None:
-                            run.font.bold = original_run.font.bold
-                        if original_run.font.italic is not None:
-                            run.font.italic = original_run.font.italic
-                        if original_run.font.color.rgb:
-                            run.font.color.rgb = original_run.font.color.rgb
             except:
-                # Fallback to default formatting
-                run.font.size = Pt(9)
-                run.font.name = 'Arial'
-                run.font.bold = False
+                pass
+            
+            # Apply white text and size 10
+            run.font.size = Pt(10)
+            run.font.color.rgb = RGBColor(255, 255, 255)  # White text
+            run.font.bold = False
             
             # Apply paragraph formatting
             try:
@@ -885,14 +881,6 @@ class PowerPointGenerator:
             # Count total items and slides to determine summary length
             total_items = sum(len(items) for _, _, items in distribution)
             total_slides = max((slide_idx for slide_idx, _, _ in distribution), default=0) + 1
-            
-            # Determine summary length based on content volume
-            if total_slides <= 2:
-                summary_length = "brief"  # 2-3 sentences
-            elif total_slides <= 4:
-                summary_length = "concise"  # 4-5 sentences
-            else:
-                summary_length = "detailed"  # 6-8 sentences
             
             # Extract key information from markdown content
             lines = md_content.split('\n')
@@ -912,38 +900,92 @@ class PowerPointGenerator:
                     else:
                         key_points.append(clean_line[:100] + "...")
             
-            # Create a structured summary prompt
-            summary_prompt = f"""
-            Create a {summary_length} summary of the financial commentary for the coSummaryShape.
-            
-            Key points to include:
-            {chr(10).join(f"- {point}" for point in key_points[:10])}
-            
-            Requirements:
-            - Focus on the most important financial insights
-            - Use professional, concise language
-            - Include key figures and trends mentioned
-            - Keep it under {total_slides * 50} words
-            - Make it suitable for executive summary
-            
-            Summary:
-            """
-            
-            # For now, create a simple summary based on content
-            # In a real implementation, this would call an AI service
+            # Generate longer summary content (80-120 words)
             if key_points:
-                summary = f"Financial analysis covering {len(key_points)} key areas including "
-                summary += ", ".join(key_points[:3]) + ". "
-                summary += f"Analysis spans {total_slides} pages with detailed commentary on "
-                summary += "financial position, performance trends, and key risk factors."
+                # Create a comprehensive summary with multiple paragraphs
+                summary_parts = []
+                
+                # Introduction paragraph
+                intro = f"This comprehensive financial analysis examines {len(key_points)} key areas of the organization's financial position as of the reporting date. "
+                intro += f"The analysis spans {total_slides} detailed pages providing in-depth commentary on critical financial metrics, performance indicators, and risk factors. "
+                summary_parts.append(intro)
+                
+                # Key findings paragraph
+                if len(key_points) >= 3:
+                    findings = f"Key findings include significant developments in {key_points[0]}, {key_points[1]}, and {key_points[2]}. "
+                    findings += "The analysis reveals important trends in asset management, liability structure, and overall financial health. "
+                    summary_parts.append(findings)
+                
+                # Risk and outlook paragraph
+                outlook = "Risk assessment identifies potential areas of concern while highlighting opportunities for improvement. "
+                outlook += "The overall financial position demonstrates both strengths and areas requiring management attention. "
+                summary_parts.append(outlook)
+                
+                # Combine all parts
+                full_summary = " ".join(summary_parts)
+                
+                # Ensure it's between 80-120 words
+                word_count = len(full_summary.split())
+                if word_count < 80:
+                    # Add more detail
+                    additional = "Management has implemented various strategies to address identified challenges and capitalize on opportunities. "
+                    additional += "The analysis provides a foundation for strategic decision-making and future planning initiatives."
+                    full_summary += " " + additional
+                elif word_count > 120:
+                    # Trim to fit
+                    words = full_summary.split()
+                    full_summary = " ".join(words[:120])
+                
+                return full_summary
             else:
-                summary = "Comprehensive financial analysis with detailed commentary on key financial metrics and performance indicators."
-            
-            return summary
+                # Fallback summary
+                summary = "This comprehensive financial analysis provides detailed examination of the organization's financial position, performance metrics, and key risk factors. "
+                summary += "The analysis spans multiple pages with in-depth commentary on critical financial areas including asset management, liability structure, and overall financial health. "
+                summary += "Key findings reveal important trends and provide insights for strategic decision-making and future planning initiatives."
+                return summary
             
         except Exception as e:
             logging.warning(f"Failed to generate AI summary: {str(e)}")
-            return "Financial analysis summary - detailed commentary provided in main sections."
+            return "Comprehensive financial analysis with detailed commentary on key financial metrics and performance indicators."
+
+    def _distribute_summary_across_slides(self, summary_content: str, total_slides: int) -> List[str]:
+        """Distribute summary content across multiple slides with different content on each"""
+        try:
+            # Split the summary into sentences
+            sentences = summary_content.split('. ')
+            
+            # Calculate sentences per slide
+            sentences_per_slide = max(1, len(sentences) // total_slides)
+            
+            # Distribute content across slides
+            summary_chunks = []
+            for slide_idx in range(total_slides):
+                start_idx = slide_idx * sentences_per_slide
+                end_idx = start_idx + sentences_per_slide
+                
+                if slide_idx == total_slides - 1:
+                    # Last slide gets remaining content
+                    slide_sentences = sentences[start_idx:]
+                else:
+                    slide_sentences = sentences[start_idx:end_idx]
+                
+                # Create slide-specific content
+                if slide_sentences:
+                    slide_content = '. '.join(slide_sentences)
+                    if not slide_content.endswith('.'):
+                        slide_content += '.'
+                else:
+                    # Fallback content for empty slides
+                    slide_content = "Financial analysis summary - detailed commentary provided in main sections."
+                
+                summary_chunks.append(slide_content)
+            
+            return summary_chunks
+            
+        except Exception as e:
+            logging.warning(f"Failed to distribute summary: {str(e)}")
+            # Return single chunk for all slides
+            return [summary_content] * total_slides
 
     def _detect_unused_slides(self, distribution):
         """Adjusted slide retention logic with content-aware detection"""
