@@ -880,87 +880,45 @@ class PowerPointGenerator:
                 run.font.size = Pt(9)
 
     def _populate_summary_section_safe(self, shape, summary_content: str):
-        """Summary section with dynamic calculation and original font style"""
+        """Summary section with natural text wrapping and filling"""
         tf = shape.text_frame
         tf.clear()
-        tf.word_wrap = True
-        
-        # Use the same calculation logic as main content but preserve original font style
-        self.current_shape = shape
-        
-        # Calculate max lines for summary shape (separate from main text)
-        max_lines = self._calculate_max_rows_for_summary(shape)
-        chars_per_line = self._calculate_chars_per_line_for_summary(shape)
-        
-        # Wrap the summary content to fit the shape with optimal utilization
-        wrapper = textwrap.TextWrapper(
-            width=chars_per_line,
-            break_long_words=True,
-            break_on_hyphens=True,
-            replace_whitespace=False,  # Keep original whitespace
-            expand_tabs=True,
-            drop_whitespace=False,  # Keep whitespace for formatting
-            max_lines=None,  # No limit on lines
-            placeholder='...'  # Use ... for truncated content
-        )
-        
-        # Split summary into lines
-        lines = wrapper.wrap(summary_content)
-        
-        # Limit to max lines
-        if len(lines) > max_lines:
-            lines = lines[:max_lines]
-            # Add ellipsis if content was truncated
-            if lines:
-                lines[-1] = lines[-1].rstrip() + "..."
-        
-        # Add content to shape
-        for i, line in enumerate(lines):
-            p = tf.add_paragraph()
-            
-            # Preserve original font style and size from the shape
-            run = p.add_run()
-            run.text = line
-            
-            # Apply dark blue text, size 10, original font
-            try:
-                # Get original font name if available
-                if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
-                    original_para = shape.text_frame.paragraphs[0]
-                    if original_para.runs:
-                        original_run = original_para.runs[0]
-                        if original_run.font.name:
-                            run.font.name = original_run.font.name
-            except:
-                pass
-            
-            # Apply dark blue text and size 10
-            run.font.size = Pt(10)
-            run.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue text for white background
-            run.font.bold = False
-            
-            # Apply paragraph formatting with tight spacing
-            try:
-                p.alignment = PP_ALIGN.LEFT
-                p.space_before = Pt(0)  # No space before paragraphs
-                p.space_after = Pt(0)   # No space after paragraphs
-                p.line_spacing = 0.95   # Tight line spacing
-            except AttributeError:
-                self._handle_legacy_alignment(p)
-        
-        self.current_shape = None
+
+        # Create a single paragraph and let PowerPoint handle natural wrapping
+        p = tf.add_paragraph()
+        run = p.add_run()
+
+        # Set the full summary content - let PowerPoint handle wrapping naturally
+        run.text = summary_content
+
+        # Apply optimal font settings
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue text
+        run.font.bold = False
+        run.font.name = 'Arial'
+
+        # Configure text frame for optimal filling
         tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
         tf.word_wrap = True
-        tf.auto_size = MSO_AUTO_SIZE.NONE  # Don't auto-resize, use full space
+        tf.auto_size = MSO_AUTO_SIZE.NONE  # Use full shape space
 
-        # Ensure minimal margins for maximum width utilization
+        # Minimal margins for maximum space utilization
         try:
-            tf.margin_left = Pt(2)
-            tf.margin_right = Pt(2)
-            tf.margin_top = Pt(2)
-            tf.margin_bottom = Pt(2)
+            tf.margin_left = Pt(1)
+            tf.margin_right = Pt(1)
+            tf.margin_top = Pt(1)
+            tf.margin_bottom = Pt(1)
         except:
             pass  # Some versions don't support margin settings
+
+        # Apply paragraph formatting for natural text flow
+        try:
+            p.alignment = PP_ALIGN.LEFT
+            p.line_spacing = 1.0  # Natural line spacing
+            p.space_before = Pt(0)
+            p.space_after = Pt(0)
+        except AttributeError:
+            self._handle_legacy_alignment(p)
 
     def _generate_ai_summary_content(self, md_content: str, distribution) -> str:
         """Generate AI summary content based on commentary length and distribution"""
