@@ -107,20 +107,20 @@ class PowerPointGenerator:
         # Convert EMU to points (1 EMU = 1/914400 inches, 1 inch = 72 points)
         shape_height_pt = shape_height_emu * 72 / 914400
         
-        # Account for margins and padding - moderate space for shorter summary
-        effective_height_pt = shape_height_pt * 0.85  # Moderate height utilization for shorter summary
-        
+        # Account for margins and padding - use maximum space (99% of shape height)
+        effective_height_pt = shape_height_pt * 0.99  # Use almost all available height
+
         # Calculate line height based on font size and line spacing
-        # Use dynamic font size detection or default to 10pt for summary shapes
-        font_size_pt = 10  # Use 10pt for summary shapes to match actual usage
-        line_spacing = 1.15  # Comfortable spacing for shorter, more readable summary
+        # Default font size is 9pt, line spacing is typically 1.2x font size
+        font_size_pt = 9
+        line_spacing = 1.05  # Very tight spacing to fit maximum content
         line_height_pt = font_size_pt * line_spacing
         
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
         
-        # Use moderate space for shorter, more readable summary
-        max_rows = max(20, max_rows)  # Minimum 20 rows for compact summary
+        # Use all available space
+        max_rows = max(20, max_rows)  # Minimum 20 rows, no subtraction
         
         return max_rows
 
@@ -360,6 +360,43 @@ class PowerPointGenerator:
             avg_char_px = 7  # Default (efficient estimate for 10pt font)
         
         chars_per_line = max(65, int(effective_width // avg_char_px))  # Minimum 65 chars for full width utilization
+        return chars_per_line
+
+    def _calculate_max_rows_for_summary(self, shape):
+        """Calculate maximum rows for summary shape with optimized settings"""
+        if not shape or not hasattr(shape, 'height'):
+            return 25  # Default fallback
+
+        shape_height_emu = shape.height
+        shape_height_pt = shape_height_emu * 72 / 914400
+
+        # Use moderate space for shorter, more readable summary
+        effective_height_pt = shape_height_pt * 0.85
+
+        # Use 10pt font and comfortable spacing for summary
+        font_size_pt = 10
+        line_spacing = 1.15
+        line_height_pt = font_size_pt * line_spacing
+
+        max_rows = int(effective_height_pt / line_height_pt)
+        max_rows = max(20, max_rows)  # Minimum 20 rows for compact summary
+
+        return max_rows
+
+    def _calculate_chars_per_line_for_summary(self, shape):
+        """Calculate characters per line for summary with maximum width utilization"""
+        if not shape or not hasattr(shape, 'width'):
+            return self.CHARS_PER_ROW
+
+        px_width = int(shape.width * 96 / 914400)
+
+        # Use maximum width utilization for summary
+        effective_width = px_width * 0.98
+
+        # Optimized character width estimates for 10pt font
+        avg_char_px = 7  # Efficient estimate for regular text
+
+        chars_per_line = max(65, int(effective_width // avg_char_px))
         return chars_per_line
 
     def _wrap_text_to_shape(self, text, shape):
@@ -851,9 +888,9 @@ class PowerPointGenerator:
         # Use the same calculation logic as main content but preserve original font style
         self.current_shape = shape
         
-        # Calculate max lines for this shape
-        max_lines = self._calculate_max_rows_for_shape(shape)
-        chars_per_line = self._calculate_chars_per_line(shape)
+        # Calculate max lines for summary shape (separate from main text)
+        max_lines = self._calculate_max_rows_for_summary(shape)
+        chars_per_line = self._calculate_chars_per_line_for_summary(shape)
         
         # Wrap the summary content to fit the shape with optimal utilization
         wrapper = textwrap.TextWrapper(
@@ -907,7 +944,7 @@ class PowerPointGenerator:
                 p.alignment = PP_ALIGN.LEFT
                 p.space_before = Pt(0)  # No space before paragraphs
                 p.space_after = Pt(0)   # No space after paragraphs
-                p.line_spacing = 1.15   # Comfortable line spacing
+                p.line_spacing = 0.95   # Tight line spacing
             except AttributeError:
                 self._handle_legacy_alignment(p)
         
