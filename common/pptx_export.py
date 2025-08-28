@@ -107,20 +107,20 @@ class PowerPointGenerator:
         # Convert EMU to points (1 EMU = 1/914400 inches, 1 inch = 72 points)
         shape_height_pt = shape_height_emu * 72 / 914400
         
-        # Account for margins and padding - use maximum space (99.8% of shape height)
-        effective_height_pt = shape_height_pt * 0.998  # Maximize height utilization
+        # Account for margins and padding - moderate space for shorter summary
+        effective_height_pt = shape_height_pt * 0.85  # Moderate height utilization for shorter summary
         
         # Calculate line height based on font size and line spacing
         # Use dynamic font size detection or default to 10pt for summary shapes
         font_size_pt = 10  # Use 10pt for summary shapes to match actual usage
-        line_spacing = 0.95  # Ultra-tight spacing to maximize content
+        line_spacing = 1.15  # Comfortable spacing for shorter, more readable summary
         line_height_pt = font_size_pt * line_spacing
         
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
         
-        # Use all available space - allow more rows for summary shapes
-        max_rows = max(40, max_rows)  # Minimum 40 rows for maximum height utilization
+        # Use moderate space for shorter, more readable summary
+        max_rows = max(20, max_rows)  # Minimum 20 rows for compact summary
         
         return max_rows
 
@@ -337,8 +337,8 @@ class PowerPointGenerator:
         # Convert EMU to pixels: 1 EMU = 1/914400 inches, 1 inch = 96 px
         px_width = int(shape.width * 96 / 914400)
         
-        # Use optimal width utilization for better space usage
-        effective_width = px_width * 0.96  # Optimal width utilization
+        # Use maximum width utilization for full space usage
+        effective_width = px_width * 0.98  # Maximum width utilization
         
         # Different character widths for different font sizes and styles
         if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
@@ -353,13 +353,13 @@ class PowerPointGenerator:
                     break
             
             if is_bold:
-                avg_char_px = 8.5  # Bold text (optimal estimate for 10pt font)
+                avg_char_px = 8  # Bold text (efficient estimate for 10pt font)
             else:
-                avg_char_px = 7.5  # Regular text (optimal estimate for 10pt font)
+                avg_char_px = 7  # Regular text (efficient estimate for 10pt font)
         else:
-            avg_char_px = 7.5  # Default (optimal estimate for 10pt font)
+            avg_char_px = 7  # Default (efficient estimate for 10pt font)
         
-        chars_per_line = max(55, int(effective_width // avg_char_px))  # Minimum 55 chars for maximum utilization
+        chars_per_line = max(65, int(effective_width // avg_char_px))  # Minimum 65 chars for full width utilization
         return chars_per_line
 
     def _wrap_text_to_shape(self, text, shape):
@@ -907,7 +907,7 @@ class PowerPointGenerator:
                 p.alignment = PP_ALIGN.LEFT
                 p.space_before = Pt(0)  # No space before paragraphs
                 p.space_after = Pt(0)   # No space after paragraphs
-                p.line_spacing = 0.95   # Tight line spacing
+                p.line_spacing = 1.15   # Comfortable line spacing
             except AttributeError:
                 self._handle_legacy_alignment(p)
         
