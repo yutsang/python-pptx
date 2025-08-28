@@ -945,59 +945,43 @@ class PowerPointGenerator:
                     else:
                         key_points.append(clean_line[:100] + "...")
             
-            # Generate comprehensive summary content (120-180 words)
-            if key_points:
-                # Create a comprehensive summary with multiple paragraphs
-                summary_parts = []
-                
-                # Introduction paragraph
-                intro = f"This comprehensive financial analysis examines {len(key_points)} key areas of the organization's financial position as of the reporting date. "
-                intro += f"The analysis spans {total_slides} detailed pages providing in-depth commentary on critical financial metrics, performance indicators, and risk factors. "
-                intro += f"Total assets and liabilities are thoroughly analyzed with specific focus on cash management, receivables, investment properties, and outstanding obligations. "
-                summary_parts.append(intro)
-                
-                # Key findings paragraph
-                if len(key_points) >= 3:
-                    findings = f"Key findings include significant developments in {key_points[0]}, {key_points[1]}, and {key_points[2]}. "
-                    findings += "The analysis reveals important trends in asset management, liability structure, and overall financial health. "
-                    findings += "Investment properties show substantial value with proper depreciation accounting, while current assets demonstrate adequate liquidity for operational needs. "
-                    summary_parts.append(findings)
-                
-                # Risk and outlook paragraph
-                outlook = "Risk assessment identifies potential areas of concern while highlighting opportunities for improvement. "
-                outlook += "The overall financial position demonstrates both strengths and areas requiring management attention. "
-                outlook += "Management has implemented various strategies to address identified challenges and capitalize on opportunities. "
-                summary_parts.append(outlook)
-                
-                # Additional insights paragraph
-                insights = "The analysis provides a foundation for strategic decision-making and future planning initiatives. "
-                insights += "Financial ratios and performance metrics indicate the organization's ability to meet short-term obligations and long-term growth objectives. "
-                insights += "Recommendations focus on optimizing asset utilization, improving cash flow management, and strengthening financial controls."
-                summary_parts.append(insights)
-                
-                # Combine all parts
-                full_summary = " ".join(summary_parts)
-                
-                # Ensure it's between 120-180 words
-                word_count = len(full_summary.split())
-                if word_count < 120:
-                    # Add more detail
-                    additional = "The comprehensive review covers all material financial transactions and provides assurance on the accuracy and completeness of financial reporting. "
-                    additional += "This analysis serves as a critical tool for stakeholders to understand the organization's financial health and make informed decisions."
-                    full_summary += " " + additional
-                elif word_count > 180:
-                    # Trim to fit
-                    words = full_summary.split()
-                    full_summary = " ".join(words[:180])
-                
-                return full_summary
+                            # Generate concise summary content (40-60 words)
+                if key_points:
+                    # Create a brief, focused summary
+                    summary_parts = []
+
+                    # Single, concise paragraph
+                    summary = f"This financial analysis examines {len(key_points)} key areas across {total_slides} pages, "
+                    summary += f"focusing on {key_points[0]}"
+                    if len(key_points) > 1:
+                        summary += f", {key_points[1]}"
+                    summary += ". The analysis highlights critical financial metrics and performance indicators. "
+
+                    # Add one key insight
+                    if len(key_points) >= 3:
+                        summary += f"Key findings include developments in {key_points[2]} with emphasis on asset management and financial health."
+
+                    summary_parts.append(summary)
+
+                    # Combine all parts
+                    full_summary = " ".join(summary_parts)
+
+                    # Ensure it's between 40-60 words
+                    word_count = len(full_summary.split())
+                    if word_count < 40:
+                        # Add minimal detail
+                        additional = "The review provides assurance on financial reporting accuracy and completeness."
+                        full_summary += " " + additional
+                    elif word_count > 60:
+                        # Trim to fit
+                        words = full_summary.split()
+                        full_summary = " ".join(words[:60])
+
+                    return full_summary
             else:
-                # Fallback summary
-                summary = "This comprehensive financial analysis provides detailed examination of the organization's financial position, performance metrics, and key risk factors. "
-                summary += "The analysis spans multiple pages with in-depth commentary on critical financial areas including asset management, liability structure, and overall financial health. "
-                summary += "Key findings reveal important trends and provide insights for strategic decision-making and future planning initiatives. "
-                summary += "The comprehensive review covers all material financial transactions and provides assurance on the accuracy and completeness of financial reporting. "
-                summary += "This analysis serves as a critical tool for stakeholders to understand the organization's financial health and make informed decisions."
+                # Fallback summary (concise)
+                summary = "This financial analysis examines the organization's financial position and performance metrics across multiple pages. "
+                summary += "Key findings reveal important trends in asset management and financial health, providing insights for strategic decision-making."
                 return summary
             
         except Exception as e:

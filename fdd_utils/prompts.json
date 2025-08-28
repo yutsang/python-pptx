@@ -5,7 +5,7 @@
     "AI Proofreader": "You are an AI proofreader for financial due diligence narratives. Review Agent 1 content for: pattern compliance, figure formatting (K/M 1dp; handle '000), entity/details correctness per tables (not reporting entity), grammar/pro tone (remove outer quotes), language normalization (translate Chinese to English; use VAT, CIT, WHT, Surtax). Rules: do not invent data; keep concise; if list too long, keep top 2 items. Return JSON with: is_compliant (bool), issues (array), corrected_content (string), figure_checks (array), entity_checks (array), grammar_notes (array), pattern_used (string). corrected_content must be the final cleaned text only."
   },
   "user_prompts": {
-    "Cash": {
+        "Cash": {
       "title": "Cash Analysis for [ENTITY_NAME]",
       "description": "Generate content for Cash using worksheet data and patterns for [ENTITY_NAME]",
       "analysis_points": [
@@ -26,7 +26,79 @@
         "Financial statements",
         "Bank reconciliations",
         "Cash flow statements",
-                          "Management representations"
+        "Management representations"
+      ]
+     },
+     "Other CA": {
+       "title": "Other Current Assets Analysis for [ENTITY_NAME]",
+       "description": "Analyze the other current assets position for [ENTITY_NAME]",
+       "analysis_points": [
+         "Asset Composition: Review the composition and nature of other current assets for [ENTITY_NAME]",
+         "Asset Recognition: Assess the recognition and valuation of other current assets for [ENTITY_NAME]",
+         "Asset Trends: Analyze historical trends in other current assets for [ENTITY_NAME]",
+         "Asset Quality: Evaluate the quality and recoverability of other current assets for [ENTITY_NAME]",
+         "Business Impact: Consider the impact on liquidity and working capital for [ENTITY_NAME]"
+       ],
+       "key_questions": [
+         "What are the main components of other current assets for [ENTITY_NAME]?",
+         "How have other current assets changed over time for [ENTITY_NAME]?",
+         "Are the other current assets properly valued and recoverable for [ENTITY_NAME]?",
+         "What is the impact on liquidity and working capital for [ENTITY_NAME]?",
+         "What are the future expectations for other current assets for [ENTITY_NAME]?"
+       ],
+       "data_sources": [
+         "Balance sheet analysis",
+         "Asset schedules",
+         "Management representations",
+         "Historical asset analysis"
+       ]
+     },
+     "Other NCA": {
+       "title": "Other Non-Current Assets Analysis for [ENTITY_NAME]",
+       "description": "Analyze the other non-current assets position for [ENTITY_NAME]",
+       "analysis_points": [
+         "Asset Composition: Review the composition and nature of other non-current assets for [ENTITY_NAME]",
+         "Asset Recognition: Assess the recognition and valuation of other non-current assets for [ENTITY_NAME]",
+         "Asset Trends: Analyze historical trends in other non-current assets for [ENTITY_NAME]",
+         "Asset Quality: Evaluate the quality and recoverability of other non-current assets for [ENTITY_NAME]",
+         "Business Impact: Consider the impact on long-term financial position for [ENTITY_NAME]"
+       ],
+       "key_questions": [
+         "What are the main components of other non-current assets for [ENTITY_NAME]?",
+         "How have other non-current assets changed over time for [ENTITY_NAME]?",
+         "Are the other non-current assets properly valued and recoverable for [ENTITY_NAME]?",
+         "What is the impact on long-term financial position for [ENTITY_NAME]?",
+         "What are the future expectations for other non-current assets for [ENTITY_NAME]?"
+       ],
+       "data_sources": [
+         "Balance sheet analysis",
+         "Asset schedules",
+         "Management representations",
+         "Historical asset analysis"
+       ]
+     },
+     "Reserve": {
+       "title": "Surplus Reserve Analysis for [ENTITY_NAME]",
+       "description": "Analyze the surplus reserve position for [ENTITY_NAME]",
+       "analysis_points": [
+         "Reserve Composition: Review the composition and sources of surplus reserve for [ENTITY_NAME]",
+         "Reserve Recognition: Assess the recognition and accumulation of surplus reserve for [ENTITY_NAME]",
+         "Reserve Trends: Analyze historical trends in surplus reserve for [ENTITY_NAME]",
+         "Reserve Utilization: Evaluate the utilization and distribution of surplus reserve for [ENTITY_NAME]",
+         "Business Impact: Consider the impact on equity and financial flexibility for [ENTITY_NAME]"
+       ],
+       "key_questions": [
+         "What are the main sources of surplus reserve for [ENTITY_NAME]?",
+         "How has surplus reserve changed over time for [ENTITY_NAME]?",
+         "How is surplus reserve being utilized or distributed for [ENTITY_NAME]?",
+         "What is the impact on equity and financial flexibility for [ENTITY_NAME]?",
+         "What are the future expectations for surplus reserve for [ENTITY_NAME]?"
+       ],
+       "data_sources": [
+         "Equity analysis",
+         "Reserve schedules",
+         "Management representations",
+         "Historical equity analysis"
        ]
      },
      "Other Income": {
