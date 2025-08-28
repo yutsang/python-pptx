@@ -107,20 +107,20 @@ class PowerPointGenerator:
         # Convert EMU to points (1 EMU = 1/914400 inches, 1 inch = 72 points)
         shape_height_pt = shape_height_emu * 72 / 914400
         
-        # Account for margins and padding (typically 10-15% of shape height)
-        effective_height_pt = shape_height_pt * 0.90  # Less conservative margin to use more space
+        # Account for margins and padding - use more space (95% of shape height)
+        effective_height_pt = shape_height_pt * 0.95  # Use almost all available height
         
         # Calculate line height based on font size and line spacing
         # Default font size is 9pt, line spacing is typically 1.2x font size
         font_size_pt = 9
-        line_spacing = 1.2  # Standard line spacing
+        line_spacing = 1.15  # Slightly tighter spacing to fit more content
         line_height_pt = font_size_pt * line_spacing
         
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
         
-        # Subtract fewer rows for safety margin to use more space
-        max_rows = max(12, max_rows - 2)  # Less conservative safety margin
+        # Minimal safety margin to use maximum space
+        max_rows = max(15, max_rows - 1)  # Only subtract 1 line for safety
         
         return max_rows
 
@@ -313,12 +313,15 @@ class PowerPointGenerator:
         return distribution
 
     def _calculate_chars_per_line(self, shape):
+        """Calculate characters per line based on actual shape width"""
+        if not shape or not hasattr(shape, 'width'):
+            return self.CHARS_PER_ROW  # Default fallback
+        
         # Convert EMU to pixels: 1 EMU = 1/914400 inches, 1 inch = 96 px
         px_width = int(shape.width * 96 / 914400)
         
-        # More conservative character width calculation for better visual fit
-        # Account for margins, padding, and visual rendering differences
-        effective_width = px_width * 0.85  # Reduce by 15% for margins/padding
+        # Use more of the available width (90% instead of 85%)
+        effective_width = px_width * 0.90  # Use more width for content
         
         # Different character widths for different font sizes and styles
         if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
@@ -339,7 +342,7 @@ class PowerPointGenerator:
         else:
             avg_char_px = 7  # Default
         
-        chars_per_line = max(15, int(effective_width // avg_char_px))
+        chars_per_line = max(20, int(effective_width // avg_char_px))  # Minimum 20 chars
         return chars_per_line
 
     def _wrap_text_to_shape(self, text, shape):
@@ -349,17 +352,25 @@ class PowerPointGenerator:
         return wrapped
 
     def _calculate_item_lines(self, item: FinancialItem) -> int:
+        """Calculate lines needed for an item using shape-based calculations"""
+        # Use the current shape for calculations, or fallback to default
         shape = getattr(self, 'current_shape', None)
         chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
+        
         lines = 0
+        
+        # Calculate header lines
         header = f"{item.accounting_type} (continued)" if item.layer1_continued else item.accounting_type
         header_lines = len(textwrap.wrap(header, width=chars_per_line))
         lines += header_lines
+        
+        # Calculate description lines
         desc_lines = 0
         for desc in item.descriptions:
             for para in desc.split('\n'):
                 para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
                 desc_lines += para_lines
+        
         lines += desc_lines
         return lines
 
