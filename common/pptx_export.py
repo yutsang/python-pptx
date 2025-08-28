@@ -696,22 +696,16 @@ class PowerPointGenerator:
             items = self.parse_markdown(md_content)
             distribution = self._plan_content_distribution(items)
             self._validate_content_placement(distribution)
-            summary_text = self.parse_summary_markdown(summary_md)
+            
+            # Generate AI summary content based on commentary length
+            summary_content = self._generate_ai_summary_content(md_content, distribution)
+            
             max_slide_used = max((slide_idx for slide_idx, _, _ in distribution), default=0)
             total_slides_needed = max_slide_used + 1
-            wrapper = textwrap.TextWrapper(
-                width=self.CHARS_PER_ROW, 
-                break_long_words=True,
-                replace_whitespace=False
-            )
-            summary_chunks = wrapper.wrap(summary_text)
-            chunks_per_slide = len(summary_chunks) // total_slides_needed + 1
-            slide_summary_chunks = [
-                summary_chunks[i:i+chunks_per_slide] 
-                for i in range(0, len(summary_chunks), chunks_per_slide)
-            ]
+            
             while len(self.prs.slides) < total_slides_needed:
                 self.prs.slides.add_slide(self.prs.slide_layouts[1])
+            
             for slide_idx, section, section_items in distribution:
                 if slide_idx >= len(self.prs.slides):
                     raise ValueError("Insufficient slides in template")
@@ -720,14 +714,14 @@ class PowerPointGenerator:
                 shape = self._get_section_shape(slide, section)
                 if shape:
                     self._populate_section(shape, section_items)
+            
+            # Populate summary sections on all slides
             for slide_idx in range(total_slides_needed):
                 slide = self.prs.slides[slide_idx]
                 summary_shape = next((s for s in slide.shapes if s.name == "coSummaryShape"), None)
                 if summary_shape:
-                    self._populate_summary_section_safe(
-                        summary_shape, 
-                        slide_summary_chunks[slide_idx] if slide_idx < len(slide_summary_chunks) else []
-                    )
+                    self._populate_summary_section_safe(summary_shape, summary_content)
+            
             unused_slides = self._detect_unused_slides(distribution)
             if unused_slides:
                 logging.info(f"Removing unused slides: {[idx+1 for idx in unused_slides]}")
@@ -815,30 +809,141 @@ class PowerPointGenerator:
                 run.font.name = 'Arial'
                 run.font.size = Pt(9)
 
-    def _populate_summary_section_safe(self, shape, chunks: List[str]):
-        """Summary section with updated formatting"""
+    def _populate_summary_section_safe(self, shape, summary_content: str):
+        """Summary section with dynamic calculation and original font style"""
         tf = shape.text_frame
         tf.clear()
         tf.word_wrap = True
-        tf.margin_left = Inches(0.07)
-        tf.margin_right = Inches(0.07)
-        p = tf.add_paragraph()
-        full_text = " ".join(chunks)
-        run = p.add_run()
-        run.text = full_text
-        run.font.size = Pt(9)  # All text pt 9
-        run.font.bold = True
-        run.font.name = 'Arial'
-        run.font.color.rgb = RGBColor(255, 255, 255)
-        # Set LEFT alignment
-        try:
-            p.alignment = PP_ALIGN.LEFT
-        except AttributeError:
+        
+        # Use the same calculation logic as main content but preserve original font style
+        self.current_shape = shape
+        
+        # Calculate max lines for this shape
+        max_lines = self._calculate_max_rows_for_shape(shape)
+        chars_per_line = self._calculate_chars_per_line(shape)
+        
+        # Wrap the summary content to fit the shape
+        wrapper = textwrap.TextWrapper(
+            width=chars_per_line,
+            break_long_words=True,
+            replace_whitespace=False
+        )
+        
+        # Split summary into lines
+        lines = wrapper.wrap(summary_content)
+        
+        # Limit to max lines
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            # Add ellipsis if content was truncated
+            if lines:
+                lines[-1] = lines[-1].rstrip() + "..."
+        
+        # Add content to shape
+        for i, line in enumerate(lines):
+            p = tf.add_paragraph()
+            
+            # Preserve original font style and size from the shape
+            run = p.add_run()
+            run.text = line
+            
+            # Try to get original font properties from the shape
+            try:
+                # Get original font properties if available
+                if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
+                    original_para = shape.text_frame.paragraphs[0]
+                    if original_para.runs:
+                        original_run = original_para.runs[0]
+                        if original_run.font.name:
+                            run.font.name = original_run.font.name
+                        if original_run.font.size:
+                            run.font.size = original_run.font.size
+                        if original_run.font.bold is not None:
+                            run.font.bold = original_run.font.bold
+                        if original_run.font.italic is not None:
+                            run.font.italic = original_run.font.italic
+                        if original_run.font.color.rgb:
+                            run.font.color.rgb = original_run.font.color.rgb
+            except:
+                # Fallback to default formatting
+                run.font.size = Pt(9)
+                run.font.name = 'Arial'
+                run.font.bold = False
+            
+            # Apply paragraph formatting
             try:
                 p.alignment = PP_ALIGN.LEFT
             except AttributeError:
                 self._handle_legacy_alignment(p)
+        
+        self.current_shape = None
         tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
+
+    def _generate_ai_summary_content(self, md_content: str, distribution) -> str:
+        """Generate AI summary content based on commentary length and distribution"""
+        try:
+            # Count total items and slides to determine summary length
+            total_items = sum(len(items) for _, _, items in distribution)
+            total_slides = max((slide_idx for slide_idx, _, _ in distribution), default=0) + 1
+            
+            # Determine summary length based on content volume
+            if total_slides <= 2:
+                summary_length = "brief"  # 2-3 sentences
+            elif total_slides <= 4:
+                summary_length = "concise"  # 4-5 sentences
+            else:
+                summary_length = "detailed"  # 6-8 sentences
+            
+            # Extract key information from markdown content
+            lines = md_content.split('\n')
+            key_points = []
+            
+            for line in lines:
+                line = line.strip()
+                if line.startswith('### ') and not line.startswith('### ' + self.BULLET_CHAR):
+                    # This is a section header
+                    key_points.append(line.replace('### ', ''))
+                elif line.startswith(self.BULLET_CHAR):
+                    # This is a bullet point - extract key info
+                    clean_line = line.replace(self.BULLET_CHAR, '').strip()
+                    if ' - ' in clean_line:
+                        title, desc = clean_line.split(' - ', 1)
+                        key_points.append(f"{title}: {desc[:100]}...")
+                    else:
+                        key_points.append(clean_line[:100] + "...")
+            
+            # Create a structured summary prompt
+            summary_prompt = f"""
+            Create a {summary_length} summary of the financial commentary for the coSummaryShape.
+            
+            Key points to include:
+            {chr(10).join(f"- {point}" for point in key_points[:10])}
+            
+            Requirements:
+            - Focus on the most important financial insights
+            - Use professional, concise language
+            - Include key figures and trends mentioned
+            - Keep it under {total_slides * 50} words
+            - Make it suitable for executive summary
+            
+            Summary:
+            """
+            
+            # For now, create a simple summary based on content
+            # In a real implementation, this would call an AI service
+            if key_points:
+                summary = f"Financial analysis covering {len(key_points)} key areas including "
+                summary += ", ".join(key_points[:3]) + ". "
+                summary += f"Analysis spans {total_slides} pages with detailed commentary on "
+                summary += "financial position, performance trends, and key risk factors."
+            else:
+                summary = "Comprehensive financial analysis with detailed commentary on key financial metrics and performance indicators."
+            
+            return summary
+            
+        except Exception as e:
+            logging.warning(f"Failed to generate AI summary: {str(e)}")
+            return "Financial analysis summary - detailed commentary provided in main sections."
 
     def _detect_unused_slides(self, distribution):
         """Adjusted slide retention logic with content-aware detection"""
@@ -909,29 +1014,16 @@ class ReportGenerator:
         self.project_name = project_name
         
     def generate(self):
-        location = self.project_name  # Use the provided project_name/entity
-        if location == "Haining":
-            summary_content = """
-            ## Summary
-            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
-            """
-        elif location == "Ningbo":
-            summary_content = """
-            ## Summary
-            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
-            """
-        elif location == "Nanjing":
-            summary_content = """
-            ## Summary
-            The company demonstrates strong financial health with total assets of $180 million, liabilities of $75 million, and shareholder's equity of $105 million. Current assets including $45 million cash and $30 million receivables provide ample liquidity to cover short-term obligations of $50 milliion. Long-term invesmtnets in property and equipment total $90 million, supported by conservative debt levels with a debt-to-equity ratio of 0.71. Retained earnings of $80 million reflect consistent profitability and prudent dividend policies. The balance sheet structure shows optimal asset allocation with 60% long-term investments and 40% working capital. Financial ratios indicate robust solvency with current ratio of 2.4 and quick ratio of 1.8. Equity growth of 12% year-over-year demonstrates sustainable value creation. Conservative accounting practives ensure asset valutations remain realistic, while liability management maintains healthy interest coverage. Overall, the balance sheet positions the company for strategic investments while maintaining financial stability.
-            """
-        else:
-            summary_content = ""
+        # Read the markdown content
         with open(self.markdown_file, 'r', encoding='utf-8') as f:
             md_content = f.read()
+        
+        # Create PowerPoint generator
         generator = PowerPointGenerator(self.template_path)
+        
         try: 
-            generator.generate_full_report(md_content, summary_content, self.output_path)
+            # Generate the report with AI summary content
+            generator.generate_full_report(md_content, "", self.output_path)
         except Exception as e:
             print(f"Generation failed: {str(e)}")
 
