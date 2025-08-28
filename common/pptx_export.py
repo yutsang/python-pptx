@@ -288,6 +288,9 @@ class PowerPointGenerator:
                 shape = self._get_target_shape_for_section(slide_idx, section)
                 if shape:
                     max_lines = self._calculate_max_rows_for_shape(shape)
+                    # Ensure _L and _R columns have consistent behavior
+                    if section in ['b', 'c']:  # _L and _R sections
+                        max_lines = max(max_lines, 15)  # Minimum lines for proper text distribution
                 else:
                     max_lines = self.ROWS_PER_SECTION  # Fallback
                 
@@ -337,8 +340,8 @@ class PowerPointGenerator:
         # Convert EMU to pixels: 1 EMU = 1/914400 inches, 1 inch = 96 px
         px_width = int(shape.width * 96 / 914400)
         
-        # Use near-maximum width utilization for full space usage
-        effective_width = px_width * 0.97  # Near-maximum width utilization
+        # Use maximum width utilization for full space usage
+        effective_width = px_width * 0.99  # Maximum width utilization
         
         # Different character widths for different font sizes and styles
         if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
@@ -353,11 +356,11 @@ class PowerPointGenerator:
                     break
             
             if is_bold:
-                avg_char_px = 8  # Bold text (efficient estimate for 10pt font)
+                avg_char_px = 7.5  # Bold text (optimized for 9pt font)
             else:
-                avg_char_px = 7  # Regular text (efficient estimate for 10pt font)
+                avg_char_px = 6.5  # Regular text (optimized for 9pt font)
         else:
-            avg_char_px = 7  # Default (efficient estimate for 10pt font)
+            avg_char_px = 6.5  # Default (optimized for 9pt font)
         
         chars_per_line = max(65, int(effective_width // avg_char_px))  # Minimum 65 chars for full width utilization
         return chars_per_line
@@ -470,8 +473,17 @@ class PowerPointGenerator:
             first_part = wrapped[:available_lines]
             remaining_part = wrapped[available_lines:]
             
-            # Reconstruct text properly, preserving word boundaries
+            # Reconstruct text properly, preserving word boundaries and sentence continuity
             first_part_text = '\n'.join(line.rstrip() for line in first_part)
+            # Ensure the first part doesn't end with incomplete sentence fragments
+            if first_part_text and not first_part_text.endswith('.') and not first_part_text.endswith('M'):
+                # If it doesn't end with a period or currency value, try to find a better break point
+                sentences = first_part_text.split('. ')
+                if len(sentences) > 1:
+                    # Keep complete sentences only
+                    first_part_text = '. '.join(sentences[:-1])
+                    if first_part_text and not first_part_text.endswith('.'):
+                        first_part_text += '.'
             split_item = FinancialItem(
                 item.accounting_type,
                 item.account_title,
@@ -483,6 +495,9 @@ class PowerPointGenerator:
             
             # Reconstruct remaining text properly
             remaining_part_text = '\n'.join(line.rstrip() for line in remaining_part)
+            # Ensure proper continuation formatting
+            if remaining_part_text and not remaining_part_text.startswith(' ') and remaining_part:
+                remaining_part_text = ' ' + remaining_part_text
             remaining_item = FinancialItem(
                 item.accounting_type,
                 item.account_title,
@@ -616,7 +631,7 @@ class PowerPointGenerator:
                 p = tf.add_paragraph()
                 self._apply_paragraph_formatting(p, is_layer2_3=False)
                 if paragraph_count > 0:
-                    try: p.space_before = Pt(3)
+                    try: p.space_before = Pt(1)  # Reduced spacing to minimize empty rows
                     except: pass
                 run = p.add_run()
                 cont_text = " (continued)" if item.layer1_continued else ""
@@ -640,7 +655,7 @@ class PowerPointGenerator:
                         p = tf.add_paragraph()
                         self._apply_paragraph_formatting(p, is_layer2_3=True)
                         if paragraph_count > 0:
-                            try: p.space_before = Pt(3)
+                            try: p.space_before = Pt(1)  # Reduced spacing to minimize empty rows
                             except: pass
                         bullet_run = p.add_run()
                         bullet_run.text = self.BULLET_CHAR
@@ -667,7 +682,7 @@ class PowerPointGenerator:
                         p = tf.add_paragraph()
                         self._apply_paragraph_formatting(p, is_layer2_3=True)
                         if paragraph_count > 0:
-                            try: p.space_before = Pt(3)
+                            try: p.space_before = Pt(1)  # Reduced spacing to minimize empty rows
                             except: pass
                         try: p.left_indent = Inches(0.4)
                         except: pass
