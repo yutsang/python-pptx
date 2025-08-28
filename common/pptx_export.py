@@ -474,7 +474,8 @@ class PowerPointGenerator:
             remaining_part = wrapped[available_lines:]
             
             # Reconstruct text properly, preserving word boundaries and sentence continuity
-            first_part_text = '\n'.join(line.rstrip() for line in first_part)
+            # Use spaces instead of line breaks to avoid creating unwanted paragraphs
+            first_part_text = ' '.join(line.rstrip() for line in first_part)
             # Ensure the first part doesn't end with incomplete sentence fragments
             if first_part_text and not first_part_text.endswith('.') and not first_part_text.endswith('M'):
                 # If it doesn't end with a period or currency value, try to find a better break point
@@ -494,7 +495,7 @@ class PowerPointGenerator:
             )
             
             # Reconstruct remaining text properly
-            remaining_part_text = '\n'.join(line.rstrip() for line in remaining_part)
+            remaining_part_text = ' '.join(line.rstrip() for line in remaining_part)
             # Ensure proper continuation formatting
             if remaining_part_text and not remaining_part_text.startswith(' ') and remaining_part:
                 remaining_part_text = ' ' + remaining_part_text
@@ -619,6 +620,7 @@ class PowerPointGenerator:
         tf = shape.text_frame
         tf.clear()
         tf.word_wrap = True
+        tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP  # Ensure text starts from top
         self.prev_layer1 = None  # Reset for each new section
         self.current_shape = shape  # For dynamic line calculation
         prev_account_title = None
@@ -1122,6 +1124,7 @@ class PowerPointGenerator:
 
     def _populate_bullet_content(self, shape, item, bullet_lines):
         tf = shape.text_frame
+        tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP  # Ensure text starts from top
         p = tf.add_paragraph()
         self._apply_paragraph_formatting(p, is_layer2_3=True)
         bullet_run = p.add_run()
