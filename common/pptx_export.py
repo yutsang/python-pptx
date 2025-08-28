@@ -108,19 +108,19 @@ class PowerPointGenerator:
         shape_height_pt = shape_height_emu * 72 / 914400
         
         # Account for margins and padding (typically 10-15% of shape height)
-        effective_height_pt = shape_height_pt * 0.80  # More conservative margin
+        effective_height_pt = shape_height_pt * 0.90  # Less conservative margin to use more space
         
         # Calculate line height based on font size and line spacing
         # Default font size is 9pt, line spacing is typically 1.2x font size
         font_size_pt = 9
-        line_spacing = 1.3  # Slightly more spacing for better readability
+        line_spacing = 1.2  # Standard line spacing
         line_height_pt = font_size_pt * line_spacing
         
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
         
-        # Subtract a few rows for safety margin
-        max_rows = max(8, max_rows - 5)  # More conservative safety margin
+        # Subtract fewer rows for safety margin to use more space
+        max_rows = max(12, max_rows - 2)  # Less conservative safety margin
         
         return max_rows
 
