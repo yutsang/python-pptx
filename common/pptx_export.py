@@ -107,8 +107,8 @@ class PowerPointGenerator:
         # Convert EMU to points (1 EMU = 1/914400 inches, 1 inch = 72 points)
         shape_height_pt = shape_height_emu * 72 / 914400
         
-        # Account for margins and padding - use maximum space (99% of shape height)
-        effective_height_pt = shape_height_pt * 0.99  # Use almost all available height
+        # Account for margins and padding - use maximum space (99.5% of shape height)
+        effective_height_pt = shape_height_pt * 0.995  # Use more available height
 
         # Calculate line height based on font size and line spacing
         # Default font size is 9pt, line spacing is typically 1.2x font size
@@ -120,7 +120,7 @@ class PowerPointGenerator:
         max_rows = int(effective_height_pt / line_height_pt)
         
         # Use all available space
-        max_rows = max(20, max_rows)  # Minimum 20 rows, no subtraction
+        max_rows = max(25, max_rows)  # Minimum 25 rows for better height utilization
         
         return max_rows
 
@@ -337,8 +337,8 @@ class PowerPointGenerator:
         # Convert EMU to pixels: 1 EMU = 1/914400 inches, 1 inch = 96 px
         px_width = int(shape.width * 96 / 914400)
         
-        # Use maximum width utilization for full space usage
-        effective_width = px_width * 0.98  # Maximum width utilization
+        # Use near-maximum width utilization for full space usage
+        effective_width = px_width * 0.97  # Near-maximum width utilization
         
         # Different character widths for different font sizes and styles
         if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
@@ -390,13 +390,13 @@ class PowerPointGenerator:
 
         px_width = int(shape.width * 96 / 914400)
 
-        # Use maximum width utilization for summary
-        effective_width = px_width * 0.98
+        # Use near-maximum width utilization for summary (99%)
+        effective_width = px_width * 0.99
 
         # Optimized character width estimates for 10pt font
-        avg_char_px = 7  # Efficient estimate for regular text
+        avg_char_px = 6.5  # Very efficient estimate for maximum text density
 
-        chars_per_line = max(65, int(effective_width // avg_char_px))
+        chars_per_line = max(70, int(effective_width // avg_char_px))
         return chars_per_line
 
     def _wrap_text_to_shape(self, text, shape):
