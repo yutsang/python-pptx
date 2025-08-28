@@ -1,8 +1,8 @@
 {
   "metadata": {
-    "entity_name": "Haining Wanpu Limited",
-    "generated_timestamp": "2025-08-27T16:10:12.971675",
-    "session_id": "20250827_160432",
+    "entity_name": "Haining Wanpu",
+    "generated_timestamp": "2025-08-28T16:25:01.498478",
+    "session_id": "20250828_161743",
     "total_keys": 9
   },
   "categories": {
@@ -10,37 +10,37 @@
       {
         "key": "Cash",
         "display_name": "Cash at bank",
-        "content": "The balance as at 30 September 2022 represented CNY9.1M of bank deposits.\n\nManagement indicated that the cash was under supervision by the bank but had no related use restrictions imposed.\nWe obtained all bank statements and found no discrepancies.",
+        "content": "The balance as at 30 September 2022 represented CNY9.1m of cash at bank. Management indicated that cash at bank was under supervision by the bank but had no related use restrictions imposed. We read all bank statements and found no exceptions.",
         "content_source": "agent3_final",
         "source_timestamp": null,
-        "length": 248,
+        "length": 243,
         "category": "Current Assets"
       },
       {
         "key": "AR",
         "display_name": "Accounts receivables",
-        "content": "The balance as at 30 September 2022 represented receivables of rental and property management income due from third-party customers. The Target recognised revenue using the straight-line method; we reclassified the levelling impact of revenue recognition in the rent-free period to other non-current assets at the end of September 2022. Management did not accrue bad debt provision for accounts receivable from third-party customers; we indicatively accrued provision at the rate of 1% according to the Target's policy.",
+        "content": "The balance as at 30 September 2022 represented receivables of rental and property management income due from [specific entity name]. The Target recognised revenue using straight-line method; we reclassified the levelling impact of revenue recognition in the rent-free period to other non-current assets at the end of September 2022. Management did not accrue bad debt provision for accounts receivables from [specific entity name], we indicatively accrued provision at the rate of 1% according to the Target's policy.",
         "content_source": "agent3_final",
         "source_timestamp": null,
-        "length": 519,
+        "length": 518,
         "category": "Current Assets"
       },
       {
         "key": "Prepayments",
         "display_name": "Prepayments",
-        "content": "Balance as at 30 September 2022 represented CNY346.0K of upfront utility expense payments for the next one to three months of prepaid utility expenses including water and electricity with Haining Power Supply Co., Ltd. (CNY336.0K for electricity) and Haining Qiantang Water Services Co., Ltd. (CNY10.0K for water).",
+        "content": "Balance as at 30 September 2022 represented CNY346k of upfront utility expense payments for the next one to three months of prepaid utility expenses including CNY336k to Haining Power Supply Co., Ltd. for electricity and CNY10k to Haining Qiantang Water Co., Ltd. for water.",
         "content_source": "agent3_final",
         "source_timestamp": null,
-        "length": 314,
+        "length": 274,
         "category": "Current Assets"
       },
       {
         "key": "OR",
         "display_name": "Other receivables",
-        "content": "Balance as at 30 September 2022 CNY738.0K of utilities paid on behalf of Haining Wanpu Limited. As indicated by management, the Target accrued 6.9% bad debt provision for utilities receivables aged within 1 year.",
+        "content": "Balance as at 30 September 2022 CNY738.0K of utilities paid on behalf of the Target.\nAs indicated by management, the Target accrued 6.9% bad debt provision for utilities receivables aged within 1 year.",
         "content_source": "agent3_final",
         "source_timestamp": null,
-        "length": 212,
+        "length": 201,
         "category": "Current Assets"
       },
       {
@@ -57,10 +57,10 @@
       {
         "key": "IP",
         "display_name": "Investment properties",
-        "content": "Balance as at 30 September 2022 mainly represented the net book value of the targeted properties of CNY197.5M. The original value did not change over the period; the book value change represented the depreciation of properties.\n\nProject Haining Wanpu was investment property that Haining Wanpu Limited previously acquired. The land was located in Haining, the construction of Project Haining Wanpu was completed and was leased over the period. The land use rights and buildings were depreciated using straight-line method of 50 years and 20 years of useful life, with the residual value rate of 0% and 4%, respectively.\n\nAs at this report date, Project Haining Wanpu did not conduct final accounts. Though management said that most of the primary contracts had been verified and accounted, the original costs may still not be finalised. Potential under-estimated construction payables and CAPEX commitments may still exist; you should confirm with management if there are any future CAPEX plans and factor the capital commitments (if any) into your valuation model.\n\nTotal properties of Project Haining Wanpu were mortgaged as loan collateral.",
+        "content": "The balance as at 30 September 2022 mainly represented the net book value of the targeted properties of CNY197.5m. The original value did not change over the period, and the change in book value represented the depreciation of properties.\n\nProject Haining Wanpu was an investment property that the entity previously acquired. The land was located in Haining, and the construction of Project Haining Wanpu was completed. The land use rights and buildings were depreciated using the straight-line method over 50 years and 20 years of useful life, with residual value rates of 0% and 4%, respectively.\n\nAs at this report date, Project Haining Wanpu had not conducted final accounts. Although management stated that most primary contracts had been verified and accounted for, the original costs may not yet be finalised. Potential under-estimated construction payables and capital expenditure commitments may still exist.\n\nThe total properties of Project Haining Wanpu were mortgaged as loan collateral.",
         "content_source": "agent3_final",
         "source_timestamp": null,
-        "length": 1143,
+        "length": 999,
         "category": "Non-current Assets"
       },
       {
@@ -77,28 +77,28 @@
       {
         "key": "AP",
         "display_name": "Accounts payable",
-        "content": "balance as at 30 September 2022 mainly entailed consulting fees to Jones Lang LaSalle Beijing Consulting Co. of CNY13.0K and audit fees to Credit Zhonghe Accounting Firm (Special General Partnership) of CNY14.0K",
+        "content": "balance as at 30 September 2022 mainly entailed consulting fees to Business Management Consulting Co. of CNY2.3M and logistics services to Logistics Development Co., Ltd. of CNY8.3M",
         "content_source": "agent3_final",
         "source_timestamp": null,
-        "length": 211,
+        "length": 181,
         "category": "Liabilities"
       },
       {
         "key": "Taxes payable",
         "display_name": "Taxes payables",
-        "content": "Balance as at 30 September 2022 represented property tax payable of CNY216.0k and land use tax payable of CNY623.0k.",
+        "content": "Balance as at 30 September 2022 represented property tax payable of CNY216.0 thousand and land use tax payable of CNY623.0 thousand.",
         "content_source": "agent3_final",
         "source_timestamp": null,
-        "length": 116,
+        "length": 132,
         "category": "Liabilities"
       },
       {
         "key": "OP",
         "display_name": "Other payables",
-        "content": "Balance as at 30-Sep-2022 represented:\n\nCNY30.5K of Others subtotal, including Company #2 (CNY4.8K) and Estimated costs (CNY25.5K)\nCNY85.2K of Related party payables Subtotal, including Equity Investment Fund Partnership (Limited Partnership) (CNY83.0K) and Logistics Storage Co., Ltd. (CNY2.2K)",
+        "content": "balance as at 30-Sep-2022 represented:\n\nCNY30.5k of other payables, including Estimated costs (CNY25.5k) and Company #2 (CNY4.8k)\nCNY85.2k of related party payables, including Equity Investment Fund Partnership (Limited Partnership) (CNY83.0k) and Logistics Warehousing Co., Ltd. (CNY2.2k)",
         "content_source": "agent3_final",
         "source_timestamp": null,
-        "length": 295,
+        "length": 289,
         "category": "Liabilities"
       }
     ],
@@ -106,10 +106,10 @@
       {
         "key": "Capital",
         "display_name": "Capital",
-        "content": "Share capital of circa CNY92.0m was paid up as at 30 September 2022, comprising CNY91.1m from Equity Investment Fund Partnership (Limited Partnership) and CNY0.9m from Logistics Storage Co., Ltd.",
+        "content": "Share capital of circa CNY92.0M was paid up as at 30-Sep-2022, comprising CNY91.1M from Equity Investment Fund Partnership (Limited Partnership) and CNY0.9M from Logistics Storage Co., Ltd.",
         "content_source": "agent3_final",
         "source_timestamp": null,
-        "length": 195,
+        "length": 189,
         "category": "Equity"
       },
       {
@@ -127,37 +127,37 @@
     "Cash": {
       "key": "Cash",
       "display_name": "Cash at bank",
-      "content": "The balance as at 30 September 2022 represented CNY9.1M of bank deposits.\n\nManagement indicated that the cash was under supervision by the bank but had no related use restrictions imposed.\nWe obtained all bank statements and found no discrepancies.",
+      "content": "The balance as at 30 September 2022 represented CNY9.1m of cash at bank. Management indicated that cash at bank was under supervision by the bank but had no related use restrictions imposed. We read all bank statements and found no exceptions.",
       "content_source": "agent3_final",
       "source_timestamp": null,
-      "length": 248,
+      "length": 243,
       "category": "Current Assets"
     },
     "AR": {
       "key": "AR",
       "display_name": "Accounts receivables",
-      "content": "The balance as at 30 September 2022 represented receivables of rental and property management income due from third-party customers. The Target recognised revenue using the straight-line method; we reclassified the levelling impact of revenue recognition in the rent-free period to other non-current assets at the end of September 2022. Management did not accrue bad debt provision for accounts receivable from third-party customers; we indicatively accrued provision at the rate of 1% according to the Target's policy.",
+      "content": "The balance as at 30 September 2022 represented receivables of rental and property management income due from [specific entity name]. The Target recognised revenue using straight-line method; we reclassified the levelling impact of revenue recognition in the rent-free period to other non-current assets at the end of September 2022. Management did not accrue bad debt provision for accounts receivables from [specific entity name], we indicatively accrued provision at the rate of 1% according to the Target's policy.",
       "content_source": "agent3_final",
       "source_timestamp": null,
-      "length": 519,
+      "length": 518,
       "category": "Current Assets"
     },
     "Prepayments": {
       "key": "Prepayments",
       "display_name": "Prepayments",
-      "content": "Balance as at 30 September 2022 represented CNY346.0K of upfront utility expense payments for the next one to three months of prepaid utility expenses including water and electricity with Haining Power Supply Co., Ltd. (CNY336.0K for electricity) and Haining Qiantang Water Services Co., Ltd. (CNY10.0K for water).",
+      "content": "Balance as at 30 September 2022 represented CNY346k of upfront utility expense payments for the next one to three months of prepaid utility expenses including CNY336k to Haining Power Supply Co., Ltd. for electricity and CNY10k to Haining Qiantang Water Co., Ltd. for water.",
       "content_source": "agent3_final",
       "source_timestamp": null,
-      "length": 314,
+      "length": 274,
       "category": "Current Assets"
     },
     "OR": {
       "key": "OR",
       "display_name": "Other receivables",
-      "content": "Balance as at 30 September 2022 CNY738.0K of utilities paid on behalf of Haining Wanpu Limited. As indicated by management, the Target accrued 6.9% bad debt provision for utilities receivables aged within 1 year.",
+      "content": "Balance as at 30 September 2022 CNY738.0K of utilities paid on behalf of the Target.\nAs indicated by management, the Target accrued 6.9% bad debt provision for utilities receivables aged within 1 year.",
       "content_source": "agent3_final",
       "source_timestamp": null,
-      "length": 212,
+      "length": 201,
       "category": "Current Assets"
     },
     "Other CA": {
@@ -172,10 +172,10 @@
     "IP": {
       "key": "IP",
       "display_name": "Investment properties",
-      "content": "Balance as at 30 September 2022 mainly represented the net book value of the targeted properties of CNY197.5M. The original value did not change over the period; the book value change represented the depreciation of properties.\n\nProject Haining Wanpu was investment property that Haining Wanpu Limited previously acquired. The land was located in Haining, the construction of Project Haining Wanpu was completed and was leased over the period. The land use rights and buildings were depreciated using straight-line method of 50 years and 20 years of useful life, with the residual value rate of 0% and 4%, respectively.\n\nAs at this report date, Project Haining Wanpu did not conduct final accounts. Though management said that most of the primary contracts had been verified and accounted, the original costs may still not be finalised. Potential under-estimated construction payables and CAPEX commitments may still exist; you should confirm with management if there are any future CAPEX plans and factor the capital commitments (if any) into your valuation model.\n\nTotal properties of Project Haining Wanpu were mortgaged as loan collateral.",
+      "content": "The balance as at 30 September 2022 mainly represented the net book value of the targeted properties of CNY197.5m. The original value did not change over the period, and the change in book value represented the depreciation of properties.\n\nProject Haining Wanpu was an investment property that the entity previously acquired. The land was located in Haining, and the construction of Project Haining Wanpu was completed. The land use rights and buildings were depreciated using the straight-line method over 50 years and 20 years of useful life, with residual value rates of 0% and 4%, respectively.\n\nAs at this report date, Project Haining Wanpu had not conducted final accounts. Although management stated that most primary contracts had been verified and accounted for, the original costs may not yet be finalised. Potential under-estimated construction payables and capital expenditure commitments may still exist.\n\nThe total properties of Project Haining Wanpu were mortgaged as loan collateral.",
       "content_source": "agent3_final",
       "source_timestamp": null,
-      "length": 1143,
+      "length": 999,
       "category": "Non-current Assets"
     },
     "Other NCA": {
@@ -190,37 +190,37 @@
     "AP": {
       "key": "AP",
       "display_name": "Accounts payable",
-      "content": "balance as at 30 September 2022 mainly entailed consulting fees to Jones Lang LaSalle Beijing Consulting Co. of CNY13.0K and audit fees to Credit Zhonghe Accounting Firm (Special General Partnership) of CNY14.0K",
+      "content": "balance as at 30 September 2022 mainly entailed consulting fees to Business Management Consulting Co. of CNY2.3M and logistics services to Logistics Development Co., Ltd. of CNY8.3M",
       "content_source": "agent3_final",
       "source_timestamp": null,
-      "length": 211,
+      "length": 181,
       "category": "Liabilities"
     },
     "Taxes payable": {
       "key": "Taxes payable",
       "display_name": "Taxes payables",
-      "content": "Balance as at 30 September 2022 represented property tax payable of CNY216.0k and land use tax payable of CNY623.0k.",
+      "content": "Balance as at 30 September 2022 represented property tax payable of CNY216.0 thousand and land use tax payable of CNY623.0 thousand.",
       "content_source": "agent3_final",
       "source_timestamp": null,
-      "length": 116,
+      "length": 132,
       "category": "Liabilities"
     },
     "OP": {
       "key": "OP",
       "display_name": "Other payables",
-      "content": "Balance as at 30-Sep-2022 represented:\n\nCNY30.5K of Others subtotal, including Company #2 (CNY4.8K) and Estimated costs (CNY25.5K)\nCNY85.2K of Related party payables Subtotal, including Equity Investment Fund Partnership (Limited Partnership) (CNY83.0K) and Logistics Storage Co., Ltd. (CNY2.2K)",
+      "content": "balance as at 30-Sep-2022 represented:\n\nCNY30.5k of other payables, including Estimated costs (CNY25.5k) and Company #2 (CNY4.8k)\nCNY85.2k of related party payables, including Equity Investment Fund Partnership (Limited Partnership) (CNY83.0k) and Logistics Warehousing Co., Ltd. (CNY2.2k)",
       "content_source": "agent3_final",
       "source_timestamp": null,
-      "length": 295,
+      "length": 289,
       "category": "Liabilities"
     },
     "Capital": {
       "key": "Capital",
       "display_name": "Capital",
-      "content": "Share capital of circa CNY92.0m was paid up as at 30 September 2022, comprising CNY91.1m from Equity Investment Fund Partnership (Limited Partnership) and CNY0.9m from Logistics Storage Co., Ltd.",
+      "content": "Share capital of circa CNY92.0M was paid up as at 30-Sep-2022, comprising CNY91.1M from Equity Investment Fund Partnership (Limited Partnership) and CNY0.9M from Logistics Storage Co., Ltd.",
       "content_source": "agent3_final",
       "source_timestamp": null,
-      "length": 195,
+      "length": 189,
       "category": "Equity"
     },
     "Reserve": {
