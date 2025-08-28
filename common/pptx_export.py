@@ -337,8 +337,8 @@ class PowerPointGenerator:
         # Convert EMU to pixels: 1 EMU = 1/914400 inches, 1 inch = 96 px
         px_width = int(shape.width * 96 / 914400)
         
-        # Use more of the available width (98% for maximum utilization)
-        effective_width = px_width * 0.98  # Maximize width utilization
+        # Use conservative width utilization to prevent text overflow
+        effective_width = px_width * 0.92  # Conservative width utilization
         
         # Different character widths for different font sizes and styles
         if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
@@ -353,11 +353,11 @@ class PowerPointGenerator:
                     break
             
             if is_bold:
-                avg_char_px = 8  # Bold text (optimized for 10pt font)
+                avg_char_px = 9  # Bold text (conservative estimate for 10pt font)
             else:
-                avg_char_px = 7  # Regular text (optimized for 10pt font)
+                avg_char_px = 8  # Regular text (conservative estimate for 10pt font)
         else:
-            avg_char_px = 7  # Default (optimized for 10pt font)
+            avg_char_px = 8  # Default (conservative estimate for 10pt font)
         
         chars_per_line = max(40, int(effective_width // avg_char_px))  # Minimum 40 chars for maximum utilization
         return chars_per_line

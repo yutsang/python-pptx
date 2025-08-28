@@ -438,8 +438,8 @@ def main():
             # Use full entity name for processing
             selected_entity = entity_input
             
-            # Show entity info
-            st.info(f"📋 Entity: {selected_entity}")
+            # Show entity info (display only first word)
+            st.info(f"📋 Entity: {base_entity}")
             print(f"DEBUG: Generated entity keywords: {entity_keywords}")
         else:
             selected_entity = None
@@ -1076,8 +1076,8 @@ def main():
         with col1:
             if st.button("📊 Prepare PowerPoint", type="secondary", use_container_width=True):
                 try:
-                    # Get the project name based on selected entity
-                    project_name = selected_entity
+                    # Get the project name based on selected entity (use only first word)
+                    project_name = selected_entity.split()[0] if selected_entity else selected_entity
                     
                     # Check for template file in common locations
                     possible_templates = [
