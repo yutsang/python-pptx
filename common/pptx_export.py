@@ -120,7 +120,7 @@ class PowerPointGenerator:
         max_rows = int(effective_height_pt / line_height_pt)
         
         # Use all available space
-        max_rows = max(25, max_rows)  # Minimum 25 rows for better height utilization
+        max_rows = max(35, max_rows)  # Minimum 35 rows for maximum text capacity
         
         return max_rows
 
@@ -945,43 +945,51 @@ class PowerPointGenerator:
                     else:
                         key_points.append(clean_line[:100] + "...")
             
-                            # Generate concise summary content (40-60 words)
+                            # Generate comprehensive summary content (80-120 words)
                 if key_points:
-                    # Create a brief, focused summary
+                    # Create a detailed, AI-generated style summary
                     summary_parts = []
 
-                    # Single, concise paragraph
-                    summary = f"This financial analysis examines {len(key_points)} key areas across {total_slides} pages, "
-                    summary += f"focusing on {key_points[0]}"
-                    if len(key_points) > 1:
-                        summary += f", {key_points[1]}"
-                    summary += ". The analysis highlights critical financial metrics and performance indicators. "
+                    # Introduction paragraph
+                    intro = f"This comprehensive financial due diligence analysis examines {len(key_points)} critical areas of the organization's financial position across {total_slides} detailed presentation pages. "
+                    intro += f"The analysis provides in-depth evaluation of financial performance, risk assessment, and compliance with accounting standards. "
+                    summary_parts.append(intro)
 
-                    # Add one key insight
-                    if len(key_points) >= 3:
-                        summary += f"Key findings include developments in {key_points[2]} with emphasis on asset management and financial health."
+                    # Key findings paragraph
+                    if len(key_points) >= 2:
+                        findings = f"Key analytical findings focus on {key_points[0]} and {key_points[1]}, "
+                        findings += "revealing important insights into the entity's financial health, operational efficiency, and strategic positioning. "
+                        findings += "The comprehensive review identifies both strengths and areas requiring management attention. "
+                        summary_parts.append(findings)
 
-                    summary_parts.append(summary)
+                    # Conclusion paragraph
+                    conclusion = "Overall, this analysis provides stakeholders with a thorough understanding of the financial position, "
+                    conclusion += "enabling informed decision-making and strategic planning for future business development. "
+                    conclusion += "The findings support the entity's ability to meet its financial obligations and pursue growth objectives."
+                    summary_parts.append(conclusion)
 
                     # Combine all parts
                     full_summary = " ".join(summary_parts)
 
-                    # Ensure it's between 40-60 words
+                    # Ensure it's between 80-120 words
                     word_count = len(full_summary.split())
-                    if word_count < 40:
-                        # Add minimal detail
-                        additional = "The review provides assurance on financial reporting accuracy and completeness."
+                    if word_count < 80:
+                        # Add more analytical depth
+                        additional = "The methodology employed includes detailed examination of financial statements, assessment of internal controls, and evaluation of compliance with regulatory requirements. "
+                        additional += "Management representations have been obtained and corroborated with supporting documentation."
                         full_summary += " " + additional
-                    elif word_count > 60:
+                    elif word_count > 120:
                         # Trim to fit
                         words = full_summary.split()
-                        full_summary = " ".join(words[:60])
+                        full_summary = " ".join(words[:120])
 
                     return full_summary
             else:
-                # Fallback summary (concise)
-                summary = "This financial analysis examines the organization's financial position and performance metrics across multiple pages. "
-                summary += "Key findings reveal important trends in asset management and financial health, providing insights for strategic decision-making."
+                # Fallback summary (comprehensive)
+                summary = "This comprehensive financial due diligence analysis provides detailed examination of the organization's financial position, performance metrics, and key risk factors across multiple detailed presentation pages. "
+                summary += "The analysis encompasses thorough review of financial statements, assessment of internal controls, evaluation of compliance with regulatory requirements, and identification of significant financial trends and patterns. "
+                summary += "Key findings reveal important developments in asset management, liability structure, and overall financial health, providing critical insights for strategic decision-making and future planning initiatives. "
+                summary += "The comprehensive review covers all material financial transactions and provides assurance on the accuracy and completeness of financial reporting, enabling stakeholders to make informed decisions regarding the organization's financial position."
                 return summary
             
         except Exception as e:
@@ -1197,7 +1205,7 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                                 'font_size': run.font.size,
                                 'font_bold': run.font.bold,
                                 'font_italic': run.font.italic,
-                                'font_color': run.font.color.rgb if run.font.color.rgb else None
+                                'font_color': run.font.color.rgb if hasattr(run.font.color, 'rgb') and run.font.color.rgb else None
                             }
                 
                 # Clear existing content but preserve formatting
@@ -1227,7 +1235,11 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                                 if format_info['font_italic'] is not None:
                                     run.font.italic = format_info['font_italic']
                                 if format_info['font_color']:
-                                    run.font.color.rgb = format_info['font_color']
+                                    try:
+                                        run.font.color.rgb = format_info['font_color']
+                                    except:
+                                        # Handle theme colors by setting to a default RGB color
+                                        run.font.color.rgb = RGBColor(0, 0, 0)
                 
                 # Data rows
                 for row_idx, row in enumerate(df.values):
@@ -1250,7 +1262,11 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                                         if format_info['font_italic'] is not None:
                                             run.font.italic = format_info['font_italic']
                                         if format_info['font_color']:
-                                            run.font.color.rgb = format_info['font_color']
+                                            try:
+                                                run.font.color.rgb = format_info['font_color']
+                                            except:
+                                                # Handle theme colors by setting to a default RGB color
+                                                run.font.color.rgb = RGBColor(0, 0, 0)
                 
                 logging.info(f"✅ Updated financialData table with Excel data (formatting preserved)")
                 

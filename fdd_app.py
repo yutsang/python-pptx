@@ -1574,16 +1574,16 @@ def get_content_from_json(key):
     if not json_data:
         return None
     
-    # Search in all categories
-    for category in ["current_assets", "non_current_assets", "liabilities", "equity"]:
-        category_data = json_data.get("financial_items", {}).get(category, {})
+    # Search in all categories (matching the actual JSON structure)
+    for category in ["Current Assets", "Non-current Assets", "Liabilities", "Equity"]:
+        category_data = json_data.get("categories", {}).get(category, {})
         if key in category_data:
             return category_data[key]["content"]
     
-    # Direct key lookup for backwards compatibility
-    direct_items = json_data.get("financial_items", {})
-    if key in direct_items:
-        return direct_items[key].get("content", "")
+    # Direct key lookup in keys section
+    keys_data = json_data.get("keys", {})
+    if key in keys_data:
+        return keys_data[key].get("content", "")
     
     return None
 
