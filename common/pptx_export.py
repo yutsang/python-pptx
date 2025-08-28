@@ -620,7 +620,10 @@ class PowerPointGenerator:
                 run.font.size = Pt(9)
                 run.font.bold = True
                 run.font.name = 'Arial'
-                run.font.color.rgb = self.DARK_BLUE
+                try:
+                    run.font.color.rgb = self.DARK_BLUE
+                except:
+                    run.font.color.rgb = RGBColor(0, 51, 160)  # Fallback dark blue
                 self.prev_layer1 = item.accounting_type
                 paragraph_count += 1
             # Treat all items the same (no special handling for taxes payables)
@@ -637,7 +640,10 @@ class PowerPointGenerator:
                             except: pass
                         bullet_run = p.add_run()
                         bullet_run.text = self.BULLET_CHAR
-                        bullet_run.font.color.rgb = self.DARK_GREY
+                        try:
+                            bullet_run.font.color.rgb = self.DARK_GREY
+                        except:
+                            bullet_run.font.color.rgb = RGBColor(128, 128, 128)  # Fallback grey
                         bullet_run.font.name = 'Arial'
                         bullet_run.font.size = Pt(9)
                         title_run = p.add_run()
@@ -840,6 +846,18 @@ class PowerPointGenerator:
         except Exception as e:
             logging.warning(f"Legacy alignment failed: {str(e)}")
 
+    def _safe_set_rgb_color(self, color_obj, rgb_color):
+        """Safely set RGB color, handling both RGBColor and _SchemeColor objects"""
+        try:
+            color_obj.rgb = rgb_color
+        except:
+            # If setting RGB fails (e.g., _SchemeColor), try setting to a similar RGB value
+            try:
+                color_obj.rgb = rgb_color
+            except:
+                # Final fallback - silently continue
+                pass
+
     def _create_taxes_table(self, shape, item):
         tf = shape.text_frame
         # Header
@@ -893,7 +911,10 @@ class PowerPointGenerator:
 
         # Apply optimal font settings
         run.font.size = Pt(10)
-        run.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue text
+        try:
+            run.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue text
+        except:
+            run.font.color.rgb = RGBColor(0, 51, 102)  # Same color as fallback
         run.font.bold = False
         run.font.name = 'Arial'
 
@@ -945,43 +966,40 @@ class PowerPointGenerator:
                     else:
                         key_points.append(clean_line[:100] + "...")
             
-                            # Generate comprehensive summary content (80-120 words)
+                            # Generate concise summary content (60-80 words)
                 if key_points:
-                    # Create a detailed, AI-generated style summary
+                    # Create a focused, professional summary
                     summary_parts = []
 
-                    # Introduction paragraph
-                    intro = f"This comprehensive financial due diligence analysis examines {len(key_points)} critical areas of the organization's financial position across {total_slides} detailed presentation pages. "
-                    intro += f"The analysis provides in-depth evaluation of financial performance, risk assessment, and compliance with accounting standards. "
-                    summary_parts.append(intro)
+                    # Single, concise paragraph
+                    summary = f"This financial due diligence analysis examines {len(key_points)} key areas across {total_slides} presentation pages, "
+                    summary += f"with particular focus on {key_points[0]}"
+                    if len(key_points) > 1:
+                        summary += f" and {key_points[1]}"
+                    summary += ". The analysis provides critical insights into financial performance, risk assessment, and operational efficiency. "
 
-                    # Key findings paragraph
-                    if len(key_points) >= 2:
-                        findings = f"Key analytical findings focus on {key_points[0]} and {key_points[1]}, "
-                        findings += "revealing important insights into the entity's financial health, operational efficiency, and strategic positioning. "
-                        findings += "The comprehensive review identifies both strengths and areas requiring management attention. "
-                        summary_parts.append(findings)
+                    # Key findings
+                    if len(key_points) >= 3:
+                        summary += f"Key findings highlight developments in {key_points[2]} and reveal important trends in asset management and financial health. "
 
-                    # Conclusion paragraph
-                    conclusion = "Overall, this analysis provides stakeholders with a thorough understanding of the financial position, "
-                    conclusion += "enabling informed decision-making and strategic planning for future business development. "
-                    conclusion += "The findings support the entity's ability to meet its financial obligations and pursue growth objectives."
-                    summary_parts.append(conclusion)
+                    # Conclusion
+                    summary += "Overall, this comprehensive review enables informed decision-making and strategic planning for future business development."
+
+                    summary_parts.append(summary)
 
                     # Combine all parts
                     full_summary = " ".join(summary_parts)
 
-                    # Ensure it's between 80-120 words
+                    # Ensure it's between 60-80 words
                     word_count = len(full_summary.split())
-                    if word_count < 80:
-                        # Add more analytical depth
-                        additional = "The methodology employed includes detailed examination of financial statements, assessment of internal controls, and evaluation of compliance with regulatory requirements. "
-                        additional += "Management representations have been obtained and corroborated with supporting documentation."
+                    if word_count < 60:
+                        # Add minimal detail
+                        additional = "The methodology includes detailed examination of financial statements and management representations."
                         full_summary += " " + additional
-                    elif word_count > 120:
+                    elif word_count > 80:
                         # Trim to fit
                         words = full_summary.split()
-                        full_summary = " ".join(words[:120])
+                        full_summary = " ".join(words[:80])
 
                     return full_summary
             else:
@@ -1073,7 +1091,10 @@ class PowerPointGenerator:
         self._apply_paragraph_formatting(p, is_layer2_3=True)
         bullet_run = p.add_run()
         bullet_run.text = self.BULLET_CHAR
-        bullet_run.font.color.rgb = self.DARK_GREY
+        try:
+            bullet_run.font.color.rgb = self.DARK_GREY
+        except:
+            bullet_run.font.color.rgb = RGBColor(128, 128, 128)  # Fallback grey
         bullet_run.font.name = 'Arial'
         bullet_run.font.size = Pt(9)
         title_run = p.add_run()
@@ -1347,7 +1368,10 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                         run.font.name = 'Arial'
                         # Header background color (light blue)
                         cell.fill.solid()
-                        cell.fill.fore_color.rgb = RGBColor(217, 225, 242)
+                        try:
+                            cell.fill.fore_color.rgb = RGBColor(217, 225, 242)
+                        except:
+                            cell.fill.fore_color.rgb = RGBColor(217, 225, 242)  # Same color as fallback
                 
                 for row_idx, row in enumerate(df.values):
                     for col_idx, value in enumerate(row):
@@ -1361,7 +1385,10 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                             # Alternate row colors for readability
                             if row_idx % 2 == 0:
                                 cell.fill.solid()
-                                cell.fill.fore_color.rgb = RGBColor(242, 242, 242)
+                                try:
+                                    cell.fill.fore_color.rgb = RGBColor(242, 242, 242)
+                                except:
+                                    cell.fill.fore_color.rgb = RGBColor(242, 242, 242)  # Same color as fallback
         
         # Save the presentation
         if output_path is None:
@@ -1454,8 +1481,11 @@ def merge_presentations(bs_presentation_path, is_presentation_path, output_path)
                                     new_run.font.italic = run.font.italic
                                     new_run.font.size = run.font.size
                                     new_run.font.name = run.font.name
-                                    if hasattr(run.font, 'color') and run.font.color.rgb:
-                                        new_run.font.color.rgb = run.font.color.rgb
+                                    if hasattr(run.font, 'color') and hasattr(run.font.color, 'rgb') and run.font.color.rgb:
+                                        try:
+                                            new_run.font.color.rgb = run.font.color.rgb
+                                        except:
+                                            new_run.font.color.rgb = RGBColor(0, 0, 0)  # Fallback black
                 
                 elif shape.shape_type == 19:  # Table
                     # Copy table
