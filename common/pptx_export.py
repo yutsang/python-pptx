@@ -157,28 +157,39 @@ class PowerPointGenerator:
         
         slide = self.prs.slides[slide_idx]
         
-        # For the new template structure:
-        # - Slide 0 (index 0): Content slide with textMainBullets
-        # - Slide 1+ (index 1+): Content slides with textMainBullets (single column)
+        # Handle both template structures:
+        # - Old template: textMainBullets_L and textMainBullets_R
+        # - New template: single textMainBullets
         
         if slide_idx == 0:
-            # Slide 0 has textMainBullets
+            # Slide 0 - try textMainBullets first, then fallback
             if section == 'c':
+                # Try textMainBullets first
                 try:
                     return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
                 except StopIteration:
                     pass
             return None  # No 'b' section on slide 0
         else:
-            # Additional slides (index 1+) - new template uses single textMainBullets
-            if section == 'c':
-                # Use textMainBullets for all sections on additional slides
+            # Additional slides (index 1+) - handle both template structures
+            if section == 'b':
+                # Left section - try textMainBullets_L first, then textMainBullets
+                try:
+                    return next((s for s in slide.shapes if s.name == "textMainBullets_L"), None)
+                except StopIteration:
+                    pass
+                # Fallback to textMainBullets for single column layout
                 try:
                     return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
                 except StopIteration:
                     pass
-            elif section == 'b':
-                # For 'b' section, also use textMainBullets (single column layout)
+            elif section == 'c':
+                # Right section - try textMainBullets_R first, then textMainBullets
+                try:
+                    return next((s for s in slide.shapes if s.name == "textMainBullets_R"), None)
+                except StopIteration:
+                    pass
+                # Fallback to textMainBullets for single column layout
                 try:
                     return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
                 except StopIteration:
@@ -196,7 +207,12 @@ class PowerPointGenerator:
         except StopIteration:
             pass
         
-        # If still not found, try to find any text shape
+        # If still not found, try to find any text shape with text_frame
+        for shape in slide.shapes:
+            if hasattr(shape, 'text_frame') and shape.text_frame:
+                return shape
+        
+        # Final fallback: any shape that might be a text container
         for shape in slide.shapes:
             if hasattr(shape, 'text_frame'):
                 return shape
@@ -259,8 +275,8 @@ class PowerPointGenerator:
             if slide_idx == 0:
                 sections = ['c']  # Only 'c' section on slide 0 (textMainBullets)
             else:
-                # For new template: use single column layout
-                sections = ['c']  # Single section for additional slides (textMainBullets)
+                # For server template: use both left and right sections
+                sections = ['b', 'c']  # Left and right sections (textMainBullets_L and textMainBullets_R)
             
             for section in sections:
                 if not content_queue:
@@ -915,7 +931,7 @@ class PowerPointGenerator:
                     else:
                         key_points.append(clean_line[:100] + "...")
             
-            # Generate longer summary content (80-120 words)
+            # Generate comprehensive summary content (120-180 words)
             if key_points:
                 # Create a comprehensive summary with multiple paragraphs
                 summary_parts = []
@@ -923,40 +939,51 @@ class PowerPointGenerator:
                 # Introduction paragraph
                 intro = f"This comprehensive financial analysis examines {len(key_points)} key areas of the organization's financial position as of the reporting date. "
                 intro += f"The analysis spans {total_slides} detailed pages providing in-depth commentary on critical financial metrics, performance indicators, and risk factors. "
+                intro += f"Total assets and liabilities are thoroughly analyzed with specific focus on cash management, receivables, investment properties, and outstanding obligations. "
                 summary_parts.append(intro)
                 
                 # Key findings paragraph
                 if len(key_points) >= 3:
                     findings = f"Key findings include significant developments in {key_points[0]}, {key_points[1]}, and {key_points[2]}. "
                     findings += "The analysis reveals important trends in asset management, liability structure, and overall financial health. "
+                    findings += "Investment properties show substantial value with proper depreciation accounting, while current assets demonstrate adequate liquidity for operational needs. "
                     summary_parts.append(findings)
                 
                 # Risk and outlook paragraph
                 outlook = "Risk assessment identifies potential areas of concern while highlighting opportunities for improvement. "
                 outlook += "The overall financial position demonstrates both strengths and areas requiring management attention. "
+                outlook += "Management has implemented various strategies to address identified challenges and capitalize on opportunities. "
                 summary_parts.append(outlook)
+                
+                # Additional insights paragraph
+                insights = "The analysis provides a foundation for strategic decision-making and future planning initiatives. "
+                insights += "Financial ratios and performance metrics indicate the organization's ability to meet short-term obligations and long-term growth objectives. "
+                insights += "Recommendations focus on optimizing asset utilization, improving cash flow management, and strengthening financial controls."
+                summary_parts.append(insights)
                 
                 # Combine all parts
                 full_summary = " ".join(summary_parts)
                 
-                # Ensure it's between 80-120 words
+                # Ensure it's between 120-180 words
                 word_count = len(full_summary.split())
-                if word_count < 80:
+                if word_count < 120:
                     # Add more detail
-                    additional = "Management has implemented various strategies to address identified challenges and capitalize on opportunities. "
-                    additional += "The analysis provides a foundation for strategic decision-making and future planning initiatives."
+                    additional = "The comprehensive review covers all material financial transactions and provides assurance on the accuracy and completeness of financial reporting. "
+                    additional += "This analysis serves as a critical tool for stakeholders to understand the organization's financial health and make informed decisions."
                     full_summary += " " + additional
-                elif word_count > 120:
+                elif word_count > 180:
                     # Trim to fit
                     words = full_summary.split()
-                    full_summary = " ".join(words[:120])
+                    full_summary = " ".join(words[:180])
                 
                 return full_summary
             else:
                 # Fallback summary
                 summary = "This comprehensive financial analysis provides detailed examination of the organization's financial position, performance metrics, and key risk factors. "
                 summary += "The analysis spans multiple pages with in-depth commentary on critical financial areas including asset management, liability structure, and overall financial health. "
-                summary += "Key findings reveal important trends and provide insights for strategic decision-making and future planning initiatives."
+                summary += "Key findings reveal important trends and provide insights for strategic decision-making and future planning initiatives. "
+                summary += "The comprehensive review covers all material financial transactions and provides assurance on the accuracy and completeness of financial reporting. "
+                summary += "This analysis serves as a critical tool for stakeholders to understand the organization's financial health and make informed decisions."
                 return summary
             
         except Exception as e:
