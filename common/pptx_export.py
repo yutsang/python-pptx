@@ -337,8 +337,8 @@ class PowerPointGenerator:
         # Convert EMU to pixels: 1 EMU = 1/914400 inches, 1 inch = 96 px
         px_width = int(shape.width * 96 / 914400)
         
-        # Use conservative width utilization to prevent text overflow
-        effective_width = px_width * 0.92  # Conservative width utilization
+        # Use optimal width utilization for better space usage
+        effective_width = px_width * 0.96  # Optimal width utilization
         
         # Different character widths for different font sizes and styles
         if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
@@ -353,13 +353,13 @@ class PowerPointGenerator:
                     break
             
             if is_bold:
-                avg_char_px = 9  # Bold text (conservative estimate for 10pt font)
+                avg_char_px = 8.5  # Bold text (optimal estimate for 10pt font)
             else:
-                avg_char_px = 8  # Regular text (conservative estimate for 10pt font)
+                avg_char_px = 7.5  # Regular text (optimal estimate for 10pt font)
         else:
-            avg_char_px = 8  # Default (conservative estimate for 10pt font)
+            avg_char_px = 7.5  # Default (optimal estimate for 10pt font)
         
-        chars_per_line = max(40, int(effective_width // avg_char_px))  # Minimum 40 chars for maximum utilization
+        chars_per_line = max(55, int(effective_width // avg_char_px))  # Minimum 55 chars for maximum utilization
         return chars_per_line
 
     def _wrap_text_to_shape(self, text, shape):
@@ -855,14 +855,14 @@ class PowerPointGenerator:
         max_lines = self._calculate_max_rows_for_shape(shape)
         chars_per_line = self._calculate_chars_per_line(shape)
         
-        # Wrap the summary content to fit the shape with maximum utilization
+        # Wrap the summary content to fit the shape with optimal utilization
         wrapper = textwrap.TextWrapper(
             width=chars_per_line,
             break_long_words=True,
             break_on_hyphens=True,
-            replace_whitespace=True,  # Replace multiple spaces with single
+            replace_whitespace=False,  # Keep original whitespace
             expand_tabs=True,
-            drop_whitespace=True,
+            drop_whitespace=False,  # Keep whitespace for formatting
             max_lines=None,  # No limit on lines
             placeholder='...'  # Use ... for truncated content
         )
@@ -915,6 +915,15 @@ class PowerPointGenerator:
         tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
         tf.word_wrap = True
         tf.auto_size = MSO_AUTO_SIZE.NONE  # Don't auto-resize, use full space
+
+        # Ensure minimal margins for maximum width utilization
+        try:
+            tf.margin_left = Pt(2)
+            tf.margin_right = Pt(2)
+            tf.margin_top = Pt(2)
+            tf.margin_bottom = Pt(2)
+        except:
+            pass  # Some versions don't support margin settings
 
     def _generate_ai_summary_content(self, md_content: str, distribution) -> str:
         """Generate AI summary content based on commentary length and distribution"""
