@@ -107,20 +107,20 @@ class PowerPointGenerator:
         # Convert EMU to points (1 EMU = 1/914400 inches, 1 inch = 72 points)
         shape_height_pt = shape_height_emu * 72 / 914400
         
-        # Account for margins and padding - use even more space (98% of shape height)
-        effective_height_pt = shape_height_pt * 0.98  # Use almost all available height
+        # Account for margins and padding - use maximum space (99% of shape height)
+        effective_height_pt = shape_height_pt * 0.99  # Use almost all available height
         
         # Calculate line height based on font size and line spacing
         # Default font size is 9pt, line spacing is typically 1.2x font size
         font_size_pt = 9
-        line_spacing = 1.1  # Even tighter spacing to fit more content
+        line_spacing = 1.05  # Very tight spacing to fit maximum content
         line_height_pt = font_size_pt * line_spacing
         
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
         
-        # Minimal safety margin to use maximum space
-        max_rows = max(18, max_rows)  # No subtraction, use all available space
+        # Use all available space
+        max_rows = max(20, max_rows)  # Minimum 20 rows, no subtraction
         
         return max_rows
 
@@ -726,7 +726,10 @@ class PowerPointGenerator:
                     # Fallback: look for Subtitle or other suitable text shapes for summary
                     summary_shape = next((s for s in slide.shapes if hasattr(s, 'text_frame') and s.name == "Subtitle 2"), None)
                 if not summary_shape:
-                    # Final fallback: look for any text shape that could be used for summary
+                    # Look for TextBox shapes
+                    summary_shape = next((s for s in slide.shapes if hasattr(s, 'text_frame') and "TextBox" in s.name), None)
+                if not summary_shape:
+                    # Look for any text shape that could be used for summary
                     summary_shape = next((s for s in slide.shapes if hasattr(s, 'text_frame') and s.name != "textMainBullets" and "Title" not in s.name), None)
                 
                 if summary_shape:
@@ -749,14 +752,14 @@ class PowerPointGenerator:
         # Only use legacy assignments, never .paragraph_format
         try:
             if is_layer2_3:
-                try: paragraph.left_indent = Inches(0.21)
+                try: paragraph.left_indent = Inches(0.25)  # Increased left margin
                 except: pass
                 try: paragraph.first_line_indent = Inches(-0.19)
                 except: pass
                 try: paragraph.space_before = Pt(0)
                 except: pass
             else:
-                try: paragraph.left_indent = Inches(0.3)
+                try: paragraph.left_indent = Inches(0.35)  # Increased left margin
                 except: pass
                 try: paragraph.first_line_indent = Inches(-0.3)
                 except: pass
@@ -861,7 +864,7 @@ class PowerPointGenerator:
             run = p.add_run()
             run.text = line
             
-            # Apply white text, size 10, original font
+            # Apply dark blue text, size 10, original font
             try:
                 # Get original font name if available
                 if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
@@ -873,9 +876,9 @@ class PowerPointGenerator:
             except:
                 pass
             
-            # Apply white text and size 10
+            # Apply dark blue text and size 10
             run.font.size = Pt(10)
-            run.font.color.rgb = RGBColor(255, 255, 255)  # White text
+            run.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue text for white background
             run.font.bold = False
             
             # Apply paragraph formatting
