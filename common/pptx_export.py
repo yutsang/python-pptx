@@ -157,9 +157,9 @@ class PowerPointGenerator:
         
         slide = self.prs.slides[slide_idx]
         
-        # For the server template structure:
+        # For the new template structure:
         # - Slide 0 (index 0): Content slide with textMainBullets
-        # - Slide 1+ (index 1+): Content slides with textMainBullets_L and textMainBullets_R
+        # - Slide 1+ (index 1+): Content slides with textMainBullets (single column)
         
         if slide_idx == 0:
             # Slide 0 has textMainBullets
@@ -170,17 +170,17 @@ class PowerPointGenerator:
                     pass
             return None  # No 'b' section on slide 0
         else:
-            # Additional slides (index 1+) - try to find textMainBullets_L and textMainBullets_R
-            if section == 'b':
-                # Left section
+            # Additional slides (index 1+) - new template uses single textMainBullets
+            if section == 'c':
+                # Use textMainBullets for all sections on additional slides
                 try:
-                    return next((s for s in slide.shapes if s.name == "textMainBullets_L"), None)
+                    return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
                 except StopIteration:
                     pass
-            elif section == 'c':
-                # Right section
+            elif section == 'b':
+                # For 'b' section, also use textMainBullets (single column layout)
                 try:
-                    return next((s for s in slide.shapes if s.name == "textMainBullets_R"), None)
+                    return next((s for s in slide.shapes if s.name == "textMainBullets"), None)
                 except StopIteration:
                     pass
         
@@ -259,7 +259,8 @@ class PowerPointGenerator:
             if slide_idx == 0:
                 sections = ['c']  # Only 'c' section on slide 0 (textMainBullets)
             else:
-                sections = ['b', 'c']  # Left and right sections (textMainBullets_L and textMainBullets_R)
+                # For new template: use single column layout
+                sections = ['c']  # Single section for additional slides (textMainBullets)
             
             for section in sections:
                 if not content_queue:
@@ -719,10 +720,21 @@ class PowerPointGenerator:
             summary_chunks = self._distribute_summary_across_slides(summary_content, total_slides_needed)
             for slide_idx in range(total_slides_needed):
                 slide = self.prs.slides[slide_idx]
+                # Look for coSummaryShape or alternative summary shapes
                 summary_shape = next((s for s in slide.shapes if s.name == "coSummaryShape"), None)
+                if not summary_shape:
+                    # Fallback: look for Subtitle or other suitable text shapes for summary
+                    summary_shape = next((s for s in slide.shapes if hasattr(s, 'text_frame') and s.name == "Subtitle 2"), None)
+                if not summary_shape:
+                    # Final fallback: look for any text shape that could be used for summary
+                    summary_shape = next((s for s in slide.shapes if hasattr(s, 'text_frame') and s.name != "textMainBullets" and "Title" not in s.name), None)
+                
                 if summary_shape:
                     chunk_content = summary_chunks[slide_idx] if slide_idx < len(summary_chunks) else ""
                     self._populate_summary_section_safe(summary_shape, chunk_content)
+                    logging.info(f"✅ Populated summary on slide {slide_idx + 1} using shape: {summary_shape.name}")
+                else:
+                    logging.warning(f"⚠️ No summary shape found on slide {slide_idx + 1}")
             
             unused_slides = self._detect_unused_slides(distribution)
             if unused_slides:
