@@ -438,8 +438,14 @@ def main():
             # Use full entity name for processing
             selected_entity = entity_input
             
-            # Show entity info (display only first word)
-            st.info(f"📋 Entity: {base_entity}")
+            # Show entity info with first two words for display
+            if entity_input:
+                words = entity_input.split()
+                # Use first two words, or first word if only one word
+                display_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else entity_input
+            else:
+                display_name = base_entity
+            st.info(f"📋 Entity: {display_name}")
             print(f"DEBUG: Generated entity keywords: {entity_keywords}")
         else:
             selected_entity = None
@@ -1076,8 +1082,13 @@ def main():
         with col1:
             if st.button("📊 Prepare PowerPoint", type="secondary", use_container_width=True):
                 try:
-                    # Get the project name based on selected entity (use only first word)
-                    project_name = selected_entity.split()[0] if selected_entity else selected_entity
+                    # Get the project name based on selected entity (use first two words)
+                    if selected_entity:
+                        words = selected_entity.split()
+                        # Use first two words, or first word if only one word
+                        project_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else selected_entity
+                    else:
+                        project_name = selected_entity
                     
                     # Check for template file in common locations
                     possible_templates = [
@@ -1578,13 +1589,31 @@ def get_content_from_json(key):
     for category in ["Current Assets", "Non-current Assets", "Liabilities", "Equity"]:
         category_data = json_data.get("categories", {}).get(category, {})
         if key in category_data:
-            return category_data[key]["content"]
+            content = category_data[key]["content"]
+            # Skip items with no information available
+            if content and "no information available" not in content.lower():
+                # Apply entity name abbreviations to placeholders in content
+                from common.pptx_export import replace_entity_placeholders
+                # Get the selected entity name (assuming it's available in session state)
+                selected_entity = st.session_state.get('entity_input', '')
+                if selected_entity:
+                    content = replace_entity_placeholders(content, selected_entity)
+                return content
     
     # Direct key lookup in keys section
     keys_data = json_data.get("keys", {})
     if key in keys_data:
-        return keys_data[key].get("content", "")
-    
+        content = keys_data[key].get("content", "")
+        # Skip items with no information available
+        if content and "no information available" not in content.lower():
+            # Apply entity name abbreviations to placeholders in content
+            from common.pptx_export import replace_entity_placeholders
+            # Get the selected entity name (assuming it's available in session state)
+            selected_entity = st.session_state.get('entity_input', '')
+            if selected_entity:
+                content = replace_entity_placeholders(content, selected_entity)
+            return content
+
     return None
 
 def display_offline_content(key):

@@ -37,14 +37,46 @@ def clean_content_quotes(content):
     """
     if not content:
         return content
-    
+
     # Handle straight quotes
     content = re.sub(r'^"([^"]*)"$', r'\1', content)
-    
+
     # Handle curly quotes
     content = re.sub(r'^"([^"]*)"$', r'\1', content)
     content = re.sub(r'^"([^"]*)"$', r'\1', content)
-    
+
+    return content
+
+def replace_entity_placeholders(content, project_name):
+    """
+    Replace entity name placeholders in content with abbreviated entity names.
+    """
+    if not content or not project_name:
+        return content
+
+    # Extract first two words for professional display
+    if project_name:
+        words = project_name.split()
+        # Use first two words, or first word if only one word
+        display_entity = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else project_name
+    else:
+        display_entity = project_name
+
+    # Replace common entity name placeholders
+    replacements = {
+        '[specific entity name]': display_entity,
+        '[entity name]': display_entity,
+        '[company name]': display_entity,
+        '[target entity]': display_entity,
+        '[ENTITY_NAME]': display_entity,
+        '[COMPANY_NAME]': display_entity,
+        '[SPECIFIC_ENTITY_NAME]': display_entity,
+        '[TARGET_ENTITY]': display_entity
+    }
+
+    for placeholder, replacement in replacements.items():
+        content = content.replace(placeholder, replacement)
+
     return content
 
 @dataclass
@@ -944,12 +976,12 @@ class PowerPointGenerator:
         tf.word_wrap = True
         tf.auto_size = MSO_AUTO_SIZE.NONE  # Use full shape space
 
-        # Minimal margins for maximum space utilization
+        # Add left margin for better readability while maximizing space utilization
         try:
-            tf.margin_left = Pt(1)
-            tf.margin_right = Pt(1)
-            tf.margin_top = Pt(1)
-            tf.margin_bottom = Pt(1)
+            tf.margin_left = Pt(8)  # Increased left margin for better appearance
+            tf.margin_right = Pt(2)
+            tf.margin_top = Pt(2)
+            tf.margin_bottom = Pt(2)
         except:
             pass  # Some versions don't support margin settings
 
@@ -1196,15 +1228,20 @@ def update_project_titles(presentation_path, project_name, output_path=None):
     prs = Presentation(presentation_path)
     total_slides = len(prs.slides)
     
-    # Extract base entity name (e.g., "Haining" from "Haining Wanpu Limited")
-    base_entity = project_name.split()[0] if project_name else project_name
+    # Extract first two words for professional display
+    if project_name:
+        words = project_name.split()
+        # Use first two words, or first word if only one word
+        display_entity = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else project_name
+    else:
+        display_entity = project_name
     
     for slide_index, slide in enumerate(prs.slides):
         current_slide_number = slide_index + 1
         projTitle_shape = find_shape_by_name(slide.shapes, "projTitle")
         if projTitle_shape:
             replacements = {
-                "[PROJECT]": base_entity,  # Use base entity name instead of full project name
+                "[PROJECT]": display_entity,  # Use abbreviated entity name for professional display
                 "[Current]": str(current_slide_number),
                 "[Total]": str(total_slides)
             }
