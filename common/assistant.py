@@ -1948,6 +1948,16 @@ class ProofreadingAgent:
                     result['corrected_content'] = corrected
                     result['translation_runs'] = runs
 
+                # Post-process: Replace any remaining xxx placeholders
+                corrected = result.get('corrected_content') or content
+                if corrected:
+                    # Replace common xxx patterns with appropriate content
+                    corrected = corrected.replace('xxx', 'the relevant amount')
+                    corrected = corrected.replace('XXX', 'the relevant amount')
+                    corrected = corrected.replace('xxx', 'applicable')
+                    corrected = corrected.replace('XXX', 'applicable')
+                    result['corrected_content'] = corrected
+
                 # Debug: Log final result (remove after testing)
                 # print(f"🔍 DEBUG: Proofreading completed for {key}. Translation runs: {runs}")
                 # print(f"🔍 DEBUG: Final corrected content (first 200 chars): {result.get('corrected_content', '')[:200]}...")

@@ -2913,8 +2913,13 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         # Setup tqdm progress bar for CLI, or use external progress for Streamlit
         if is_cli:
             progress_bar = tqdm(total=len(filtered_keys), desc="🌐 中文翻译", unit="key")
+            print(f"🔍 DEBUG: Translator initialized with tqdm for {len(filtered_keys)} keys")
         else:
             progress_bar = None
+            if external_progress:
+                print(f"🔍 DEBUG: Translator initialized with external_progress for Streamlit")
+            else:
+                print(f"🔍 DEBUG: Translator initialized without progress tracking")
 
         # Get AI model settings
         use_local_ai = False
@@ -3056,8 +3061,11 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     prompts_config = json.load(f)
 
                 # Use Chinese system prompt for translation with heuristic
+                print(f"🔍 DEBUG: Loading Chinese prompts for translation")
                 system_prompt = prompts_config.get('system_prompts', {}).get('chinese', {}).get('Agent 1', '')
+                print(f"🔍 DEBUG: Chinese system prompt loaded: {system_prompt[:100]}..." if system_prompt else "❌ No Chinese system prompt found")
                 if not system_prompt:
+                    print("⚠️ DEBUG: Using fallback Chinese system prompt")
                     system_prompt = """
                     你是中国财务报告翻译专家。你的任务是将英文财务分析内容翻译成简体中文。
                     关键要求：
@@ -3069,6 +3077,7 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     """
 
                 # Call process_keys with translation prompt
+                print(f"🔍 DEBUG: Calling process_keys with language='chinese' for key: {key}")
                 translation_result = process_keys(
                     keys=[key],
                     entity_name=entity_name,
@@ -3083,8 +3092,9 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     processed_table_data={key: tables_md},
                     use_local_ai=use_local_ai,
                     use_openai=use_openai,
-                    language='english'  # Use English prompts for translation
+                    language='chinese'  # Use Chinese prompts for Chinese translation
                 )
+                print(f"🔍 DEBUG: process_keys returned result for {key}: {bool(translation_result and key in translation_result)}")
 
                 # Update the result with translated content
                 if key in translation_result and translation_result[key]:
@@ -3124,6 +3134,8 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     # Update tqdm with key information and progress
                     progress_bar.set_description(f"🌐 中文翻译 {key} ({idx+1}/{len(filtered_keys)})")
                     progress_bar.update(1)
+                    # Force refresh to ensure progress shows
+                    progress_bar.refresh()
                 elif external_progress:
                     # Update Streamlit progress with detailed information
                     progress_pct = (idx + 1) / len(filtered_keys)
