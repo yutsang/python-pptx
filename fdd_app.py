@@ -1052,6 +1052,29 @@ def main():
                                     translated_results = run_chinese_translator(filtered_keys_for_ai, proofread_english_results, temp_ai_data, external_progress=ext)
 
                                     proof_results = translated_results  # Final results are the translated content
+
+                                    # Check if translation actually produced Chinese content
+                                    if translated_results:
+                                        # Verify that at least some content is in Chinese
+                                        has_chinese_content = False
+                                        has_translation_failure = False
+
+                                        for key, result in translated_results.items():
+                                            content = result.get('content', '') if isinstance(result, dict) else str(result)
+                                            if isinstance(result, dict) and result.get('translation_failed'):
+                                                has_translation_failure = True
+                                                break
+                                            elif content and any('\u4e00' <= char <= '\u9fff' for char in content):
+                                                has_chinese_content = True
+                                                break
+
+                                        if has_translation_failure:
+                                            st.error("❌ 翻译完全失败。请检查AI配置和网络连接。")
+                                            status_text.text("❌ 翻译失败")
+                                        elif not has_chinese_content:
+                                            st.warning("⚠️ 翻译可能失败，内容仍为英文。请检查AI配置。")
+                                            status_text.text("⚠️ 翻译警告：内容可能仍为英文")
+
                                 else:
                                     # English version: Generate → Proofread
                                     ext['combined']['stage_index'] = 2
@@ -1092,6 +1115,29 @@ def main():
                                 translated_results = run_chinese_translator(filtered_keys_for_ai, proofread_english_results, temp_ai_data, external_progress=ext)
 
                                 proof_results = translated_results  # Final results are the translated content
+
+                                # Check if translation actually produced Chinese content
+                                if translated_results:
+                                    # Verify that at least some content is in Chinese
+                                    has_chinese_content = False
+                                    has_translation_failure = False
+
+                                    for key, result in translated_results.items():
+                                        content = result.get('content', '') if isinstance(result, dict) else str(result)
+                                        if isinstance(result, dict) and result.get('translation_failed'):
+                                            has_translation_failure = True
+                                            break
+                                        elif content and any('\u4e00' <= char <= '\u9fff' for char in content):
+                                            has_chinese_content = True
+                                            break
+
+                                    if has_translation_failure:
+                                        st.error("❌ 翻译完全失败。请检查AI配置和网络连接。")
+                                        status_text.text("❌ 翻译失败")
+                                    elif not has_chinese_content:
+                                        st.warning("⚠️ 翻译可能失败，内容仍为英文。请检查AI配置。")
+                                        status_text.text("⚠️ 翻译警告：内容可能仍为英文")
+
                             else:
                                 # English version: Generate → Proofread
                                 status_text.text("🧐 运行校对...")
@@ -1149,14 +1195,34 @@ def main():
                     with key_tabs[i]:
                         # Show Compliance (Proofreader) first if available
                         agent3_results_all = agent_states.get('agent3_results', {}) or {}
+                        agent3_final_content = None
+
+                        # Check for agent3_final content from JSON file if not in session state
+                        if key not in agent3_results_all:
+                            agent3_final_content = get_content_from_json(key)
+
                         if key in agent3_results_all:
                             pr = agent3_results_all[key]
                             corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
-                            if corrected_content:
+
+                            # Check if this is a translation failure
+                            if isinstance(pr, dict) and pr.get('translation_failed'):
+                                st.error(f"❌ 翻译失败: {corrected_content}")
+                                # Show original English content if available
+                                original_content = pr.get('original_content', '')
+                                if original_content:
+                                    st.info("📝 显示原始英文内容:")
+                                    st.markdown(original_content)
+                            elif corrected_content:
                                 st.markdown(corrected_content)
+                        elif agent3_final_content:
+                            # Display agent3_final content from JSON
+                            st.markdown("**Agent 3 Final Content:**")
+                            st.markdown(agent3_final_content)
+                            agent3_results_all[key] = {"content": agent3_final_content}  # Add to results for expander logic
 
                         # AI1 Results (collapsible if proofreader exists)
-                        with st.expander("📝 AI: Generation (details)", expanded=key not in agent3_results_all):
+                        with st.expander("📝 AI: Generation (details)", expanded=key not in agent3_results_all and not agent3_final_content):
                             agent1_results = agent_states.get('agent1_results', {}) or {}
                             if key in agent1_results and agent1_results[key]:
                                 content = agent1_results[key]
@@ -1779,35 +1845,23 @@ def get_content_from_json(key):
     json_data = load_json_content()
     if not json_data:
         return None
-    
+
     # Search in all categories (matching the actual JSON structure)
     for category in ["Current Assets", "Non-current Assets", "Liabilities", "Equity"]:
-        category_data = json_data.get("categories", {}).get(category, {})
-        if key in category_data:
-            content = category_data[key]["content"]
-            # Skip items with no information available
-            if content and "no information available" not in content.lower():
-                # Apply entity name abbreviations to placeholders in content
-                from common.pptx_export import replace_entity_placeholders
-                # Get the selected entity name (assuming it's available in session state)
-                selected_entity = st.session_state.get('entity_input', '')
-                if selected_entity:
-                    content = replace_entity_placeholders(content, selected_entity)
-                return content
-    
-    # Direct key lookup in keys section
-    keys_data = json_data.get("keys", {})
-    if key in keys_data:
-        content = keys_data[key].get("content", "")
-        # Skip items with no information available
-        if content and "no information available" not in content.lower():
-            # Apply entity name abbreviations to placeholders in content
-            from common.pptx_export import replace_entity_placeholders
-            # Get the selected entity name (assuming it's available in session state)
-            selected_entity = st.session_state.get('entity_input', '')
-            if selected_entity:
-                content = replace_entity_placeholders(content, selected_entity)
-            return content
+        category_data = json_data.get("categories", {}).get(category, [])
+        for item in category_data:
+            if isinstance(item, dict) and item.get("key") == key:
+                content = item.get("content", "")
+                content_source = item.get("content_source", "")
+                # Only return agent3_final content
+                if content and "no information available" not in content.lower() and content_source == "agent3_final":
+                    # Apply entity name abbreviations to placeholders in content
+                    from common.pptx_export import replace_entity_placeholders
+                    # Get the selected entity name (assuming it's available in session state)
+                    selected_entity = st.session_state.get('entity_input', '')
+                    if selected_entity:
+                        content = replace_entity_placeholders(content, selected_entity)
+                    return content
 
     return None
 
@@ -3156,7 +3210,16 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 print(f"❌ Chinese translation error: {e}")
         if is_cli and progress_bar:
             progress_bar.close()
-        return agent1_results
+
+        # Return a clear indication of translation failure instead of original results
+        failed_translation_results = {}
+        for key in filtered_keys:
+            failed_translation_results[key] = {
+                'content': f"❌ 翻译失败: {str(e)}",
+                'translation_failed': True,
+                'original_content': agent1_results.get(key, '')
+            }
+        return failed_translation_results
 
 def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress=None, language='English'):
     """Run AI Proofreader for all keys (Compliance, Figures, Entities, Grammar)."""
