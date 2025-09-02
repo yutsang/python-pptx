@@ -2552,11 +2552,25 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None, language='Englis
             language_key = 'chinese' if language == '中文' else 'english'
             system_prompts = prompts_config.get('system_prompts', {}).get(language_key, {})
 
+            # DEBUG: Print prompt configuration
+            print(f"🔧 DEBUG - PROMPT CONFIGURATION")
+            print(f"🌐 REQUESTED LANGUAGE: {language}")
+            print(f"🔑 LANGUAGE KEY: {language_key}")
+            print(f"📋 AVAILABLE SYSTEM PROMPTS: {list(system_prompts.keys())}")
+            print(f"🤖 REQUESTED AGENT: Agent 1")
+            print(f"{'─' * 60}")
+
             actual_system_prompt = system_prompts.get('Agent 1', '')
             if not actual_system_prompt:
                 # Fallback to English if language-specific prompt not found
+                print(f"⚠️ WARNING: No Agent 1 prompt found for {language_key}, falling back to English")
                 actual_system_prompt = prompts_config.get('system_prompts', {}).get('english', {}).get('Agent 1', '')
-                if not actual_system_prompt:
+
+            print(f"📝 FINAL SYSTEM PROMPT ({len(actual_system_prompt)} chars):")
+            print(f"{actual_system_prompt[:200]}..." if len(actual_system_prompt) > 200 else actual_system_prompt)
+            print(f"{'─' * 60}")
+
+            if not actual_system_prompt:
                     actual_system_prompt = """
                     Role: system,
                     Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
@@ -2867,6 +2881,17 @@ IMPORTANT ENTITY INSTRUCTIONS:
         from common.assistant import clear_json_cache
         clear_json_cache()
 
+        # DEBUG: Print Agent 1 input parameters
+        print(f"\n{'='*80}")
+        print(f"🤖 DEBUG - AGENT 1 INPUT PARAMETERS")
+        print(f"{'='*80}")
+        print(f"🔧 KEYS: {filtered_keys}")
+        print(f"🏢 ENTITY NAME: {entity_name}")
+        print(f"🌐 LANGUAGE: {language_key}")
+        print(f"🤖 USE LOCAL AI: {use_local_ai}")
+        print(f"🤖 USE OPENAI: {use_openai}")
+        print(f"{'='*80}")
+
         results = process_keys(
             keys=filtered_keys,  # All keys at once
             entity_name=entity_name,
@@ -2883,6 +2908,26 @@ IMPORTANT ENTITY INSTRUCTIONS:
             use_openai=use_openai,
             language=language_key
         )
+
+        # DEBUG: Print Agent 1 results
+        print(f"\n{'='*80}")
+        print(f"🤖 DEBUG - AGENT 1 OUTPUT RESULTS")
+        print(f"{'='*80}")
+        if results:
+            print(f"📊 RESULTS SUMMARY:")
+            for key in filtered_keys:
+                if key in results:
+                    result = results[key]
+                    if isinstance(result, dict):
+                        content = result.get('content', '')
+                        print(f"  {key}: {len(content)} chars - {content[:50]}..." if len(content) > 50 else f"  {key}: {len(content)} chars - {content}")
+                    else:
+                        print(f"  {key}: {result}")
+                else:
+                    print(f"  {key}: NO RESULT")
+        else:
+            print("❌ NO RESULTS RETURNED")
+        print(f"{'='*80}")
         
         processing_time = time.time() - start_time
         
@@ -2910,7 +2955,33 @@ IMPORTANT ENTITY INSTRUCTIONS:
             }
             
             logger.log_agent_output('agent1', key, enhanced_output, processing_time / len(filtered_keys))
-        
+
+        # DEBUG: Print final Agent 1 results being returned
+        print(f"\n{'='*80}")
+        print(f"🏁 DEBUG - FINAL AGENT 1 RESULTS BEING RETURNED")
+        print(f"{'='*80}")
+        if results:
+            print(f"📊 FINAL RESULTS SUMMARY ({len(results)} keys):")
+            for key, result in results.items():
+                if isinstance(result, dict):
+                    content = result.get('content', '')
+                    chinese_chars = sum(1 for char in content if '\u4e00' <= char <= '\u9fff')
+                    english_chars = sum(1 for char in content if char.isascii() and char.isalnum())
+                    total_chars = chinese_chars + english_chars
+
+                    if total_chars > 0:
+                        chinese_ratio = chinese_chars / total_chars
+                        status = "🇨🇳" if chinese_ratio > 0.5 else "🇺🇸" if chinese_ratio < 0.3 else "🌐"
+                        print(f"  {status} {key}: {len(content)} chars, 中文占比: {chinese_ratio:.1%}")
+                        print(f"      内容预览: {content[:50]}..." if len(content) > 50 else f"      内容: {content}")
+                    else:
+                        print(f"  ❓ {key}: {len(content)} chars (empty)")
+                else:
+                    print(f"  ❓ {key}: {result}")
+        else:
+            print("❌ NO RESULTS TO RETURN")
+        print(f"{'='*80}")
+
         st.success(f"🎉 Agent 1 completed all {len(filtered_keys)} keys in {processing_time:.2f}s")
         return results
             
@@ -3152,6 +3223,16 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
 请直接返回翻译后的完整中文内容，不要包含任何解释、注释或额外文本。"""
 
+                # DEBUG: Print input prompts for each key
+                print(f"\n{'='*80}")
+                print(f"🔧 DEBUG - TRANSLATION INPUT FOR KEY: {key}")
+                print(f"{'='*80}")
+                print(f"📝 SYSTEM PROMPT ({len(system_prompt)} chars):")
+                print(f"{system_prompt}")
+                print(f"\n📝 USER PROMPT ({len(user_prompt)} chars):")
+                print(f"{user_prompt}")
+                print(f"{'='*80}")
+
                 # Call AI for translation
                 translated_content = generate_response(
                     user_query=user_prompt,
@@ -3162,6 +3243,14 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     entity_name=entity_name,
                     use_local_ai=use_local_ai
                 )
+
+                # DEBUG: Print AI response for each key
+                print(f"\n{'='*80}")
+                print(f"🤖 DEBUG - TRANSLATION OUTPUT FOR KEY: {key}")
+                print(f"{'='*80}")
+                print(f"📤 RAW AI RESPONSE ({len(str(translated_content)) if translated_content else 0} chars):")
+                print(f"'{translated_content}'")
+                print(f"{'='*80}")
 
                 # Clean the response
                 if translated_content:
@@ -3318,26 +3407,68 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
         entity_name = ai_data.get('entity_name', '')
         sections_by_key = ai_data.get('sections_by_key', {})
 
-        # Continue with proofreading logic
-        # Setup tqdm progress bar for processing
+        # Enhanced progress tracking for proofreading
+        if external_progress:
+            def update_proofreader_progress(current_idx, total, current_key, status_msg=""):
+                try:
+                    progress_pct = (current_idx + 1) / total
+                    bar = external_progress.get('bar')
+                    status = external_progress.get('status')
+
+                    if bar:
+                        bar.progress(progress_pct)
+
+                    if status:
+                        eta_str = ""
+                        if current_idx > 0:
+                            elapsed = time.time() - start_time
+                            avg_time = elapsed / (current_idx + 1)
+                            remaining = total - current_idx - 1
+                            eta_seconds = int(avg_time * remaining)
+                            mins, secs = divmod(eta_seconds, 60)
+                            eta_str = f" ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else ""
+
+                        enhanced_msg = f"🔍 校对中: {current_key} ({current_idx + 1}/{total}){eta_str}"
+                        if status_msg:
+                            enhanced_msg += f" - {status_msg}"
+
+                        status.text(enhanced_msg)
+                except Exception as e:
+                    print(f"Progress update error: {e}")
+
+            progress_callback = update_proofreader_progress
+        else:
+            progress_callback = None
+
+        # Setup tqdm progress bar for CLI processing
         if is_cli:
             progress_bar = tqdm(total=len(filtered_keys), desc="🔍 校对", unit="key")
         else:
             progress_bar = None
 
+        start_time = time.time()
+
         # Process each key with proofreading
         for idx, key in enumerate(filtered_keys):
             try:
                 # Update progress
-                if is_cli and progress_bar:
+                if progress_callback:
+                    progress_callback(idx, len(filtered_keys), key, "开始校对")
+                elif is_cli and progress_bar:
                     progress_bar.set_description(f"🔍 校对 {key} ({idx+1}/{len(filtered_keys)})")
-                    progress_bar.update(1)
 
                 content = agent1_results.get(key, '')
                 if isinstance(content, dict):
                     content_text = content.get('content', '')
                 else:
                     content_text = str(content)
+
+                # Debug output for all modes
+                print(f"\n🔍 [{idx+1}/{len(filtered_keys)}] 校对中: {key}")
+                print(f"📝 内容预览: {content_text[:50]}..." if len(content_text) > 50 else f"📝 内容: {content_text}")
+
+                if is_cli and progress_bar:
+                    progress_bar.update(1)
 
                 if not content_text:
                     results[key] = agent1_results.get(key, {})
@@ -3346,8 +3477,45 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                 # Get sections for this key
                 key_sections = sections_by_key.get(key, [])
 
+                # DEBUG: Print proofreading input
+                print(f"\n{'='*80}")
+                print(f"🔍 DEBUG - PROOFREAD INPUT FOR KEY: {key}")
+                print(f"{'='*80}")
+                print(f"📝 CONTENT TO PROOFREAD ({len(content_text)} chars):")
+                print(f"{content_text}")
+                print(f"🔧 ENTITY NAME: {entity_name}")
+                print(f"{'='*80}")
+
                 # Process the content with proofreading agent
                 proofread_result = proof_agent.proofread(content_text, key_sections, entity_name)
+
+                # DEBUG: Print proofreading output
+                print(f"\n{'='*80}")
+                print(f"✅ DEBUG - PROOFREAD OUTPUT FOR KEY: {key}")
+                print(f"{'='*80}")
+                if isinstance(proofread_result, dict):
+                    print(f"📤 PROOFREAD RESULT:")
+                    for k, v in proofread_result.items():
+                        if k == 'corrected_content' and v:
+                            print(f"  {k}: {v[:100]}..." if len(str(v)) > 100 else f"  {k}: {v}")
+                        else:
+                            print(f"  {k}: {v}")
+                else:
+                    print(f"📤 PROOFREAD RESULT: {proofread_result}")
+                print(f"{'='*80}")
+
+                # Debug output for proofreading result
+                print(f"✅ 校对完成: {key}")
+                if isinstance(proofread_result, dict):
+                    corrected_content = proofread_result.get('corrected_content', '')
+                    issues_found = len(proofread_result.get('issues', []))
+                    print(f"🔧 校对结果: {issues_found} 个问题发现")
+                    if corrected_content:
+                        print(f"📝 修正内容预览: {corrected_content[:50]}..." if len(corrected_content) > 50 else f"📝 修正内容: {corrected_content}")
+
+                # Update progress to show completion
+                if progress_callback:
+                    progress_callback(idx, len(filtered_keys), key, "校对完成")
 
                 # Store result
                 result_data = agent1_results.get(key, {})
@@ -3362,9 +3530,31 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                     print(f"Error proofreading {key}: {e}")
                 results[key] = agent1_results.get(key, {})
 
-        # Close progress bar
+        # Final summary and close progress bar
+        total_processed = len([k for k in results.keys() if results[k]])
+        success_rate = total_processed / len(filtered_keys) if filtered_keys else 0
+
+        summary_msg = f"✅ 校对完成 - 成功处理 {total_processed}/{len(filtered_keys)} 个项目 ({success_rate:.1%})"
+
         if is_cli and progress_bar:
             progress_bar.close()
+            print(f"\n{summary_msg}")
+            print(f"🔍 校对质量统计:")
+            for key in results:
+                if results[key] and isinstance(results[key], dict):
+                    issues = len(results[key].get('issues', []))
+                    status = "✅" if issues == 0 else "⚠️" if issues < 3 else "❌"
+                    print(f"  {status} {key}: {issues} 个问题")
+        elif external_progress and external_progress.get('status'):
+            external_progress['status'].text(summary_msg)
+
+        print(f"\n{'─' * 60}")
+        print(f"🎯 校对任务完成总结:")
+        print(f"   总项目数: {len(filtered_keys)}")
+        print(f"   成功校对: {total_processed}")
+        print(f"   成功率: {success_rate:.1%}")
+        print(f"   耗时: {time.time() - start_time:.1f} 秒")
+        print(f"{'─' * 60}")
 
         return results
 
@@ -3456,6 +3646,9 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
         total = len(filtered_keys)
 
         for idx, key in enumerate(filtered_keys):
+            # Debug output for all modes
+            print(f"\n🔍 [{idx+1}/{len(filtered_keys)}] 校对中: {key}")
+
             if not is_cli:
                 elapsed = time.time() - start_time
                 # Simple ETA: average time per processed item * remaining
@@ -3466,7 +3659,7 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                 eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else "ETA --:--"
                 # Enhanced proofreading progress message
                 progress_pct = int((idx + 1) / total * 100)
-                enhanced_msg = f"🧐 Proofreader — {key} — {progress_pct}% ({idx+1}/{total}) — {eta_str}"
+                enhanced_msg = f"🔍 校对中: {key} ({idx+1}/{total}) {eta_str}"
 
                 # Add compliance status if available from previous results
                 if results and key in results:
@@ -3489,6 +3682,10 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                         progress_bar.progress((idx+1)/len(filtered_keys))
                 except Exception:
                     pass
+            elif is_cli:
+                # Update tqdm progress bar
+                progress_bar.set_description(f"🔍 校对 {key} ({idx+1}/{len(filtered_keys)})")
+                progress_bar.update(1)
             
             try:
                 content = agent1_results.get(key, '')
@@ -3505,8 +3702,43 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                         progress_bar.update(1)
                     continue
 
+                # DEBUG: Print proofreading input
+                print(f"\n{'='*80}")
+                print(f"🔍 DEBUG - PROOFREAD INPUT FOR KEY: {key}")
+                print(f"{'='*80}")
+                print(f"📝 CONTENT TO PROOFREAD ({len(content_text)} chars):")
+                print(f"{content_text}")
+                print(f"🔧 ENTITY NAME: {entity_name}")
+                print(f"{'='*80}")
+
                 # Pass progress_bar to proofread method
                 result = proof_agent.proofread(content_text, key, tables_md, entity_name, progress_bar if is_cli else None)
+
+                # DEBUG: Print proofreading output
+                print(f"\n{'='*80}")
+                print(f"✅ DEBUG - PROOFREAD OUTPUT FOR KEY: {key}")
+                print(f"{'='*80}")
+                if isinstance(result, dict):
+                    print(f"📤 PROOFREAD RESULT:")
+                    for k, v in result.items():
+                        if k == 'corrected_content' and v:
+                            print(f"  {k}: {v[:100]}..." if len(str(v)) > 100 else f"  {k}: {v}")
+                        else:
+                            print(f"  {k}: {v}")
+                else:
+                    print(f"📤 PROOFREAD RESULT: {result}")
+                print(f"{'='*80}")
+
+                # Debug output for proofreading result
+                print(f"✅ 校对完成: {key}")
+                if isinstance(result, dict):
+                    corrected_content = result.get('corrected_content', '')
+                    issues_found = len(result.get('issues', []))
+                    is_compliant = result.get('is_compliant', False)
+                    print(f"🔧 校对结果: {issues_found} 个问题发现, 合规性: {'✅' if is_compliant else '⚠️'}")
+                    if corrected_content:
+                        print(f"📝 修正内容预览: {corrected_content[:50]}..." if len(corrected_content) > 50 else f"📝 修正内容: {corrected_content}")
+
                 results[key] = result
 
                 # Log output only if logger is available
@@ -3534,13 +3766,35 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                 if is_cli and progress_bar:
                     progress_bar.update(1)
 
+        # Final summary and close progress bar
+        total_processed = len([k for k in results.keys() if results[k]])
+        success_rate = total_processed / len(filtered_keys) if filtered_keys else 0
+
+        summary_msg = f"✅ 校对完成 - 成功处理 {total_processed}/{len(filtered_keys)} 个项目 ({success_rate:.1%})"
+
         if is_cli and progress_bar:
             progress_bar.close()
+            print(f"\n{summary_msg}")
+            print(f"🔍 校对质量统计:")
+            for key in results:
+                if results[key] and isinstance(results[key], dict):
+                    issues = len(results[key].get('issues', []))
+                    is_compliant = results[key].get('is_compliant', False)
+                    status = "✅" if issues == 0 and is_compliant else "⚠️" if issues < 3 else "❌"
+                    print(f"  {status} {key}: {issues} 个问题, 合规性: {'是' if is_compliant else '否'}")
         elif not is_cli:
             try:
-                st.success("✅ AI Proofreader completed")
+                st.success(summary_msg)
             except Exception:
                 pass
+
+        print(f"\n{'─' * 60}")
+        print(f"🎯 校对任务完成总结:")
+        print(f"   总项目数: {len(filtered_keys)}")
+        print(f"   成功校对: {total_processed}")
+        print(f"   成功率: {success_rate:.1%}")
+        print(f"   耗时: {time.time() - start_time:.1f} 秒")
+        print(f"{'─' * 60}")
 
         return results
     except Exception as e:
