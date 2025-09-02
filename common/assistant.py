@@ -937,7 +937,7 @@ def detect_string_in_file(file_content, target_string):
 
 def load_ip(file, key=None):
     try:
-        with open(file, 'r') as f:
+        with open(file, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if key is not None and key in data:
             return data[key]
@@ -960,7 +960,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     print(f"🚀 Starting AI processing for {len(keys)} keys")
     
     # Load prompts from prompts.json file (no hardcoded fallback)
-    with open(prompts_file, 'r') as f:
+    with open(prompts_file, 'r', encoding='utf-8') as f:
         prompts_config = json.load(f)
     system_prompt = prompts_config['system_prompts']['Agent 1']
     
