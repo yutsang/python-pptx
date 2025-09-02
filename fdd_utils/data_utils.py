@@ -14,22 +14,34 @@ def get_tab_name(project_name):
     """Get tab name based on project name."""
     if not project_name:
         return None
-    
-    if project_name == 'Haining':
+
+    project_name = project_name.strip()
+
+    # Hardcoded mappings for known entities
+    if project_name.lower() == 'haining':
         return "BSHN"
-    elif project_name == 'Nanjing':
+    elif project_name.lower() == 'nanjing':
         return "BSNJ"
-    elif project_name == 'Ningbo':
+    elif project_name.lower() == 'ningbo':
         return "BSNB"
-    
+
     # For other entities, try to extract a meaningful sheet name
     # Remove common suffixes and use first word
     clean_name = project_name.split()[0] if project_name else None
     if clean_name:
-        return f"BS{clean_name.upper()[:3]}"  # Use first 3 letters
+        # Try different sheet name patterns
+        possible_names = [
+            f"BS{clean_name.upper()[:3]}",  # BSCLE, BSHAI, etc.
+            f"{clean_name.upper()[:3]}",     # CLE, HAI, etc.
+            clean_name.upper(),             # CLEANTECH, HAINING, etc.
+            f"BS_{clean_name.upper()[:3]}",  # BS_CLE, etc.
+            project_name                     # Original name as last resort
+        ]
+        return possible_names  # Return list of possible names
+
     # Fallback: return the project name itself to avoid None
     print(f"Warning: Could not extract sheet name from '{project_name}', using project name as fallback")
-    return project_name
+    return [project_name]
 
 
 def get_financial_keys():

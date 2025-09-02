@@ -3347,6 +3347,10 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
                 if current_content:
                     # Get patterns for this key
                     key_patterns = patterns.get(key, {})
+                    if not key_patterns:
+                        st.warning(f"⚠️ No patterns found for {key} in pattern.json")
+                        st.info(f"Available pattern keys: {list(patterns.keys())}")
+
                     st.write(f"Found {len(key_patterns)} patterns for {key}")
                     
                     # Prepare detailed user prompt for pattern compliance

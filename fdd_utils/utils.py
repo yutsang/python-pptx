@@ -232,10 +232,23 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str):
         file_path = Path(filename)
         # Use context manager to ensure file handle is released
         with pd.ExcelFile(file_path) as xl:
-            if sheet_name not in xl.sheet_names:
-                print(f"Sheet '{sheet_name}' not found in the file.")
+            # Handle both single sheet name and list of possible names
+            if isinstance(sheet_name, list):
+                found_sheet = None
+                for possible_sheet in sheet_name:
+                    if possible_sheet in xl.sheet_names:
+                        found_sheet = possible_sheet
+                        break
+
+                if found_sheet is None:
+                    print(f"None of the sheet names {sheet_name} found in the file. Available sheets: {xl.sheet_names}")
+                    return {}
+                sheet_name = found_sheet
+                print(f"Found matching sheet: '{sheet_name}'")
+            elif sheet_name not in xl.sheet_names:
+                print(f"Sheet '{sheet_name}' not found in the file. Available sheets: {xl.sheet_names}")
                 return {}
-            
+
             # Parse the sheet
             df = xl.parse(sheet_name)
 
@@ -303,9 +316,19 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str):
                         financial_figures[key] = float(value[0]) / scale_factor
             return financial_figures
     
+    except FileNotFoundError:
+        print(f"❌ Excel file not found: {filename}")
+        print(f"   Expected path: {file_path}")
+        return {}
+    except PermissionError:
+        print(f"❌ Permission denied accessing Excel file: {filename}")
+        print(f"   Check file permissions: {file_path}")
+        return {}
     except Exception as e:
-        print(f"An error occurred while processing the Excel file: {e}")
-    return {}
+        print(f"❌ Unexpected error processing Excel file '{filename}': {e}")
+        print(f"   File path: {file_path}")
+        print(f"   Sheet name: {sheet_name}")
+        return {}
 
 # Example usage
 excel_file_name = 'fdd_utils/221128.Project TK.Databook.JW_enhanced.xlsx'
@@ -313,16 +336,36 @@ project_name = 'Nanjing'
 date = '30/09/2022'
 
 def get_tab_name(project_name):
-    if project_name == 'Haining':
+    if not project_name:
+        return None
+
+    project_name = project_name.strip()
+
+    # Hardcoded mappings for known entities
+    if project_name.lower() == 'haining':
         return "BSHN"
-    elif project_name == 'Nanjing':
+    elif project_name.lower() == 'nanjing':
         return "BSNJ"
-    elif project_name == 'Ningbo':
+    elif project_name.lower() == 'ningbo':
         return "BSNB"
-    else:
-        # For unknown entities, return the project name itself to avoid None
-        print(f"Warning: Unknown project name '{project_name}', using project name as fallback")
-        return project_name
+
+    # For other entities, try to extract a meaningful sheet name
+    # Remove common suffixes and use first word
+    clean_name = project_name.split()[0] if project_name else None
+    if clean_name:
+        # Try different sheet name patterns
+        possible_names = [
+            f"BS{clean_name.upper()[:3]}",  # BSCLE, BSHAI, etc.
+            f"{clean_name.upper()[:3]}",     # CLE, HAI, etc.
+            clean_name.upper(),             # CLEANTECH, HAINING, etc.
+            f"BS_{clean_name.upper()[:3]}",  # BS_CLE, etc.
+            project_name                     # Original name as last resort
+        ]
+        return possible_names  # Return list of possible names
+
+    # Fallback: return the project name itself to avoid None
+    print(f"Warning: Could not extract sheet name from '{project_name}', using project name as fallback")
+    return [project_name]
     
 def get_financial_figure(financial_figures, key):
     figure = financial_figures.get(key, None)
