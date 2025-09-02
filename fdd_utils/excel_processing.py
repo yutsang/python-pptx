@@ -699,6 +699,9 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                     
                     print(f"   🔍 Processing sheet: {sheet_name}")
                     print(f"   🔍 Available financial keys: {financial_keys}")
+                    print(f"   🔍 Entity mode: {entity_mode}")
+                    print(f"   🔍 Entity name: {entity_name}")
+                    print(f"   🔍 Entity keywords: {entity_keywords}")
                     
                     # Check each financial key - prioritize exact sheet name matches
                     for financial_key in financial_keys:
@@ -733,6 +736,9 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                     
                     # Process this dataframe for each matched key
                     for best_key in matched_keys:
+                        # Initialize actual_entity_found for this key
+                        actual_entity_found = None
+
                         # Check for entity keywords in the dataframe
                         try:
                             # Vectorized entity matching - much faster than row-by-row
@@ -770,14 +776,18 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         # Only process if entity is found in this section (or if single entity mode)
                         if entity_found:
                             # Find the actual entity name from the section text (skip for single entity mode)
-                            if entity_mode != 'single':
+                            if entity_mode == 'single':
+                                # For single entity mode, always use the provided entity name
+                                actual_entity_found = entity_name
+                            else:
+                                # For multiple entity mode, search for entity in the text
                                 actual_entity_found = None
                                 # First try to find the exact entity keyword
                                 for entity_keyword in entity_keywords:
                                     if entity_keyword.lower() in section_text:
                                         actual_entity_found = entity_keyword
                                         break
-                            
+
                             # If not found, try to extract the actual entity name from the data (skip for single entity mode)
                             if actual_entity_found is None and entity_mode != 'single':
                                 # Look for entity patterns in the section text
@@ -807,8 +817,14 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             
                             if parsed_table:
                                 # Check if this section contains the selected entity
-                                section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
-                                is_selected_entity = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
+                                if entity_mode == 'single':
+                                    # For single entity mode, skip entity validation
+                                    is_selected_entity = True
+                                    section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
+                                else:
+                                    # For multiple entity mode, perform entity validation
+                                    section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
+                                    is_selected_entity = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
                                 
                                 # Debug: Print which entity was found
                                 print(f"   🔍 Section for {best_key}: entity_found={entity_found}, is_selected_entity={is_selected_entity}")
@@ -844,6 +860,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                     # Temporarily disable entity matching to debug
                                     sections_by_key[best_key].append(section_data)
                                     print(f"   ✅ Added section for {best_key} with entity: {actual_entity_found}")
+                                    print(f"   📊 Total sections for {best_key}: {len(sections_by_key[best_key])}")
                                     if not is_selected_entity:
                                         print(f"   ⚠️  Note: entity mismatch (found: {actual_entity_found}, expected: {entity_keywords})")
                             else:
@@ -862,8 +879,17 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                     'is_selected_entity': True  # Force this to True for fallback
                                 })
         
+        # Print summary of processed sections
+        total_sections = sum(len(sections) for sections in sections_by_key.values())
+        print(f"   📊 SUMMARY: Processed {len(sections_by_key)} keys with {total_sections} total sections")
+        for key, sections in sections_by_key.items():
+            if sections:
+                print(f"   📋 {key}: {len(sections)} sections")
+            else:
+                print(f"   ❌ {key}: No sections found")
+
         return sections_by_key
-        
+
     except Exception as e:
         print(f"Error in get_worksheet_sections_by_keys: {e}")
         return {}
