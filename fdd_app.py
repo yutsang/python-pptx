@@ -1035,11 +1035,20 @@ def main():
                                 combined_results.update(agent1_results_bs or {})
                                 combined_results.update(agent1_results_is or {})
 
-                                # Chinese Translation Agent
-                                ext['combined']['stage_index'] = 2
-                                status_text.text("🌐 翻译为中文...")
-                                progress_bar.progress(70)
-                                translated_results = run_chinese_translator(filtered_keys_for_ai, combined_results, temp_ai_data, external_progress=ext)
+                                # Chinese Translation Agent - Only translate if content is not already in Chinese
+                                if selected_language == '中文':
+                                    # Content is already in Chinese, skip translation
+                                    translated_results = combined_results
+                                    print("✅ Content already in Chinese, skipping translation step")
+                                    ext['combined']['stage_index'] = 2
+                                    status_text.text("🌐 内容已在中文，跳过翻译...")
+                                    progress_bar.progress(70)
+                                    ext['combined']['stage_index'] = 3  # Skip to proofreading
+                                else:
+                                    ext['combined']['stage_index'] = 2
+                                    status_text.text("🌐 翻译为中文...")
+                                    progress_bar.progress(70)
+                                    translated_results = run_chinese_translator(filtered_keys_for_ai, combined_results, temp_ai_data, external_progress=ext)
 
                                 # Proofreader
                                 ext['combined']['stage_index'] = 3
@@ -1064,10 +1073,18 @@ def main():
                             st.session_state['agent_states']['agent1_completed'] = True
                             st.session_state['agent_states']['agent1_success'] = bool(agent1_results)
 
-                            # Chinese Translation Agent
-                            status_text.text("🌐 翻译为中文...")
-                            ext['combined']['stage_index'] = 1
-                            translated_results = run_chinese_translator(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
+                            # Chinese Translation Agent - Only translate if content is not already in Chinese
+                            if selected_language == '中文':
+                                # Content is already in Chinese, skip translation
+                                translated_results = agent1_results
+                                print("✅ Content already in Chinese, skipping translation step")
+                                ext['combined']['stage_index'] = 1
+                                status_text.text("🌐 内容已在中文，跳过翻译...")
+                                ext['combined']['stage_index'] = 2  # Skip to proofreading
+                            else:
+                                status_text.text("🌐 翻译为中文...")
+                                ext['combined']['stage_index'] = 1
+                                translated_results = run_chinese_translator(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
 
                             # Proofreader
                             status_text.text("🧐 运行校对...")
@@ -1501,16 +1518,19 @@ def display_ai_content_by_key(key, agent_choice, language='English'):
                 st.markdown("### 📊 Generated Content")
                 
                 if mode == "AI Mode":
-                    # Get stored AI results
-                    ai_results = ai_data.get('ai_results', {})
-                    # AI1 processing key with prompt loaded (following old version pattern)
-                    
-                    if key in ai_results and ai_results[key]:
-                        content = ai_results[key]
+                    # Get stored AI results - check agent_states first (for processed Chinese content)
+                    agent_states = st.session_state.get('agent_states', {})
+                    agent1_results = agent_states.get('agent1_results', {})
+
+                    # Check if we have processed results in agent_states
+                    if key in agent1_results and agent1_results[key]:
+                        content = agent1_results[key]
+                        if isinstance(content, dict):
+                            content = content.get('content', '')
                         # Clean the content
                         cleaned_content = clean_content_quotes(content)
                         st.markdown(cleaned_content)
-                        
+
                         # Show source information
                         with st.expander("📋 Source Information", expanded=False):
                             st.info(f"**Key:** {key}")
@@ -1518,9 +1538,24 @@ def display_ai_content_by_key(key, agent_choice, language='English'):
                             st.info(f"**Agent:** {agent_choice}")
                             st.info(f"**Mode:** {mode}")
                     else:
-                        st.warning(f"No AI content available for {get_key_display_name(key)}")
-                        st.info("This may be due to AI processing failure or no data found for this key.")
-                        
+                        # Fallback to ai_data results
+                        ai_results = ai_data.get('ai_results', {})
+                        if key in ai_results and ai_results[key]:
+                            content = ai_results[key]
+                            # Clean the content
+                            cleaned_content = clean_content_quotes(content)
+                            st.markdown(cleaned_content)
+
+                            # Show source information
+                            with st.expander("📋 Source Information", expanded=False):
+                                st.info(f"**Key:** {key}")
+                                st.info(f"**Entity:** {entity_name}")
+                                st.info(f"**Agent:** {agent_choice}")
+                                st.info(f"**Mode:** {mode}")
+                        else:
+                            st.warning(f"No AI content available for {get_key_display_name(key)}")
+                            st.info("This may be due to AI processing failure or no data found for this key.")
+
                 else:  # Only AI Mode supported
                     st.error("❌ Only AI Mode is supported. Please configure AI services.")
                     
@@ -1585,36 +1620,82 @@ def display_ai_content_by_key(key, agent_choice, language='English'):
                         st.warning("No AI-generated content available for this key.")
                     agent1_content = ""
                 
-                if agent1_content:
-                    # Display Agent 1 content
-                    st.markdown("**Agent 1 Content:**")
-                    st.markdown(clean_content_quotes(agent1_content))
-                    
-                    # Display pattern compliance results from session state
-                    st.markdown("---")
-                    st.markdown("**Pattern Compliance Results:**")
-                    
-                    # Get AI3 results from session state (processed during sequential workflow)
-                    ai3_results = st.session_state.get('ai3_results', {})
-                    pattern_result = ai3_results.get(key, {})
-                    
-                    if pattern_result:
-                        if pattern_result.get('is_compliant', False):
+                # Get Agent 1 content - check agent_states first
+                agent_states = st.session_state.get('agent_states', {})
+                agent1_results = agent_states.get('agent1_results', {})
+                agent3_results = agent_states.get('agent3_results', {})
+
+                # Check for processed content in agent_states
+                if key in agent3_results and agent3_results[key]:
+                    # We have proofread results
+                    proofread_content = agent3_results[key]
+                    if isinstance(proofread_content, dict):
+                        proofread_content = proofread_content.get('corrected_content', proofread_content.get('content', ''))
+
+                    if proofread_content:
+                        st.markdown("**Proofread Content (Agent 3):**")
+                        st.markdown(clean_content_quotes(proofread_content))
+
+                        # Show compliance status
+                        is_compliant = agent3_results[key].get('is_compliant', False) if isinstance(agent3_results[key], dict) else False
+                        if is_compliant:
                             st.success("✅ Pattern compliance passed")
                         else:
-                            st.warning("⚠️ Pattern compliance issues found:")
-                            for issue in pattern_result.get('issues', []):
-                                st.write(f"• {issue}")
-                            
-                            # Show corrected content if available
-                            if pattern_result.get('corrected_content'):
-                                st.markdown("**Corrected Content:**")
-                                st.markdown(pattern_result['corrected_content'])
-                    else:
-                        # Fallback to offline pattern validation display
-                        st.info("Pattern validation now uses AI-generated content only.")
+                            st.warning("⚠️ Pattern compliance issues found")
+
+                elif key in agent1_results and agent1_results[key]:
+                    # We have Agent 1 results but no Agent 3
+                    agent1_content = agent1_results[key]
+                    if isinstance(agent1_content, dict):
+                        agent1_content = agent1_content.get('content', '')
+
+                    if agent1_content:
+                        st.markdown("**Agent 1 Content:**")
+                        st.markdown(clean_content_quotes(agent1_content))
+                        st.info("ℹ️ No proofreading results available yet. Run proofreading to see corrections.")
+
                 else:
-                    st.warning("No content available for pattern validation")
+                    # Fallback to old method
+                    if mode == "Offline Mode":
+                        st.warning("No AI-generated content available for this key.")
+                        agent1_content = ""
+                    else:
+                        ai_results = ai_data.get('ai_results', {})
+                        agent1_content = ai_results.get(key, "")
+                        if not agent1_content:
+                            st.warning("No AI-generated content available for this key.")
+                        agent1_content = ""
+
+                    if agent1_content:
+                        # Display Agent 1 content
+                        st.markdown("**Agent 1 Content:**")
+                        st.markdown(clean_content_quotes(agent1_content))
+
+                        # Display pattern compliance results from session state
+                        st.markdown("---")
+                        st.markdown("**Pattern Compliance Results:**")
+
+                        # Get AI3 results from session state (processed during sequential workflow)
+                        ai3_results = st.session_state.get('ai3_results', {})
+                        pattern_result = ai3_results.get(key, {})
+
+                        if pattern_result:
+                            if pattern_result.get('is_compliant', False):
+                                st.success("✅ Pattern compliance passed")
+                            else:
+                                st.warning("⚠️ Pattern compliance issues found:")
+                                for issue in pattern_result.get('issues', []):
+                                    st.write(f"• {issue}")
+
+                                # Show corrected content if available
+                                if pattern_result.get('corrected_content'):
+                                    st.markdown("**Corrected Content:**")
+                                    st.markdown(pattern_result['corrected_content'])
+                        else:
+                            # Fallback to offline pattern validation display
+                            st.info("Pattern validation now uses AI-generated content only.")
+                    else:
+                        st.warning("No content available for pattern validation")
     
     except Exception as e:
         st.error(f"Error in AI content display: {e}")
@@ -2805,10 +2886,25 @@ IMPORTANT ENTITY INSTRUCTIONS:
 def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_progress=None):
     """Run Chinese Translation Agent: Translate English content to Chinese based on raw data table."""
     try:
-        print(f"🔍 run_chinese_translator called with {len(filtered_keys)} keys")
         import json
         from common.assistant import process_keys
         logger = st.session_state.ai_logger
+
+        # Determine if we're in CLI or Streamlit context
+        try:
+            import streamlit as st
+            is_cli = False
+        except ImportError:
+            is_cli = True
+
+        # Setup tqdm progress bar for CLI, or use external progress for Streamlit
+        if is_cli:
+            progress_bar = tqdm(total=len(filtered_keys), desc="🌐 中文翻译", unit="key")
+        else:
+            progress_bar = None
+
+        if is_cli:  # Only show start message in CLI mode
+            print(f"🌐 Starting Chinese translation for {len(filtered_keys)} keys")
 
         # Get AI data
         entity_name = ai_data.get('entity_name', '')
@@ -2879,9 +2975,22 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
             progress_callback = None
 
         translated_results = {}
+        start_time = time.time()
 
         for idx, key in enumerate(filtered_keys):
             try:
+                # Update progress
+                if is_cli and progress_bar:
+                    elapsed = time.time() - start_time
+                    avg_time = elapsed / (idx + 1) if idx > 0 else 0
+                    remaining = len(filtered_keys) - idx - 1
+                    eta_seconds = int(avg_time * remaining)
+                    mins, secs = divmod(eta_seconds, 60)
+                    eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else ""
+
+                    progress_bar.set_description(f"🌐 中文翻译 {key} ({idx+1}/{len(filtered_keys)}) {eta_str}")
+                    progress_bar.update(0)  # Don't increment yet
+
                 content = agent1_results.get(key, '')
                 if isinstance(content, dict):
                     content_text = content.get('content', '')
@@ -2890,6 +2999,8 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
                 if not content_text:
                     translated_results[key] = agent1_results.get(key, {})
+                    if is_cli and progress_bar:
+                        progress_bar.update(1)
                     continue
 
                 # Get table data for this key
@@ -2962,10 +3073,45 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     # If translation failed, keep original
                     translated_results[key] = agent1_results.get(key, {})
 
+                # Update progress after each translation
+                if is_cli and progress_bar:
+                    progress_bar.update(1)
+                elif external_progress:
+                    # Update Streamlit progress
+                    progress_pct = (idx + 1) / len(filtered_keys)
+                    if external_progress.get('bar'):
+                        external_progress['bar'].progress(progress_pct)
+                    if external_progress.get('status'):
+                        elapsed = time.time() - start_time
+                        avg_time = elapsed / (idx + 1)
+                        remaining = len(filtered_keys) - idx - 1
+                        eta_seconds = int(avg_time * remaining)
+                        mins, secs = divmod(eta_seconds, 60)
+                        eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else ""
+                        external_progress['status'].text(f"🌐 中文翻译: {key} ({idx+1}/{len(filtered_keys)}) {eta_str}")
+
             except Exception as e:
-                print(f"Error translating {key}: {e}")
+                if is_cli:  # Only print errors in CLI mode to reduce noise in Streamlit
+                    print(f"Error translating {key}: {e}")
                 # Keep original content if translation fails
                 translated_results[key] = agent1_results.get(key, {})
+                # Update progress even on error
+                if is_cli and progress_bar:
+                    progress_bar.update(1)
+                elif external_progress:
+                    progress_pct = (idx + 1) / len(filtered_keys)
+                    if external_progress.get('bar'):
+                        external_progress['bar'].progress(progress_pct)
+
+        # Close progress bar if in CLI mode
+        if is_cli and progress_bar:
+            progress_bar.close()
+            total_time = time.time() - start_time
+            print(f"✅ Chinese translation completed in {total_time:.1f} seconds")
+        else:
+            # In Streamlit mode, just update the final progress
+            if external_progress and external_progress.get('status'):
+                external_progress['status'].text(f"✅ 中文翻译完成 - 处理了 {len(filtered_keys)} 个项目")
 
         # Clean up temp file
         try:
@@ -2977,7 +3123,9 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         return translated_results
 
     except Exception as e:
-        print(f"Chinese translation error: {e}")
+        print(f"❌ Chinese translation error: {e}")
+        if is_cli and progress_bar:
+            progress_bar.close()
         return agent1_results
 
 def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress=None, language='English'):
