@@ -3165,12 +3165,51 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
             if debug_mode:
                 print(f"📊 Streamlit mode - no tqdm progress bar")
 
-        # Get AI model settings
+        # Get AI model settings - try session state regardless of CLI mode
         use_local_ai = False
         use_openai = False
-        if not is_cli:
+
+        try:
+            # Try to get settings from session state (works even in CLI mode if Streamlit is imported)
+            import streamlit as st
             use_local_ai = st.session_state.get('use_local_ai', False)
             use_openai = st.session_state.get('use_openai', False)
+
+            # Also check selected_provider for more specific control
+            selected_provider = st.session_state.get('selected_provider')
+            if selected_provider == 'Open AI':
+                use_openai = True
+                use_local_ai = False
+            elif selected_provider == 'Local AI' or selected_provider == 'Server AI':
+                use_local_ai = True
+                use_openai = False
+
+            if debug_mode:
+                print(f"🤖 AI Settings from session state:")
+                print(f"   use_local_ai: {use_local_ai}")
+                print(f"   use_openai: {use_openai}")
+                print(f"   selected_provider: {selected_provider}")
+
+        except Exception as e:
+            if debug_mode:
+                print(f"⚠️ Could not access session state: {e}")
+                print(f"   Falling back to config defaults")
+
+        # If still no settings, try to detect from config
+        if not use_local_ai and not use_openai:
+            try:
+                config_details = load_config('fdd_utils/config.json')
+                if config_details.get('LOCAL_AI_API_BASE'):
+                    use_local_ai = True
+                    if debug_mode:
+                        print(f"✅ Detected Local AI from config")
+                elif config_details.get('OPENAI_API_KEY'):
+                    use_openai = True
+                    if debug_mode:
+                        print(f"✅ Detected OpenAI from config")
+            except Exception as e:
+                if debug_mode:
+                    print(f"⚠️ Could not load config: {e}")
 
         # Get AI data
         entity_name = ai_data.get('entity_name', '')
@@ -3179,7 +3218,16 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
         # Load configuration
         config_details = load_config('fdd_utils/config.json')
+
+        if debug_mode:
+            print(f"🔧 Initializing AI services...")
+            print(f"   use_local_ai: {use_local_ai}")
+            print(f"   use_openai: {use_openai}")
+
         oai_client, _ = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
+
+        if debug_mode:
+            print(f"✅ AI client initialized successfully")
 
         # Load Chinese system prompt from config
         with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
@@ -3206,10 +3254,16 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         # Get model name
         if use_local_ai:
             model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
+            if debug_mode:
+                print(f"🎯 Using Local AI model: {model}")
         elif use_openai:
             model = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
+            if debug_mode:
+                print(f"🎯 Using OpenAI model: {model}")
         else:
             model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
+            if debug_mode:
+                print(f"🎯 Using DeepSeek model: {model} (fallback - check AI settings!)")
 
         # Create temporary file for processing
         temp_file_path = None
@@ -3555,12 +3609,36 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
             except:
                 pass
 
-        # Model/provider selection
+        # Model/provider selection - try session state regardless of CLI mode
         use_local_ai = False
         use_openai = False
-        if not is_cli:
+
+        try:
+            # Try to get settings from session state (works even in CLI mode if Streamlit is imported)
+            import streamlit as st
             use_local_ai = st.session_state.get('use_local_ai', False)
             use_openai = st.session_state.get('use_openai', False)
+
+            # Also check selected_provider for more specific control
+            selected_provider = st.session_state.get('selected_provider')
+            if selected_provider == 'Open AI':
+                use_openai = True
+                use_local_ai = False
+            elif selected_provider == 'Local AI' or selected_provider == 'Server AI':
+                use_local_ai = True
+                use_openai = False
+
+        except Exception as e:
+            # Fallback to config detection
+            try:
+                from common.assistant import load_config
+                config_details = load_config('fdd_utils/config.json')
+                if config_details.get('LOCAL_AI_API_BASE'):
+                    use_local_ai = True
+                elif config_details.get('OPENAI_API_KEY'):
+                    use_openai = True
+            except Exception:
+                pass
 
         proof_agent = ProofreadingAgent(use_local_ai=use_local_ai, use_openai=use_openai, language=language)
 
@@ -3757,12 +3835,36 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
             except:
                 pass
 
-        # Model/provider selection
+        # Model/provider selection - try session state regardless of CLI mode
         use_local_ai = False
         use_openai = False
-        if not is_cli:
+
+        try:
+            # Try to get settings from session state (works even in CLI mode if Streamlit is imported)
+            import streamlit as st
             use_local_ai = st.session_state.get('use_local_ai', False)
             use_openai = st.session_state.get('use_openai', False)
+
+            # Also check selected_provider for more specific control
+            selected_provider = st.session_state.get('selected_provider')
+            if selected_provider == 'Open AI':
+                use_openai = True
+                use_local_ai = False
+            elif selected_provider == 'Local AI' or selected_provider == 'Server AI':
+                use_local_ai = True
+                use_openai = False
+
+        except Exception as e:
+            # Fallback to config detection
+            try:
+                from common.assistant import load_config
+                config_details = load_config('fdd_utils/config.json')
+                if config_details.get('LOCAL_AI_API_BASE'):
+                    use_local_ai = True
+                elif config_details.get('OPENAI_API_KEY'):
+                    use_openai = True
+            except Exception:
+                pass
 
         proof_agent = ProofreadingAgent(use_local_ai=use_local_ai, use_openai=use_openai, language=language)
 
