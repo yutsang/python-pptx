@@ -1200,7 +1200,7 @@ class DataValidationAgent:
             
             # Load system prompt from prompts.json
             try:
-                with open('fdd_utils/prompts.json', 'r') as f:
+                with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
                     prompts_config = json.load(f)
                 system_prompt = prompts_config.get('system_prompts', {}).get('Agent 2', '')
                 
@@ -1393,7 +1393,7 @@ class PatternValidationAgent:
             
             # Load system prompt from prompts.json
             try:
-                with open('fdd_utils/prompts.json', 'r') as f:
+                with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
                     prompts_config = json.load(f)
                 system_prompt = prompts_config.get('system_prompts', {}).get('Agent 3', '')
                 
@@ -1606,7 +1606,7 @@ class ProofreadingAgent:
 
             # Load system prompt
             try:
-                with open('fdd_utils/prompts.json', 'r') as f:
+                with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
                     prompts_config = json.load(f)
                 system_prompt = prompts_config.get('system_prompts', {}).get('AI Proofreader', '')
             except (FileNotFoundError, json.JSONDecodeError):

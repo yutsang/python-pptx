@@ -117,37 +117,40 @@ def load_config_files():
         # Load config
         config_path = base_path / 'config.json'
         if config_path.exists():
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
         else:
             config = {}
-        
+
         # Load mapping
         mapping_path = base_path / 'mapping.json'
         if mapping_path.exists():
-            with open(mapping_path, 'r') as f:
+            with open(mapping_path, 'r', encoding='utf-8') as f:
                 mapping = json.load(f)
         else:
             mapping = {}
-        
+
         # Load pattern
         pattern_path = base_path / 'pattern.json'
         if pattern_path.exists():
-            with open(pattern_path, 'r') as f:
+            with open(pattern_path, 'r', encoding='utf-8') as f:
                 pattern = json.load(f)
         else:
             pattern = {}
-        
+
         # Load prompts
         prompts_path = base_path / 'prompts.json'
         if prompts_path.exists():
-            with open(prompts_path, 'r') as f:
+            with open(prompts_path, 'r', encoding='utf-8') as f:
                 prompts = json.load(f)
         else:
             prompts = {}
         
         return config, mapping, pattern, prompts
         
+    except UnicodeDecodeError as e:
+        print(f"Encoding error loading config files (try saving files as UTF-8): {e}")
+        return {}, {}, {}, {}
     except Exception as e:
         print(f"Error loading config files: {e}")
         return {}, {}, {}, {}

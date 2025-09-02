@@ -2604,7 +2604,7 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None):
         # We need to capture the real prompts with table data
         try:
         # Load prompts from prompts.json file
-            with open('fdd_utils/prompts.json', 'r') as f:
+            with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
                 prompts_config = json.load(f)
             actual_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1', '')
             if not actual_system_prompt:
@@ -2690,7 +2690,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
             
             # Build the actual user prompt using templates from prompts.json, then inject dynamic data
             try:
-                with open('fdd_utils/prompts.json', 'r') as f:
+                with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
                     prompts_cfg = json.load(f)
                 user_prompts_cfg = prompts_cfg.get('user_prompts', {})
                 generic_cfg = prompts_cfg.get('generic_prompt', {})
@@ -3216,7 +3216,7 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
         
         # Load prompts from prompts.json
         try:
-            with open('fdd_utils/prompts.json', 'r') as f:
+            with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
                 prompts_config = json.load(f)
             agent3_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 3', '')
             st.success("✅ Loaded Agent 3 system prompt from prompts.json")
