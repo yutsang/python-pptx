@@ -285,7 +285,7 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                         structured_data['multiplier'] = 1000
             
             # Extract items (skip header rows and totals)
-            if (desc_cell.lower() not in ['total', 'indicative adjusted', 'nan', ''] and 
+            if (desc_cell.lower() not in ['total', 'indicative adjusted', '示意性調整後', '示意性调整后', 'nan', ''] and
                 not re.match(r'^[A-Z\s]+$', desc_cell) and  # Skip all caps headers
                 amount_cell and amount_cell != 'nan'):
                 

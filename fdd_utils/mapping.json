@@ -2,32 +2,59 @@
     "Cash": [
         "Cash",
         "Cash and Cash Equivalents",
-        "Cash and cash equivalents"
+        "Cash and cash equivalents",
+        "貨幣資金",
+        "货币资金"
     ],
     "AR": [
         "AR",
         "Accounts Receivables",
         "Accounts Receivable",
         "Accounts receivable",
-        "Accounts receivables"
+        "Accounts receivables",
+        "應收賬款",
+        "应收账款"
     ],
     "Prepayments": [
         "Prepayment",
-        "Prepayments"
+        "Prepayments",
+        "預收款項",
+        "预收款项"
     ],
     "OR": [
         "OR",
         "Other Receivables",
         "Other receivables",
         "Other Receivable",
-        "Other receivables"
+        "Other receivables",
+        "其他应收款",
+        "其他應收款"
+    ],
+    "Inventory": [
+        "Inventory",
+        "Inventories",
+        "存货",
+        "库存",
+        "存貨"
     ],
     "IP": [
         "IP",
         "Investment Property",
         "Investment properties",
         "Investment property",
-        "Investment Properties"
+        "Investment Properties",
+        "投资物业",
+        "投资性房地产",
+        "投資性房地產"
+    ],
+    "IA": [
+        "IA",
+        "Intangible Assets",
+        "Intangible asset",
+        "Intangible assets",
+        "无形资产",
+        "无形资产",
+        "無形資產"
     ],
     "NCA": [
         "NCA",
@@ -39,7 +66,9 @@
         "Fixed Assets",
         "Fixed Asset",
         "Fixed assets",
-        "Fixed asset"
+        "Fixed asset",
+        "固定資產",
+        "固定资产"
     ],
     "Other NCA": [
         "Other NCA",
@@ -51,7 +80,9 @@
         "Other Fixed Assets",
         "Other Fixed Asset",
         "Other Fixed assets",
-        "Other Fixed asset"
+        "Other Fixed asset",
+        "其他非流动资产",
+        "其他非流動資產"
     ],
     "Other CA": [
         "Other CA",
@@ -61,35 +92,45 @@
         "Other Current Assets",
         "Other Current Asset",
         "Other Current assets",
-        "Other Current asset"
+        "Other Current asset",
+        "其他流动资产",
+        "其他流動資產"
     ],
     "AP": [
         "AP",
         "Accounts Payables",
         "Accounts Payable",
         "Accounts payable",
-        "Accounts payables"
+        "Accounts payables",
+        "应付账款",
+        "應付帳款"
     ],
     "Advances": [
         "Advances",
         "Advances from Customers",
         "Advances from customers",
         "Advances from customer",
-        "Advances from Customer"
+        "Advances from Customer",
+        "预收款项",
+        "預收款項"
     ],
     "Taxes payable": [
         "Taxes payable",
         "Tax Payable",
         "Tax payable",
         "Taxes Payable",
-        "Taxes payables"
+        "Taxes payables",
+        "應交稅費",
+        "应交税费"
     ],
     "OP": [
         "OP",
         "Other Payables",
         "Other payables",
         "Other Payable",
-        "Other payables"
+        "Other payables",
+        "其他应付款",
+        "其他應付款"
     ],
     "Capital": [
         "Capital",
@@ -98,16 +139,23 @@
         "Shareholder's Equity",
         "Shareholders' Equity",
         "Shareholders Equity",
-        "Shareholder Equity"
+        "Shareholder Equity",
+        "股东权益",
+        "實收資本",
+        "实收资本"
     ],
     "Reserve": [
         "Reserve",
-        "Reserves"
+        "Reserves",
+        "盈余公积",
+        "盈餘公積"
     ],
     "Capital reserve": [
         "Capital reserve",
         "Capital Reserves",
-        "Capital Reserve"
+        "Capital Reserve",
+        "资本公积",
+        "資本公積"
     ],
     "OI": [
         "OI",
@@ -116,7 +164,11 @@
         "Other Income and Gains",
         "Other income and gains",
         "Sales",
-        "Sale"
+        "Sale",
+        "其他收入",
+        "其他收益",
+        "營業收入",
+        "营业收入"
     ],
     "OC": [
         "OC",
@@ -124,7 +176,11 @@
         "Other costs",
         "Other Cost",
         "Other cost",
-        "Cost"
+        "Cost",
+        "其他成本",
+        "其他費用",
+        "營業成本",
+        "营业成本"
     ],
     "Tax and Surcharges": [
         "Tax and Surcharges",
@@ -132,11 +188,15 @@
         "Taxes and Surcharges",
         "Taxes and surcharges",
         "Tax and surcharge",
-        "Taxes and surcharge"
+        "Taxes and surcharge",
+        "税金及附加",
+        "稅金及附加"
     ],
     "GA": [
         "GA",
-        "G&A expenses"
+        "G&A expenses",
+        "管理费用",
+        "管理費用"
     ],
     "Fin Exp": [
         "Fin Exp",
@@ -145,33 +205,43 @@
         "Financial Expenses",
         "Financial expenses",
         "Financial Expense",
-        "Financial expense"
+        "Financial expense",
+        "财务费用",
+        "財務費用"
     ],
     "Cr Loss": [
         "Cr Loss",
         "Credit Losses",
         "Credit losses",
         "Credit loss",
-        "Credit Loss"
+        "Credit Loss",
+        "信用损失",
+        "信用損失"
     ],
     "Other Income": [
         "Other Income",
         "Other income",
         "Other Income and Gains",
-        "Other income and gains"
+        "Other income and gains",
+        "其他收益",
+        "其他收益"
     ],
     "Non-operating Income": [
         "Non-operating Income",
         "Non-operating income",
         "Non Operating Income",
-        "Non Operating income"
+        "Non Operating income",
+        "营业外收入",
+        "營業外收入"
     ],
     "Non-operating Exp": [
         "Non-operating Exp",
         "Non-operating Expenses",
         "Non-operating expenses",
         "Non Operating Expenses",
-        "Non Operating expenses"
+        "Non Operating expenses",
+        "营业外支出",
+        "營業外支出"
     ],
     "Income tax": [
         "Income tax",
@@ -179,14 +249,17 @@
         "Income Taxes",
         "Income taxes",
         "Income tax expense",
-        "Income tax expenses"
+        "Income tax expenses",
+        "所得税费用",
+        "所得稅費用"
     ],
     "LT DTA": [
         "LT DTA",
         "Long-term Deferred Tax Assets",
         "Long-term deferred tax assets",
         "Long-term Deferred Tax Asset",
-        "Long-term deferred tax asset"
+        "Long-term deferred tax asset",
+        "递延所得税资产",
+        "遞延所得稅資產"
     ]
-
 }

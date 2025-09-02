@@ -15,7 +15,7 @@ from tabulate import tabulate
 
 
 def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
-    """Detect the latest date column from a DataFrame, focusing on 'Indicative adjusted' with merged cell handling."""
+    """Detect the latest date column from a DataFrame, focusing on 'Indicative adjusted' (English/Chinese) with merged cell handling."""
     
     def parse_date(date_str):
         """Parse date string in various formats including xMxx."""
@@ -64,21 +64,27 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
     latest_date = None
     latest_column = None
     
-    # print(f"🔍 {sheet_name}: Searching for 'Indicative adjusted' column...")
-    
-    # Step 1: Find "Indicative adjusted" positions
+    # print(f"🔍 {sheet_name}: Searching for 'Indicative adjusted' (English/Chinese) column...")
+
+    # Step 1: Find "Indicative adjusted" (English/Chinese) positions
     indicative_positions = []
     
-    # Search in first 10 rows for "Indicative adjusted"
+    # Search in first 10 rows for "Indicative adjusted" (English and Chinese)
     for row_idx in range(min(10, len(df))):
         for col_idx, col in enumerate(columns):
             val = df.iloc[row_idx, col_idx]
-            if pd.notna(val) and 'indicative' in str(val).lower() and 'adjusted' in str(val).lower():
+            val_str = str(val).lower()
+            # Check for English "indicative adjusted" or Chinese "示意性調整後" / "示意性调整后"
+            if pd.notna(val) and (
+                ('indicative' in val_str and 'adjusted' in val_str) or
+                '示意性調整後' in val_str or
+                '示意性调整后' in val_str
+            ):
                 indicative_positions.append((row_idx, col_idx))
-                                                # print(f"   📋 Found 'Indicative adjusted' at Row {row_idx}, Col {col_idx} ({col})")
-    
+                                                # print(f"   📋 Found 'Indicative adjusted' (English/Chinese) at Row {row_idx}, Col {col_idx} ({col})")
+
     if not indicative_positions:
-        print(f"   ⚠️  No 'Indicative adjusted' found, using fallback date detection")
+        print(f"   ⚠️  No 'Indicative adjusted' (English/Chinese) found, using fallback date detection")
         # Fallback: find any date column
         for col in columns:
             for row_idx in range(min(5, len(df))):
@@ -91,9 +97,9 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
                         print(f"   📅 Fallback: Found date in {col}: {date_val.strftime('%Y-%m-%d')}")
         return latest_column
     
-    # Step 2: For each "Indicative adjusted" position, find the merged range and get the date
+    # Step 2: For each "Indicative adjusted" (English/Chinese) position, find the merged range and get the date
     for indic_row, indic_col in indicative_positions:
-        print(f"   🔍 Processing 'Indicative adjusted' at col {indic_col}")
+        print(f"   🔍 Processing 'Indicative adjusted' (English/Chinese) at col {indic_col}")
         
         # Find merged range: go right until we hit a non-empty cell or reach the end
         merge_start = indic_col
@@ -247,7 +253,10 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             for i in range(min(3, len(df_str))):  # Check first 3 rows for headers
                 for j in range(len(df_str.columns)):
                     cell_value = str(df_str.iloc[i, j]).lower()
-                    if "indicative adjusted" in cell_value:
+                    # Check for English "indicative adjusted" or Chinese "示意性調整後" / "示意性调整后"
+                    if ("indicative adjusted" in cell_value or
+                        "示意性調整後" in cell_value or
+                        "示意性调整后" in cell_value):
                         value_col_idx = j
                         value_col_name = "Indicative adjusted"
                         # Found value column indicator
