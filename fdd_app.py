@@ -852,8 +852,15 @@ def main():
                         type="primary",
                         use_container_width=True,
                         key="btn_ai_chi",
-                        help="Generate AI report in Chinese (内容生成 + 校对)"
+                        help="Generate AI report in Chinese (内容生成 + 校对 + 翻译)"
                     )
+
+                    # DEBUG: Track Chinese button clicks
+                    if run_chi_clicked:
+                        print(f"\n🎯 CHINESE AI BUTTON CLICKED!")
+                        print(f"🌐 Selected language: {st.session_state.get('selected_language', 'Unknown')}")
+                        print(f"📊 Current statement type: {st.session_state.get('current_statement_type', 'Unknown')}")
+                        print(f"{'='*60}")
 
                 # Handle English AI processing
                 if run_eng_clicked:
@@ -948,12 +955,14 @@ def main():
 
                 # Handle Chinese AI processing
                 if run_chi_clicked:
+                    print(f"\n🚀 CHINESE AI PROCESSING STARTED")
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     eta_text = st.empty()
                     try:
                         status_text.text("🤖 初始化中文AI处理…")
                         progress_bar.progress(10)
+                        print(f"📊 Progress bar initialized")
 
                         selected_language = '中文'
                         st.session_state['selected_language'] = selected_language
@@ -1056,7 +1065,7 @@ def main():
                                     print(f"📊 Proofread results available: {len(proofread_english_results) if proofread_english_results else 0}")
                                     print(f"📋 External progress: {type(ext)}")
 
-                                    translated_results = run_chinese_translator(filtered_keys_for_ai, proofread_english_results, temp_ai_data, external_progress=ext)
+                                    translated_results = run_chinese_translator(filtered_keys_for_ai, proofread_english_results, temp_ai_data, external_progress=ext, debug_mode=True)
 
                                     # DEBUG: Translation completed
                                     print(f"\n✅ DEBUG: run_chinese_translator completed")
@@ -1095,9 +1104,17 @@ def main():
                                     translated_results = combined_results  # No translation for English
 
                                 if proof_results:
+                                    print(f"\n💾 STORING TRANSLATION RESULTS IN SESSION STATE")
+                                    print(f"📊 Results type: {type(proof_results)}")
+                                    print(f"📊 Results keys: {list(proof_results.keys()) if proof_results else 'None'}")
+
                                     st.session_state['agent_states']['agent3_results'] = proof_results
                                     st.session_state['agent_states']['agent3_completed'] = True
                                     st.session_state['agent_states']['agent3_success'] = bool(proof_results)
+
+                                    print(f"✅ Session state updated successfully")
+                                    print(f"🔍 agent3_results keys: {list(st.session_state['agent_states']['agent3_results'].keys())}")
+                                    print(f"{'='*60}")
 
                             progress_bar.progress(100)
                             status_text.text("✅ 所有处理完成")
@@ -1129,7 +1146,7 @@ def main():
                                 print(f"🔑 Keys: {len(filtered_keys_for_ai)}")
                                 print(f"📊 Proofread results available: {len(proofread_english_results) if proofread_english_results else 0}")
 
-                                translated_results = run_chinese_translator(filtered_keys_for_ai, proofread_english_results, temp_ai_data, external_progress=ext)
+                                translated_results = run_chinese_translator(filtered_keys_for_ai, proofread_english_results, temp_ai_data, external_progress=ext, debug_mode=True)
 
                                 # DEBUG: Translation completed (single statement mode)
                                 print(f"\n✅ DEBUG: run_chinese_translator completed (single statement)")
@@ -1214,9 +1231,19 @@ def main():
                 # Display results for each key in its tab
                 for i, key in enumerate(filtered_keys):
                     with key_tabs[i]:
+                        # DEBUG: Show what data we're working with
+                        print(f"\n📋 DISPLAYING KEY: {key}")
+                        print(f"🔍 Available agent states: {list(agent_states.keys())}")
+                        print(f"📊 agent3_results exists: {'agent3_results' in agent_states}")
+                        if 'agent3_results' in agent_states:
+                            print(f"🔑 agent3_results keys: {list(agent_states['agent3_results'].keys())}")
+                            print(f"🔍 Key '{key}' in agent3_results: {key in agent_states['agent3_results']}")
+
                         # Show Compliance (Proofreader) first if available
                         agent3_results_all = agent_states.get('agent3_results', {}) or {}
                         agent3_final_content = None
+
+                        print(f"📄 agent3_results_all for {key}: {type(agent3_results_all.get(key)) if key in agent3_results_all else 'NOT FOUND'}")
 
                         # Check for agent3_final content from JSON file if not in session state
                         if key not in agent3_results_all:
@@ -1225,6 +1252,14 @@ def main():
                         if key in agent3_results_all:
                             pr = agent3_results_all[key]
                             corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
+
+                            # DEBUG: Show what content we're displaying
+                            print(f"📝 Content type: {type(pr)}")
+                            print(f"📝 Has corrected_content: {'corrected_content' in pr if isinstance(pr, dict) else False}")
+                            print(f"📝 Has content: {'content' in pr if isinstance(pr, dict) else False}")
+                            print(f"📝 Final content length: {len(corrected_content)}")
+                            print(f"📝 Content preview: {corrected_content[:100]}..." if len(corrected_content) > 100 else f"📝 Content: {corrected_content}")
+                            print(f"{'─' * 40}")
 
                             # Check if this is a translation failure
                             if isinstance(pr, dict) and pr.get('translation_failed'):
@@ -3037,7 +3072,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
             except Exception:
                 pass
 
-def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_progress=None):
+def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_progress=None, debug_mode=True):
     """Simple Chinese Translation Agent: Process proofread content one by one using AI"""
     try:
         import json
@@ -3055,20 +3090,30 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
             is_cli = True
 
         # EARLY DEBUG: Confirm function is being called
-        print(f"\n🚀 DEBUG: run_chinese_translator called with {len(filtered_keys)} keys")
-        print(f"📊 CLI mode: {is_cli}")
-        print(f"📊 External progress provided: {external_progress is not None}")
-        print(f"🔑 Keys to process: {filtered_keys}")
-        print(f"{'='*60}")
+        if debug_mode:
+            print(f"\n🚀🚀🚀 DEBUG: run_chinese_translator called with {len(filtered_keys)} keys 🚀🚀🚀")
+            print(f"📊 CLI mode: {is_cli}")
+            print(f"📊 External progress provided: {external_progress is not None}")
+            print(f"🔑 Keys to process: {filtered_keys}")
+            print(f"{'='*60}")
+
+        # FORCE CLI MODE FOR DEBUGGING (only in debug mode)
+        if debug_mode and not is_cli:  # If we're in Streamlit mode, force CLI for debugging
+            is_cli = True
+            if debug_mode:
+                print(f"🔧 FORCED CLI MODE for debugging: {is_cli}")
 
         # Setup tqdm progress bar
         if is_cli:
-            print(f"📊 Setting up tqdm progress bar for {len(filtered_keys)} keys")
+            if debug_mode:
+                print(f"📊 Setting up tqdm progress bar for {len(filtered_keys)} keys")
             progress_bar = tqdm(total=len(filtered_keys), desc="🌐 中文翻译", unit="key")
-            print(f"✅ Tqdm progress bar created successfully")
+            if debug_mode:
+                print(f"✅ Tqdm progress bar created successfully")
         else:
             progress_bar = None
-            print(f"📊 Streamlit mode - no tqdm progress bar")
+            if debug_mode:
+                print(f"📊 Streamlit mode - no tqdm progress bar")
 
         # Get AI model settings
         use_local_ai = False
@@ -3201,8 +3246,10 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 print(f"📋 Content type: {type(content)}")
 
                 if isinstance(content, dict):
-                    content_text = content.get('content', '')
+                    # First try corrected_content (from proofreader), then content (from agent1)
+                    content_text = content.get('corrected_content', '') or content.get('content', '')
                     print(f"📝 Extracted content from dict: {len(content_text)} chars")
+                    print(f"🔍 Content source: {'corrected_content' if 'corrected_content' in content else 'content'}")
                 else:
                     content_text = str(content)
                     print(f"📝 Converted content to string: {len(content_text)} chars")
