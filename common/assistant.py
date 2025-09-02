@@ -1777,7 +1777,10 @@ class ProofreadingAgent:
         try:
             import json
             import re
-            
+
+            # Debug: Proofreading start (remove after testing)
+            # print(f"🔍 DEBUG: Proofreading {key} with language: {self.language}")
+
             # Update progress bar if provided
             if progress_bar:
                 progress_bar.set_description(f"Proofreading {key}")
@@ -1804,9 +1807,13 @@ class ProofreadingAgent:
                 # Get the appropriate prompt for the language
                 system_prompt = prompts_config.get('system_prompts', {}).get(language_key, {}).get('AI Proofreader', '')
 
+                # Debug: Log which prompt was loaded (remove after testing)
+                # print(f"🔍 DEBUG: Loaded system prompt for language '{language_key}': {system_prompt[:100]}...")
+
                 # Fallback if language-specific prompt not found
                 if not system_prompt:
                     system_prompt = prompts_config.get('system_prompts', {}).get('AI Proofreader', '')
+                    # print(f"⚠️ DEBUG: Using fallback prompt for language '{language_key}'")
 
             except (FileNotFoundError, json.JSONDecodeError):
                 # Fallback to language-appropriate default prompt
@@ -1827,33 +1834,62 @@ class ProofreadingAgent:
             truncated_content = content[:max_content_length] + ("..." if len(content) > max_content_length else "")
             truncated_tables = tables_markdown[:max_tables_length] + ("..." if len(tables_markdown) > max_tables_length else "")
 
-            # Build user query with truncated content
-            user_query = f"""
-            AI PROOFREADING TASK
+            # Build user query with truncated content (language-aware)
+            if language_key == 'chinese':
+                user_query = f"""
+                AI PROOFREADING TASK (中文内容)
 
-            KEY: {key}
-            REPORTING ENTITY: {entity}
+                KEY: {key}
+                REPORTING ENTITY: {entity}
 
-            CONTENT TO REVIEW:
-            {truncated_content}
+                CONTENT TO REVIEW:
+                {truncated_content}
 
-            DATA TABLES (for entity/details and figure source):
-            {truncated_tables}
+                DATA TABLES (for entity/details and figure source):
+                {truncated_tables}
 
-            TASK: Analyze the content for compliance, figure formatting, entity correctness, and grammar.
-            Return ONLY a JSON object with these exact fields:
-            {{
-              "is_compliant": true,
-              "issues": ["list of issues found"],
-              "corrected_content": "the corrected content text",
-              "figure_checks": ["figure validation notes"],
-              "entity_checks": ["entity validation notes"],
-              "grammar_notes": ["grammar and style notes"],
-              "pattern_used": "Pattern X"
-            }}
+                TASK: Analyze the content for compliance, figure formatting, entity correctness, and grammar.
+                IMPORTANT: Keep ALL content in 简体中文 (Simplified Chinese). Do NOT translate to English.
+                Return ONLY a JSON object with these exact fields:
+                {{
+                  "is_compliant": true,
+                  "issues": ["list of issues found"],
+                  "corrected_content": "the corrected content text in Chinese",
+                  "figure_checks": ["figure validation notes"],
+                  "entity_checks": ["entity validation notes"],
+                  "grammar_notes": ["grammar and style notes"],
+                  "pattern_used": "Pattern X"
+                }}
 
-            IMPORTANT: Ensure the JSON is valid and properly formatted.
-            """
+                IMPORTANT: Ensure the JSON is valid and properly formatted. Keep corrected_content in Chinese.
+                """
+            else:
+                user_query = f"""
+                AI PROOFREADING TASK
+
+                KEY: {key}
+                REPORTING ENTITY: {entity}
+
+                CONTENT TO REVIEW:
+                {truncated_content}
+
+                DATA TABLES (for entity/details and figure source):
+                {truncated_tables}
+
+                TASK: Analyze the content for compliance, figure formatting, entity correctness, and grammar.
+                Return ONLY a JSON object with these exact fields:
+                {{
+                  "is_compliant": true,
+                  "issues": ["list of issues found"],
+                  "corrected_content": "the corrected content text",
+                  "figure_checks": ["figure validation notes"],
+                  "entity_checks": ["entity validation notes"],
+                  "grammar_notes": ["grammar and style notes"],
+                  "pattern_used": "Pattern X"
+                }}
+
+                IMPORTANT: Ensure the JSON is valid and properly formatted.
+                """
 
             # Model selection
             if self.use_local_ai:
@@ -1882,7 +1918,7 @@ class ProofreadingAgent:
                 result.setdefault('pattern_used', '')
                 result.setdefault('translation_runs', 0)
 
-                # Heuristic one-shot translation for any residual CJK text (run up to 2 passes)
+                # Only apply heuristic translation for English language (not for Chinese)
                 def contains_cjk(txt: str) -> bool:
                     try:
                         return bool(re.search(r"[\u4e00-\u9fff]", txt or ''))
@@ -1890,8 +1926,9 @@ class ProofreadingAgent:
                         return False
 
                 corrected = result.get('corrected_content') or content
-                runs = 0
-                while contains_cjk(corrected) and runs < 2:
+
+                # Only translate Chinese to English if we're using English language
+                if language_key == 'english' and contains_cjk(corrected):
                     trans_system = (
                         "You are a professional financial translator. Translate ALL non-English text to clear business English. "
                         "Keep numbers/currency intact, use standard tax abbreviations (VAT, CIT, WHT, LUT), remove pinyin, "
@@ -1899,7 +1936,7 @@ class ProofreadingAgent:
                     )
                     trans_user = f"Translate to English (final text only):\n{corrected}"
                     trans = generate_response(trans_user, trans_system, oai_client, tables_markdown, model, entity, self.use_local_ai)
-                    corrected = clean_response_text(trans)
+                    corrected = clean_response_text(trans, 'english')  # Explicitly pass english for translation
                     runs += 1
                     if not contains_cjk(corrected):
                         break
@@ -1907,6 +1944,11 @@ class ProofreadingAgent:
                 if runs > 0:
                     result['corrected_content'] = corrected
                     result['translation_runs'] = runs
+
+                # Debug: Log final result (remove after testing)
+                # print(f"🔍 DEBUG: Proofreading completed for {key}. Translation runs: {runs}")
+                # print(f"🔍 DEBUG: Final corrected content (first 200 chars): {result.get('corrected_content', '')[:200]}...")
+
                 return result
             except Exception as parse_error:
                 print(f"Failed to parse AI Proofreader response: {parse_error}")
