@@ -542,10 +542,9 @@ def main():
             provider_mapping = {
                 "Open AI": "Open AI",
                 "Local AI": "Local AI",
-                "DeepSeek": "DeepSeek",
-                "Offline": "Offline"
+                "DeepSeek": "DeepSeek"
             }
-            mode = f"AI Mode - {provider_mapping[mode_display]}" if mode_display != "Offline" else "Offline Mode"
+            mode = f"AI Mode - {provider_mapping[mode_display]}"
             st.session_state['selected_mode'] = mode
             st.session_state['ai_model'] = mode_display
             st.session_state['selected_provider'] = provider_mapping[mode_display]
@@ -872,8 +871,8 @@ def main():
                         current_statement_type = st.session_state.get('current_statement_type', 'BS')
 
                         if current_statement_type == "ALL":
-                            # For ALL, process both BS and IS
-                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
+                            # For ALL, process both BS and IS + translation + proofreading
+                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 4, 'stage_index': 0, 'start_time': time.time()}}
                             
                             # Define key lists for BS and IS
                             bs_key_list = [
@@ -926,7 +925,7 @@ def main():
                             ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 1, 'stage_index': 0, 'start_time': time.time()}}
                             agent1_results = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
                             agent1_success = bool(agent1_results and any(agent1_results.values()))
-                            
+
                             # Generate content files after AI processing
                             if agent1_success:
                                 status_text.text("📝 Generating content files...")
@@ -982,8 +981,8 @@ def main():
                         current_statement_type = st.session_state.get('current_statement_type', 'BS')
 
                         if current_statement_type == "ALL":
-                            # For ALL, process both BS and IS
-                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
+                            # For ALL, process both BS and IS + translation + proofreading
+                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 4, 'stage_index': 0, 'start_time': time.time()}}
 
                             # Define key lists for BS and IS
                             bs_key_list = [
@@ -1015,7 +1014,7 @@ def main():
                                 # Switch to IS processing
                                 ext['combined']['stage_index'] = 1
                                 status_text.text("📈 处理损益表...")
-                                progress_bar.progress(60)
+                                progress_bar.progress(40)
 
                                 # Filter IS keys
                                 is_filtered_keys = [key for key in filtered_keys_for_ai if key in is_key_list]
@@ -1031,12 +1030,22 @@ def main():
                                 status_text.text("🧐 运行全面校对...")
                                 progress_bar.progress(80)
 
-                                # Combine all results for proofreading
+                                # Combine all results for translation
                                 combined_results = {}
                                 combined_results.update(agent1_results_bs or {})
                                 combined_results.update(agent1_results_is or {})
 
-                                proof_results = run_ai_proofreader(filtered_keys_for_ai, combined_results, temp_ai_data, external_progress=ext, language=selected_language)
+                                # Chinese Translation Agent
+                                ext['combined']['stage_index'] = 2
+                                status_text.text("🌐 翻译为中文...")
+                                progress_bar.progress(70)
+                                translated_results = run_chinese_translator(filtered_keys_for_ai, combined_results, temp_ai_data, external_progress=ext)
+
+                                # Proofreader
+                                ext['combined']['stage_index'] = 3
+                                status_text.text("🧐 运行校对...")
+                                progress_bar.progress(85)
+                                proof_results = run_ai_proofreader(filtered_keys_for_ai, translated_results, temp_ai_data, external_progress=ext, language=selected_language)
 
                                 if proof_results:
                                     st.session_state['agent_states']['agent3_results'] = proof_results
@@ -1049,16 +1058,21 @@ def main():
 
                         else:
                             # Single statement type processing
-                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
+                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 3, 'stage_index': 0, 'start_time': time.time()}}
                             agent1_results = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
                             st.session_state['agent_states']['agent1_results'] = agent1_results
                             st.session_state['agent_states']['agent1_completed'] = True
                             st.session_state['agent_states']['agent1_success'] = bool(agent1_results)
 
+                            # Chinese Translation Agent
+                            status_text.text("🌐 翻译为中文...")
+                            ext['combined']['stage_index'] = 1
+                            translated_results = run_chinese_translator(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
+
                             # Proofreader
                             status_text.text("🧐 运行校对...")
-                            ext['combined']['stage_index'] = 1
-                            proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext, language=selected_language)
+                            ext['combined']['stage_index'] = 2
+                            proof_results = run_ai_proofreader(filtered_keys_for_ai, translated_results, temp_ai_data, external_progress=ext, language=selected_language)
                             st.session_state['agent_states']['agent3_results'] = proof_results
                             st.session_state['agent_states']['agent3_completed'] = True
                             st.session_state['agent_states']['agent3_success'] = bool(proof_results)
@@ -1507,24 +1521,22 @@ def display_ai_content_by_key(key, agent_choice, language='English'):
                         st.warning(f"No AI content available for {get_key_display_name(key)}")
                         st.info("This may be due to AI processing failure or no data found for this key.")
                         
-                else:  # Offline Mode
-                    display_offline_content(key)
+                else:  # Only AI Mode supported
+                    st.error("❌ Only AI Mode is supported. Please configure AI services.")
                     
             elif agent_choice == "Agent 2":
                 # Agent 2: Data integrity validation
                 st.markdown("### 🔍 Data Integrity Report")
-                
+
                 # Get Agent 1 content
-                if mode == "Offline Mode":
-                    agent1_content = get_offline_content(key)
-                else:
-                    ai_results = ai_data.get('ai_results', {})
-                    agent1_content = ai_results.get(key, "")
-                    if not agent1_content:
-                        agent1_content = get_offline_content(key)
+                ai_results = ai_data.get('ai_results', {})
+                agent1_content = ai_results.get(key, "")
+                if not agent1_content:
+                    st.warning("No AI-generated content available for this key.")
+                    agent1_content = ""
                 
                 if agent1_content:
-                    # Display Agent 1 content (like offline mode)
+                    # Display Agent 1 content
                     st.markdown("**Agent 1 Content:**")
                     st.markdown(clean_content_quotes(agent1_content))
                     
@@ -1553,8 +1565,8 @@ def display_ai_content_by_key(key, agent_choice, language='English'):
                                 st.markdown("**Corrected Content:**")
                                 st.markdown(validation_result['corrected_content'])
                     else:
-                        # Fallback to offline validation display
-                        perform_offline_data_validation(key, agent1_content, sections_by_key)
+                        # Offline validation removed
+                        st.info("Data validation now uses AI-generated content only.")
                 else:
                     st.warning("No content available for validation")
                     
@@ -1564,15 +1576,17 @@ def display_ai_content_by_key(key, agent_choice, language='English'):
                 
                 # Get Agent 1 content
                 if mode == "Offline Mode":
-                    agent1_content = get_offline_content(key)
+                    st.warning("No AI-generated content available for this key.")
+                    agent1_content = ""
                 else:
                     ai_results = ai_data.get('ai_results', {})
                     agent1_content = ai_results.get(key, "")
                     if not agent1_content:
-                        agent1_content = get_offline_content(key)
+                        st.warning("No AI-generated content available for this key.")
+                    agent1_content = ""
                 
                 if agent1_content:
-                    # Display Agent 1 content (like offline mode)
+                    # Display Agent 1 content
                     st.markdown("**Agent 1 Content:**")
                     st.markdown(clean_content_quotes(agent1_content))
                     
@@ -1598,7 +1612,7 @@ def display_ai_content_by_key(key, agent_choice, language='English'):
                                 st.markdown(pattern_result['corrected_content'])
                     else:
                         # Fallback to offline pattern validation display
-                        perform_offline_pattern_validation(key, agent1_content, pattern)
+                        st.info("Pattern validation now uses AI-generated content only.")
                 else:
                     st.warning("No content available for pattern validation")
     
@@ -1620,7 +1634,7 @@ def load_json_content():
     
     # Fallback to parsing markdown if JSON not available
     try:
-        content_files = ["fdd_utils/bs_content.md", "fdd_utils/bs_content_ai_generated.md", "fdd_utils/bs_content_offline.md"]
+        content_files = ["fdd_utils/bs_content.md", "fdd_utils/bs_content_ai_generated.md"]
         for file_path in content_files:
             if os.path.exists(file_path):
                 return parse_markdown_to_json(file_path)
@@ -1708,322 +1722,15 @@ def get_content_from_json(key):
 
     return None
 
-def display_offline_content(key):
-    """Display offline content for a given key using JSON format for better performance"""
-    try:
-        content = get_content_from_json(key)
-        
-        if content:
-            # Clean the content
-            cleaned_content = clean_content_quotes(content)
-            st.markdown(cleaned_content)
-            
-            # Show JSON source info
-            st.info(f"📄 Content loaded from JSON format for better performance")
-        else:
-            st.info(f"No content found for {get_key_display_name(key)} in JSON data")
-            
-    except Exception as e:
-        st.error(f"Error reading JSON content: {e}")
-        # Fallback to old method
-        display_offline_content_fallback(key)
+# Offline content functions removed - system now only uses AI-generated content
 
-def display_offline_content_fallback(key):
-    """Fallback to original markdown parsing method"""
-    try:
-        # First try to read from offline content file
-        content_file = "fdd_utils/bs_content_offline.md"
-        content = None
-        
-        try:
-            with open(content_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-        except FileNotFoundError:
-            # Try to read from AI-generated content if offline file not found
-            ai_content_files = ["fdd_utils/bs_content.md", "fdd_utils/bs_content_ai_generated.md"]
-            for ai_file in ai_content_files:
-                try:
-                    with open(ai_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        st.info(f"📄 Using AI-generated content from: {ai_file}")
-                        break
-                except FileNotFoundError:
-                    continue
-        
-        if not content:
-            st.error(f"No content files found. Checked: {content_file}, fdd_utils/bs_content.md, fdd_utils/bs_content_ai_generated.md")
-            return
-        
-        # Map financial keys to content sections
-        key_to_section_mapping = KEY_TO_SECTION_MAPPING
-        
-        # Find the section for this key
-        target_section = key_to_section_mapping.get(key)
-        if target_section:
-            sections_content = re.split(r'(^### .+$)', content, flags=re.MULTILINE)
-            found_content = None
-            for i in range(1, len(sections_content), 2):
-                section_header = sections_content[i].strip()
-                section_content = sections_content[i+1].strip() if i+1 < len(sections_content) else ''
-                if target_section.lower() in section_header.lower():
-                    found_content = section_content
-                    break
-            
-            if found_content:
-                cleaned_content = clean_content_quotes(found_content)
-                st.markdown(cleaned_content)
-            else:
-                st.info(f"No content found for {get_key_display_name(key)} in available files")
-        else:
-            st.info(f"No content mapping available for {get_key_display_name(key)}")
-            
-    except Exception as e:
-        st.error(f"Error reading content: {e}")
+# Removed offline content fallback function
 
-def get_offline_content(key):
-    """Get offline content for a given key (returns string) using JSON for better performance"""
-    try:
-        # Try JSON first (much faster)
-        content = get_content_from_json(key)
-        if content:
-            return content
-            
-        # Fallback to markdown parsing
-        return get_offline_content_fallback(key)
-        
-    except Exception:
-        return ""
+# Removed get_offline_content function
 
-def get_offline_content_fallback(key):
-    """Fallback method for getting content from markdown files"""
-    try:
-        content_file = "fdd_utils/bs_content_offline.md"
-        
-        with open(content_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # Centralized mapping
-        from fdd_utils.mappings import KEY_TO_SECTION_MAPPING as key_to_section_mapping
-        
-        target_section = key_to_section_mapping.get(key)
-        if target_section:
-            sections_content = re.split(r'(^### .+$)', content, flags=re.MULTILINE)
-            for i in range(1, len(sections_content), 2):
-                section_header = sections_content[i].strip()
-                section_content = sections_content[i+1].strip() if i+1 < len(sections_content) else ''
-                if target_section.lower() in section_header.lower():
-                    return section_content
-        
-        return ""
-        
-    except Exception:
-        return ""
+# Removed get_offline_content_fallback function
 
-def perform_offline_data_validation(key, agent1_content, sections_by_key):
-    """Perform offline data validation with table highlighting and analysis"""
-    try:
-        import re
-        
-        # Get sections for this key
-        sections = sections_by_key.get(key, [])
-        if not sections:
-            st.warning("No data sections available for validation")
-            return
-        
-        # Extract financial figures from content
-        st.markdown("**📊 Data Analysis:**")
-        
-        # Extract numbers from content
-        numbers = re.findall(r'CNY([\d,]+\.?\d*)[KMB]?', agent1_content, re.IGNORECASE)
-        numbers.extend(re.findall(r'\$([\d,]+\.?\d*)[KMB]?', agent1_content, re.IGNORECASE))
-        numbers.extend(re.findall(r'([\d,]+\.?\d*)[KMB]', agent1_content, re.IGNORECASE))
-        
-        if numbers:
-            st.info(f"**Extracted Figures:** {', '.join(numbers)}")
-        
-        # Show data table with highlighting
-        st.markdown("**📋 Source Data Table:**")
-        first_section = sections[0]
-        df = first_section['data']
-        
-        # Create a copy for highlighting
-        df_highlight = df.copy()
-        
-        # Highlight rows that contain the key or related terms
-        def highlight_key_rows(row):
-            row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
-            key_lower = key.lower()
-            
-            # Check for key-related terms
-            terms = KEY_TERMS_BY_KEY.get(key, [key_lower])
-            if any(term in row_str.lower() for term in terms):
-                return ['background-color: yellow'] * len(row)
-            return [''] * len(row)
-        
-        # Apply highlighting
-        styled_df = df_highlight.style.apply(highlight_key_rows, axis=1)
-        st.dataframe(styled_df, use_container_width=True)
-        
-        # Data quality metrics
-        st.markdown("**📈 Data Quality Metrics:**")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Total Rows", len(df))
-            st.metric("Total Columns", len(df.columns))
-        
-        with col2:
-            non_null_count = df.count().sum()
-            total_cells = df.size
-            completeness = (non_null_count / total_cells * 100) if total_cells > 0 else 0
-            st.metric("Data Completeness", f"{completeness:.1f}%")
-        
-        with col3:
-            numeric_cols = df.select_dtypes(include=['number']).columns
-            st.metric("Numeric Columns", len(numeric_cols))
-        
-        # Validation results
-        st.markdown("**✅ Validation Results:**")
-        
-        # Check for key terms in data
-        key_found = False
-        for section in sections:
-            df_section = section['data']
-            for idx, row in df_section.iterrows():
-                row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
-                if key and key.lower() in row_str.lower():
-                    key_found = True
-                    break
-                display_name = get_key_display_name(key)
-                if display_name and display_name.lower() in row_str.lower():
-                    key_found = True
-                    break
-            if key_found:
-                break
-        
-        if key_found:
-            st.success("✅ Key term found in source data")
-        else:
-            st.warning("⚠️ Key term not found in source data")
-        
-        # Check for financial figures
-        if numbers:
-            st.success("✅ Financial figures extracted from content")
-        else:
-            st.warning("⚠️ No financial figures found in content")
-        
-        # Check data consistency
-        if len(sections) > 0:
-            st.success("✅ Data structure is consistent")
-        else:
-            st.warning("⚠️ Data structure issues detected")
-        
-        # Summary
-        st.markdown("**📝 Validation Summary:**")
-        st.info(f"""
-        **Key:** {get_key_display_name(key)}
-        **Data Source:** {len(sections)} section(s) found
-        **Figures Extracted:** {len(numbers)} number(s)
-        **Data Quality:** {completeness:.1f}% complete
-        **Validation Status:** ✅ Passed (Offline Mode)
-        """)
-        
-    except Exception as e:
-        st.error(f"Error in offline data validation: {e}")
-
-def perform_offline_pattern_validation(key, agent1_content, pattern):
-    """Perform offline pattern compliance validation"""
-    try:
-        import re
-        
-        # Get patterns for this key
-        key_patterns = pattern.get(key, {})
-        
-        st.markdown("**📝 Pattern Analysis:**")
-        
-        if key_patterns:
-            # Show available patterns
-            st.markdown("**Available Patterns:**")
-            pattern_names = list(key_patterns.keys())
-            pattern_tabs = st.tabs(pattern_names)
-            
-            for i, (pattern_name, pattern_text) in enumerate(key_patterns.items()):
-                with pattern_tabs[i]:
-                    st.code(pattern_text, language="text")
-                    
-                    # Pattern analysis
-                    st.markdown("**Pattern Analysis:**")
-                    pattern_words = len(pattern_text.split())
-                    pattern_sentences = len(pattern_text.split('.'))
-                    st.metric("Words", pattern_words)
-                    st.metric("Sentences", pattern_sentences)
-                    
-                    # Check for required elements
-                    required_elements = ['balance', 'CNY', 'represented', 'as at']
-                    found_elements = [elem for elem in required_elements if elem.lower() in pattern_text.lower()]
-                    missing_elements = [elem for elem in required_elements if elem.lower() not in pattern_text.lower()]
-                    
-                    if found_elements:
-                        st.success(f"✅ Found elements: {', '.join(found_elements)}")
-                    if missing_elements:
-                        st.warning(f"⚠️ Missing elements: {', '.join(missing_elements)}")
-        else:
-            st.warning(f"⚠️ No patterns found for {get_key_display_name(key)}")
-        
-        # Content analysis
-        st.markdown("**📊 Content Analysis:**")
-        
-        # Extract numbers from content
-        numbers = re.findall(r'CNY([\d,]+\.?\d*)[KMB]?', agent1_content, re.IGNORECASE)
-        numbers.extend(re.findall(r'\$([\d,]+\.?\d*)[KMB]?', agent1_content, re.IGNORECASE))
-        numbers.extend(re.findall(r'([\d,]+\.?\d*)[KMB]', agent1_content, re.IGNORECASE))
-        
-        if numbers:
-            st.info(f"**Extracted Figures:** {', '.join(numbers)}")
-        
-        # Check for pattern compliance indicators
-        compliance_indicators = {
-            'has_date': bool(re.search(r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}', agent1_content)),
-            'has_currency': bool(re.search(r'CNY|\$', agent1_content, re.IGNORECASE)),
-            'has_amount': len(numbers) > 0,
-            'has_description': len(str(agent1_content).split()) > 10,
-            'has_entity_reference': bool(re.search(r'Haining|Nanjing|Ningbo', agent1_content, re.IGNORECASE))
-        }
-        
-        # Display compliance results
-        st.markdown("**✅ Pattern Compliance Results:**")
-        
-        for indicator, value in compliance_indicators.items():
-            if value:
-                st.success(f"✅ {indicator.replace('_', ' ').title()}")
-            else:
-                st.warning(f"⚠️ {indicator.replace('_', ' ').title()}")
-        
-        # Overall compliance score
-        compliance_score = sum(compliance_indicators.values()) / len(compliance_indicators) * 100
-        
-        st.markdown("**📈 Compliance Score:**")
-        st.metric("Overall Compliance", f"{compliance_score:.1f}%")
-        
-        if compliance_score >= 80:
-            st.success("✅ Pattern compliance passed")
-        elif compliance_score >= 60:
-            st.warning("⚠️ Pattern compliance partially met")
-        else:
-            st.error("❌ Pattern compliance failed")
-        
-        # Summary
-        st.markdown("**📝 Pattern Validation Summary:**")
-        st.info(f"""
-        **Key:** {get_key_display_name(key)}
-        **Patterns Available:** {len(key_patterns)}
-        **Figures Extracted:** {len(numbers)}
-        **Compliance Score:** {compliance_score:.1f}%
-        **Validation Status:** {'✅ Passed' if compliance_score >= 80 else '⚠️ Partial' if compliance_score >= 60 else '❌ Failed'} (Offline Mode)
-        """)
-        
-    except Exception as e:
-        st.error(f"Error in offline pattern validation: {e}")
+# Offline validation functions removed - system now only uses AI-generated content
 
 def generate_content_from_session_storage(entity_name):
     """Generate content files (JSON + Markdown) from session state storage (PERFORMANCE OPTIMIZED)"""
@@ -2035,8 +1742,8 @@ def generate_content_from_session_storage(entity_name):
 
         
         if not content_store:
-            st.warning("⚠️ No content in session storage. Using fallback method.")
-            return generate_markdown_from_ai_results(st.session_state.get('ai_data', {}).get('ai_results', {}), entity_name)
+            st.error("❌ No AI-generated content available. Please run AI processing first.")
+            return
         
         # Get current statement type from session state
         current_statement_type = st.session_state.get('current_statement_type', 'BS')
@@ -3038,6 +2745,169 @@ IMPORTANT ENTITY INSTRUCTIONS:
                     os.unlink(temp_file_path)
             except Exception:
                 pass
+
+def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_progress=None):
+    """Run Chinese Translation Agent: Translate English content to Chinese based on raw data table."""
+    try:
+        print(f"🔍 run_chinese_translator called with {len(filtered_keys)} keys")
+        import json
+        from common.assistant import process_keys
+        logger = st.session_state.ai_logger
+
+        # Get AI data
+        entity_name = ai_data.get('entity_name', '')
+        entity_keywords = ai_data.get('entity_keywords', [])
+        sections_by_key = ai_data.get('sections_by_key', {})
+
+        # Create temporary file for processing
+        temp_file_path = None
+        try:
+            if 'uploaded_file_data' in st.session_state:
+                unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
+                temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
+                with open(temp_file_path, 'wb') as tmp_file:
+                    tmp_file.write(st.session_state['uploaded_file_data'])
+            else:
+                if os.path.exists('databook.xlsx'):
+                    temp_file_path = 'databook.xlsx'
+                else:
+                    st.error("❌ No databook available for processing")
+                    return agent1_results
+        except Exception as e:
+            st.error(f"❌ Error creating temporary file: {e}")
+            return agent1_results
+
+        # Prepare processed table data
+        processed_table_data = {}
+        for key in filtered_keys:
+            try:
+                from common.assistant import process_and_filter_excel, load_ip
+                mapping = load_ip('fdd_utils/mapping.json')
+                table_data = process_and_filter_excel(temp_file_path, mapping, entity_name, entity_keywords)
+                processed_table_data[key] = table_data
+            except Exception as e:
+                print(f"Warning: Could not prepare table data for {key}: {e}")
+
+        # Get AI model settings
+        use_local_ai = st.session_state.get('use_local_ai', False)
+        use_openai = st.session_state.get('use_openai', False)
+
+        # Create progress callback
+        if external_progress:
+            def update_progress(progress, message):
+                try:
+                    bar = external_progress.get('bar')
+                    status = external_progress.get('status')
+                    if bar:
+                        bar.progress(progress)
+                    if status:
+                        status.text(message)
+                except Exception:
+                    pass
+            progress_callback = update_progress
+        else:
+            progress_callback = None
+
+        translated_results = {}
+
+        for idx, key in enumerate(filtered_keys):
+            try:
+                content = agent1_results.get(key, '')
+                if isinstance(content, dict):
+                    content_text = content.get('content', '')
+                else:
+                    content_text = str(content)
+
+                if not content_text:
+                    translated_results[key] = agent1_results.get(key, {})
+                    continue
+
+                # Get table data for this key
+                tables_md = processed_table_data.get(key, '')
+
+                # Create translation prompt
+                translation_prompt = f"""
+                TRANSLATION TASK: Convert the following English financial content to Chinese.
+
+                IMPORTANT REQUIREMENTS:
+                1. Translate ALL English text to Chinese
+                2. Keep ALL financial figures, numbers, and currency symbols unchanged
+                3. Keep company names, entity names, and proper nouns unchanged
+                4. Keep technical terms like "VAT", "CIT", "WHT" unchanged
+                5. Maintain the same professional financial tone and structure
+                6. Ensure the translation is natural and fluent Chinese
+
+                REFERENCE DATA TABLES:
+                {tables_md[:3000] if tables_md else "No table data available"}
+
+                ENGLISH CONTENT TO TRANSLATE:
+                {content_text}
+
+                OUTPUT: Return only the translated Chinese content, no explanations or additional text.
+                """
+
+                # Load prompts and system message for translation
+                with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
+                    prompts_config = json.load(f)
+
+                # Use Chinese system prompt for translation
+                system_prompt = prompts_config.get('system_prompts', {}).get('chinese', {}).get('Agent 1', '')
+                if not system_prompt:
+                    system_prompt = """
+                    你是中国财务报告翻译专家。你的任务是将英文财务分析内容翻译成中文。
+                    要求：保持专业财务语气，保留所有数字和货币符号，不改变公司名称和技术术语。
+                    """
+
+                # Call process_keys with translation prompt
+                translation_result = process_keys(
+                    keys=[key],
+                    entity_name=entity_name,
+                    entity_helpers=entity_keywords,
+                    input_file=temp_file_path,
+                    mapping_file="fdd_utils/mapping.json",
+                    pattern_file="fdd_utils/pattern.json",
+                    config_file='fdd_utils/config.json',
+                    prompts_file='fdd_utils/prompts.json',
+                    use_ai=True,
+                    progress_callback=None,  # Disable progress for individual keys
+                    processed_table_data={key: tables_md},
+                    use_local_ai=use_local_ai,
+                    use_openai=use_openai
+                )
+
+                # Update the result with translated content
+                if key in translation_result and translation_result[key]:
+                    result_data = agent1_results.get(key, {})
+                    if isinstance(result_data, dict):
+                        result_data['content'] = translation_result[key].get('content', content_text)
+                        result_data['translated'] = True
+                    else:
+                        result_data = {
+                            'content': translation_result[key].get('content', content_text),
+                            'translated': True
+                        }
+                    translated_results[key] = result_data
+                else:
+                    # If translation failed, keep original
+                    translated_results[key] = agent1_results.get(key, {})
+
+            except Exception as e:
+                print(f"Error translating {key}: {e}")
+                # Keep original content if translation fails
+                translated_results[key] = agent1_results.get(key, {})
+
+        # Clean up temp file
+        try:
+            if temp_file_path and temp_file_path != 'databook.xlsx' and os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+        except Exception:
+            pass
+
+        return translated_results
+
+    except Exception as e:
+        print(f"Chinese translation error: {e}")
+        return agent1_results
 
 def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress=None, language='English'):
     """Run AI Proofreader for all keys (Compliance, Figures, Entities, Grammar)."""

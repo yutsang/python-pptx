@@ -1003,8 +1003,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     
     if not AI_AVAILABLE:
         raise RuntimeError("AI services are not available. Please check your configuration and internet connection.")
-    
-    print(f"🚀 Starting AI processing for {len(keys)} keys")
+
+    print(f"🚀 Starting AI processing for {len(keys)} keys (Offline mode removed)")
     
     # Load prompts from prompts.json file (no hardcoded fallback)
     with open(prompts_file, 'r', encoding='utf-8') as f:
@@ -1373,9 +1373,7 @@ class DataValidationAgent:
             print(f"Data validation error: {e}")
             return {"needs_correction": False, "issues": [f"Validation error: {e}"], "score": 50, "suggestions": []}
     
-    def _fallback_data_validation(self, content: str, expected_figure: float, key: str) -> Dict:
-        """This function is deprecated - AI is now required"""
-        raise RuntimeError("AI services are required for data validation. Please check your configuration.")
+# Removed _fallback_data_validation function - offline mode eliminated
     
     def correct_financial_data(self, content: str, issues: List[str]) -> str:
         """Correct financial data issues using AI"""
@@ -1581,9 +1579,7 @@ class PatternValidationAgent:
             print(f"Pattern validation error: {e}")
             return {"needs_correction": False, "issues": [f"Validation error: {e}"], "score": 50, "suggestions": []}
     
-    def _fallback_pattern_validation(self, content: str, patterns: Dict, key: str) -> Dict:
-        """This function is deprecated - AI is now required"""
-        raise RuntimeError("AI services are required for pattern validation. Please check your configuration.")
+# Removed _fallback_pattern_validation function - offline mode eliminated
     
     def correct_pattern_compliance(self, content: str, issues: List[str]) -> str:
         """Correct pattern compliance issues using AI"""
@@ -1670,30 +1666,39 @@ class ProofreadingAgent:
                     "K/M figure formatting, entity correctness, grammar/pro tone, and language normalization. Return JSON."
                 )
 
-            # Build user query
+            # Truncate content and tables to fit within context limits
+            max_content_length = 8000  # Leave room for other parts
+            max_tables_length = 4000
+
+            truncated_content = content[:max_content_length] + ("..." if len(content) > max_content_length else "")
+            truncated_tables = tables_markdown[:max_tables_length] + ("..." if len(tables_markdown) > max_tables_length else "")
+
+            # Build user query with truncated content
             user_query = f"""
             AI PROOFREADING TASK
 
             KEY: {key}
             REPORTING ENTITY: {entity}
-            AVAILABLE PATTERNS: {json.dumps(patterns, indent=2)}
 
             CONTENT TO REVIEW:
-            {content}
+            {truncated_content}
 
             DATA TABLES (for entity/details and figure source):
-            {tables_markdown}
+            {truncated_tables}
 
-            STRICT OUTPUT: Return ONLY a JSON object with fields:
+            TASK: Analyze the content for compliance, figure formatting, entity correctness, and grammar.
+            Return ONLY a JSON object with these exact fields:
             {{
               "is_compliant": true,
-              "issues": ["..."],
-              "corrected_content": "...",
-              "figure_checks": ["..."],
-              "entity_checks": ["..."],
-              "grammar_notes": ["..."],
+              "issues": ["list of issues found"],
+              "corrected_content": "the corrected content text",
+              "figure_checks": ["figure validation notes"],
+              "entity_checks": ["entity validation notes"],
+              "grammar_notes": ["grammar and style notes"],
               "pattern_used": "Pattern X"
             }}
+
+            IMPORTANT: Ensure the JSON is valid and properly formatted.
             """
 
             # Model selection
@@ -1751,15 +1756,28 @@ class ProofreadingAgent:
                 return result
             except Exception as parse_error:
                 print(f"Failed to parse AI Proofreader response: {parse_error}")
-                print(f"Raw response: {response}")
+                print(f"Raw response (first 500 chars): {response[:500]}")
+
+                # Try to extract content from malformed response
+                corrected_content = content
+                if '"corrected_content"' in response:
+                    try:
+                        # Try to extract corrected_content from malformed JSON
+                        import re
+                        content_match = re.search(r'"corrected_content"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', response, re.DOTALL)
+                        if content_match:
+                            corrected_content = content_match.group(1).replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
+                    except Exception:
+                        pass
+
                 return {
-                    'is_compliant': True,
-                    'issues': [f"AI response parsing failed: {parse_error}"],
-                    'corrected_content': content,
-                    'figure_checks': [],
-                    'entity_checks': [],
-                    'grammar_notes': [],
-                    'pattern_used': '',
+                    'is_compliant': False,
+                    'issues': [f"AI response parsing failed: {str(parse_error)}", "Used original content due to parsing error"],
+                    'corrected_content': corrected_content,
+                    'figure_checks': ["Unable to validate - parsing error"],
+                    'entity_checks': ["Unable to validate - parsing error"],
+                    'grammar_notes': ["Unable to validate - parsing error"],
+                    'pattern_used': 'Unknown',
                     'translation_runs': 0
                 }
         except Exception as e:
