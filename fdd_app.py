@@ -2984,21 +2984,27 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         config_details = load_config('fdd_utils/config.json')
         oai_client, _ = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
 
-        # Load Chinese system prompt
+        # Load Chinese system prompt from config
         with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
             prompts_config = json.load(f)
+
+        # Use the proper Chinese translation system prompt
         system_prompt = prompts_config.get('system_prompts', {}).get('chinese', {}).get('Agent 1', '')
 
+        # If no Chinese Agent 1 prompt, use a dedicated translation prompt
         if not system_prompt:
-            system_prompt = """
-            你是中国财务报告翻译专家。你的任务是将英文财务分析内容翻译成简体中文。
-            关键要求：
-            1. 必须将所有英文内容翻译成简体中文
-            2. 保留所有数字、货币符号和技术术语（如VAT、CIT、WHT）不变
-            3. 保持专业财务语气和结构
-            4. 确保输出完全是中文，除了数字和技术术语
-            5. 如果发现任何英文单词，请立即将其翻译成中文
-            """
+            system_prompt = """你是中国财务报告翻译专家。你的任务是将英文财务分析内容翻译成简体中文。
+
+关键要求：
+1. 必须将所有英文内容翻译成简体中文
+2. 保留所有数字、货币符号和技术术语（如VAT、CIT、WHT、Surtax）不变
+3. 保持专业财务语气和结构
+4. 确保输出完全是中文，除了数字和技术术语
+5. 如果发现任何英文单词，请立即将其翻译成中文
+6. 不要添加任何解释或额外文本，直接返回翻译结果
+7. 保持原始内容的格式和结构"""
+
+        print(f"🔧 Using Chinese translation system prompt: {system_prompt[:100]}...")
 
         # Get model name
         if use_local_ai:
@@ -3047,33 +3053,36 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         use_local_ai = st.session_state.get('use_local_ai', False)
         use_openai = st.session_state.get('use_openai', False)
 
-        # Create enhanced progress callback for Chinese processing
+        # Enhanced progress tracking for translation
         if external_progress:
-            def update_progress(progress, message):
+            def update_translation_progress(current_idx, total, current_key, status_msg=""):
                 try:
+                    progress_pct = (current_idx + 1) / total
                     bar = external_progress.get('bar')
                     status = external_progress.get('status')
-                    if bar:
-                        bar.progress(progress)
-                    if status:
-                        # Enhanced Chinese progress messages
-                        if "翻译" in message or "Translation" in message:
-                            enhanced_msg = f"🌐 翻译中... {message}"
-                        elif "校对" in message or "Proofreading" in message:
-                            enhanced_msg = f"🧐 校对中... {message}"
-                        elif "完成" in message or "completed" in message:
-                            enhanced_msg = f"✅ {message}"
-                        else:
-                            enhanced_msg = f"🔄 {message}"
 
-                        # Add progress percentage
-                        progress_pct = int(progress * 100)
-                        enhanced_msg += f" ({progress_pct}%)"
+                    if bar:
+                        bar.progress(progress_pct)
+
+                    if status:
+                        eta_str = ""
+                        if current_idx > 0:
+                            elapsed = time.time() - start_time
+                            avg_time = elapsed / (current_idx + 1)
+                            remaining = total - current_idx - 1
+                            eta_seconds = int(avg_time * remaining)
+                            mins, secs = divmod(eta_seconds, 60)
+                            eta_str = f" ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else ""
+
+                        enhanced_msg = f"🌐 翻译中: {current_key} ({current_idx + 1}/{total}){eta_str}"
+                        if status_msg:
+                            enhanced_msg += f" - {status_msg}"
 
                         status.text(enhanced_msg)
-                except Exception:
-                    pass
-            progress_callback = update_progress
+                except Exception as e:
+                    print(f"Progress update error: {e}")
+
+            progress_callback = update_translation_progress
         else:
             progress_callback = None
 
@@ -3111,41 +3120,37 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     else:
                         table_info = str(sections)
 
-                # Update progress
-                if is_cli and progress_bar:
-                    progress_bar.set_description(f"🌐 中文翻译 {key} ({idx+1}/{len(filtered_keys)})")
+                # Update progress with enhanced debugging
+                if progress_callback:
+                    progress_callback(idx, len(filtered_keys), key, "开始翻译")
+                elif is_cli and progress_bar:
+                    progress_msg = f"🌐 中文翻译: {key} ({idx+1}/{len(filtered_keys)})"
+                    progress_bar.set_description(progress_msg)
                     progress_bar.update(1)
-                elif external_progress:
-                    progress_pct = (idx + 1) / len(filtered_keys)
-                    if external_progress.get('bar'):
-                        external_progress['bar'].progress(progress_pct)
-                    if external_progress.get('status'):
-                        elapsed = time.time() - start_time
-                        avg_time = elapsed / (idx + 1) if idx > 0 else 0
-                        remaining = len(filtered_keys) - idx - 1
-                        eta_seconds = int(avg_time * remaining)
-                        mins, secs = divmod(eta_seconds, 60)
-                        eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else ""
-                        external_progress['status'].text(f"🌐 中文翻译: {key} ({idx+1}/{len(filtered_keys)}) {eta_str}")
 
-                # Create translation prompt
-                user_prompt = f"""
-                请将以下英文财务内容翻译成简体中文：
+                # Debug output for all modes
+                print(f"\n🔄 [{idx+1}/{len(filtered_keys)}] 翻译中: {key}")
+                print(f"📝 原文预览: {content_text[:50]}..." if len(content_text) > 50 else f"📝 原文: {content_text}")
+                print(f"🔧 使用AI模型: {model}")
 
-                英文内容：
-                {content_text}
+                # Create enhanced translation prompt
+                user_prompt = f"""请将以下英文财务分析内容完整翻译成简体中文。
 
-                相关表格数据（用于参考）：
-                {table_info[:2000] if table_info else "无表格数据"}
+【原文内容】
+{content_text}
 
-                翻译要求：
-                1. 必须将所有英文内容翻译成简体中文
-                2. 保留所有数字、货币符号和技术术语（如VAT、CIT、WHT）不变
-                3. 保持专业财务语气和结构
-                4. 确保输出完全是中文，除了数字和技术术语
+【财务数据参考（可选）】
+{table_info[:1500] if table_info else "无额外数据"}
 
-                请直接返回翻译后的中文内容，不要包含任何解释或额外文本。
-                """
+【翻译要求】
+1. 必须将所有英文句子和词汇翻译成简体中文
+2. 保留所有数字、百分比、货币符号（如CNY、USD、$）和技术术语（如VAT、CIT、WHT、Surtax、IPO）不变
+3. 保持专业的财务报告语气和格式结构
+4. 确保最终输出100%是中文内容，除了上述保留的数字和技术术语
+5. 禁止在翻译结果中保留任何英文句子或短语
+6. 翻译必须准确、专业，适合中国财务报告使用
+
+请直接返回翻译后的完整中文内容，不要包含任何解释、注释或额外文本。"""
 
                 # Call AI for translation
                 translated_content = generate_response(
@@ -3164,17 +3169,44 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     if translated_content.startswith('"') and translated_content.endswith('"'):
                         translated_content = translated_content[1:-1]
 
+                    # Debug output for translation result
+                    print(f"✅ 翻译完成: {key}")
+                    print(f"🌐 译文预览: {translated_content[:50]}..." if len(translated_content) > 50 else f"🌐 译文: {translated_content}")
+
+                    # Update progress to show completion
+                    if progress_callback:
+                        progress_callback(idx, len(filtered_keys), key, "翻译完成")
+
                     # Quality check for Chinese content
-                    if is_cli:
-                        chinese_chars = sum(1 for char in translated_content if '\u4e00' <= char <= '\u9fff')
-                        english_chars = sum(1 for char in translated_content if char.isascii() and char.isalnum())
-                        total_chars = chinese_chars + english_chars
-                        if total_chars > 0:
-                            chinese_ratio = chinese_chars / total_chars
-                            if chinese_ratio < 0.3:
-                                print(f"⚠️ Low Chinese ratio ({chinese_ratio:.2%}) for {key}")
-                            else:
-                                print(f"✅ Good Chinese ratio ({chinese_ratio:.2%}) for {key}")
+                    chinese_chars = sum(1 for char in translated_content if '\u4e00' <= char <= '\u9fff')
+                    english_chars = sum(1 for char in translated_content if char.isascii() and char.isalnum())
+                    total_chars = chinese_chars + english_chars
+
+                    if total_chars > 0:
+                        chinese_ratio = chinese_chars / total_chars
+                        print(f"📊 中文占比: {chinese_ratio:.1%} ({chinese_chars}/{total_chars} 字符)")
+
+                        if chinese_ratio < 0.3:
+                            print(f"⚠️ 警告: 中文占比过低 ({chinese_ratio:.2%}) - 可能翻译失败")
+                        elif chinese_ratio > 0.7:
+                            print(f"✅ 良好: 中文占比正常 ({chinese_ratio:.1%})")
+                        else:
+                            print(f"ℹ️ 一般: 中文占比中等 ({chinese_ratio:.1%})")
+
+                        # Additional check for common English words that should be translated
+                        english_words = ['the', 'and', 'for', 'with', 'from', 'that', 'have', 'been', 'were']
+                        found_english_words = [word for word in english_words if word in translated_content.lower()]
+                        if found_english_words:
+                            print(f"⚠️ 发现英文词汇: {', '.join(found_english_words)}")
+                    else:
+                        print(f"⚠️ 警告: 无法分析字符类型")
+
+                    # Show detailed comparison
+                    print(f"🔍 对比分析:")
+                    print(f"   原文长度: {len(content_text)} 字符")
+                    print(f"   译文长度: {len(translated_content)} 字符")
+                    print(f"   长度变化: {len(translated_content) - len(content_text)} 字符")
+                    print(f"{'─' * 60}")
 
                 # Store result
                 result_data = agent1_results.get(key, {})
@@ -3192,11 +3224,35 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 if is_cli:
                     print(f"Error translating {key}: {e}")
                 translated_results[key] = agent1_results.get(key, {})
-        # Close progress bar
+        # Final summary and close progress bar
+        total_processed = len([k for k in translated_results.keys() if translated_results[k]])
+        success_rate = total_processed / len(filtered_keys) if filtered_keys else 0
+
+        summary_msg = f"✅ 中文翻译完成 - 成功处理 {total_processed}/{len(filtered_keys)} 个项目 ({success_rate:.1%})"
+
         if is_cli and progress_bar:
             progress_bar.close()
+            print(f"\n{summary_msg}")
+            print(f"🔍 翻译质量统计:")
+            for key in translated_results:
+                if translated_results[key]:
+                    content = translated_results[key].get('content', '') if isinstance(translated_results[key], dict) else str(translated_results[key])
+                    chinese_chars = sum(1 for char in content if '\u4e00' <= char <= '\u9fff')
+                    total_chars = len(content)
+                    if total_chars > 0:
+                        ratio = chinese_chars / total_chars
+                        status = "✅" if ratio > 0.5 else "⚠️" if ratio > 0.2 else "❌"
+                        print(f"  {status} {key}: {ratio:.1%} 中文")
         elif external_progress and external_progress.get('status'):
-            external_progress['status'].text(f"✅ 中文翻译完成 - 处理了 {len(filtered_keys)} 个项目")
+            external_progress['status'].text(summary_msg)
+
+        print(f"\n{'='*60}")
+        print(f"🎯 翻译任务完成总结:")
+        print(f"   总项目数: {len(filtered_keys)}")
+        print(f"   成功翻译: {total_processed}")
+        print(f"   成功率: {success_rate:.1%}")
+        print(f"   耗时: {time.time() - start_time:.1f} 秒")
+        print(f"{'='*60}")
 
         return translated_results
 
