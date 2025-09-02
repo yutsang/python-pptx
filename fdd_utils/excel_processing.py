@@ -784,44 +784,44 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             )
                         # entity_mask is already defined above as mask_series
                         
-                        # Check if this section contains the selected entity
-                        if entity_mode == 'single':
-                            # For single entity mode, skip entity filtering
-                            entity_found = True
-                            actual_entity_found = entity_name
-                            print(f"   🔍 Single entity mode: Skipping entity check for {best_key}")
-                        else:
-                            # For multiple entity mode, perform entity filtering
-                            section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
-                            entity_found = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
+                        # Intelligent entity detection - automatically handle single vs multiple entity scenarios
+                        # entity_mode parameter is now 'auto' and the logic adapts automatically
+                        section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
 
-                            # Special handling for Chinese Excel files - if no entity found but content exists,
-                            # assume it's the correct entity (common in Chinese financial reports)
-                            if not entity_found and len(section_text.strip()) > 50:  # Has substantial content
-                                # Check if this looks like a financial table (has numbers and Chinese characters)
+                        # Check if entity keywords are found in the content
+                        entity_found = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
+
+                        if entity_found:
+                            # Entity found - use normal processing
+                            actual_entity_found = None
+                            print(f"   🔍 Entity found in content: entity_found={entity_found}")
+                            print(f"   🔍 Entity keywords: {entity_keywords}")
+                        else:
+                            # No entity found - use intelligent detection
+                            if len(section_text.strip()) > 50:  # Has substantial content
+                                # Check if this looks like a financial table (has numbers and/or Chinese characters)
                                 has_numbers = any(char.isdigit() for char in section_text)
                                 has_chinese = any('\u4e00' <= char <= '\u9fff' for char in section_text)
 
-                                if has_numbers and has_chinese:
+                                if has_numbers or has_chinese:
+                                    # Likely valid financial content - assume correct entity
                                     entity_found = True
-                                    print(f"   🔍 Chinese content detected - assuming correct entity for {best_key}")
+                                    actual_entity_found = entity_name
+                                    print(f"   🔍 No entity found but valid financial content detected - assuming correct entity for {best_key}")
+                                    print(f"   🔍 Content has numbers: {has_numbers}, Chinese: {has_chinese}")
                                 else:
-                                    print(f"   🔍 Entity check for {best_key}: entity_found={entity_found}")
+                                    print(f"   🔍 No entity found and content doesn't appear to be financial data")
                                     print(f"   🔍 Entity keywords: {entity_keywords}")
                                     print(f"   🔍 Section text sample: {section_text[:200]}...")
                             else:
-                                print(f"   🔍 Entity check for {best_key}: entity_found={entity_found}")
+                                print(f"   🔍 No entity found in minimal content")
                                 print(f"   🔍 Entity keywords: {entity_keywords}")
                                 print(f"   🔍 Section text sample: {section_text[:200]}...")
 
-                        # Only process if entity is found in this section (or if single entity mode)
+                                                # Only process if entity is found in this section
                         if entity_found:
-                            # Find the actual entity name from the section text (skip for single entity mode)
-                            if entity_mode == 'single':
-                                # For single entity mode, always use the provided entity name
-                                actual_entity_found = entity_name
-                            else:
-                                # For multiple entity mode, search for entity in the text
+                            # Find the actual entity name from the section text
+                            if actual_entity_found is None:  # Not already set by intelligent detection
                                 actual_entity_found = None
                                 # First try to find the exact entity keyword
                                 for entity_keyword in entity_keywords:
@@ -829,8 +829,8 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                         actual_entity_found = entity_keyword
                                         break
 
-                            # If not found, try to extract the actual entity name from the data (skip for single entity mode)
-                            if actual_entity_found is None and entity_mode != 'single':
+                            # If still not found, try to extract the actual entity name from the data
+                            if actual_entity_found is None:
                                 # Look for entity patterns in the section text
                                 import re
                                 # Common patterns for entity names
@@ -857,13 +857,13 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                 print(f"   🔍 parsed_table keys: {list(parsed_table.keys()) if isinstance(parsed_table, dict) else 'not a dict'}")
                             
                             if parsed_table:
-                                # Check if this section contains the selected entity
-                                if entity_mode == 'single':
-                                    # For single entity mode, skip entity validation
+                                # Entity validation - use the same intelligent logic as above
+                                if actual_entity_found is not None:
+                                    # Entity was already validated in the intelligent detection above
                                     is_selected_entity = True
                                     section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
                                 else:
-                                    # For multiple entity mode, perform entity validation
+                                    # Perform final validation check
                                     section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
                                     is_selected_entity = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
                                 

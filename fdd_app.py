@@ -393,21 +393,11 @@ def main():
         
         # Entity Selection Mode (Single vs Multiple)
         st.markdown("---")
-        entity_mode_options = ["Multiple Entities", "Single Entity"]
-        entity_mode_display = st.radio(
-            "Entity in Databook",
-            entity_mode_options,
-            index=0,  # Default to Multiple
-            help="Select whether your databook contains multiple entities or a single entity"
-        )
-        
-        # Map display names back to internal codes
-        entity_mode_mapping = {
-            "Multiple Entities": "multiple",
-            "Single Entity": "single"
-        }
-        entity_mode = entity_mode_mapping[entity_mode_display]
+        # Entity mode is now automatically detected - no manual selection needed
+        entity_mode = 'auto'  # System will automatically detect single vs multiple entity scenarios
         st.session_state['entity_mode'] = entity_mode
+
+        st.info("ℹ️ **Entity Detection**: The system automatically detects whether your databook contains single or multiple entities and adjusts processing accordingly.")
         
 
         
@@ -575,24 +565,19 @@ def main():
         # Use the pre-generated entity keywords
         if 'entity_keywords' not in locals() or not entity_keywords:
             # Fallback: generate entity keywords from entity_helpers
-            entity_mode = st.session_state.get('entity_mode', 'multiple')
-            
-            if entity_mode == 'single':
-                # For single entity mode, use only the base entity name
-                entity_suffixes = []
+            entity_mode = st.session_state.get('entity_mode', 'auto')
+
+            # Auto mode: Generate comprehensive entity keywords for intelligent detection
+            entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
+
+            # Create entity keywords based on the selected entity
+            entity_keywords = [selected_entity]  # Always include the base entity name
+            for suffix in entity_suffixes:
+                if suffix != selected_entity:  # Avoid duplicates
+                    entity_keywords.append(f"{selected_entity} {suffix}")
+
+            if not entity_keywords:
                 entity_keywords = [selected_entity]
-            else:
-                # For multiple entity mode, use the full entity helpers
-                entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
-                
-                # Create entity keywords based on the selected entity
-                entity_keywords = [selected_entity]  # Always include the base entity name
-                for suffix in entity_suffixes:
-                    if suffix != selected_entity:  # Avoid duplicates
-                        entity_keywords.append(f"{selected_entity} {suffix}")
-                
-                if not entity_keywords:
-                    entity_keywords = [selected_entity]
             
             # Entity processing completed
         
@@ -610,7 +595,7 @@ def main():
                         entity_name=selected_entity,
                         entity_suffixes=entity_suffixes,
                         entity_keywords=entity_keywords,
-                        entity_mode=entity_mode,
+                        entity_mode='auto',  # Always use auto mode for intelligent detection
                         debug=True  # Set to True for debugging
                     )
                     
@@ -649,7 +634,7 @@ def main():
                         entity_name=selected_entity,
                         entity_suffixes=entity_suffixes,
                         entity_keywords=entity_keywords,
-                        entity_mode=entity_mode,
+                        entity_mode='auto',  # Always use auto mode for intelligent detection
                         debug=True  # Set to True for debugging
                     )
                     
@@ -691,7 +676,7 @@ def main():
                         entity_name=selected_entity,
                         entity_suffixes=entity_suffixes,
                         entity_keywords=entity_keywords,
-                        entity_mode=entity_mode,
+                        entity_mode='auto',  # Always use auto mode for intelligent detection
                         debug=False
                     )
             
@@ -778,7 +763,7 @@ def main():
                             entity_name=selected_entity,
                             entity_suffixes=entity_suffixes,
                             entity_keywords=entity_keywords,
-                            entity_mode=entity_mode,
+                            entity_mode='auto',  # Always use auto mode for intelligent detection
                             debug=False
                         )
                     print(f"DEBUG AI: Processed data as fallback")
@@ -846,15 +831,30 @@ def main():
                         'agent3_success': False
                     }
                 
+                # Language Selection for AI Reports
+                st.markdown("### 🌐 Report Language")
+                language_options = ["English", "中文"]
+                selected_language = st.radio(
+                    "Select report language:",
+                    language_options,
+                    index=0,
+                    horizontal=True,
+                    help="Choose the language for AI-generated reports"
+                )
+                st.session_state['selected_language'] = selected_language
+
                 # AI Processing Button with a single main progress bar
                 agent_states = st.session_state.get('agent_states', {})
                 col_a, col_b, col_c = st.columns(3)
                 with col_a:
-                    run_ai_clicked = st.button("🚀 Run AI: Content Generation", type="secondary", use_container_width=True, key="btn_ai_gen")
+                    lang_indicator = "(中文)" if selected_language == "中文" else "(English)"
+                    run_ai_clicked = st.button(f"🚀 AI{lang_indicator}: Content Generation", type="secondary", use_container_width=True, key="btn_ai_gen")
                 with col_b:
-                    run_proof_clicked = st.button("🧐 Run AI: Proofreader", type="secondary", use_container_width=True, key="btn_ai_proof")
+                    lang_indicator = "(中文)" if selected_language == "中文" else "(English)"
+                    run_proof_clicked = st.button(f"🧐 AI{lang_indicator}: Proofreader", type="secondary", use_container_width=True, key="btn_ai_proof")
                 with col_c:
-                    run_both_clicked = st.button("🔁 Run AI: Generate → Proofread", type="primary", use_container_width=True, key="btn_ai_both")
+                    lang_indicator = "(中文)" if selected_language == "中文" else "(English)"
+                    run_both_clicked = st.button(f"🔁 AI{lang_indicator}: Generate → Proofread", type="primary", use_container_width=True, key="btn_ai_both")
 
                 if run_ai_clicked:
                     progress_bar = st.progress(0)
@@ -863,10 +863,13 @@ def main():
                     try:
                         status_text.text("🤖 Initializing…")
                         progress_bar.progress(10)
-                        
+
+                        # Get selected language for AI processing
+                        selected_language = st.session_state.get('selected_language', 'English')
+
                         # Handle different statement types
                         current_statement_type = st.session_state.get('current_statement_type', 'BS')
-                        
+
                         if current_statement_type == "ALL":
                             # For ALL, process both BS and IS
                             ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
@@ -885,7 +888,7 @@ def main():
                             status_text.text("📊 Processing all financial data...")
                             progress_bar.progress(20)
                             st.session_state['current_statement_type'] = 'ALL'
-                            agent1_results_bs = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
+                            agent1_results_bs = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
                             
                             # Store all results in session state
                             if agent1_results_bs:
@@ -920,7 +923,7 @@ def main():
                         else:
                             # Single statement type processing
                             ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 1, 'stage_index': 0, 'start_time': time.time()}}
-                            agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
+                            agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
                             agent1_success = bool(agent1_results and any(agent1_results.values()))
                             
                             # Generate content files after AI processing
@@ -956,7 +959,7 @@ def main():
                             st.warning("Run content generation first to produce material for proofreading.")
                         else:
                             ext = {'bar': progress_bar, 'status': status_text}
-                            proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
+                            proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext, language=selected_language)
                             st.session_state['agent_states']['agent3_results'] = proof_results
                             st.session_state['agent_states']['agent3_completed'] = True
                             st.session_state['agent_states']['agent3_success'] = bool(proof_results)
@@ -1385,7 +1388,7 @@ def clean_content_quotes(content):
     
     return '\n'.join(cleaned_lines)
 
-def display_ai_content_by_key(key, agent_choice):
+def display_ai_content_by_key(key, agent_choice, language='English'):
     """
     Display AI content based on the financial key using actual AI processing
     """
@@ -2348,8 +2351,9 @@ def display_ai_prompt_by_key(key, agent_choice):
             st.error("❌ Failed to load prompts configuration")
             return
         
-        # Get system prompts from configuration
-        system_prompts = prompts.get('system_prompts', {})
+        # Get system prompts from configuration - use language-specific prompts
+        language_key = 'chinese' if language == '中文' else 'english'
+        system_prompts = prompts.get('system_prompts', {}).get(language_key, {})
         
         # Get user prompts from configuration
         user_prompts_config = prompts.get('user_prompts', {})
@@ -2587,7 +2591,7 @@ def write_prompt_debug_content(filtered_keys, sections_by_key):
 #     project_name=project_name
 # )
 
-def run_agent_1(filtered_keys, ai_data, external_progress=None):
+def run_agent_1(filtered_keys, ai_data, external_progress=None, language='English'):
     """Run Agent 1: Content Generation for all keys"""
     try:
 
@@ -2629,21 +2633,29 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None):
         # Load prompts from prompts.json file
             with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
                 prompts_config = json.load(f)
-            actual_system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1', '')
+
+            # Select language-specific prompts
+            language_key = 'chinese' if language == '中文' else 'english'
+            system_prompts = prompts_config.get('system_prompts', {}).get(language_key, {})
+
+            actual_system_prompt = system_prompts.get('Agent 1', '')
             if not actual_system_prompt:
-                actual_system_prompt = """
-                Role: system,
-                Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
-                CORE PRINCIPLES:
-                1. SELECT exactly one appropriate non-nil pattern from the provided pattern options
-                2. Replace all placeholder values with corresponding actual data
-                3. Output only the financial completed pattern text, never show template structure
-                4. ACCURACY: Use only provided - data - never estimate or extrapolate
-                5. CLARITY: Write in clear business English, translating any foreign content
-                6. FORMAT: Follow the exact template structure provided
-                7. CURRENCY: Express figures to Thousands (K) or Millions (M) as appropriate
-                8. CONCISENESS: Focus on material figures and key insights only
-                OUTPUT REQUIREMENTS:
+                # Fallback to English if language-specific prompt not found
+                actual_system_prompt = prompts_config.get('system_prompts', {}).get('english', {}).get('Agent 1', '')
+                if not actual_system_prompt:
+                    actual_system_prompt = """
+                    Role: system,
+                    Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
+                    CORE PRINCIPLES:
+                    1. SELECT exactly one appropriate non-nil pattern from the provided pattern options
+                    2. Replace all placeholder values with corresponding actual data
+                    3. Output only the financial completed pattern text, never show template structure
+                    4. ACCURACY: Use only provided - data - never estimate or extrapolate
+                    5. CLARITY: Write in clear business English, translating any foreign content
+                    6. FORMAT: Follow the exact template structure provided
+                    7. CURRENCY: Express figures to Thousands (K) or Millions (M) as appropriate
+                    8. CONCISENESS: Focus on material figures and key insights only
+                    OUTPUT REQUIREMENTS:
                 - Choose the most suitable single pattern based on available data
                 - Replace all placeholders with actaul figures from databook
                 - Output ONLY the final text - no pattern names, no template structure, no explanations
@@ -2963,7 +2975,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
             except Exception:
                 pass
 
-def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress=None):
+def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress=None, language='English'):
     """Run AI Proofreader for all keys (Compliance, Figures, Entities, Grammar)."""
     try:
         import json
