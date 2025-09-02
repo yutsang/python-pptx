@@ -2658,7 +2658,54 @@ IMPORTANT ENTITY INSTRUCTIONS:
                     remaining = int(elapsed * (1 - progress) / max(progress, 0.001))
                 mins, secs = divmod(max(0, remaining), 60)
                 eta_str = f"ETA {mins:02d}:{secs:02d}" if progress < 1 else "ETA 00:00"
-                status_text.text(f"📝 Agent 1 — {message} — {eta_str}")
+
+                # Enhanced status message with more details
+                # Extract current key from various message formats
+                key_patterns = [
+                    r'Processing (\w+)',
+                    r'Loading data for (\w+)',
+                    r'Processing (\w+) data',
+                    r'AI generating (\w+)',
+                    r'Sending (\w+) to',
+                    r'Processing (\w+) response',
+                    r'Completed (\w+)'
+                ]
+
+                current_key = "Unknown"
+                for pattern in key_patterns:
+                    match = re.search(pattern, message)
+                    if match:
+                        current_key = match.group(1)
+                        break
+
+                # Extract more details from the message and determine phase
+                if "Loading data" in message:
+                    phase = "📊 Data Loading"
+                elif "Processing data" in message:
+                    phase = "📈 Data Processing"
+                elif "AI generating" in message:
+                    phase = "🤖 AI Generation"
+                elif "Sending" in message and "to" in message:
+                    phase = "📤 AI Request"
+                elif "Processing response" in message:
+                    phase = "📥 Response Processing"
+                elif "Completed" in message:
+                    phase = "✅ Completed"
+                elif "AI processing completed" in message:
+                    phase = "🎉 All Done"
+                    current_key = "All Keys"
+                else:
+                    phase = "🔄 Processing"
+
+                # Show current key and phase information
+                enhanced_message = f"{phase} — {current_key} — {eta_str}"
+
+                # Add processing statistics if available
+                if progress > 0 and progress < 1:
+                    processed_keys = int(progress * total)
+                    enhanced_message += f" ({processed_keys}/{total} keys)"
+
+                status_text.text(enhanced_message)
             except Exception:
                 pass
         
@@ -2668,6 +2715,14 @@ IMPORTANT ENTITY INSTRUCTIONS:
         # Get AI model settings from session state
         use_local_ai = st.session_state.get('use_local_ai', False)
         use_openai = st.session_state.get('use_openai', False)
+
+        # Get selected language for AI processing
+        selected_language = st.session_state.get('selected_language', 'English')
+        language_key = 'chinese' if selected_language == '中文' else 'english'
+
+        # Clear JSON cache to ensure fresh prompts are loaded
+        from common.assistant import clear_json_cache
+        clear_json_cache()
 
         results = process_keys(
             keys=filtered_keys,  # All keys at once
@@ -2682,7 +2737,8 @@ IMPORTANT ENTITY INSTRUCTIONS:
             progress_callback=update_progress,
             processed_table_data=processed_table_data,
             use_local_ai=use_local_ai,
-            use_openai=use_openai
+            use_openai=use_openai,
+            language=language_key
         )
         
         processing_time = time.time() - start_time
@@ -2792,7 +2848,7 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         use_local_ai = st.session_state.get('use_local_ai', False)
         use_openai = st.session_state.get('use_openai', False)
 
-        # Create progress callback
+        # Create enhanced progress callback for Chinese processing
         if external_progress:
             def update_progress(progress, message):
                 try:
@@ -2801,7 +2857,21 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     if bar:
                         bar.progress(progress)
                     if status:
-                        status.text(message)
+                        # Enhanced Chinese progress messages
+                        if "翻译" in message or "Translation" in message:
+                            enhanced_msg = f"🌐 翻译中... {message}"
+                        elif "校对" in message or "Proofreading" in message:
+                            enhanced_msg = f"🧐 校对中... {message}"
+                        elif "完成" in message or "completed" in message:
+                            enhanced_msg = f"✅ {message}"
+                        else:
+                            enhanced_msg = f"🔄 {message}"
+
+                        # Add progress percentage
+                        progress_pct = int(progress * 100)
+                        enhanced_msg += f" ({progress_pct}%)"
+
+                        status.text(enhanced_msg)
                 except Exception:
                     pass
             progress_callback = update_progress
@@ -2872,7 +2942,8 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     progress_callback=None,  # Disable progress for individual keys
                     processed_table_data={key: tables_md},
                     use_local_ai=use_local_ai,
-                    use_openai=use_openai
+                    use_openai=use_openai,
+                    language='english'  # Use English prompts for translation
                 )
 
                 # Update the result with translated content
@@ -2977,7 +3048,17 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                 eta_seconds = int(avg * remaining) if idx else 0
                 mins, secs = divmod(eta_seconds, 60)
                 eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else "ETA --:--"
-                status_text.text(f"🧐 Proofreader — {key} ({idx+1}/{total}) — {eta_str}")
+                # Enhanced proofreading progress message
+                progress_pct = int((idx + 1) / total * 100)
+                enhanced_msg = f"🧐 Proofreader — {key} — {progress_pct}% ({idx+1}/{total}) — {eta_str}"
+
+                # Add compliance status if available from previous results
+                if results and key in results:
+                    is_compliant = results[key].get('is_compliant', False)
+                    status_icon = "✅" if is_compliant else "⚠️"
+                    enhanced_msg += f" {status_icon}"
+
+                status_text.text(enhanced_msg)
                 try:
                     combined = external_progress.get('combined') if external_progress else None
                     if combined and isinstance(combined, dict):
@@ -3173,47 +3254,41 @@ def read_bs_content_by_key(entity_name):
         print(f"Error reading bs_content.md: {e}")
         return {}
 
+def convert_sections_to_markdown(sections_by_key):
+    """Convert sections_by_key format to markdown format expected by process_keys"""
+    processed_table_data = {}
+
+    for key, sections in sections_by_key.items():
+        if not sections:
+            continue
+
+        # Combine all markdown content from sections for this key
+        markdown_parts = []
+        for section in sections:
+            if isinstance(section, dict) and 'markdown' in section:
+                markdown_parts.append(section['markdown'])
+            elif isinstance(section, str):
+                markdown_parts.append(section)
+
+        # Join all sections for this key
+        if markdown_parts:
+            processed_table_data[key] = '\n\n'.join(markdown_parts)
+
+    return processed_table_data
+
 def run_agent_1_simple(filtered_keys, ai_data, external_progress=None, language='English'):
-    """Simplified Agent 1 using process_keys directly - more reliable than run_agent_1"""
+    """Optimized Agent 1 using process_keys directly - eliminates redundant Excel processing"""
     try:
         print(f"🔍 run_agent_1_simple called with {len(filtered_keys)} keys, language: {language}")
         import time
-        from common.assistant import process_keys, load_ip, process_and_filter_excel
+        from common.assistant import process_keys
+
+        # Convert language parameter to the format expected by process_keys
+        language_key = 'chinese' if language == '中文' else 'english'
 
         # Get data from ai_data
         entity_name = ai_data.get('entity_name', '')
         entity_keywords = ai_data.get('entity_keywords', [])
-
-        # Create temporary file for processing
-        temp_file_path = None
-        try:
-            if 'uploaded_file_data' in st.session_state:
-                # Use a unique filename to avoid conflicts
-                unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
-                temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
-
-                with open(temp_file_path, 'wb') as tmp_file:
-                    tmp_file.write(st.session_state['uploaded_file_data'])
-            else:
-                # Fallback: use existing databook.xlsx
-                if os.path.exists('databook.xlsx'):
-                    temp_file_path = 'databook.xlsx'
-                else:
-                    st.error("❌ No databook available for processing")
-                    return {}
-        except Exception as e:
-            st.error(f"❌ Error creating temporary file: {e}")
-            return {}
-
-        # Prepare processed table data
-        processed_table_data = {}
-        for key in filtered_keys:
-            try:
-                mapping = load_ip('fdd_utils/mapping.json')
-                table_data = process_and_filter_excel(temp_file_path, mapping, entity_name, entity_keywords)
-                processed_table_data[key] = table_data
-            except Exception as e:
-                print(f"Warning: Could not prepare table data for {key}: {e}")
 
         # Get AI model settings
         use_local_ai = st.session_state.get('use_local_ai', False)
@@ -3235,7 +3310,45 @@ def run_agent_1_simple(filtered_keys, ai_data, external_progress=None, language=
         else:
             progress_callback = None
 
-        # Call process_keys directly
+        # Try to use already processed data from sections_by_key
+        sections_by_key = ai_data.get('sections_by_key', {})
+        processed_table_data = None
+
+        if sections_by_key:
+            print(f"✅ Using already processed table data from sections_by_key")
+            processed_table_data = convert_sections_to_markdown(sections_by_key)
+            print(f"📊 Converted {len(processed_table_data)} keys to markdown format")
+
+            # Create a dummy file path since we won't need to read from file
+            temp_file_path = "dummy.xlsx"  # process_keys will use processed_table_data instead
+        else:
+            print(f"⚠️ No processed data found, falling back to Excel processing")
+            # Fallback to original Excel processing
+            temp_file_path = None
+            try:
+                if 'uploaded_file_data' in st.session_state:
+                    # Use a unique filename to avoid conflicts
+                    unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
+                    temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
+
+                    with open(temp_file_path, 'wb') as tmp_file:
+                        tmp_file.write(st.session_state['uploaded_file_data'])
+                else:
+                    # Fallback: use existing databook.xlsx
+                    if os.path.exists('databook.xlsx'):
+                        temp_file_path = 'databook.xlsx'
+                    else:
+                        st.error("❌ No databook available for processing")
+                        return {}
+            except Exception as e:
+                st.error(f"❌ Error creating temporary file: {e}")
+                return {}
+
+        # Clear JSON cache to ensure fresh prompts are loaded
+        from common.assistant import clear_json_cache
+        clear_json_cache()
+
+        # Call process_keys directly - it handles Excel processing efficiently
         results = process_keys(
             keys=filtered_keys,
             entity_name=entity_name,
@@ -3249,15 +3362,16 @@ def run_agent_1_simple(filtered_keys, ai_data, external_progress=None, language=
             progress_callback=progress_callback,
             processed_table_data=processed_table_data,
             use_local_ai=use_local_ai,
-            use_openai=use_openai
+            use_openai=use_openai,
+            language=language_key
         )
 
-        # Clean up temp file
-        try:
-            if temp_file_path and temp_file_path != 'databook.xlsx' and os.path.exists(temp_file_path):
+        # Clean up temp file (only if we created one)
+        if temp_file_path and temp_file_path != 'databook.xlsx' and temp_file_path != "dummy.xlsx" and os.path.exists(temp_file_path):
+            try:
                 os.unlink(temp_file_path)
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         return results
 

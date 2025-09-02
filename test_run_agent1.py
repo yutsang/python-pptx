@@ -123,7 +123,8 @@ def test_run_agent1():
                 progress_callback=None,
                 processed_table_data=processed_table_data,
                 use_local_ai=False,
-                use_openai=False
+                use_openai=False,
+                language='english'
             )
             print(f"   process_keys returned: {type(process_results)} with {len(process_results) if process_results else 0} keys")
             if process_results:

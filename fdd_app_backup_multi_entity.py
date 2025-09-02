@@ -3202,7 +3202,8 @@ IMPORTANT ENTITY INSTRUCTIONS:
             progress_callback=update_progress,
             processed_table_data=processed_table_data,
             use_local_ai=use_local_ai,
-            use_openai=use_openai
+            use_openai=use_openai,
+            language='english'  # Default to English
         )
         
         processing_time = time.time() - start_time

@@ -1,4 +1,4 @@
-import json, os, httpx
+import json, os, httpx, time
 import pandas as pd
 from tabulate import tabulate
 from pathlib import Path
@@ -982,13 +982,33 @@ def detect_string_in_file(file_content, target_string):
     except Exception:
         return False
 
+# Global cache for loaded JSON files to avoid repeated I/O
+_json_cache = {}
+
+def clear_json_cache():
+    """Clear the JSON cache to ensure fresh data loading"""
+    global _json_cache
+    _json_cache.clear()
+    print("🧹 JSON cache cleared")
+
 def load_ip(file, key=None):
+    """Load JSON file with caching to improve performance"""
     try:
-        with open(file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if key is not None and key in data:
-            return data[key]
-        return data
+        # Use file path as cache key
+        cache_key = file
+
+        # Check cache first
+        if cache_key in _json_cache:
+            cached_data = _json_cache[cache_key]
+        else:
+            with open(file, 'r', encoding='utf-8') as f:
+                cached_data = json.load(f)
+            # Cache the loaded data
+            _json_cache[cache_key] = cached_data
+
+        if key is not None and key in cached_data:
+            return cached_data[key]
+        return cached_data
     except FileNotFoundError:
         print(f"File {file} not found.")
     except json.JSONDecodeError:
@@ -996,7 +1016,7 @@ def load_ip(file, key=None):
     return {}
 
 # --- Pattern Filling and Main Processing ---
-def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', prompts_file='utils/prompts.json', use_ai=True, convert_thousands=False, progress_callback=None, processed_table_data=None, use_local_ai=False, use_openai=False):
+def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pattern_file, config_file='utils/config.json', prompts_file='utils/prompts.json', use_ai=True, convert_thousands=False, progress_callback=None, processed_table_data=None, use_local_ai=False, use_openai=False, language='english'):
     # AI is required - no fallback mode
     if not use_ai:
         raise RuntimeError("AI processing is required. Cannot run in offline mode.")
@@ -1010,8 +1030,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     with open(prompts_file, 'r', encoding='utf-8') as f:
         prompts_config = json.load(f)
 
-    # Determine language - default to english if not specified
-    language = 'english'  # This could be made configurable later
+    # Use the passed language parameter (defaults to 'english')
     system_prompts = prompts_config.get('system_prompts', {}).get(language, {})
 
     system_prompt = system_prompts.get('Agent 1')
@@ -1023,49 +1042,75 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), None, convert_thousands=False)
     results = {}
     
-    # Fix tqdm progress bar to show proper total
-    pbar = tqdm(keys, desc="Processing keys", unit="key", total=len(keys))
-    
+    # Enhanced tqdm progress bar with detailed information
+    pbar = tqdm(keys, desc="🤖 AI Processing", unit="key", total=len(keys),
+                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+
+    # Track start time for final summary
+    start_time = time.time()
+
     for key_index, key in enumerate(pbar):
-        # Update progress description to show current key and progress
-        pbar.set_description(f"Processing {key}")
-        
-        # Update streamlit progress if callback provided
-        if progress_callback:
-            progress_callback((key_index + 1) / len(keys), f"Processing {key}...")
-        
+        # Determine AI model being used for display
         config_details = load_config(config_file)
-        
-        # Initialize AI services - required for processing
-        oai_client, search_client = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
-        # Use appropriate model based on selection
         if use_local_ai:
+            ai_model = "Local AI"
             openai_model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
         elif use_openai:
+            ai_model = "OpenAI"
             openai_model = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
         else:
+            ai_model = "DeepSeek"
             openai_model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
-        
+
+        # Initial progress update with key info
+        progress_desc = f"🔄 {key} ({ai_model})"
+        pbar.set_description(progress_desc)
+
+        # Enhanced Streamlit progress with detailed status
+        if progress_callback:
+            detailed_message = f"🔄 Processing {key} • {ai_model} • Key {key_index + 1}/{len(keys)}"
+            progress_callback((key_index + 1) / len(keys), detailed_message)
+
+        # Update progress: Data loading phase
+        pbar.set_postfix_str("📊 Loading data...")
+        if progress_callback:
+            progress_callback((key_index + 0.1) / len(keys), f"📊 Loading data for {key}...")
+
+        # Initialize AI services - required for processing
+        oai_client, search_client = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
+
         pattern = load_ip(pattern_file, key)
         mapping = {key: load_ip(mapping_file)}
-        
+
         # Use processed table data if provided, otherwise process Excel file
         if processed_table_data and key in processed_table_data:
             excel_tables = processed_table_data[key]
+            data_source = "cached"
         else:
             excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers)
-        
+            data_source = "processed"
+
+        # Update progress: Data processing phase
+        pbar.set_postfix_str(f"📈 Processing data ({data_source})...")
+        if progress_callback:
+            progress_callback((key_index + 0.2) / len(keys), f"📈 Processing {key} data...")
+
         # Check if '000 notation is detected
         has_thousands_notation = detect_string_in_file(excel_tables, "'000")
-        
+
         # Process data for AI: multiply figures by 1000 if '000 notation detected
         excel_tables_for_ai = multiply_figures_for_ai_processing(excel_tables) if has_thousands_notation else excel_tables
-        
+
         # Apply thousands conversion to the specific financial figure for this key
         current_financial_figure = financial_figures.get(key, 0)
         if has_thousands_notation and current_financial_figure:
             adjusted_financial_figure = current_financial_figure * 1000
             financial_figures[key] = adjusted_financial_figure
+
+        # Update progress: AI processing phase
+        pbar.set_postfix_str(f"🤖 AI generating ({openai_model})...")
+        if progress_callback:
+            progress_callback((key_index + 0.3) / len(keys), f"🤖 AI generating {key} content...")
         
         # Update prompt to reflect the data processing
         detect_zeros = """IMPORTANT: The numerical figures in the DATA SOURCE have been adjusted for analysis (multiplied by 1000 from the original '000 notation). 
@@ -1081,69 +1126,138 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         pattern_json = json.dumps(pattern, indent=2)
         financial_figure_info = f"{key}: {get_financial_figure(financial_figures, key)}"
         
-        # Template for output requirements - reusable across queries
-        output_requirements = f"""
-        REQUIRED OUTPUT FORMAT:
-        - Only the completed pattern text
-        - No pattern names or labels
-        - No template structure
-        - No JSON formatting
-        - Replace ALL 'xxx' or placeholders with actual data values
-        - Replace ALL [ENTITY_NAME] placeholders with the SPECIFIC entity name from the DATA SOURCE
-        - CRITICAL: Use the SPECIFIC entity names from the table data (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
-        - Do not use bullet point for listing
-        - Express all figures with proper K/M conversion (e.g., 9,076,000 = 9.1M, 1,500 = 1.5K)
-        - No foreign contents, if any, translate to English
-        - Stick to Template format, no extra explanations or comments
-        - For entity name to be filled into template, use the specific entity names from the DATA SOURCE table
-        - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
-        - Ensure all financial figures mentioned match the actual values from the DATA SOURCE
-        - IMPORTANT: Look at the table data to identify the correct entity names (e.g., 'Third-party receivables', 'Company #1', etc.)
-        """
+        # Template for output requirements - language aware
+        if language == 'chinese':
+            output_requirements = f"""
+            必需的输出格式：
+            - 仅包含完成的模式文本
+            - 没有模式名称或标签
+            - 没有模板结构
+            - 没有JSON格式
+            - 将所有'xxx'或占位符替换为实际数据值
+            - 将所有[ENTITY_NAME]占位符替换为数据源中的具体实体名称
+            - 关键：使用表数据中的具体实体名称（如'第三方应收款'、'公司#1'），而不是报告实体名称
+            - 不要使用项目符号列出
+            - 用正确的K/M转换表示所有数字（如9,076,000 = 9.1M，1,500 = 1.5K）
+            - 坚持模板格式，不要添加额外解释或注释
+            - 对于要填入模板的实体名称，使用数据源表中的具体实体名称
+            - 对于所有列出的数字，请检查总数，应该与财务数据大致相同或构成大部分
+            - 确保提到的所有财务数字与数据源中的实际值匹配
+            - 重要：查看表数据以识别正确的实体名称（如'第三方应收款'、'公司#1'等）
+            """
+        else:
+            output_requirements = f"""
+            REQUIRED OUTPUT FORMAT:
+            - Only the completed pattern text
+            - No pattern names or labels
+            - No template structure
+            - No JSON formatting
+            - Replace ALL 'xxx' or placeholders with actual data values
+            - Replace ALL [ENTITY_NAME] placeholders with the SPECIFIC entity name from the DATA SOURCE
+            - CRITICAL: Use the SPECIFIC entity names from the table data (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
+            - Do not use bullet point for listing
+            - Express all figures with proper K/M conversion (e.g., 9,076,000 = 9.1M, 1,500 = 1.5K)
+            - No foreign contents, if any, translate to English
+            - Stick to Template format, no extra explanations or comments
+            - For entity name to be filled into template, use the specific entity names from the DATA SOURCE table
+            - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
+            - Ensure all financial figures mentioned match the actual values from the DATA SOURCE
+            - IMPORTANT: Look at the table data to identify the correct entity names (e.g., 'Third-party receivables', 'Company #1', etc.)
+            """
+
+        # Example formats for consistent output - language aware
+        if language == 'chinese':
+            examples = f"""
+            正确输出格式示例：
+            "银行存款包括截至2022年9月30日存放在主要金融机构的CNY9.1M存款。"
+
+            错误输出格式示例：
+            "模式1：银行存款包括截至xxx存放在xxx的xxx存款。"
+            """
+        else:
+            examples = f"""
+            Example of CORRECT output format:
+            "Cash at bank comprises deposits of CNY9.1M held with major financial institutions as at 30/09/2022."
+
+            Example of INCORRECT output format:
+            "Pattern 1: Cash at bank comprises deposits of xxx held with xxx as at xxx."
+            """
         
-        # Example formats for consistent output
-        examples = f"""
-        Example of CORRECT output format:
-        "Cash at bank comprises deposits of CNY9.1M held with major financial institutions as at 30/09/2022."
+        # User query construction - language aware
+        if language == 'chinese':
+            user_query = f"""
+            任务：选择一个模式并用实际数据完成它
+
+            可用模式：{pattern_json}
+
+            财务数据：{financial_figure_info}
+
+            数据源：{excel_tables_for_ai}
+
+            选择标准：
+            - 选择数据覆盖最完整的模式
+            - 优先选择匹配主要账户类别的模式
+            - 使用最新数据：最新的可用数据
+            - {detect_zeros}
+
+            {output_requirements}
+
+            {examples}
+
+            重要要求：
+            1. 始终指定确切的金额和货币（如"CNY9.1M"、"$2.3M"、"CNY687K"）
+            2. 始终识别并提及数据源表中的具体实体名称
+            3. 关键：对于实体名称，使用财务数据表中的具体实体名称（如'第三方应收款'、'公司#1'），而不是报告实体名称
+            4. 查看表数据以识别正确的实体名称和金额
+            5. 当表格显示'第三方应收款'时，使用确切的名称，而不是报告实体
+            6. 在响应末尾提供简要摘要，如：
+               "摘要：使用了实体'第三方应收款'，金额：CNY634K（应收款总额）"
+            """
+        else:
+            user_query = f"""
+            TASK: Select ONE pattern and complete it with actual data
+
+            AVAILABLE PATTERNS: {pattern_json}
+
+            FINANCIAL FIGURE: {financial_figure_info}
+
+            DATA SOURCE: {excel_tables_for_ai}
+
+            SELECTION CRITERIA:
+            - Choose the pattern with the most complete data coverage
+            - Prioritize patterns that match the primary account category
+            - Use most recent data: latest available
+            - {detect_zeros}
+
+            {output_requirements}
+
+            {examples}
+
+            IMPORTANT REQUIREMENTS:
+            1. ALWAYS specify exact dollar amounts and currency (e.g., "CNY9.1M", "$2.3M", "CNY687K")
+            2. ALWAYS identify and mention the specific entity names from the DATA SOURCE table
+            3. CRITICAL: For entity names, use the SPECIFIC entity names from the financial data table (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
+            4. Look at the table data to identify the correct entity names and amounts
+            5. When the table shows 'Third-party receivables', use that exact name, not the reporting entity
+            6. At the end of your response, provide a brief summary like:
+               "SUMMARY: Used entity 'Third-party receivables' with amounts: CNY634K (total receivables)"
+            """
         
-        Example of INCORRECT output format:
-        "Pattern 1: Cash at bank comprises deposits of xxx held with xxx as at xxx."
-        """
-        
-        user_query = f"""
-        TASK: Select ONE pattern and complete it with actual data
-        
-        AVAILABLE PATTERNS: {pattern_json}
-        
-        FINANCIAL FIGURE: {financial_figure_info}
-        
-        DATA SOURCE: {excel_tables_for_ai}
-        
-        SELECTION CRITERIA:
-        - Choose the pattern with the most complete data coverage
-        - Prioritize patterns that match the primary account category
-        - Use most recent data: latest available
-        - {detect_zeros}
-        
-        {output_requirements}
-        
-        {examples}
-        
-        IMPORTANT REQUIREMENTS:
-        1. ALWAYS specify exact dollar amounts and currency (e.g., "CNY9.1M", "$2.3M", "CNY687K")
-        2. ALWAYS identify and mention the specific entity names from the DATA SOURCE table
-        3. CRITICAL: For entity names, use the SPECIFIC entity names from the financial data table (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
-        4. Look at the table data to identify the correct entity names and amounts
-        5. When the table shows 'Third-party receivables', use that exact name, not the reporting entity
-        6. At the end of your response, provide a brief summary like:
-           "SUMMARY: Used entity 'Third-party receivables' with amounts: CNY634K (total receivables)"
-        """
-        
+        # Update progress: AI request phase
+        pbar.set_postfix_str(f"📤 Sending to {openai_model}...")
+        if progress_callback:
+            progress_callback((key_index + 0.7) / len(keys), f"📤 Sending {key} to {ai_model}...")
+
         response_txt = generate_response(user_query, system_prompt, oai_client, excel_tables, openai_model, entity_name, use_local_ai)
-        
+
+        # Update progress: Response processing phase
+        pbar.set_postfix_str("📥 Processing response...")
+        if progress_callback:
+            progress_callback((key_index + 0.8) / len(keys), f"📥 Processing {key} response...")
+
         # Clean up response: remove outer quotation marks and translate Chinese
         response_txt = clean_response_text(response_txt)
-        
+
         # Store result with pattern information for logging
         results[key] = {
             'content': response_txt,
@@ -1152,16 +1266,39 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             'financial_figure': financial_figures.get(key, 0),
             'entity_name': entity_name
         }
-        
-        # Update progress bar with key information and AI response preview
-        pbar.set_postfix_str(f"{key}: {response_txt[:10]}...")
-    
+
+        # Update progress bar with completion info and response preview
+        completion_status = f"✅ {key}: {response_txt[:15]}..." if len(response_txt) > 15 else f"✅ {key}: {response_txt}"
+        pbar.set_postfix_str(completion_status)
+
+        # Enhanced Streamlit progress with completion details
+        if progress_callback:
+            completion_msg = f"✅ Completed {key} • Generated {len(response_txt)} chars"
+            progress_callback((key_index + 1) / len(keys), completion_msg)
+
     pbar.close()
-    
-    # Final progress update
+
+    # Enhanced final progress update with summary
+    total_keys = len(keys)
+    successful_keys = len([k for k in results.keys() if results[k].get('content')])
+    success_rate = (successful_keys / total_keys * 100) if total_keys > 0 else 0
+
+    final_status = f"🎉 AI processing completed! {successful_keys}/{total_keys} keys processed ({success_rate:.1f}% success)"
+
     if progress_callback:
-        progress_callback(1.0, "AI processing completed!")
-    
+        progress_callback(1.0, final_status)
+
+    # Print summary to console as well
+    print(f"\n{'='*60}")
+    print(f"🤖 AI PROCESSING SUMMARY")
+    print(f"{'='*60}")
+    print(f"📊 Total keys processed: {total_keys}")
+    print(f"✅ Successful: {successful_keys}")
+    print(f"❌ Failed: {total_keys - successful_keys}")
+    print(f"📈 Success rate: {success_rate:.1f}%")
+    print(f"⏱️  Total time: {time.time() - start_time:.2f}s")
+    print(f"{'='*60}\n")
+
     return results
 
 def generate_test_results(keys):
