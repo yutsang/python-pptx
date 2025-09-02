@@ -1928,18 +1928,20 @@ class ProofreadingAgent:
                 corrected = result.get('corrected_content') or content
 
                 # Only translate Chinese to English if we're using English language
-                if language_key == 'english' and contains_cjk(corrected):
-                    trans_system = (
-                        "You are a professional financial translator. Translate ALL non-English text to clear business English. "
-                        "Keep numbers/currency intact, use standard tax abbreviations (VAT, CIT, WHT, LUT), remove pinyin, "
-                        "no brackets or explanations, output final English text only."
-                    )
-                    trans_user = f"Translate to English (final text only):\n{corrected}"
-                    trans = generate_response(trans_user, trans_system, oai_client, tables_markdown, model, entity, self.use_local_ai)
-                    corrected = clean_response_text(trans, 'english')  # Explicitly pass english for translation
-                    runs += 1
-                    if not contains_cjk(corrected):
-                        break
+                if language_key == 'english':
+                    # Heuristic translation loop for English language
+                    while contains_cjk(corrected) and runs < 2:
+                        trans_system = (
+                            "You are a professional financial translator. Translate ALL non-English text to clear business English. "
+                            "Keep numbers/currency intact, use standard tax abbreviations (VAT, CIT, WHT, LUT), remove pinyin, "
+                            "no brackets or explanations, output final English text only."
+                        )
+                        trans_user = f"Translate to English (final text only):\n{corrected}"
+                        trans = generate_response(trans_user, trans_system, oai_client, tables_markdown, model, entity, self.use_local_ai)
+                        corrected = clean_response_text(trans, 'english')  # Explicitly pass english for translation
+                        runs += 1
+                        if not contains_cjk(corrected):
+                            break
 
                 if runs > 0:
                     result['corrected_content'] = corrected

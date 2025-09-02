@@ -998,7 +998,9 @@ def main():
                             status_text.text("📊 处理所有财务数据...")
                             progress_bar.progress(20)
                             st.session_state['current_statement_type'] = 'ALL'
-                            agent1_results_bs = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
+                            # For Chinese reports, generate English content first, then proofread, then translate
+                            agent1_language = 'English' if selected_language == '中文' else selected_language
+                            agent1_results_bs = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=agent1_language)
 
                             # Store all results in session state
                             if agent1_results_bs:
@@ -1018,7 +1020,7 @@ def main():
 
                                 # Filter IS keys
                                 is_filtered_keys = [key for key in filtered_keys_for_ai if key in is_key_list]
-                                agent1_results_is = run_agent_1_simple(is_filtered_keys, temp_ai_data, external_progress=ext, language=selected_language)
+                                agent1_results_is = run_agent_1_simple(is_filtered_keys, temp_ai_data, external_progress=ext, language=agent1_language)
 
                                 if agent1_results_is:
                                     # Store IS results
@@ -1035,26 +1037,28 @@ def main():
                                 combined_results.update(agent1_results_bs or {})
                                 combined_results.update(agent1_results_is or {})
 
-                                # Chinese Translation Agent - Only translate if content is not already in Chinese
+                                # New Chinese Logic: Generate English → Proofread English → Translate to Chinese
                                 if selected_language == '中文':
-                                    # Content is already in Chinese, skip translation
-                                    translated_results = combined_results
-                                    print("✅ Content already in Chinese, skipping translation step")
+                                    # Step 1: Proofread the English content first
                                     ext['combined']['stage_index'] = 2
-                                    status_text.text("🌐 内容已在中文，跳过翻译...")
+                                    status_text.text("🧐 校对英文内容...")
                                     progress_bar.progress(70)
-                                    ext['combined']['stage_index'] = 3  # Skip to proofreading
-                                else:
-                                    ext['combined']['stage_index'] = 2
-                                    status_text.text("🌐 翻译为中文...")
-                                    progress_bar.progress(70)
-                                    translated_results = run_chinese_translator(filtered_keys_for_ai, combined_results, temp_ai_data, external_progress=ext)
+                                    proofread_english_results = run_ai_proofreader(filtered_keys_for_ai, combined_results, temp_ai_data, external_progress=ext, language='English')
 
-                                # Proofreader
-                                ext['combined']['stage_index'] = 3
-                                status_text.text("🧐 运行校对...")
-                                progress_bar.progress(85)
-                                proof_results = run_ai_proofreader(filtered_keys_for_ai, translated_results, temp_ai_data, external_progress=ext, language=selected_language)
+                                    # Step 2: Then translate the proofread English content to Chinese
+                                    ext['combined']['stage_index'] = 3
+                                    status_text.text("🌐 翻译为中文...")
+                                    progress_bar.progress(85)
+                                    translated_results = run_chinese_translator(filtered_keys_for_ai, proofread_english_results, temp_ai_data, external_progress=ext)
+
+                                    proof_results = translated_results  # Final results are the translated content
+                                else:
+                                    # English version: Generate → Proofread
+                                    ext['combined']['stage_index'] = 2
+                                    status_text.text("🧐 运行校对...")
+                                    progress_bar.progress(70)
+                                    proof_results = run_ai_proofreader(filtered_keys_for_ai, combined_results, temp_ai_data, external_progress=ext, language=selected_language)
+                                    translated_results = combined_results  # No translation for English
 
                                 if proof_results:
                                     st.session_state['agent_states']['agent3_results'] = proof_results
@@ -1068,28 +1072,32 @@ def main():
                         else:
                             # Single statement type processing
                             ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 3, 'stage_index': 0, 'start_time': time.time()}}
-                            agent1_results = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
+                            # For Chinese reports, generate English content first, then proofread, then translate
+                            agent1_language = 'English' if selected_language == '中文' else selected_language
+                            agent1_results = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=agent1_language)
                             st.session_state['agent_states']['agent1_results'] = agent1_results
                             st.session_state['agent_states']['agent1_completed'] = True
                             st.session_state['agent_states']['agent1_success'] = bool(agent1_results)
 
-                            # Chinese Translation Agent - Only translate if content is not already in Chinese
+                            # New Chinese Logic: Generate English → Proofread English → Translate to Chinese
                             if selected_language == '中文':
-                                # Content is already in Chinese, skip translation
-                                translated_results = agent1_results
-                                print("✅ Content already in Chinese, skipping translation step")
+                                # Step 1: Proofread the English content first
                                 ext['combined']['stage_index'] = 1
-                                status_text.text("🌐 内容已在中文，跳过翻译...")
-                                ext['combined']['stage_index'] = 2  # Skip to proofreading
-                            else:
-                                status_text.text("🌐 翻译为中文...")
-                                ext['combined']['stage_index'] = 1
-                                translated_results = run_chinese_translator(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
+                                status_text.text("🧐 校对英文内容...")
+                                proofread_english_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext, language='English')
 
-                            # Proofreader
-                            status_text.text("🧐 运行校对...")
-                            ext['combined']['stage_index'] = 2
-                            proof_results = run_ai_proofreader(filtered_keys_for_ai, translated_results, temp_ai_data, external_progress=ext, language=selected_language)
+                                # Step 2: Then translate the proofread English content to Chinese
+                                ext['combined']['stage_index'] = 2
+                                status_text.text("🌐 翻译为中文...")
+                                translated_results = run_chinese_translator(filtered_keys_for_ai, proofread_english_results, temp_ai_data, external_progress=ext)
+
+                                proof_results = translated_results  # Final results are the translated content
+                            else:
+                                # English version: Generate → Proofread
+                                status_text.text("🧐 运行校对...")
+                                ext['combined']['stage_index'] = 1
+                                proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext, language=selected_language)
+                                translated_results = agent1_results  # No translation for English
                             st.session_state['agent_states']['agent3_results'] = proof_results
                             st.session_state['agent_states']['agent3_completed'] = True
                             st.session_state['agent_states']['agent3_success'] = bool(proof_results)
