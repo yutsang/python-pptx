@@ -889,7 +889,7 @@ def main():
                             status_text.text("📊 Processing all financial data...")
                             progress_bar.progress(20)
                             st.session_state['current_statement_type'] = 'ALL'
-                            agent1_results_bs = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
+                            agent1_results_bs = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
                             
                             # Store all results in session state
                             if agent1_results_bs:
@@ -980,7 +980,7 @@ def main():
                             status_text.text("📊 处理所有财务数据...")
                             progress_bar.progress(20)
                             st.session_state['current_statement_type'] = 'ALL'
-                            agent1_results_bs = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
+                            agent1_results_bs = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
 
                             # Store all results in session state
                             if agent1_results_bs:
@@ -1000,7 +1000,7 @@ def main():
 
                                 # Filter IS keys
                                 is_filtered_keys = [key for key in filtered_keys_for_ai if key in is_key_list]
-                                agent1_results_is = run_agent_1(is_filtered_keys, temp_ai_data, external_progress=ext, language=selected_language)
+                                agent1_results_is = run_agent_1_simple(is_filtered_keys, temp_ai_data, external_progress=ext, language=selected_language)
 
                                 if agent1_results_is:
                                     # Store IS results
@@ -3345,7 +3345,6 @@ def run_agent_1_simple(filtered_keys, ai_data, external_progress=None, language=
             progress_callback = None
 
         # Call process_keys directly
-        print(f"run_agent_1_simple: About to call process_keys with {len(processed_table_data)} processed tables")
         results = process_keys(
             keys=filtered_keys,
             entity_name=entity_name,
@@ -3361,7 +3360,6 @@ def run_agent_1_simple(filtered_keys, ai_data, external_progress=None, language=
             use_local_ai=use_local_ai,
             use_openai=use_openai
         )
-        print(f"run_agent_1_simple: process_keys returned {type(results)} with {len(results) if results else 0} keys")
 
         # Clean up temp file
         try:
