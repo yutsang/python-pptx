@@ -1766,11 +1766,12 @@ class PatternValidationAgent:
 
 class ProofreadingAgent:
     """AI Proofreader for compliance, figure formatting, entity matching, and grammar/style."""
-    def __init__(self, use_local_ai: bool = False, use_openai: bool = False):
+    def __init__(self, use_local_ai: bool = False, use_openai: bool = False, language: str = 'English'):
         self.config_file = 'fdd_utils/config.json'
         self.pattern_file = 'fdd_utils/pattern.json'
         self.use_local_ai = use_local_ai
         self.use_openai = use_openai
+        self.language = language
 
     def proofread(self, content: str, key: str, tables_markdown: str, entity: str, progress_bar: Optional[tqdm] = None) -> Dict:
         try:
@@ -1792,16 +1793,32 @@ class ProofreadingAgent:
             config_details = load_config(self.config_file)
             oai_client, _ = initialize_ai_services(config_details, use_local=self.use_local_ai, use_openai=self.use_openai)
 
-            # Load system prompt
+            # Load system prompt based on language
             try:
                 with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
                     prompts_config = json.load(f)
-                system_prompt = prompts_config.get('system_prompts', {}).get('AI Proofreader', '')
+
+                # Convert language to the format used in prompts.json
+                language_key = 'chinese' if self.language == '中文' else 'english'
+
+                # Get the appropriate prompt for the language
+                system_prompt = prompts_config.get('system_prompts', {}).get(language_key, {}).get('AI Proofreader', '')
+
+                # Fallback if language-specific prompt not found
+                if not system_prompt:
+                    system_prompt = prompts_config.get('system_prompts', {}).get('AI Proofreader', '')
+
             except (FileNotFoundError, json.JSONDecodeError):
-                system_prompt = (
-                    "You are an AI proofreader for financial due diligence narratives. Focus on pattern compliance, "
-                    "K/M figure formatting, entity correctness, grammar/pro tone, and language normalization. Return JSON."
-                )
+                # Fallback to language-appropriate default prompt
+                if self.language == '中文':
+                    system_prompt = (
+                        "您是财务尽职调查叙述的人工智能校对员。审查Agent 1内容是否符合：模式要求、数据格式化（K/M 1位小数；处理'000）、按表格的实体/细节正确性（不是报告实体）、语法/专业语气（移除外引号）、语言规范化（确保使用简体中文；使用VAT、CIT、WHT、附加税）。规则：不要发明数据；保持简洁；如果列表太长，保留前2项；确保所有内容都是简体中文。返回JSON格式：is_compliant (bool), issues (array), corrected_content (string), figure_checks (array), entity_checks (array), grammar_notes (array), pattern_used (string)。corrected_content必须是最终清理后的简体中文文本。"
+                    )
+                else:
+                    system_prompt = (
+                        "You are an AI proofreader for financial due diligence narratives. Focus on pattern compliance, "
+                        "K/M figure formatting, entity correctness, grammar/pro tone, and language normalization (keep original language). Return JSON."
+                    )
 
             # Truncate content and tables to fit within context limits
             max_content_length = 8000  # Leave room for other parts

@@ -3138,7 +3138,7 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
         # Model/provider selection
         use_local_ai = st.session_state.get('use_local_ai', False)
         use_openai = st.session_state.get('use_openai', False)
-        proof_agent = ProofreadingAgent(use_local_ai=use_local_ai, use_openai=use_openai)
+        proof_agent = ProofreadingAgent(use_local_ai=use_local_ai, use_openai=use_openai, language=language)
 
         results = {}
         entity_name = ai_data.get('entity_name', '')
