@@ -959,6 +959,25 @@ def main():
                         selected_language = '中文'
                         st.session_state['selected_language'] = selected_language
 
+                        # Get AI data from session state
+                        temp_ai_data = st.session_state.get('ai_data', {})
+                        filtered_keys_for_ai = st.session_state.get('filtered_keys_for_ai', [])
+
+                        # Check if required data is available
+                        if not temp_ai_data or not filtered_keys_for_ai:
+                            st.error("❌ AI数据未准备好。请先上传文件并选择实体。")
+                            return
+
+                        # Update progress and status
+                        progress_bar.progress(15)
+                        status_text.text(f"📊 找到 {len(filtered_keys_for_ai)} 个财务科目，准备处理...")
+
+                        # Debug: Check logger availability
+                        if 'ai_logger' not in st.session_state:
+                            st.warning("⚠️ AI日志记录器未初始化，正在初始化...")
+                            from fdd_utils.enhanced_logging_config import AIAgentLogger
+                            st.session_state.ai_logger = AIAgentLogger()
+
                         # Handle different statement types
                         current_statement_type = st.session_state.get('current_statement_type', 'BS')
 
@@ -3023,6 +3042,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
 def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress=None, language='English'):
     """Run AI Proofreader for all keys (Compliance, Figures, Entities, Grammar)."""
     try:
+        print(f"🔍 run_ai_proofreader called with {len(filtered_keys)} keys")
         import json
         logger = st.session_state.ai_logger
 
@@ -3286,6 +3306,7 @@ def read_bs_content_by_key(entity_name):
 def run_agent_1_simple(filtered_keys, ai_data, external_progress=None, language='English'):
     """Simplified Agent 1 using process_keys directly - more reliable than run_agent_1"""
     try:
+        print(f"🔍 run_agent_1_simple called with {len(filtered_keys)} keys, language: {language}")
         import time
         from common.assistant import process_keys, load_ip, process_and_filter_excel
 
