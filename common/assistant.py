@@ -914,6 +914,11 @@ def get_tab_name(project_name):
         return "BSNJ"
     elif project_name == 'Ningbo':
         return "BSNB"
+    else:
+        # For unknown entities, return the project name itself or a default
+        # This prevents None from being returned and causing sheet access errors
+        print(f"Warning: Unknown project name '{project_name}', using default sheet name")
+        return project_name  # Use the entity name as fallback
 
 def get_financial_figure(financial_figures, key):
     """Get financial figure with proper K/M formatting and 1 decimal place"""

@@ -25,8 +25,9 @@ def get_tab_name(project_name):
         elif project_name == 'Ningbo':
             return "BSNB"
         else:
-            # Try to find a sheet that contains the project name
-            return None
+            # For unknown entities, return the project name itself to avoid None
+            print(f"Warning: Unknown project name '{project_name}', using project name as fallback")
+            return project_name
     except Exception:
         return None
 

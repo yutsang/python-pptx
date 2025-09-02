@@ -1060,75 +1060,8 @@ def main():
                         status_text.text("❌ 处理失败")
 
                 # Clean UI with direct language selection buttons
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    eta_text = st.empty()
-                    try:
-                        status_text.text("🧐 Initializing…")
-                        progress_bar.progress(10)
-                        agent1_results = st.session_state.get('agent_states', {}).get('agent1_results', {}) or {}
-                        if not agent1_results:
-                            st.warning("Run content generation first to produce material for proofreading.")
-                        else:
-                            ext = {'bar': progress_bar, 'status': status_text}
-                            proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext, language=selected_language)
-                            st.session_state['agent_states']['agent3_results'] = proof_results
-                            st.session_state['agent_states']['agent3_completed'] = True
-                            st.session_state['agent_states']['agent3_success'] = bool(proof_results)
-                            
-                            # Generate content files after proofreading
-                            if proof_results:
-                                status_text.text("📝 Generating content files...")
-                                progress_bar.progress(90)
-                                generate_content_from_session_storage(selected_entity)
-                        
-                        progress_bar.progress(100)
-                        status_text.text("✅ Proofreading done")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        progress_bar.progress(100)
-                        status_text.text(f"❌ Proofreading failed: {e}")
-                        time.sleep(1)
-                        st.rerun()
 
-                if run_both_clicked:
-                    # Run Generation then Proofreader in sequence with single trigger
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    try:
-                        status_text.text("🤖 Initializing…")
-                        progress_bar.progress(10)
-                        ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
-                        agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext)
-                        st.session_state['agent_states']['agent1_results'] = agent1_results
-                        st.session_state['agent_states']['agent1_completed'] = True
-                        st.session_state['agent_states']['agent1_success'] = bool(agent1_results)
-                        # Proofreader
-                        status_text.text("🧐 Running…")
-                        # Switch to PROOF stage index for combined ETA/progress
-                        ext['combined']['stage_index'] = 1
-                        proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext)
-                        st.session_state['agent_states']['agent3_results'] = proof_results
-                        st.session_state['agent_states']['agent3_completed'] = True
-                        st.session_state['agent_states']['agent3_success'] = bool(proof_results)
-                        
-                        # Generate content files after combined processing
-                        if proof_results:
-                            status_text.text("📝 Generating content files...")
-                            progress_bar.progress(95)
-                            generate_content_from_session_storage(selected_entity)
-                        
-                        progress_bar.progress(100)
-                        status_text.text("✅ Generate → Proofread complete")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        progress_bar.progress(100)
-                        status_text.text(f"❌ Combined run failed: {e}")
-                        time.sleep(1)
-                        st.rerun()
-                
+                # All legacy button handlers removed
 
                 
             except Exception as e:
@@ -2451,7 +2384,7 @@ def generate_markdown_from_ai_results(ai_results, entity_name):
         print(f"Error generating markdown: {e}")
         return False
 
-def display_ai_prompt_by_key(key, agent_choice):
+def display_ai_prompt_by_key(key, agent_choice, language='English'):
     """
     Display AI prompt for the financial key using dynamic prompts from configuration
     """

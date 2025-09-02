@@ -27,7 +27,9 @@ def get_tab_name(project_name):
     clean_name = project_name.split()[0] if project_name else None
     if clean_name:
         return f"BS{clean_name.upper()[:3]}"  # Use first 3 letters
-    return None
+    # Fallback: return the project name itself to avoid None
+    print(f"Warning: Could not extract sheet name from '{project_name}', using project name as fallback")
+    return project_name
 
 
 def get_financial_keys():

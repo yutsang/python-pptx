@@ -319,6 +319,10 @@ def get_tab_name(project_name):
         return "BSNJ"
     elif project_name == 'Ningbo':
         return "BSNB"
+    else:
+        # For unknown entities, return the project name itself to avoid None
+        print(f"Warning: Unknown project name '{project_name}', using project name as fallback")
+        return project_name
     
 def get_financial_figure(financial_figures, key):
     figure = financial_figures.get(key, None)
