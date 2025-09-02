@@ -587,6 +587,7 @@ def main():
                         entity_name=selected_entity,
                         entity_suffixes=entity_suffixes,
                         entity_keywords=entity_keywords,
+                        entity_mode=entity_mode,
                         debug=True  # Set to True for debugging
                     )
                     
@@ -625,6 +626,7 @@ def main():
                         entity_name=selected_entity,
                         entity_suffixes=entity_suffixes,
                         entity_keywords=entity_keywords,
+                        entity_mode=entity_mode,
                         debug=True  # Set to True for debugging
                     )
                     
@@ -666,6 +668,7 @@ def main():
                         entity_name=selected_entity,
                         entity_suffixes=entity_suffixes,
                         entity_keywords=entity_keywords,
+                        entity_mode=entity_mode,
                         debug=False
                     )
             
@@ -752,6 +755,7 @@ def main():
                             entity_name=selected_entity,
                             entity_suffixes=entity_suffixes,
                             entity_keywords=entity_keywords,
+                            entity_mode=entity_mode,
                             debug=False
                         )
                     print(f"DEBUG AI: Processed data as fallback")

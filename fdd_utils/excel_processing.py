@@ -620,9 +620,10 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         return ""
 
 
-def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, entity_keywords=None, debug=False):
+def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, entity_keywords=None, entity_mode='multiple', debug=False):
     """
     Get worksheet sections organized by financial keys with enhanced entity filtering and latest date detection.
+    For single entity mode, entity filtering is skipped as there's only one entity table.
     """
     import re  # Import re inside function to avoid scope issues
     try:
@@ -752,25 +753,33 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         # entity_mask is already defined above as mask_series
                         
                         # Check if this section contains the selected entity
-                        section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
-                        entity_found = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
-                        
-                        print(f"   🔍 Entity check for {best_key}: entity_found={entity_found}")
-                        print(f"   🔍 Entity keywords: {entity_keywords}")
-                        print(f"   🔍 Section text sample: {section_text[:200]}...")
-                        
-                        # Only process if entity is found in this section
+                        if entity_mode == 'single':
+                            # For single entity mode, skip entity filtering
+                            entity_found = True
+                            actual_entity_found = entity_name
+                            print(f"   🔍 Single entity mode: Skipping entity check for {best_key}")
+                        else:
+                            # For multiple entity mode, perform entity filtering
+                            section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
+                            entity_found = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
+
+                            print(f"   🔍 Entity check for {best_key}: entity_found={entity_found}")
+                            print(f"   🔍 Entity keywords: {entity_keywords}")
+                            print(f"   🔍 Section text sample: {section_text[:200]}...")
+
+                        # Only process if entity is found in this section (or if single entity mode)
                         if entity_found:
-                            # Find the actual entity name from the section text
-                            actual_entity_found = None
-                            # First try to find the exact entity keyword
-                            for entity_keyword in entity_keywords:
-                                if entity_keyword.lower() in section_text:
-                                    actual_entity_found = entity_keyword
-                                    break
+                            # Find the actual entity name from the section text (skip for single entity mode)
+                            if entity_mode != 'single':
+                                actual_entity_found = None
+                                # First try to find the exact entity keyword
+                                for entity_keyword in entity_keywords:
+                                    if entity_keyword.lower() in section_text:
+                                        actual_entity_found = entity_keyword
+                                        break
                             
-                            # If not found, try to extract the actual entity name from the data
-                            if actual_entity_found is None:
+                            # If not found, try to extract the actual entity name from the data (skip for single entity mode)
+                            if actual_entity_found is None and entity_mode != 'single':
                                 # Look for entity patterns in the section text
                                 import re
                                 # Common patterns for entity names
@@ -781,7 +790,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                     r'(Haining\s+\w+(?:\s+Limited)?)',
                                     r'(Nanjing\s+\w+(?:\s+Limited)?)'
                                 ]
-                                
+
                                 for pattern in entity_patterns:
                                     matches = re.findall(pattern, section_text, re.IGNORECASE)
                                     if matches:
