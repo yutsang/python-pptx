@@ -1009,7 +1009,15 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     # Load prompts from prompts.json file (no hardcoded fallback)
     with open(prompts_file, 'r', encoding='utf-8') as f:
         prompts_config = json.load(f)
-    system_prompt = prompts_config['system_prompts']['Agent 1']
+
+    # Determine language - default to english if not specified
+    language = 'english'  # This could be made configurable later
+    system_prompts = prompts_config.get('system_prompts', {}).get(language, {})
+
+    system_prompt = system_prompts.get('Agent 1')
+    if not system_prompt:
+        # Fallback to direct access if nested structure fails
+        system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1')
     
     # Initialize financial figures without pre-processing (will check '000 per key)
     financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), None, convert_thousands=False)

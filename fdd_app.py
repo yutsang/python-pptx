@@ -924,7 +924,7 @@ def main():
                         else:
                             # Single statement type processing
                             ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 1, 'stage_index': 0, 'start_time': time.time()}}
-                            agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
+                            agent1_results = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
                             agent1_success = bool(agent1_results and any(agent1_results.values()))
                             
                             # Generate content files after AI processing
@@ -1031,7 +1031,7 @@ def main():
                         else:
                             # Single statement type processing
                             ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
-                            agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
+                            agent1_results = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
                             st.session_state['agent_states']['agent1_results'] = agent1_results
                             st.session_state['agent_states']['agent1_completed'] = True
                             st.session_state['agent_states']['agent1_success'] = bool(agent1_results)
@@ -2641,7 +2641,7 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None, language='Englis
     try:
 
         import time
-        
+
         logger = st.session_state.ai_logger
         # Keep content section minimal; avoid extra headings that duplicate the main status
         
@@ -2942,7 +2942,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
         # Get AI model settings from session state
         use_local_ai = st.session_state.get('use_local_ai', False)
         use_openai = st.session_state.get('use_openai', False)
-        
+
         results = process_keys(
             keys=filtered_keys,  # All keys at once
             entity_name=entity_name,
@@ -3281,6 +3281,99 @@ def read_bs_content_by_key(entity_name):
         
     except Exception as e:
         print(f"Error reading bs_content.md: {e}")
+        return {}
+
+def run_agent_1_simple(filtered_keys, ai_data, external_progress=None, language='English'):
+    """Simplified Agent 1 using process_keys directly - more reliable than run_agent_1"""
+    try:
+        import time
+        from common.assistant import process_keys, load_ip, process_and_filter_excel
+
+        # Get data from ai_data
+        entity_name = ai_data.get('entity_name', '')
+        entity_keywords = ai_data.get('entity_keywords', [])
+
+        # Create temporary file for processing
+        temp_file_path = None
+        try:
+            if 'uploaded_file_data' in st.session_state:
+                # Use a unique filename to avoid conflicts
+                unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
+                temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
+
+                with open(temp_file_path, 'wb') as tmp_file:
+                    tmp_file.write(st.session_state['uploaded_file_data'])
+            else:
+                # Fallback: use existing databook.xlsx
+                if os.path.exists('databook.xlsx'):
+                    temp_file_path = 'databook.xlsx'
+                else:
+                    st.error("❌ No databook available for processing")
+                    return {}
+        except Exception as e:
+            st.error(f"❌ Error creating temporary file: {e}")
+            return {}
+
+        # Prepare processed table data
+        processed_table_data = {}
+        for key in filtered_keys:
+            try:
+                mapping = load_ip('fdd_utils/mapping.json')
+                table_data = process_and_filter_excel(temp_file_path, mapping, entity_name, entity_keywords)
+                processed_table_data[key] = table_data
+            except Exception as e:
+                print(f"Warning: Could not prepare table data for {key}: {e}")
+
+        # Get AI model settings
+        use_local_ai = st.session_state.get('use_local_ai', False)
+        use_openai = st.session_state.get('use_openai', False)
+
+        # Create progress callback if provided
+        if external_progress:
+            def update_progress(progress, message):
+                try:
+                    bar = external_progress.get('bar')
+                    status = external_progress.get('status')
+                    if bar:
+                        bar.progress(progress)
+                    if status:
+                        status.text(message)
+                except Exception:
+                    pass
+            progress_callback = update_progress
+        else:
+            progress_callback = None
+
+        # Call process_keys directly
+        print(f"run_agent_1_simple: About to call process_keys with {len(processed_table_data)} processed tables")
+        results = process_keys(
+            keys=filtered_keys,
+            entity_name=entity_name,
+            entity_helpers=entity_keywords,
+            input_file=temp_file_path,
+            mapping_file="fdd_utils/mapping.json",
+            pattern_file="fdd_utils/pattern.json",
+            config_file='fdd_utils/config.json',
+            prompts_file='fdd_utils/prompts.json',
+            use_ai=True,
+            progress_callback=progress_callback,
+            processed_table_data=processed_table_data,
+            use_local_ai=use_local_ai,
+            use_openai=use_openai
+        )
+        print(f"run_agent_1_simple: process_keys returned {type(results)} with {len(results) if results else 0} keys")
+
+        # Clean up temp file
+        try:
+            if temp_file_path and temp_file_path != 'databook.xlsx' and os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+        except Exception:
+            pass
+
+        return results
+
+    except Exception as e:
+        print(f"Error in run_agent_1_simple: {e}")
         return {}
 
 def run_agent_3(filtered_keys, agent1_results, ai_data):
