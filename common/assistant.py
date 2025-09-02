@@ -1926,6 +1926,7 @@ class ProofreadingAgent:
                         return False
 
                 corrected = result.get('corrected_content') or content
+                runs = 0  # Initialize runs counter
 
                 # Only translate Chinese to English if we're using English language
                 if language_key == 'english':

@@ -3029,17 +3029,18 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 # Get table data for this key
                 tables_md = processed_table_data.get(key, '')
 
-                # Create translation prompt
+                # Create translation prompt with heuristic to ensure Chinese output
                 translation_prompt = f"""
                 TRANSLATION TASK: Convert the following English financial content to Chinese.
 
-                IMPORTANT REQUIREMENTS:
-                1. Translate ALL English text to Chinese
-                2. Keep ALL financial figures, numbers, and currency symbols unchanged
+                CRITICAL REQUIREMENTS:
+                1. Translate ALL English text to 简体中文 (Simplified Chinese)
+                2. Keep ALL financial figures, numbers, and currency symbols unchanged (e.g., CNY15.8K, USD100M)
                 3. Keep company names, entity names, and proper nouns unchanged
-                4. Keep technical terms like "VAT", "CIT", "WHT" unchanged
+                4. Keep technical terms like "VAT", "CIT", "WHT" in English
                 5. Maintain the same professional financial tone and structure
-                6. Ensure the translation is natural and fluent Chinese
+                6. Ensure the translation is natural and fluent 简体中文
+                7. IMPORTANT: The output must be entirely in Chinese characters except for numbers and technical terms
 
                 REFERENCE DATA TABLES:
                 {tables_md[:3000] if tables_md else "No table data available"}
@@ -3047,19 +3048,24 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 ENGLISH CONTENT TO TRANSLATE:
                 {content_text}
 
-                OUTPUT: Return only the translated Chinese content, no explanations or additional text.
+                OUTPUT: Return only the translated Chinese content in 简体中文, no English text except numbers and technical terms.
                 """
 
                 # Load prompts and system message for translation
                 with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
                     prompts_config = json.load(f)
 
-                # Use Chinese system prompt for translation
+                # Use Chinese system prompt for translation with heuristic
                 system_prompt = prompts_config.get('system_prompts', {}).get('chinese', {}).get('Agent 1', '')
                 if not system_prompt:
                     system_prompt = """
-                    你是中国财务报告翻译专家。你的任务是将英文财务分析内容翻译成中文。
-                    要求：保持专业财务语气，保留所有数字和货币符号，不改变公司名称和技术术语。
+                    你是中国财务报告翻译专家。你的任务是将英文财务分析内容翻译成简体中文。
+                    关键要求：
+                    1. 必须将所有英文内容翻译成简体中文
+                    2. 保留所有数字、货币符号和技术术语（如VAT、CIT、WHT）不变
+                    3. 保持专业财务语气和结构
+                    4. 确保输出完全是中文，除了数字和技术术语
+                    5. 如果发现任何英文单词，请立即将其翻译成中文
                     """
 
                 # Call process_keys with translation prompt
@@ -3082,13 +3088,30 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
                 # Update the result with translated content
                 if key in translation_result and translation_result[key]:
+                    translated_content = translation_result[key].get('content', content_text)
+
+                    # Heuristic: Ensure translated content is actually in Chinese
+                    if translated_content and is_cli:
+                        print(f"🔍 Checking translation quality for {key}...")
+                        # Count Chinese vs English characters
+                        chinese_chars = sum(1 for char in translated_content if '\u4e00' <= char <= '\u9fff')
+                        english_chars = sum(1 for char in translated_content if char.isascii() and char.isalnum())
+                        total_chars = chinese_chars + english_chars
+
+                        if total_chars > 0:
+                            chinese_ratio = chinese_chars / total_chars
+                            if chinese_ratio < 0.3:  # Less than 30% Chinese
+                                print(f"⚠️ Low Chinese ratio ({chinese_ratio:.2%}) for {key}, content may not be properly translated")
+                            else:
+                                print(f"✅ Good Chinese ratio ({chinese_ratio:.2%}) for {key}")
+
                     result_data = agent1_results.get(key, {})
                     if isinstance(result_data, dict):
-                        result_data['content'] = translation_result[key].get('content', content_text)
+                        result_data['content'] = translated_content
                         result_data['translated'] = True
                     else:
                         result_data = {
-                            'content': translation_result[key].get('content', content_text),
+                            'content': translated_content,
                             'translated': True
                         }
                     translated_results[key] = result_data
@@ -3098,9 +3121,11 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
                 # Update progress after each translation
                 if is_cli and progress_bar:
+                    # Update tqdm with key information and progress
+                    progress_bar.set_description(f"🌐 中文翻译 {key} ({idx+1}/{len(filtered_keys)})")
                     progress_bar.update(1)
                 elif external_progress:
-                    # Update Streamlit progress
+                    # Update Streamlit progress with detailed information
                     progress_pct = (idx + 1) / len(filtered_keys)
                     if external_progress.get('bar'):
                         external_progress['bar'].progress(progress_pct)
@@ -3111,7 +3136,9 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                         eta_seconds = int(avg_time * remaining)
                         mins, secs = divmod(eta_seconds, 60)
                         eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else ""
-                        external_progress['status'].text(f"🌐 中文翻译: {key} ({idx+1}/{len(filtered_keys)}) {eta_str}")
+
+                        status_msg = f"🌐 中文翻译: {key} ({idx+1}/{len(filtered_keys)}) {eta_str}"
+                        external_progress['status'].text(status_msg)
 
             except Exception as e:
                 if is_cli:  # Only print errors in CLI mode to reduce noise in Streamlit
