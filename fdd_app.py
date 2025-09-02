@@ -2911,9 +2911,6 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         else:
             progress_bar = None
 
-        if is_cli:  # Only show start message in CLI mode
-            print(f"🌐 Starting Chinese translation for {len(filtered_keys)} keys")
-
         # Get AI data
         entity_name = ai_data.get('entity_name', '')
         entity_keywords = ai_data.get('entity_keywords', [])
@@ -3114,12 +3111,9 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         # Close progress bar if in CLI mode
         if is_cli and progress_bar:
             progress_bar.close()
-            total_time = time.time() - start_time
-            print(f"✅ Chinese translation completed in {total_time:.1f} seconds")
-        else:
-            # In Streamlit mode, just update the final progress
-            if external_progress and external_progress.get('status'):
-                external_progress['status'].text(f"✅ 中文翻译完成 - 处理了 {len(filtered_keys)} 个项目")
+        elif external_progress and external_progress.get('status'):
+            # In Streamlit mode, update the final progress
+            external_progress['status'].text(f"✅ 中文翻译完成 - 处理了 {len(filtered_keys)} 个项目")
 
         # Clean up temp file
         try:
@@ -3131,7 +3125,13 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         return translated_results
 
     except Exception as e:
-        print(f"❌ Chinese translation error: {e}")
+        if is_cli:
+            print(f"❌ Chinese translation error: {e}")
+        else:
+            try:
+                st.error(f"❌ Chinese translation error: {e}")
+            except Exception:
+                print(f"❌ Chinese translation error: {e}")
         if is_cli and progress_bar:
             progress_bar.close()
         return agent1_results
@@ -3139,13 +3139,38 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress=None, language='English'):
     """Run AI Proofreader for all keys (Compliance, Figures, Entities, Grammar)."""
     try:
-        print(f"🔍 run_ai_proofreader called with {len(filtered_keys)} keys")
-        import json
-        logger = st.session_state.ai_logger
+        # Initialize is_cli flag properly
+        is_cli = True  # Default to CLI mode
+
+        # Check if we're in a Streamlit environment (not CLI)
+        try:
+            import streamlit as st
+            # Try to access Streamlit session state - if it succeeds, we're in Streamlit
+            _ = st.session_state
+            is_cli = False
+        except (ImportError, AttributeError):
+            # If Streamlit is not available or session state doesn't exist, we're in CLI
+            is_cli = True
+
+        # Only show verbose output in CLI mode
+        if is_cli:
+            print(f"🔍 run_ai_proofreader called with {len(filtered_keys)} keys")
+
+        # Get logger only if available
+        logger = None
+        if not is_cli:
+            try:
+                logger = st.session_state.ai_logger
+            except:
+                pass
 
         # Model/provider selection
-        use_local_ai = st.session_state.get('use_local_ai', False)
-        use_openai = st.session_state.get('use_openai', False)
+        use_local_ai = False
+        use_openai = False
+        if not is_cli:
+            use_local_ai = st.session_state.get('use_local_ai', False)
+            use_openai = st.session_state.get('use_openai', False)
+
         proof_agent = ProofreadingAgent(use_local_ai=use_local_ai, use_openai=use_openai, language=language)
 
         results = {}
@@ -3171,18 +3196,11 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                 else:
                     parts.append(str(section))
             return "\n".join(parts)
-
-        # Check if we're in a command-line environment (no Streamlit)
-        try:
-            # Try to access Streamlit session state - if it fails, we're in CLI
-            _ = st.session_state
-            is_cli = False
-        except Exception:
-            is_cli = True
         
         if is_cli:
             # Use tqdm for command-line progress
             progress_bar = tqdm(total=len(filtered_keys), desc="🤖 AI Proofreader", unit="key")
+            status_text = None
         else:
             # Use Streamlit progress
             if external_progress:
@@ -3191,10 +3209,10 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
             else:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
-        
+
         start_time = time.time()
         total = len(filtered_keys)
-        
+
         for idx, key in enumerate(filtered_keys):
             if not is_cli:
                 elapsed = time.time() - start_time
@@ -3214,7 +3232,8 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                     status_icon = "✅" if is_compliant else "⚠️"
                     enhanced_msg += f" {status_icon}"
 
-                status_text.text(enhanced_msg)
+                if status_text:
+                    status_text.text(enhanced_msg)
                 try:
                     combined = external_progress.get('combined') if external_progress else None
                     if combined and isinstance(combined, dict):
@@ -3248,34 +3267,48 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                 result = proof_agent.proofread(content_text, key, tables_md, entity_name, progress_bar if is_cli else None)
                 results[key] = result
 
-                # Log output
-                try:
-                    logger.log_agent_output('agent3', key, result, 0)
-                except Exception:
-                    pass
+                # Log output only if logger is available
+                if logger:
+                    try:
+                        logger.log_agent_output('agent3', key, result, 0)
+                    except Exception:
+                        pass
 
                 # Update session store with corrected content
                 if not is_cli:
-                    content_store = st.session_state.get('ai_content_store', {})
-                    if key not in content_store:
-                        content_store[key] = {}
-                    corrected = result.get('corrected_content') or content_text
-                    content_store[key]['agent3_content'] = corrected
-                    content_store[key]['current_content'] = corrected
-                    st.session_state['ai_content_store'] = content_store
+                    try:
+                        content_store = st.session_state.get('ai_content_store', {})
+                        if key not in content_store:
+                            content_store[key] = {}
+                        corrected = result.get('corrected_content') or content_text
+                        content_store[key]['agent3_content'] = corrected
+                        content_store[key]['current_content'] = corrected
+                        st.session_state['ai_content_store'] = content_store
+                    except Exception:
+                        pass
+
             except Exception as e:
                 results[key] = {'is_compliant': False, 'issues': [str(e)], 'corrected_content': ''}
-                if is_cli:
+                if is_cli and progress_bar:
                     progress_bar.update(1)
 
-        if is_cli:
+        if is_cli and progress_bar:
             progress_bar.close()
-        else:
-            st.success("✅ AI Proofreader completed")
-        
+        elif not is_cli:
+            try:
+                st.success("✅ AI Proofreader completed")
+            except Exception:
+                pass
+
         return results
     except Exception as e:
-        st.error(f"❌ AI Proofreader Error: {e}")
+        if is_cli:
+            print(f"❌ AI Proofreader Error: {e}")
+        else:
+            try:
+                st.error(f"❌ AI Proofreader Error: {e}")
+            except Exception:
+                print(f"❌ AI Proofreader Error: {e}")
         return {}
 
 def update_bs_content_with_agent_corrections(corrections_dict, entity_name, agent_name):
