@@ -3199,163 +3199,64 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
         entity_name = ai_data.get('entity_name', '')
         sections_by_key = ai_data.get('sections_by_key', {})
 
-                # Create translation prompt with heuristic to ensure Chinese output
-                translation_prompt = f"""
-                TRANSLATION TASK: Convert the following English financial content to Chinese.
+        # Continue with proofreading logic
+        # Setup tqdm progress bar for processing
+        if is_cli:
+            progress_bar = tqdm(total=len(filtered_keys), desc="🔍 校对", unit="key")
+        else:
+            progress_bar = None
 
-                CRITICAL REQUIREMENTS:
-                1. Translate ALL English text to 简体中文 (Simplified Chinese)
-                2. Keep ALL financial figures, numbers, and currency symbols unchanged (e.g., CNY15.8K, USD100M)
-                3. Keep company names, entity names, and proper nouns unchanged
-                4. Keep technical terms like "VAT", "CIT", "WHT" in English
-                5. Maintain the same professional financial tone and structure
-                6. Ensure the translation is natural and fluent 简体中文
-                7. IMPORTANT: The output must be entirely in Chinese characters except for numbers and technical terms
-
-                REFERENCE DATA TABLES:
-                {tables_md[:3000] if tables_md else "No table data available"}
-
-                ENGLISH CONTENT TO TRANSLATE:
-                {content_text}
-
-                OUTPUT: Return only the translated Chinese content in 简体中文, no English text except numbers and technical terms.
-                """
-
-                # Load prompts and system message for translation
-                with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
-                    prompts_config = json.load(f)
-
-                # Use Chinese system prompt for translation with heuristic
-                print(f"🔍 DEBUG: Loading Chinese prompts for translation")
-                system_prompt = prompts_config.get('system_prompts', {}).get('chinese', {}).get('Agent 1', '')
-                print(f"🔍 DEBUG: Chinese system prompt loaded: {system_prompt[:100]}..." if system_prompt else "❌ No Chinese system prompt found")
-                if not system_prompt:
-                    print("⚠️ DEBUG: Using fallback Chinese system prompt")
-                    system_prompt = """
-                    你是中国财务报告翻译专家。你的任务是将英文财务分析内容翻译成简体中文。
-                    关键要求：
-                    1. 必须将所有英文内容翻译成简体中文
-                    2. 保留所有数字、货币符号和技术术语（如VAT、CIT、WHT）不变
-                    3. 保持专业财务语气和结构
-                    4. 确保输出完全是中文，除了数字和技术术语
-                    5. 如果发现任何英文单词，请立即将其翻译成中文
-                    """
-
-                # Call process_keys with translation prompt
-                print(f"🔍 DEBUG: Calling process_keys with language='chinese' for key: {key}")
-                translation_result = process_keys(
-                    keys=[key],
-                    entity_name=entity_name,
-                    entity_helpers=entity_keywords,
-                    input_file=temp_file_path,
-                    mapping_file="fdd_utils/mapping.json",
-                    pattern_file="fdd_utils/pattern.json",
-                    config_file='fdd_utils/config.json',
-                    prompts_file='fdd_utils/prompts.json',
-                    use_ai=True,
-                    progress_callback=None,  # Disable progress for individual keys
-                    processed_table_data={key: tables_md},
-                    use_local_ai=use_local_ai,
-                    use_openai=use_openai,
-                    language='chinese'  # Use Chinese prompts for Chinese translation
-                )
-                print(f"🔍 DEBUG: process_keys returned result for {key}: {bool(translation_result and key in translation_result)}")
-
-                # Update the result with translated content
-                if key in translation_result and translation_result[key]:
-                    translated_content = translation_result[key].get('content', content_text)
-
-                    # Heuristic: Ensure translated content is actually in Chinese
-                    if translated_content and is_cli:
-                        print(f"🔍 Checking translation quality for {key}...")
-                        # Count Chinese vs English characters
-                        chinese_chars = sum(1 for char in translated_content if '\u4e00' <= char <= '\u9fff')
-                        english_chars = sum(1 for char in translated_content if char.isascii() and char.isalnum())
-                        total_chars = chinese_chars + english_chars
-
-                        if total_chars > 0:
-                            chinese_ratio = chinese_chars / total_chars
-                            if chinese_ratio < 0.3:  # Less than 30% Chinese
-                                print(f"⚠️ Low Chinese ratio ({chinese_ratio:.2%}) for {key}, content may not be properly translated")
-                            else:
-                                print(f"✅ Good Chinese ratio ({chinese_ratio:.2%}) for {key}")
-
-                    result_data = agent1_results.get(key, {})
-                    if isinstance(result_data, dict):
-                        result_data['content'] = translated_content
-                        result_data['translated'] = True
-                    else:
-                        result_data = {
-                            'content': translated_content,
-                            'translated': True
-                        }
-                    translated_results[key] = result_data
-                else:
-                    # If translation failed, keep original
-                    translated_results[key] = agent1_results.get(key, {})
-
-                # Update progress after each translation
+        # Process each key with proofreading
+        for idx, key in enumerate(filtered_keys):
+            try:
+                # Update progress
                 if is_cli and progress_bar:
-                    # Update tqdm with key information and progress
-                    progress_bar.set_description(f"🌐 中文翻译 {key} ({idx+1}/{len(filtered_keys)})")
+                    progress_bar.set_description(f"🔍 校对 {key} ({idx+1}/{len(filtered_keys)})")
                     progress_bar.update(1)
-                    # Force refresh to ensure progress shows
-                    progress_bar.refresh()
-                elif external_progress:
-                    # Update Streamlit progress with detailed information
-                    progress_pct = (idx + 1) / len(filtered_keys)
-                    if external_progress.get('bar'):
-                        external_progress['bar'].progress(progress_pct)
-                    if external_progress.get('status'):
-                        elapsed = time.time() - start_time
-                        avg_time = elapsed / (idx + 1)
-                        remaining = len(filtered_keys) - idx - 1
-                        eta_seconds = int(avg_time * remaining)
-                        mins, secs = divmod(eta_seconds, 60)
-                        eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else ""
 
-                        status_msg = f"🌐 中文翻译: {key} ({idx+1}/{len(filtered_keys)}) {eta_str}"
-                        external_progress['status'].text(status_msg)
+                content = agent1_results.get(key, '')
+                if isinstance(content, dict):
+                    content_text = content.get('content', '')
+                else:
+                    content_text = str(content)
+
+                if not content_text:
+                    results[key] = agent1_results.get(key, {})
+                    continue
+
+                # Get sections for this key
+                key_sections = sections_by_key.get(key, [])
+
+                # Process the content with proofreading agent
+                proofread_result = proof_agent.proofread(content_text, key_sections, entity_name)
+
+                # Store result
+                result_data = agent1_results.get(key, {})
+                if isinstance(result_data, dict):
+                    result_data.update(proofread_result)
+                else:
+                    result_data = proofread_result
+                results[key] = result_data
 
             except Exception as e:
-                if is_cli:  # Only print errors in CLI mode to reduce noise in Streamlit
-                    print(f"Error translating {key}: {e}")
-                # Keep original content if translation fails
-                translated_results[key] = agent1_results.get(key, {})
-                # Update progress even on error
-                if is_cli and progress_bar:
-                    progress_bar.update(1)
-                elif external_progress:
-                    progress_pct = (idx + 1) / len(filtered_keys)
-                    if external_progress.get('bar'):
-                        external_progress['bar'].progress(progress_pct)
+                if is_cli:
+                    print(f"Error proofreading {key}: {e}")
+                results[key] = agent1_results.get(key, {})
 
-        # Close progress bar if in CLI mode
+        # Close progress bar
         if is_cli and progress_bar:
             progress_bar.close()
-        elif external_progress and external_progress.get('status'):
-            # In Streamlit mode, update the final progress
-            external_progress['status'].text(f"✅ 中文翻译完成 - 处理了 {len(filtered_keys)} 个项目")
 
-        # Clean up temp file
-        try:
-            if temp_file_path and temp_file_path != 'databook.xlsx' and os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
-        except Exception:
-            pass
-
-        return translated_results
+        return results
 
     except Exception as e:
         if is_cli:
-            print(f"❌ Chinese translation error: {e}")
+            print(f"❌ Proofreading error: {e}")
         else:
             try:
-                st.error(f"❌ Chinese translation error: {e}")
+                st.error(f"❌ Proofreading error: {e}")
             except Exception:
-                print(f"❌ Chinese translation error: {e}")
-        if is_cli and progress_bar:
-            progress_bar.close()
+                print(f"❌ Proofreading error: {e}")
         return agent1_results
 
 def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress=None, language='English'):
