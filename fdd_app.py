@@ -1287,26 +1287,36 @@ def main():
 
                         if key in agent3_results_all:
                             pr = agent3_results_all[key]
+
+                            # PRIORITY: Check for translated Chinese content first
+                            translated_content = pr.get('translated_content', '')
                             corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
+
+                            # Use translated content if available and it's actually Chinese, otherwise use corrected content
+                            final_content = translated_content if translated_content and pr.get('is_chinese', False) else corrected_content
 
                             # ENHANCED DEBUG: Show what content we're displaying with Chinese detection
                             print(f"📝 Content type: {type(pr)}")
+                            print(f"📝 Has translated_content: {'translated_content' in pr if isinstance(pr, dict) else False}")
                             print(f"📝 Has corrected_content: {'corrected_content' in pr if isinstance(pr, dict) else False}")
                             print(f"📝 Has content: {'content' in pr if isinstance(pr, dict) else False}")
-                            print(f"📝 Final content length: {len(corrected_content)}")
+                            print(f"📝 Is Chinese: {pr.get('is_chinese', False)}")
+                            print(f"📝 Using translated content: {translated_content != '' and pr.get('is_chinese', False)}")
+                            print(f"📝 Final content length: {len(final_content)}")
 
-                            # Check for Chinese characters in content
-                            chinese_chars = sum(1 for char in corrected_content if '\u4e00' <= char <= '\u9fff')
-                            english_chars = sum(1 for char in corrected_content if char.isascii() and char.isalnum())
-                            total_chars = len(corrected_content)
+                            # Check for Chinese characters in final content
+                            chinese_chars = sum(1 for char in final_content if '\u4e00' <= char <= '\u9fff')
+                            english_chars = sum(1 for char in final_content if char.isascii() and char.isalnum())
+                            total_chars = len(final_content)
 
                             if total_chars > 0:
                                 chinese_ratio = chinese_chars / total_chars
-                                print(f"🌐 Content language: {'Chinese' if chinese_ratio > 0.5 else 'English'} ({chinese_ratio:.1%} 中文)")
+                                content_type = "Chinese" if chinese_ratio > 0.5 else "English"
+                                print(f"🌐 Content language: {content_type} ({chinese_ratio:.1%} 中文)")
                             else:
                                 print(f"🌐 Content language: Empty content")
 
-                            print(f"📝 Content preview: {corrected_content[:100]}..." if len(corrected_content) > 100 else f"📝 Content: {corrected_content}")
+                            print(f"📝 Content preview: {final_content[:100]}..." if len(final_content) > 100 else f"📝 Content: {final_content}")
                             print(f"{'─' * 40}")
 
                             # Show Chinese content prominently if it's in Chinese
@@ -1315,9 +1325,15 @@ def main():
                                 if chinese_ratio > 0.5:
                                     print(f"\n🇨🇳 CHINESE CONTENT DETECTED FOR {key}:")
                                     print(f"{'─' * 60}")
-                                    print(f"{corrected_content[:300]}{'...' if len(corrected_content) > 300 else ''}")
+                                    print(f"{final_content[:300]}{'...' if len(final_content) > 300 else ''}")
                                     print(f"{'─' * 60}")
                                     print(f"✅ Chinese characters: {chinese_chars}/{total_chars} ({chinese_ratio:.1%})")
+                                else:
+                                    print(f"\n🇺🇸 ENGLISH CONTENT DETECTED FOR {key}:")
+                                    print(f"{'─' * 60}")
+                                    print(f"{final_content[:300]}{'...' if len(final_content) > 300 else ''}")
+                                    print(f"{'─' * 60}")
+                                    print(f"❌ Chinese characters: {chinese_chars}/{total_chars} ({chinese_ratio:.1%})")
 
                             # Check if this is a translation failure
                             if isinstance(pr, dict) and pr.get('translation_failed'):
@@ -3258,18 +3274,15 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         # Use the proper Chinese translation system prompt
         system_prompt = prompts_config.get('system_prompts', {}).get('chinese', {}).get('Agent 1', '')
 
-        # If no Chinese Agent 1 prompt, use a dedicated translation prompt
+        # Use a simple translation prompt
         if not system_prompt:
-            system_prompt = """你是中国财务报告翻译专家。你的任务是将英文财务分析内容翻译成简体中文。
+            system_prompt = """你是专业翻译助手。请将英文内容准确翻译成简体中文。
 
-关键要求：
-1. 必须将所有英文内容翻译成简体中文
-2. 保留所有数字、货币符号和技术术语（如VAT、CIT、WHT、Surtax）不变
-3. 保持专业财务语气和结构
-4. 确保输出完全是中文，除了数字和技术术语
-5. 如果发现任何英文单词，请立即将其翻译成中文
-6. 不要添加任何解释或额外文本，直接返回翻译结果
-7. 保持原始内容的格式和结构"""
+要求：
+1. 翻译成简体中文
+2. 保留所有数字和货币符号
+3. 保持专业语气
+4. 只返回翻译结果"""
 
         print(f"🔧 Using Chinese translation system prompt: {system_prompt[:100]}...")
 
@@ -3389,21 +3402,8 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                         progress_bar.update(1)
                     continue
 
-                # Get table information for this key
-                table_info = ""
-                if key in sections_by_key:
-                    sections = sections_by_key[key]
-                    if isinstance(sections, list):
-                        for section in sections:
-                            if isinstance(section, dict):
-                                try:
-                                    table_info += json.dumps(section, indent=2, default=str, ensure_ascii=False)
-                                except:
-                                    table_info += str(section)
-                            else:
-                                table_info += str(section)
-                    else:
-                        table_info = str(sections)
+                # Skip table information for simple translation
+                table_info = ""  # Not needed for simple translation
 
                 # Update progress with enhanced debugging
                 if progress_callback:
@@ -3420,24 +3420,19 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 print(f"📝 原文预览: {content_text[:50]}..." if len(content_text) > 50 else f"📝 原文: {content_text}")
                 print(f"🔧 使用AI模型: {model}")
 
-                # Create enhanced translation prompt
-                user_prompt = f"""请将以下英文财务分析内容完整翻译成简体中文。
+                # Create simple, focused translation prompt
+                user_prompt = f"""请将以下英文内容翻译成简体中文。
 
-【原文内容】
+英文内容：
 {content_text}
 
-【财务数据参考（可选）】
-{table_info[:1500] if table_info else "无额外数据"}
+要求：
+1. 翻译成简体中文
+2. 保留所有数字、百分比和货币符号
+3. 保持专业语气
+4. 只返回翻译结果，不要添加解释
 
-【翻译要求】
-1. 必须将所有英文句子和词汇翻译成简体中文
-2. 保留所有数字、百分比、货币符号（如CNY、USD、$）和技术术语（如VAT、CIT、WHT、Surtax、IPO）不变
-3. 保持专业的财务报告语气和格式结构
-4. 确保最终输出100%是中文内容，除了上述保留的数字和技术术语
-5. 禁止在翻译结果中保留任何英文句子或短语
-6. 翻译必须准确、专业，适合中国财务报告使用
-
-请直接返回翻译后的完整中文内容，不要包含任何解释、注释或额外文本。"""
+直接返回中文翻译："""
 
                 # TIMING: Record time before AI call
                 debug_start_time = time.time()
@@ -3553,17 +3548,31 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     print(f"   长度变化: {len(translated_content) - len(content_text)} 字符")
                     print(f"{'─' * 60}")
 
-                # Store result
+                # Store result with explicit Chinese content
                 result_data = agent1_results.get(key, {})
                 if isinstance(result_data, dict):
+                    # Store the translated content prominently
                     result_data['content'] = translated_content or content_text
+                    result_data['translated_content'] = translated_content
+                    result_data['original_content'] = content_text
                     result_data['translated'] = True
+                    result_data['is_chinese'] = bool(translated_content and any('\u4e00' <= char <= '\u9fff' for char in translated_content))
                 else:
                     result_data = {
                         'content': translated_content or content_text,
-                        'translated': True
+                        'translated_content': translated_content,
+                        'original_content': content_text,
+                        'translated': True,
+                        'is_chinese': bool(translated_content and any('\u4e00' <= char <= '\u9fff' for char in translated_content))
                     }
                 translated_results[key] = result_data
+
+                # DEBUG: Show what we're storing
+                print(f"💾 STORING RESULT FOR {key}:")
+                print(f"   📝 Original length: {len(content_text)} chars")
+                print(f"   🌐 Translated length: {len(translated_content) if translated_content else 0} chars")
+                print(f"   ✅ Is Chinese: {result_data.get('is_chinese', False)}")
+                print(f"   📊 Content preview: {result_data['content'][:100]}..." if len(result_data['content']) > 100 else f"   📊 Content: {result_data['content']}")
 
             except Exception as e:
                 if is_cli:
