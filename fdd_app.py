@@ -1289,13 +1289,35 @@ def main():
                             pr = agent3_results_all[key]
                             corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
 
-                            # DEBUG: Show what content we're displaying
+                            # ENHANCED DEBUG: Show what content we're displaying with Chinese detection
                             print(f"📝 Content type: {type(pr)}")
                             print(f"📝 Has corrected_content: {'corrected_content' in pr if isinstance(pr, dict) else False}")
                             print(f"📝 Has content: {'content' in pr if isinstance(pr, dict) else False}")
                             print(f"📝 Final content length: {len(corrected_content)}")
+
+                            # Check for Chinese characters in content
+                            chinese_chars = sum(1 for char in corrected_content if '\u4e00' <= char <= '\u9fff')
+                            english_chars = sum(1 for char in corrected_content if char.isascii() and char.isalnum())
+                            total_chars = len(corrected_content)
+
+                            if total_chars > 0:
+                                chinese_ratio = chinese_chars / total_chars
+                                print(f"🌐 Content language: {'Chinese' if chinese_ratio > 0.5 else 'English'} ({chinese_ratio:.1%} 中文)")
+                            else:
+                                print(f"🌐 Content language: Empty content")
+
                             print(f"📝 Content preview: {corrected_content[:100]}..." if len(corrected_content) > 100 else f"📝 Content: {corrected_content}")
                             print(f"{'─' * 40}")
+
+                            # Show Chinese content prominently if it's in Chinese
+                            if chinese_chars > 0 and total_chars > 0:
+                                chinese_ratio = chinese_chars / total_chars
+                                if chinese_ratio > 0.5:
+                                    print(f"\n🇨🇳 CHINESE CONTENT DETECTED FOR {key}:")
+                                    print(f"{'─' * 60}")
+                                    print(f"{corrected_content[:300]}{'...' if len(corrected_content) > 300 else ''}")
+                                    print(f"{'─' * 60}")
+                                    print(f"✅ Chinese characters: {chinese_chars}/{total_chars} ({chinese_ratio:.1%})")
 
                             # Check if this is a translation failure
                             if isinstance(pr, dict) and pr.get('translation_failed'):
@@ -3417,6 +3439,10 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
 请直接返回翻译后的完整中文内容，不要包含任何解释、注释或额外文本。"""
 
+                # TIMING: Record time before AI call
+                import time
+                debug_start_time = time.time()
+
                 # DEBUG: Print input prompts for each key
                 print(f"\n{'='*80}")
                 print(f"🔧 DEBUG - TRANSLATION INPUT FOR KEY: {key}")
@@ -3427,11 +3453,19 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 print(f"{user_prompt}")
                 print(f"{'='*80}")
 
+                # TIMING: Record time after prompt setup
+                prompt_setup_time = time.time()
+                print(f"⏱️  Prompt setup completed in {(prompt_setup_time - debug_start_time):.2f}s")
+
                 # DEBUG: About to call AI
                 print(f"🤖 About to call AI for translation of {key}")
                 print(f"🔧 Model: {model}")
                 print(f"🌐 Use local AI: {use_local_ai}")
                 print(f"📤 Calling generate_response...")
+
+                # TIMING: Record time before AI call
+                ai_call_start = time.time()
+                print(f"⏱️  Starting AI call at {ai_call_start:.2f}s")
 
                 # Call AI for translation
                 translated_content = generate_response(
@@ -3444,8 +3478,14 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     use_local_ai=use_local_ai
                 )
 
-                # DEBUG: AI call completed
-                print(f"✅ AI call completed for {key}")
+                # TIMING: Record time after AI call
+                ai_call_end = time.time()
+                ai_duration = ai_call_end - ai_call_start
+                total_duration = ai_call_end - debug_start_time
+
+                # DEBUG: AI call completed with timing
+                print(f"✅ AI call completed for {key} in {ai_duration:.2f}s")
+                print(f"⏱️  Total time from prompt to response: {total_duration:.2f}s")
                 print(f"📥 Response type: {type(translated_content)}")
                 print(f"📏 Response length: {len(str(translated_content)) if translated_content else 0}")
 
@@ -3456,6 +3496,18 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 print(f"📤 RAW AI RESPONSE ({len(str(translated_content)) if translated_content else 0} chars):")
                 print(f"'{translated_content}'")
                 print(f"{'='*80}")
+
+                # ENHANCED: Show Chinese output more prominently
+                if translated_content:
+                    print(f"\n🌟🌟🌟 CHINESE TRANSLATION RESULT 🌟🌟🌟")
+                    print(f"🔑 Key: {key}")
+                    print(f"🌐 Chinese Output (First 200 chars):")
+                    print(f"{'─' * 60}")
+                    print(f"{translated_content[:200]}{'...' if len(translated_content) > 200 else ''}")
+                    print(f"{'─' * 60}")
+                    print(f"📊 Full length: {len(translated_content)} chars")
+                else:
+                    print(f"❌ NO CHINESE OUTPUT RECEIVED FOR {key}")
 
                 # Clean the response
                 if translated_content:
@@ -3538,6 +3590,7 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
             progress_bar.close()
             print(f"\n{summary_msg}")
             print(f"🔍 翻译质量统计:")
+            print(f"{'─' * 80}")
             for key in translated_results:
                 if translated_results[key]:
                     content = translated_results[key].get('content', '') if isinstance(translated_results[key], dict) else str(translated_results[key])
@@ -3546,7 +3599,28 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     if total_chars > 0:
                         ratio = chinese_chars / total_chars
                         status = "✅" if ratio > 0.5 else "⚠️" if ratio > 0.2 else "❌"
-                        print(f"  {status} {key}: {ratio:.1%} 中文")
+                        print(f"  {status} {key}: {ratio:.1%} 中文 ({chinese_chars}/{total_chars} 字符)")
+
+                        # Show sample of Chinese content if available
+                        if ratio > 0.5:
+                            print(f"      🌐 中文预览: {content[:100]}{'...' if len(content) > 100 else ''}")
+                        else:
+                            print(f"      ❓ 内容可能仍为英文: {content[:100]}{'...' if len(content) > 100 else ''}")
+            print(f"{'─' * 80}")
+
+            # Show overall translation success summary
+            successful_translations = 0
+            total_keys = len(translated_results)
+            for key in translated_results:
+                if translated_results[key]:
+                    content = translated_results[key].get('content', '') if isinstance(translated_results[key], dict) else str(translated_results[key])
+                    chinese_chars = sum(1 for char in content if '\u4e00' <= char <= '\u9fff')
+                    total_chars = len(content)
+                    if total_chars > 0 and chinese_chars / total_chars > 0.5:
+                        successful_translations += 1
+
+            success_rate = successful_translations / total_keys if total_keys > 0 else 0
+            print(f"🎯 翻译成功率: {successful_translations}/{total_keys} ({success_rate:.1%})")
         elif external_progress and external_progress.get('status'):
             external_progress['status'].text(summary_msg)
 
