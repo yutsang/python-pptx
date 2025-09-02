@@ -1255,8 +1255,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         if progress_callback:
             progress_callback((key_index + 0.8) / len(keys), f"📥 Processing {key} response...")
 
-        # Clean up response: remove outer quotation marks and translate Chinese
-        response_txt = clean_response_text(response_txt)
+        # Clean up response: remove outer quotation marks and translate Chinese (only for English)
+        response_txt = clean_response_text(response_txt, language)
 
         # Store result with pattern information for logging
         results[key] = {
@@ -1947,7 +1947,7 @@ class ProofreadingAgent:
                 'translation_runs': 0
             }
 
-def clean_response_text(text: str) -> str:
+def clean_response_text(text: str, language: str = 'english') -> str:
     """Clean up AI response text: remove outer quotes, translate Chinese, etc."""
     if not text:
         return text
@@ -1957,8 +1957,11 @@ def clean_response_text(text: str) -> str:
     if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
         text = text[1:-1]
     
-    # Translate Chinese to English (extended common terms)
-    chinese_translations = {
+    # Only apply Chinese translation logic if we're using English prompts
+    # If language is Chinese, we expect Chinese output and should NOT translate it
+    if language == 'english':
+        # Translate Chinese to English (extended common terms)
+        chinese_translations = {
         '進項稅金中轉': 'Input Tax Transfer',
         '自來水有限公司': 'Water Supply Co., Ltd.',
         '仲量聯行北京諮詢公司': 'Jones Lang LaSalle Beijing Consulting Co.',
@@ -1981,18 +1984,21 @@ def clean_response_text(text: str) -> str:
         '土地使用稅': 'LUT',
         '印花稅': 'Stamp Tax'
     }
-    for chinese, english in chinese_translations.items():
-        text = text.replace(chinese, english)
+        for chinese, english in chinese_translations.items():
+            text = text.replace(chinese, english)
 
-    # Fallback: detect any residual CJK characters and annotate/remedy
-    try:
-        import re
-        if re.search(r"[\u4e00-\u9fff]", text):
-            # As a minimal remediation, wrap unknown Chinese segments in brackets with a note
-            # while keeping the rest English; prevents raw Chinese leaking to final output
-            text = re.sub(r"([\u4e00-\u9fff]+)", r"[Translate: \1]", text)
-    except Exception:
-        pass
+        # Fallback: detect any residual CJK characters and annotate/remedy
+        try:
+            import re
+            if re.search(r"[\u4e00-\u9fff]", text):
+                # As a minimal remediation, wrap unknown Chinese segments in brackets with a note
+                # while keeping the rest English; prevents raw Chinese leaking to final output
+                text = re.sub(r"([\u4e00-\u9fff]+)", r"[Translate: \1]", text)
+        except Exception:
+            pass
+
+    # For Chinese language, we expect Chinese output, so don't apply any translation logic
+    # Just return the cleaned text as-is
     
     return text.strip()
 
