@@ -397,7 +397,7 @@ def main():
         entity_mode = 'auto'  # System will automatically detect single vs multiple entity scenarios
         st.session_state['entity_mode'] = entity_mode
 
-        st.info("ℹ️ **Entity Detection**: The system automatically detects whether your databook contains single or multiple entities and adjusts processing accordingly.")
+
         
 
         
@@ -2896,13 +2896,18 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
     try:
         import json
         from common.assistant import process_keys
-        logger = st.session_state.ai_logger
 
-        # Determine if we're in CLI or Streamlit context
+        # Initialize is_cli flag properly at function start
+        is_cli = True  # Default to CLI mode
+
+        # Determine if we're in Streamlit context
         try:
             import streamlit as st
+            # Try to access Streamlit session state - if it succeeds, we're in Streamlit
+            _ = st.session_state
             is_cli = False
-        except ImportError:
+        except (ImportError, AttributeError):
+            # If Streamlit is not available or session state doesn't exist
             is_cli = True
 
         # Setup tqdm progress bar for CLI, or use external progress for Streamlit
@@ -2910,6 +2915,13 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
             progress_bar = tqdm(total=len(filtered_keys), desc="🌐 中文翻译", unit="key")
         else:
             progress_bar = None
+
+        # Get AI model settings
+        use_local_ai = False
+        use_openai = False
+        if not is_cli:
+            use_local_ai = st.session_state.get('use_local_ai', False)
+            use_openai = st.session_state.get('use_openai', False)
 
         # Get AI data
         entity_name = ai_data.get('entity_name', '')
@@ -2919,7 +2931,7 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         # Create temporary file for processing
         temp_file_path = None
         try:
-            if 'uploaded_file_data' in st.session_state:
+            if not is_cli and 'uploaded_file_data' in st.session_state:
                 unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
                 temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
                 with open(temp_file_path, 'wb') as tmp_file:
@@ -2928,10 +2940,16 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 if os.path.exists('databook.xlsx'):
                     temp_file_path = 'databook.xlsx'
                 else:
-                    st.error("❌ No databook available for processing")
+                    if not is_cli:
+                        st.error("❌ No databook available for processing")
+                    else:
+                        print("❌ No databook available for processing")
                     return agent1_results
         except Exception as e:
-            st.error(f"❌ Error creating temporary file: {e}")
+            if not is_cli:
+                st.error(f"❌ Error creating temporary file: {e}")
+            else:
+                print(f"❌ Error creating temporary file: {e}")
             return agent1_results
 
         # Prepare processed table data
