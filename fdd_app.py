@@ -2892,34 +2892,27 @@ IMPORTANT ENTITY INSTRUCTIONS:
                 pass
 
 def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_progress=None):
-    """Run Chinese Translation Agent: Translate English content to Chinese based on raw data table."""
+    """Simple Chinese Translation Agent: Process proofread content one by one using AI"""
     try:
         import json
-        from common.assistant import process_keys
+        from common.assistant import generate_response, load_config, initialize_ai_services
 
-        # Initialize is_cli flag properly at function start
+        # Initialize is_cli flag properly
         is_cli = True  # Default to CLI mode
 
         # Determine if we're in Streamlit context
         try:
             import streamlit as st
-            # Try to access Streamlit session state - if it succeeds, we're in Streamlit
             _ = st.session_state
             is_cli = False
         except (ImportError, AttributeError):
-            # If Streamlit is not available or session state doesn't exist
             is_cli = True
 
-        # Setup tqdm progress bar for CLI, or use external progress for Streamlit
+        # Setup tqdm progress bar
         if is_cli:
             progress_bar = tqdm(total=len(filtered_keys), desc="🌐 中文翻译", unit="key")
-            print(f"🔍 DEBUG: Translator initialized with tqdm for {len(filtered_keys)} keys")
         else:
             progress_bar = None
-            if external_progress:
-                print(f"🔍 DEBUG: Translator initialized with external_progress for Streamlit")
-            else:
-                print(f"🔍 DEBUG: Translator initialized without progress tracking")
 
         # Get AI model settings
         use_local_ai = False
@@ -2932,6 +2925,34 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         entity_name = ai_data.get('entity_name', '')
         entity_keywords = ai_data.get('entity_keywords', [])
         sections_by_key = ai_data.get('sections_by_key', {})
+
+        # Load configuration
+        config_details = load_config('fdd_utils/config.json')
+        oai_client, _ = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
+
+        # Load Chinese system prompt
+        with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
+            prompts_config = json.load(f)
+        system_prompt = prompts_config.get('system_prompts', {}).get('chinese', {}).get('Agent 1', '')
+
+        if not system_prompt:
+            system_prompt = """
+            你是中国财务报告翻译专家。你的任务是将英文财务分析内容翻译成简体中文。
+            关键要求：
+            1. 必须将所有英文内容翻译成简体中文
+            2. 保留所有数字、货币符号和技术术语（如VAT、CIT、WHT）不变
+            3. 保持专业财务语气和结构
+            4. 确保输出完全是中文，除了数字和技术术语
+            5. 如果发现任何英文单词，请立即将其翻译成中文
+            """
+
+        # Get model name
+        if use_local_ai:
+            model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
+        elif use_openai:
+            model = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
+        else:
+            model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
 
         # Create temporary file for processing
         temp_file_path = None
@@ -3007,18 +3028,7 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
         for idx, key in enumerate(filtered_keys):
             try:
-                # Update progress
-                if is_cli and progress_bar:
-                    elapsed = time.time() - start_time
-                    avg_time = elapsed / (idx + 1) if idx > 0 else 0
-                    remaining = len(filtered_keys) - idx - 1
-                    eta_seconds = int(avg_time * remaining)
-                    mins, secs = divmod(eta_seconds, 60)
-                    eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else ""
-
-                    progress_bar.set_description(f"🌐 中文翻译 {key} ({idx+1}/{len(filtered_keys)}) {eta_str}")
-                    progress_bar.update(0)  # Don't increment yet
-
+                # Get the proofread content
                 content = agent1_results.get(key, '')
                 if isinstance(content, dict):
                     content_text = content.get('content', '')
@@ -3031,8 +3041,163 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                         progress_bar.update(1)
                     continue
 
-                # Get table data for this key
-                tables_md = processed_table_data.get(key, '')
+                # Get table information for this key
+                table_info = ""
+                if key in sections_by_key:
+                    sections = sections_by_key[key]
+                    if isinstance(sections, list):
+                        for section in sections:
+                            if isinstance(section, dict):
+                                try:
+                                    table_info += json.dumps(section, indent=2, default=str, ensure_ascii=False)
+                                except:
+                                    table_info += str(section)
+                            else:
+                                table_info += str(section)
+                    else:
+                        table_info = str(sections)
+
+                # Update progress
+                if is_cli and progress_bar:
+                    progress_bar.set_description(f"🌐 中文翻译 {key} ({idx+1}/{len(filtered_keys)})")
+                    progress_bar.update(1)
+                elif external_progress:
+                    progress_pct = (idx + 1) / len(filtered_keys)
+                    if external_progress.get('bar'):
+                        external_progress['bar'].progress(progress_pct)
+                    if external_progress.get('status'):
+                        elapsed = time.time() - start_time
+                        avg_time = elapsed / (idx + 1) if idx > 0 else 0
+                        remaining = len(filtered_keys) - idx - 1
+                        eta_seconds = int(avg_time * remaining)
+                        mins, secs = divmod(eta_seconds, 60)
+                        eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else ""
+                        external_progress['status'].text(f"🌐 中文翻译: {key} ({idx+1}/{len(filtered_keys)}) {eta_str}")
+
+                # Create translation prompt
+                user_prompt = f"""
+                请将以下英文财务内容翻译成简体中文：
+
+                英文内容：
+                {content_text}
+
+                相关表格数据（用于参考）：
+                {table_info[:2000] if table_info else "无表格数据"}
+
+                翻译要求：
+                1. 必须将所有英文内容翻译成简体中文
+                2. 保留所有数字、货币符号和技术术语（如VAT、CIT、WHT）不变
+                3. 保持专业财务语气和结构
+                4. 确保输出完全是中文，除了数字和技术术语
+
+                请直接返回翻译后的中文内容，不要包含任何解释或额外文本。
+                """
+
+                # Call AI for translation
+                translated_content = generate_response(
+                    user_query=user_prompt,
+                    system_prompt=system_prompt,
+                    oai_client=oai_client,
+                    context_content=table_info,
+                    openai_chat_model=model,
+                    entity_name=entity_name,
+                    use_local_ai=use_local_ai
+                )
+
+                # Clean the response
+                if translated_content:
+                    translated_content = translated_content.strip()
+                    if translated_content.startswith('"') and translated_content.endswith('"'):
+                        translated_content = translated_content[1:-1]
+
+                    # Quality check for Chinese content
+                    if is_cli:
+                        chinese_chars = sum(1 for char in translated_content if '\u4e00' <= char <= '\u9fff')
+                        english_chars = sum(1 for char in translated_content if char.isascii() and char.isalnum())
+                        total_chars = chinese_chars + english_chars
+                        if total_chars > 0:
+                            chinese_ratio = chinese_chars / total_chars
+                            if chinese_ratio < 0.3:
+                                print(f"⚠️ Low Chinese ratio ({chinese_ratio:.2%}) for {key}")
+                            else:
+                                print(f"✅ Good Chinese ratio ({chinese_ratio:.2%}) for {key}")
+
+                # Store result
+                result_data = agent1_results.get(key, {})
+                if isinstance(result_data, dict):
+                    result_data['content'] = translated_content or content_text
+                    result_data['translated'] = True
+                else:
+                    result_data = {
+                        'content': translated_content or content_text,
+                        'translated': True
+                    }
+                translated_results[key] = result_data
+
+            except Exception as e:
+                if is_cli:
+                    print(f"Error translating {key}: {e}")
+                translated_results[key] = agent1_results.get(key, {})
+        # Close progress bar
+        if is_cli and progress_bar:
+            progress_bar.close()
+        elif external_progress and external_progress.get('status'):
+            external_progress['status'].text(f"✅ 中文翻译完成 - 处理了 {len(filtered_keys)} 个项目")
+
+        return translated_results
+
+    except Exception as e:
+        if is_cli:
+            print(f"❌ Chinese translation error: {e}")
+        else:
+            try:
+                st.error(f"❌ Chinese translation error: {e}")
+            except Exception:
+                print(f"❌ Chinese translation error: {e}")
+        if is_cli and progress_bar:
+            progress_bar.close()
+        return agent1_results
+
+def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress=None, language='English'):
+    """Run AI Proofreader for all keys (Compliance, Figures, Entities, Grammar)."""
+    try:
+        # Initialize is_cli flag properly
+        is_cli = True  # Default to CLI mode
+
+        # Check if we're in a Streamlit environment (not CLI)
+        try:
+            import streamlit as st
+            # Try to access Streamlit session state - if it succeeds, we're in Streamlit
+            _ = st.session_state
+            is_cli = False
+        except (ImportError, AttributeError):
+            # If Streamlit is not available or session state doesn't exist, we're in CLI
+            is_cli = True
+
+        # Only show verbose output in CLI mode
+        if is_cli:
+            print(f"🔍 run_ai_proofreader called with {len(filtered_keys)} keys")
+
+        # Get logger only if available
+        logger = None
+        if not is_cli:
+            try:
+                logger = st.session_state.ai_logger
+            except:
+                pass
+
+        # Model/provider selection
+        use_local_ai = False
+        use_openai = False
+        if not is_cli:
+            use_local_ai = st.session_state.get('use_local_ai', False)
+            use_openai = st.session_state.get('use_openai', False)
+
+        proof_agent = ProofreadingAgent(use_local_ai=use_local_ai, use_openai=use_openai, language=language)
+
+        results = {}
+        entity_name = ai_data.get('entity_name', '')
+        sections_by_key = ai_data.get('sections_by_key', {})
 
                 # Create translation prompt with heuristic to ensure Chinese output
                 translation_prompt = f"""
