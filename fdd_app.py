@@ -2622,7 +2622,6 @@ def write_prompt_debug_content(filtered_keys, sections_by_key):
 def run_agent_1(filtered_keys, ai_data, external_progress=None, language='English'):
     """Run Agent 1: Content Generation for all keys"""
     try:
-
         import time
 
         logger = st.session_state.ai_logger
@@ -3134,6 +3133,7 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
     """Simple Chinese Translation Agent: Process proofread content one by one using AI"""
     try:
         import json
+        import time
         from common.assistant import generate_response, load_config, initialize_ai_services
 
         # Initialize is_cli flag properly
@@ -3440,7 +3440,6 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 请直接返回翻译后的完整中文内容，不要包含任何解释、注释或额外文本。"""
 
                 # TIMING: Record time before AI call
-                import time
                 debug_start_time = time.time()
 
                 # DEBUG: Print input prompts for each key
@@ -4301,8 +4300,8 @@ def convert_sections_to_markdown(sections_by_key):
 def run_agent_1_simple(filtered_keys, ai_data, external_progress=None, language='English'):
     """Optimized Agent 1 using process_keys directly - eliminates redundant Excel processing"""
     try:
-        print(f"🔍 run_agent_1_simple called with {len(filtered_keys)} keys, language: {language}")
         import time
+        print(f"🔍 run_agent_1_simple called with {len(filtered_keys)} keys, language: {language}")
         from common.assistant import process_keys
 
         # Convert language parameter to the format expected by process_keys
