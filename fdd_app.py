@@ -1049,7 +1049,18 @@ def main():
                                     ext['combined']['stage_index'] = 3
                                     status_text.text("🌐 翻译为中文...")
                                     progress_bar.progress(85)
+
+                                    # DEBUG: About to call translation
+                                    print(f"\n🔄 DEBUG: About to call run_chinese_translator")
+                                    print(f"🔑 Keys: {len(filtered_keys_for_ai)}")
+                                    print(f"📊 Proofread results available: {len(proofread_english_results) if proofread_english_results else 0}")
+                                    print(f"📋 External progress: {type(ext)}")
+
                                     translated_results = run_chinese_translator(filtered_keys_for_ai, proofread_english_results, temp_ai_data, external_progress=ext)
+
+                                    # DEBUG: Translation completed
+                                    print(f"\n✅ DEBUG: run_chinese_translator completed")
+                                    print(f"📊 Translation results: {len(translated_results) if translated_results else 0}")
 
                                     proof_results = translated_results  # Final results are the translated content
 
@@ -1112,7 +1123,17 @@ def main():
                                 # Step 2: Then translate the proofread English content to Chinese
                                 ext['combined']['stage_index'] = 2
                                 status_text.text("🌐 翻译为中文...")
+
+                                # DEBUG: About to call translation (single statement mode)
+                                print(f"\n🔄 DEBUG: About to call run_chinese_translator (single statement)")
+                                print(f"🔑 Keys: {len(filtered_keys_for_ai)}")
+                                print(f"📊 Proofread results available: {len(proofread_english_results) if proofread_english_results else 0}")
+
                                 translated_results = run_chinese_translator(filtered_keys_for_ai, proofread_english_results, temp_ai_data, external_progress=ext)
+
+                                # DEBUG: Translation completed (single statement mode)
+                                print(f"\n✅ DEBUG: run_chinese_translator completed (single statement)")
+                                print(f"📊 Translation results: {len(translated_results) if translated_results else 0}")
 
                                 proof_results = translated_results  # Final results are the translated content
 
@@ -3033,11 +3054,21 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         except (ImportError, AttributeError):
             is_cli = True
 
+        # EARLY DEBUG: Confirm function is being called
+        print(f"\n🚀 DEBUG: run_chinese_translator called with {len(filtered_keys)} keys")
+        print(f"📊 CLI mode: {is_cli}")
+        print(f"📊 External progress provided: {external_progress is not None}")
+        print(f"🔑 Keys to process: {filtered_keys}")
+        print(f"{'='*60}")
+
         # Setup tqdm progress bar
         if is_cli:
+            print(f"📊 Setting up tqdm progress bar for {len(filtered_keys)} keys")
             progress_bar = tqdm(total=len(filtered_keys), desc="🌐 中文翻译", unit="key")
+            print(f"✅ Tqdm progress bar created successfully")
         else:
             progress_bar = None
+            print(f"📊 Streamlit mode - no tqdm progress bar")
 
         # Get AI model settings
         use_local_ai = False
@@ -3162,14 +3193,24 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
         for idx, key in enumerate(filtered_keys):
             try:
+                # DEBUG: Show we're processing this key
+                print(f"\n🔄 [{idx+1}/{len(filtered_keys)}] Processing key: {key}")
+
                 # Get the proofread content
                 content = agent1_results.get(key, '')
+                print(f"📋 Content type: {type(content)}")
+
                 if isinstance(content, dict):
                     content_text = content.get('content', '')
+                    print(f"📝 Extracted content from dict: {len(content_text)} chars")
                 else:
                     content_text = str(content)
+                    print(f"📝 Converted content to string: {len(content_text)} chars")
+
+                print(f"📄 Content preview: {content_text[:100]}..." if len(content_text) > 100 else f"📄 Content: {content_text}")
 
                 if not content_text:
+                    print(f"⚠️  Empty content for {key}, skipping")
                     translated_results[key] = agent1_results.get(key, {})
                     if is_cli and progress_bar:
                         progress_bar.update(1)
@@ -3196,8 +3237,10 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     progress_callback(idx, len(filtered_keys), key, "开始翻译")
                 elif is_cli and progress_bar:
                     progress_msg = f"🌐 中文翻译: {key} ({idx+1}/{len(filtered_keys)})"
+                    print(f"📊 Updating progress bar: {progress_msg}")
                     progress_bar.set_description(progress_msg)
                     progress_bar.update(1)
+                    print(f"✅ Progress bar updated")
 
                 # Debug output for all modes
                 print(f"\n🔄 [{idx+1}/{len(filtered_keys)}] 翻译中: {key}")
@@ -3233,6 +3276,12 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 print(f"{user_prompt}")
                 print(f"{'='*80}")
 
+                # DEBUG: About to call AI
+                print(f"🤖 About to call AI for translation of {key}")
+                print(f"🔧 Model: {model}")
+                print(f"🌐 Use local AI: {use_local_ai}")
+                print(f"📤 Calling generate_response...")
+
                 # Call AI for translation
                 translated_content = generate_response(
                     user_query=user_prompt,
@@ -3243,6 +3292,11 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     entity_name=entity_name,
                     use_local_ai=use_local_ai
                 )
+
+                # DEBUG: AI call completed
+                print(f"✅ AI call completed for {key}")
+                print(f"📥 Response type: {type(translated_content)}")
+                print(f"📏 Response length: {len(str(translated_content)) if translated_content else 0}")
 
                 # DEBUG: Print AI response for each key
                 print(f"\n{'='*80}")
@@ -3313,11 +3367,21 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 if is_cli:
                     print(f"Error translating {key}: {e}")
                 translated_results[key] = agent1_results.get(key, {})
+        # DEBUG: Final results summary
+        print(f"\n{'='*80}")
+        print(f"🏁 DEBUG - TRANSLATION PROCESS SUMMARY")
+        print(f"{'='*80}")
+        print(f"📊 Total keys processed: {len(filtered_keys)}")
+        print(f"📊 Results with content: {len([k for k in translated_results.keys() if translated_results[k]])}")
+        print(f"📊 Total results: {len(translated_results)}")
+
         # Final summary and close progress bar
         total_processed = len([k for k in translated_results.keys() if translated_results[k]])
         success_rate = total_processed / len(filtered_keys) if filtered_keys else 0
 
         summary_msg = f"✅ 中文翻译完成 - 成功处理 {total_processed}/{len(filtered_keys)} 个项目 ({success_rate:.1%})"
+        print(f"📈 Success rate: {success_rate:.1%}")
+        print(f"⏱️  Total time: {time.time() - start_time:.2f} seconds")
 
         if is_cli and progress_bar:
             progress_bar.close()
