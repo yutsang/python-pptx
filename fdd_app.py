@@ -831,32 +831,33 @@ def main():
                         'agent3_success': False
                     }
                 
-                # Language Selection for AI Reports
-                st.markdown("### 🌐 Report Language")
-                language_options = ["English", "中文"]
-                selected_language = st.radio(
-                    "Select report language:",
-                    language_options,
-                    index=0,
-                    horizontal=True,
-                    help="Choose the language for AI-generated reports"
-                )
-                st.session_state['selected_language'] = selected_language
-
-                # AI Processing Button with a single main progress bar
+                # AI Processing Buttons - Direct language selection
+                st.markdown("### 🤖 AI Report Generation")
                 agent_states = st.session_state.get('agent_states', {})
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    lang_indicator = "(中文)" if selected_language == "中文" else "(English)"
-                    run_ai_clicked = st.button(f"🚀 AI{lang_indicator}: Content Generation", type="secondary", use_container_width=True, key="btn_ai_gen")
-                with col_b:
-                    lang_indicator = "(中文)" if selected_language == "中文" else "(English)"
-                    run_proof_clicked = st.button(f"🧐 AI{lang_indicator}: Proofreader", type="secondary", use_container_width=True, key="btn_ai_proof")
-                with col_c:
-                    lang_indicator = "(中文)" if selected_language == "中文" else "(English)"
-                    run_both_clicked = st.button(f"🔁 AI{lang_indicator}: Generate → Proofread", type="primary", use_container_width=True, key="btn_ai_both")
 
-                if run_ai_clicked:
+                # Two columns for English and Chinese buttons
+                col_eng, col_chi = st.columns(2)
+
+                with col_eng:
+                    run_eng_clicked = st.button(
+                        "🇺🇸 Generate English Report",
+                        type="primary",
+                        use_container_width=True,
+                        key="btn_ai_eng",
+                        help="Generate AI report in English (Content Generation + Proofreading)"
+                    )
+
+                with col_chi:
+                    run_chi_clicked = st.button(
+                        "🇨🇳 生成中文报告",
+                        type="primary",
+                        use_container_width=True,
+                        key="btn_ai_chi",
+                        help="Generate AI report in Chinese (内容生成 + 校对)"
+                    )
+
+                # Handle English AI processing
+                if run_eng_clicked:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     eta_text = st.empty()
@@ -945,9 +946,120 @@ def main():
                         status_text.text(f"❌ AI failed: {e}")
                         time.sleep(1)
                         st.rerun()
-                
-                if run_proof_clicked:
-                    # Run AI Proofreader using Agent 1 outputs
+
+                # Handle Chinese AI processing
+                if run_chi_clicked:
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    eta_text = st.empty()
+                    try:
+                        status_text.text("🤖 初始化中文AI处理…")
+                        progress_bar.progress(10)
+
+                        selected_language = '中文'
+                        st.session_state['selected_language'] = selected_language
+
+                        # Handle different statement types
+                        current_statement_type = st.session_state.get('current_statement_type', 'BS')
+
+                        if current_statement_type == "ALL":
+                            # For ALL, process both BS and IS
+                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
+
+                            # Define key lists for BS and IS
+                            bs_key_list = [
+                                "Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
+                                "AP", "Taxes payable", "OP", "Capital", "Reserve"
+                            ]
+                            is_key_list = [
+                                "OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
+                                "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"
+                            ]
+
+                            # Process all keys for ALL mode
+                            status_text.text("📊 处理所有财务数据...")
+                            progress_bar.progress(20)
+                            st.session_state['current_statement_type'] = 'ALL'
+                            agent1_results_bs = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
+
+                            # Store all results in session state
+                            if agent1_results_bs:
+                                # Initialize content store if not exists
+                                if 'ai_content_store' not in st.session_state:
+                                    st.session_state['ai_content_store'] = {}
+
+                                # Store BS results
+                                for key, result in agent1_results_bs.items():
+                                    if key in bs_key_list:
+                                        st.session_state['ai_content_store'][f"bs_{key}"] = result
+
+                                # Switch to IS processing
+                                ext['combined']['stage_index'] = 1
+                                status_text.text("📈 处理损益表...")
+                                progress_bar.progress(60)
+
+                                # Filter IS keys
+                                is_filtered_keys = [key for key in filtered_keys_for_ai if key in is_key_list]
+                                agent1_results_is = run_agent_1(is_filtered_keys, temp_ai_data, external_progress=ext, language=selected_language)
+
+                                if agent1_results_is:
+                                    # Store IS results
+                                    for key, result in agent1_results_is.items():
+                                        if key in is_key_list:
+                                            st.session_state['ai_content_store'][f"is_{key}"] = result
+
+                                # Proofreader for both
+                                status_text.text("🧐 运行全面校对...")
+                                progress_bar.progress(80)
+
+                                # Combine all results for proofreading
+                                combined_results = {}
+                                combined_results.update(agent1_results_bs or {})
+                                combined_results.update(agent1_results_is or {})
+
+                                proof_results = run_ai_proofreader(filtered_keys_for_ai, combined_results, temp_ai_data, external_progress=ext, language=selected_language)
+
+                                if proof_results:
+                                    st.session_state['agent_states']['agent3_results'] = proof_results
+                                    st.session_state['agent_states']['agent3_completed'] = True
+                                    st.session_state['agent_states']['agent3_success'] = bool(proof_results)
+
+                            progress_bar.progress(100)
+                            status_text.text("✅ 所有处理完成")
+                            time.sleep(1)
+
+                        else:
+                            # Single statement type processing
+                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
+                            agent1_results = run_agent_1(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
+                            st.session_state['agent_states']['agent1_results'] = agent1_results
+                            st.session_state['agent_states']['agent1_completed'] = True
+                            st.session_state['agent_states']['agent1_success'] = bool(agent1_results)
+
+                            # Proofreader
+                            status_text.text("🧐 运行校对...")
+                            ext['combined']['stage_index'] = 1
+                            proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext, language=selected_language)
+                            st.session_state['agent_states']['agent3_results'] = proof_results
+                            st.session_state['agent_states']['agent3_completed'] = True
+                            st.session_state['agent_states']['agent3_success'] = bool(proof_results)
+
+                            # Generate content files after combined processing
+                            if proof_results:
+                                status_text.text("📝 生成内容文件...")
+                                progress_bar.progress(95)
+                                generate_content_from_session_storage(selected_entity)
+
+                            progress_bar.progress(100)
+                            status_text.text("✅ 中文AI处理完成")
+                            time.sleep(1)
+
+                    except Exception as e:
+                        st.error(f"❌ 中文AI处理失败: {e}")
+                        progress_bar.progress(0)
+                        status_text.text("❌ 处理失败")
+
+                # Clean UI with direct language selection buttons
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     eta_text = st.empty()
