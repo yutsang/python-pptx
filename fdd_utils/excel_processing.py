@@ -48,7 +48,12 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
             '%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y',
             '%Y-%m-%d', '%m/%d/%Y', '%m-%d-%Y',
             '%d/%b/%Y', '%d-%b-%Y', '%b/%d/%Y', '%b-%d-%Y',
-            '%d/%B/%Y', '%d-%B-%Y', '%B/%d/%Y', '%B-%d-%Y'
+            '%d/%B/%Y', '%d-%B-%Y', '%B/%d/%Y', '%B-%d-%Y',
+            # Chinese date formats
+            '%Y年%m月%d日', '%Y年%m月', '%m月%d日', '%Y/%m/%d',
+            '%Y.%m.%d', '%Y年%m月%d日', '%Y年%m月%d号',
+            # Additional flexible formats
+            '%Y%m%d', '%d%m%Y', '%m%d%Y'
         ]
         
         for fmt in date_formats:
@@ -140,10 +145,10 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
         
         # If no date found in the row below, check a few more rows down
         if latest_column is None:
-            for check_row in range(indic_row + 2, min(indic_row + 5, len(df))):
+            for check_row in range(indic_row + 2, min(indic_row + 8, len(df))):  # Extended search range
                 for col_idx in range(merge_start, merge_end + 1):
                     val = df.iloc[check_row, col_idx]
-                    
+
                     if isinstance(val, (pd.Timestamp, datetime)):
                         date_val = val if isinstance(val, datetime) else val.to_pydatetime()
                         if latest_date is None or date_val > latest_date:
@@ -157,6 +162,27 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
                                 latest_date = parsed_date
                                 latest_column = columns[col_idx]
                                 print(f"   📅 Parsed date in row {check_row}: {latest_column} = {parsed_date.strftime('%Y-%m-%d')}")
+
+        # If still no date found in merged range, search entire sheet for dates (Chinese files might have dates elsewhere)
+        if latest_column is None:
+            print(f"   🔍 Extended search: Looking for dates in entire sheet...")
+            for row_idx in range(min(15, len(df))):  # Search first 15 rows
+                for col_idx in range(len(columns)):
+                    val = df.iloc[row_idx, col_idx]
+
+                    if isinstance(val, (pd.Timestamp, datetime)):
+                        date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                        if latest_date is None or date_val > latest_date:
+                            latest_date = date_val
+                            latest_column = columns[col_idx]
+                            print(f"   📅 Found date in extended search: Row {row_idx}, Col {col_idx} = {date_val.strftime('%Y-%m-%d')}")
+                    elif pd.notna(val) and str(val).strip():
+                        parsed_date = parse_date(str(val))
+                        if parsed_date:
+                            if latest_date is None or parsed_date > latest_date:
+                                latest_date = parsed_date
+                                latest_column = columns[col_idx]
+                                print(f"   📅 Parsed date in extended search: Row {row_idx}, Col {col_idx} = {parsed_date.strftime('%Y-%m-%d')}")
     
     if latest_column:
         print(f"   🎯 FINAL SELECTION: Column '{latest_column}' with date {latest_date.strftime('%Y-%m-%d')}")
@@ -769,9 +795,24 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
                             entity_found = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
 
-                            print(f"   🔍 Entity check for {best_key}: entity_found={entity_found}")
-                            print(f"   🔍 Entity keywords: {entity_keywords}")
-                            print(f"   🔍 Section text sample: {section_text[:200]}...")
+                            # Special handling for Chinese Excel files - if no entity found but content exists,
+                            # assume it's the correct entity (common in Chinese financial reports)
+                            if not entity_found and len(section_text.strip()) > 50:  # Has substantial content
+                                # Check if this looks like a financial table (has numbers and Chinese characters)
+                                has_numbers = any(char.isdigit() for char in section_text)
+                                has_chinese = any('\u4e00' <= char <= '\u9fff' for char in section_text)
+
+                                if has_numbers and has_chinese:
+                                    entity_found = True
+                                    print(f"   🔍 Chinese content detected - assuming correct entity for {best_key}")
+                                else:
+                                    print(f"   🔍 Entity check for {best_key}: entity_found={entity_found}")
+                                    print(f"   🔍 Entity keywords: {entity_keywords}")
+                                    print(f"   🔍 Section text sample: {section_text[:200]}...")
+                            else:
+                                print(f"   🔍 Entity check for {best_key}: entity_found={entity_found}")
+                                print(f"   🔍 Entity keywords: {entity_keywords}")
+                                print(f"   🔍 Section text sample: {section_text[:200]}...")
 
                         # Only process if entity is found in this section (or if single entity mode)
                         if entity_found:
