@@ -508,23 +508,46 @@ def main():
                 if mode_display == "Open AI":
                     if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_BASE'):
                         st.success("✅ OpenAI configured")
-                        st.info(f"🤖 Model: {config.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini')}")
+                        model = config.get('OPENAI_CHAT_MODEL', 'Not configured')
+                        st.info(f"🤖 Model: {model}")
                     else:
                         st.warning("⚠️ OpenAI not configured. Add OPENAI_API_KEY and OPENAI_API_BASE in fdd_utils/config.json")
                 elif mode_display == "DeepSeek":
                     if config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_BASE'):
                         st.success("✅ DeepSeek configured")
-                        st.info(f"🤖 Model: {config.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')}")
+                        model = config.get('DEEPSEEK_CHAT_MODEL', 'Not configured')
+                        st.info(f"🤖 Model: {model}")
                     else:
                         st.warning("⚠️ DeepSeek not configured. Add DEEPSEEK_API_KEY and DEEPSEEK_API_BASE in fdd_utils/config.json")
                 elif mode_display == "Local AI":
                     if config.get('LOCAL_AI_API_BASE') and config.get('LOCAL_AI_ENABLED'):
                         st.success("✅ Local AI configured")
-                        st.info(f"🏠 Model: {config.get('LOCAL_AI_CHAT_MODEL', 'local-qwen2')}")
-                        st.info(f"🔗 Endpoint: {config.get('LOCAL_AI_API_BASE', 'Not specified')}")
+                        model = config.get('LOCAL_AI_CHAT_MODEL', 'Not configured')
+                        endpoint = config.get('LOCAL_AI_API_BASE', 'Not configured')
+                        st.info(f"🏠 Model: {model}")
+                        st.info(f"🔗 Endpoint: {endpoint}")
                     else:
                         st.warning("⚠️ Local AI not configured. Configure LOCAL_AI_* in fdd_utils/config.json")
-            
+
+            # Show table mapping information
+            st.subheader("📊 Table Mapping Configuration")
+            config, mapping, pattern, prompts = load_config_files()
+            if mapping:
+                with st.expander("View Sheet Name Mappings", expanded=False):
+                    # Create a table to show mapping information
+                    mapping_data = []
+                    for key, values in mapping.items():
+                        if isinstance(values, list):
+                            mapping_data.append({
+                                "Financial Key": key,
+                                "Mapped Sheet Names": ", ".join(values[:3]) + ("..." if len(values) > 3 else "")
+                            })
+
+                    if mapping_data:
+                        st.table(mapping_data)
+                    else:
+                        st.info("No mapping data available")
+
             # Map display names to internal mode names
             provider_mapping = {
                 "Open AI": "Open AI",
@@ -1285,7 +1308,7 @@ def main():
 # Helper function to parse and display bs_content.md by key
 def display_bs_content_by_key(md_path):
     try:
-        with open(md_path, 'r') as f:
+        with open(md_path, 'r', encoding='utf-8') as f:
             content = f.read()
         # Split by key headers (e.g., ## Cash, ## AR, etc.)
         sections = re.split(r'(^## .+$)', content, flags=re.MULTILINE)
