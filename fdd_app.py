@@ -1130,6 +1130,27 @@ def main():
                                     st.session_state['agent_states']['agent3_completed'] = True
                                     st.session_state['agent_states']['agent3_success'] = bool(proof_results)
 
+                                    # UPDATE AI CONTENT STORE WITH TRANSLATED CONTENT FOR PPTX EXPORT
+                                    print(f"\n🔄 UPDATING AI CONTENT STORE WITH TRANSLATED CONTENT...")
+                                    if 'ai_content_store' not in st.session_state:
+                                        st.session_state['ai_content_store'] = {}
+
+                                    for key, result in proof_results.items():
+                                        if isinstance(result, dict):
+                                            translated_content = result.get('corrected_content', '') or result.get('content', '')
+                                            if translated_content and result.get('is_chinese', False):
+                                                if key not in st.session_state['ai_content_store']:
+                                                    st.session_state['ai_content_store'][key] = {}
+                                                st.session_state['ai_content_store'][key]['current_content'] = translated_content
+                                                st.session_state['ai_content_store'][key]['agent3_content'] = translated_content
+                                                st.session_state['ai_content_store'][key]['agent3_timestamp'] = time.time()
+                                                print(f"   ✅ Updated {key} with Chinese content ({len(translated_content)} chars)")
+                                            else:
+                                                print(f"   ⚠️  {key} has no valid Chinese content to update")
+                                        else:
+                                            print(f"   ⚠️  {key} result is not a dict: {type(result)}")
+
+                                    print(f"✅ AI content store updated for PPTX export")
                                     print(f"✅ Session state updated successfully")
                                     print(f"🔍 agent3_results keys: {list(st.session_state['agent_states']['agent3_results'].keys())}")
                                     print(f"{'='*60}")
@@ -1218,9 +1239,35 @@ def main():
                                 ext['combined']['stage_index'] = 1
                                 proof_results = run_ai_proofreader(filtered_keys_for_ai, agent1_results, temp_ai_data, external_progress=ext, language=selected_language)
                                 translated_results = agent1_results  # No translation for English
-                            st.session_state['agent_states']['agent3_results'] = proof_results
+
+                            # STORE FINAL RESULTS (translated_results for Chinese, proof_results for English)
+                            final_results = translated_results if 'translated_results' in locals() and selected_language == '中文' else proof_results
+                            st.session_state['agent_states']['agent3_results'] = final_results
                             st.session_state['agent_states']['agent3_completed'] = True
-                            st.session_state['agent_states']['agent3_success'] = bool(proof_results)
+                            st.session_state['agent_states']['agent3_success'] = bool(final_results)
+
+                            # UPDATE AI CONTENT STORE WITH FINAL RESULTS FOR PPTX EXPORT
+                            print(f"\n🔄 UPDATING AI CONTENT STORE WITH FINAL RESULTS...")
+                            if 'ai_content_store' not in st.session_state:
+                                st.session_state['ai_content_store'] = {}
+
+                            for key, result in final_results.items():
+                                if isinstance(result, dict):
+                                    final_content = result.get('corrected_content', '') or result.get('content', '')
+                                    if final_content:
+                                        if key not in st.session_state['ai_content_store']:
+                                            st.session_state['ai_content_store'][key] = {}
+                                        st.session_state['ai_content_store'][key]['current_content'] = final_content
+                                        if selected_language == '中文':
+                                            st.session_state['ai_content_store'][key]['agent3_content'] = final_content
+                                            st.session_state['ai_content_store'][key]['agent3_timestamp'] = time.time()
+                                        print(f"   ✅ Updated {key} with final content ({len(final_content)} chars)")
+                                    else:
+                                        print(f"   ⚠️  {key} has no content to update")
+                                else:
+                                    print(f"   ⚠️  {key} result is not a dict: {type(result)}")
+
+                            print(f"✅ AI content store updated for PPTX export")
 
                             # Generate content files after combined processing
                             if proof_results:
@@ -3434,6 +3481,16 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
 直接返回中文翻译："""
 
+                # SHOW FULL TRANSLATION PREVIEW DURING PROMPT SETUP
+                print(f"\n📋 FULL TRANSLATION PREVIEW FOR {key}:")
+                print(f"{'─' * 60}")
+                print(f"📝 ORIGINAL ENGLISH:")
+                print(f"{content_text}")
+                print(f"📝 TRANSLATION PROMPT:")
+                print(f"{user_prompt}")
+                print(f"{'─' * 60}")
+                print(f"⏳ About to send to AI for translation...")
+
                 # TIMING: Record time before AI call
                 debug_start_time = time.time()
 
@@ -3548,11 +3605,13 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     print(f"   长度变化: {len(translated_content) - len(content_text)} 字符")
                     print(f"{'─' * 60}")
 
-                # Store result with explicit Chinese content
+                # Store result with explicit Chinese content - ENSURE UI CAN FIND IT
                 result_data = agent1_results.get(key, {})
                 if isinstance(result_data, dict):
-                    # Store the translated content prominently
+                    # Store the translated content in BOTH content AND corrected_content fields
+                    # This ensures both UI display and PPTX export can find the translated content
                     result_data['content'] = translated_content or content_text
+                    result_data['corrected_content'] = translated_content or content_text  # ← KEY FIX: UI looks here first
                     result_data['translated_content'] = translated_content
                     result_data['original_content'] = content_text
                     result_data['translated'] = True
@@ -3560,6 +3619,7 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 else:
                     result_data = {
                         'content': translated_content or content_text,
+                        'corrected_content': translated_content or content_text,  # ← KEY FIX: UI looks here first
                         'translated_content': translated_content,
                         'original_content': content_text,
                         'translated': True,
