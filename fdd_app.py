@@ -2121,7 +2121,11 @@ def generate_content_from_session_storage(entity_name):
                             key_data = bs_content_store[item]
                             latest_content = key_data.get('current_content', key_data.get('agent1_content', ''))
                             cleaned_content = clean_content_quotes(latest_content)
-                            
+
+                            # Skip items with no information available
+                            if not cleaned_content or "no information available" in cleaned_content.lower():
+                                continue
+
                             key_info = {
                                 'key': item,
                                 'display_name': full_name,
@@ -2131,7 +2135,7 @@ def generate_content_from_session_storage(entity_name):
                                 'length': len(cleaned_content),
                                 'category': category
                             }
-                            
+
                             bs_json_content['categories'][category].append(key_info)
                             bs_json_content['keys'][item] = key_info
                 
@@ -2147,11 +2151,10 @@ def generate_content_from_session_storage(entity_name):
                         if item in bs_content_store:
                             full_name = name_mapping[item]
                             key_info = bs_json_content['keys'].get(item)
-                            if key_info:
+                            if key_info and key_info['content'] and "no information available" not in key_info['content'].lower():
                                 cleaned_content = key_info['content']
-                            else:
-                                cleaned_content = f"No information available for {item}"
-                            bs_markdown_lines.append(f"### {full_name}\n{cleaned_content}\n")
+                                bs_markdown_lines.append(f"### {full_name}\n{cleaned_content}\n")
+                            # Skip items with no information or empty content
                 
                 bs_markdown_text = "\n".join(bs_markdown_lines)
                 with open('fdd_utils/bs_content.md', 'w', encoding='utf-8') as file:
@@ -2179,7 +2182,11 @@ def generate_content_from_session_storage(entity_name):
                             key_data = is_content_store[item]
                             latest_content = key_data.get('current_content', key_data.get('agent1_content', ''))
                             cleaned_content = clean_content_quotes(latest_content)
-                            
+
+                            # Skip items with no information available
+                            if not cleaned_content or "no information available" in cleaned_content.lower():
+                                continue
+
                             key_info = {
                                 'key': item,
                                 'display_name': full_name,
@@ -2189,7 +2196,7 @@ def generate_content_from_session_storage(entity_name):
                                 'length': len(cleaned_content),
                                 'category': category
                             }
-                            
+
                             is_json_content['categories'][category].append(key_info)
                             is_json_content['keys'][item] = key_info
                 
@@ -2205,11 +2212,10 @@ def generate_content_from_session_storage(entity_name):
                         if item in is_content_store:
                             full_name = name_mapping[item]
                             key_info = is_json_content['keys'].get(item)
-                            if key_info:
+                            if key_info and key_info['content'] and "no information available" not in key_info['content'].lower():
                                 cleaned_content = key_info['content']
-                            else:
-                                cleaned_content = f"No information available for {item}"
-                            is_markdown_lines.append(f"### {full_name}\n{cleaned_content}\n")
+                                is_markdown_lines.append(f"### {full_name}\n{cleaned_content}\n")
+                            # Skip items with no information or empty content
                 
                 is_markdown_text = "\n".join(is_markdown_lines)
                 with open('fdd_utils/is_content.md', 'w', encoding='utf-8') as file:
