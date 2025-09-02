@@ -386,7 +386,7 @@ def main():
                     del st.session_state['ai_data']
                 if 'filtered_keys_for_ai' in st.session_state:
                     del st.session_state['filtered_keys_for_ai']
-                print(f"DEBUG: Entity changed from '{st.session_state['last_entity_input']}' to '{entity_input}', cleared session state")
+                # Entity change detected, session cleared
         
         # Store current entity input for next comparison
         st.session_state['last_entity_input'] = entity_input
@@ -446,7 +446,7 @@ def main():
             else:
                 display_name = base_entity
             st.info(f"📋 Entity: {display_name}")
-            print(f"DEBUG: Generated entity keywords: {entity_keywords}")
+            # Entity keywords generated successfully
         else:
             selected_entity = None
             entity_keywords = []
@@ -571,9 +571,7 @@ def main():
                 if not entity_keywords:
                     entity_keywords = [selected_entity]
             
-            print(f"DEBUG: entity_keywords generated: {entity_keywords}")
-            print(f"DEBUG: entity_suffixes: {entity_suffixes}")
-            print(f"DEBUG: selected_entity: {selected_entity}")
+            # Entity processing completed
         
         # Handle different statement types
         if statement_type == "BS":

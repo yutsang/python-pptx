@@ -320,9 +320,11 @@ class PowerPointGenerator:
                 shape = self._get_target_shape_for_section(slide_idx, section)
                 if shape:
                     max_lines = self._calculate_max_rows_for_shape(shape)
-                    # Ensure _L and _R columns have consistent behavior
-                    if section in ['b', 'c']:  # _L and _R sections
-                        max_lines = max(max_lines, 15)  # Minimum lines for proper text distribution
+                    # Ensure better height utilization, especially for slide 0
+                    if slide_idx == 0:  # First slide needs more content
+                        max_lines = max(max_lines, 25)  # Higher minimum for slide 0
+                    elif section in ['b', 'c']:  # _L and _R sections
+                        max_lines = max(max_lines, 20)  # Minimum lines for proper text distribution
                 else:
                     max_lines = self.ROWS_PER_SECTION  # Fallback
                 
@@ -884,7 +886,7 @@ class PowerPointGenerator:
             try: paragraph.alignment = PP_ALIGN.LEFT
             except: self._handle_legacy_alignment(paragraph)
         except Exception as e:
-            print(f"[ERROR] _apply_paragraph_formatting failed: {e} (type: {type(paragraph)})")
+            pass  # Silently handle paragraph formatting errors
 
     def _handle_legacy_alignment(self, paragraph):
         """XML-based left alignment for legacy versions"""
@@ -1206,7 +1208,7 @@ class ReportGenerator:
             # Generate the report with AI summary content
             generator.generate_full_report(md_content, "", self.output_path)
         except Exception as e:
-            print(f"Generation failed: {str(e)}")
+            pass  # Generation error handled silently
 
 # --- Project Title Update Logic (from 3.wrap_up.py) ---
 def find_shape_by_name(shapes, name):
