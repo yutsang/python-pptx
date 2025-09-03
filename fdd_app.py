@@ -411,7 +411,7 @@ def main():
             "Enter Entity Name",
             value="",
             placeholder="e.g., Company Name Limited, Entity Name Corp",
-            help="Enter the full entity name to start processing"
+            help="Enter the full entity name to configure processing"
         )
         
         # Clear session state when entity changes
@@ -422,6 +422,9 @@ def main():
                     del st.session_state['ai_data']
                 if 'filtered_keys_for_ai' in st.session_state:
                     del st.session_state['filtered_keys_for_ai']
+                # Reset processing state when entity changes
+                if 'processing_started' in st.session_state:
+                    del st.session_state['processing_started']
                 # Entity change detected, session cleared
         
         # Store current entity input for next comparison
@@ -593,7 +596,32 @@ def main():
 
     # Main area for results
     if uploaded_file is not None:
-        
+
+        # Add a process button to control when processing starts
+        if 'processing_started' not in st.session_state:
+            st.session_state['processing_started'] = False
+
+        if not st.session_state['processing_started']:
+            st.markdown("### 🎯 Ready to Process")
+            st.info("📋 Configuration loaded. Click 'Start Processing' to begin data analysis and AI processing.")
+
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                start_processing = st.button(
+                    "🚀 Start Processing",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_start_processing",
+                    help="Begin data processing and AI analysis"
+                )
+
+            if start_processing:
+                st.session_state['processing_started'] = True
+                st.rerun()  # Refresh to show processing interface
+
+            # Don't show processing interface until button is clicked
+            st.stop()
+
         # --- View Table Section ---
         config, mapping, pattern, prompts = load_config_files()
         
@@ -1716,7 +1744,7 @@ def generate_content_from_session_storage(entity_name):
                     key_data = filtered_content_store[item]
 
                     latest_content = key_data.get('current_content', key_data.get('agent1_content', ''))
-
+                    
                     # Determine content source
                     if 'agent3_content' in key_data:
                         content_source = "agent3_final"
@@ -1731,8 +1759,8 @@ def generate_content_from_session_storage(entity_name):
                     else:
                         content_source = "agent1_original"
                         source_timestamp = key_data.get('agent1_timestamp')
-
-                    st.write(f"  • {item}: Using {content_source} version")
+                    
+                    # Removed version display message for cleaner UI
                 else:
                     latest_content = f"No information available for {item}"
                     content_source = "none"
