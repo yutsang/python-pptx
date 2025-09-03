@@ -259,7 +259,7 @@ class PowerPointGenerator:
         
         return self._calculate_max_rows_for_shape(shape)
 
-        def _get_target_shape_for_section(self, slide_idx, section):
+    def _get_target_shape_for_section(self, slide_idx, section):
         """Get the target shape for a specific section on a specific slide"""
         # Check if the slide exists
         if slide_idx >= len(self.prs.slides):
