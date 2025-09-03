@@ -6,40 +6,56 @@ Debug script to help identify Excel processing issues
 import sys
 import os
 import time
-import signal
 
 def test_excel_timeout():
-    """Test if the timeout mechanism works"""
-    print("🧪 Testing Excel processing timeout mechanism...")
-    
-    def timeout_handler(signum, frame):
-        raise TimeoutError("Test timeout triggered")
-    
+    """Test if the threading-based timeout mechanism works"""
+    print("🧪 Testing Excel processing timeout mechanism (threading-based)...")
+
+    import threading
+
+    # Test normal completion
+    result_container = {}
+    exception_container = {}
+
+    def test_normal_completion():
+        try:
+            time.sleep(2)  # Short delay
+            result_container['result'] = "Success"
+        except Exception as e:
+            exception_container['exception'] = e
+
+    processing_thread = threading.Thread(target=test_normal_completion)
+    processing_thread.daemon = True
+    processing_thread.start()
+    processing_thread.join(timeout=5)  # Longer timeout
+
+    if processing_thread.is_alive():
+        print("❌ Normal completion test failed - thread should have completed")
+    elif 'result' in result_container:
+        print("✅ Normal completion test passed")
+    else:
+        print("❌ Normal completion test failed - no result")
+
     # Test timeout
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(5)  # 5 second timeout for test
-    
-    try:
-        print("⏳ Waiting 3 seconds (should complete normally)...")
-        time.sleep(3)
-        signal.alarm(0)  # Cancel timeout
-        print("✅ Timeout test passed - completed normally")
-    except TimeoutError:
-        print("❌ Timeout test failed - should not timeout in 3 seconds")
-        signal.alarm(0)
-    
-    # Test actual timeout
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(2)  # 2 second timeout
-    
-    try:
-        print("⏳ Waiting 3 seconds (should timeout)...")
-        time.sleep(3)
-        print("❌ Timeout test failed - should have timed out")
-        signal.alarm(0)
-    except TimeoutError:
-        print("✅ Timeout test passed - correctly timed out")
-        signal.alarm(0)
+    result_container.clear()
+    exception_container.clear()
+
+    def test_timeout():
+        try:
+            time.sleep(5)  # Longer delay than timeout
+            result_container['result'] = "Should not reach here"
+        except Exception as e:
+            exception_container['exception'] = e
+
+    processing_thread = threading.Thread(target=test_timeout)
+    processing_thread.daemon = True
+    processing_thread.start()
+    processing_thread.join(timeout=2)  # Short timeout
+
+    if processing_thread.is_alive():
+        print("✅ Timeout test passed - thread correctly timed out")
+    else:
+        print("❌ Timeout test failed - thread should have timed out")
 
 def check_imports():
     """Check if required modules can be imported"""
