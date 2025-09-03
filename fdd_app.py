@@ -487,7 +487,11 @@ def main():
             st.stop()
 
         # Generate entity_helpers dynamically from the input entity name
-        words = selected_entity.split()
+        if selected_entity:
+            words = selected_entity.split()
+        else:
+            # Fallback if somehow we got here without an entity
+            words = ["Unknown"]
         if len(words) > 1:
             # Use all words after the first as potential suffixes
             entity_helpers = ",".join(words[1:]) + ","
