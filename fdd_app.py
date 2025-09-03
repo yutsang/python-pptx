@@ -647,34 +647,74 @@ def main():
         # Handle different statement types
         if statement_type == "BS":
             st.markdown("### Balance Sheet")
-            
+
             # Always process the data first and store it in session state for both sections
-            if 'ai_data' not in st.session_state or 'sections_by_key' not in st.session_state['ai_data']:
+            # Check if we need to reprocess (entity changed or no data)
+            entity_changed = st.session_state.get('last_processed_entity') != selected_entity
+            needs_processing = 'ai_data' not in st.session_state or 'sections_by_key' not in st.session_state['ai_data'] or entity_changed
+
+            if needs_processing:
                 # Process Excel file and store in session state
                 with st.spinner("🔄 Processing Excel file..."):
-                    sections_by_key = get_worksheet_sections_by_keys(
-                        uploaded_file=uploaded_file,
-                        tab_name_mapping=mapping,
-                        entity_name=selected_entity,
-                        entity_suffixes=entity_suffixes,
-                        entity_keywords=entity_keywords,
-                        entity_mode='auto',  # Always use auto mode for intelligent detection
-                        debug=True  # Set to True for debugging
-                    )
-                    
+                    print(f"🔍 DEBUG: Starting Excel processing for {selected_entity}")
+                    print(f"🔍 DEBUG: File size: {len(uploaded_file.getvalue()) if hasattr(uploaded_file, 'getvalue') else 'Unknown'} bytes")
+                    start_excel_time = time.time()
+
+                    # Add timeout protection for Excel processing
+                    import signal
+
+                    def timeout_handler(signum, frame):
+                        raise TimeoutError("Excel processing timed out")
+
+                    # Set 30 second timeout
+                    signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(30)
+
+                    try:
+                        sections_by_key = get_worksheet_sections_by_keys(
+                            uploaded_file=uploaded_file,
+                            tab_name_mapping=mapping,
+                            entity_name=selected_entity,
+                            entity_suffixes=entity_suffixes,
+                            entity_keywords=entity_keywords,
+                            entity_mode='auto',  # Always use auto mode for intelligent detection
+                            debug=True  # Set to True for debugging
+                        )
+                        signal.alarm(0)  # Cancel timeout
+                    except TimeoutError:
+                        signal.alarm(0)  # Cancel timeout
+                        print("❌ Excel processing timed out after 30 seconds")
+
+                        # Provide option to continue without Excel data
+                        if st.button("⚠️ Continue Without Excel Data", key="continue_without_excel"):
+                            st.warning("⚠️ Continuing without Excel data. Some features may be limited.")
+                            sections_by_key = {}  # Empty data structure
+                            st.session_state['excel_processing_skipped'] = True
+                        else:
+                            st.error("❌ Excel processing timed out. Click 'Continue Without Excel Data' to proceed or try a smaller file.")
+                            st.stop()
+                            return
+
+                    excel_processing_time = time.time() - start_excel_time
+                    print(f"✅ Excel processing completed in {excel_processing_time:.2f}s")
+                    print(f"📊 Found {len(sections_by_key)} keys with data")
+
                     # High-level debug only
                     total_sections = sum(len(sections) for sections in sections_by_key.values())
 
-                    
+
                     # Store in session state for AI section to use
                     if 'ai_data' not in st.session_state:
                         st.session_state['ai_data'] = {}
                     st.session_state['ai_data']['sections_by_key'] = sections_by_key
                     st.session_state['ai_data']['entity_name'] = selected_entity
                     st.session_state['ai_data']['entity_keywords'] = entity_keywords
+                    st.session_state['last_processed_entity'] = selected_entity  # Track last processed entity
+                    print(f"💾 Stored processed data for Balance Sheet entity: {selected_entity}")
             else:
                 # Use the data that was already processed
                 sections_by_key = st.session_state['ai_data']['sections_by_key']
+                print(f"♻️ Reusing previously processed Balance Sheet data for entity: {selected_entity}")
             
             from common.ui_sections import render_balance_sheet_sections
             render_balance_sheet_sections(
@@ -691,6 +731,10 @@ def main():
             if 'ai_data' not in st.session_state or 'sections_by_key' not in st.session_state['ai_data']:
                 # Process Excel file and store in session state
                 with st.spinner("🔄 Processing Excel file for Income Statement..."):
+                    print(f"🔍 DEBUG: Starting Excel processing for Income Statement - {selected_entity}")
+                    print(f"🔍 DEBUG: File size: {len(uploaded_file.getvalue()) if hasattr(uploaded_file, 'getvalue') else 'Unknown'} bytes")
+                    start_excel_time = time.time()
+
                     sections_by_key = get_worksheet_sections_by_keys(
                         uploaded_file=uploaded_file,
                         tab_name_mapping=mapping,
@@ -700,6 +744,10 @@ def main():
                         entity_mode='auto',  # Always use auto mode for intelligent detection
                         debug=True  # Set to True for debugging
                     )
+
+                    excel_processing_time = time.time() - start_excel_time
+                    print(f"✅ Income Statement Excel processing completed in {excel_processing_time:.2f}s")
+                    print(f"📊 Found {len(sections_by_key)} keys with data")
                     
                     # High-level debug only
                     total_sections = sum(len(sections) for sections in sections_by_key.values())
@@ -733,6 +781,9 @@ def main():
             else:
                 # Fallback: process data if not already done
                 with st.spinner("🔄 Processing Excel file for combined view..."):
+                    print(f"🔍 DEBUG: Starting Excel processing for combined view - {selected_entity}")
+                    start_excel_time = time.time()
+
                     sections_by_key = get_worksheet_sections_by_keys(
                         uploaded_file=uploaded_file,
                         tab_name_mapping=mapping,
@@ -742,6 +793,9 @@ def main():
                         entity_mode='auto',  # Always use auto mode for intelligent detection
                         debug=False
                     )
+
+                    excel_processing_time = time.time() - start_excel_time
+                    print(f"✅ Combined view Excel processing completed in {excel_processing_time:.2f}s")
             
             # Show combined data using the combined rendering function
             from common.ui_sections import render_combined_sections
