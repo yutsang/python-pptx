@@ -1668,19 +1668,6 @@ def main():
         st.markdown("---")
         st.subheader("📊 PowerPoint Generation")
 
-        # Create combined buttons for English and Chinese exports
-        col1, col2 = st.columns([1, 1])
-
-        # English PPTX Export Button (combines prepare and download)
-        with col1:
-            if st.button("📊 Export English PPTX", type="primary", use_container_width=True):
-                export_pptx_with_download(selected_entity, statement_type, language='english')
-
-        # Chinese PPTX Export Button (combines prepare and download)
-        with col2:
-            if st.button("📊 Export Chinese PPTX", type="primary", use_container_width=True):
-                export_pptx_with_download(selected_entity, statement_type, language='chinese')
-
         # Define the export function that combines prepare and download
         def export_pptx_with_download(selected_entity, statement_type, language='english'):
             try:
@@ -1917,6 +1904,20 @@ def main():
             except Exception as e:
                 st.error(f"❌ Export failed: {e}")
                 st.error(f"Error details: {str(e)}")
+
+        # Create combined buttons for English and Chinese exports
+        col1, col2 = st.columns([1, 1])
+
+        # English PPTX Export Button (combines prepare and download)
+        with col1:
+            if st.button("📊 Export English PPTX", type="primary", use_container_width=True):
+                export_pptx_with_download(selected_entity, statement_type, language='english')
+
+        # Chinese PPTX Export Button (combines prepare and download)
+        with col2:
+            if st.button("📊 Export Chinese PPTX", type="primary", use_container_width=True):
+                export_pptx_with_download(selected_entity, statement_type, language='chinese')
+
         # Download buttons are now integrated into the export functions above
         
 
