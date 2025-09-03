@@ -483,8 +483,9 @@ def main():
         
         # Check if entity is provided (file can be default)
         if not selected_entity:
+            st.warning("Please select an entity first")
             st.stop()
-        
+
         # Generate entity_helpers dynamically from the input entity name
         words = selected_entity.split()
         if len(words) > 1:

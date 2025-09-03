@@ -200,9 +200,56 @@ def parse_table_to_structured_format(df, entity_name, table_name):
         print(f"{'='*80}")
 
         # Show all rows of the table
-        print(f"🔍 FULL TABLE DATA ({len(df)} rows):")
-        for i, row in enumerate(df.values.tolist()):
-            print(f"Row {i:2d}: {row}")
+        print(f"\n{'='*100}")
+        print(f"📊 DETAILED EXCEL CONTENT ANALYSIS FOR TABLE: '{table_name}'")
+        print(f"{'='*100}")
+
+        print(f"🔍 FULL RAW DATAFRAME ({len(df)} rows x {len(df.columns)} columns):")
+        print(f"   DataFrame shape: {df.shape}")
+        print(f"   Column names: {list(df.columns)}")
+        print(f"   Column types: {[str(df[col].dtype) for col in df.columns]}")
+
+        print(f"\n🔍 COMPLETE CELL-BY-CELL CONTENT:")
+        for i in range(len(df)):
+            print(f"\n--- ROW {i} ---")
+            for j, col in enumerate(df.columns):
+                cell_value = df.iloc[i, j]
+                cell_type = type(cell_value).__name__
+                cell_str = str(cell_value) if cell_value is not None else "None"
+
+                # Check for RMB-related patterns in this cell
+                rmb_found = False
+                rmb_patterns = ["人民币", "人民幣", "千元", "CNY", "RMB", "万元", "万", "'000", '"000', "000", "thousands", "THOUSANDS", "Thousands"]
+                found_patterns = []
+                for pattern in rmb_patterns:
+                    if cell_str and pattern in cell_str:
+                        found_patterns.append(pattern)
+                        rmb_found = True
+
+                if rmb_found:
+                    print(f"   Col {j} ({col}): [{cell_type}] '{cell_str}' 💰 RMB-PATTERNS: {found_patterns}")
+                else:
+                    print(f"   Col {j} ({col}): [{cell_type}] '{cell_str}'")
+
+        print(f"\n🔍 ROW-BY-ROW SUMMARY (for RMB detection):")
+        for i in range(len(df)):
+            row_data = df.iloc[i].values
+            row_str = " | ".join([str(cell) if cell is not None else "None" for cell in row_data])
+
+            # Count RMB patterns in this row
+            rmb_count = 0
+            pattern_counts = {}
+            for cell in row_data:
+                cell_str = str(cell) if cell is not None else ""
+                for pattern in rmb_patterns:
+                    if pattern in cell_str:
+                        rmb_count += 1
+                        pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
+
+            if rmb_count > 0:
+                print(f"Row {i:2d}: {row_str} 💰 ({rmb_count} RMB patterns: {pattern_counts})")
+            else:
+                print(f"Row {i:2d}: {row_str}")
 
         # Also show raw Excel values for RMB detection verification
         print(f"\n🔍 RAW EXCEL VALUES FOR RMB DETECTION:")
@@ -212,12 +259,13 @@ def parse_table_to_structured_format(df, entity_name, table_name):
             # Highlight any cells containing RMB keywords
             for j, cell in enumerate(row):
                 if cell and isinstance(cell, str):
-                    rmb_patterns = ["人民币", "人民幣", "千元", "CNY", "RMB", "万元", "万", "'000", '"000', "000", "thousands"]
+                    rmb_patterns = ["人民币", "人民幣", "千元", "CNY", "RMB", "万元", "万", "'000", '"000', "000", "thousands", "THOUSANDS", "Thousands"]
                     if any(pattern in cell for pattern in rmb_patterns):
                         print(f"         💰 RMB-RELATED CELL [{i},{j}]: '{cell}'")
 
-        print(f"{'='*80}")
+        print(f"{'='*100}")
         print(f"🔍 Starting detailed processing of table '{table_name}'...")
+        print(f"{'='*100}")
         print(f"🔍 DEBUG: First 5 rows of data:")
         for i, row in enumerate(df.head(5).values.tolist()):
             print(f"   Row {i}: {row}")
