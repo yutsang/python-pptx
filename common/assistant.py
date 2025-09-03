@@ -200,8 +200,21 @@ def parse_table_to_structured_format(df, entity_name, table_name):
         print(f"{'='*80}")
 
         # Show all rows of the table
+        print(f"🔍 FULL TABLE DATA ({len(df)} rows):")
         for i, row in enumerate(df.values.tolist()):
             print(f"Row {i:2d}: {row}")
+
+        # Also show raw Excel values for RMB detection verification
+        print(f"\n🔍 RAW EXCEL VALUES FOR RMB DETECTION:")
+        for i, row in enumerate(df.values.tolist()):
+            row_str = " | ".join([str(cell) if cell is not None else "None" for cell in row])
+            print(f"Row {i:2d}: {row_str}")
+            # Highlight any cells containing RMB keywords
+            for j, cell in enumerate(row):
+                if cell and isinstance(cell, str):
+                    rmb_patterns = ["人民币", "人民幣", "千元", "CNY", "RMB", "万元", "万", "'000", '"000', "000", "thousands"]
+                    if any(pattern in cell for pattern in rmb_patterns):
+                        print(f"         💰 RMB-RELATED CELL [{i},{j}]: '{cell}'")
 
         print(f"{'='*80}")
         print(f"🔍 Starting detailed processing of table '{table_name}'...")
@@ -232,26 +245,62 @@ def parse_table_to_structured_format(df, entity_name, table_name):
             print(f"   Row {i}: {row}")
 
         # DEBUG: Search for "人民币千元" in all cells
+        print(f"\n🔍 RMB DETECTION SCAN: Searching {len(rows)} rows x {len(rows[0]) if rows else 0} columns")
         rmb_thousands_found = False
         rmb_locations = []
+        all_rmb_related_cells = []
+
         for row_idx, row in enumerate(rows):
             for col_idx, cell in enumerate(row):
                 cell_str = str(cell).strip()
+                # Check for exact RMB thousand matches
                 if "人民币千元" in cell_str:
-                    print(f"🎯 FOUND: '人民币千元' in row {row_idx}, col {col_idx}: '{cell_str}'")
+                    print(f"🎯 FOUND EXACT: '人民币千元' in row {row_idx}, col {col_idx}: '{cell_str}'")
                     rmb_thousands_found = True
                     rmb_locations.append(f"人民币千元@[{row_idx},{col_idx}]")
                 elif "人民幣千元" in cell_str:
-                    print(f"🎯 FOUND: '人民幣千元' in row {row_idx}, col {col_idx}: '{cell_str}'")
+                    print(f"🎯 FOUND EXACT: '人民幣千元' in row {row_idx}, col {col_idx}: '{cell_str}'")
                     rmb_thousands_found = True
                     rmb_locations.append(f"人民幣千元@[{row_idx},{col_idx}]")
+
+                # Also track any RMB-related content for debugging - expanded detection
+                rmb_keywords = [
+                    "人民币", "人民幣", "千元", "CNY", "RMB",
+                    "万元", "万", "十万元", "百万元", "千万元",
+                    "'000", '"000', "000",
+                    "thousands", "THOUSANDS", "Thousands"
+                ]
+
+                # Check for exact RMB thousand patterns
+                exact_thousand_patterns = [
+                    "人民币千元", "人民幣千元", "CNY'000", 'CNY"000',
+                    "人民币千", "人民幣千", "CNY千",
+                    "千人民币", "千人民幣", "千CNY"
+                ]
+
+                if any(keyword in cell_str for keyword in rmb_keywords):
+                    all_rmb_related_cells.append(f"[{row_idx},{col_idx}]: '{cell_str}'")
+                    print(f"💰 RMB-RELATED: '{cell_str}' in row {row_idx}, col {col_idx}")
+
+                # Check for exact thousand patterns
+                for pattern in exact_thousand_patterns:
+                    if pattern in cell_str:
+                        print(f"🎯 EXACT THOUSAND PATTERN: '{pattern}' found in '{cell_str}' at [{row_idx},{col_idx}]")
 
         if not rmb_thousands_found:
             print(f"⚠️ DEBUG: No '人民币千元' or '人民幣千元' found in table '{table_name}'")
             print(f"   💰 RMB SCAN: Searched {len(rows)} rows, {len(rows[0]) if rows else 0} columns per row")
+            if all_rmb_related_cells:
+                print(f"   💰 OTHER RMB CONTENT FOUND: {len(all_rmb_related_cells)} RMB-related cells:")
+                for cell_info in all_rmb_related_cells[:10]:  # Show first 10
+                    print(f"      {cell_info}")
+                if len(all_rmb_related_cells) > 10:
+                    print(f"      ... and {len(all_rmb_related_cells) - 10} more RMB-related cells")
         else:
             print(f"✅ DEBUG: Found RMB thousands notation in table '{table_name}' at locations: {', '.join(rmb_locations)}")
             print(f"   💰 RMB SCAN: Successfully detected {len(rmb_locations)} RMB thousand instances")
+            if all_rmb_related_cells:
+                print(f"   💰 ADDITIONAL RMB CONTENT: {len(all_rmb_related_cells)} total RMB-related cells")
         
         # Find the two most important columns (description and amount)
         # Usually the first two columns, but let's be smart about it
@@ -474,30 +523,31 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 "千" in amount_cell
             )
 
-            # Special detection for Chinese "人民币千元" and "人民幣千元" - check ALL cells in the row
-            traditional_chinese_thousands = any("人民币千元" in str(cell) for cell in row)
-            simplified_chinese_thousands = any("人民幣千元" in str(cell) for cell in row)
-            chinese_rmb_thousands = traditional_chinese_thousands or simplified_chinese_thousands
+            # Special detection for various RMB thousand patterns - check ALL cells in the row
+            thousand_patterns = [
+                "人民币千元", "人民幣千元", "CNY'000", 'CNY"000',
+                "人民币千", "人民幣千", "CNY千",
+                "千人民币", "千人民幣", "千CNY",
+                "000", "'000", '"000',
+                "thousands", "THOUSANDS", "Thousands"
+            ]
 
-            # Debug: Always show RMB detection status for this row
-            rmb_detected_in_row = False
-            for cell_idx, cell in enumerate(row):
+            # Check for thousand indicators in all cells
+            thousands_detected = any(
+                any(pattern in str(cell) for pattern in thousand_patterns)
+                for cell in row
+            )
+
+            # Debug: Show detection of thousand patterns in this row
+            detected_patterns = []
+            for cell in row:
                 cell_str = str(cell)
-                if "人民币千元" in cell_str or "人民幣千元" in cell_str:
-                    print(f"💰 RMB DETECTED: '{cell_str}' found in row {row_idx}, col {cell_idx}")
-                    rmb_detected_in_row = True
+                for pattern in thousand_patterns:
+                    if pattern in cell_str:
+                        detected_patterns.append(f"'{pattern}' in '{cell_str}'")
 
-            if traditional_chinese_thousands:
-                print(f"🔍 MULTIPLIER: Detected traditional Chinese '人民币千元' in row {row_idx}, desc='{desc_cell}', amount='{amount_cell}'")
-                print(f"🔍 MULTIPLIER: Full row content: {[str(cell) for cell in row]}")
-                thousands_detected = True
-            elif simplified_chinese_thousands:
-                print(f"🔍 MULTIPLIER: Detected simplified Chinese '人民幣千元' in row {row_idx}, desc='{desc_cell}', amount='{amount_cell}'")
-                print(f"🔍 MULTIPLIER: Full row content: {[str(cell) for cell in row]}")
-                thousands_detected = True
-            elif rmb_detected_in_row:
-                print(f"⚠️ RMB FOUND but not triggering multiplier logic in row {row_idx}")
-                print(f"   desc='{desc_cell}', amount='{amount_cell}'")
+            if detected_patterns:
+                print(f"🔍 THOUSAND PATTERNS DETECTED in row {row_idx}: {', '.join(detected_patterns)}")
                 print(f"   Row content: {[str(cell) for cell in row]}")
 
             # Debug logging for multiplier detection
@@ -505,21 +555,12 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 print(f"DEBUG: Multiplier detection - desc='{desc_cell}', amount='{amount_cell}', thousands_detected={thousands_detected}, currency_detected={currency_detected}")
 
             # Set multiplier based on detection
-            if chinese_rmb_thousands:
-                # Priority: Chinese "人民币千元"/"人民幣千元" should definitely be 1000x
+            if thousands_detected:
                 old_multiplier = structured_data['multiplier']
                 structured_data['multiplier'] = 1000
-                if traditional_chinese_thousands:
-                    print(f"💰 MULTIPLIER SET: 人民币千元 detected - setting multiplier to 1000x (traditional Chinese RMB thousands)")
-                    print(f"💰 MULTIPLIER SET: Changed from {old_multiplier}x to {structured_data['multiplier']}x")
-                elif simplified_chinese_thousands:
-                    print(f"💰 MULTIPLIER SET: 人民幣千元 detected - setting multiplier to 1000x (simplified Chinese RMB thousands)")
-                    print(f"💰 MULTIPLIER SET: Changed from {old_multiplier}x to {structured_data['multiplier']}x")
-            elif thousands_detected:
-                old_multiplier = structured_data['multiplier']
-                structured_data['multiplier'] = 1000
-                print(f"💰 MULTIPLIER SET: Set multiplier to 1000x for cell: desc='{desc_cell}', amount='{amount_cell}'")
+                print(f"💰 MULTIPLIER SET: Thousand pattern detected - setting multiplier to 1000x")
                 print(f"💰 MULTIPLIER SET: Changed from {old_multiplier}x to {structured_data['multiplier']}x")
+                print(f"   Detected patterns in row: {detected_patterns if 'detected_patterns' in locals() else 'N/A'}")
             elif currency_detected and ("000" in desc_cell or "000" in amount_cell):
                 # Fallback: if we have currency and "000", still apply multiplier
                 structured_data['multiplier'] = 1000
@@ -534,17 +575,10 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                         print(f"DEBUG: Set multiplier to 1000 (standalone 000) for cell: desc='{desc_cell}', amount='{amount_cell}'")
 
             # Final confirmation logging
-            if structured_data['multiplier'] == 1000 and chinese_rmb_thousands:
-                if traditional_chinese_thousands:
-                    print(f"✅ CONFIRMED: 人民币千元 detected - multiplier set to 1000x (traditional Chinese RMB thousands)")
-                    if currency_detected:
-                        print(f"✅ CONFIRMED: Both currency (人民币) and thousands (千元) detected - full processing confirmed")
-                elif simplified_chinese_thousands:
-                    print(f"✅ CONFIRMED: 人民幣千元 detected - multiplier set to 1000x (simplified Chinese RMB thousands)")
-                    if currency_detected:
-                        print(f"✅ CONFIRMED: Both currency (人民幣) and thousands (千元) detected - full processing confirmed")
-            elif structured_data['multiplier'] == 1000 and thousands_detected:
+            if structured_data['multiplier'] == 1000 and thousands_detected:
                 print(f"✅ CONFIRMED: Multiplier set to 1000x - thousands notation detected")
+                if detected_patterns:
+                    print(f"   Detected patterns: {detected_patterns}")
             elif structured_data['multiplier'] == 1000000:
                 print(f"✅ CONFIRMED: Multiplier set to 1000000x - million notation detected")
 
@@ -666,10 +700,10 @@ def parse_table_to_structured_format(df, entity_name, table_name):
         if structured_data['multiplier'] > 1:
             print(f"🎯 FINAL MULTIPLIER: Table '{table_name}' multiplier set to {structured_data['multiplier']}x")
             if structured_data['multiplier'] == 1000:
-                print(f"   💰 RMB THOUSANDS: Multiplier set to 1000x due to RMB thousand notation")
+                print(f"   💰 RMB THOUSANDS: Multiplier set to 1000x due to detected thousand patterns")
         else:
             print(f"⚠️ FINAL MULTIPLIER: Table '{table_name}' multiplier remains at {structured_data['multiplier']}x (no thousands/million notation detected)")
-            print(f"   💰 RMB CHECK: Check if '人民币千元' or '人民幣千元' was detected in the table")
+            print(f"   💰 RMB CHECK: Check if RMB thousand patterns were detected in the table")
 
         # Extract entity name from table content if not found
         if structured_data['entity'] == entity_name:
@@ -879,11 +913,10 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
 
                         # Show first few rows of the table
                         if data:
-                            print("📊 TABLE PREVIEW:")
-                            for i, row in enumerate(data[:5]):  # Show first 5 rows
+                            print("📊 TABLE PREVIEW (ALL ROWS):")
+                            for i, row in enumerate(data):  # Show ALL rows
                                 print(f"   Row {i}: {row}")
-                            if len(data) > 5:
-                                print(f"   ... and {len(data) - 5} more rows")
+                            print(f"   📊 TOTAL: {len(data)} rows in this table")
                         table_name = table_info['name']
                         
                         if not data or len(data) < 2:
