@@ -82,11 +82,11 @@ def get_font_size_for_text(text, base_size=Pt(9), force_chinese_mode=False):
         # Use even smaller font for Chinese to prevent line breaks
         chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text) if text else 0
         if chinese_ratio > 0.5 or force_chinese_mode:  # Mostly Chinese text or forced mode
-            print(f"🔤 FONT: Using 7.5pt for Chinese text (ratio: {chinese_ratio:.2f}, force: {force_chinese_mode})")
-            return Pt(7.5)  # Very small font for dense Chinese content
+            print(f"🔤 FONT: Using 9pt Arial for Chinese text (ratio: {chinese_ratio:.2f}, force: {force_chinese_mode})")
+            return Pt(9)  # Standard 9pt font for Chinese content (as requested)
         else:
-            print(f"🔤 FONT: Using 8pt for mixed Chinese text (ratio: {chinese_ratio:.2f})")
-            return Pt(8)  # Mixed Chinese/English content
+            print(f"🔤 FONT: Using 9pt Arial for mixed Chinese text (ratio: {chinese_ratio:.2f})")
+            return Pt(9)  # Standard 9pt font for mixed Chinese/English content
     else:
         print(f"🔤 FONT: Using {base_size}pt for English text")
         return base_size  # Default size for English
@@ -1079,14 +1079,29 @@ class PowerPointGenerator:
             raise
 
     def _apply_paragraph_formatting(self, paragraph, is_layer2_3=False):
-        # Only use legacy assignments, never .paragraph_format
+        # Apply Chinese-specific formatting when in Chinese mode
+        is_chinese_mode = hasattr(self, 'language') and self.language == 'chinese'
+
         try:
-            if is_layer2_3:
+            if is_chinese_mode:
+                # Chinese formatting: 0.15" indent, 0.15" hanging, 6pt after
+                try: paragraph.left_indent = Inches(0.15)  # 0.15" left indent
+                except: pass
+                try: paragraph.first_line_indent = Inches(-0.15)  # 0.15" hanging indent
+                except: pass
+                try: paragraph.space_before = Pt(0)  # No space before
+                except: pass
+                try: paragraph.space_after = Pt(6)  # 6pt space after
+                except: pass
+                print("📄 CHINESE PARAGRAPH: 0.15\" indent, 0.15\" hanging, 6pt after")
+            elif is_layer2_3:
                 try: paragraph.left_indent = Inches(0.25)  # Increased left margin
                 except: pass
                 try: paragraph.first_line_indent = Inches(-0.19)
                 except: pass
                 try: paragraph.space_before = Pt(0)
+                except: pass
+                try: paragraph.space_after = Pt(0)
                 except: pass
             else:
                 try: paragraph.left_indent = Inches(0.35)  # Increased left margin
@@ -1095,8 +1110,9 @@ class PowerPointGenerator:
                 except: pass
                 try: paragraph.space_before = Pt(0)
                 except: pass
-            try: paragraph.space_after = Pt(0)
-            except: pass
+                try: paragraph.space_after = Pt(0)
+                except: pass
+
             try: paragraph.line_spacing = 1.0
             except: pass
             try: paragraph.alignment = PP_ALIGN.LEFT
@@ -1226,14 +1242,17 @@ class PowerPointGenerator:
     def _generate_ai_summary_content(self, md_content: str, distribution) -> str:
         """Generate AI summary content based on commentary length and distribution"""
         try:
+            # Check if we're in Chinese mode
+            is_chinese_mode = hasattr(self, 'language') and self.language == 'chinese'
+
             # Count total items and slides to determine summary length
             total_items = sum(len(items) for _, _, items in distribution)
             total_slides = max((slide_idx for slide_idx, _, _ in distribution), default=0) + 1
-            
+
             # Extract key information from markdown content
             lines = md_content.split('\n')
             key_points = []
-            
+
             for line in lines:
                 line = line.strip()
                 if line.startswith('### ') and not line.startswith('### ' + self.BULLET_CHAR):
@@ -1247,26 +1266,41 @@ class PowerPointGenerator:
                         key_points.append(f"{title}: {desc[:100]}...")
                     else:
                         key_points.append(clean_line[:100] + "...")
-            
-                            # Generate professional FDD summary content (80-100 words)
-                if key_points:
-                    # Create a comprehensive, professional financial due diligence summary
-                    summary_parts = []
 
-                    # Introduction paragraph with professional tone
+            print(f"📝 SUMMARY: Generating {'Chinese' if is_chinese_mode else 'English'} summary for {len(key_points)} key points")
+
+            # Generate professional FDD summary content (80-100 words)
+            if key_points:
+                summary_parts = []
+
+                if is_chinese_mode:
+                    # Generate Chinese summary
+                    intro = f"本综合财务尽职调查分析涵盖了对{len(key_points)}个关键财务领域在{total_slides}页详细分析演示文稿中的全面审查。"
+                    intro += "该调查提供了对实体财务状况、运营绩效和风险管理框架的深入评估。"
+                    summary_parts.append(intro)
+
+                    if len(key_points) >= 2:
+                        findings = f"关键分析发现揭示了对{key_points[0]}和{key_points[1]}的重要洞察，"
+                        findings += "展示了实体的财务稳定性和运营效率。该综合审查识别了财务管理和需要加强监控和控制的领域。"
+                        summary_parts.append(findings)
+
+                    if len(key_points) >= 3:
+                        conclusion = f"特别关注{key_points[2]}的发展，这强调了强大的财务控制和战略风险管理的重要性。"
+                        conclusion += "该分析支持明智的投资决策，并为未来的业务规划和利益相关者沟通提供了坚实基础。"
+                        summary_parts.append(conclusion)
+                else:
+                    # Generate English summary
                     intro = f"This comprehensive financial due diligence analysis encompasses a thorough examination of {len(key_points)} critical financial domains "
                     intro += f"across {total_slides} detailed analytical presentation pages. The investigation provides an in-depth assessment of the entity's "
                     intro += "financial position, operational performance, and risk management framework. "
                     summary_parts.append(intro)
 
-                    # Analytical findings paragraph
                     if len(key_points) >= 2:
                         findings = f"Key analytical findings reveal significant insights into {key_points[0]} and {key_points[1]}, "
                         findings += "demonstrating the entity's financial stability and operational efficiency. The comprehensive review identifies "
                         findings += "both strengths in financial management and areas requiring enhanced monitoring and control. "
                         summary_parts.append(findings)
 
-                    # Professional conclusion
                     if len(key_points) >= 3:
                         conclusion = f"Particular attention has been given to developments in {key_points[2]}, which underscore the importance of "
                         conclusion += "robust financial controls and strategic risk management. The analysis supports informed investment decisions "
@@ -1275,12 +1309,19 @@ class PowerPointGenerator:
 
                     # If we don't have enough key points, create a single professional paragraph
                     if len(key_points) < 3:
-                        summary = f"This comprehensive financial due diligence analysis examines {len(key_points)} key areas across {total_slides} presentation pages, "
-                        summary += f"with particular focus on {key_points[0]}"
-                        if len(key_points) > 1:
-                            summary += f" and {key_points[1]}"
-                        summary += ". The analysis provides critical insights into financial performance, risk assessment, and operational efficiency. "
-                        summary += "The comprehensive review enables informed decision-making and strategic planning for future business development."
+                        if is_chinese_mode:
+                            summary = f"本综合财务尽职调查分析考察了{len(key_points)}个关键领域在{total_slides}页演示文稿中的情况，"
+                            summary += f"特别关注{key_points[0]}"
+                            if len(key_points) > 1:
+                                summary += f"和{key_points[1]}"
+                            summary += "。该分析提供了对财务绩效、风险评估和运营效率的关键洞察。该综合审查能够为未来的业务发展提供明智的决策和战略规划。"
+                        else:
+                            summary = f"This comprehensive financial due diligence analysis examines {len(key_points)} key areas across {total_slides} presentation pages, "
+                            summary += f"with particular focus on {key_points[0]}"
+                            if len(key_points) > 1:
+                                summary += f" and {key_points[1]}"
+                            summary += ". The analysis provides critical insights into financial performance, risk assessment, and operational efficiency. "
+                            summary += "The comprehensive review enables informed decision-making and strategic planning for future business development."
                         summary_parts = [summary]
 
                     # Combine all parts
@@ -1302,10 +1343,16 @@ class PowerPointGenerator:
                     return full_summary
             else:
                 # Fallback summary (comprehensive)
-                summary = "This comprehensive financial due diligence analysis provides detailed examination of the organization's financial position, performance metrics, and key risk factors across multiple detailed presentation pages. "
-                summary += "The analysis encompasses thorough review of financial statements, assessment of internal controls, evaluation of compliance with regulatory requirements, and identification of significant financial trends and patterns. "
-                summary += "Key findings reveal important developments in asset management, liability structure, and overall financial health, providing critical insights for strategic decision-making and future planning initiatives. "
-                summary += "The comprehensive review covers all material financial transactions and provides assurance on the accuracy and completeness of financial reporting, enabling stakeholders to make informed decisions regarding the organization's financial position."
+                if is_chinese_mode:
+                    summary = "本综合财务尽职调查分析提供了对组织财务状况、绩效指标和关键风险因素的详细审查，涵盖多个详细演示页面。"
+                    summary += "该分析包括对财务报表的全面审查、对内部控制的评估、对监管要求的评估，以及对重要财务趋势和模式的识别。"
+                    summary += "关键发现揭示了资产管理、负债结构和整体财务健康的重要发展，为战略决策和未来规划提供了关键洞察。"
+                    summary += "该综合审查涵盖所有重大财务交易，并对财务报告的准确性和完整性提供保证，使利益相关者能够就组织的财务状况做出明智决定。"
+                else:
+                    summary = "This comprehensive financial due diligence analysis provides detailed examination of the organization's financial position, performance metrics, and key risk factors across multiple detailed presentation pages. "
+                    summary += "The analysis encompasses thorough review of financial statements, assessment of internal controls, evaluation of compliance with regulatory requirements, and identification of significant financial trends and patterns. "
+                    summary += "Key findings reveal important developments in asset management, liability structure, and overall financial health, providing critical insights for strategic decision-making and future planning initiatives. "
+                    summary += "The comprehensive review covers all material financial transactions and provides assurance on the accuracy and completeness of financial reporting, enabling stakeholders to make informed decisions regarding the organization's financial position."
                 return summary
             
         except Exception as e:
