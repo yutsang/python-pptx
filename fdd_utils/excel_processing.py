@@ -16,7 +16,22 @@ from tabulate import tabulate
 
 def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
     """Detect the latest date column from a DataFrame, focusing on 'Indicative adjusted' (English/Chinese) with merged cell handling."""
-    
+
+    def col_num_to_letter(n):
+        """Convert column number to Excel-style letter (0=A, 1=B, ..., 25=Z, 26=AA, etc.)"""
+        result = ""
+        while n >= 0:
+            result = chr(65 + (n % 26)) + result
+            n = n // 26 - 1
+            if n < 0:
+                break
+        return result
+
+    from datetime import datetime
+    timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+    print(f"🔍 [{timestamp}] DETECT_LATEST_DATE_COLUMN called for sheet '{sheet_name}' with {len(df)} rows, {len(df.columns)} columns")
+    print(f"🔍 [{timestamp}] Entity keywords: {entity_keywords}")
+
     def parse_date(date_str):
         """Parse date string in various formats including xMxx."""
         if not date_str or pd.isna(date_str):
@@ -86,26 +101,26 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
                 '示意性调整后' in val_str
             ):
                 indicative_positions.append((row_idx, col_idx))
-                                                # print(f"   📋 Found 'Indicative adjusted' (English/Chinese) at Row {row_idx}, Col {col_idx} ({col})")
+                print(f"   📋 FOUND 'Indicative adjusted' (English/Chinese) at Row {row_idx}, Col {col_idx} ({col}): '{df.iloc[row_idx, col_idx]}'")
+                print(f"   📋 Column letter: {col_num_to_letter(col_idx)}")
 
     if not indicative_positions:
         print(f"   ⚠️  No 'Indicative adjusted' (English/Chinese) found, using fallback date detection")
         # Fallback: find any date column
-        for col in columns:
-            for row_idx in range(min(5, len(df))):
-                val = df.iloc[row_idx, col_idx]
-                if isinstance(val, (pd.Timestamp, datetime)):
-                    date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                    if latest_date is None or date_val > latest_date:
-                        latest_date = date_val
-                        latest_column = col
-                        print(f"   📅 Fallback: Found date in {col}: {date_val.strftime('%Y-%m-%d')}")
-        return latest_column
+    else:
+        print(f"   📊 Found {len(indicative_positions)} instances of 'Indicative adjusted' (English/Chinese):")
+        for i, (row, col) in enumerate(indicative_positions):
+            col_name = columns[col]
+            col_letter = col_num_to_letter(col)
+            print(f"   {i+1}. Row {row}, Column {col} ({col_name}) - {col_letter}: '{df.iloc[row, col]}'")
+        print(f"   🔄 Will process these instances in order...")
     
     # Step 2: For each "Indicative adjusted" (English/Chinese) position, find the merged range and get the date
-    for indic_row, indic_col in indicative_positions:
-        print(f"   🔍 Processing 'Indicative adjusted' (English/Chinese) at col {indic_col}")
-        
+    for instance_idx, (indic_row, indic_col) in enumerate(indicative_positions):
+        col_name = columns[indic_col]
+        col_letter = col_num_to_letter(indic_col)
+        print(f"   🔍 [{instance_idx+1}/{len(indicative_positions)}] Processing 'Indicative adjusted' at Row {indic_row}, Col {indic_col} ({col_name}) - {col_letter}")
+
         # Find merged range: go right until we hit a non-empty cell or reach the end
         merge_start = indic_col
         merge_end = indic_col
@@ -120,8 +135,9 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
         else:
             merge_end = len(columns) - 1
         
-        print(f"   📍 Merged range: columns {merge_start}-{merge_end}")
-        
+        print(f"   📍 Merged range: columns {merge_start}-{merge_end} (searching for latest date)")
+        print(f"   📍 Indicative adjusted found at column {indic_col} (0-indexed)")
+
         # Find the date value in the row below the "Indicative adjusted" header
         date_row = indic_row + 1
         if date_row < len(df):
@@ -132,16 +148,18 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
                 if isinstance(val, (pd.Timestamp, datetime)):
                     date_val = val if isinstance(val, datetime) else val.to_pydatetime()
                     if latest_date is None or date_val > latest_date:
+                        old_date = latest_date
                         latest_date = date_val
                         latest_column = columns[col_idx]
-                        print(f"   📅 Found date in merged range: {latest_column} = {date_val.strftime('%Y-%m-%d')}")
+                        print(f"   📅 [{instance_idx+1}] FOUND DATE in merged range: {latest_column} = {date_val.strftime('%Y-%m-%d')} (previous: {old_date.strftime('%Y-%m-%d') if old_date else 'None'})")
                 elif pd.notna(val):
                     parsed_date = parse_date(str(val))
                     if parsed_date:
                         if latest_date is None or parsed_date > latest_date:
+                            old_date = latest_date
                             latest_date = parsed_date
                             latest_column = columns[col_idx]
-                            print(f"   📅 Parsed date in merged range: {latest_column} = {parsed_date.strftime('%Y-%m-%d')}")
+                            print(f"   📅 [{instance_idx+1}] PARSED DATE in merged range: {latest_column} = {parsed_date.strftime('%Y-%m-%d')} (previous: {old_date.strftime('%Y-%m-%d') if old_date else 'None'})")
         
         # If no date found in the row below, check a few more rows down
         if latest_column is None:
@@ -185,9 +203,15 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
                                 print(f"   📅 Parsed date in extended search: Row {row_idx}, Col {col_idx} = {parsed_date.strftime('%Y-%m-%d')}")
     
     if latest_column:
-        print(f"   🎯 FINAL SELECTION: Column '{latest_column}' with date {latest_date.strftime('%Y-%m-%d')}")
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        col_idx = columns.get_loc(latest_column) if latest_column in columns else -1
+        col_letter = col_num_to_letter(col_idx) if col_idx >= 0 else 'unknown'
+        print(f"   🎯 [{timestamp}] FINAL SELECTION: Column '{latest_column}' ({col_letter}) with date {latest_date.strftime('%Y-%m-%d')}")
     else:
-        print(f"   ❌ No date column detected")
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        print(f"   ❌ [{timestamp}] No date column detected")
     
     return latest_column
 
