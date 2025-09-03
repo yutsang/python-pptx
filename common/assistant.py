@@ -301,7 +301,7 @@ def parse_table_to_structured_format(df, entity_name, table_name):
         for row_idx, row in enumerate(rows):
             for col_idx, cell in enumerate(row):
                 cell_str = str(cell).strip()
-                # Check for exact RMB thousand matches
+                # Check for RMB thousand matches (more flexible - handles extra characters)
                 if "人民币千元" in cell_str:
                     print(f"🎯 FOUND EXACT: '人民币千元' in row {row_idx}, col {col_idx}: '{cell_str}'")
                     rmb_thousands_found = True
@@ -310,6 +310,15 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                     print(f"🎯 FOUND EXACT: '人民幣千元' in row {row_idx}, col {col_idx}: '{cell_str}'")
                     rmb_thousands_found = True
                     rmb_locations.append(f"人民幣千元@[{row_idx},{col_idx}]")
+                # More flexible detection - RMB thousand patterns with extra characters
+                elif "人民币" in cell_str and "千元" in cell_str:
+                    print(f"🎯 FOUND FLEXIBLE: '人民币...千元' pattern in row {row_idx}, col {col_idx}: '{cell_str}'")
+                    rmb_thousands_found = True
+                    rmb_locations.append(f"人民币千元(pattern)@[{row_idx},{col_idx}]")
+                elif "人民幣" in cell_str and "千元" in cell_str:
+                    print(f"🎯 FOUND FLEXIBLE: '人民幣...千元' pattern in row {row_idx}, col {col_idx}: '{cell_str}'")
+                    rmb_thousands_found = True
+                    rmb_locations.append(f"人民幣千元(pattern)@[{row_idx},{col_idx}]")
 
                 # Also track any RMB-related content for debugging - expanded detection
                 rmb_keywords = [
@@ -319,11 +328,13 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                     "thousands", "THOUSANDS", "Thousands"
                 ]
 
-                # Check for exact RMB thousand patterns
+                # Check for exact RMB thousand patterns (now more flexible)
                 exact_thousand_patterns = [
                     "人民币千元", "人民幣千元", "CNY'000", 'CNY"000',
                     "人民币千", "人民幣千", "CNY千",
-                    "千人民币", "千人民幣", "千CNY"
+                    "千人民币", "千人民幣", "千CNY",
+                    # Add patterns that might have extra characters
+                    "人民币", "人民幣", "千元"
                 ]
 
                 if any(keyword in cell_str for keyword in rmb_keywords):
@@ -336,8 +347,9 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                         print(f"🎯 EXACT THOUSAND PATTERN: '{pattern}' found in '{cell_str}' at [{row_idx},{col_idx}]")
 
         if not rmb_thousands_found:
-            print(f"⚠️ DEBUG: No '人民币千元' or '人民幣千元' found in table '{table_name}'")
+            print(f"⚠️ DEBUG: No RMB thousand patterns found in table '{table_name}'")
             print(f"   💰 RMB SCAN: Searched {len(rows)} rows, {len(rows[0]) if rows else 0} columns per row")
+            print(f"   💰 LOOKED FOR: 人民币千元, 人民幣千元, CNY'000, and flexible patterns")
             if all_rmb_related_cells:
                 print(f"   💰 OTHER RMB CONTENT FOUND: {len(all_rmb_related_cells)} RMB-related cells:")
                 for cell_info in all_rmb_related_cells[:10]:  # Show first 10
