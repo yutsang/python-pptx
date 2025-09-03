@@ -396,11 +396,11 @@ class PowerPointGenerator:
                 shape = self._get_target_shape_for_section(slide_idx, section)
                 if shape:
                     max_lines = self._calculate_max_rows_for_shape(shape)
-                    # Use appropriate minimums for Chinese content but don't be overly restrictive
-                    if slide_idx == 0:  # First slide can handle more content
-                        max_lines = max(max_lines, 35)  # Allow more content on first slide
+                    # Use appropriate minimums for Chinese content - balanced approach
+                    if slide_idx == 0:  # First slide
+                        max_lines = max(max_lines, 28)  # Reasonable content on first slide
                     elif section in ['b', 'c']:  # _L and _R sections
-                        max_lines = max(max_lines, 25)  # Allow sufficient content on side sections
+                        max_lines = max(max_lines, 20)  # Allow reasonable content on side sections
                     print(f"📐 SECTION {section}: Found shape '{shape.name}', max_lines = {max_lines}")
                 else:
                     max_lines = self.ROWS_PER_SECTION  # Fallback
@@ -481,18 +481,23 @@ class PowerPointGenerator:
                     break
 
             if has_chinese:
-                # Chinese characters are wider - enhanced calculations
+                # Chinese characters are wider than English - corrected calculations
                 chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text) if text else 0
                 if chinese_ratio > 0.8:  # Almost entirely Chinese
                     if is_bold:
-                        avg_char_px = 9.2  # Bold Chinese text (wider for line break prevention)
+                        avg_char_px = 12.5  # Bold Chinese text (much wider than English)
                     else:
-                        avg_char_px = 7.8  # Regular Chinese text (optimized for 7.5pt font)
+                        avg_char_px = 11.2  # Regular Chinese text (wider than English)
+                elif chinese_ratio > 0.6:  # Mostly Chinese
+                    if is_bold:
+                        avg_char_px = 11.8  # Bold mostly Chinese
+                    else:
+                        avg_char_px = 10.5  # Regular mostly Chinese
                 else:  # Mixed Chinese/English
                     if is_bold:
-                        avg_char_px = 8.5  # Bold mixed text
+                        avg_char_px = 9.5  # Bold mixed text
                     else:
-                        avg_char_px = 7.2  # Regular mixed text
+                        avg_char_px = 8.2  # Regular mixed text
             else:
                 # English characters - standard calculations
                 if is_bold:
@@ -547,15 +552,15 @@ class PowerPointGenerator:
         # Use the actual shape width and font size to wrap text accurately
         chars_per_line = self._calculate_chars_per_line(shape)
 
-        # Be appropriately conservative with Chinese text to prevent unwanted line breaks
+        # Chinese characters are wider, so they need more lines - be less conservative
         if text and any('\u4e00' <= char <= '\u9fff' for char in text):
             chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text)
             if chinese_ratio > 0.8:  # Almost entirely Chinese
-                chars_per_line = int(chars_per_line * 0.92)  # 8% conservative for Chinese
+                chars_per_line = int(chars_per_line * 0.88)  # 12% more lines for Chinese (less conservative)
             elif chinese_ratio > 0.6:  # Mostly Chinese
-                chars_per_line = int(chars_per_line * 0.94)  # 6% conservative for mostly Chinese
+                chars_per_line = int(chars_per_line * 0.90)  # 10% more lines for mostly Chinese
             else:  # Mixed Chinese/English
-                chars_per_line = int(chars_per_line * 0.96)  # 4% conservative for mixed
+                chars_per_line = int(chars_per_line * 0.92)  # 8% more lines for mixed
 
         # Use Chinese-aware text wrapping
         if text and any('\u4e00' <= char <= '\u9fff' for char in text):
@@ -619,12 +624,12 @@ class PowerPointGenerator:
             for para in desc.split('\n'):
                 if chinese_ratio > 0.3:  # Has significant Chinese content
                     if chinese_ratio > 0.8:  # Almost entirely Chinese
-                        # Be conservative but not overly so - Chinese characters are compact
-                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.9))))  # 10% conservative
+                        # Chinese characters are wider, so they need more lines
+                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.85))))  # 15% more lines
                     elif chinese_ratio > 0.6:  # Mostly Chinese
-                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.92))))  # 8% conservative
+                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.87))))  # 13% more lines
                     else:  # Mixed Chinese/English
-                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.95))))  # 5% conservative
+                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.90))))  # 10% more lines
                 else:
                     # English or minimal Chinese content
                     para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
