@@ -189,7 +189,18 @@ def parse_table_to_structured_format(df, entity_name, table_name):
     """
     try:
         import re
+        import os
         from datetime import datetime
+
+        # 🚨 SERVER DEBUG: Comprehensive Application Flow Logging
+        print(f"\n🚨 SERVER DEBUG: === APPLICATION START ===")
+        print(f"🚨 SERVER DEBUG: Function: parse_table_to_structured_format")
+        print(f"🚨 SERVER DEBUG: Table: '{table_name}' | Entity: '{entity_name}'")
+        print(f"🚨 SERVER DEBUG: DataFrame shape: {df.shape}")
+        print(f"🚨 SERVER DEBUG: DataFrame columns: {list(df.columns)}")
+        print(f"🚨 SERVER DEBUG: Python version: {os.sys.version}")
+        print(f"🚨 SERVER DEBUG: Current working directory: {os.getcwd()}")
+        print(f"🚨 SERVER DEBUG: Available modules: pandas={__import__('pandas', fromlist=['']).__version__ if 'pandas' in str(__import__('sys').modules) else 'Not loaded'}")
 
         # DEBUG: Log what we're reading from the Excel
         print(f"\n{'='*80}")
@@ -292,13 +303,22 @@ def parse_table_to_structured_format(df, entity_name, table_name):
         for i, row in enumerate(rows[:3]):  # Show first 3 rows
             print(f"   Row {i}: {row}")
 
-        # DEBUG: Search for "人民币千元" in all cells
-        print(f"\n🔍 RMB DETECTION SCAN: Searching {len(rows)} rows x {len(rows[0]) if rows else 0} columns")
+        # 🚨 SERVER DEBUG: Comprehensive RMB Detection Logging
+        print(f"\n🚨 SERVER DEBUG: === RMB DETECTION SCAN STARTING ===")
+        print(f"🚨 SERVER DEBUG: Table: '{table_name}' | Entity: '{entity_name}'")
+        print(f"🚨 SERVER DEBUG: DataFrame shape: {df.shape} | Searching {len(rows)} rows x {len(rows[0]) if rows else 0} columns")
+        print(f"🚨 SERVER DEBUG: Looking for patterns: 人民币千元, 人民幣千元, CNY'000, 000")
+        print(f"🚨 SERVER DEBUG: Current working directory: {os.getcwd()}")
+
         rmb_thousands_found = False
         rmb_locations = []
         all_rmb_related_cells = []
 
+        print(f"🚨 SERVER DEBUG: Initialized detection - thousands_found: {rmb_thousands_found}")
+        print(f"🚨 SERVER DEBUG: Starting cell-by-cell scan...")
+
         for row_idx, row in enumerate(rows):
+            print(f"🚨 SERVER DEBUG: Scanning row {row_idx}/{len(rows)-1}")
             for col_idx, cell in enumerate(row):
                 cell_str = str(cell).strip()
                 # Check for RMB thousand matches (more flexible - handles extra characters)
@@ -801,6 +821,22 @@ def parse_table_to_structured_format(df, entity_name, table_name):
 
         print(f"{'='*80}\n")
 
+        # 🚨 SERVER DEBUG: Final Results Logging
+        print(f"🚨 SERVER DEBUG: === FINAL RESULTS ===")
+        print(f"🚨 SERVER DEBUG: Table: '{table_name}' | Entity: '{entity_name}'")
+        print(f"🚨 SERVER DEBUG: Multiplier: {structured_data['multiplier']}x")
+        print(f"🚨 SERVER DEBUG: Currency: {structured_data['currency']}")
+        print(f"🚨 SERVER DEBUG: Items found: {len(structured_data['items'])}")
+        print(f"🚨 SERVER DEBUG: Date: {structured_data['date']}")
+        print(f"🚨 SERVER DEBUG: Returning data: {'YES' if structured_data['items'] else 'NO (empty items)'}")
+
+        if structured_data['items']:
+            print(f"🚨 SERVER DEBUG: Sample items:")
+            for i, item in enumerate(structured_data['items'][:3]):  # Show first 3 items
+                print(f"   {i+1}. {item['description']}: {item['amount']}")
+
+        print(f"🚨 SERVER DEBUG: === APPLICATION END ===\n")
+
         return structured_data if structured_data['items'] else None
         
     except Exception as e:
@@ -939,13 +975,25 @@ def extract_tables_robust(worksheet, entity_keywords):
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
     """Process and filter Excel file"""
     try:
-            
+        # 🚨 SERVER DEBUG: Main Application Entry Point
+        print(f"\n🚨 SERVER DEBUG: === MAIN APPLICATION START ===")
+        print(f"🚨 SERVER DEBUG: Function: process_and_filter_excel")
+        print(f"🚨 SERVER DEBUG: Filename: '{filename}'")
+        print(f"🚨 SERVER DEBUG: Entity: '{entity_name}'")
+        print(f"🚨 SERVER DEBUG: Entity suffixes: {entity_suffixes}")
+        print(f"🚨 SERVER DEBUG: Tab mapping: {tab_name_mapping}")
+        print(f"🚨 SERVER DEBUG: Current working directory: {os.getcwd()}")
+
         main_dir = Path(__file__).parent.parent
         file_path = main_dir / filename
+        print(f"🚨 SERVER DEBUG: Looking for file at: {file_path}")
+        print(f"🚨 SERVER DEBUG: File exists: {file_path.exists()}")
+
         wb = None
         markdown_content = ""
         entity_keywords = [entity_name] + list(entity_suffixes)
         entity_keywords = [kw.strip().lower() for kw in entity_keywords if kw.strip()]
+        print(f"🚨 SERVER DEBUG: Generated entity keywords: {entity_keywords}")
 
         try:
             wb = openpyxl.load_workbook(file_path, data_only=True)
@@ -1015,8 +1063,24 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                                 print(f"   Filtered DataFrame columns: {list(filtered_df.columns)}")
 
                                 # Parse the table into structured format
+                                print(f"🚨 SERVER DEBUG: === ABOUT TO CALL TABLE PARSER ===")
+                                print(f"🚨 SERVER DEBUG: Table name: '{table_name}' | Entity: '{entity_name}'")
+                                print(f"🚨 SERVER DEBUG: Filtered DataFrame: {filtered_df.shape} rows x {filtered_df.shape[1]} columns")
+                                print(f"🚨 SERVER DEBUG: First few rows of filtered data:")
+                                for i in range(min(3, len(filtered_df))):
+                                    row_data = filtered_df.iloc[i].fillna('').values
+                                    print(f"   Row {i}: {row_data}")
+
                                 print(f"🔄 CALLING parse_table_to_structured_format for table: {table_name}")
                                 structured_table = parse_table_to_structured_format(filtered_df, entity_name, table_name)
+
+                                print(f"🚨 SERVER DEBUG: === TABLE PARSER RETURNED ===")
+                                print(f"🚨 SERVER DEBUG: Result: {'SUCCESS' if structured_table else 'FAILED/NONE'}")
+                                if structured_table:
+                                    print(f"🚨 SERVER DEBUG: Parsed table has {len(structured_table.get('items', []))} items")
+                                    print(f"🚨 SERVER DEBUG: Multiplier: {structured_table.get('multiplier', 'N/A')}x")
+                                else:
+                                    print(f"🚨 SERVER DEBUG: No structured table returned - likely no valid items found")
                             else:
                                 print(f"❌ NO FILTERED ROWS for table {table_name}")
                                 structured_table = None
@@ -1054,6 +1118,14 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                     wb.close()
             except Exception:
                 pass
+
+        # 🚨 SERVER DEBUG: Final Application Results
+        print(f"\n🚨 SERVER DEBUG: === MAIN APPLICATION END ===")
+        print(f"🚨 SERVER DEBUG: Processing complete for file: '{filename}'")
+        print(f"🚨 SERVER DEBUG: Entity: '{entity_name}'")
+        print(f"🚨 SERVER DEBUG: Final markdown content length: {len(markdown_content)} characters")
+        print(f"🚨 SERVER DEBUG: Returning result: {'SUCCESS' if markdown_content else 'EMPTY'}")
+        print(f"🚨 SERVER DEBUG: === APPLICATION FINISHED ===\n")
 
         return markdown_content
         
