@@ -734,10 +734,13 @@ def extract_tables_robust(worksheet, entity_keywords):
     Robust table extraction using the original method from utils.py
     """
     tables = []
-    
+
+    print(f"🔍 EXTRACT_TABLES_ROBUST: Processing worksheet '{worksheet.title}' with entity_keywords: {entity_keywords}")
+
     try:
         # Method 1: Try to extract from openpyxl tables (works for individually formatted tables)
         if hasattr(worksheet, '_tables') and worksheet._tables:
+            print(f"🔍 Found {len(worksheet._tables)} formal Excel tables")
             for tbl in worksheet._tables.values():
                 try:
                     ref = tbl.ref
@@ -758,17 +761,23 @@ def extract_tables_robust(worksheet, entity_keywords):
                     continue
         
         # Method 2: Original method from utils.py - DataFrame splitting on empty rows
+        print(f"🔍 Trying Method 2: DataFrame splitting on empty rows")
         try:
             # Convert worksheet to DataFrame
             all_data = []
             for row in worksheet.iter_rows(values_only=True):
                 all_data.append(row)
-            
+
+            print(f"🔍 Raw worksheet data: {len(all_data)} rows")
+
             if all_data:
                 df = pd.DataFrame(all_data)
                 df = df.dropna(how='all').dropna(axis=1, how='all')
-                
+
+                print(f"🔍 After cleaning: DataFrame shape {df.shape}")
+
                 if len(df) >= 2:
+                    print(f"🔍 DataFrame has {len(df)} rows, proceeding with splitting...")
                     # Split dataframes on empty rows (original method)
                     empty_rows = df.index[df.isnull().all(1)]
                     start_idx = 0
@@ -788,6 +797,8 @@ def extract_tables_robust(worksheet, entity_keywords):
                     combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
                     
                     for i, data_frame in enumerate(dataframes):
+                        print(f"🔍 Checking dataframe {i}: shape {data_frame.shape}, combined_pattern: '{combined_pattern}'")
+
                         # Check if dataframe contains entity keywords
                         mask = data_frame.apply(
                             lambda row: row.astype(str).str.contains(
@@ -795,7 +806,9 @@ def extract_tables_robust(worksheet, entity_keywords):
                             ).any(),
                             axis=1
                         )
-                        
+
+                        print(f"🔍 Dataframe {i} entity match: {mask.any()}")
+
                         if mask.any():
                             # Convert DataFrame to list format for consistency
                             table_data = [data_frame.columns.tolist()] + data_frame.values.tolist()
@@ -810,6 +823,7 @@ def extract_tables_robust(worksheet, entity_keywords):
                                         break
                                 
                                 if has_data:
+                                    print(f"✅ ADDED TABLE: original_table_{i} with {len(table_data)} rows")
                                     tables.append({
                                         'data': table_data,
                                         'method': 'original_split',
@@ -843,17 +857,33 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
             wb = openpyxl.load_workbook(file_path, data_only=True)
             for ws in wb.worksheets:
                 if ws.title not in tab_name_mapping:
+                    print(f"⏭️ SKIPPING WORKSHEET: {ws.title} (not in mapping)")
                     continue
-                
+
+                print(f"\n🔍 PROCESSING WORKSHEET: {ws.title}")
+                print(f"🔍 Mapped to: {tab_name_mapping[ws.title]}")
+
                 # Processing worksheet: {ws.title}
-                
+
                 # Use robust table extraction
                 tables = extract_tables_robust(ws, entity_keywords)
+                print(f"🔍 Found {len(tables)} tables in worksheet {ws.title}")
                 
-                for table_info in tables:
+                for table_idx, table_info in enumerate(tables):
                     try:
                         data = table_info['data']
                         method = table_info['method']
+                        print(f"📊 PROCESSING TABLE {table_idx + 1}/{len(tables)} in {ws.title}")
+                        print(f"📊 Table method: {method}")
+                        print(f"📊 Table size: {len(data)} rows x {len(data[0]) if data else 0} columns")
+
+                        # Show first few rows of the table
+                        if data:
+                            print("📊 TABLE PREVIEW:")
+                            for i, row in enumerate(data[:5]):  # Show first 5 rows
+                                print(f"   Row {i}: {row}")
+                            if len(data) > 5:
+                                print(f"   ... and {len(data) - 5} more rows")
                         table_name = table_info['name']
                         
                         if not data or len(data) < 2:
@@ -870,6 +900,9 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                         match_found = any(any(kw in cell for cell in all_cells) for kw in entity_keywords)
                         
                         if match_found:
+                            print(f"✅ ENTITY MATCH FOUND in table {table_idx + 1} of {ws.title}")
+                            print(f"   Table name: {table_name}")
+
                             # Include all rows that contain any entity information
                             # This allows the AI to see all entity names in the table
                             filtered_rows = []
@@ -879,39 +912,44 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                                 # This will help the AI identify the correct entity names
                                 if any(cell for cell in row_cells if cell and cell != 'nan'):
                                     filtered_rows.append(row)
-                            
+
+                            print(f"   Filtered to {len(filtered_rows)} rows from original {len(df)} rows")
+
                             # Create filtered DataFrame and parse it into structured format
                             if filtered_rows:
                                 filtered_df = pd.DataFrame(filtered_rows)
-                                
+                                print(f"   Filtered DataFrame shape: {filtered_df.shape}")
+                                print(f"   Filtered DataFrame columns: {list(filtered_df.columns)}")
+
                                 # Parse the table into structured format
+                                print(f"🔄 CALLING parse_table_to_structured_format for table: {table_name}")
                                 structured_table = parse_table_to_structured_format(filtered_df, entity_name, table_name)
-                                
-                                if structured_table:
-                                    # Add structured table to markdown content
-                                    markdown_content += f"## {structured_table['table_name']}\n"
-                                    markdown_content += f"**Entity:** {structured_table['entity']}\n"
-                                    markdown_content += f"**Date:** {structured_table['date']}\n"
-                                    markdown_content += f"**Currency:** {structured_table['currency']}\n"
-                                    markdown_content += f"**Multiplier:** {structured_table['multiplier']}\n\n"
-                                    
-                                    # Add items
-                                    for item in structured_table['items']:
-                                        markdown_content += f"- {item['description']}: {item['amount']}\n"
-                                    
-                                    markdown_content += f"\n**Total:** {structured_table['total']}\n\n"
-                                else:
-                                    # Fallback to original format if parsing fails
-                                    try:
-                                        markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
-                                    except Exception:
-                                        markdown_content += filtered_df.to_markdown(index=False) + '\n\n'
                             else:
-                                # No rows matched the strict filtering criteria
-                                pass
+                                print(f"❌ NO FILTERED ROWS for table {table_name}")
+                                structured_table = None
                         else:
-                            # Table skipped for entity keywords
-                            pass
+                            print(f"⏭️ NO ENTITY MATCH in table {table_idx + 1} of {ws.title}")
+                            structured_table = None
+
+                        if structured_table:
+                            # Add structured table to markdown content
+                            markdown_content += f"## {structured_table['table_name']}\n"
+                            markdown_content += f"**Entity:** {structured_table['entity']}\n"
+                            markdown_content += f"**Date:** {structured_table['date']}\n"
+                            markdown_content += f"**Currency:** {structured_table['currency']}\n"
+                            markdown_content += f"**Multiplier:** {structured_table['multiplier']}\n\n"
+
+                            # Add items
+                            for item in structured_table['items']:
+                                markdown_content += f"- {item['description']}: {item['amount']}\n"
+
+                            markdown_content += f"\n**Total:** {structured_table['total']}\n\n"
+                        else:
+                            # Fallback to original format if parsing fails
+                            try:
+                                markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
+                            except Exception:
+                                markdown_content += filtered_df.to_markdown(index=False) + '\n\n'
                             
                     except Exception as e:
                         print(f"Error processing table {table_info.get('name', 'unknown')}: {e}")
