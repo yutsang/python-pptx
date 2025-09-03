@@ -2395,7 +2395,7 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None, language='Englis
         # Process results
         for key in filtered_keys:
             result = results[key]
-
+        
         processing_time = time.time() - start_time
         
         # Log Agent 1 output for each key with pattern information
@@ -2424,7 +2424,7 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None, language='Englis
             logger.log_agent_output('agent1', key, enhanced_output, processing_time / len(filtered_keys))
         
         # Return results
-
+        
         st.success(f"🎉 Agent 1 completed all {len(filtered_keys)} keys in {processing_time:.2f}s")
         return results
             
@@ -2521,48 +2521,48 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     # Config loading failed, continue with defaults
                     pass
 
-            # Get AI data
-            entity_name = ai_data.get('entity_name', '')
-            entity_keywords = ai_data.get('entity_keywords', [])
-            sections_by_key = ai_data.get('sections_by_key', {})
+        # Get AI data
+        entity_name = ai_data.get('entity_name', '')
+        entity_keywords = ai_data.get('entity_keywords', [])
+        sections_by_key = ai_data.get('sections_by_key', {})
 
-            # Load configuration
-            config_details = load_config('fdd_utils/config.json')
+        # Load configuration
+        config_details = load_config('fdd_utils/config.json')
 
-            oai_client, _ = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
+        oai_client, _ = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
 
             # system_prompt moved to higher scope above
 
-            # Get model name
-            if use_local_ai:
-                model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
-            elif use_openai:
-                model = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
-            else:
-                model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
+        # Get model name
+        if use_local_ai:
+            model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
+        elif use_openai:
+            model = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
+        else:
+            model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
 
-            # Create temporary file for processing
-            temp_file_path = None
-            try:
-                if not is_cli and 'uploaded_file_data' in st.session_state:
-                    unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
-                    temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
-                    with open(temp_file_path, 'wb') as tmp_file:
-                        tmp_file.write(st.session_state['uploaded_file_data'])
+        # Create temporary file for processing
+        temp_file_path = None
+        try:
+            if not is_cli and 'uploaded_file_data' in st.session_state:
+                unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
+                temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
+                with open(temp_file_path, 'wb') as tmp_file:
+                    tmp_file.write(st.session_state['uploaded_file_data'])
+            else:
+                if os.path.exists('databook.xlsx'):
+                    temp_file_path = 'databook.xlsx'
                 else:
-                    if os.path.exists('databook.xlsx'):
-                        temp_file_path = 'databook.xlsx'
+                    if not is_cli:
+                        st.error("❌ No databook available for processing")
                     else:
-                        if not is_cli:
-                            st.error("❌ No databook available for processing")
-                        else:
-                            print("❌ No databook available for processing")
-                        return agent1_results
-            except Exception as e:
-                if not is_cli:
-                    st.error(f"❌ Error creating temporary file: {e}")
-                else:
-                    print(f"❌ Error creating temporary file: {e}")
+                        print("❌ No databook available for processing")
+                    return agent1_results
+        except Exception as e:
+            if not is_cli:
+                st.error(f"❌ Error creating temporary file: {e}")
+            else:
+                print(f"❌ Error creating temporary file: {e}")
                 temp_file_path = None
 
         # Prepare processed table data (only if temp_file_path is available)
