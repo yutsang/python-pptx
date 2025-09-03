@@ -1142,6 +1142,7 @@ def main():
 
                                 if proof_results:
                                     # Storing translation results
+                                    print(f"🔍 DEBUG: Storing agent3_results, selected_language='{selected_language}', proof_results has {len(proof_results) if proof_results else 0} keys")
 
                                     st.session_state['agent_states']['agent3_results'] = proof_results
                                     st.session_state['agent_states']['agent3_completed'] = True
@@ -1167,6 +1168,7 @@ def main():
                             progress_bar.progress(100)
                             status_text.text("✅ 所有处理完成")
                             time.sleep(1)
+                            st.rerun()  # Force UI refresh to show Chinese content
 
                         else:
                             # Single statement type processing
@@ -3988,6 +3990,11 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
         agent2_results = agent_states.get('agent2_results', {}) or {}
         agent3_results = agent_states.get('agent3_results', {}) or {}
         content_store = st.session_state.get('ai_content_store', {})
+
+        # Debug: Show what's available in session state
+        print(f"🔍 DEBUG UI LOAD: agent_states keys: {list(agent_states.keys()) if agent_states else 'None'}")
+        print(f"🔍 DEBUG UI LOAD: agent3_results keys: {list(agent3_results.keys()) if agent3_results else 'None'}")
+        print(f"🔍 DEBUG UI LOAD: content_store keys: {list(content_store.keys()) if content_store else 'None'}")
         
         # Key selector for comparison
         if filtered_keys:
@@ -4028,12 +4035,17 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                     agent3_content = agent3_data.get('corrected_content', '')
                     if not agent3_content and selected_key in content_store:
                         agent3_content = content_store[selected_key].get('agent3_content', '')
+                else:
+                    print(f"🔍 DEBUG UI: {selected_key} NOT found in agent3_results (keys: {list(agent3_results.keys()) if agent3_results else 'None'})")
                 
                 # Default to Agent 1 content if later agents don't have content
                 if not agent2_content:
                     agent2_content = agent1_content
                 if not agent3_content:
+                    print(f"⚠️ Agent3 content empty for {selected_key}, falling back to agent2/agent1")
                     agent3_content = agent2_content or agent1_content
+                else:
+                    print(f"✅ Agent3 content found for {selected_key}: {len(agent3_content)} chars")
                 
                 # Display comparison based on selected mode
                 if comparison_mode == "Before vs After (AI1 → AI3)":
