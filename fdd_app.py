@@ -353,11 +353,16 @@ def main():
     # Sidebar for controls
     with st.sidebar:
         # File uploader with default file option
-        uploaded_file = st.file_uploader(
-            "Upload Excel File (Optional)",
-            type=['xlsx', 'xls'],
-            help="Upload your financial data Excel file or use the default databook.xlsx"
-        )
+        try:
+            uploaded_file = st.file_uploader(
+                "Upload Excel File (Optional)",
+                type=['xlsx', 'xls'],
+                help="Upload your financial data Excel file or use the default databook.xlsx"
+            )
+        except:
+            # CLI mode - use default file
+            uploaded_file = None
+            print(f"🔧 CLI MODE: Using default databook.xlsx")
 
         # Use default file if no file is uploaded (show immediately under uploader)
         if uploaded_file is None:
@@ -407,34 +412,59 @@ def main():
         # (Removed duplicate provider/model UI to avoid two model selectors)
 
         # Entity name input with auto-mapping
-        entity_input = st.text_input(
-            "Enter Entity Name",
-            value="",
-            placeholder="e.g., Company Name Limited, Entity Name Corp",
-            help="Enter the full entity name to configure processing"
-        )
+        # Check if we're running in CLI mode (when Streamlit components don't work)
+        try:
+            entity_input = st.text_input(
+                "Enter Entity Name",
+                value="",
+                placeholder="e.g., Company Name Limited, Entity Name Corp",
+                help="Enter the full entity name to configure processing"
+            )
+
+            # Check if we're actually in CLI mode (empty entity_input indicates CLI)
+            if not entity_input:
+                print(f"🔧 CLI MODE: Using default entity '联洋'")
+                entity_input = "联洋"  # Default entity for testing
+
+        except Exception as e:
+            # CLI mode - provide default entity
+            entity_input = "联洋"  # Default entity for testing
+            print(f"🔧 CLI MODE: Using default entity '{entity_input}'")
         
         # Clear session state when entity changes
-        if 'last_entity_input' in st.session_state:
-            if st.session_state['last_entity_input'] != entity_input:
-                # Entity has changed, clear the cached data
-                if 'ai_data' in st.session_state:
-                    del st.session_state['ai_data']
-                if 'filtered_keys_for_ai' in st.session_state:
-                    del st.session_state['filtered_keys_for_ai']
-                # Reset processing state when entity changes
-                if 'processing_started' in st.session_state:
-                    del st.session_state['processing_started']
-                # Entity change detected, session cleared
+        try:
+            if 'last_entity_input' in st.session_state:
+                if st.session_state['last_entity_input'] != entity_input:
+                    # Entity has changed, clear the cached data
+                    if 'ai_data' in st.session_state:
+                        del st.session_state['ai_data']
+                    if 'filtered_keys_for_ai' in st.session_state:
+                        del st.session_state['filtered_keys_for_ai']
+                    # Reset processing state when entity changes
+                    if 'processing_started' in st.session_state:
+                        del st.session_state['processing_started']
+                    # Entity change detected, session cleared
+        except:
+            # CLI mode - skip session state operations
+            pass
         
         # Store current entity input for next comparison
-        st.session_state['last_entity_input'] = entity_input
+        try:
+            st.session_state['last_entity_input'] = entity_input
+        except:
+            # CLI mode - skip session state
+            pass
         
         # Entity Selection Mode (Single vs Multiple)
-        st.markdown("---")
-        # Entity mode is now automatically detected - no manual selection needed
-        entity_mode = 'auto'  # System will automatically detect single vs multiple entity scenarios
-        st.session_state['entity_mode'] = entity_mode
+        try:
+            st.markdown("---")
+            # Entity mode is now automatically detected - no manual selection needed
+            entity_mode = 'auto'  # System will automatically detect single vs multiple entity scenarios
+            st.session_state['entity_mode'] = entity_mode
+        except:
+            # CLI mode - skip UI components
+            entity_mode = 'auto'
+            print(f"🔧 CLI MODE: Skipping UI components, using entity_mode='{entity_mode}'")
 
 
         
@@ -466,7 +496,7 @@ def main():
             
             # Use full entity name for processing
             selected_entity = entity_input
-            
+
             # Show entity info with first two words for display
             if entity_input:
                 words = entity_input.split()
@@ -474,17 +504,30 @@ def main():
                 display_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else entity_input
             else:
                 display_name = base_entity
-            st.info(f"📋 Entity: {display_name}")
+            try:
+                st.info(f"📋 Entity: {display_name}")
+            except:
+                # CLI mode - print info
+                print(f"📋 Entity: {display_name}")
             # Entity keywords generated successfully
         else:
             selected_entity = None
             entity_keywords = []
-            st.warning("⚠️ Please enter an entity name to start processing")
+            try:
+                st.warning("⚠️ Please enter an entity name to start processing")
+            except:
+                # CLI mode - print warning
+                print("⚠️ Please enter an entity name to start processing")
         
         # Check if entity is provided (file can be default)
         if not selected_entity:
-            st.stop()
-        
+            try:
+                st.stop()
+            except:
+                # CLI mode - exit gracefully
+                print("❌ No entity provided. Exiting.")
+                return
+
         # Generate entity_helpers dynamically from the input entity name
         words = selected_entity.split()
         if len(words) > 1:
@@ -524,12 +567,17 @@ def main():
             
             # AI Provider Selection (models defined in fdd_utils/config.json)
             ai_mode_options = ["Local AI", "Open AI", "DeepSeek", "Offline"]
-            mode_display = st.selectbox(
-                "Select Mode", 
-                ai_mode_options,
-                index=0,  # Local AI default
-                help="Choose AI provider. Models are taken from fdd_utils/config.json"
-            )
+            try:
+                mode_display = st.selectbox(
+                    "Select Mode",
+                    ai_mode_options,
+                    index=0,  # Local AI default
+                    help="Choose AI provider. Models are taken from fdd_utils/config.json"
+                )
+            except:
+                # CLI mode - use default
+                mode_display = "Local AI"
+                print(f"🔧 CLI MODE: Using default AI mode '{mode_display}'")
             
             # Show API configuration status
             config, _, _, _ = load_config_files()
@@ -607,13 +655,18 @@ def main():
 
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
-                start_processing = st.button(
-                    "🚀 Start Processing",
-                    type="primary",
-                    use_container_width=True,
-                    key="btn_start_processing",
-                    help="Begin data processing and AI analysis"
-                )
+                try:
+                    start_processing = st.button(
+                        "🚀 Start Processing",
+                        type="primary",
+                        use_container_width=True,
+                        key="btn_start_processing",
+                        help="Begin data processing and AI analysis"
+                    )
+                except:
+                    # CLI mode - automatically start processing
+                    start_processing = True
+                    print(f"🔧 CLI MODE: Automatically starting processing")
 
             if start_processing:
                 st.session_state['processing_started'] = True
