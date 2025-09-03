@@ -3429,18 +3429,12 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
                 # Get the proofread content
                 content = agent1_results.get(key, '')
-                print(f"📋 Content type: {type(content)}")
 
                 if isinstance(content, dict):
                     # First try corrected_content (from proofreader), then content (from agent1)
                     content_text = content.get('corrected_content', '') or content.get('content', '')
-                    print(f"📝 Extracted content from dict: {len(content_text)} chars")
-                    print(f"🔍 Content source: {'corrected_content' if 'corrected_content' in content else 'content'}")
                 else:
                     content_text = str(content)
-                    print(f"📝 Converted content to string: {len(content_text)} chars")
-
-                print(f"📄 Content preview: {content_text[:100]}..." if len(content_text) > 100 else f"📄 Content: {content_text}")
 
                 if not content_text:
                     print(f"⚠️  Empty content for {key}, skipping")
@@ -3452,22 +3446,17 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 # Skip table information for simple translation
                 table_info = ""  # Not needed for simple translation
 
-                # Update progress with enhanced debugging
+                # Update progress
                 if progress_callback:
                     progress_callback(idx, len(filtered_keys), key, "开始翻译")
                 elif is_cli and progress_bar:
-                    progress_msg = f"🌐 中文翻译: {key} ({idx+1}/{len(filtered_keys)})"
-                    print(f"📊 Updating progress bar: {progress_msg}")
-                    progress_bar.set_description(progress_msg)
                     progress_bar.update(1)
-                    print(f"✅ Progress bar updated")
 
-                # Debug output for all modes
+                # CLEAN OUTPUT: Show only before/after translation
                 print(f"\n🔄 [{idx+1}/{len(filtered_keys)}] 翻译中: {key}")
-                print(f"📝 原文预览: {content_text[:50]}..." if len(content_text) > 50 else f"📝 原文: {content_text}")
-                print(f"🔧 使用AI模型: {model}")
+                print(f"📝 BEFORE: {content_text[:80]}{'...' if len(content_text) > 80 else ''}")
 
-                # Create simple, focused translation prompt
+                # Create simple, focused translation prompt (NO SUMMARY SECTION)
                 user_prompt = f"""请将以下英文内容翻译成简体中文。
 
 英文内容：
@@ -3481,38 +3470,8 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
 直接返回中文翻译："""
 
-                # SHOW FULL TRANSLATION PREVIEW DURING PROMPT SETUP
-                print(f"\n📋 FULL TRANSLATION PREVIEW FOR {key}:")
-                print(f"{'─' * 60}")
-                print(f"📝 ORIGINAL ENGLISH:")
-                print(f"{content_text}")
-                print(f"📝 TRANSLATION PROMPT:")
-                print(f"{user_prompt}")
-                print(f"{'─' * 60}")
-                print(f"⏳ About to send to AI for translation...")
-
                 # TIMING: Record time before AI call
                 debug_start_time = time.time()
-
-                # DEBUG: Print input prompts for each key
-                print(f"\n{'='*80}")
-                print(f"🔧 DEBUG - TRANSLATION INPUT FOR KEY: {key}")
-                print(f"{'='*80}")
-                print(f"📝 SYSTEM PROMPT ({len(system_prompt)} chars):")
-                print(f"{system_prompt}")
-                print(f"\n📝 USER PROMPT ({len(user_prompt)} chars):")
-                print(f"{user_prompt}")
-                print(f"{'='*80}")
-
-                # TIMING: Record time after prompt setup
-                prompt_setup_time = time.time()
-                print(f"⏱️  Prompt setup completed in {(prompt_setup_time - debug_start_time):.2f}s")
-
-                # DEBUG: About to call AI
-                print(f"🤖 About to call AI for translation of {key}")
-                print(f"🔧 Model: {model}")
-                print(f"🌐 Use local AI: {use_local_ai}")
-                print(f"📤 Calling generate_response...")
 
                 # TIMING: Record time before AI call
                 ai_call_start = time.time()
@@ -3529,36 +3488,11 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     use_local_ai=use_local_ai
                 )
 
-                # TIMING: Record time after AI call
-                ai_call_end = time.time()
-                ai_duration = ai_call_end - ai_call_start
-                total_duration = ai_call_end - debug_start_time
-
-                # DEBUG: AI call completed with timing
-                print(f"✅ AI call completed for {key} in {ai_duration:.2f}s")
-                print(f"⏱️  Total time from prompt to response: {total_duration:.2f}s")
-                print(f"📥 Response type: {type(translated_content)}")
-                print(f"📏 Response length: {len(str(translated_content)) if translated_content else 0}")
-
-                # DEBUG: Print AI response for each key
-                print(f"\n{'='*80}")
-                print(f"🤖 DEBUG - TRANSLATION OUTPUT FOR KEY: {key}")
-                print(f"{'='*80}")
-                print(f"📤 RAW AI RESPONSE ({len(str(translated_content)) if translated_content else 0} chars):")
-                print(f"'{translated_content}'")
-                print(f"{'='*80}")
-
-                # ENHANCED: Show Chinese output more prominently
+                # CLEAN OUTPUT: Show only AFTER translation result
                 if translated_content:
-                    print(f"\n🌟🌟🌟 CHINESE TRANSLATION RESULT 🌟🌟🌟")
-                    print(f"🔑 Key: {key}")
-                    print(f"🌐 Chinese Output (First 200 chars):")
-                    print(f"{'─' * 60}")
-                    print(f"{translated_content[:200]}{'...' if len(translated_content) > 200 else ''}")
-                    print(f"{'─' * 60}")
-                    print(f"📊 Full length: {len(translated_content)} chars")
+                    print(f"🌐 AFTER:  {translated_content[:80]}{'...' if len(translated_content) > 80 else ''}")
                 else:
-                    print(f"❌ NO CHINESE OUTPUT RECEIVED FOR {key}")
+                    print(f"❌ FAILED: No translation received for {key}")
 
                 # Clean the response
                 if translated_content:
