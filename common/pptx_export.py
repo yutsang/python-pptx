@@ -1030,13 +1030,19 @@ class PowerPointGenerator:
             
             # Generate AI summary content based on commentary length
             summary_content = self._generate_ai_summary_content(md_content, distribution)
-            
+
+            # Ensure summary_content is valid
+            if not summary_content or summary_content is None:
+                summary_content = "Comprehensive financial analysis with detailed commentary on key financial metrics and performance indicators."
+            elif not isinstance(summary_content, str):
+                summary_content = str(summary_content)
+
             max_slide_used = max((slide_idx for slide_idx, _, _ in distribution), default=0)
             total_slides_needed = max_slide_used + 1
-            
+
             while len(self.prs.slides) < total_slides_needed:
                 self.prs.slides.add_slide(self.prs.slide_layouts[1])
-            
+
             for slide_idx, section, section_items in distribution:
                 if slide_idx >= len(self.prs.slides):
                     raise ValueError("Insufficient slides in template")
@@ -1045,7 +1051,7 @@ class PowerPointGenerator:
                 shape = self._get_section_shape(slide, section)
                 if shape:
                     self._populate_section(shape, section_items)
-            
+
             # Populate summary sections on all slides with different content
             summary_chunks = self._distribute_summary_across_slides(summary_content, total_slides_needed)
             for slide_idx in range(total_slides_needed):
@@ -1270,7 +1276,7 @@ class PowerPointGenerator:
             print(f"📝 SUMMARY: Generating {'Chinese' if is_chinese_mode else 'English'} summary for {len(key_points)} key points")
 
             # Generate professional FDD summary content (80-100 words)
-            if key_points:
+            if key_points and len(key_points) > 0:
                 summary_parts = []
 
                 if is_chinese_mode:
@@ -1327,6 +1333,10 @@ class PowerPointGenerator:
                     # Combine all parts
                     full_summary = " ".join(summary_parts)
 
+                    # Ensure we have valid content
+                    if not full_summary or full_summary.strip() == "":
+                        full_summary = "Comprehensive financial due diligence analysis with detailed commentary."
+
                     # Ensure it's between 80-100 words
                     word_count = len(full_summary.split())
                     if word_count < 80:
@@ -1340,7 +1350,11 @@ class PowerPointGenerator:
                         words = full_summary.split()
                         full_summary = " ".join(words[:100])
 
-                    return full_summary
+                    # Final safety check - ensure we return a valid string
+                    if not isinstance(full_summary, str):
+                        full_summary = str(full_summary)
+
+                    return full_summary or "Comprehensive financial analysis summary."
             else:
                 # Fallback summary (comprehensive)
                 if is_chinese_mode:
@@ -1357,11 +1371,21 @@ class PowerPointGenerator:
             
         except Exception as e:
             logging.warning(f"Failed to generate AI summary: {str(e)}")
-            return "Comprehensive financial analysis with detailed commentary on key financial metrics and performance indicators."
+            # Ensure we always return a valid string
+            fallback_summary = "Comprehensive financial analysis with detailed commentary on key financial metrics and performance indicators."
+            return str(fallback_summary) if fallback_summary else "Financial analysis summary."
 
     def _distribute_summary_across_slides(self, summary_content: str, total_slides: int) -> List[str]:
         """Distribute summary content across multiple slides with different content on each"""
         try:
+            # Handle None or empty summary content
+            if not summary_content or summary_content is None:
+                summary_content = "Comprehensive financial analysis with detailed commentary on key financial metrics and performance indicators."
+
+            # Ensure summary_content is a string
+            if not isinstance(summary_content, str):
+                summary_content = str(summary_content)
+
             # Split the summary into sentences
             sentences = summary_content.split('. ')
             
