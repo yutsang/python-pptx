@@ -371,13 +371,27 @@ def parse_table_to_structured_format(df, entity_name, table_name):
             
             # Extract currency and multiplier (English and Chinese)
             currency_detected = False
-            if ('CNY' in desc_cell.upper() or 'CNY' in amount_cell.upper() or
-                '人民币' in desc_cell or '人民币' in amount_cell or
-                '人民幣' in desc_cell or '人民幣' in amount_cell or
-                'RMB' in desc_cell.upper() or 'RMB' in amount_cell.upper()):
+            currency_source = ""
+
+            if ('CNY' in desc_cell.upper() or 'CNY' in amount_cell.upper()):
                 structured_data['currency'] = 'CNY'
                 currency_detected = True
-                print(f"DEBUG: Currency detected as CNY - desc='{desc_cell}', amount='{amount_cell}'")
+                currency_source = "CNY"
+            elif ('人民币' in desc_cell or '人民币' in amount_cell):
+                structured_data['currency'] = 'CNY'
+                currency_detected = True
+                currency_source = "人民币 (traditional)"
+            elif ('人民幣' in desc_cell or '人民幣' in amount_cell):
+                structured_data['currency'] = 'CNY'
+                currency_detected = True
+                currency_source = "人民幣 (simplified)"
+            elif ('RMB' in desc_cell.upper() or 'RMB' in amount_cell.upper()):
+                structured_data['currency'] = 'CNY'
+                currency_detected = True
+                currency_source = "RMB"
+
+            if currency_detected:
+                print(f"DEBUG: Currency detected as CNY ({currency_source}) - desc='{desc_cell}', amount='{amount_cell}'")
 
             # Enhanced check for thousands notation (English and Chinese)
             thousands_detected = (
@@ -390,7 +404,7 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 "千人民幣" in desc_cell or "千人民幣" in amount_cell or
                 "人民幣千" in desc_cell or "人民幣千" in amount_cell or
                 "千元人民幣" in desc_cell or "千元人民幣" in amount_cell or
-                "人民幣千元" in desc_cell or "人民幣千元" in amount_cell or
+                "人民幣千元" in desc_cell or "人民幣千元" in amount_cell or  # 人民幣千元 (simplified Chinese)
                 "千RMB" in desc_cell or "千RMB" in amount_cell or
                 "RMB千" in desc_cell or "RMB千" in amount_cell or
                 # Also check for standalone "千" in amount column
@@ -404,12 +418,35 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 "千" in amount_cell
             )
 
+            # Special detection for Chinese "人民币千元" and "人民幣千元"
+            traditional_chinese_thousands = (
+                "人民币千元" in desc_cell or "人民币千元" in amount_cell
+            )
+            simplified_chinese_thousands = (
+                "人民幣千元" in desc_cell or "人民幣千元" in amount_cell
+            )
+            chinese_rmb_thousands = traditional_chinese_thousands or simplified_chinese_thousands
+
+            if traditional_chinese_thousands:
+                print(f"DEBUG: Detected traditional Chinese '人民币千元' - desc='{desc_cell}', amount='{amount_cell}'")
+                thousands_detected = True
+            elif simplified_chinese_thousands:
+                print(f"DEBUG: Detected simplified Chinese '人民幣千元' - desc='{desc_cell}', amount='{amount_cell}'")
+                thousands_detected = True
+
             # Debug logging for multiplier detection
             if thousands_detected or currency_detected:
                 print(f"DEBUG: Multiplier detection - desc='{desc_cell}', amount='{amount_cell}', thousands_detected={thousands_detected}, currency_detected={currency_detected}")
 
             # Set multiplier based on detection
-            if thousands_detected:
+            if chinese_rmb_thousands:
+                # Priority: Chinese "人民币千元"/"人民幣千元" should definitely be 1000x
+                structured_data['multiplier'] = 1000
+                if traditional_chinese_thousands:
+                    print(f"DEBUG: 人民币千元 detected - setting multiplier to 1000x (traditional Chinese RMB thousands)")
+                elif simplified_chinese_thousands:
+                    print(f"DEBUG: 人民幣千元 detected - setting multiplier to 1000x (simplified Chinese RMB thousands)")
+            elif thousands_detected:
                 structured_data['multiplier'] = 1000
                 print(f"DEBUG: Set multiplier to 1000 for cell: desc='{desc_cell}', amount='{amount_cell}'")
             elif currency_detected and ("000" in desc_cell or "000" in amount_cell):
@@ -424,6 +461,21 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 if re.match(r'^0*000$', desc_cell.replace("'", "")) or re.match(r'^0*000$', amount_cell.replace("'", "")):
                         structured_data['multiplier'] = 1000
                         print(f"DEBUG: Set multiplier to 1000 (standalone 000) for cell: desc='{desc_cell}', amount='{amount_cell}'")
+
+            # Final confirmation logging
+            if structured_data['multiplier'] == 1000 and chinese_rmb_thousands:
+                if traditional_chinese_thousands:
+                    print(f"✅ CONFIRMED: 人民币千元 detected - multiplier set to 1000x (traditional Chinese RMB thousands)")
+                    if currency_detected:
+                        print(f"✅ CONFIRMED: Both currency (人民币) and thousands (千元) detected - full processing confirmed")
+                elif simplified_chinese_thousands:
+                    print(f"✅ CONFIRMED: 人民幣千元 detected - multiplier set to 1000x (simplified Chinese RMB thousands)")
+                    if currency_detected:
+                        print(f"✅ CONFIRMED: Both currency (人民幣) and thousands (千元) detected - full processing confirmed")
+            elif structured_data['multiplier'] == 1000 and thousands_detected:
+                print(f"✅ CONFIRMED: Multiplier set to 1000x - thousands notation detected")
+            elif structured_data['multiplier'] == 1000000:
+                print(f"✅ CONFIRMED: Multiplier set to 1000000x - million notation detected")
             
             # Extract items (skip header rows and totals)
             # Be more careful about filtering - don't filter out valid Chinese descriptions
