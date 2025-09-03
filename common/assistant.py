@@ -192,9 +192,19 @@ def parse_table_to_structured_format(df, entity_name, table_name):
         from datetime import datetime
 
         # DEBUG: Log what we're reading from the Excel
-        print(f"🔍 DEBUG: Processing table '{table_name}' for entity '{entity_name}'")
-        print(f"🔍 DEBUG: DataFrame shape: {df.shape}")
-        print(f"🔍 DEBUG: DataFrame columns: {list(df.columns)}")
+        print(f"\n{'='*80}")
+        print(f"📊 TABLE PROCESSING: '{table_name}' for entity '{entity_name}'")
+        print(f"📊 DataFrame shape: {df.shape}")
+        print(f"📊 DataFrame columns: {list(df.columns)}")
+        print(f"📊 TABLE CONTENTS:")
+        print(f"{'='*80}")
+
+        # Show all rows of the table
+        for i, row in enumerate(df.values.tolist()):
+            print(f"Row {i:2d}: {row}")
+
+        print(f"{'='*80}")
+        print(f"🔍 Starting detailed processing of table '{table_name}'...")
         print(f"🔍 DEBUG: First 5 rows of data:")
         for i, row in enumerate(df.head(5).values.tolist()):
             print(f"   Row {i}: {row}")
@@ -264,6 +274,7 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 amount_col = col_idx
                 desc_col = 1 if col_idx == 0 else 0
                 print(f"✅ DEBUG: Identified amount column as {col_idx}, desc column as {desc_col}")
+                print(f"📋 COLUMN MAPPING: Description='{df.columns[desc_col]}', Amount='{df.columns[amount_col]}'")
                 break
         
         # Process rows to extract information
@@ -673,12 +684,28 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                         break
 
         # DEBUG: Final summary of what was detected
-        print(f"📊 DEBUG: Final results for table '{table_name}':")
+        print(f"\n📊 FINAL RESULTS for table '{table_name}':")
         print(f"   - Currency: {structured_data['currency']}")
         print(f"   - Multiplier: {structured_data['multiplier']}x")
         print(f"   - Date: {structured_data['date']}")
         print(f"   - Items found: {len(structured_data['items'])}")
+        if structured_data['items']:
+            print(f"   - Items details:")
+            for item in structured_data['items']:
+                print(f"     * {item['description']}: {item['amount']}")
         print(f"   - Total: {structured_data['total']}")
+        print(f"{'='*80}")
+
+        # Summary of processing
+        if structured_data['items']:
+            print(f"✅ TABLE '{table_name}' PROCESSED SUCCESSFULLY")
+            print(f"   → {len(structured_data['items'])} financial items extracted")
+            print(f"   → Multiplier applied: {structured_data['multiplier']}x")
+            print(f"   → Currency detected: {structured_data['currency']}")
+        else:
+            print(f"❌ TABLE '{table_name}' SKIPPED - No valid items found")
+
+        print(f"{'='*80}\n")
 
         return structured_data if structured_data['items'] else None
         
