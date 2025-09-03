@@ -1062,11 +1062,26 @@ def main():
                         status_text = st.empty()
                         eta_text = st.empty()
 
-                        # Clear previous translation flags
+                        # Clear previous translation flags and prepare for new translation
                         if 'translation_completed' in st.session_state:
                             del st.session_state['translation_completed']
                         if 'refresh_needed' in st.session_state:
                             del st.session_state['refresh_needed']
+                        if 'last_translation_time' in st.session_state:
+                            del st.session_state['last_translation_time']
+
+                        # Clear any existing agent3 results to ensure clean slate
+                        if 'agent_states' in st.session_state and 'agent3_results' in st.session_state['agent_states']:
+                            print("🧹 Clearing existing agent3_results for fresh translation")
+                            st.session_state['agent_states']['agent3_results'] = {}
+
+                        # Clear content store agent3 entries
+                        if 'ai_content_store' in st.session_state:
+                            content_store = st.session_state['ai_content_store']
+                            for key in list(content_store.keys()):
+                                if 'agent3_content' in content_store[key]:
+                                    print(f"🧹 Clearing existing agent3_content for {key}")
+                                    del content_store[key]['agent3_content']
 
                         status_text.text("🤖 初始化中文AI处理…")
                         progress_bar.progress(10)
@@ -1344,9 +1359,12 @@ def main():
                             # Set refresh flag for UI to know translation is complete
                             st.session_state['refresh_needed'] = True
                             st.session_state['translation_completed'] = True
+                            st.session_state['last_translation_time'] = time.time()
 
+                            # Force immediate refresh to show Chinese content
+                            print("🔄 Forcing UI refresh to display Chinese content...")
                             time.sleep(1)
-                            st.rerun()  # Force UI refresh to show Chinese content
+                            st.rerun()
 
                         else:
                             # Single statement type processing
@@ -4173,6 +4191,9 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
         print(f"🔍 UI DEBUG - agent_states keys: {list(agent_states.keys()) if agent_states else 'None'}")
         print(f"🔍 UI DEBUG - agent3_results keys: {list(agent3_results.keys()) if agent3_results else 'None'}")
         print(f"🔍 UI DEBUG - content_store keys: {list(content_store.keys()) if content_store else 'None'}")
+        print(f"🔍 UI DEBUG - translation_completed: {st.session_state.get('translation_completed', False)}")
+        print(f"🔍 UI DEBUG - last_translation_time: {st.session_state.get('last_translation_time', 0)}")
+        print(f"🔍 UI DEBUG - last_ui_refresh_time: {st.session_state.get('last_ui_refresh_time', 0)}")
 
         # Show translation status
         translation_completed = st.session_state.get('translation_completed', False)
@@ -4183,13 +4204,19 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
         elif translation_completed:
             st.warning("⚠️ Translation completed but no results found. Please check the translation process.")
 
-        # Force refresh if we have agent3 results but no display
-        if agent3_results and 'refresh_needed' in st.session_state:
-            print("🔄 UI DEBUG - Refreshing due to pending updates")
-            del st.session_state['refresh_needed']
+        # Check for new translation results and force refresh if needed
+        last_translation_time = st.session_state.get('last_translation_time', 0)
+        last_ui_refresh_time = st.session_state.get('last_ui_refresh_time', 0)
+
+        # If we have new translation results since last UI refresh, force refresh
+        if agent3_results and last_translation_time > last_ui_refresh_time:
+            print(f"🔄 UI DEBUG - New translation detected (translation: {last_translation_time}, ui: {last_ui_refresh_time})")
+            st.session_state['last_ui_refresh_time'] = time.time()
+            if 'refresh_needed' in st.session_state:
+                del st.session_state['refresh_needed']
             st.rerun()
 
-        # Clear refresh flag if we don't need it anymore
+        # Clear stale refresh flags
         if 'refresh_needed' in st.session_state and not agent3_results:
             print("🧹 UI DEBUG - Clearing stale refresh flag")
             del st.session_state['refresh_needed']
@@ -4237,11 +4264,28 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                     agent3_content = agent3_data.get('corrected_content', '') if isinstance(agent3_data, dict) else ''
                     print(f"🔍 UI DEBUG - corrected_content (first 100 chars): '{agent3_content[:100]}...'")
 
+                    # Also check content_store as backup (it might have more recent data)
+                    content_store_content = ''
+                    if selected_key in content_store:
+                        content_store_content = content_store[selected_key].get('agent3_content', '')
+                        print(f"🔍 UI DEBUG - content_store has agent3_content (first 100 chars): '{content_store_content[:100]}...'")
+
+                        # Use content_store content if it's different and contains Chinese
+                        if (content_store_content and
+                            content_store_content != agent3_content and
+                            any('\u4e00' <= char <= '\u9fff' for char in content_store_content)):
+                            print("🔍 UI DEBUG - Using content_store content (more recent/Chinese)")
+                            agent3_content = content_store_content
+
                     if not agent3_content and selected_key in content_store:
-                        agent3_content = content_store[selected_key].get('agent3_content', '')
+                        agent3_content = content_store_content
                         print(f"🔍 UI DEBUG - Fallback from content_store (first 100 chars): '{agent3_content[:100]}...'")
                 else:
                     print(f"🔍 UI DEBUG - {selected_key} NOT found in agent3_results")
+                    # Try content_store as last resort
+                    if selected_key in content_store and 'agent3_content' in content_store[selected_key]:
+                        agent3_content = content_store[selected_key]['agent3_content']
+                        print(f"🔍 UI DEBUG - Using content_store fallback: '{agent3_content[:100]}...'")
 
                 
                 # Default to Agent 1 content if later agents don't have content
