@@ -661,8 +661,12 @@ def main():
             if needs_processing:
                 # Process Excel file and store in session state
                 with st.spinner("🔄 Processing Excel file..."):
-                    print(f"🔍 DEBUG: Starting Excel processing for {selected_entity}")
-                    print(f"🔍 DEBUG: File size: {len(uploaded_file.getvalue()) if hasattr(uploaded_file, 'getvalue') else 'Unknown'} bytes")
+                    print(f"\n{'='*80}")
+                    print(f"🔄 STARTING EXCEL PROCESSING FOR BALANCE SHEET")
+                    print(f"🏢 Entity: {selected_entity}")
+                    print(f"📁 File size: {len(uploaded_file.getvalue()) if hasattr(uploaded_file, 'getvalue') else 'Unknown'} bytes")
+                    print(f"⏱️  Processing with 30-second timeout...")
+                    print(f"{'='*80}\n")
                     start_excel_time = time.time()
 
                     # Add timeout protection for Excel processing (cross-platform)
@@ -715,8 +719,12 @@ def main():
                         sections_by_key = result_container['result']
 
                     excel_processing_time = time.time() - start_excel_time
-                    print(f"✅ Excel processing completed in {excel_processing_time:.2f}s")
-                    print(f"📊 Found {len(sections_by_key)} keys with data")
+                    print(f"\n{'='*60}")
+                    print(f"✅ EXCEL PROCESSING COMPLETED!")
+                    print(f"⏱️  Processing time: {excel_processing_time:.2f}s")
+                    print(f"📊 Found {len(sections_by_key)} financial keys with data")
+                    print(f"💡 The detailed tab-by-tab processing results are shown above.")
+                    print(f"{'='*60}\n")
 
                     # High-level debug only
                     total_sections = sum(len(sections) for sections in sections_by_key.values())
@@ -750,8 +758,12 @@ def main():
             if 'ai_data' not in st.session_state or 'sections_by_key' not in st.session_state['ai_data']:
                 # Process Excel file and store in session state
                 with st.spinner("🔄 Processing Excel file for Income Statement..."):
-                    print(f"🔍 DEBUG: Starting Excel processing for Income Statement - {selected_entity}")
-                    print(f"🔍 DEBUG: File size: {len(uploaded_file.getvalue()) if hasattr(uploaded_file, 'getvalue') else 'Unknown'} bytes")
+                    print(f"\n{'='*80}")
+                    print(f"🔄 STARTING EXCEL PROCESSING FOR INCOME STATEMENT")
+                    print(f"🏢 Entity: {selected_entity}")
+                    print(f"📁 File size: {len(uploaded_file.getvalue()) if hasattr(uploaded_file, 'getvalue') else 'Unknown'} bytes")
+                    print(f"⏱️  Processing with 30-second timeout...")
+                    print(f"{'='*80}\n")
                     start_excel_time = time.time()
 
                     # Add timeout protection for Excel processing (cross-platform)
@@ -804,8 +816,12 @@ def main():
                         sections_by_key = result_container['result']
 
                     excel_processing_time = time.time() - start_excel_time
-                    print(f"✅ Income Statement Excel processing completed in {excel_processing_time:.2f}s")
-                    print(f"📊 Found {len(sections_by_key)} keys with data")
+                    print(f"\n{'='*60}")
+                    print(f"✅ INCOME STATEMENT EXCEL PROCESSING COMPLETED!")
+                    print(f"⏱️  Processing time: {excel_processing_time:.2f}s")
+                    print(f"📊 Found {len(sections_by_key)} financial keys with data")
+                    print(f"💡 The detailed tab-by-tab processing results are shown above.")
+                    print(f"{'='*60}\n")
                     
                     # High-level debug only
                     total_sections = sum(len(sections) for sections in sections_by_key.values())

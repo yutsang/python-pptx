@@ -275,20 +275,35 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         currency_info = "CNY"
         
         # Look for thousand/million indicators in first 3 rows
-        thousand_indicators = ["'000", "'000", "cny'000", "thousands"]
-        million_indicators = ["'000,000", "millions", "cny'000,000"]
-        
+        thousand_indicators = ["'000", "'000", "cny'000", "thousands", "人民币千元", "人民幣千元"]
+        million_indicators = ["'000,000", "millions", "cny'000,000", "人民币万元", "人民幣萬元"]
+
+        # Debug: Print what we're looking for
+        print(f"   🔍 DEBUG: Looking for currency indicators in first 3 rows of sheet '{sheet_name}'")
+
         for i in range(min(3, len(df_str))):
             for j in range(len(df_str.columns)):
                 cell_value = str(df_str.iloc[i, j]).lower()
+                original_cell_value = str(df_str.iloc[i, j])
+
+                # Check thousand indicators
                 if any(indicator in cell_value for indicator in thousand_indicators):
                     multiplier = 1000
                     currency_info = "CNY'000"
+                    print(f"   💰 FOUND: '{original_cell_value}' at Row {i}, Col {j} - Detected as {currency_info}")
                     break
+                # Check million indicators
                 elif any(indicator in cell_value for indicator in million_indicators):
                     multiplier = 1000000
                     currency_info = "CNY'000,000"
+                    print(f"   💰 FOUND: '{original_cell_value}' at Row {i}, Col {j} - Detected as {currency_info}")
                     break
+
+        # If no currency indicators found, show what we looked at
+        if multiplier == 1:
+            print(f"   ⚠️  No currency indicators found in first 3 rows of sheet '{sheet_name}'")
+            print(f"   💡 Looking for: {thousand_indicators + million_indicators}")
+            print(f"   📝 First row content: {' | '.join(str(df_str.iloc[0, j]) for j in range(min(5, len(df_str.columns))))}")
         
         # Find the value column - use detected latest_date_col if provided
         value_col_idx = None
@@ -748,19 +763,39 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                 
                 # Organize sections by key - make it less restrictive
                 for data_frame in dataframes:
-                    
+
                     # Check if this section contains any of the financial keys
                     matched_keys = []  # Track which keys this data_frame matches
-                    
+
                     # Get all text from the dataframe for searching
                     all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
-                    
-                    print(f"   🔍 Processing sheet: {sheet_name}")
+
+                    print(f"📋 PROCESSING TAB: {sheet_name}")
                     print(f"   🔍 Available financial keys: {financial_keys}")
                     print(f"   🔍 Entity mode: {entity_mode}")
                     print(f"   🔍 Entity name: {entity_name}")
                     print(f"   🔍 Entity keywords: {entity_keywords}")
-                    
+                    print(f"   📊 DataFrame shape: {data_frame.shape}")
+                    print(f"   📝 Sample content (first 3 rows):")
+                    for idx in range(min(3, len(data_frame))):
+                        row_content = ' | '.join(str(val)[:50] for val in data_frame.iloc[idx] if pd.notna(val))
+                        print(f"      Row {idx}: {row_content}")
+                    print(f"   🔍 Looking for '人民币千元' in content...")
+
+                    # Check for RMB patterns
+                    rmb_found = False
+                    if "人民币千元" in all_text:
+                        print(f"   💰 FOUND: '人民币千元' detected in tab '{sheet_name}'")
+                        rmb_found = True
+                    elif "人民幣千元" in all_text:
+                        print(f"   💰 FOUND: '人民幣千元' (Traditional) detected in tab '{sheet_name}'")
+                        rmb_found = True
+                    elif "cny'000" in all_text.lower():
+                        print(f"   💰 FOUND: 'CNY'000' detected in tab '{sheet_name}'")
+                        rmb_found = True
+                    else:
+                        print(f"   ❌ RMB patterns NOT found in tab '{sheet_name}'")
+
                     # Check each financial key - prioritize exact sheet name matches
                     for financial_key in financial_keys:
                         # First, check if the sheet name exactly matches this key
@@ -794,6 +829,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                     
                     # Process this dataframe for each matched key
                     for best_key in matched_keys:
+                        print(f"   🎯 Processing key '{best_key}' for tab '{sheet_name}'")
                         # Initialize actual_entity_found for this key
                         actual_entity_found = None
 
@@ -815,7 +851,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                 ).any()
                             )
                         # entity_mask is already defined above as mask_series
-                        
+
                         # Intelligent entity detection - automatically handle single vs multiple entity scenarios
                         # entity_mode parameter is now 'auto' and the logic adapts automatically
                         section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
@@ -932,7 +968,10 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                     # Only add sections that match the selected entity
                                     # Temporarily disable entity matching to debug
                                     sections_by_key[best_key].append(section_data)
-                                    print(f"   ✅ Added section for {best_key} with entity: {actual_entity_found}")
+                                    print(f"   ✅ SUCCESS: Added section for '{best_key}' from tab '{sheet_name}'")
+                                    print(f"   📊 Section contains {len(parsed_table.get('data', []))} data rows")
+                                    print(f"   💰 RMB detected: {'YES' if rmb_found else 'NO'}")
+                                    print(f"   🔍 Entity found: {actual_entity_found}")
                                     print(f"   📊 Total sections for {best_key}: {len(sections_by_key[best_key])}")
                                     if not is_selected_entity:
                                         print(f"   ⚠️  Note: entity mismatch (found: {actual_entity_found}, expected: {entity_keywords})")
@@ -954,12 +993,26 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
         
         # Print summary of processed sections
         total_sections = sum(len(sections) for sections in sections_by_key.values())
-        print(f"   📊 SUMMARY: Processed {len(sections_by_key)} keys with {total_sections} total sections")
+        print(f"\n🎉 EXCEL PROCESSING COMPLETE!")
+        print(f"   📊 SUMMARY: Processed {len(sections_by_key)} financial keys with {total_sections} total sections")
+
+        # Detailed summary
+        print(f"   📋 DETAILED RESULTS:")
+        keys_with_data = 0
         for key, sections in sections_by_key.items():
             if sections:
-                print(f"   📋 {key}: {len(sections)} sections")
+                keys_with_data += 1
+                print(f"   ✅ {key}: {len(sections)} sections found")
             else:
                 print(f"   ❌ {key}: No sections found")
+
+        print(f"   🎯 SUCCESS: {keys_with_data} out of {len(sections_by_key)} financial keys have data")
+        print(f"   💡 TIP: If '人民币千元' was not detected, check if your Excel file contains this exact text or similar currency indicators")
+        print(f"\n" + "="*80)
+        print(f"   🎉 EXCEL TAB PROCESSING FINISHED!")
+        print(f"   📊 You can now view the processed data in the application tabs above.")
+        print(f"   💰 Check each financial key tab to see the extracted data.")
+        print(f"="*80)
 
         return sections_by_key
 
