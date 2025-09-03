@@ -259,14 +259,14 @@ class PowerPointGenerator:
         
         return self._calculate_max_rows_for_shape(shape)
 
-    def _get_target_shape_for_section(self, slide_idx, section):
+        def _get_target_shape_for_section(self, slide_idx, section):
         """Get the target shape for a specific section on a specific slide"""
         # Check if the slide exists
         if slide_idx >= len(self.prs.slides):
             return None
-        
+
         slide = self.prs.slides[slide_idx]
-        
+
         # Handle both template structures:
         # - Old template: textMainBullets_L and textMainBullets_R
         # - New template: single textMainBullets
@@ -1040,7 +1040,6 @@ class PowerPointGenerator:
             # Generate AI summary content based on commentary length
             # For Chinese mode, use the provided summary_md if it's Chinese content
             if hasattr(self, 'language') and self.language == 'chinese' and summary_md and any('\u4e00' <= char <= '\u9fff' for char in summary_md):
-                print("🌐 SUMMARY: Using provided Chinese summary content")
                 summary_content = summary_md.strip()
             else:
                 summary_content = self._generate_ai_summary_content(md_content, distribution)
@@ -1070,14 +1069,17 @@ class PowerPointGenerator:
             summary_chunks = self._distribute_summary_across_slides(summary_content, total_slides_needed)
             for slide_idx in range(total_slides_needed):
                 slide = self.prs.slides[slide_idx]
+
                 # Look for coSummaryShape or alternative summary shapes
                 summary_shape = next((s for s in slide.shapes if s.name == "coSummaryShape"), None)
                 if not summary_shape:
                     # Fallback: look for Subtitle or other suitable text shapes for summary
                     summary_shape = next((s for s in slide.shapes if hasattr(s, 'text_frame') and s.name == "Subtitle 2"), None)
+
                 if not summary_shape:
                     # Look for TextBox shapes
                     summary_shape = next((s for s in slide.shapes if hasattr(s, 'text_frame') and "TextBox" in s.name), None)
+
                 if not summary_shape:
                     # Look for any text shape that could be used for summary
                     summary_shape = next((s for s in slide.shapes if hasattr(s, 'text_frame') and s.name != "textMainBullets" and "Title" not in s.name), None)
