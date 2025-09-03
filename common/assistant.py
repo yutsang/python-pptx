@@ -190,7 +190,15 @@ def parse_table_to_structured_format(df, entity_name, table_name):
     try:
         import re
         from datetime import datetime
-        
+
+        # DEBUG: Log what we're reading from the Excel
+        print(f"🔍 DEBUG: Processing table '{table_name}' for entity '{entity_name}'")
+        print(f"🔍 DEBUG: DataFrame shape: {df.shape}")
+        print(f"🔍 DEBUG: DataFrame columns: {list(df.columns)}")
+        print(f"🔍 DEBUG: First 5 rows of data:")
+        for i, row in enumerate(df.head(5).values.tolist()):
+            print(f"   Row {i}: {row}")
+
         # Initialize structured data
         structured_data = {
             'table_name': table_name,
@@ -201,11 +209,34 @@ def parse_table_to_structured_format(df, entity_name, table_name):
             'items': [],
             'total': None
         }
-        
+
         # Convert DataFrame to list of rows for easier processing
         rows = df.values.tolist()
         if not rows:
+            print(f"⚠️ DEBUG: No rows found in table '{table_name}'")
             return None
+
+        print(f"🔍 DEBUG: Total rows to process: {len(rows)}")
+        print(f"🔍 DEBUG: Sample row data:")
+        for i, row in enumerate(rows[:3]):  # Show first 3 rows
+            print(f"   Row {i}: {row}")
+
+        # DEBUG: Search for "人民币千元" in all cells
+        rmb_thousands_found = False
+        for row_idx, row in enumerate(rows):
+            for col_idx, cell in enumerate(row):
+                cell_str = str(cell).strip()
+                if "人民币千元" in cell_str:
+                    print(f"🎯 FOUND: '人民币千元' in row {row_idx}, col {col_idx}: '{cell_str}'")
+                    rmb_thousands_found = True
+                elif "人民幣千元" in cell_str:
+                    print(f"🎯 FOUND: '人民幣千元' in row {row_idx}, col {col_idx}: '{cell_str}'")
+                    rmb_thousands_found = True
+
+        if not rmb_thousands_found:
+            print(f"⚠️ DEBUG: No '人民币千元' or '人民幣千元' found in table '{table_name}'")
+        else:
+            print(f"✅ DEBUG: Found RMB thousands notation in table '{table_name}'")
         
         # Find the two most important columns (description and amount)
         # Usually the first two columns, but let's be smart about it
@@ -213,6 +244,7 @@ def parse_table_to_structured_format(df, entity_name, table_name):
         amount_col = 1
         
         # Look for columns with numbers in the amount column
+        print(f"🔍 DEBUG: Analyzing columns for numeric content...")
         for col_idx in range(min(2, len(df.columns))):
             numeric_count = 0
             for row in rows:
@@ -221,20 +253,25 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                     # Check if it's a number (including with commas, decimals, etc.)
                     if re.match(r'^[\d,]+\.?\d*$', cell_value.replace(',', '')):
                         numeric_count += 1
-            
+
+            print(f"🔍 DEBUG: Column {col_idx}: {numeric_count}/{len(rows)} numeric values")
             if numeric_count > len(rows) * 0.3:  # At least 30% of rows have numbers
                 amount_col = col_idx
                 desc_col = 1 if col_idx == 0 else 0
+                print(f"✅ DEBUG: Identified amount column as {col_idx}, desc column as {desc_col}")
                 break
         
         # Process rows to extract information
         for row_idx, row in enumerate(rows):
             if len(row) < 2:
                 continue
-                
+
             desc_cell = str(row[desc_col]).strip() if desc_col < len(row) else ""
             amount_cell = str(row[amount_col]).strip() if amount_col < len(row) else ""
-            
+
+            # DEBUG: Log every row we're processing
+            print(f"🔍 DEBUG: Processing row {row_idx}: desc='{desc_cell}', amount='{amount_cell}'")
+
             # Skip empty rows
             if not desc_cell and not amount_cell:
                 continue
@@ -592,7 +629,15 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                     if entity_match:
                         structured_data['entity'] = entity_match.group()
                         break
-        
+
+        # DEBUG: Final summary of what was detected
+        print(f"📊 DEBUG: Final results for table '{table_name}':")
+        print(f"   - Currency: {structured_data['currency']}")
+        print(f"   - Multiplier: {structured_data['multiplier']}x")
+        print(f"   - Date: {structured_data['date']}")
+        print(f"   - Items found: {len(structured_data['items'])}")
+        print(f"   - Total: {structured_data['total']}")
+
         return structured_data if structured_data['items'] else None
         
     except Exception as e:
