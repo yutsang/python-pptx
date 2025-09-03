@@ -238,8 +238,10 @@ def parse_table_to_structured_format(df, entity_name, table_name):
 
         if not rmb_thousands_found:
             print(f"⚠️ DEBUG: No '人民币千元' or '人民幣千元' found in table '{table_name}'")
+            print(f"   💰 RMB SCAN: Searched {len(rows)} rows, {len(rows[0]) if rows else 0} columns per row")
         else:
             print(f"✅ DEBUG: Found RMB thousands notation in table '{table_name}' at locations: {', '.join(rmb_locations)}")
+            print(f"   💰 RMB SCAN: Successfully detected {len(rmb_locations)} RMB thousand instances")
         
         # Find the two most important columns (description and amount)
         # Usually the first two columns, but let's be smart about it
@@ -265,8 +267,11 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 break
         
         # Process rows to extract information
+        print(f"🚀 STARTING ROW PROCESSING: {len(rows)} rows to process")
         for row_idx, row in enumerate(rows):
+            print(f"🔄 ROW {row_idx}: Starting processing, row length: {len(row)}")
             if len(row) < 2:
+                print(f"⏭️ ROW {row_idx}: Skipping due to insufficient columns")
                 continue
 
             desc_cell = str(row[desc_col]).strip() if desc_col < len(row) else ""
@@ -463,6 +468,14 @@ def parse_table_to_structured_format(df, entity_name, table_name):
             simplified_chinese_thousands = any("人民幣千元" in str(cell) for cell in row)
             chinese_rmb_thousands = traditional_chinese_thousands or simplified_chinese_thousands
 
+            # Debug: Always show RMB detection status for this row
+            rmb_detected_in_row = False
+            for cell_idx, cell in enumerate(row):
+                cell_str = str(cell)
+                if "人民币千元" in cell_str or "人民幣千元" in cell_str:
+                    print(f"💰 RMB DETECTED: '{cell_str}' found in row {row_idx}, col {cell_idx}")
+                    rmb_detected_in_row = True
+
             if traditional_chinese_thousands:
                 print(f"🔍 MULTIPLIER: Detected traditional Chinese '人民币千元' in row {row_idx}, desc='{desc_cell}', amount='{amount_cell}'")
                 print(f"🔍 MULTIPLIER: Full row content: {[str(cell) for cell in row]}")
@@ -471,6 +484,10 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 print(f"🔍 MULTIPLIER: Detected simplified Chinese '人民幣千元' in row {row_idx}, desc='{desc_cell}', amount='{amount_cell}'")
                 print(f"🔍 MULTIPLIER: Full row content: {[str(cell) for cell in row]}")
                 thousands_detected = True
+            elif rmb_detected_in_row:
+                print(f"⚠️ RMB FOUND but not triggering multiplier logic in row {row_idx}")
+                print(f"   desc='{desc_cell}', amount='{amount_cell}'")
+                print(f"   Row content: {[str(cell) for cell in row]}")
 
             # Debug logging for multiplier detection
             if thousands_detected or currency_detected:
@@ -520,24 +537,23 @@ def parse_table_to_structured_format(df, entity_name, table_name):
             elif structured_data['multiplier'] == 1000000:
                 print(f"✅ CONFIRMED: Multiplier set to 1000000x - million notation detected")
 
-        # Final summary of multiplier detection
-        if structured_data['multiplier'] > 1:
-            print(f"🎯 FINAL MULTIPLIER: Table '{table_name}' multiplier set to {structured_data['multiplier']}x")
-        else:
-            print(f"⚠️ FINAL MULTIPLIER: Table '{table_name}' multiplier remains at {structured_data['multiplier']}x (no thousands/million notation detected)")
-            
-            # Extract items (skip header rows and totals)
+            # Extract items (skip header rows and totals) - INSIDE THE ROW PROCESSING LOOP
             # Be more careful about filtering - don't filter out valid Chinese descriptions
             skip_row = False
 
             # Skip obvious headers and totals
             if desc_cell.lower() in ['total', 'nan', '']:
                 skip_row = True
+                print(f"⏭️ SKIP ROW {row_idx}: desc is header/total ('{desc_cell}')")
             elif re.match(r'^[A-Z\s]{3,}$', desc_cell) and not any('\u4e00' <= c <= '\u9fff' for c in desc_cell):
                 # Skip all-caps English headers, but allow Chinese text
                 skip_row = True
+                print(f"⏭️ SKIP ROW {row_idx}: desc is all-caps English header ('{desc_cell}')")
             elif not amount_cell or amount_cell == 'nan':
                 skip_row = True
+                print(f"⏭️ SKIP ROW {row_idx}: amount is empty or nan ('{amount_cell}')")
+            else:
+                print(f"✅ PROCESS ROW {row_idx}: desc='{desc_cell}', amount='{amount_cell}'")
 
             if not skip_row:
                 
@@ -583,10 +599,15 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                             amount = None
 
                 if amount is not None:
-                    structured_data['items'].append({
+                    item_data = {
                         'description': desc_cell,
                         'amount': int(amount) if amount.is_integer() else amount
-                    })
+                    }
+                    structured_data['items'].append(item_data)
+                    print(f"📝 ADDED ITEM: {desc_cell} = {amount} (multiplier: {structured_data['multiplier']}x)")
+                    print(f"   Final amount after multiplier: {amount * structured_data['multiplier']}")
+                else:
+                    print(f"❌ NO AMOUNT: Could not parse amount from '{amount_cell}' for desc '{desc_cell}'")
             
             # Extract total
             if desc_cell.lower() == 'total' and amount_cell and amount_cell != 'nan':
@@ -629,7 +650,16 @@ def parse_table_to_structured_format(df, entity_name, table_name):
 
                 if total_amount is not None:
                     structured_data['total'] = int(total_amount) if total_amount.is_integer() else total_amount
-        
+
+        # Final summary of multiplier detection (OUTSIDE the row processing loop)
+        if structured_data['multiplier'] > 1:
+            print(f"🎯 FINAL MULTIPLIER: Table '{table_name}' multiplier set to {structured_data['multiplier']}x")
+            if structured_data['multiplier'] == 1000:
+                print(f"   💰 RMB THOUSANDS: Multiplier set to 1000x due to RMB thousand notation")
+        else:
+            print(f"⚠️ FINAL MULTIPLIER: Table '{table_name}' multiplier remains at {structured_data['multiplier']}x (no thousands/million notation detected)")
+            print(f"   💰 RMB CHECK: Check if '人民币千元' or '人民幣千元' was detected in the table")
+
         # Extract entity name from table content if not found
         if structured_data['entity'] == entity_name:
             # Look for more specific entity names in the data

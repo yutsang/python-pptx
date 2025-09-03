@@ -111,11 +111,70 @@ def test_traditional_chinese():
     else:
         print(f"❌ FAIL: Traditional Chinese not detected. Multiplier: {result['multiplier'] if result else 'None'}")
 
+def test_rmb_detection_comprehensive():
+    """Comprehensive test for RMB detection in various scenarios."""
+    print("\n🧪 Testing comprehensive RMB detection...")
+
+    # Test 1: RMB in header row with valid data items
+    test_data1 = [
+        ['人民币千元', '示意性调整后'],
+        ['现金及现金等价物', 1000],
+        ['应收账款', 500],
+        ['存货', 300]
+    ]
+    df1 = pd.DataFrame(test_data1)
+
+    print("Test 1: RMB in header row")
+    result1 = parse_table_to_structured_format(df1, "Test Entity", "Test Table")
+    if result1 and result1['multiplier'] == 1000:
+        print("✅ PASS: RMB in header detected correctly")
+        print(f"   Items found: {len(result1['items'])}")
+        for item in result1['items']:
+            print(f"   - {item['description']}: {item['amount']}")
+    else:
+        print(f"❌ FAIL: RMB in header not detected. Result: {result1}")
+
+    # Test 2: RMB in data row with valid items
+    test_data2 = [
+        ['Description', 'Amount'],
+        ['人民币千元', 'Header'],
+        ['现金及现金等价物', 1000],
+        ['应收账款', 500],
+        ['存货', 300]
+    ]
+    df2 = pd.DataFrame(test_data2)
+
+    print("\nTest 2: RMB in data row")
+    result2 = parse_table_to_structured_format(df2, "Test Entity", "Test Table")
+    if result2 and result2['multiplier'] == 1000:
+        print("✅ PASS: RMB in data row detected correctly")
+        print(f"   Items found: {len(result2['items'])}")
+    else:
+        print(f"❌ FAIL: RMB in data row not detected. Result: {result2}")
+
+    # Test 3: RMB in middle column with valid items
+    test_data3 = [
+        ['Desc', '人民币千元', 'Amount'],
+        ['现金及现金等价物', 'Header', 1000],
+        ['应收账款', 'Data', 500],
+        ['存货', 'Item', 300]
+    ]
+    df3 = pd.DataFrame(test_data3)
+
+    print("\nTest 3: RMB in middle column")
+    result3 = parse_table_to_structured_format(df3, "Test Entity", "Test Table")
+    if result3 and result3['multiplier'] == 1000:
+        print("✅ PASS: RMB in middle column detected correctly")
+        print(f"   Items found: {len(result3['items'])}")
+    else:
+        print(f"❌ FAIL: RMB in middle column not detected. Result: {result3}")
+
 if __name__ == "__main__":
     print("🚀 Running fix verification tests...\n")
 
     test_chinese_column_display()
     test_rmb_multiplier_detection()
     test_traditional_chinese()
+    test_rmb_detection_comprehensive()
 
     print("\n✅ All tests completed!")
