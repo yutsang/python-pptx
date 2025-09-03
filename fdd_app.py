@@ -1360,9 +1360,11 @@ def main():
                             st.session_state['refresh_needed'] = True
                             st.session_state['translation_completed'] = True
                             st.session_state['last_translation_time'] = time.time()
+                            st.session_state['force_reload_agent3'] = True  # Force UI to reload agent3_results
 
                             # Force immediate refresh to show Chinese content
                             print("🔄 Forcing UI refresh to display Chinese content...")
+                            print(f"📊 agent3_results stored with {len(proof_results)} keys: {list(proof_results.keys())}")
                             time.sleep(1)
                             st.rerun()
 
@@ -4180,12 +4182,19 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
     with main_tabs[2]:
         st.markdown("### 🔄 Parallel Agent Comparison & Before/After Changes")
         
-        # Get agent states and results
+        # Get agent states and results with forced refresh
         agent_states = st.session_state.get('agent_states', {})
         agent1_results = agent_states.get('agent1_results', {}) or {}
         agent2_results = agent_states.get('agent2_results', {}) or {}
         agent3_results = agent_states.get('agent3_results', {}) or {}
         content_store = st.session_state.get('ai_content_store', {})
+
+        # Force reload agent3_results if we just completed a translation
+        if st.session_state.get('force_reload_agent3', False):
+            print("🔄 FORCE RELOADING agent3_results from session state")
+            agent_states = st.session_state.get('agent_states', {})
+            agent3_results = agent_states.get('agent3_results', {}) or {}
+            st.session_state['force_reload_agent3'] = False
 
         # Debug: Show what's available in session state for troubleshooting
         print(f"🔍 UI DEBUG - agent_states keys: {list(agent_states.keys()) if agent_states else 'None'}")
@@ -4195,22 +4204,48 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
         print(f"🔍 UI DEBUG - last_translation_time: {st.session_state.get('last_translation_time', 0)}")
         print(f"🔍 UI DEBUG - last_ui_refresh_time: {st.session_state.get('last_ui_refresh_time', 0)}")
 
-        # Show translation status
+        # Show translation status and refresh controls
         translation_completed = st.session_state.get('translation_completed', False)
-        if translation_completed and agent3_results:
-            st.success("✅ Chinese translation completed! Translated content is now available.")
-        elif agent3_results:
-            st.info("ℹ️ Agent 3 results available. Select a key to view translated content.")
-        elif translation_completed:
-            st.warning("⚠️ Translation completed but no results found. Please check the translation process.")
+
+        # Add manual refresh button for immediate UI update
+        col_status, col_refresh = st.columns([3, 1])
+        with col_status:
+            if translation_completed and agent3_results:
+                st.success("✅ Chinese translation completed! Translated content is now available.")
+            elif agent3_results:
+                st.info("ℹ️ Agent 3 results available. Select a key to view translated content.")
+            elif translation_completed:
+                st.warning("⚠️ Translation completed but no results found. Please check the translation process.")
+
+        with col_refresh:
+            if st.button("🔄 Refresh UI", key="refresh_ui_button", help="Force refresh to show latest translated content"):
+                print("🔄 MANUAL UI REFRESH TRIGGERED")
+                st.session_state['manual_refresh_triggered'] = time.time()
+                st.rerun()
 
         # Check for new translation results and force refresh if needed
         last_translation_time = st.session_state.get('last_translation_time', 0)
         last_ui_refresh_time = st.session_state.get('last_ui_refresh_time', 0)
+        manual_refresh_time = st.session_state.get('manual_refresh_triggered', 0)
 
-        # If we have new translation results since last UI refresh, force refresh
-        if agent3_results and last_translation_time > last_ui_refresh_time:
-            print(f"🔄 UI DEBUG - New translation detected (translation: {last_translation_time}, ui: {last_ui_refresh_time})")
+        # Force refresh conditions:
+        # 1. New translation results detected
+        # 2. Manual refresh button pressed
+        # 3. UI is stale (more than 5 seconds old)
+        should_refresh = (
+            (agent3_results and last_translation_time > last_ui_refresh_time) or
+            (manual_refresh_time > last_ui_refresh_time) or
+            (agent3_results and time.time() - last_ui_refresh_time > 5)  # Auto-refresh every 5 seconds if we have results
+        )
+
+        if should_refresh:
+            refresh_reason = "new translation" if last_translation_time > last_ui_refresh_time else "manual trigger" if manual_refresh_time > last_ui_refresh_time else "stale UI"
+            print(f"🔄 UI DEBUG - Refreshing due to: {refresh_reason} (translation: {last_translation_time}, ui: {last_ui_refresh_time})")
+
+            # Show refresh indicator
+            with st.spinner(f"🔄 Refreshing UI - {refresh_reason}..."):
+                time.sleep(0.5)  # Brief visual feedback
+
             st.session_state['last_ui_refresh_time'] = time.time()
             if 'refresh_needed' in st.session_state:
                 del st.session_state['refresh_needed']
@@ -4222,13 +4257,16 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
             del st.session_state['refresh_needed']
 
 
-        # Key selector for comparison
+        # Key selector for comparison (with dynamic key to force refresh)
         if filtered_keys:
+            # Use timestamp to force refresh of selectbox when new content arrives
+            selectbox_key = f"parallel_comparison_key_{int(st.session_state.get('last_translation_time', 0))}"
+
             selected_key = st.selectbox(
                 "Select Financial Key for Detailed Comparison:",
                 filtered_keys,
                 format_func=get_key_display_name,
-                key="parallel_comparison_key"
+                key=selectbox_key
             )
             
             if selected_key:
@@ -4305,7 +4343,7 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                     chinese_ratio = chinese_chars / total_chars
                     return "🇨🇳 Chinese" if chinese_ratio > 0.3 else "🇺🇸 English"
 
-                # Show content language indicators
+                # Show content language indicators and last update time
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Agent 1", detect_language(agent1_content))
@@ -4315,7 +4353,12 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                     else:
                         st.metric("Agent 2", "Not Available")
                 with col3:
-                    st.metric("Agent 3", detect_language(agent3_content))
+                    last_update = st.session_state.get('last_translation_time', 0)
+                    if last_update > 0:
+                        update_time = time.strftime("%H:%M:%S", time.localtime(last_update))
+                        st.metric("Agent 3", f"{detect_language(agent3_content)}", delta=f"Updated: {update_time}")
+                    else:
+                        st.metric("Agent 3", detect_language(agent3_content))
 
                 # Display comparison based on selected mode
                 if comparison_mode == "Before vs After (AI1 → AI3)":
