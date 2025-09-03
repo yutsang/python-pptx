@@ -70,11 +70,19 @@ def render_balance_sheet_sections(
                     else:
                         st.markdown("**Date:** Unknown")
                 with col3:
-                    st.markdown(f"**Currency:** {metadata['currency_info']}")
+                    currency = metadata.get('currency', 'CNY')
+                    st.markdown(f"**Currency:** {currency}")
                 with col4:
-                    st.markdown(f"**Multiplier:** {metadata['multiplier']}x")
+                    multiplier = metadata.get('multiplier', 1)
+                    st.markdown(f"**Multiplier:** {multiplier}x")
                 with col5:
-                    st.markdown(f"**Value Column:** {metadata['value_column']}")
+                    # Show currency and multiplier info instead of "Value Column"
+                    currency_info = metadata.get('currency', 'CNY')
+                    multiplier_info = metadata.get('multiplier', 1)
+                    if multiplier_info > 1:
+                        st.markdown(f"**Processed:** {currency_info} × {multiplier_info}")
+                    else:
+                        st.markdown(f"**Processed:** {currency_info}")
                 with col6:
                     st.markdown("**Entity:** ✅" if first_section.get('entity_match', False) else "**Entity:** ⚠️")
 
@@ -192,11 +200,19 @@ def render_combined_sections(
                     else:
                         st.markdown("**Date:** Unknown")
                 with col3:
-                    st.markdown(f"**Currency:** {metadata['currency_info']}")
+                    currency = metadata.get('currency', 'CNY')
+                    st.markdown(f"**Currency:** {currency}")
                 with col4:
-                    st.markdown(f"**Multiplier:** {metadata['multiplier']}x")
+                    multiplier = metadata.get('multiplier', 1)
+                    st.markdown(f"**Multiplier:** {multiplier}x")
                 with col5:
-                    st.markdown(f"**Value Column:** {metadata['value_column']}")
+                    # Show currency and multiplier info instead of "Value Column"
+                    currency_info = metadata.get('currency', 'CNY')
+                    multiplier_info = metadata.get('multiplier', 1)
+                    if multiplier_info > 1:
+                        st.markdown(f"**Processed:** {currency_info} × {multiplier_info}")
+                    else:
+                        st.markdown(f"**Processed:** {currency_info}")
                 with col6:
                     st.markdown(f"**Statement Type:** Combined")
                 
@@ -277,11 +293,19 @@ def render_income_statement_sections(
                     else:
                         st.markdown("**Date:** Unknown")
                 with col3:
-                    st.markdown(f"**Currency:** {metadata['currency_info']}")
+                    currency = metadata.get('currency', 'CNY')
+                    st.markdown(f"**Currency:** {currency}")
                 with col4:
-                    st.markdown(f"**Multiplier:** {metadata['multiplier']}x")
+                    multiplier = metadata.get('multiplier', 1)
+                    st.markdown(f"**Multiplier:** {multiplier}x")
                 with col5:
-                    st.markdown(f"**Value Column:** {metadata['value_column']}")
+                    # Show currency and multiplier info instead of "Value Column"
+                    currency_info = metadata.get('currency', 'CNY')
+                    multiplier_info = metadata.get('multiplier', 1)
+                    if multiplier_info > 1:
+                        st.markdown(f"**Processed:** {currency_info} × {multiplier_info}")
+                    else:
+                        st.markdown(f"**Processed:** {currency_info}")
                 with col6:
                     st.markdown("**Entity:** ✅" if first_section.get('entity_match', False) else "**Entity:** ⚠️")
 

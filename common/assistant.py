@@ -246,20 +246,33 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                     cell_str = str(cell).strip()
                     # Common date patterns (English and Chinese)
                     date_patterns = [
+                        # English formats
                         r'\d{4}-\d{2}-\d{2}',  # YYYY-MM-DD
                         r'\d{2}/\d{2}/\d{4}',  # MM/DD/YYYY
                         r'\d{2}-\d{2}-\d{4}',  # DD-MM-YYYY
                         r'\d{4}/\d{2}/\d{2}',  # YYYY/MM/DD
-                        r'\d{4}年\d{1,2}月\d{1,2}日',  # Chinese: 2024年5月31日
-                        r'\d{4}年\d{1,2}月\d{1,2}日[？?\s]*',  # Chinese with question mark/spaces: 2024年5月31日?
+
+                        # Chinese formats (prioritize longer matches first)
                         r'\d{4}年\d{1,2}月\d{1,2}日[^\d年月]*',  # Chinese with any non-date suffix: 2024年5月31日...
+                        r'\d{4}年\d{1,2}月\d{1,2}日[？?\s]*',  # Chinese with question mark/spaces: 2024年5月31日?
+                        r'\d{4}年\d{1,2}月\d{1,2}日',  # Chinese: 2024年5月31日
                         r'\d{4}年\d{1,2}月',  # Chinese: 2024年5月
-                        r'\d{4}年\d{1,2}月\d{1,2}號',  # Chinese Traditional: 2024年5月31號
-                        r'\d{4}年\d{1,2}月\d{1,2}号',  # Chinese Simplified: 2024年5月31号
+
+                        # Chinese traditional/simplified variants
+                        r'\d{4}年\d{1,2}月\d{1,2}號[^\d年月]*',  # Chinese Traditional with suffix
+                        r'\d{4}年\d{1,2}月\d{1,2}号[^\d年月]*',  # Chinese Simplified with suffix
                         r'\d{4}年\d{1,2}月\d{1,2}號[？?\s]*',  # Chinese Traditional with question mark/spaces
                         r'\d{4}年\d{1,2}月\d{1,2}号[？?\s]*',  # Chinese Simplified with question mark/spaces
+                        r'\d{4}年\d{1,2}月\d{1,2}號',  # Chinese Traditional: 2024年5月31號
+                        r'\d{4}年\d{1,2}月\d{1,2}号',  # Chinese Simplified: 2024年5月31号
+
+                        # 2-digit year formats
+                        r'\d{2}年\d{1,2}月\d{1,2}日[^\d年月]*',  # Chinese 2-digit year with suffix
                         r'\d{2}年\d{1,2}月\d{1,2}日',  # Chinese 2-digit year: 24年5月31日
                         r'\d{2}年\d{1,2}月',  # Chinese 2-digit year: 24年5月
+
+                        # Month-day only (less specific, put last)
+                        r'\d{1,2}月\d{1,2}日[^\d年月]*',  # Chinese month-day with suffix
                         r'\d{1,2}月\d{1,2}日',  # Chinese month-day only: 5月31日
                     ]
                     for pattern in date_patterns:
@@ -269,6 +282,9 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                                 # Try to parse the date
                                 date_str = match.group()
                                 print(f"DEBUG: Found date pattern '{pattern}' in cell '{cell_str}', extracted '{date_str}'")
+                            except Exception as e:
+                                print(f"DEBUG: Date parsing failed for pattern '{pattern}' with '{date_str}': {e}")
+                                continue
 
                                 if '年' in date_str and '月' in date_str:
                                     # Chinese date format: 2024年5月31日, 2024年5月31號, 2024年5月31号 or 2024年5月
@@ -361,6 +377,7 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 'RMB' in desc_cell.upper() or 'RMB' in amount_cell.upper()):
                 structured_data['currency'] = 'CNY'
                 currency_detected = True
+                print(f"DEBUG: Currency detected as CNY - desc='{desc_cell}', amount='{amount_cell}'")
 
             # Enhanced check for thousands notation (English and Chinese)
             thousands_detected = (
@@ -386,6 +403,10 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 # Check for "千" anywhere in the amount cell
                 "千" in amount_cell
             )
+
+            # Debug logging for multiplier detection
+            if thousands_detected or currency_detected:
+                print(f"DEBUG: Multiplier detection - desc='{desc_cell}', amount='{amount_cell}', thousands_detected={thousands_detected}, currency_detected={currency_detected}")
 
             # Set multiplier based on detection
             if thousands_detected:
