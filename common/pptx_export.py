@@ -48,6 +48,61 @@ def clean_content_quotes(content):
 
     return content
 
+def detect_chinese_text(text):
+    """
+    Detect if text contains significant Chinese characters.
+    Returns True if more than 30% of characters are Chinese.
+    """
+    if not text:
+        return False
+
+    chinese_chars = sum(1 for char in text if '\u4e00' <= char <= '\u9fff')
+    total_chars = len(text)
+
+    if total_chars == 0:
+        return False
+
+    chinese_ratio = chinese_chars / total_chars
+    return chinese_ratio > 0.3
+
+def get_font_size_for_text(text, base_size=Pt(9)):
+    """
+    Get appropriate font size based on text content.
+    Chinese text gets slightly larger font for better readability.
+    """
+    if detect_chinese_text(text):
+        return Pt(10)  # Slightly larger for Chinese
+    else:
+        return base_size  # Default size for English
+
+def get_line_spacing_for_text(text):
+    """
+    Get appropriate line spacing based on text content.
+    Chinese text needs different spacing than English.
+    """
+    if detect_chinese_text(text):
+        return Pt(13)  # Tighter spacing for Chinese
+    else:
+        return Pt(12)  # Standard spacing for English
+
+def get_space_after_for_text(text):
+    """
+    Get appropriate space after paragraph based on text content.
+    """
+    if detect_chinese_text(text):
+        return Pt(6)  # Less space after for Chinese
+    else:
+        return Pt(8)  # Standard space after for English
+
+def get_space_before_for_text(text):
+    """
+    Get appropriate space before paragraph based on text content.
+    """
+    if detect_chinese_text(text):
+        return Pt(3)  # Less space before for Chinese
+    else:
+        return Pt(4)  # Standard space before for English
+
 def replace_entity_placeholders(content, project_name):
     """
     Replace entity name placeholders in content with abbreviated entity names.
@@ -668,12 +723,16 @@ class PowerPointGenerator:
                 p = tf.add_paragraph()
                 self._apply_paragraph_formatting(p, is_layer2_3=False)
                 if paragraph_count > 0:
-                    try: p.space_before = Pt(1)  # Reduced spacing to minimize empty rows
+                    try: p.space_before = get_space_before_for_text(f"{item.accounting_type}{cont_text}")
                     except: pass
+                try: p.space_after = get_space_after_for_text(f"{item.accounting_type}{cont_text}")
+                except: pass
+                try: p.line_spacing = get_line_spacing_for_text(f"{item.accounting_type}{cont_text}")
+                except: pass
                 run = p.add_run()
                 cont_text = " (continued)" if item.layer1_continued else ""
                 run.text = f"{item.accounting_type}{cont_text}"
-                run.font.size = Pt(9)
+                run.font.size = get_font_size_for_text(run.text, Pt(9))
                 run.font.bold = True
                 run.font.name = 'Arial'
                 try:
@@ -692,8 +751,12 @@ class PowerPointGenerator:
                         p = tf.add_paragraph()
                         self._apply_paragraph_formatting(p, is_layer2_3=True)
                         if paragraph_count > 0:
-                            try: p.space_before = Pt(1)  # Reduced spacing to minimize empty rows
+                            try: p.space_before = get_space_before_for_text(f"{self.BULLET_CHAR}{item.account_title}{cont_text} - {part}")
                             except: pass
+                        try: p.space_after = get_space_after_for_text(f"{self.BULLET_CHAR}{item.account_title}{cont_text} - {part}")
+                        except: pass
+                        try: p.line_spacing = get_line_spacing_for_text(f"{self.BULLET_CHAR}{item.account_title}{cont_text} - {part}")
+                        except: pass
                         bullet_run = p.add_run()
                         bullet_run.text = self.BULLET_CHAR
                         try:
@@ -701,26 +764,30 @@ class PowerPointGenerator:
                         except:
                             bullet_run.font.color.rgb = RGBColor(128, 128, 128)  # Fallback grey
                         bullet_run.font.name = 'Arial'
-                        bullet_run.font.size = Pt(9)
+                        bullet_run.font.size = get_font_size_for_text(bullet_run.text, Pt(9))
                         title_run = p.add_run()
                         cont_text = " (continued)" if item.layer2_continued else ""
                         title_run.text = f"{item.account_title}{cont_text}"
                         title_run.font.bold = True
                         title_run.font.name = 'Arial'
-                        title_run.font.size = Pt(9)
+                        title_run.font.size = get_font_size_for_text(title_run.text, Pt(9))
                         desc_run = p.add_run()
                         desc_run.text = f" - {part}"
                         desc_run.font.bold = False
                         desc_run.font.name = 'Arial'
-                        desc_run.font.size = Pt(9)
+                        desc_run.font.size = get_font_size_for_text(desc_run.text, Pt(9))
                         paragraph_count += 1
                     else:
                         # Continuation: visually subordinate (indented, no bullet)
                         p = tf.add_paragraph()
                         self._apply_paragraph_formatting(p, is_layer2_3=True)
                         if paragraph_count > 0:
-                            try: p.space_before = Pt(1)  # Reduced spacing to minimize empty rows
+                            try: p.space_before = get_space_before_for_text(part)
                             except: pass
+                        try: p.space_after = get_space_after_for_text(part)
+                        except: pass
+                        try: p.line_spacing = get_line_spacing_for_text(part)
+                        except: pass
                         try: p.left_indent = Inches(0.4)
                         except: pass
                         try: p.first_line_indent = Inches(-0.19)
@@ -729,7 +796,7 @@ class PowerPointGenerator:
                         cont_run.text = part
                         cont_run.font.bold = False
                         cont_run.font.name = 'Arial'
-                        cont_run.font.size = Pt(9)
+                        cont_run.font.size = get_font_size_for_text(cont_run.text, Pt(9))
                         paragraph_count += 1
                     # Add an empty row between split parts (but not after the last)
                     if part_idx < len(desc_parts) - 1:
@@ -924,7 +991,7 @@ class PowerPointGenerator:
         header_run.text = f"{self.BULLET_CHAR}{item.account_title}{cont_text}"
         header_run.font.bold = True
         header_run.font.name = 'Arial'
-        header_run.font.size = Pt(9)
+        header_run.font.size = get_font_size_for_text(header_run.text, Pt(9))
         # Process table content
         content = ' '.join(item.descriptions)
         current_category = None
@@ -942,7 +1009,7 @@ class PowerPointGenerator:
                 run.text = f"• {current_category}"
                 run.font.name = 'Arial'
                 run.font.bold = True
-                run.font.size = Pt(9)
+                run.font.size = get_font_size_for_text(run.text, Pt(9))
             elif line.startswith('- '):
                 p = tf.add_paragraph()
                 self._apply_paragraph_formatting(p, is_layer2_3=True)
@@ -951,7 +1018,7 @@ class PowerPointGenerator:
                 run = p.add_run()
                 run.text = f"◦ {line[2:]}"
                 run.font.name = 'Arial'
-                run.font.size = Pt(9)
+                run.font.size = get_font_size_for_text(run.text, Pt(9))
 
     def _populate_summary_section_safe(self, shape, summary_content: str):
         """Summary section with natural text wrapping and filling"""

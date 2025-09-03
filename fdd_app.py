@@ -10,6 +10,8 @@ from tqdm import tqdm
 from fdd_utils.mappings import (
     KEY_TO_SECTION_MAPPING,
     KEY_TERMS_BY_KEY,
+)
+from fdd_utils.category_config import (
     DISPLAY_NAME_MAPPING_DEFAULT,
     DISPLAY_NAME_MAPPING_NB_NJ,
 )
@@ -26,6 +28,40 @@ from fdd_utils.data_utils import (
     get_key_display_name,
     format_date_to_dd_mmm_yyyy,
     load_config_files
+)
+from fdd_utils.content_utils import (
+    display_bs_content_by_key,
+    clean_content_quotes,
+    load_json_content,
+    parse_markdown_to_json,
+    get_content_from_json,
+    generate_content_from_session_storage,
+    generate_markdown_from_ai_results,
+    convert_sections_to_markdown,
+    update_bs_content_with_agent_corrections,
+    read_bs_content_by_key
+)
+from fdd_utils.display_utils import (
+    display_ai_content_by_key,
+    display_ai_prompt_by_key,
+    display_sequential_agent_results,
+    display_before_after_comparison,
+    display_step_by_step_comparison,
+    display_validation_comparison,
+    calculate_content_similarity,
+    show_text_differences
+)
+from fdd_utils.general_utils import (
+    write_prompt_debug_content,
+    calculate_text_metrics,
+    format_file_size,
+    safe_json_load,
+    safe_json_dump,
+    create_backup_file,
+    validate_file_exists,
+    get_file_modification_time,
+    log_processing_step,
+    validate_text_content
 )
 from pathlib import Path
 from tabulate import tabulate
@@ -600,7 +636,7 @@ def main():
                     
                     # High-level debug only
                     total_sections = sum(len(sections) for sections in sections_by_key.values())
-                    print(f"DEBUG: Processed {len(sections_by_key)} keys with {total_sections} total sections")
+
                     
                     # Store in session state for AI section to use
                     if 'ai_data' not in st.session_state:
@@ -639,7 +675,7 @@ def main():
                     
                     # High-level debug only
                     total_sections = sum(len(sections) for sections in sections_by_key.values())
-                    print(f"DEBUG IS: Processed {len(sections_by_key)} income statement keys with {total_sections} total sections")
+
                     
                     # Store in session state for AI section to use
                     if 'ai_data' not in st.session_state:
@@ -745,14 +781,12 @@ def main():
                     if not entity_keywords:
                         entity_keywords = [selected_entity]
                     
-                    print(f"DEBUG AI: entity_keywords generated: {entity_keywords}")
-                    print(f"DEBUG AI: entity_suffixes: {entity_suffixes}")
-                    print(f"DEBUG AI: selected_entity: {selected_entity}")
+
                 
                 # Use the data that was already processed by the first section
                 if 'ai_data' in st.session_state and 'sections_by_key' in st.session_state['ai_data']:
                     sections_by_key = st.session_state['ai_data']['sections_by_key']
-                    print(f"DEBUG AI: Using existing data from session state")
+
                 else:
                     # Fallback: process data if not already done
                     with st.spinner("🔄 Processing Excel file for AI..."):
@@ -765,7 +799,7 @@ def main():
                             entity_mode='auto',  # Always use auto mode for intelligent detection
                             debug=False
                         )
-                    print(f"DEBUG AI: Processed data as fallback")
+
                 st.success("✅ Excel processing completed for AI")
                 
                 # Get keys with data
@@ -1059,59 +1093,54 @@ def main():
                                     status_text.text("🌐 翻译为中文...")
                                     progress_bar.progress(85)
 
-                                    # DEBUG: About to call translation
-                                    print(f"\n🔄 DEBUG: About to call run_chinese_translator")
-                                    print(f"🔑 Keys: {len(filtered_keys_for_ai)}")
-                                    print(f"📊 Proofread results available: {len(proofread_english_results) if proofread_english_results else 0}")
-                                    print(f"📋 External progress: {type(ext)}")
+                                                                    # ENHANCED LOGGING: Create button-specific logger
+                                from fdd_utils.logging_config import log_ai_processing, create_button_logger
+                                button_logger = create_button_logger().get_button_logger("chinese_ai")
+                                button_logger.info("Starting Chinese AI translation process")
+                                button_logger.info(f"Processing {len(filtered_keys_for_ai)} keys")
+                                button_logger.info(f"Proofread results available: {len(proofread_english_results) if proofread_english_results else 0}")
 
-                                    # Prepare translation input by ensuring content is properly structured
-                                    translation_input = {}
-                                    for key in filtered_keys_for_ai:
-                                        if key in proofread_english_results and isinstance(proofread_english_results[key], dict):
-                                            # Use the proofread result as the input for translation
-                                            translation_input[key] = proofread_english_results[key]
-                                            print(f"✅ {key}: Using proofread result")
-                                        else:
-                                            # Fallback to original agent1 result if available
-                                            agent1_state = st.session_state.get('agent_states', {}).get('agent1_results', {})
-                                            if key in agent1_state:
-                                                translation_input[key] = agent1_state[key]
-                                                print(f"⚠️ {key}: Using fallback agent1 result")
-                                            else:
-                                                print(f"❌ {key}: No content available")
 
-                                    print(f"📊 Translation input prepared: {len(translation_input)} keys")
 
-                                    translated_results = run_chinese_translator(filtered_keys_for_ai, translation_input, temp_ai_data, external_progress=ext, debug_mode=True)
+                                # FAST: Prepare translation input with minimal processing
+                                translation_input = {}
 
-                                    # DEBUG: Translation completed
-                                    print(f"\n✅ DEBUG: run_chinese_translator completed")
-                                    print(f"📊 Translation results: {len(translated_results) if translated_results else 0}")
+                                # Pre-fetch agent1 results to avoid repeated session state access
+                                agent1_state = st.session_state.get('agent_states', {}).get('agent1_results', {})
 
-                                    proof_results = translated_results  # Final results are the translated content
+                                for key in filtered_keys_for_ai:
+                                    if key in proofread_english_results and isinstance(proofread_english_results[key], dict):
+                                        translation_input[key] = proofread_english_results[key]
+                                    elif key in agent1_state:
+                                        translation_input[key] = agent1_state[key]
 
-                                    # Check if translation actually produced Chinese content
-                                    if translated_results:
-                                        # Verify that at least some content is in Chinese
-                                        has_chinese_content = False
-                                        has_translation_failure = False
 
-                                        for key, result in translated_results.items():
-                                            content = result.get('content', '') if isinstance(result, dict) else str(result)
-                                            if isinstance(result, dict) and result.get('translation_failed'):
-                                                has_translation_failure = True
-                                                break
-                                            elif content and any('\u4e00' <= char <= '\u9fff' for char in content):
-                                                has_chinese_content = True
-                                                break
 
-                                        if has_translation_failure:
-                                            st.error("❌ 翻译完全失败。请检查AI配置和网络连接。")
-                                            status_text.text("❌ 翻译失败")
-                                        elif not has_chinese_content:
-                                            st.warning("⚠️ 翻译可能失败，内容仍为英文。请检查AI配置。")
-                                            status_text.text("⚠️ 翻译警告：内容可能仍为英文")
+                                translated_results = run_chinese_translator(filtered_keys_for_ai, translation_input, temp_ai_data, external_progress=ext)
+
+                                proof_results = translated_results  # Final results are the translated content
+
+                                # Check if translation actually produced Chinese content
+                                if translated_results:
+                                    # Verify that at least some content is in Chinese
+                                    has_chinese_content = False
+                                    has_translation_failure = False
+
+                                    for key, result in translated_results.items():
+                                        content = result.get('content', '') if isinstance(result, dict) else str(result)
+                                        if isinstance(result, dict) and result.get('translation_failed'):
+                                            has_translation_failure = True
+                                            break
+                                        elif content and any('\u4e00' <= char <= '\u9fff' for char in content):
+                                            has_chinese_content = True
+                                            break
+
+                                    if has_translation_failure:
+                                        st.error("❌ 翻译完全失败。请检查AI配置和网络连接。")
+                                        status_text.text("❌ 翻译失败")
+                                    elif not has_chinese_content:
+                                        st.warning("⚠️ 翻译可能失败，内容仍为英文。请检查AI配置。")
+                                        status_text.text("⚠️ 翻译警告：内容可能仍为英文")
 
                                 else:
                                     # English version: Generate → Proofread
@@ -1180,34 +1209,23 @@ def main():
                                 ext['combined']['stage_index'] = 2
                                 status_text.text("🌐 翻译为中文...")
 
-                                # DEBUG: About to call translation (single statement mode)
-                                print(f"\n🔄 DEBUG: About to call run_chinese_translator (single statement)")
-                                print(f"🔑 Keys: {len(filtered_keys_for_ai)}")
-                                print(f"📊 Proofread results available: {len(proofread_english_results) if proofread_english_results else 0}")
 
-                                # Prepare translation input by ensuring content is properly structured
+
+                                # FAST: Prepare translation input with minimal processing
                                 translation_input = {}
+
+                                # Pre-fetch agent1 results to avoid repeated session state access
+                                agent1_state = st.session_state.get('agent_states', {}).get('agent1_results', {})
+
                                 for key in filtered_keys_for_ai:
                                     if key in proofread_english_results and isinstance(proofread_english_results[key], dict):
-                                        # Use the proofread result as the input for translation
                                         translation_input[key] = proofread_english_results[key]
-                                        print(f"✅ {key}: Using proofread result")
-                                    else:
-                                        # Fallback to original agent1 result if available
-                                        agent1_state = st.session_state.get('agent_states', {}).get('agent1_results', {})
-                                        if key in agent1_state:
-                                            translation_input[key] = agent1_state[key]
-                                            print(f"⚠️ {key}: Using fallback agent1 result")
-                                        else:
-                                            print(f"❌ {key}: No content available")
+                                    elif key in agent1_state:
+                                        translation_input[key] = agent1_state[key]
 
-                                print(f"📊 Translation input prepared: {len(translation_input)} keys")
 
-                                translated_results = run_chinese_translator(filtered_keys_for_ai, translation_input, temp_ai_data, external_progress=ext, debug_mode=True)
 
-                                # DEBUG: Translation completed (single statement mode)
-                                print(f"\n✅ DEBUG: run_chinese_translator completed (single statement)")
-                                print(f"📊 Translation results: {len(translated_results) if translated_results else 0}")
+                                translated_results = run_chinese_translator(filtered_keys_for_ai, translation_input, temp_ai_data, external_progress=ext)
 
                                 proof_results = translated_results  # Final results are the translated content
 
@@ -1268,6 +1286,15 @@ def main():
                                     print(f"   ⚠️  {key} result is not a dict: {type(result)}")
 
                             print(f"✅ AI content store updated for PPTX export")
+
+                            # LOG COMPLETION
+                            try:
+                                button_logger.info("Chinese AI translation process completed successfully")
+                                button_logger.info(f"Total keys processed: {len(final_results)}")
+                                button_logger.info(f"Session state updated with agent3_results")
+                                button_logger.info("Ready for PowerPoint export with Chinese content")
+                            except Exception:
+                                pass
 
                             # Generate content files after combined processing
                             if proof_results:
@@ -1525,10 +1552,18 @@ def main():
                         # Get uploaded_file from session state or use default
                         current_uploaded_file = st.session_state.get('uploaded_file', None)
                         if current_uploaded_file is not None:
-                            if hasattr(current_uploaded_file, 'file_path'):
-                                excel_file_path = current_uploaded_file.file_path
-                            elif hasattr(current_uploaded_file, 'name'):
-                                excel_file_path = current_uploaded_file.name
+                            try:
+                                # Save uploaded file to temporary location for PowerPoint processing
+                                import tempfile
+                                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
+                                    temp_file.write(current_uploaded_file.getvalue())
+                                    excel_file_path = temp_file.name
+                                print(f"💾 Saved uploaded file to temporary location: {excel_file_path}")
+                            except Exception as e:
+                                print(f"⚠️ Failed to save uploaded file: {e}")
+                                # Fallback to default file
+                                if os.path.exists("databook.xlsx"):
+                                    excel_file_path = "databook.xlsx"
                         else:
                             # Fallback to default file
                             if os.path.exists("databook.xlsx"):
@@ -1655,392 +1690,18 @@ def main():
 
 
 # Helper function to parse and display bs_content.md by key
-def display_bs_content_by_key(md_path):
-    try:
-        with open(md_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        # Split by key headers (e.g., ## Cash, ## AR, etc.)
-        sections = re.split(r'(^## .+$)', content, flags=re.MULTILINE)
-        if len(sections) < 2:
-            st.markdown(content)
-            return
-        for i in range(1, len(sections), 2):
-            key_header = sections[i].strip()
-            key_content = sections[i+1].strip() if i+1 < len(sections) else ''
-            with st.expander(key_header, expanded=False):
-                st.markdown(key_content)
-    except Exception as e:
-        st.error(f"Error reading {md_path}: {e}")
+# display_bs_content_by_key moved to fdd_utils.content_utils
 
-def clean_content_quotes(content):
-    """
-    Clean up content by removing unnecessary quotation marks while preserving legitimate quotes
-    """
-    if not content:
-        return content
-    
-    # Split content into lines to process each line separately
-    lines = content.split('\n')
-    cleaned_lines = []
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            cleaned_lines.append(line)
-            continue
-        
-        # Check if the entire line is wrapped in quotes (common AI output issue)
-        # Handle both straight quotes and curly quotes
-        if ((line.startswith('"') and line.endswith('"')) or 
-            (line.startswith('"') and line.endswith('"')) or
-            (line.startswith('"') and line.endswith('"')) or
-            (line.startswith('"') and line.endswith('"'))):
-            # Remove the outer quotes
-            cleaned_line = line[1:-1]
-            cleaned_lines.append(cleaned_line)
-        else:
-            # Check for partial quotes that might be AI artifacts
-            # Look for patterns like "text" where the quotes seem unnecessary
-            # But preserve legitimate quotes like "Property Tax" or "Land Use Tax"
-            
-            # Split by spaces to check each word
-            words = line.split()
-            cleaned_words = []
-            
-            for word in words:
-                # If a word is entirely quoted and it's not a proper noun or special term, remove quotes
-                if ((word.startswith('"') and word.endswith('"')) or 
-                    (word.startswith('"') and word.endswith('"')) or
-                    (word.startswith('"') and word.endswith('"')) or
-                    (word.startswith('"') and word.endswith('"'))):
-                    # Check if it's a legitimate quote (proper noun, special term, etc.)
-                    unquoted_word = word[1:-1]
-                    
-                    # List of terms that should keep quotes (proper nouns, special terms)
-                    keep_quotes_terms = [
-                        'Property Tax', 'Land Use Tax', 'VAT', 'GST', 'Income Tax',
-                        'Corporate Tax', 'Sales Tax', 'Excise Tax', 'Customs Duty',
-                        'Stamp Duty', 'Transfer Tax', 'Capital Gains Tax'
-                    ]
-                    
-                    if any(term.lower() in unquoted_word.lower() for term in keep_quotes_terms):
-                        cleaned_words.append(word)  # Keep the quotes
-                    else:
-                        cleaned_words.append(unquoted_word)  # Remove quotes
-                else:
-                    cleaned_words.append(word)
-            
-            cleaned_lines.append(' '.join(cleaned_words))
-    
-    return '\n'.join(cleaned_lines)
+# clean_content_quotes moved to fdd_utils.content_utils
 
-def display_ai_content_by_key(key, agent_choice, language='English'):
-    """
-    Display AI content based on the financial key using actual AI processing
-    """
-    try:
-        import re
-        
-        # Get AI data from session state
-        ai_data = st.session_state.get('ai_data')
-        if not ai_data:
-            st.info("No AI data available. Please process with AI first.")
-            return
-        
-        sections_by_key = ai_data['sections_by_key']
-        pattern = ai_data['pattern']
-        mapping = ai_data['mapping']
-        config = ai_data['config']
-        entity_name = ai_data['entity_name']
-        entity_keywords = ai_data['entity_keywords']
-        mode = ai_data.get('mode', 'AI Mode')
-        
-        # Get sections for this key
-        sections = sections_by_key.get(key, [])
-        if not sections:
-            st.info(f"No data found for {get_key_display_name(key)}")
-            return
-        
-        # Show processing status
-        with st.spinner(f"🤖 Processing {get_key_display_name(key)} with {agent_choice}..."):
-            
-            if agent_choice == "Agent 1":
-                # Agent 1: Content generation using AI
-                st.markdown("### 📊 Generated Content")
-                
-                if mode == "AI Mode":
-                    # Get stored AI results - check agent_states first (for processed Chinese content)
-                    agent_states = st.session_state.get('agent_states', {})
-                    agent1_results = agent_states.get('agent1_results', {})
-
-                    # Check if we have processed results in agent_states
-                    if key in agent1_results and agent1_results[key]:
-                        content = agent1_results[key]
-                        if isinstance(content, dict):
-                            content = content.get('content', '')
-                        # Clean the content
-                        cleaned_content = clean_content_quotes(content)
-                        st.markdown(cleaned_content)
-
-                        # Show source information
-                        with st.expander("📋 Source Information", expanded=False):
-                            st.info(f"**Key:** {key}")
-                            st.info(f"**Entity:** {entity_name}")
-                            st.info(f"**Agent:** {agent_choice}")
-                            st.info(f"**Mode:** {mode}")
-                    else:
-                        # Fallback to ai_data results
-                        ai_results = ai_data.get('ai_results', {})
-                        if key in ai_results and ai_results[key]:
-                            content = ai_results[key]
-                            # Clean the content
-                            cleaned_content = clean_content_quotes(content)
-                            st.markdown(cleaned_content)
-
-                            # Show source information
-                            with st.expander("📋 Source Information", expanded=False):
-                                st.info(f"**Key:** {key}")
-                                st.info(f"**Entity:** {entity_name}")
-                                st.info(f"**Agent:** {agent_choice}")
-                                st.info(f"**Mode:** {mode}")
-                        else:
-                            st.warning(f"No AI content available for {get_key_display_name(key)}")
-                            st.info("This may be due to AI processing failure or no data found for this key.")
-
-                else:  # Only AI Mode supported
-                    st.error("❌ Only AI Mode is supported. Please configure AI services.")
-                    
-            elif agent_choice == "Agent 2":
-                # Agent 2: Data integrity validation
-                st.markdown("### 🔍 Data Integrity Report")
-
-                # Get Agent 1 content
-                ai_results = ai_data.get('ai_results', {})
-                agent1_content = ai_results.get(key, "")
-                if not agent1_content:
-                    st.warning("No AI-generated content available for this key.")
-                    agent1_content = ""
-                
-                if agent1_content:
-                    # Display Agent 1 content
-                    st.markdown("**Agent 1 Content:**")
-                    st.markdown(clean_content_quotes(agent1_content))
-                    
-                    # Display data validation results from session state
-                    st.markdown("---")
-                    st.markdown("**Data Validation Results:**")
-                    
-                    # Get AI2 results from session state (processed during sequential workflow)
-                    ai2_results = st.session_state.get('ai2_results', {})
-                    validation_result = ai2_results.get(key)
-                    
-                    if validation_result:
-                        if validation_result.get('is_valid', False):
-                            st.success("✅ Data validation passed")
-                            st.info(f"Validation Score: {validation_result.get('score', 100)}/100")
-                        else:
-                            st.warning("⚠️ Data validation issues found:")
-                            for issue in validation_result.get('issues', []):
-                                st.write(f"• {issue}")
-                            
-                            if validation_result.get('score'):
-                                st.info(f"Validation Score: {validation_result['score']}/100")
-                            
-                            # Show corrected content if available
-                            if validation_result.get('corrected_content'):
-                                st.markdown("**Corrected Content:**")
-                                st.markdown(validation_result['corrected_content'])
-                    else:
-                        # Offline validation removed
-                        st.info("Data validation now uses AI-generated content only.")
-                else:
-                    st.warning("No content available for validation")
-                    
-            elif agent_choice == "Agent 3":
-                # Agent 3: Pattern compliance validation
-                st.markdown("### 🎯 Pattern Compliance Report")
-                
-                # Get Agent 1 content
-                if mode == "Offline Mode":
-                    st.warning("No AI-generated content available for this key.")
-                    agent1_content = ""
-                else:
-                    ai_results = ai_data.get('ai_results', {})
-                    agent1_content = ai_results.get(key, "")
-                    if not agent1_content:
-                        st.warning("No AI-generated content available for this key.")
-                    agent1_content = ""
-                
-                # Get Agent 1 content - check agent_states first
-                agent_states = st.session_state.get('agent_states', {})
-                agent1_results = agent_states.get('agent1_results', {})
-                agent3_results = agent_states.get('agent3_results', {})
-
-                # Check for processed content in agent_states
-                if key in agent3_results and agent3_results[key]:
-                    # We have proofread results
-                    proofread_content = agent3_results[key]
-                    if isinstance(proofread_content, dict):
-                        proofread_content = proofread_content.get('corrected_content', proofread_content.get('content', ''))
-
-                    if proofread_content:
-                        st.markdown("**Proofread Content (Agent 3):**")
-                        st.markdown(clean_content_quotes(proofread_content))
-
-                        # Show compliance status
-                        is_compliant = agent3_results[key].get('is_compliant', False) if isinstance(agent3_results[key], dict) else False
-                        if is_compliant:
-                            st.success("✅ Pattern compliance passed")
-                        else:
-                            st.warning("⚠️ Pattern compliance issues found")
-
-                elif key in agent1_results and agent1_results[key]:
-                    # We have Agent 1 results but no Agent 3
-                    agent1_content = agent1_results[key]
-                    if isinstance(agent1_content, dict):
-                        agent1_content = agent1_content.get('content', '')
-
-                    if agent1_content:
-                        st.markdown("**Agent 1 Content:**")
-                        st.markdown(clean_content_quotes(agent1_content))
-                        st.info("ℹ️ No proofreading results available yet. Run proofreading to see corrections.")
-
-                else:
-                    # Fallback to old method
-                    if mode == "Offline Mode":
-                        st.warning("No AI-generated content available for this key.")
-                        agent1_content = ""
-                    else:
-                        ai_results = ai_data.get('ai_results', {})
-                        agent1_content = ai_results.get(key, "")
-                        if not agent1_content:
-                            st.warning("No AI-generated content available for this key.")
-                        agent1_content = ""
-
-                    if agent1_content:
-                        # Display Agent 1 content
-                        st.markdown("**Agent 1 Content:**")
-                        st.markdown(clean_content_quotes(agent1_content))
-
-                        # Display pattern compliance results from session state
-                        st.markdown("---")
-                        st.markdown("**Pattern Compliance Results:**")
-
-                        # Get AI3 results from session state (processed during sequential workflow)
-                        ai3_results = st.session_state.get('ai3_results', {})
-                        pattern_result = ai3_results.get(key, {})
-
-                        if pattern_result:
-                            if pattern_result.get('is_compliant', False):
-                                st.success("✅ Pattern compliance passed")
-                            else:
-                                st.warning("⚠️ Pattern compliance issues found:")
-                                for issue in pattern_result.get('issues', []):
-                                    st.write(f"• {issue}")
-
-                                # Show corrected content if available
-                                if pattern_result.get('corrected_content'):
-                                    st.markdown("**Corrected Content:**")
-                                    st.markdown(pattern_result['corrected_content'])
-                        else:
-                            # Fallback to offline pattern validation display
-                            st.info("Pattern validation now uses AI-generated content only.")
-                    else:
-                        st.warning("No content available for pattern validation")
-    
-    except Exception as e:
-        st.error(f"Error in AI content display: {e}")
-        st.error(f"Error details: {str(e)}")
+# display_ai_content_by_key moved to fdd_utils.display_utils
 
 # JSON Content Access Helper Functions
-def load_json_content():
-    """Load content from JSON file with caching for better performance"""
-    try:
-        # Try JSON first (better performance)
-        json_file = "fdd_utils/bs_content.json"
-        if os.path.exists(json_file):
-            with open(json_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"Error loading JSON content: {e}")
-    
-    # Fallback to parsing markdown if JSON not available
-    try:
-        content_files = ["fdd_utils/bs_content.md", "fdd_utils/bs_content_ai_generated.md"]
-        for file_path in content_files:
-            if os.path.exists(file_path):
-                return parse_markdown_to_json(file_path)
-    except Exception as e:
-        print(f"Error parsing markdown fallback: {e}")
-    
-    return None
+# load_json_content moved to fdd_utils.content_utils
 
-def parse_markdown_to_json(md_file_path):
-    """Parse markdown file and convert to JSON-like structure for compatibility"""
-    try:
-        with open(md_file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # Parse markdown into structured format
-        sections = re.split(r'(^### .+$)', content, flags=re.MULTILINE)
-        parsed_data = {"financial_items": {}}
-        
-        for i in range(1, len(sections), 2):
-            if i + 1 < len(sections):
-                header = sections[i].strip().replace('### ', '')
-                section_content = sections[i + 1].strip()
-                
-                # Map headers back to keys
-                header_to_key_mapping = {
-                    'Cash at bank': 'Cash',
-                    'Accounts receivables': 'AR',
-                    'Prepayments': 'Prepayments',
-                    'Other receivables': 'OR',
-                    'Other current assets': 'Other CA',
-                    'Investment properties': 'IP',
-                    'Other non-current assets': 'Other NCA',
-                    'Accounts payable': 'AP',
-                    'Taxes payables': 'Taxes payable',
-                    'Other payables': 'OP',
-                    'Capital': 'Capital',
-                    'Surplus reserve': 'Reserve'
-                }
-                
-                key = header_to_key_mapping.get(header, header)
-                parsed_data["financial_items"][key] = {
-                    "content": section_content,
-                    "display_name": header
-                }
-        
-        return parsed_data
-    except Exception as e:
-        print(f"Error parsing markdown: {e}")
-        return None
+# parse_markdown_to_json moved to fdd_utils.content_utils
 
-def get_content_from_json(key):
-    """Get content for a specific financial key from JSON data"""
-    json_data = load_json_content()
-    if not json_data:
-        return None
-
-    # Search in all categories (matching the actual JSON structure)
-    for category in ["Current Assets", "Non-current Assets", "Liabilities", "Equity"]:
-        category_data = json_data.get("categories", {}).get(category, [])
-        for item in category_data:
-            if isinstance(item, dict) and item.get("key") == key:
-                content = item.get("content", "")
-                content_source = item.get("content_source", "")
-                # Only return agent3_final content
-                if content and "no information available" not in content.lower() and content_source == "agent3_final":
-                    # Apply entity name abbreviations to placeholders in content
-                    from common.pptx_export import replace_entity_placeholders
-                    # Get the selected entity name (assuming it's available in session state)
-                    selected_entity = st.session_state.get('entity_input', '')
-                    if selected_entity:
-                        content = replace_entity_placeholders(content, selected_entity)
-                    return content
-
-    return None
+# get_content_from_json moved to fdd_utils.content_utils
 
 # Offline content functions removed - system now only uses AI-generated content
 
@@ -2068,44 +1729,10 @@ def generate_content_from_session_storage(entity_name):
         # Get current statement type from session state
         current_statement_type = st.session_state.get('current_statement_type', 'BS')
         
-        # Define category mappings based on entity name and statement type
-        if current_statement_type == "IS":
-            # Income Statement categories
-            if entity_name in ['Ningbo', 'Nanjing']:
-                name_mapping = DISPLAY_NAME_MAPPING_NB_NJ
-                category_mapping = {
-                    'Revenue': ['OI', 'Other Income', 'Non-operating Income'],
-                    'Expenses': ['OC', 'GA', 'Fin Exp', 'Cr Loss', 'Non-operating Exp'],
-                    'Taxes': ['Tax and Surcharges', 'Income tax'],
-                    'Other': ['LT DTA']
-                }
-            else:  # Haining and others
-                name_mapping = DISPLAY_NAME_MAPPING_DEFAULT
-                category_mapping = {
-                    'Revenue': ['OI', 'Other Income', 'Non-operating Income'],
-                    'Expenses': ['OC', 'GA', 'Fin Exp', 'Cr Loss', 'Non-operating Exp'],
-                    'Taxes': ['Tax and Surcharges', 'Income tax'],
-                    'Other': ['LT DTA']
-                }
-        else:
-            # Balance Sheet categories (default)
-            if entity_name in ['Ningbo', 'Nanjing']:
-                name_mapping = DISPLAY_NAME_MAPPING_NB_NJ
-                category_mapping = {
-                    'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
-                    'Non-current Assets': ['IP', 'Other NCA'],
-                    'Liabilities': ['AP', 'Taxes payable', 'OP'],
-                    'Equity': ['Capital']
-                }
-            else:  # Haining and others
-                name_mapping = DISPLAY_NAME_MAPPING_DEFAULT
-                category_mapping = {
-                    'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
-                    'Non-current Assets': ['IP', 'Other NCA'],
-                    'Liabilities': ['AP', 'Taxes payable', 'OP'],
-                    'Equity': ['Capital', 'Reserve']
-                }
-        
+        # Get category mappings from centralized config
+        from fdd_utils.category_config import get_category_mapping
+        category_mapping, name_mapping = get_category_mapping(current_statement_type, entity_name)
+
         # Generate JSON content from session storage (for AI2 easy access)
         json_content = {
             'metadata': {
@@ -2430,229 +2057,7 @@ def generate_markdown_from_ai_results(ai_results, entity_name):
         print(f"Error generating markdown: {e}")
         return False
 
-def display_ai_prompt_by_key(key, agent_choice, language='English'):
-    """
-    Display AI prompt for the financial key using dynamic prompts from configuration
-    """
-    try:
-        # Load prompts from configuration
-        config, mapping, pattern, prompts = load_config_files()
-        
-        if not prompts:
-            st.error("❌ Failed to load prompts configuration")
-            return
-        
-        # Get system prompts from configuration - use language-specific prompts
-        language_key = 'chinese' if language == '中文' else 'english'
-        system_prompts = prompts.get('system_prompts', {}).get(language_key, {})
-        
-        # Get user prompts from configuration
-        user_prompts_config = prompts.get('user_prompts', {})
-        generic_prompt_config = prompts.get('generic_prompt', {})
-        
-        # Get AI data for context
-        ai_data = st.session_state.get('ai_data', {})
-        entity_name = ai_data.get('entity_name', 'Unknown Entity')
-        
-        # Generate dynamic user prompt
-        def generate_user_prompt(key, prompt_config):
-            if not prompt_config:
-                return None
-                
-            title = prompt_config.get('title', f'{get_key_display_name(key)} Analysis')
-            description = prompt_config.get('description', f'Analyze the {get_key_display_name(key)} position')
-            analysis_points = prompt_config.get('analysis_points', [])
-            key_questions = prompt_config.get('key_questions', [])
-            data_sources = prompt_config.get('data_sources', [])
-            
-            prompt = f"""{description}:
-
-**Data Sources:**
-- Worksheet data from Excel file
-- Patterns from pattern.json for {key}
-- Entity information: {entity_name}
-- {', '.join(data_sources)}
-
-**Required Analysis:**
-"""
-            
-            for i, point in enumerate(analysis_points, 1):
-                prompt += f"{i}. **{point}**\n"
-            
-            prompt += f"""
-**Key Questions to Address:**
-"""
-            
-            for question in key_questions:
-                prompt += f"- {question}\n"
-            
-            prompt += f"""
-**Key Tasks:**
-- Review worksheet data for {key}
-- Identify applicable patterns from pattern.json
-- Generate content following pattern structure
-- Include actual figures from worksheet data
-- Ensure professional financial writing style
-
-**Expected Output:**
-- Narrative content based on patterns and actual data
-- Integration of worksheet figures into text
-- Professional financial report language
-- Consistent formatting with other sections"""
-            
-            return prompt
-        
-        # Get the prompts for this key and agent
-        system_prompt = system_prompts.get(agent_choice, system_prompts.get('Agent 1', ''))
-        user_prompt_config = user_prompts_config.get(key, generic_prompt_config)
-        user_prompt = generate_user_prompt(key, user_prompt_config)
-        
-        if user_prompt:
-            st.markdown("### 🤖 AI Prompt Configuration")
-            st.markdown(f"**Agent:** {agent_choice}")
-            st.markdown(f"**Financial Key:** {get_key_display_name(key)}")
-            
-            # Collapsible prompt sections
-            prompt_expander = st.expander("📝 View AI Prompts", expanded=False)
-            with prompt_expander:
-                st.markdown("#### 📋 System Prompt")
-                st.code(system_prompt, language="text")
-                
-                st.markdown("#### 💬 User Prompt")
-                st.code(user_prompt, language="text")
-            
-            # Get AI data for debug information
-            ai_data = st.session_state.get('ai_data', {})
-            sections_by_key = ai_data.get('sections_by_key', {})
-            pattern = ai_data.get('pattern', {})
-            sections = sections_by_key.get(key, [])
-            key_patterns = pattern.get(key, {})
-            
-            st.markdown("#### 📊 Debug Information")
-            
-            # Worksheet Data
-            if sections:
-                st.markdown("**📋 Worksheet Data:**")
-                first_section = sections[0]
-                # Create a proper copy to avoid SettingWithCopyWarning
-                df_clean = first_section['data'].dropna(axis=1, how='all').copy()
-                
-                # Convert datetime columns to strings to avoid Arrow serialization issues
-                for col in df_clean.columns:
-                    if df_clean[col].dtype == 'object':
-                        # Convert any datetime-like objects to strings
-                        try:
-                            # First try to convert to string directly
-                            df_clean.loc[:, col] = df_clean[col].astype(str)
-                        except:
-                            # If that fails, handle datetime objects specifically
-                            df_clean.loc[:, col] = df_clean[col].map(
-                                lambda x: str(x) if pd.notna(x) and not pd.isna(x) else ''
-                            )
-                    elif 'datetime' in str(df_clean[col].dtype):
-                        # Handle datetime columns specifically
-                        df_clean.loc[:, col] = df_clean[col].dt.strftime('%Y-%m-%d %H:%M:%S').fillna('')
-                
-                st.dataframe(df_clean, use_container_width=True)
-                
-                # Data Quality Metrics
-                df = first_section['data']
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Rows", len(df))
-                    st.metric("Columns", len(df.columns))
-                with col2:
-                    non_null_count = df.count().sum()
-                    total_cells = df.size
-                    completeness = (non_null_count / total_cells * 100) if total_cells > 0 else 0
-                    st.metric("Completeness", f"{completeness:.1f}%")
-                with col3:
-                    numeric_cols = df.select_dtypes(include=['number']).columns
-                    st.metric("Numeric Columns", len(numeric_cols))
-            else:
-                st.warning("No worksheet data available for this key.")
-            
-            # Patterns as Tabs
-            if key_patterns:
-                st.markdown("**📝 Available Patterns:**")
-                pattern_names = list(key_patterns.keys())
-                pattern_tabs = st.tabs(pattern_names)
-                
-                for i, (pattern_name, pattern_text) in enumerate(key_patterns.items()):
-                    with pattern_tabs[i]:
-                        st.code(pattern_text, language="text")
-                        
-                        # Pattern Analysis
-                        st.markdown("**Pattern Analysis:**")
-                        pattern_words = len(pattern_text.split())
-                        pattern_sentences = len(pattern_text.split('.'))
-                        st.metric("Words", pattern_words)
-                        st.metric("Sentences", pattern_sentences)
-                        
-                        # Check for required elements
-                        required_elements = ['balance', 'CNY', 'represented']
-                        found_elements = [elem for elem in required_elements if elem.lower() in pattern_text.lower()]
-                        missing_elements = [elem for elem in required_elements if elem.lower() not in pattern_text.lower()]
-                        
-                        if found_elements:
-                            st.success(f"✅ Found elements: {', '.join(found_elements)}")
-                        if missing_elements:
-                            st.warning(f"⚠️ Missing elements: {', '.join(missing_elements)}")
-            else:
-                st.warning(f"⚠️ No patterns found for {get_key_display_name(key)}")
-            
-            # Balance Sheet Consistency Check
-            if sections:
-                st.markdown("**🔍 Balance Sheet Consistency:**")
-                if key in ['Cash', 'AR', 'Prepayments', 'Other CA']:
-                    st.info("✅ Current Asset - Data structure appears consistent")
-                elif key in ['IP', 'Other NCA']:
-                    st.info("✅ Non-Current Asset - Data structure appears consistent")
-                elif key in ['AP', 'Taxes payable', 'OP']:
-                    st.info("✅ Liability - Data structure appears consistent")
-                elif key in ['Capital', 'Reserve']:
-                    st.info("✅ Equity - Data structure appears consistent")
-            
-            st.markdown("#### 🔄 Conversation Flow")
-            st.markdown("""
-            **Message Sequence:**
-            1. **System Message**: Sets the AI's role and expertise
-            2. **Assistant Message**: Provides context data from financial statements
-            3. **User Message**: Specific analysis request for the financial key
-            """)
-        else:
-            st.info(f"No AI prompt template available for {get_key_display_name(key)}")
-            st.markdown(f"""
-**{agent_choice} Generic Prompt for {get_key_display_name(key)} Analysis:**
-
-**System Prompt:**
-{system_prompts.get(agent_choice, system_prompts.get('Agent 1', ''))}
-
-**User Prompt:**
-Analyze the {get_key_display_name(key)} position:
-
-1. **Current Balance**: Review the current balance and composition
-2. **Trend Analysis**: Assess historical trends and changes
-3. **Risk Assessment**: Evaluate any associated risks
-4. **Business Impact**: Consider the impact on business operations
-5. **Future Outlook**: Assess future expectations and plans
-
-**Key Questions to Address:**
-- What is the current balance and its composition?
-- How has this changed over time?
-- What are the key risks and considerations?
-- How does this impact business operations?
-- What are the future expectations?
-
-**Data Sources:**
-- Financial statements
-- Management representations
-- Industry analysis
-- Historical data
-            """)
-                
-    except Exception as e:
-        st.error(f"Error generating AI prompt for {key}: {e}")
+# display_ai_prompt_by_key moved to fdd_utils.display_utils
 
 # --- For AI1/2/3 prompt/debug output, use a separate file ---
 def write_prompt_debug_content(filtered_keys, sections_by_key):
@@ -2728,13 +2133,7 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None, language='Englis
             language_key = 'chinese' if language == '中文' else 'english'
             system_prompts = prompts_config.get('system_prompts', {}).get(language_key, {})
 
-            # DEBUG: Print prompt configuration
-            print(f"🔧 DEBUG - PROMPT CONFIGURATION")
-            print(f"🌐 REQUESTED LANGUAGE: {language}")
-            print(f"🔑 LANGUAGE KEY: {language_key}")
-            print(f"📋 AVAILABLE SYSTEM PROMPTS: {list(system_prompts.keys())}")
-            print(f"🤖 REQUESTED AGENT: Agent 1")
-            print(f"{'─' * 60}")
+
 
             actual_system_prompt = system_prompts.get('Agent 1', '')
             if not actual_system_prompt:
@@ -2742,40 +2141,15 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None, language='Englis
                 print(f"⚠️ WARNING: No Agent 1 prompt found for {language_key}, falling back to English")
                 actual_system_prompt = prompts_config.get('system_prompts', {}).get('english', {}).get('Agent 1', '')
 
-            print(f"📝 FINAL SYSTEM PROMPT ({len(actual_system_prompt)} chars):")
-            print(f"{actual_system_prompt[:200]}..." if len(actual_system_prompt) > 200 else actual_system_prompt)
-            print(f"{'─' * 60}")
+
 
             if not actual_system_prompt:
-                    actual_system_prompt = """
-                    Role: system,
-                    Content: You are a senior financial analyst specializing in due diligence reporting. Your task is to integrate actual financial data from databooks into predefined report templates.
-                    CORE PRINCIPLES:
-                    1. SELECT exactly one appropriate non-nil pattern from the provided pattern options
-                    2. Replace all placeholder values with corresponding actual data
-                    3. Output only the financial completed pattern text, never show template structure
-                    4. ACCURACY: Use only provided - data - never estimate or extrapolate
-                    5. CLARITY: Write in clear business English, translating any foreign content
-                    6. FORMAT: Follow the exact template structure provided
-                    7. CURRENCY: Express figures to Thousands (K) or Millions (M) as appropriate
-                    8. CONCISENESS: Focus on material figures and key insights only
-                    OUTPUT REQUIREMENTS:
-                - Choose the most suitable single pattern based on available data
-                - Replace all placeholders with actaul figures from databook
-                - Output ONLY the final text - no pattern names, no template structure, no explanations
-                - If data is missing for a pattern, select a different pattern that has complete data
-                - Never output JSON structure or pattern formatting
-                """
+                from fdd_utils.prompt_templates import get_fallback_system_prompt
+                actual_system_prompt = get_fallback_system_prompt()
             
             # Add entity placeholder instructions to system prompt
-            actual_system_prompt += f"""
-
-IMPORTANT ENTITY INSTRUCTIONS:
-- Replace all [ENTITY_NAME] placeholders with the actual entity name from the provided financial data
-                - Use the exact entity name as shown in the financial data tables
-- Do not use the reporting entity name ({entity_name}) unless it matches the entity in the financial data
-- Ensure all entity references in your analysis are accurate according to the provided data
-"""
+            from fdd_utils.prompt_templates import get_entity_instructions
+            actual_system_prompt += get_entity_instructions().format(entity_name=entity_name)
         except Exception as e:
             actual_system_prompt = "Error loading prompts.json"
             print(f"Error loading prompts: {e}")
@@ -2802,7 +2176,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
                     for col in list(df.columns):
                         if df[col].isna().all() or (df[col].astype(str) == 'None').all():
                             df = df.drop(columns=[col])
-                            print(f"DEBUG: Removed all-NaN column {col} for AI prompt")
+
                         
                         # Convert to string with proper formatting
                         df_str = df.to_string(index=False, na_rep='')
@@ -2873,15 +2247,9 @@ IMPORTANT ENTITY INSTRUCTIONS:
                     prompt_lines.append(f"- {s}")
                 prompt_lines.append("")
 
-            # Output requirements central; concise, no template artifacts
-            prompt_lines += [
-                "OUTPUT REQUIREMENTS:",
-                "- Provide only the final completed text; no JSON, no headers, no pattern names",
-                "- Replace placeholders with actual values and entity names from the DATA SOURCE",
-                "- Use exact entity names shown in the table (not the reporting entity)",
-                "- Maintain professional financial tone and formatting",
-                "- Ensure all figures match the DATA SOURCE",
-            ]
+            # Output requirements from centralized template
+            from fdd_utils.prompt_templates import get_output_requirements
+            prompt_lines += get_output_requirements()
 
             actual_user_prompt = "\n".join(prompt_lines)
             
@@ -3057,16 +2425,8 @@ IMPORTANT ENTITY INSTRUCTIONS:
         from common.assistant import clear_json_cache
         clear_json_cache()
 
-        # DEBUG: Print Agent 1 input parameters
-        print(f"\n{'='*80}")
-        print(f"🤖 DEBUG - AGENT 1 INPUT PARAMETERS")
-        print(f"{'='*80}")
-        print(f"🔧 KEYS: {filtered_keys}")
-        print(f"🏢 ENTITY NAME: {entity_name}")
-        print(f"🌐 LANGUAGE: {language_key}")
-        print(f"🤖 USE LOCAL AI: {use_local_ai}")
-        print(f"🤖 USE OPENAI: {use_openai}")
-        print(f"{'='*80}")
+
+
 
         results = process_keys(
             keys=filtered_keys,  # All keys at once
@@ -3085,26 +2445,10 @@ IMPORTANT ENTITY INSTRUCTIONS:
             language=language_key
         )
 
-        # DEBUG: Print Agent 1 results
-        print(f"\n{'='*80}")
-        print(f"🤖 DEBUG - AGENT 1 OUTPUT RESULTS")
-        print(f"{'='*80}")
-        if results:
-            print(f"📊 RESULTS SUMMARY:")
-            for key in filtered_keys:
-                if key in results:
-                    result = results[key]
-                    if isinstance(result, dict):
-                        content = result.get('content', '')
-                        print(f"  {key}: {len(content)} chars - {content[:50]}..." if len(content) > 50 else f"  {key}: {len(content)} chars - {content}")
-                    else:
-                        print(f"  {key}: {result}")
-                else:
-                    print(f"  {key}: NO RESULT")
-        else:
-            print("❌ NO RESULTS RETURNED")
-        print(f"{'='*80}")
-        
+        # Process results
+        for key in filtered_keys:
+            result = results[key]
+
         processing_time = time.time() - start_time
         
         # Log Agent 1 output for each key with pattern information
@@ -3132,31 +2476,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
             
             logger.log_agent_output('agent1', key, enhanced_output, processing_time / len(filtered_keys))
 
-        # DEBUG: Print final Agent 1 results being returned
-        print(f"\n{'='*80}")
-        print(f"🏁 DEBUG - FINAL AGENT 1 RESULTS BEING RETURNED")
-        print(f"{'='*80}")
-        if results:
-            print(f"📊 FINAL RESULTS SUMMARY ({len(results)} keys):")
-            for key, result in results.items():
-                if isinstance(result, dict):
-                    content = result.get('content', '')
-                    chinese_chars = sum(1 for char in content if '\u4e00' <= char <= '\u9fff')
-                    english_chars = sum(1 for char in content if char.isascii() and char.isalnum())
-                    total_chars = chinese_chars + english_chars
-
-                    if total_chars > 0:
-                        chinese_ratio = chinese_chars / total_chars
-                        status = "🇨🇳" if chinese_ratio > 0.5 else "🇺🇸" if chinese_ratio < 0.3 else "🌐"
-                        print(f"  {status} {key}: {len(content)} chars, 中文占比: {chinese_ratio:.1%}")
-                        print(f"      内容预览: {content[:50]}..." if len(content) > 50 else f"      内容: {content}")
-                    else:
-                        print(f"  ❓ {key}: {len(content)} chars (empty)")
-                else:
-                    print(f"  ❓ {key}: {result}")
-        else:
-            print("❌ NO RESULTS TO RETURN")
-        print(f"{'='*80}")
+        # Return results
 
         st.success(f"🎉 Agent 1 completed all {len(filtered_keys)} keys in {processing_time:.2f}s")
         return results
@@ -3192,7 +2512,7 @@ IMPORTANT ENTITY INSTRUCTIONS:
             except Exception:
                 pass
 
-def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_progress=None, debug_mode=True):
+def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_progress=None):
     """Simple Chinese Translation Agent: Process proofread content one by one using AI"""
     try:
         import json
@@ -3210,45 +2530,15 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         except (ImportError, AttributeError):
             is_cli = True
 
-        # EARLY DEBUG: Confirm function is being called
-        if debug_mode:
-            print(f"\n🚀🚀🚀 DEBUG: run_chinese_translator called with {len(filtered_keys)} keys 🚀🚀🚀")
-            print(f"📊 CLI mode: {is_cli}")
-            print(f"📊 External progress provided: {external_progress is not None}")
-            print(f"🔑 Keys to process: {filtered_keys}")
-            print(f"{'='*60}")
+        # Initialize processing
 
-        # FORCE CLI MODE FOR DEBUGGING (only in debug mode)
-        if debug_mode and not is_cli:  # If we're in Streamlit mode, force CLI for debugging
-            is_cli = True
-            if debug_mode:
-                print(f"🔧 FORCED CLI MODE for debugging: {is_cli}")
 
-        # DEBUG: Show what we received as input
-        if debug_mode:
-            print(f"📊 RECEIVED AGENT1_RESULTS SUMMARY:")
-            if agent1_results:
-                for key, result in agent1_results.items():
-                    if isinstance(result, dict):
-                        content_preview = result.get('corrected_content', '') or result.get('content', '')
-                        print(f"  {key}: {len(content_preview)} chars - {content_preview[:50]}..." if len(content_preview) > 50 else f"  {key}: {len(content_preview)} chars")
-                    else:
-                        print(f"  {key}: {str(result)[:50]}...")
-            else:
-                print("  ❌ No agent1_results provided!")
-            print(f"{'─'*60}")
 
         # Setup tqdm progress bar
         if is_cli:
-            if debug_mode:
-                print(f"📊 Setting up tqdm progress bar for {len(filtered_keys)} keys")
             progress_bar = tqdm(total=len(filtered_keys), desc="🌐 中文翻译", unit="key")
-            if debug_mode:
-                print(f"✅ Tqdm progress bar created successfully")
         else:
             progress_bar = None
-            if debug_mode:
-                print(f"📊 Streamlit mode - no tqdm progress bar")
 
         # Get AI model settings - try session state regardless of CLI mode
         use_local_ai = False
@@ -3304,48 +2594,22 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
         # Load configuration
         config_details = load_config('fdd_utils/config.json')
 
-        if debug_mode:
-            print(f"🔧 Initializing AI services...")
-            print(f"   use_local_ai: {use_local_ai}")
-            print(f"   use_openai: {use_openai}")
-
         oai_client, _ = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
 
-        if debug_mode:
-            print(f"✅ AI client initialized successfully")
+        # Load system prompt from centralized template
+        from fdd_utils.prompt_templates import get_translation_prompts
+        prompts = get_translation_prompts()
+        system_prompt = prompts["chinese_translator_system"]
 
-        # Load Chinese system prompt from config
-        with open('fdd_utils/prompts.json', 'r', encoding='utf-8') as f:
-            prompts_config = json.load(f)
 
-        # Use the proper Chinese translation system prompt
-        system_prompt = prompts_config.get('system_prompts', {}).get('chinese', {}).get('Agent 1', '')
-
-        # Use a simple translation prompt
-        if not system_prompt:
-            system_prompt = """你是专业翻译助手。请将英文内容准确翻译成简体中文。
-
-要求：
-1. 翻译成简体中文
-2. 保留所有数字和货币符号
-3. 保持专业语气
-4. 只返回翻译结果"""
-
-        print(f"🔧 Using Chinese translation system prompt: {system_prompt[:100]}...")
 
         # Get model name
         if use_local_ai:
             model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
-            if debug_mode:
-                print(f"🎯 Using Local AI model: {model}")
         elif use_openai:
             model = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
-            if debug_mode:
-                print(f"🎯 Using OpenAI model: {model}")
         else:
             model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
-            if debug_mode:
-                print(f"🎯 Using DeepSeek model: {model} (fallback - check AI settings!)")
 
         # Create temporary file for processing
         temp_file_path = None
@@ -3436,6 +2700,15 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 else:
                     content_text = str(content)
 
+                # FILTER OUT SUMMARY SECTIONS - Don't translate summary content
+                summary_keywords = ['summary', 'conclusion', 'overall', 'in summary', 'to summarize', 'key findings']
+                if content_text and any(keyword in content_text.lower() for keyword in summary_keywords):
+                    print(f"⚠️  Skipping {key} - contains summary-like content")
+                    translated_results[key] = agent1_results.get(key, {})
+                    if is_cli and progress_bar:
+                        progress_bar.update(1)
+                    continue
+
                 if not content_text:
                     print(f"⚠️  Empty content for {key}, skipping")
                     translated_results[key] = agent1_results.get(key, {})
@@ -3456,19 +2729,24 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 print(f"\n🔄 [{idx+1}/{len(filtered_keys)}] 翻译中: {key}")
                 print(f"📝 BEFORE: {content_text[:80]}{'...' if len(content_text) > 80 else ''}")
 
-                # Create simple, focused translation prompt (NO SUMMARY SECTION)
-                user_prompt = f"""请将以下英文内容翻译成简体中文。
+                # Use prompt from centralized template (NO SUMMARY SECTION)
+                from fdd_utils.prompt_templates import get_translation_prompts
+                prompts = get_translation_prompts()
+                user_prompt = prompts["chinese_translator_user"].replace("{content_text}", content_text)
 
-英文内容：
-{content_text}
-
-要求：
-1. 翻译成简体中文
-2. 保留所有数字、百分比和货币符号
-3. 保持专业语气
-4. 只返回翻译结果，不要添加解释
-
-直接返回中文翻译："""
+                # LOG AI PROCESSING
+                try:
+                    from fdd_utils.logging_config import log_ai_processing
+                    ai_logger = log_ai_processing(
+                        button_name="chinese_ai",
+                        agent_name="Chinese Translator",
+                        key=key,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt
+                    )
+                    ai_logger.debug(f"Original content: {content_text}")
+                except Exception as log_error:
+                    print(f"⚠️ Logging error: {log_error}")
 
                 # TIMING: Record time before AI call
                 debug_start_time = time.time()
@@ -3487,6 +2765,16 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     entity_name=entity_name,
                     use_local_ai=use_local_ai
                 )
+
+                # LOG AI RESPONSE
+                try:
+                    if translated_content:
+                        ai_logger.info(f"Translation successful - Response length: {len(translated_content)} chars")
+                        ai_logger.debug(f"Translated content: {translated_content}")
+                    else:
+                        ai_logger.error(f"Translation failed - No response received")
+                except Exception:
+                    pass  # Ignore logging errors
 
                 # CLEAN OUTPUT: Show only AFTER translation result
                 if translated_content:
@@ -3572,13 +2860,7 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 if is_cli:
                     print(f"Error translating {key}: {e}")
                 translated_results[key] = agent1_results.get(key, {})
-        # DEBUG: Final results summary
-        print(f"\n{'='*80}")
-        print(f"🏁 DEBUG - TRANSLATION PROCESS SUMMARY")
-        print(f"{'='*80}")
-        print(f"📊 Total keys processed: {len(filtered_keys)}")
-        print(f"📊 Results with content: {len([k for k in translated_results.keys() if translated_results[k]])}")
-        print(f"📊 Total results: {len(translated_results)}")
+        # Return translated results
 
         # Final summary and close progress bar
         total_processed = len([k for k in translated_results.keys() if translated_results[k]])
@@ -3794,7 +3076,7 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
 
                 # DEBUG: Print proofreading input
                 print(f"\n{'='*80}")
-                print(f"🔍 DEBUG - PROOFREAD INPUT FOR KEY: {key}")
+
                 print(f"{'='*80}")
                 print(f"📝 CONTENT TO PROOFREAD ({len(content_text)} chars):")
                 print(f"{content_text}")
@@ -3806,7 +3088,7 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
 
                 # DEBUG: Print proofreading output
                 print(f"\n{'='*80}")
-                print(f"✅ DEBUG - PROOFREAD OUTPUT FOR KEY: {key}")
+
                 print(f"{'='*80}")
                 if isinstance(proofread_result, dict):
                     print(f"📤 PROOFREAD RESULT:")
@@ -4043,7 +3325,7 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
 
                 # DEBUG: Print proofreading input
                 print(f"\n{'='*80}")
-                print(f"🔍 DEBUG - PROOFREAD INPUT FOR KEY: {key}")
+
                 print(f"{'='*80}")
                 print(f"📝 CONTENT TO PROOFREAD ({len(content_text)} chars):")
                 print(f"{content_text}")
@@ -4055,7 +3337,7 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
 
                 # DEBUG: Print proofreading output
                 print(f"\n{'='*80}")
-                print(f"✅ DEBUG - PROOFREAD OUTPUT FOR KEY: {key}")
+
                 print(f"{'='*80}")
                 if isinstance(result, dict):
                     print(f"📤 PROOFREAD RESULT:")
