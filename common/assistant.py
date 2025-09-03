@@ -455,20 +455,16 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 "千" in amount_cell
             )
 
-            # Special detection for Chinese "人民币千元" and "人民幣千元"
-            traditional_chinese_thousands = (
-                "人民币千元" in desc_cell or "人民币千元" in amount_cell
-            )
-            simplified_chinese_thousands = (
-                "人民幣千元" in desc_cell or "人民幣千元" in amount_cell
-            )
+            # Special detection for Chinese "人民币千元" and "人民幣千元" - check ALL cells in the row
+            traditional_chinese_thousands = any("人民币千元" in str(cell) for cell in row)
+            simplified_chinese_thousands = any("人民幣千元" in str(cell) for cell in row)
             chinese_rmb_thousands = traditional_chinese_thousands or simplified_chinese_thousands
 
             if traditional_chinese_thousands:
-                print(f"DEBUG: Detected traditional Chinese '人民币千元' - desc='{desc_cell}', amount='{amount_cell}'")
+                print(f"DEBUG: Detected traditional Chinese '人民币千元' in row {row_idx} - cells: {[str(cell) for cell in row]}")
                 thousands_detected = True
             elif simplified_chinese_thousands:
-                print(f"DEBUG: Detected simplified Chinese '人民幣千元' - desc='{desc_cell}', amount='{amount_cell}'")
+                print(f"DEBUG: Detected simplified Chinese '人民幣千元' in row {row_idx} - cells: {[str(cell) for cell in row]}")
                 thousands_detected = True
 
             # Debug logging for multiplier detection

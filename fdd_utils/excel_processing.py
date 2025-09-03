@@ -268,8 +268,9 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         if latest_date_col and latest_date_col in df_str.columns:
             # Use the detected latest date column
             value_col_idx = df_str.columns.get_loc(latest_date_col)
-            value_col_name = "Indicative adjusted"  # This is the detected column
-            print(f"   🎯 Using detected latest date column: {latest_date_col} (col {value_col_idx})")
+            # Get the actual column header text from the Excel file
+            value_col_name = str(df_str.columns[value_col_idx])
+            print(f"   🎯 Using detected latest date column: {latest_date_col} (col {value_col_idx}) - Column name: '{value_col_name}'")
             # print(f"   🔍 DEBUG: Column names: {list(df_str.columns)}")
             # print(f"   🔍 DEBUG: latest_date_col: {latest_date_col}")
             # print(f"   🔍 DEBUG: value_col_idx: {value_col_idx}")
@@ -284,7 +285,9 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
                         "示意性調整後" in cell_value or
                         "示意性调整后" in cell_value):
                         value_col_idx = j
-                        value_col_name = "Indicative adjusted"
+                        # Get the actual column header text from the Excel file
+                        value_col_name = str(df_str.iloc[i, j])
+                        print(f"   🎯 Found indicative adjusted column: '{value_col_name}' (col {j})")
                         # Found value column indicator
                         break
                     elif "total" in cell_value and value_col_idx is None:
