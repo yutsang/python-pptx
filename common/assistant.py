@@ -1210,8 +1210,6 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             3. 关键：对于实体名称，使用财务数据表中的具体实体名称（如'第三方应收款'、'公司#1'），而不是报告实体名称
             4. 查看表数据以识别正确的实体名称和金额
             5. 当表格显示'第三方应收款'时，使用确切的名称，而不是报告实体
-            6. 在响应末尾提供简要摘要，如：
-               "摘要：使用了实体'第三方应收款'，金额：CNY634K（应收款总额）"
             """
         else:
             user_query = f"""
@@ -1239,8 +1237,6 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             3. CRITICAL: For entity names, use the SPECIFIC entity names from the financial data table (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
             4. Look at the table data to identify the correct entity names and amounts
             5. When the table shows 'Third-party receivables', use that exact name, not the reporting entity
-            6. At the end of your response, provide a brief summary like:
-               "SUMMARY: Used entity 'Third-party receivables' with amounts: CNY634K (total receivables)"
             """
         
         # Update progress: AI request phase

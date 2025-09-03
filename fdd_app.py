@@ -2963,11 +2963,11 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 # Store result with explicit Chinese content - ENSURE UI CAN FIND IT
                 result_data = agent1_results.get(key, {})
                 if isinstance(result_data, dict):
-                    # Store the translated content in BOTH content AND corrected_content fields
-                    # This ensures both UI display and PPTX export can find the translated content
+                    # Store the translated content in ALL relevant fields to ensure maximum compatibility
+                    # Priority: translated_content > corrected_content > content
                     result_data['content'] = translated_content or content_text
                     result_data['corrected_content'] = translated_content or content_text  # ← KEY FIX: UI looks here first
-                    result_data['translated_content'] = translated_content
+                    result_data['translated_content'] = translated_content  # ← Store Chinese content here
                     result_data['original_content'] = content_text
                     result_data['translated'] = True
                     result_data['is_chinese'] = bool(translated_content and any('\u4e00' <= char <= '\u9fff' for char in translated_content))
@@ -2975,7 +2975,7 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     result_data = {
                         'content': translated_content or content_text,
                         'corrected_content': translated_content or content_text,  # ← KEY FIX: UI looks here first
-                        'translated_content': translated_content,
+                        'translated_content': translated_content,  # ← Store Chinese content here
                         'original_content': content_text,
                         'translated': True,
                         'is_chinese': bool(translated_content and any('\u4e00' <= char <= '\u9fff' for char in translated_content))
@@ -4299,8 +4299,32 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                     print(f"🔍 UI DEBUG - Found {selected_key} in agent3_results")
                     print(f"🔍 UI DEBUG - agent3_data keys: {list(agent3_data.keys()) if isinstance(agent3_data, dict) else 'Not dict'}")
 
-                    agent3_content = agent3_data.get('corrected_content', '') if isinstance(agent3_data, dict) else ''
-                    print(f"🔍 UI DEBUG - corrected_content (first 100 chars): '{agent3_content[:100]}...'")
+                    if isinstance(agent3_data, dict):
+                        # PRIORITY ORDER: translated_content (if Chinese) > corrected_content > content
+                        translated_content = agent3_data.get('translated_content', '')
+                        corrected_content = agent3_data.get('corrected_content', '')
+                        content = agent3_data.get('content', '')
+
+                        print(f"🔍 UI DEBUG - translated_content (first 100): '{translated_content[:100]}...'")
+                        print(f"🔍 UI DEBUG - corrected_content (first 100): '{corrected_content[:100]}...'")
+
+                        # Check if translated_content contains Chinese and use it if so
+                        if (translated_content and
+                            any('\u4e00' <= char <= '\u9fff' for char in translated_content)):
+                            print("🔍 UI DEBUG - Using translated_content (contains Chinese)")
+                            agent3_content = translated_content
+                        elif corrected_content:
+                            print("🔍 UI DEBUG - Using corrected_content")
+                            agent3_content = corrected_content
+                        elif content:
+                            print("🔍 UI DEBUG - Using content")
+                            agent3_content = content
+                        else:
+                            agent3_content = ''
+                            print("🔍 UI DEBUG - No content found in agent3_data")
+                    else:
+                        agent3_content = str(agent3_data)
+                        print(f"🔍 UI DEBUG - Using raw string content: '{agent3_content[:100]}...'")
 
                     # Also check content_store as backup (it might have more recent data)
                     content_store_content = ''
