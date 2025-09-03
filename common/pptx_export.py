@@ -68,20 +68,20 @@ def detect_chinese_text(text):
 def get_font_size_for_text(text, base_size=Pt(9)):
     """
     Get appropriate font size based on text content.
-    Chinese text gets slightly larger font for better readability.
+    Chinese text gets smaller font to maximize content density and prevent overflow.
     """
     if detect_chinese_text(text):
-        return Pt(10)  # Slightly larger for Chinese
+        return Pt(8)  # Smaller font for Chinese to fit more content
     else:
         return base_size  # Default size for English
 
 def get_line_spacing_for_text(text):
     """
     Get appropriate line spacing based on text content.
-    Chinese text needs different spacing than English.
+    Chinese text needs tighter spacing to maximize content density.
     """
     if detect_chinese_text(text):
-        return Pt(13)  # Tighter spacing for Chinese
+        return Pt(11)  # Much tighter spacing for Chinese to fit more content
     else:
         return Pt(12)  # Standard spacing for English
 
@@ -90,7 +90,7 @@ def get_space_after_for_text(text):
     Get appropriate space after paragraph based on text content.
     """
     if detect_chinese_text(text):
-        return Pt(6)  # Less space after for Chinese
+        return Pt(4)  # Much less space after for Chinese to maximize content
     else:
         return Pt(8)  # Standard space after for English
 
@@ -99,7 +99,7 @@ def get_space_before_for_text(text):
     Get appropriate space before paragraph based on text content.
     """
     if detect_chinese_text(text):
-        return Pt(3)  # Less space before for Chinese
+        return Pt(2)  # Much less space before for Chinese to maximize content
     else:
         return Pt(4)  # Standard space before for English
 
@@ -188,28 +188,28 @@ class PowerPointGenerator:
         """Calculate the actual maximum number of rows that can fit in a shape"""
         if not shape or not hasattr(shape, 'height'):
             return 25  # Default fallback
-        
+
         # Get the actual shape height in EMU (English Metric Units)
         shape_height_emu = shape.height
-        
+
         # Convert EMU to points (1 EMU = 1/914400 inches, 1 inch = 72 points)
         shape_height_pt = shape_height_emu * 72 / 914400
-        
+
         # Account for margins and padding - use maximum space (99.9% of shape height)
         effective_height_pt = shape_height_pt * 0.999  # Maximum height utilization
 
         # Calculate line height based on font size and line spacing
-        # Default font size is 9pt, optimized for maximum content density
-        font_size_pt = 9
+        # Use smaller font size for Chinese to fit more content
+        font_size_pt = 8  # Reduced from 9pt for Chinese optimization
         line_spacing = 1.0  # Ultra-tight spacing for maximum height utilization
         line_height_pt = font_size_pt * line_spacing
-        
+
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
-        
-        # Use all available space
-        max_rows = max(45, max_rows)  # Minimum 45 rows for ultra-maximum text capacity
-        
+
+        # Use all available space - increased minimum for better content density
+        max_rows = max(55, max_rows)  # Increased minimum for ultra-maximum text capacity
+
         return max_rows
 
     def _calculate_max_rows(self):
@@ -376,11 +376,11 @@ class PowerPointGenerator:
                 shape = self._get_target_shape_for_section(slide_idx, section)
                 if shape:
                     max_lines = self._calculate_max_rows_for_shape(shape)
-                    # Ensure better height utilization, especially for slide 0
-                    if slide_idx == 0:  # First slide needs more content
-                        max_lines = max(max_lines, 25)  # Higher minimum for slide 0
+                    # Be more conservative with Chinese text to prevent overflow
+                    if slide_idx == 0:  # First slide needs more content but still conservative for Chinese
+                        max_lines = max(max_lines, 22)  # Lower minimum for slide 0 to prevent Chinese overflow
                     elif section in ['b', 'c']:  # _L and _R sections
-                        max_lines = max(max_lines, 20)  # Minimum lines for proper text distribution
+                        max_lines = max(max_lines, 18)  # Lower minimum for side sections to prevent overflow
                 else:
                     max_lines = self.ROWS_PER_SECTION  # Fallback
                 
@@ -423,101 +423,127 @@ class PowerPointGenerator:
         return distribution
 
     def _calculate_chars_per_line(self, shape):
-        """Calculate characters per line based on actual shape width"""
+        """Calculate characters per line based on actual shape width and content type"""
         if not shape or not hasattr(shape, 'width'):
             return self.CHARS_PER_ROW  # Default fallback
-        
+
         # Convert EMU to pixels: 1 EMU = 1/914400 inches, 1 inch = 96 px
         px_width = int(shape.width * 96 / 914400)
-        
+
         # Use maximum width utilization for full space usage
         effective_width = px_width * 0.999  # Ultra-maximum width utilization
-        
+
         # Different character widths for different font sizes and styles
+        # Chinese characters are wider than English, so we need different calculations
         if hasattr(shape, 'text_frame') and shape.text_frame.paragraphs:
-            # Check if text is bold (takes more space)
+            # Check if text contains Chinese characters
+            has_chinese = False
             is_bold = False
+
             for para in shape.text_frame.paragraphs:
                 for run in para.runs:
                     if run.font.bold:
                         is_bold = True
+                    if run.text and any('\u4e00' <= char <= '\u9fff' for char in run.text):
+                        has_chinese = True
                         break
-                if is_bold:
+                if has_chinese:
                     break
-            
-            if is_bold:
-                avg_char_px = 6.5  # Bold text (ultra-optimized for maximum density)
+
+            if has_chinese:
+                # Chinese characters are wider
+                if is_bold:
+                    avg_char_px = 8.5  # Bold Chinese text
+                else:
+                    avg_char_px = 7.2  # Regular Chinese text (optimized for 8pt font)
             else:
-                avg_char_px = 5.5  # Regular text (ultra-optimized for maximum density)
+                # English characters
+                if is_bold:
+                    avg_char_px = 6.5  # Bold English text
+                else:
+                    avg_char_px = 5.5  # Regular English text
         else:
-            avg_char_px = 6.5  # Default (optimized for 9pt font)
-        
-        chars_per_line = max(80, int(effective_width // avg_char_px))  # Minimum 80 chars for ultra-maximum utilization
+            # Default - assume mixed content, use conservative estimate
+            avg_char_px = 7.0  # Conservative estimate for mixed content
+
+        chars_per_line = max(70, int(effective_width // avg_char_px))  # Minimum 70 chars for Chinese optimization
         return chars_per_line
 
     def _calculate_max_rows_for_summary(self, shape):
-        """Calculate maximum rows for summary shape with optimized settings"""
+        """Calculate maximum rows for summary shape with optimized settings for Chinese"""
         if not shape or not hasattr(shape, 'height'):
             return 25  # Default fallback
 
         shape_height_emu = shape.height
         shape_height_pt = shape_height_emu * 72 / 914400
 
-        # Use moderate space for shorter, more readable summary
-        effective_height_pt = shape_height_pt * 0.85
+        # Use more space for Chinese text to prevent overflow
+        effective_height_pt = shape_height_pt * 0.90  # Slightly more space for Chinese
 
-        # Use 10pt font and comfortable spacing for summary
-        font_size_pt = 10
-        line_spacing = 1.15
+        # Use 9pt font for Chinese optimization (between 8pt and 10pt)
+        font_size_pt = 9
+        line_spacing = 1.1  # Tighter spacing for Chinese
         line_height_pt = font_size_pt * line_spacing
 
         max_rows = int(effective_height_pt / line_height_pt)
-        max_rows = max(20, max_rows)  # Minimum 20 rows for compact summary
+        max_rows = max(25, max_rows)  # Minimum 25 rows for Chinese summary
 
         return max_rows
 
     def _calculate_chars_per_line_for_summary(self, shape):
-        """Calculate characters per line for summary with maximum width utilization"""
+        """Calculate characters per line for summary with Chinese optimization"""
         if not shape or not hasattr(shape, 'width'):
             return self.CHARS_PER_ROW
 
         px_width = int(shape.width * 96 / 914400)
 
-        # Use ultra-maximum width utilization for summary (99.9%)
-        effective_width = px_width * 0.999
+        # Use slightly less width utilization for Chinese to prevent overflow
+        effective_width = px_width * 0.95  # More conservative for Chinese
 
-        # Ultra-optimized character width estimates for 10pt font
-        avg_char_px = 5.8  # Ultra-efficient estimate for maximum text density
+        # Chinese-optimized character width estimates for 9pt font
+        avg_char_px = 6.8  # Optimized for Chinese characters at 9pt
 
-        chars_per_line = max(85, int(effective_width // avg_char_px))
+        chars_per_line = max(75, int(effective_width // avg_char_px))
         return chars_per_line
 
     def _wrap_text_to_shape(self, text, shape):
         # Use the actual shape width and font size to wrap text accurately
         chars_per_line = self._calculate_chars_per_line(shape)
+
+        # Be more conservative with Chinese text
+        if text and any('\u4e00' <= char <= '\u9fff' for char in text):
+            chars_per_line = int(chars_per_line * 0.9)  # 10% more conservative for Chinese
+
         wrapped = textwrap.wrap(text, width=chars_per_line)
         return wrapped
 
     def _calculate_item_lines(self, item: FinancialItem) -> int:
-        """Calculate lines needed for an item using shape-based calculations"""
+        """Calculate lines needed for an item using shape-based calculations with Chinese optimization"""
         # Use the current shape for calculations, or fallback to default
         shape = getattr(self, 'current_shape', None)
         chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
-        
+
         lines = 0
-        
+
         # Calculate header lines
         header = f"{item.accounting_type} (continued)" if item.layer1_continued else item.accounting_type
         header_lines = len(textwrap.wrap(header, width=chars_per_line))
         lines += header_lines
-        
-        # Calculate description lines
+
+        # Calculate description lines with Chinese optimization
         desc_lines = 0
         for desc in item.descriptions:
+            # Check if description contains Chinese characters
+            has_chinese = any('\u4e00' <= char <= '\u9fff' for char in desc)
+
             for para in desc.split('\n'):
-                para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
+                if has_chinese:
+                    # Be more conservative with Chinese text - assume it takes more lines
+                    para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.9))))  # 10% more conservative
+                else:
+                    para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
                 desc_lines += para_lines
-        
+
         lines += desc_lines
         return lines
 
@@ -1032,8 +1058,13 @@ class PowerPointGenerator:
         # Set the full summary content - let PowerPoint handle wrapping naturally
         run.text = summary_content
 
-        # Apply optimal font settings
-        run.font.size = Pt(10)
+        # Apply Chinese-optimized font settings
+        # Use smaller font for Chinese to maximize content density
+        if summary_content and any('\u4e00' <= char <= '\u9fff' for char in summary_content):
+            run.font.size = Pt(9)  # Smaller font for Chinese content density
+        else:
+            run.font.size = Pt(10)  # Standard font for English
+
         try:
             run.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue text
         except:
@@ -1055,12 +1086,18 @@ class PowerPointGenerator:
         except:
             pass  # Some versions don't support margin settings
 
-        # Apply paragraph formatting for natural text flow
+        # Apply Chinese-optimized paragraph formatting for natural text flow
         try:
             p.alignment = PP_ALIGN.LEFT
-            p.line_spacing = 1.0  # Natural line spacing
-            p.space_before = Pt(0)
-            p.space_after = Pt(0)
+            # Use tighter spacing for Chinese content
+            if summary_content and any('\u4e00' <= char <= '\u9fff' for char in summary_content):
+                p.line_spacing = 1.0  # Tighter line spacing for Chinese
+                p.space_before = Pt(2)  # Less space before for Chinese
+                p.space_after = Pt(2)  # Less space after for Chinese
+            else:
+                p.line_spacing = 1.1  # Standard line spacing for English
+                p.space_before = Pt(4)  # Standard space before for English
+                p.space_after = Pt(4)  # Standard space after for English
         except AttributeError:
             self._handle_legacy_alignment(p)
 
