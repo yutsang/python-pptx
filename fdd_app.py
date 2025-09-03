@@ -889,12 +889,14 @@ def main():
                         help="Generate AI report in Chinese (内容生成 + 校对 + 翻译)"
                     )
 
-                    # DEBUG: Track Chinese button clicks
+                    # Handle Chinese AI processing
                     if run_chi_clicked:
-                        print(f"\n🎯 CHINESE AI BUTTON CLICKED!")
-                        print(f"🌐 Selected language: {st.session_state.get('selected_language', 'Unknown')}")
-                        print(f"📊 Current statement type: {st.session_state.get('current_statement_type', 'Unknown')}")
-                        print(f"{'='*60}")
+                        # Chinese AI button processing
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        eta_text = st.empty()
+                        status_text.text("🤖 初始化中文AI处理…")
+                        progress_bar.progress(10)
 
                 # Handle English AI processing
                 if run_eng_clicked:
@@ -960,18 +962,6 @@ def main():
                             
                             # Reset to ALL for future operations
                             st.session_state['current_statement_type'] = 'ALL'
-                            
-                        else:
-                            # Single statement type processing
-                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 1, 'stage_index': 0, 'start_time': time.time()}}
-                            agent1_results = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
-                            agent1_success = bool(agent1_results and any(agent1_results.values()))
-
-                            # Generate content files after AI processing
-                            if agent1_success:
-                                status_text.text("📝 Generating content files...")
-                                progress_bar.progress(90)
-                                generate_content_from_session_storage(selected_entity)
                         
                         st.session_state['agent_states']['agent1_results'] = agent1_results
                         st.session_state['agent_states']['agent1_completed'] = True
@@ -989,14 +979,14 @@ def main():
 
                 # Handle Chinese AI processing
                 if run_chi_clicked:
-                    print(f"\n🚀 CHINESE AI PROCESSING STARTED")
+                    # Chinese AI processing started
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     eta_text = st.empty()
                     try:
                         status_text.text("🤖 初始化中文AI处理…")
                         progress_bar.progress(10)
-                        print(f"📊 Progress bar initialized")
+                        # Progress bar initialized
 
                         selected_language = '中文'
                         st.session_state['selected_language'] = selected_language
@@ -1151,16 +1141,13 @@ def main():
                                     translated_results = combined_results  # No translation for English
 
                                 if proof_results:
-                                    print(f"\n💾 STORING TRANSLATION RESULTS IN SESSION STATE")
-                                    print(f"📊 Results type: {type(proof_results)}")
-                                    print(f"📊 Results keys: {list(proof_results.keys()) if proof_results else 'None'}")
+                                    # Storing translation results
 
                                     st.session_state['agent_states']['agent3_results'] = proof_results
                                     st.session_state['agent_states']['agent3_completed'] = True
                                     st.session_state['agent_states']['agent3_success'] = bool(proof_results)
 
                                     # UPDATE AI CONTENT STORE WITH TRANSLATED CONTENT FOR PPTX EXPORT
-                                    print(f"\n🔄 UPDATING AI CONTENT STORE WITH TRANSLATED CONTENT...")
                                     if 'ai_content_store' not in st.session_state:
                                         st.session_state['ai_content_store'] = {}
 
@@ -1305,7 +1292,6 @@ def main():
                             progress_bar.progress(100)
                             status_text.text("✅ 中文AI处理完成")
                             time.sleep(1)
-
                     except Exception as e:
                         st.error(f"❌ 中文AI处理失败: {e}")
                         progress_bar.progress(0)
@@ -1341,19 +1327,10 @@ def main():
                 # Display results for each key in its tab
                 for i, key in enumerate(filtered_keys):
                     with key_tabs[i]:
-                        # DEBUG: Show what data we're working with
-                        print(f"\n📋 DISPLAYING KEY: {key}")
-                        print(f"🔍 Available agent states: {list(agent_states.keys())}")
-                        print(f"📊 agent3_results exists: {'agent3_results' in agent_states}")
-                        if 'agent3_results' in agent_states:
-                            print(f"🔑 agent3_results keys: {list(agent_states['agent3_results'].keys())}")
-                            print(f"🔍 Key '{key}' in agent3_results: {key in agent_states['agent3_results']}")
-
+                        # Display key results
                         # Show Compliance (Proofreader) first if available
                         agent3_results_all = agent_states.get('agent3_results', {}) or {}
                         agent3_final_content = None
-
-                        print(f"📄 agent3_results_all for {key}: {type(agent3_results_all.get(key)) if key in agent3_results_all else 'NOT FOUND'}")
 
                         # Check for agent3_final content from JSON file if not in session state
                         if key not in agent3_results_all:
@@ -1369,45 +1346,16 @@ def main():
                             # Use translated content if available and it's actually Chinese, otherwise use corrected content
                             final_content = translated_content if translated_content and pr.get('is_chinese', False) else corrected_content
 
-                            # ENHANCED DEBUG: Show what content we're displaying with Chinese detection
-                            print(f"📝 Content type: {type(pr)}")
-                            print(f"📝 Has translated_content: {'translated_content' in pr if isinstance(pr, dict) else False}")
-                            print(f"📝 Has corrected_content: {'corrected_content' in pr if isinstance(pr, dict) else False}")
-                            print(f"📝 Has content: {'content' in pr if isinstance(pr, dict) else False}")
-                            print(f"📝 Is Chinese: {pr.get('is_chinese', False)}")
-                            print(f"📝 Using translated content: {translated_content != '' and pr.get('is_chinese', False)}")
-                            print(f"📝 Final content length: {len(final_content)}")
+                            # Determine content to display
 
                             # Check for Chinese characters in final content
                             chinese_chars = sum(1 for char in final_content if '\u4e00' <= char <= '\u9fff')
                             english_chars = sum(1 for char in final_content if char.isascii() and char.isalnum())
                             total_chars = len(final_content)
 
-                            if total_chars > 0:
-                                chinese_ratio = chinese_chars / total_chars
-                                content_type = "Chinese" if chinese_ratio > 0.5 else "English"
-                                print(f"🌐 Content language: {content_type} ({chinese_ratio:.1%} 中文)")
-                            else:
-                                print(f"🌐 Content language: Empty content")
+                            # Content analysis for display
 
-                            print(f"📝 Content preview: {final_content[:100]}..." if len(final_content) > 100 else f"📝 Content: {final_content}")
-                            print(f"{'─' * 40}")
-
-                            # Show Chinese content prominently if it's in Chinese
-                            if chinese_chars > 0 and total_chars > 0:
-                                chinese_ratio = chinese_chars / total_chars
-                                if chinese_ratio > 0.5:
-                                    print(f"\n🇨🇳 CHINESE CONTENT DETECTED FOR {key}:")
-                                    print(f"{'─' * 60}")
-                                    print(f"{final_content[:300]}{'...' if len(final_content) > 300 else ''}")
-                                    print(f"{'─' * 60}")
-                                    print(f"✅ Chinese characters: {chinese_chars}/{total_chars} ({chinese_ratio:.1%})")
-                                else:
-                                    print(f"\n🇺🇸 ENGLISH CONTENT DETECTED FOR {key}:")
-                                    print(f"{'─' * 60}")
-                                    print(f"{final_content[:300]}{'...' if len(final_content) > 300 else ''}")
-                                    print(f"{'─' * 60}")
-                                    print(f"❌ Chinese characters: {chinese_chars}/{total_chars} ({chinese_ratio:.1%})")
+                            # Content is ready for display
 
                             # Check if this is a translation failure
                             if isinstance(pr, dict) and pr.get('translation_failed'):
@@ -1420,8 +1368,7 @@ def main():
                             elif corrected_content:
                                 st.markdown(corrected_content)
                         elif agent3_final_content:
-                            # Display agent3_final content from JSON
-                            st.markdown("**Agent 3 Final Content:**")
+                            # Display agent3_final content from JSON (without label)
                             st.markdown(agent3_final_content)
                             agent3_results_all[key] = {"content": agent3_final_content}  # Add to results for expander logic
 
@@ -1732,7 +1679,7 @@ def generate_content_from_session_storage(entity_name):
         # Get category mappings from centralized config
         from fdd_utils.category_config import get_category_mapping
         category_mapping, name_mapping = get_category_mapping(current_statement_type, entity_name)
-
+        
         # Generate JSON content from session storage (for AI2 easy access)
         json_content = {
             'metadata': {
@@ -2143,9 +2090,9 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None, language='Englis
 
 
 
-            if not actual_system_prompt:
-                from fdd_utils.prompt_templates import get_fallback_system_prompt
-                actual_system_prompt = get_fallback_system_prompt()
+                if not actual_system_prompt:
+                    from fdd_utils.prompt_templates import get_fallback_system_prompt
+                    actual_system_prompt = get_fallback_system_prompt()
             
             # Add entity placeholder instructions to system prompt
             from fdd_utils.prompt_templates import get_entity_instructions
@@ -2444,7 +2391,7 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None, language='Englis
             use_openai=use_openai,
             language=language_key
         )
-
+        
         # Process results
         for key in filtered_keys:
             result = results[key]
@@ -2475,7 +2422,7 @@ def run_agent_1(filtered_keys, ai_data, external_progress=None, language='Englis
             }
             
             logger.log_agent_output('agent1', key, enhanced_output, processing_time / len(filtered_keys))
-
+        
         # Return results
 
         st.success(f"🎉 Agent 1 completed all {len(filtered_keys)} keys in {processing_time:.2f}s")
@@ -2559,81 +2506,67 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 use_local_ai = True
                 use_openai = False
 
-            if debug_mode:
-                print(f"🤖 AI Settings from session state:")
-                print(f"   use_local_ai: {use_local_ai}")
-                print(f"   use_openai: {use_openai}")
-                print(f"   selected_provider: {selected_provider}")
-
         except Exception as e:
-            if debug_mode:
-                print(f"⚠️ Could not access session state: {e}")
-                print(f"   Falling back to config defaults")
+            # Fallback to config defaults silently
 
-        # If still no settings, try to detect from config
-        if not use_local_ai and not use_openai:
+            # If still no settings, try to detect from config
+            if not use_local_ai and not use_openai:
+                try:
+                    config_details = load_config('fdd_utils/config.json')
+                    if config_details.get('LOCAL_AI_API_BASE'):
+                        use_local_ai = True
+                    elif config_details.get('OPENAI_API_KEY'):
+                        use_openai = True
+                except Exception as e:
+                    # Config loading failed, continue with defaults
+                    pass
+
+            # Get AI data
+            entity_name = ai_data.get('entity_name', '')
+            entity_keywords = ai_data.get('entity_keywords', [])
+            sections_by_key = ai_data.get('sections_by_key', {})
+
+            # Load configuration
+            config_details = load_config('fdd_utils/config.json')
+
+            oai_client, _ = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
+
+            # Load system prompt from centralized template
+            from fdd_utils.prompt_templates import get_translation_prompts
+            prompts = get_translation_prompts()
+            system_prompt = prompts["chinese_translator_system"]
+
+            # Get model name
+            if use_local_ai:
+                model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
+            elif use_openai:
+                model = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
+            else:
+                model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
+
+            # Create temporary file for processing
+            temp_file_path = None
             try:
-                config_details = load_config('fdd_utils/config.json')
-                if config_details.get('LOCAL_AI_API_BASE'):
-                    use_local_ai = True
-                    if debug_mode:
-                        print(f"✅ Detected Local AI from config")
-                elif config_details.get('OPENAI_API_KEY'):
-                    use_openai = True
-                    if debug_mode:
-                        print(f"✅ Detected OpenAI from config")
-            except Exception as e:
-                if debug_mode:
-                    print(f"⚠️ Could not load config: {e}")
-
-        # Get AI data
-        entity_name = ai_data.get('entity_name', '')
-        entity_keywords = ai_data.get('entity_keywords', [])
-        sections_by_key = ai_data.get('sections_by_key', {})
-
-        # Load configuration
-        config_details = load_config('fdd_utils/config.json')
-
-        oai_client, _ = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
-
-        # Load system prompt from centralized template
-        from fdd_utils.prompt_templates import get_translation_prompts
-        prompts = get_translation_prompts()
-        system_prompt = prompts["chinese_translator_system"]
-
-
-
-        # Get model name
-        if use_local_ai:
-            model = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-model')
-        elif use_openai:
-            model = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini-2024-07-18')
-        else:
-            model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
-
-        # Create temporary file for processing
-        temp_file_path = None
-        try:
-            if not is_cli and 'uploaded_file_data' in st.session_state:
-                unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
-                temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
-                with open(temp_file_path, 'wb') as tmp_file:
-                    tmp_file.write(st.session_state['uploaded_file_data'])
-            else:
-                if os.path.exists('databook.xlsx'):
-                    temp_file_path = 'databook.xlsx'
+                if not is_cli and 'uploaded_file_data' in st.session_state:
+                    unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
+                    temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
+                    with open(temp_file_path, 'wb') as tmp_file:
+                        tmp_file.write(st.session_state['uploaded_file_data'])
                 else:
-                    if not is_cli:
-                        st.error("❌ No databook available for processing")
+                    if os.path.exists('databook.xlsx'):
+                        temp_file_path = 'databook.xlsx'
                     else:
-                        print("❌ No databook available for processing")
-                    return agent1_results
-        except Exception as e:
-            if not is_cli:
-                st.error(f"❌ Error creating temporary file: {e}")
-            else:
-                print(f"❌ Error creating temporary file: {e}")
-            return agent1_results
+                        if not is_cli:
+                            st.error("❌ No databook available for processing")
+                        else:
+                            print("❌ No databook available for processing")
+                        return agent1_results
+            except Exception as e:
+                if not is_cli:
+                    st.error(f"❌ Error creating temporary file: {e}")
+                else:
+                    print(f"❌ Error creating temporary file: {e}")
+                temp_file_path = None
 
         # Prepare processed table data
         processed_table_data = {}
@@ -2797,20 +2730,20 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                         progress_callback(idx, len(filtered_keys), key, "翻译完成")
 
                     # Quality check for Chinese content
-                    chinese_chars = sum(1 for char in translated_content if '\u4e00' <= char <= '\u9fff')
-                    english_chars = sum(1 for char in translated_content if char.isascii() and char.isalnum())
-                    total_chars = chinese_chars + english_chars
+                        chinese_chars = sum(1 for char in translated_content if '\u4e00' <= char <= '\u9fff')
+                        english_chars = sum(1 for char in translated_content if char.isascii() and char.isalnum())
+                        total_chars = chinese_chars + english_chars
 
-                    if total_chars > 0:
-                        chinese_ratio = chinese_chars / total_chars
-                        print(f"📊 中文占比: {chinese_ratio:.1%} ({chinese_chars}/{total_chars} 字符)")
+                        if total_chars > 0:
+                            chinese_ratio = chinese_chars / total_chars
+                            print(f"📊 中文占比: {chinese_ratio:.1%} ({chinese_chars}/{total_chars} 字符)")
 
-                        if chinese_ratio < 0.3:
-                            print(f"⚠️ 警告: 中文占比过低 ({chinese_ratio:.2%}) - 可能翻译失败")
-                        elif chinese_ratio > 0.7:
-                            print(f"✅ 良好: 中文占比正常 ({chinese_ratio:.1%})")
-                        else:
-                            print(f"ℹ️ 一般: 中文占比中等 ({chinese_ratio:.1%})")
+                            if chinese_ratio < 0.3:
+                                print(f"⚠️ 警告: 中文占比过低 ({chinese_ratio:.2%}) - 可能翻译失败")
+                            elif chinese_ratio > 0.7:
+                                print(f"✅ 良好: 中文占比正常 ({chinese_ratio:.1%})")
+                            else:
+                                print(f"ℹ️ 一般: 中文占比中等 ({chinese_ratio:.1%})")
 
                         # Additional check for common English words that should be translated
                         english_words = ['the', 'and', 'for', 'with', 'from', 'that', 'have', 'been', 'were']
