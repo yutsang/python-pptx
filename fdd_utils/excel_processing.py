@@ -104,7 +104,7 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
             ):
                 indicative_positions.append((row_idx, col_idx))
                 print(f"   📋 FOUND 'Indicative adjusted' (English/Chinese) at Row {row_idx}, Col {col_idx} ({col}): '{df.iloc[row_idx, col_idx]}'")
-                print(f"   📋 Column letter: {col_num_to_letter(col_idx)}")
+                print(f"   📋 Column letter: {col_num_to_letter(col_idx)} (actual position in Excel)")
 
     if not indicative_positions:
         print(f"   ⚠️  No 'Indicative adjusted' (English/Chinese) found, using fallback date detection")
@@ -201,10 +201,18 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
     if latest_column:
         from datetime import datetime
         timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-        col_idx = columns.get_loc(latest_column) if latest_column in columns else -1
-        col_letter = col_num_to_letter(col_idx) if col_idx >= 0 else 'unknown'
+        col_idx = columns.index(latest_column) if latest_column in columns else -1
+        # Extract column number from column name (e.g., "Unnamed: 20" -> 20)
+        if latest_column and latest_column.startswith('Unnamed: '):
+            try:
+                actual_col_idx = int(latest_column.split(': ')[1])
+                col_letter = col_num_to_letter(actual_col_idx)
+            except (ValueError, IndexError):
+                col_letter = 'unknown'
+        else:
+            col_letter = col_num_to_letter(col_idx) if col_idx >= 0 else 'unknown'
         print(f"   🎯 [{timestamp}] FINAL SELECTION: Column '{latest_column}' ({col_letter}) with date {latest_date.strftime('%Y-%m-%d')}")
-        print(f"   ✅ Column {col_letter} (index {col_idx}) selected as latest date column")
+        print(f"   ✅ Column {col_letter} (list index {col_idx}) selected as latest date column")
     else:
         from datetime import datetime
         timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
