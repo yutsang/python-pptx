@@ -517,7 +517,7 @@ class PowerPointGenerator:
         wrapped = textwrap.wrap(text, width=chars_per_line)
         return wrapped
 
-        def _calculate_item_lines(self, item: FinancialItem) -> int:
+    def _calculate_item_lines(self, item: FinancialItem) -> int:
         """Calculate lines needed for an item using shape-based calculations with Chinese optimization"""
         # Use the current shape for calculations, or fallback to default
         shape = getattr(self, 'current_shape', None)
