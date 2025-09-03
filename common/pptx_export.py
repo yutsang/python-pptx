@@ -363,42 +363,54 @@ class PowerPointGenerator:
     def _plan_content_distribution(self, items: List[FinancialItem]):
         distribution = []
         content_queue = items.copy()
-        
+
         # Start from slide 0 (index 0) for content slides
         # For the server template structure:
         # - Slide 0 (index 0): use only 'c' section (textMainBullets)
         # - Slide 1+ (index 1+): use 'b' (left) and 'c' (right) sections (textMainBullets_L and textMainBullets_R)
         slide_idx = 0
+
+        # Debug: Log total items and content type
+        total_items = len(items)
+        print(f"🔍 CONTENT DISTRIBUTION: Processing {total_items} items")
+        chinese_items = sum(1 for item in items if any('\u4e00' <= char <= '\u9fff' for desc in item.descriptions for char in desc))
+        print(f"🔍 CONTENT TYPE: {chinese_items} Chinese items, {total_items - chinese_items} English items")
         
         while content_queue:
+            print(f"📊 SLIDE {slide_idx}: Processing {len(content_queue)} remaining items")
             if slide_idx == 0:
                 sections = ['c']  # Only 'c' section on slide 0 (textMainBullets)
+                print(f"📊 SLIDE {slide_idx}: Using section 'c' (textMainBullets)")
             else:
                 # For server template: use both left and right sections
                 sections = ['b', 'c']  # Left and right sections (textMainBullets_L and textMainBullets_R)
-            
+                print(f"📊 SLIDE {slide_idx}: Using sections 'b' and 'c' (textMainBullets_L and textMainBullets_R)")
+
             for section in sections:
                 if not content_queue:
                     break
                 section_items = []
                 lines_used = 0
-                
+
                 # Get the actual shape for this section to calculate proper line limits
                 shape = self._get_target_shape_for_section(slide_idx, section)
                 if shape:
                     max_lines = self._calculate_max_rows_for_shape(shape)
-                    # Be more conservative with Chinese text to prevent overflow
-                    if slide_idx == 0:  # First slide needs more content but still conservative for Chinese
-                        max_lines = max(max_lines, 22)  # Lower minimum for slide 0 to prevent Chinese overflow
+                    # Use appropriate minimums for Chinese content but don't be overly restrictive
+                    if slide_idx == 0:  # First slide can handle more content
+                        max_lines = max(max_lines, 35)  # Allow more content on first slide
                     elif section in ['b', 'c']:  # _L and _R sections
-                        max_lines = max(max_lines, 18)  # Lower minimum for side sections to prevent overflow
+                        max_lines = max(max_lines, 25)  # Allow sufficient content on side sections
+                    print(f"📐 SECTION {section}: Found shape '{shape.name}', max_lines = {max_lines}")
                 else:
                     max_lines = self.ROWS_PER_SECTION  # Fallback
+                    print(f"⚠️ SECTION {section}: No shape found, using fallback max_lines = {max_lines}")
                 
                 while content_queue and lines_used < max_lines:
                     item = content_queue[0]
                     item_lines = self._calculate_item_lines(item)
-                    
+                    print(f"📝 ITEM: '{item.accounting_type}' needs {item_lines} lines, used {lines_used}/{max_lines}")
+
                     # If the item fits completely, add it
                     if lines_used + item_lines <= max_lines:
                         section_items.append(item)
@@ -428,9 +440,16 @@ class PowerPointGenerator:
                             break
                 if section_items:
                     distribution.append((slide_idx, section, section_items))
-            
+                    print(f"✅ SECTION {section}: Added {len(section_items)} items to slide {slide_idx}")
+
             slide_idx += 1
             # Don't limit by existing slides since we'll create new ones as needed
+
+        # Final distribution summary
+        print("\n🎯 FINAL DISTRIBUTION:")
+        for slide_idx, section, items in distribution:
+            print(f"  📄 Slide {slide_idx}, Section {section}: {len(items)} items")
+
         return distribution
 
     def _calculate_chars_per_line(self, shape):
@@ -528,13 +547,15 @@ class PowerPointGenerator:
         # Use the actual shape width and font size to wrap text accurately
         chars_per_line = self._calculate_chars_per_line(shape)
 
-        # Be more conservative with Chinese text to prevent unwanted line breaks
+        # Be appropriately conservative with Chinese text to prevent unwanted line breaks
         if text and any('\u4e00' <= char <= '\u9fff' for char in text):
             chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text)
-            if chinese_ratio > 0.5:  # Mostly Chinese text
-                chars_per_line = int(chars_per_line * 0.85)  # 15% more conservative for Chinese
+            if chinese_ratio > 0.8:  # Almost entirely Chinese
+                chars_per_line = int(chars_per_line * 0.92)  # 8% conservative for Chinese
+            elif chinese_ratio > 0.6:  # Mostly Chinese
+                chars_per_line = int(chars_per_line * 0.94)  # 6% conservative for mostly Chinese
             else:  # Mixed Chinese/English
-                chars_per_line = int(chars_per_line * 0.9)  # 10% more conservative for mixed
+                chars_per_line = int(chars_per_line * 0.96)  # 4% conservative for mixed
 
         # Use Chinese-aware text wrapping
         if text and any('\u4e00' <= char <= '\u9fff' for char in text):
@@ -597,11 +618,13 @@ class PowerPointGenerator:
 
             for para in desc.split('\n'):
                 if chinese_ratio > 0.3:  # Has significant Chinese content
-                    if chinese_ratio > 0.7:  # Mostly Chinese
-                        # Be very conservative with Chinese text to prevent line breaks
-                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.8))))  # 20% more conservative
+                    if chinese_ratio > 0.8:  # Almost entirely Chinese
+                        # Be conservative but not overly so - Chinese characters are compact
+                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.9))))  # 10% conservative
+                    elif chinese_ratio > 0.6:  # Mostly Chinese
+                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.92))))  # 8% conservative
                     else:  # Mixed Chinese/English
-                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.85))))  # 15% more conservative
+                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.95))))  # 5% conservative
                 else:
                     # English or minimal Chinese content
                     para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
