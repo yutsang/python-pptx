@@ -1667,213 +1667,257 @@ def main():
         # --- PowerPoint Generation Section (Bottom) ---
         st.markdown("---")
         st.subheader("📊 PowerPoint Generation")
-        
+
+        # Create combined buttons for English and Chinese exports
         col1, col2 = st.columns([1, 1])
-        
+
+        # English PPTX Export Button (combines prepare and download)
         with col1:
-            if st.button("📊 Prepare PowerPoint", type="secondary", use_container_width=True):
-                try:
-                    # Get the project name based on selected entity (use first two words)
-                    if selected_entity:
-                        words = selected_entity.split()
-                        # Use first two words, or first word if only one word
-                        project_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else selected_entity
-                    else:
-                        project_name = selected_entity
-                    
-                    # Check for template file in common locations
-                    possible_templates = [
-                        "fdd_utils/template.pptx",
-                        "template.pptx", 
-                        "old_ver/template.pptx",
-                        "common/template.pptx"
-                    ]
-                    
-                    template_path = None
-                    for template in possible_templates:
-                        if os.path.exists(template):
-                            template_path = template
-                            break
-                    
-                    if not template_path:
-                        st.error("❌ PowerPoint template not found. Please ensure 'template.pptx' exists in the fdd_utils/ directory.")
-                        st.info("💡 You can copy a template file from the old_ver/ directory or create a new one.")
-                    else:
-                        # Define output path with timestamp in fdd_utils/output directory
-                        from datetime import datetime
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        output_filename = f"{project_name}_{statement_type.upper()}_{timestamp}.pptx"
-                        output_path = f"fdd_utils/output/{output_filename}"
-                        
-                        # Ensure output directory exists
-                        os.makedirs("fdd_utils/output", exist_ok=True)
-                        
-                        # 1. Get the correct filtered keys for export
-                        ai_data = st.session_state.get('ai_data', {})
-                        sections_by_key = ai_data.get('sections_by_key', {})
-                        entity_name = ai_data.get('entity_name', selected_entity)
-                        keys_with_data = [key for key, sections in sections_by_key.items() if sections]
+            if st.button("📊 Export English PPTX", type="primary", use_container_width=True):
+                export_pptx_with_download(selected_entity, statement_type, language='english')
 
-                        # Dynamic BS key selection (as in your old logic)
-                        bs_keys = [
-                            "Cash", "AR", "Prepayments", "OR", "Other CA", "IP", "Other NCA",
-                            "AP", "Taxes payable", "OP", "Capital", "Reserve"
-                        ]
-                        if entity_name in ['Ningbo', 'Nanjing']:
-                            bs_keys = [key for key in bs_keys if key != "Reserve"]
-
-                        is_keys = [
-                            "OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
-                            "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"
-                        ]
-
-                        if statement_type == "BS":
-                            filtered_keys = [key for key in keys_with_data if key in bs_keys]
-                        elif statement_type == "IS":
-                            filtered_keys = [key for key in keys_with_data if key in is_keys]
-                        else:  # ALL
-                            filtered_keys = keys_with_data
-
-                        # 2. Use appropriate content file based on statement type
-                        # Note: Content files should contain narrative content from AI processing, not table data
-                        
-                        # Get the Excel file path for embedding data
-                        excel_file_path = None
-                        # Get uploaded_file from session state or use default
-                        current_uploaded_file = st.session_state.get('uploaded_file', None)
-                        if current_uploaded_file is not None:
-                            try:
-                                # Save uploaded file to temporary location for PowerPoint processing
-                                import tempfile
-                                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
-                                    temp_file.write(current_uploaded_file.getvalue())
-                                    excel_file_path = temp_file.name
-                                print(f"💾 Saved uploaded file to temporary location: {excel_file_path}")
-                            except Exception as e:
-                                print(f"⚠️ Failed to save uploaded file: {e}")
-                                # Fallback to default file
-                                if os.path.exists("databook.xlsx"):
-                                    excel_file_path = "databook.xlsx"
-                        else:
-                            # Fallback to default file
-                            if os.path.exists("databook.xlsx"):
-                                excel_file_path = "databook.xlsx"
-                        
-                        # Handle different statement types
-                        if statement_type == "IS":
-                            # Income Statement only
-                            markdown_path = "fdd_utils/is_content.md"
-                            if not os.path.exists(markdown_path):
-                                st.error(f"❌ Content file not found: {markdown_path}")
-                                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
-                                return
-                            
-                            export_pptx(
-                                template_path=template_path,
-                                markdown_path=markdown_path,
-                                output_path=output_path,
-                                project_name=project_name,
-                                excel_file_path=excel_file_path
-                            )
-                            
-                        elif statement_type == "BS":
-                            # Balance Sheet only
-                            markdown_path = "fdd_utils/bs_content.md"
-                            if not os.path.exists(markdown_path):
-                                st.error(f"❌ Content file not found: {markdown_path}")
-                                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
-                                return
-                            
-                            export_pptx(
-                                template_path=template_path,
-                                markdown_path=markdown_path,
-                                output_path=output_path,
-                                project_name=project_name,
-                                excel_file_path=excel_file_path
-                            )
-                            
-                        else:  # ALL - Generate BS first, then IS, then merge
-                            st.info("🔄 Generating combined Balance Sheet and Income Statement presentation...")
-                            
-                            # Check if both content files exist
-                            bs_markdown_path = "fdd_utils/bs_content.md"
-                            is_markdown_path = "fdd_utils/is_content.md"
-                            
-                            if not os.path.exists(bs_markdown_path):
-                                st.error(f"❌ Balance Sheet content file not found: {bs_markdown_path}")
-                                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
-                                return
-                                
-                            if not os.path.exists(is_markdown_path):
-                                st.error(f"❌ Income Statement content file not found: {is_markdown_path}")
-                                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
-                                return
-                            
-                            # Generate temporary files for BS and IS
-                            import tempfile
-                            import shutil
-                            
-                            with tempfile.TemporaryDirectory() as temp_dir:
-                                bs_temp_path = os.path.join(temp_dir, "bs_temp.pptx")
-                                is_temp_path = os.path.join(temp_dir, "is_temp.pptx")
-                                
-                                # Generate BS presentation
-                                st.info("📊 Generating Balance Sheet section...")
-                                export_pptx(
-                                    template_path=template_path,
-                                    markdown_path=bs_markdown_path,
-                                    output_path=bs_temp_path,
-                                    project_name=project_name,
-                                    excel_file_path=excel_file_path
-                                )
-                                
-                                # Generate IS presentation
-                                st.info("📈 Generating Income Statement section...")
-                                export_pptx(
-                                    template_path=template_path,
-                                    markdown_path=is_markdown_path,
-                                    output_path=is_temp_path,
-                                    project_name=project_name,
-                                    excel_file_path=excel_file_path
-                                )
-                                
-                                # Merge the presentations
-                                st.info("🔗 Merging presentations...")
-                                merge_presentations(bs_temp_path, is_temp_path, output_path)
-                                
-                                st.success("✅ Combined presentation generated successfully!")
-                        
-                        st.session_state['pptx_exported'] = True
-                        st.session_state['pptx_filename'] = output_filename
-                        st.session_state['pptx_path'] = output_path
-                        st.success(f"✅ PowerPoint is ready for download: {output_filename}")
-                        
-                except FileNotFoundError as e:
-                    st.error(f"❌ Template file not found: {e}")
-                except Exception as e:
-                    st.error(f"❌ Export failed: {e}")
-                    st.error(f"Error details: {str(e)}")
-        
+        # Chinese PPTX Export Button (combines prepare and download)
         with col2:
-            # Show a disabled download button until a PPTX is available, then enable
-            pptx_ready = st.session_state.get('pptx_exported', False) and os.path.exists(st.session_state.get('pptx_path', ''))
-            if pptx_ready:
-                with open(st.session_state['pptx_path'], "rb") as file:
-                    st.download_button(
-                        label="📥 Download PowerPoint",
-                        data=file.read(),
-                        file_name=st.session_state['pptx_filename'],
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        use_container_width=True
+            if st.button("📊 Export Chinese PPTX", type="primary", use_container_width=True):
+                export_pptx_with_download(selected_entity, statement_type, language='chinese')
+
+        # Define the export function that combines prepare and download
+        def export_pptx_with_download(selected_entity, statement_type, language='english'):
+            try:
+                # Show language-specific progress message
+                if language == 'chinese':
+                    st.info("📊 开始生成中文 PowerPoint 演示文稿...")
+                else:
+                    st.info("📊 Generating English PowerPoint presentation...")
+
+                # Get the project name based on selected entity (use first two words)
+                if selected_entity:
+                    words = selected_entity.split()
+                    # Use first two words, or first word if only one word
+                    project_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else selected_entity
+                else:
+                    project_name = selected_entity
+
+                # Check for template file in common locations
+                possible_templates = [
+                    "fdd_utils/template.pptx",
+                    "template.pptx",
+                    "old_ver/template.pptx",
+                    "common/template.pptx"
+                ]
+
+                template_path = None
+                for template in possible_templates:
+                    if os.path.exists(template):
+                        template_path = template
+                        break
+
+                if not template_path:
+                    st.error("❌ PowerPoint template not found. Please ensure 'template.pptx' exists in the fdd_utils/ directory.")
+                    st.info("💡 You can copy a template file from the old_ver/ directory or create a new one.")
+                    return
+
+                # Add language suffix to filename
+                language_suffix = "_CN" if language == 'chinese' else "_EN"
+
+                # Define output path with timestamp in fdd_utils/output directory
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_filename = f"{project_name}_{statement_type.upper()}_{timestamp}{language_suffix}.pptx"
+                output_path = f"fdd_utils/output/{output_filename}"
+
+                # Ensure output directory exists
+                os.makedirs("fdd_utils/output", exist_ok=True)
+
+                # 1. Get the correct filtered keys for export
+                ai_data = st.session_state.get('ai_data', {})
+                sections_by_key = ai_data.get('sections_by_key', {})
+                entity_name = ai_data.get('entity_name', selected_entity)
+                keys_with_data = [key for key, sections in sections_by_key.items() if sections]
+
+                # Dynamic BS key selection (as in your old logic)
+                bs_keys = [
+                    "Cash", "AR", "Prepayments", "OR", "Other CA", "IP", "Other NCA",
+                    "AP", "Taxes payable", "OP", "Capital", "Reserve"
+                ]
+                if entity_name in ['Ningbo', 'Nanjing']:
+                    bs_keys = [key for key in bs_keys if key != "Reserve"]
+
+                is_keys = [
+                    "OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
+                    "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"
+                ]
+
+                if statement_type == "BS":
+                    filtered_keys = [key for key in keys_with_data if key in bs_keys]
+                elif statement_type == "IS":
+                    filtered_keys = [key for key in keys_with_data if key in is_keys]
+                else:  # ALL
+                    filtered_keys = keys_with_data
+
+                # 2. Use appropriate content file based on statement type
+                # Note: Content files should contain narrative content from AI processing, not table data
+
+                # Get the Excel file path for embedding data
+                excel_file_path = None
+                # Get uploaded_file from session state or use default
+                current_uploaded_file = st.session_state.get('uploaded_file', None)
+                if current_uploaded_file is not None:
+                    try:
+                        # Save uploaded file to temporary location for PowerPoint processing
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
+                            temp_file.write(current_uploaded_file.getvalue())
+                            excel_file_path = temp_file.name
+                        print(f"💾 Saved uploaded file to temporary location: {excel_file_path}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to save uploaded file: {e}")
+                        # Fallback to default file
+                        if os.path.exists("databook.xlsx"):
+                            excel_file_path = "databook.xlsx"
+                else:
+                    # Fallback to default file
+                    if os.path.exists("databook.xlsx"):
+                        excel_file_path = "databook.xlsx"
+
+                # Handle different statement types
+                if statement_type == "IS":
+                    # Income Statement only
+                    markdown_path = "fdd_utils/is_content.md"
+                    if not os.path.exists(markdown_path):
+                        st.error(f"❌ Content file not found: {markdown_path}")
+                        st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                        return
+
+                    # Use language-specific export settings
+                    if language == 'chinese':
+                        st.info("📊 使用中文优化设置生成演示文稿...")
+                        # Chinese-specific settings are handled in pptx_export.py functions
+
+                    export_pptx(
+                        template_path=template_path,
+                        markdown_path=markdown_path,
+                        output_path=output_path,
+                        project_name=project_name,
+                        excel_file_path=excel_file_path
                     )
-            else:
-                st.download_button(
-                    label="📥 Download PowerPoint",
-                    data=b"",
-                    disabled=True,
-                    file_name="report.pptx",
-                    use_container_width=True
-                )
+
+                elif statement_type == "BS":
+                    # Balance Sheet only
+                    markdown_path = "fdd_utils/bs_content.md"
+                    if not os.path.exists(markdown_path):
+                        st.error(f"❌ Content file not found: {markdown_path}")
+                        st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                        return
+
+                    # Use language-specific export settings
+                    if language == 'chinese':
+                        st.info("📊 使用中文优化设置生成演示文稿...")
+                        # Chinese-specific settings are handled in pptx_export.py functions
+
+                    export_pptx(
+                        template_path=template_path,
+                        markdown_path=markdown_path,
+                        output_path=output_path,
+                        project_name=project_name,
+                        excel_file_path=excel_file_path
+                    )
+
+                else:  # ALL - Generate BS first, then IS, then merge
+                    st.info("🔄 Generating combined Balance Sheet and Income Statement presentation...")
+
+                    # Check if both content files exist
+                    bs_markdown_path = "fdd_utils/bs_content.md"
+                    is_markdown_path = "fdd_utils/is_content.md"
+
+                    if not os.path.exists(bs_markdown_path):
+                        st.error(f"❌ Balance Sheet content file not found: {bs_markdown_path}")
+                        st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                        return
+
+                    if not os.path.exists(is_markdown_path):
+                        st.error(f"❌ Income Statement content file not found: {is_markdown_path}")
+                        st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                        return
+
+                    # Generate temporary files for BS and IS
+                    import tempfile
+                    import shutil
+
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        bs_temp_path = os.path.join(temp_dir, "bs_temp.pptx")
+                        is_temp_path = os.path.join(temp_dir, "is_temp.pptx")
+
+                        # Generate BS presentation
+                        if language == 'chinese':
+                            st.info("📊 使用中文优化设置生成资产负债表...")
+                        else:
+                            st.info("📊 Generating Balance Sheet section...")
+                        export_pptx(
+                            template_path=template_path,
+                            markdown_path=bs_markdown_path,
+                            output_path=bs_temp_path,
+                            project_name=project_name,
+                            excel_file_path=excel_file_path
+                        )
+
+                        # Generate IS presentation
+                        if language == 'chinese':
+                            st.info("📈 使用中文优化设置生成损益表...")
+                        else:
+                            st.info("📈 Generating Income Statement section...")
+                        export_pptx(
+                            template_path=template_path,
+                            markdown_path=is_markdown_path,
+                            output_path=is_temp_path,
+                            project_name=project_name,
+                            excel_file_path=excel_file_path
+                        )
+
+                        # Merge the presentations
+                        if language == 'chinese':
+                            st.info("🔗 合并中文演示文稿...")
+                        else:
+                            st.info("🔗 Merging presentations...")
+                        merge_presentations(bs_temp_path, is_temp_path, output_path)
+
+                        if language == 'chinese':
+                            st.success("✅ 中文组合演示文稿生成成功!")
+                        else:
+                            st.success("✅ Combined presentation generated successfully!")
+
+                # Store session state and show download
+                st.session_state['pptx_exported'] = True
+                st.session_state['pptx_filename'] = output_filename
+                st.session_state['pptx_path'] = output_path
+
+                # Immediately show download button after successful generation
+                if os.path.exists(output_path):
+                    with open(output_path, "rb") as file:
+                        if language == 'chinese':
+                            download_label = f"📥 下载中文 PowerPoint: {output_filename}"
+                        else:
+                            download_label = f"📥 Download English PowerPoint: {output_filename}"
+
+                        st.download_button(
+                            label=download_label,
+                            data=file.read(),
+                            file_name=output_filename,
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            use_container_width=True
+                        )
+
+                    if language == 'chinese':
+                        st.success(f"✅ 中文 PowerPoint 生成完成: {output_filename}")
+                    else:
+                        st.success(f"✅ English PowerPoint generated successfully: {output_filename}")
+
+            except FileNotFoundError as e:
+                st.error(f"❌ Template file not found: {e}")
+            except Exception as e:
+                st.error(f"❌ Export failed: {e}")
+                st.error(f"Error details: {str(e)}")
+        # Download buttons are now integrated into the export functions above
         
 
 

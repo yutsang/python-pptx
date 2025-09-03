@@ -69,9 +69,15 @@ def get_font_size_for_text(text, base_size=Pt(9)):
     """
     Get appropriate font size based on text content.
     Chinese text gets smaller font to maximize content density and prevent overflow.
+    Enhanced for better Chinese character handling.
     """
     if detect_chinese_text(text):
-        return Pt(8)  # Smaller font for Chinese to fit more content
+        # Use even smaller font for Chinese to prevent line breaks
+        chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text) if text else 0
+        if chinese_ratio > 0.5:  # Mostly Chinese text
+            return Pt(7.5)  # Very small font for dense Chinese content
+        else:
+            return Pt(8)  # Mixed Chinese/English content
     else:
         return base_size  # Default size for English
 
@@ -79,9 +85,14 @@ def get_line_spacing_for_text(text):
     """
     Get appropriate line spacing based on text content.
     Chinese text needs tighter spacing to maximize content density.
+    Enhanced for better Chinese line break handling.
     """
     if detect_chinese_text(text):
-        return Pt(11)  # Much tighter spacing for Chinese to fit more content
+        chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text) if text else 0
+        if chinese_ratio > 0.5:  # Mostly Chinese text
+            return Pt(10)  # Ultra-tight spacing for dense Chinese content
+        else:
+            return Pt(11)  # Tighter spacing for mixed Chinese/English
     else:
         return Pt(12)  # Standard spacing for English
 
@@ -451,13 +462,20 @@ class PowerPointGenerator:
                     break
 
             if has_chinese:
-                # Chinese characters are wider
-                if is_bold:
-                    avg_char_px = 8.5  # Bold Chinese text
-                else:
-                    avg_char_px = 7.2  # Regular Chinese text (optimized for 8pt font)
+                # Chinese characters are wider - enhanced calculations
+                chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text) if text else 0
+                if chinese_ratio > 0.8:  # Almost entirely Chinese
+                    if is_bold:
+                        avg_char_px = 9.2  # Bold Chinese text (wider for line break prevention)
+                    else:
+                        avg_char_px = 7.8  # Regular Chinese text (optimized for 7.5pt font)
+                else:  # Mixed Chinese/English
+                    if is_bold:
+                        avg_char_px = 8.5  # Bold mixed text
+                    else:
+                        avg_char_px = 7.2  # Regular mixed text
             else:
-                # English characters
+                # English characters - standard calculations
                 if is_bold:
                     avg_char_px = 6.5  # Bold English text
                 else:
@@ -510,12 +528,50 @@ class PowerPointGenerator:
         # Use the actual shape width and font size to wrap text accurately
         chars_per_line = self._calculate_chars_per_line(shape)
 
-        # Be more conservative with Chinese text
+        # Be more conservative with Chinese text to prevent unwanted line breaks
         if text and any('\u4e00' <= char <= '\u9fff' for char in text):
-            chars_per_line = int(chars_per_line * 0.9)  # 10% more conservative for Chinese
+            chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text)
+            if chinese_ratio > 0.5:  # Mostly Chinese text
+                chars_per_line = int(chars_per_line * 0.85)  # 15% more conservative for Chinese
+            else:  # Mixed Chinese/English
+                chars_per_line = int(chars_per_line * 0.9)  # 10% more conservative for mixed
 
-        wrapped = textwrap.wrap(text, width=chars_per_line)
-        return wrapped
+        # Use Chinese-aware text wrapping
+        if text and any('\u4e00' <= char <= '\u9fff' for char in text):
+            # For Chinese text, try to avoid breaking in the middle of Chinese phrases
+            wrapped = []
+            current_line = ""
+            words = text.split()
+
+            for word in words:
+                # Check if word contains Chinese characters
+                has_chinese_in_word = any('\u4e00' <= char <= '\u9fff' for char in word)
+
+                if has_chinese_in_word:
+                    # For Chinese words, be more careful about line breaks
+                    if len(current_line) + len(word) + 1 <= chars_per_line:
+                        current_line += (" " + word) if current_line else word
+                    else:
+                        if current_line:
+                            wrapped.append(current_line)
+                        current_line = word
+                else:
+                    # English words - standard wrapping
+                    if len(current_line) + len(word) + 1 <= chars_per_line:
+                        current_line += (" " + word) if current_line else word
+                    else:
+                        if current_line:
+                            wrapped.append(current_line)
+                        current_line = word
+
+            if current_line:
+                wrapped.append(current_line)
+
+            return wrapped
+        else:
+            # Standard text wrapping for English
+            wrapped = textwrap.wrap(text, width=chars_per_line)
+            return wrapped
 
     def _calculate_item_lines(self, item: FinancialItem) -> int:
         """Calculate lines needed for an item using shape-based calculations with Chinese optimization"""
@@ -531,17 +587,23 @@ class PowerPointGenerator:
         header_lines = len(textwrap.wrap(header, width=chars_per_line))
         lines += header_lines
 
-        # Calculate description lines with Chinese optimization
+        # Calculate description lines with enhanced Chinese optimization
         desc_lines = 0
         for desc in item.descriptions:
-            # Check if description contains Chinese characters
-            has_chinese = any('\u4e00' <= char <= '\u9fff' for char in desc)
+            # Check Chinese character ratio for better optimization
+            chinese_chars = sum(1 for char in desc if '\u4e00' <= char <= '\u9fff')
+            total_chars = len(desc)
+            chinese_ratio = chinese_chars / total_chars if total_chars > 0 else 0
 
             for para in desc.split('\n'):
-                if has_chinese:
-                    # Be more conservative with Chinese text - assume it takes more lines
-                    para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.9))))  # 10% more conservative
+                if chinese_ratio > 0.3:  # Has significant Chinese content
+                    if chinese_ratio > 0.7:  # Mostly Chinese
+                        # Be very conservative with Chinese text to prevent line breaks
+                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.8))))  # 20% more conservative
+                    else:  # Mixed Chinese/English
+                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.85))))  # 15% more conservative
                 else:
+                    # English or minimal Chinese content
                     para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
                 desc_lines += para_lines
 
