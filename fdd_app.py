@@ -1161,15 +1161,8 @@ def main():
                                                 st.session_state['ai_content_store'][key]['agent3_content'] = translated_content
                                                 st.session_state['ai_content_store'][key]['agent3_timestamp'] = time.time()
                                                 print(f"   ✅ Updated {key} with Chinese content ({len(translated_content)} chars)")
-                                            else:
-                                                print(f"   ⚠️  {key} has no valid Chinese content to update")
-                                        else:
-                                            print(f"   ⚠️  {key} result is not a dict: {type(result)}")
 
                                     print(f"✅ AI content store updated for PPTX export")
-                                    print(f"✅ Session state updated successfully")
-                                    print(f"🔍 agent3_results keys: {list(st.session_state['agent_states']['agent3_results'].keys())}")
-                                    print(f"{'='*60}")
 
                             progress_bar.progress(100)
                             status_text.text("✅ 所有处理完成")
@@ -1719,19 +1712,24 @@ def generate_content_from_session_storage(entity_name):
                 # Get latest content from session storage (could be Agent 1, 2, or 3 version)
                 if item in filtered_content_store:
                     key_data = filtered_content_store[item]
+
                     latest_content = key_data.get('current_content', key_data.get('agent1_content', ''))
-                    
+
                     # Determine content source
                     if 'agent3_content' in key_data:
                         content_source = "agent3_final"
                         source_timestamp = key_data.get('agent3_timestamp')
+                        # Use agent3_content if available and it's Chinese
+                        agent3_content = key_data['agent3_content']
+                        if agent3_content and any('\u4e00' <= char <= '\u9fff' for char in agent3_content):
+                            latest_content = agent3_content
                     elif 'agent2_content' in key_data:
                         content_source = "agent2_validated"
                         source_timestamp = key_data.get('agent2_timestamp')
                     else:
                         content_source = "agent1_original"
                         source_timestamp = key_data.get('agent1_timestamp')
-                    
+
                     st.write(f"  • {item}: Using {content_source} version")
                 else:
                     latest_content = f"No information available for {item}"
