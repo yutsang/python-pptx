@@ -494,22 +494,31 @@ class PowerPointGenerator:
 
             if has_chinese:
                 # Chinese characters are wider than English - corrected calculations
+                # Get text from the first paragraph with Chinese characters
+                text = ""
+                for para in shape.text_frame.paragraphs:
+                    for run in para.runs:
+                        if run.text and any('\u4e00' <= char <= '\u9fff' for char in run.text):
+                            text = run.text
+                            break
+                    if text:
+                        break
                 chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text) if text else 0
                 if chinese_ratio > 0.8:  # Almost entirely Chinese
                     if is_bold:
-                        avg_char_px = 12.5  # Bold Chinese text (much wider than English)
+                        avg_char_px = 14.0  # Bold Chinese text (much wider than English) - increased
                     else:
-                        avg_char_px = 11.2  # Regular Chinese text (wider than English)
+                        avg_char_px = 12.5  # Regular Chinese text (wider than English) - increased
                 elif chinese_ratio > 0.6:  # Mostly Chinese
                     if is_bold:
-                        avg_char_px = 11.8  # Bold mostly Chinese
+                        avg_char_px = 13.2  # Bold mostly Chinese - increased
                     else:
-                        avg_char_px = 10.5  # Regular mostly Chinese
+                        avg_char_px = 11.8  # Regular mostly Chinese - increased
                 else:  # Mixed Chinese/English
                     if is_bold:
-                        avg_char_px = 9.5  # Bold mixed text
+                        avg_char_px = 10.5  # Bold mixed text - increased
                     else:
-                        avg_char_px = 8.2  # Regular mixed text
+                        avg_char_px = 9.2  # Regular mixed text - increased
             else:
                 # English characters - standard calculations
                 if is_bold:
@@ -520,7 +529,7 @@ class PowerPointGenerator:
             # Default - assume mixed content, use conservative estimate
             avg_char_px = 7.0  # Conservative estimate for mixed content
 
-        chars_per_line = max(70, int(effective_width // avg_char_px))  # Minimum 70 chars for Chinese optimization
+        chars_per_line = max(50, int(effective_width // avg_char_px))  # Minimum 50 chars for Chinese optimization - more conservative
         return chars_per_line
 
     def _calculate_max_rows_for_summary(self, shape):
@@ -636,12 +645,12 @@ class PowerPointGenerator:
             for para in desc.split('\n'):
                 if chinese_ratio > 0.3:  # Has significant Chinese content
                     if chinese_ratio > 0.8:  # Almost entirely Chinese
-                        # Chinese characters are wider, so they need more lines
-                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.85))))  # 15% more lines
+                        # Chinese characters are wider, so they need more lines - more conservative
+                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.75))))  # 25% more lines
                     elif chinese_ratio > 0.6:  # Mostly Chinese
-                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.87))))  # 13% more lines
+                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.78))))  # 22% more lines
                     else:  # Mixed Chinese/English
-                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.90))))  # 10% more lines
+                        para_lines = max(1, len(textwrap.wrap(para, width=int(chars_per_line * 0.82))))  # 18% more lines
                 else:
                     # English or minimal Chinese content
                     para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
@@ -1029,7 +1038,12 @@ class PowerPointGenerator:
             self._validate_content_placement(distribution)
             
             # Generate AI summary content based on commentary length
-            summary_content = self._generate_ai_summary_content(md_content, distribution)
+            # For Chinese mode, use the provided summary_md if it's Chinese content
+            if hasattr(self, 'language') and self.language == 'chinese' and summary_md and any('\u4e00' <= char <= '\u9fff' for char in summary_md):
+                print("🌐 SUMMARY: Using provided Chinese summary content")
+                summary_content = summary_md.strip()
+            else:
+                summary_content = self._generate_ai_summary_content(md_content, distribution)
 
             # Ensure summary_content is valid
             if not summary_content or summary_content is None:
