@@ -54,8 +54,26 @@ def get_financial_keys():
     ]
 
 
-def get_key_display_name(key):
-    """Get display name for a financial key."""
+def detect_chinese_content(content):
+    """Detect if content contains significant Chinese characters."""
+    if not content:
+        return False
+
+    chinese_chars = sum(1 for char in str(content) if '\u4e00' <= char <= '\u9fff')
+    total_chars = len(str(content).replace(' ', '').replace('\n', ''))
+
+    if total_chars == 0:
+        return False
+
+    chinese_ratio = chinese_chars / total_chars
+    return chinese_ratio > 0.3
+
+def get_key_display_name(key, use_excel_tab_name=False, content=None):
+    """Get display name for a financial key with Chinese content detection."""
+    # Auto-detect if we should use Excel tab names based on content
+    if content is not None and detect_chinese_content(content):
+        use_excel_tab_name = True
+
     display_mapping = {
         'Cash': 'Cash and Cash Equivalents',
         'AR': 'Accounts Receivable',
@@ -84,7 +102,40 @@ def get_key_display_name(key):
         'Income tax': 'Income Tax',
         'LT DTA': 'Long-term Deferred Tax Assets'
     }
-    # Apply proper case formatting
+
+    if use_excel_tab_name:
+        # For Excel tab names, use a simpler mapping
+        excel_tab_mapping = {
+            'Cash': 'Cash',
+            'AR': 'AR',
+            'Prepayments': 'Prepayments',
+            'OR': 'OR',
+            'IP': 'IP',
+            'NCA': 'NCA',
+            'Other NCA': 'Other NCA',
+            'Other CA': 'Other CA',
+            'AP': 'AP',
+            'Advances': 'Advances',
+            'Taxes payable': 'Taxes payable',
+            'OP': 'OP',
+            'Capital': 'Capital',
+            'Reserve': 'Reserve',
+            'Capital reserve': 'Capital reserve',
+            'OI': 'OI',
+            'OC': 'OC',
+            'Tax and Surcharges': 'Tax and Surcharges',
+            'GA': 'GA',
+            'Fin Exp': 'Fin Exp',
+            'Cr Loss': 'Cr Loss',
+            'Other Income': 'Other Income',
+            'Non-operating Income': 'Non-operating Income',
+            'Non-operating Exp': 'Non-operating Exp',
+            'Income tax': 'Income tax',
+            'LT DTA': 'LT DTA'
+        }
+        return excel_tab_mapping.get(key, key)
+
+    # Apply proper case formatting for display names
     display_name = display_mapping.get(key, key)
     return display_name.title()
 

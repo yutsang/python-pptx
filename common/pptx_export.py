@@ -517,7 +517,7 @@ class PowerPointGenerator:
         wrapped = textwrap.wrap(text, width=chars_per_line)
         return wrapped
 
-    def _calculate_item_lines(self, item: FinancialItem) -> int:
+        def _calculate_item_lines(self, item: FinancialItem) -> int:
         """Calculate lines needed for an item using shape-based calculations with Chinese optimization"""
         # Use the current shape for calculations, or fallback to default
         shape = getattr(self, 'current_shape', None)
@@ -525,8 +525,9 @@ class PowerPointGenerator:
 
         lines = 0
 
-        # Calculate header lines
-        header = f"{item.accounting_type} (continued)" if item.layer1_continued else item.accounting_type
+        # Calculate header lines using display header
+        display_header = self._get_display_header_for_item(item)
+        header = f"{display_header} (continued)" if item.layer1_continued else display_header
         header_lines = len(textwrap.wrap(header, width=chars_per_line))
         lines += header_lines
 
@@ -551,9 +552,11 @@ class PowerPointGenerator:
         """Split an item to fit within max_lines, adding proper (cont'd) indicators"""
         shape = getattr(self, 'current_shape', None)
         chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
-        
-        # Account for header line
-        header_lines = 1  # Account for section header
+
+        # Account for header line using display header
+        display_header = self._get_display_header_for_item(item)
+        header = f"{display_header} (continued)" if item.layer1_continued else display_header
+        header_lines = len(textwrap.wrap(header, width=chars_per_line))
         available_lines = max_lines - header_lines
         
         desc_paras = item.descriptions
@@ -572,7 +575,7 @@ class PowerPointGenerator:
         if split_index == len(desc_paras):
             return (
                 FinancialItem(
-                    item.accounting_type,
+                    display_header,
                     item.account_title,
                     desc_paras,
                     layer1_continued=item.layer1_continued,
@@ -732,6 +735,22 @@ class PowerPointGenerator:
         
         return None
 
+    def _get_display_header_for_item(self, item: FinancialItem) -> str:
+        """Get appropriate header for item based on content language."""
+        # Check if any description contains Chinese characters
+        has_chinese = False
+        for desc in item.descriptions:
+            if any('\u4e00' <= char <= '\u9fff' for char in desc):
+                has_chinese = True
+                break
+
+        if has_chinese:
+            # For Chinese content, use Excel tab name (accounting_type)
+            return item.accounting_type
+        else:
+            # For English content, use the current display format
+            return item.accounting_type
+
     def _populate_section(self, shape, items: List[FinancialItem]):
         tf = shape.text_frame
         tf.clear()
@@ -745,19 +764,20 @@ class PowerPointGenerator:
         for idx, item in enumerate(items):
             is_first_part = not (item.layer1_continued or item.layer2_continued)
             # Layer 1 Header
-            if (item.accounting_type != self.prev_layer1) or (self.prev_layer1 is None):
+            display_header = self._get_display_header_for_item(item)
+            if (display_header != self.prev_layer1) or (self.prev_layer1 is None):
                 p = tf.add_paragraph()
                 self._apply_paragraph_formatting(p, is_layer2_3=False)
                 if paragraph_count > 0:
-                    try: p.space_before = get_space_before_for_text(f"{item.accounting_type}{cont_text}")
+                    try: p.space_before = get_space_before_for_text(f"{display_header}{cont_text}")
                     except: pass
-                try: p.space_after = get_space_after_for_text(f"{item.accounting_type}{cont_text}")
+                try: p.space_after = get_space_after_for_text(f"{display_header}{cont_text}")
                 except: pass
-                try: p.line_spacing = get_line_spacing_for_text(f"{item.accounting_type}{cont_text}")
+                try: p.line_spacing = get_line_spacing_for_text(f"{display_header}{cont_text}")
                 except: pass
                 run = p.add_run()
                 cont_text = " (continued)" if item.layer1_continued else ""
-                run.text = f"{item.accounting_type}{cont_text}"
+                run.text = f"{display_header}{cont_text}"
                 run.font.size = get_font_size_for_text(run.text, Pt(9))
                 run.font.bold = True
                 run.font.name = 'Arial'
@@ -765,7 +785,7 @@ class PowerPointGenerator:
                     run.font.color.rgb = self.DARK_BLUE
                 except:
                     run.font.color.rgb = RGBColor(0, 51, 160)  # Fallback dark blue
-                self.prev_layer1 = item.accounting_type
+                self.prev_layer1 = display_header
                 paragraph_count += 1
             # Treat all items the same (no special handling for taxes payables)
             for para_idx, desc in enumerate(item.descriptions):

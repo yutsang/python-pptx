@@ -1514,8 +1514,37 @@ def main():
             filtered_keys = st.session_state.get('filtered_keys_for_ai', [])
             
             if filtered_keys:
-                # Create tabs for each key (load all at once)
-                key_tabs = st.tabs([get_key_display_name(key) for key in filtered_keys])
+                # Create tabs for each key with content-aware display names
+                tab_labels = []
+                for key in filtered_keys:
+                    # Try to get content for language detection
+                    content_for_detection = None
+
+                    # Check agent3_results first
+                    agent3_results_all = agent_states.get('agent3_results', {}) or {}
+                    if key in agent3_results_all:
+                        pr = agent3_results_all[key]
+                        if isinstance(pr, dict):
+                            # Use the same logic as in the display section
+                            translated_content = pr.get('translated_content', '')
+                            corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
+                            content_for_detection = translated_content if translated_content and pr.get('is_chinese', False) else corrected_content
+
+                    # Fallback to agent1_results if no agent3 content
+                    if not content_for_detection:
+                        agent1_results_all = agent_states.get('agent1_results', {}) or {}
+                        if key in agent1_results_all:
+                            agent1_content = agent1_results_all[key]
+                            if isinstance(agent1_content, dict):
+                                content_for_detection = agent1_content.get('content', str(agent1_content))
+                            else:
+                                content_for_detection = str(agent1_content)
+
+                    # Use content-aware display name
+                    display_name = get_key_display_name(key, content=content_for_detection)
+                    tab_labels.append(display_name)
+
+                key_tabs = st.tabs(tab_labels)
                 
                 # Display results for each key in its tab
                 for i, key in enumerate(filtered_keys):
@@ -4040,7 +4069,19 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                 if agent1_results:
                     available_keys = [k for k in filtered_keys if k in agent1_results and agent1_results[k]]
                     if available_keys:
-                        key_tabs = st.tabs([get_key_display_name(k) for k in available_keys])
+                        # Create tab labels with content-aware display names
+                        tab_labels = []
+                        for k in available_keys:
+                            content = agent1_results[k]
+                            if isinstance(content, dict):
+                                content_str = content.get('content', str(content))
+                            else:
+                                content_str = str(content)
+                            # Use content-aware display name that shows Excel tab names for Chinese content
+                            display_name = get_key_display_name(k, content=content_str)
+                            tab_labels.append(display_name)
+
+                        key_tabs = st.tabs(tab_labels)
                         
                         for i, key in enumerate(available_keys):
                             with key_tabs[i]:
@@ -4083,7 +4124,19 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                 if agent2_results:
                     available_keys = [k for k in filtered_keys if k in agent2_results]
                     if available_keys:
-                        key_tabs = st.tabs([get_key_display_name(k) for k in available_keys])
+                        # Create tab labels with content-aware display names
+                        tab_labels = []
+                        for k in available_keys:
+                            content = agent2_results[k]
+                            if isinstance(content, dict):
+                                content_str = content.get('content', str(content))
+                            else:
+                                content_str = str(content)
+                            # Use content-aware display name that shows Excel tab names for Chinese content
+                            display_name = get_key_display_name(k, content=content_str)
+                            tab_labels.append(display_name)
+
+                        key_tabs = st.tabs(tab_labels)
                         
                         for i, key in enumerate(available_keys):
                             with key_tabs[i]:
@@ -4131,7 +4184,16 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
         if content_store:
             available_keys = [k for k in filtered_keys if k in content_store]
             if available_keys:
-                key_tabs = st.tabs([get_key_display_name(k) for k in available_keys])
+                # Create tab labels with content-aware display names
+                tab_labels = []
+                for k in available_keys:
+                    key_data = content_store[k]
+                    current_content = key_data.get('current_content', key_data.get('agent1_content', ''))
+                    # Use content-aware display name that shows Excel tab names for Chinese content
+                    display_name = get_key_display_name(k, content=current_content)
+                    tab_labels.append(display_name)
+
+                key_tabs = st.tabs(tab_labels)
                 
                 for i, key in enumerate(available_keys):
                     with key_tabs[i]:
