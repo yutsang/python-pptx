@@ -2531,10 +2531,7 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
 
             oai_client, _ = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
 
-            # Load system prompt from centralized template
-            from fdd_utils.prompt_templates import get_translation_prompts
-            prompts = get_translation_prompts()
-            system_prompt = prompts["chinese_translator_system"]
+            # system_prompt moved to higher scope above
 
             # Get model name
             if use_local_ai:
@@ -2568,20 +2565,27 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                     print(f"❌ Error creating temporary file: {e}")
                 temp_file_path = None
 
-        # Prepare processed table data
+        # Prepare processed table data (only if temp_file_path is available)
         processed_table_data = {}
-        for key in filtered_keys:
-            try:
-                from common.assistant import process_and_filter_excel, load_ip
-                mapping = load_ip('fdd_utils/mapping.json')
-                table_data = process_and_filter_excel(temp_file_path, mapping, entity_name, entity_keywords)
-                processed_table_data[key] = table_data
-            except Exception as e:
-                print(f"Warning: Could not prepare table data for {key}: {e}")
+        if temp_file_path:
+            for key in filtered_keys:
+                try:
+                    from common.assistant import process_and_filter_excel, load_ip
+                    mapping = load_ip('fdd_utils/mapping.json')
+                    table_data = process_and_filter_excel(temp_file_path, mapping, entity_name, entity_keywords)
+                    processed_table_data[key] = table_data
+                except Exception as e:
+                    print(f"Warning: Could not prepare table data for {key}: {e}")
+        else:
+            print("⚠️  No databook file available, skipping table data preparation")
 
-        # Get AI model settings
-        use_local_ai = st.session_state.get('use_local_ai', False)
-        use_openai = st.session_state.get('use_openai', False)
+        # Load system prompt from centralized template (move to higher scope)
+        from fdd_utils.prompt_templates import get_translation_prompts
+        prompts = get_translation_prompts()
+        system_prompt = prompts["chinese_translator_system"]
+
+        translated_results = {}
+        start_time = time.time()
 
         # Enhanced progress tracking for translation
         if external_progress:
@@ -2663,8 +2667,6 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 print(f"📝 BEFORE: {content_text[:80]}{'...' if len(content_text) > 80 else ''}")
 
                 # Use prompt from centralized template (NO SUMMARY SECTION)
-                from fdd_utils.prompt_templates import get_translation_prompts
-                prompts = get_translation_prompts()
                 user_prompt = prompts["chinese_translator_user"].replace("{content_text}", content_text)
 
                 # LOG AI PROCESSING
