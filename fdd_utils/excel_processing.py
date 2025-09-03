@@ -19,12 +19,14 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
 
     def col_num_to_letter(n):
         """Convert column number to Excel-style letter (0=A, 1=B, ..., 25=Z, 26=AA, etc.)"""
+        if n < 0:
+            return "?"
         result = ""
-        while n >= 0:
+        n = n + 1  # Convert to 1-based
+        while n > 0:
+            n = n - 1
             result = chr(65 + (n % 26)) + result
-            n = n // 26 - 1
-            if n < 0:
-                break
+            n = n // 26
         return result
 
     from datetime import datetime
@@ -108,99 +110,93 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
         print(f"   ⚠️  No 'Indicative adjusted' (English/Chinese) found, using fallback date detection")
         # Fallback: find any date column
     else:
-        print(f"   📊 Found {len(indicative_positions)} instances of 'Indicative adjusted' (English/Chinese):")
-        for i, (row, col) in enumerate(indicative_positions):
-            col_name = columns[col]
-            col_letter = col_num_to_letter(col)
-            print(f"   {i+1}. Row {row}, Column {col} ({col_name}) - {col_letter}: '{df.iloc[row, col]}'")
-        print(f"   🔄 Will process these instances in order...")
-    
-    # Step 2: For each "Indicative adjusted" (English/Chinese) position, find the merged range and get the date
-    for instance_idx, (indic_row, indic_col) in enumerate(indicative_positions):
-        col_name = columns[indic_col]
-        col_letter = col_num_to_letter(indic_col)
-        print(f"   🔍 [{instance_idx+1}/{len(indicative_positions)}] Processing 'Indicative adjusted' at Row {indic_row}, Col {indic_col} ({col_name}) - {col_letter}")
+        print(f"   📊 Found {len(indicative_positions)} instances of 'Indicative adjusted' (English/Chinese)")
+        # Step 2: For each "Indicative adjusted" (English/Chinese) position, find the merged range and get the date
+        for instance_idx, (indic_row, indic_col) in enumerate(indicative_positions):
+            col_name = columns[indic_col]
+            col_letter = col_num_to_letter(indic_col)
+            # print(f"   🔍 [{instance_idx+1}/{len(indicative_positions)}] Processing 'Indicative adjusted' at Row {indic_row}, Col {indic_col} ({col_name}) - {col_letter}")
 
-        # Find merged range: go right until we hit a non-empty cell or reach the end
-        merge_start = indic_col
-        merge_end = indic_col
-        
-        # Check if this is a merged cell by looking right
-        for check_col in range(indic_col + 1, len(columns)):
-            val = df.iloc[indic_row, check_col]
-            if pd.isna(val) or str(val).strip() == '':
-                merge_end = check_col
+            # Find merged range: go right until we hit a non-empty cell or reach the end
+            merge_start = indic_col
+            merge_end = indic_col
+
+            # Check if this is a merged cell by looking right
+            for check_col in range(indic_col + 1, len(columns)):
+                val = df.iloc[indic_row, check_col]
+                if pd.isna(val) or str(val).strip() == '':
+                    merge_end = check_col
+                else:
+                    break
             else:
-                break
-        else:
-            merge_end = len(columns) - 1
-        
-        print(f"   📍 Merged range: columns {merge_start}-{merge_end} (searching for latest date)")
-        print(f"   📍 Indicative adjusted found at column {indic_col} (0-indexed)")
+                merge_end = len(columns) - 1
 
-        # Find the date value in the row below the "Indicative adjusted" header
-        date_row = indic_row + 1
-        if date_row < len(df):
-            # Look for date in the merged range
-            for col_idx in range(merge_start, merge_end + 1):
-                val = df.iloc[date_row, col_idx]
-                
-                if isinstance(val, (pd.Timestamp, datetime)):
-                    date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                    if latest_date is None or date_val > latest_date:
-                        old_date = latest_date
-                        latest_date = date_val
-                        latest_column = columns[col_idx]
-                        print(f"   📅 [{instance_idx+1}] FOUND DATE in merged range: {latest_column} = {date_val.strftime('%Y-%m-%d')} (previous: {old_date.strftime('%Y-%m-%d') if old_date else 'None'})")
-                elif pd.notna(val):
-                    parsed_date = parse_date(str(val))
-                    if parsed_date:
-                        if latest_date is None or parsed_date > latest_date:
-                            old_date = latest_date
-                            latest_date = parsed_date
-                            latest_column = columns[col_idx]
-                            print(f"   📅 [{instance_idx+1}] PARSED DATE in merged range: {latest_column} = {parsed_date.strftime('%Y-%m-%d')} (previous: {old_date.strftime('%Y-%m-%d') if old_date else 'None'})")
-        
-        # If no date found in the row below, check a few more rows down
-        if latest_column is None:
-            for check_row in range(indic_row + 2, min(indic_row + 8, len(df))):  # Extended search range
+            # print(f"   📍 Merged range: columns {merge_start}-{merge_end} (searching for latest date)")
+            # print(f"   📍 Indicative adjusted found at column {indic_col} (0-indexed)")
+
+            # Find the date value in the row below the "Indicative adjusted" header
+            date_row = indic_row + 1
+            if date_row < len(df):
+                # Look for date in the merged range
                 for col_idx in range(merge_start, merge_end + 1):
-                    val = df.iloc[check_row, col_idx]
+                    val = df.iloc[date_row, col_idx]
 
                     if isinstance(val, (pd.Timestamp, datetime)):
                         date_val = val if isinstance(val, datetime) else val.to_pydatetime()
                         if latest_date is None or date_val > latest_date:
+                            old_date = latest_date
                             latest_date = date_val
                             latest_column = columns[col_idx]
-                            print(f"   📅 Found date in row {check_row}: {latest_column} = {date_val.strftime('%Y-%m-%d')}")
+                            # print(f"   📅 [{instance_idx+1}] FOUND DATE in merged range: {latest_column} = {date_val.strftime('%Y-%m-%d')} (previous: {old_date.strftime('%Y-%m-%d') if old_date else 'None'})")
                     elif pd.notna(val):
                         parsed_date = parse_date(str(val))
                         if parsed_date:
                             if latest_date is None or parsed_date > latest_date:
+                                old_date = latest_date
                                 latest_date = parsed_date
                                 latest_column = columns[col_idx]
-                                print(f"   📅 Parsed date in row {check_row}: {latest_column} = {parsed_date.strftime('%Y-%m-%d')}")
+                                # print(f"   📅 [{instance_idx+1}] PARSED DATE in merged range: {latest_column} = {parsed_date.strftime('%Y-%m-%d')} (previous: {old_date.strftime('%Y-%m-%d') if old_date else 'None'})")
 
-        # If still no date found in merged range, search entire sheet for dates (Chinese files might have dates elsewhere)
-        if latest_column is None:
-            print(f"   🔍 Extended search: Looking for dates in entire sheet...")
-            for row_idx in range(min(15, len(df))):  # Search first 15 rows
-                for col_idx in range(len(columns)):
-                    val = df.iloc[row_idx, col_idx]
+            # If no date found in the row below, check a few more rows down
+            if latest_column is None:
+                for check_row in range(indic_row + 2, min(indic_row + 8, len(df))):  # Extended search range
+                    for col_idx in range(merge_start, merge_end + 1):
+                        val = df.iloc[check_row, col_idx]
 
-                    if isinstance(val, (pd.Timestamp, datetime)):
-                        date_val = val if isinstance(val, datetime) else val.to_pydatetime()
-                        if latest_date is None or date_val > latest_date:
-                            latest_date = date_val
-                            latest_column = columns[col_idx]
-                            print(f"   📅 Found date in extended search: Row {row_idx}, Col {col_idx} = {date_val.strftime('%Y-%m-%d')}")
-                    elif pd.notna(val) and str(val).strip():
-                        parsed_date = parse_date(str(val))
-                        if parsed_date:
-                            if latest_date is None or parsed_date > latest_date:
-                                latest_date = parsed_date
+                        if isinstance(val, (pd.Timestamp, datetime)):
+                            date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                            if latest_date is None or date_val > latest_date:
+                                latest_date = date_val
                                 latest_column = columns[col_idx]
-                                print(f"   📅 Parsed date in extended search: Row {row_idx}, Col {col_idx} = {parsed_date.strftime('%Y-%m-%d')}")
+                                print(f"   📅 Found date in row {check_row}: {latest_column} = {date_val.strftime('%Y-%m-%d')}")
+                        elif pd.notna(val):
+                            parsed_date = parse_date(str(val))
+                            if parsed_date:
+                                if latest_date is None or parsed_date > latest_date:
+                                    latest_date = parsed_date
+                                    latest_column = columns[col_idx]
+                                    print(f"   📅 Parsed date in row {check_row}: {latest_column} = {parsed_date.strftime('%Y-%m-%d')}")
+
+            # If still no date found in merged range, search entire sheet for dates (Chinese files might have dates elsewhere)
+            if latest_column is None:
+                print(f"   🔍 Extended search: Looking for dates in entire sheet...")
+                for row_idx in range(min(15, len(df))):  # Search first 15 rows
+                    for col_idx in range(len(columns)):
+                        val = df.iloc[row_idx, col_idx]
+
+                        if isinstance(val, (pd.Timestamp, datetime)):
+                            date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+                            if latest_date is None or date_val > latest_date:
+                                latest_date = date_val
+                                latest_column = columns[col_idx]
+                                print(f"   📅 Found date in extended search: Row {row_idx}, Col {col_idx} = {date_val.strftime('%Y-%m-%d')}")
+                        elif pd.notna(val) and str(val).strip():
+                            parsed_date = parse_date(str(val))
+                            if parsed_date:
+                                if latest_date is None or parsed_date > latest_date:
+                                    latest_date = parsed_date
+                                    latest_column = columns[col_idx]
+                                    print(f"   📅 Parsed date in extended search: Row {row_idx}, Col {col_idx} = {parsed_date.strftime('%Y-%m-%d')}")
     
     if latest_column:
         from datetime import datetime
@@ -208,6 +204,7 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
         col_idx = columns.get_loc(latest_column) if latest_column in columns else -1
         col_letter = col_num_to_letter(col_idx) if col_idx >= 0 else 'unknown'
         print(f"   🎯 [{timestamp}] FINAL SELECTION: Column '{latest_column}' ({col_letter}) with date {latest_date.strftime('%Y-%m-%d')}")
+        print(f"   ✅ Column {col_letter} (index {col_idx}) selected as latest date column")
     else:
         from datetime import datetime
         timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
