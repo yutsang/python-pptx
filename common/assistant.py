@@ -244,12 +244,14 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 # Look for date patterns in any cell
                 for cell in row:
                     cell_str = str(cell).strip()
-                    # Common date patterns
+                    # Common date patterns (English and Chinese)
                     date_patterns = [
                         r'\d{4}-\d{2}-\d{2}',  # YYYY-MM-DD
                         r'\d{2}/\d{2}/\d{4}',  # MM/DD/YYYY
                         r'\d{2}-\d{2}-\d{4}',  # DD-MM-YYYY
                         r'\d{4}/\d{2}/\d{2}',  # YYYY/MM/DD
+                        r'\d{4}年\d{1,2}月\d{1,2}日',  # Chinese: 2024年5月31日
+                        r'\d{4}年\d{1,2}月',  # Chinese: 2024年5月
                     ]
                     for pattern in date_patterns:
                         match = re.search(pattern, cell_str)
@@ -257,31 +259,89 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                             try:
                                 # Try to parse the date
                                 date_str = match.group()
-                                if '-' in date_str:
+
+                                if '年' in date_str and '月' in date_str:
+                                    # Chinese date format: 2024年5月31日 or 2024年5月
+                                    if '日' in date_str:
+                                        # Full date: 2024年5月31日
+                                        parts = date_str.replace('年', '-').replace('月', '-').replace('日', '').split('-')
+                                        if len(parts) == 3:
+                                            year, month, day = map(int, parts)
+                                            parsed_date = datetime(year, month, day)
+                                    else:
+                                        # Month only: 2024年5月 (assume last day of month)
+                                        parts = date_str.replace('年', '-').replace('月', '').split('-')
+                                        if len(parts) == 2:
+                                            year, month = map(int, parts)
+                                            # Assume last day of the month for month-only dates
+                                            if month == 2:
+                                                # Check for leap year
+                                                if (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0):
+                                                    day = 29
+                                                else:
+                                                    day = 28
+                                            elif month in [4, 6, 9, 11]:
+                                                day = 30
+                                            else:
+                                                day = 31
+                                            parsed_date = datetime(year, month, day)
+                                elif '-' in date_str:
                                     if len(date_str.split('-')[0]) == 4:  # YYYY-MM-DD
                                         parsed_date = datetime.strptime(date_str, '%Y-%m-%d')
                                     else:  # DD-MM-YYYY
                                         parsed_date = datetime.strptime(date_str, '%d-%m-%Y')
-                                else:  # MM/DD/YYYY or YYYY/MM/DD
-                                    if len(date_str.split('/')[0]) == 4:  # YYYY/MM/DD
-                                        parsed_date = datetime.strptime(date_str, '%Y/%m/%d')
-                                    else:  # MM/DD/YYYY
-                                        parsed_date = datetime.strptime(date_str, '%m/%d/%Y')
+                                elif '/' in date_str:
+                                    parts = date_str.split('/')
+                                    if len(parts) == 3:
+                                        # Try both MM/DD/YYYY and DD/MM/YYYY formats
+                                        try:
+                                            # First try MM/DD/YYYY (US format)
+                                            parsed_date = datetime.strptime(date_str, '%m/%d/%Y')
+                                        except ValueError:
+                                            try:
+                                                # Then try DD/MM/YYYY (European format)
+                                                parsed_date = datetime.strptime(date_str, '%d/%m/%Y')
+                                            except ValueError:
+                                                # Finally try YYYY/MM/DD
+                                                parsed_date = datetime.strptime(date_str, '%Y/%m/%d')
+                                    else:
+                                        raise ValueError(f"Invalid date format: {date_str}")
+
                                 structured_data['date'] = parsed_date.strftime('%Y-%m-%d %H:%M:%S')
                                 break
-                            except:
+                            except Exception as e:
+                                print(f"Warning: Could not parse date '{date_str}': {e}")
                                 continue
             
-            # Extract currency and multiplier
-            if 'CNY' in desc_cell.upper() or 'CNY' in amount_cell.upper():
+            # Extract currency and multiplier (English and Chinese)
+            currency_detected = False
+            if ('CNY' in desc_cell.upper() or 'CNY' in amount_cell.upper() or
+                '人民币' in desc_cell or '人民币' in amount_cell or
+                '人民幣' in desc_cell or '人民幣' in amount_cell):
                 structured_data['currency'] = 'CNY'
-                if "'000" in desc_cell or "'000" in amount_cell:
-                    structured_data['multiplier'] = 1000
-                elif "million" in desc_cell.lower() or "million" in amount_cell.lower():
-                    structured_data['multiplier'] = 1000000
-                elif "000" in desc_cell or "000" in amount_cell:
-                    # Check if it's a standalone "000" indicating thousands
-                    if re.match(r'^0*000$', desc_cell.replace("'", "")) or re.match(r'^0*000$', amount_cell.replace("'", "")):
+                currency_detected = True
+
+            # Check for thousands notation (English and Chinese)
+            thousands_detected = (
+                "'000" in desc_cell or "'000" in amount_cell or
+                "千元" in desc_cell or "千元" in amount_cell or
+                "千人民币" in desc_cell or "千人民币" in amount_cell or
+                "人民币千" in desc_cell or "人民币千" in amount_cell or
+                "千元人民币" in desc_cell or "千元人民币" in amount_cell or
+                "人民币千元" in desc_cell or "人民币千元" in amount_cell or
+                "千人民幣" in desc_cell or "千人民幣" in amount_cell or
+                "人民幣千" in desc_cell or "人民幣千" in amount_cell or
+                "千元人民幣" in desc_cell or "千元人民幣" in amount_cell or
+                "人民幣千元" in desc_cell or "人民幣千元" in amount_cell
+            )
+
+            if currency_detected and thousands_detected:
+                structured_data['multiplier'] = 1000
+            elif "million" in desc_cell.lower() or "million" in amount_cell.lower():
+                structured_data['multiplier'] = 1000000
+            elif "000" in desc_cell or "000" in amount_cell:
+                # Check if it's a standalone "000" indicating thousands
+                if re.match(r'^0*000$', desc_cell.replace("'", "")) or re.match(r'^0*000$', amount_cell.replace("'", "")):
                         structured_data['multiplier'] = 1000
             
             # Extract items (skip header rows and totals)
@@ -883,7 +943,22 @@ def find_financial_figures_with_context_check(filename, sheet_name, date_str, co
         if sheet_name == 'BSHN':
             scale_factor = 1000  # BSHN sheet is always in '000 format
         else:
-            scale_factor = 1000 if (convert_thousands and any("'000" in str(col) for col in df.columns)) else 1
+            # Check for both English and Chinese thousands notation
+            has_thousands_notation = (
+                convert_thousands and (
+                    any("'000" in str(col) for col in df.columns) or
+                    any("千元" in str(col) for col in df.columns) or
+                    any("千人民币" in str(col) for col in df.columns) or
+                    any("人民币千" in str(col) for col in df.columns) or
+                    any("千元人民币" in str(col) for col in df.columns) or
+                    any("人民币千元" in str(col) for col in df.columns) or
+                    any("千人民幣" in str(col) for col in df.columns) or
+                    any("人民幣千" in str(col) for col in df.columns) or
+                    any("千元人民幣" in str(col) for col in df.columns) or
+                    any("人民幣千元" in str(col) for col in df.columns)
+                )
+            )
+            scale_factor = 1000 if has_thousands_notation else 1
         financial_figure_map = {
             "Cash": "Cash at bank",
             "AR": "Accounts receivable",
@@ -1096,7 +1171,15 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             progress_callback((key_index + 0.2) / len(keys), f"📈 Processing {key} data...")
 
         # Check if '000 notation is detected
-        has_thousands_notation = detect_string_in_file(excel_tables, "'000")
+        # Check for both English and Chinese thousands notation
+        has_thousands_notation = (
+            detect_string_in_file(excel_tables, "'000") or
+            detect_string_in_file(excel_tables, "千元") or
+            detect_string_in_file(excel_tables, "千人民币") or
+            detect_string_in_file(excel_tables, "人民币千") or
+            detect_string_in_file(excel_tables, "千元人民币") or
+            detect_string_in_file(excel_tables, "人民币千元")
+        )
 
         # Process data for AI: multiply figures by 1000 if '000 notation detected
         excel_tables_for_ai = multiply_figures_for_ai_processing(excel_tables) if has_thousands_notation else excel_tables
@@ -2060,7 +2143,16 @@ def multiply_figures_for_ai_processing(excel_content: str) -> str:
     """
     import re
     
-    if "'000" not in excel_content:
+    # Check for both English and Chinese thousands notation
+    has_chinese_thousands = (
+        "千元" in excel_content or
+        "千人民币" in excel_content or
+        "人民币千" in excel_content or
+        "千元人民币" in excel_content or
+        "人民币千元" in excel_content
+    )
+
+    if "'000" not in excel_content and not has_chinese_thousands:
         return excel_content
     
     lines = excel_content.split('\n')

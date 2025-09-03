@@ -1885,7 +1885,7 @@ def generate_content_from_session_storage(entity_name):
             'keys': {}
         }
         
-        st.info(f"📊 Generating content files from session storage for {len(content_store)} keys")
+        # Removed: st.info(f"📊 Generating content files from session storage for {len(content_store)} keys")
         
         # Filter content store based on current statement type
         if current_statement_type == "IS":
@@ -2118,7 +2118,7 @@ def generate_content_from_session_storage(entity_name):
         with open(md_file_path, 'w', encoding='utf-8') as file:
             file.write(markdown_text)
         
-        st.success(f"✅ Generated {json_file_path} (AI-friendly) and {md_file_path} (PowerPoint-compatible)")
+        # Removed: st.success(f"✅ Generated {json_file_path} (AI-friendly) and {md_file_path} (PowerPoint-compatible)")
         return True
         
     except Exception as e:
@@ -3864,7 +3864,7 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
             st.info("Make sure Agent 1 and Agent 2 have run successfully")
             return {}
         
-        st.success(f"✅ Found content for {len(available_keys)} keys in session state storage")
+        # Removed: st.success(f"✅ Found content for {len(available_keys)} keys in session state storage")
         
         for key in available_keys:
             st.write(f"🔄 Checking pattern compliance for {key} with Agent 3...")
@@ -3988,7 +3988,7 @@ def run_agent_3(filtered_keys, agent1_results, ai_data):
         # Update bs_content.md with Agent 3 corrections if any
         if bs_content_updates:
             update_bs_content_with_agent_corrections(bs_content_updates, ai_data.get('entity_name', ''), "Agent 3")
-            st.success(f"✅ Agent 3 updated bs_content.md with pattern compliance fixes for {len(bs_content_updates)} keys")
+            # Removed: st.success(f"✅ Agent 3 updated bs_content.md with pattern compliance fixes for {len(bs_content_updates)} keys")
         else:
             st.info("ℹ️ Agent 3 found no pattern compliance improvements needed")
         
