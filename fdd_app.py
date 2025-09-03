@@ -1142,7 +1142,7 @@ def main():
 
                                 if proof_results:
                                     # Storing translation results
-                                    print(f"🔍 DEBUG: Storing agent3_results, selected_language='{selected_language}', proof_results has {len(proof_results) if proof_results else 0} keys")
+
 
                                     st.session_state['agent_states']['agent3_results'] = proof_results
                                     st.session_state['agent_states']['agent3_completed'] = True
@@ -1161,7 +1161,7 @@ def main():
                                                 st.session_state['ai_content_store'][key]['current_content'] = translated_content
                                                 st.session_state['ai_content_store'][key]['agent3_content'] = translated_content
                                                 st.session_state['ai_content_store'][key]['agent3_timestamp'] = time.time()
-                                                print(f"   ✅ Updated {key} with Chinese content ({len(translated_content)} chars)")
+
 
                                     print(f"✅ AI content store updated for PPTX export")
 
@@ -2566,18 +2566,18 @@ def run_chinese_translator(filtered_keys, agent1_results, ai_data, external_prog
                 temp_file_path = None
 
         # Prepare processed table data (only if temp_file_path is available)
+        # OPTIMIZATION: Skip expensive Excel processing during translation
+        # The translation function only needs text content, not table data
+        # Table data processing is only needed for PPTX generation, not translation
         processed_table_data = {}
-        if temp_file_path:
-            for key in filtered_keys:
-                try:
-                    from common.assistant import process_and_filter_excel, load_ip
-                    mapping = load_ip('fdd_utils/mapping.json')
-                    table_data = process_and_filter_excel(temp_file_path, mapping, entity_name, entity_keywords)
-                    processed_table_data[key] = table_data
-                except Exception as e:
-                    print(f"Warning: Could not prepare table data for {key}: {e}")
-        else:
-            print("⚠️  No databook file available, skipping table data preparation")
+
+        # Create minimal empty data structure (fast)
+        # This satisfies the process_keys API without expensive Excel processing
+        for key in filtered_keys:
+            processed_table_data[key] = {}
+
+        # NOTE: Excel processing skipped for performance - translation only needs text content
+        # PPTX generation will handle Excel processing separately if needed
 
         # Load system prompt from centralized template (move to higher scope)
         from fdd_utils.prompt_templates import get_translation_prompts
@@ -3991,10 +3991,7 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
         agent3_results = agent_states.get('agent3_results', {}) or {}
         content_store = st.session_state.get('ai_content_store', {})
 
-        # Debug: Show what's available in session state
-        print(f"🔍 DEBUG UI LOAD: agent_states keys: {list(agent_states.keys()) if agent_states else 'None'}")
-        print(f"🔍 DEBUG UI LOAD: agent3_results keys: {list(agent3_results.keys()) if agent3_results else 'None'}")
-        print(f"🔍 DEBUG UI LOAD: content_store keys: {list(content_store.keys()) if content_store else 'None'}")
+
         
         # Key selector for comparison
         if filtered_keys:
@@ -4035,17 +4032,13 @@ def display_sequential_agent_results(key, filtered_keys, ai_data):
                     agent3_content = agent3_data.get('corrected_content', '')
                     if not agent3_content and selected_key in content_store:
                         agent3_content = content_store[selected_key].get('agent3_content', '')
-                else:
-                    print(f"🔍 DEBUG UI: {selected_key} NOT found in agent3_results (keys: {list(agent3_results.keys()) if agent3_results else 'None'})")
+
                 
                 # Default to Agent 1 content if later agents don't have content
                 if not agent2_content:
                     agent2_content = agent1_content
                 if not agent3_content:
-                    print(f"⚠️ Agent3 content empty for {selected_key}, falling back to agent2/agent1")
                     agent3_content = agent2_content or agent1_content
-                else:
-                    print(f"✅ Agent3 content found for {selected_key}: {len(agent3_content)} chars")
                 
                 # Display comparison based on selected mode
                 if comparison_mode == "Before vs After (AI1 → AI3)":
