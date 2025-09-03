@@ -48,37 +48,47 @@ def clean_content_quotes(content):
 
     return content
 
-def detect_chinese_text(text):
+def detect_chinese_text(text, force_chinese_mode=False):
     """
     Detect if text contains significant Chinese characters.
-    Returns True if more than 30% of characters are Chinese.
+    For Chinese PPTX export, apply Chinese formatting even to English text.
+    Returns True if more than 30% of characters are Chinese, or if force_chinese_mode is True.
     """
     if not text:
-        return False
+        return force_chinese_mode  # Return the forced mode for empty text
 
     chinese_chars = sum(1 for char in text if '\u4e00' <= char <= '\u9fff')
     total_chars = len(text)
 
     if total_chars == 0:
-        return False
+        return force_chinese_mode
 
     chinese_ratio = chinese_chars / total_chars
+
+    # If force_chinese_mode is True (for Chinese PPTX export), apply Chinese formatting
+    if force_chinese_mode:
+        return True
+
+    # Otherwise, use the normal detection threshold
     return chinese_ratio > 0.3
 
-def get_font_size_for_text(text, base_size=Pt(9)):
+def get_font_size_for_text(text, base_size=Pt(9), force_chinese_mode=False):
     """
     Get appropriate font size based on text content.
     Chinese text gets smaller font to maximize content density and prevent overflow.
     Enhanced for better Chinese character handling.
     """
-    if detect_chinese_text(text):
+    if detect_chinese_text(text, force_chinese_mode=force_chinese_mode):
         # Use even smaller font for Chinese to prevent line breaks
         chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text) if text else 0
-        if chinese_ratio > 0.5:  # Mostly Chinese text
+        if chinese_ratio > 0.5 or force_chinese_mode:  # Mostly Chinese text or forced mode
+            print(f"🔤 FONT: Using 7.5pt for Chinese text (ratio: {chinese_ratio:.2f}, force: {force_chinese_mode})")
             return Pt(7.5)  # Very small font for dense Chinese content
         else:
+            print(f"🔤 FONT: Using 8pt for mixed Chinese text (ratio: {chinese_ratio:.2f})")
             return Pt(8)  # Mixed Chinese/English content
     else:
+        print(f"🔤 FONT: Using {base_size}pt for English text")
         return base_size  # Default size for English
 
 def get_line_spacing_for_text(text):
@@ -87,7 +97,7 @@ def get_line_spacing_for_text(text):
     Chinese text needs tighter spacing to maximize content density.
     Enhanced for better Chinese line break handling.
     """
-    if detect_chinese_text(text):
+    if detect_chinese_text(text, force_chinese_mode=(self.language == 'chinese')):
         chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text) if text else 0
         if chinese_ratio > 0.5:  # Mostly Chinese text
             return Pt(10)  # Ultra-tight spacing for dense Chinese content
@@ -100,7 +110,7 @@ def get_space_after_for_text(text):
     """
     Get appropriate space after paragraph based on text content.
     """
-    if detect_chinese_text(text):
+    if detect_chinese_text(text, force_chinese_mode=(self.language == 'chinese')):
         return Pt(4)  # Much less space after for Chinese to maximize content
     else:
         return Pt(8)  # Standard space after for English
@@ -109,7 +119,7 @@ def get_space_before_for_text(text):
     """
     Get appropriate space before paragraph based on text content.
     """
-    if detect_chinese_text(text):
+    if detect_chinese_text(text, force_chinese_mode=(self.language == 'chinese')):
         return Pt(2)  # Much less space before for Chinese to maximize content
     else:
         return Pt(4)  # Standard space before for English
@@ -156,11 +166,12 @@ class FinancialItem:
     is_table: bool = False
 
 class PowerPointGenerator:
-    def __init__(self, template_path: str):
+    def __init__(self, template_path: str, language: str = 'english'):
         self.prs = Presentation(template_path)
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
         self.ROWS_PER_SECTION = 30  # Use the same value for all sections
+        self.language = language  # Store language for Chinese mode detection
         
         # Find a slide with textMainBullets shape
         shape = None
@@ -372,9 +383,10 @@ class PowerPointGenerator:
 
         # Debug: Log total items and content type
         total_items = len(items)
-        print(f"🔍 CONTENT DISTRIBUTION: Processing {total_items} items")
+        print(f"🔍 CONTENT DISTRIBUTION: Processing {total_items} items in {self.language} mode")
         chinese_items = sum(1 for item in items if any('\u4e00' <= char <= '\u9fff' for desc in item.descriptions for char in desc))
         print(f"🔍 CONTENT TYPE: {chinese_items} Chinese items, {total_items - chinese_items} English items")
+        print(f"🔍 LANGUAGE MODE: {self.language} (force Chinese formatting: {self.language == 'chinese'})")
         
         while content_queue:
             print(f"📊 SLIDE {slide_idx}: Processing {len(content_queue)} remaining items")
@@ -868,7 +880,7 @@ class PowerPointGenerator:
                 run = p.add_run()
                 cont_text = " (continued)" if item.layer1_continued else ""
                 run.text = f"{display_header}{cont_text}"
-                run.font.size = get_font_size_for_text(run.text, Pt(9))
+                run.font.size = get_font_size_for_text(run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                 run.font.bold = True
                 run.font.name = 'Arial'
                 try:
@@ -900,18 +912,18 @@ class PowerPointGenerator:
                         except:
                             bullet_run.font.color.rgb = RGBColor(128, 128, 128)  # Fallback grey
                         bullet_run.font.name = 'Arial'
-                        bullet_run.font.size = get_font_size_for_text(bullet_run.text, Pt(9))
+                        bullet_run.font.size = get_font_size_for_text(bullet_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         title_run = p.add_run()
                         cont_text = " (continued)" if item.layer2_continued else ""
                         title_run.text = f"{item.account_title}{cont_text}"
                         title_run.font.bold = True
                         title_run.font.name = 'Arial'
-                        title_run.font.size = get_font_size_for_text(title_run.text, Pt(9))
+                        title_run.font.size = get_font_size_for_text(title_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         desc_run = p.add_run()
                         desc_run.text = f" - {part}"
                         desc_run.font.bold = False
                         desc_run.font.name = 'Arial'
-                        desc_run.font.size = get_font_size_for_text(desc_run.text, Pt(9))
+                        desc_run.font.size = get_font_size_for_text(desc_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         paragraph_count += 1
                     else:
                         # Continuation: visually subordinate (indented, no bullet)
@@ -932,7 +944,7 @@ class PowerPointGenerator:
                         cont_run.text = part
                         cont_run.font.bold = False
                         cont_run.font.name = 'Arial'
-                        cont_run.font.size = get_font_size_for_text(cont_run.text, Pt(9))
+                        cont_run.font.size = get_font_size_for_text(cont_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         paragraph_count += 1
                     # Add an empty row between split parts (but not after the last)
                     if part_idx < len(desc_parts) - 1:
@@ -1127,7 +1139,7 @@ class PowerPointGenerator:
         header_run.text = f"{self.BULLET_CHAR}{item.account_title}{cont_text}"
         header_run.font.bold = True
         header_run.font.name = 'Arial'
-        header_run.font.size = get_font_size_for_text(header_run.text, Pt(9))
+        header_run.font.size = get_font_size_for_text(header_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
         # Process table content
         content = ' '.join(item.descriptions)
         current_category = None
@@ -1145,7 +1157,7 @@ class PowerPointGenerator:
                 run.text = f"• {current_category}"
                 run.font.name = 'Arial'
                 run.font.bold = True
-                run.font.size = get_font_size_for_text(run.text, Pt(9))
+                run.font.size = get_font_size_for_text(run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
             elif line.startswith('- '):
                 p = tf.add_paragraph()
                 self._apply_paragraph_formatting(p, is_layer2_3=True)
@@ -1154,7 +1166,7 @@ class PowerPointGenerator:
                 run = p.add_run()
                 run.text = f"◦ {line[2:]}"
                 run.font.name = 'Arial'
-                run.font.size = get_font_size_for_text(run.text, Pt(9))
+                run.font.size = get_font_size_for_text(run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
 
     def _populate_summary_section_safe(self, shape, summary_content: str):
         """Summary section with natural text wrapping and filling"""
@@ -1405,19 +1417,20 @@ class PowerPointGenerator:
             run.font.bold = False
 
 class ReportGenerator:
-    def __init__(self, template_path, markdown_file, output_path, project_name=None):
+    def __init__(self, template_path, markdown_file, output_path, project_name=None, language='english'):
         self.template_path = template_path
         self.markdown_file = markdown_file
         self.output_path = output_path
         self.project_name = project_name
+        self.language = language
         
     def generate(self):
         # Read the markdown content
         with open(self.markdown_file, 'r', encoding='utf-8') as f:
             md_content = f.read()
         
-        # Create PowerPoint generator
-        generator = PowerPointGenerator(self.template_path)
+        # Create PowerPoint generator with language support
+        generator = PowerPointGenerator(self.template_path, self.language)
         
         try: 
             # Generate the report with AI summary content
@@ -1694,8 +1707,8 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
         logging.error(f"❌ Failed to update Excel data: {str(e)}")
         raise
 
-def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None):
-    generator = ReportGenerator(template_path, markdown_path, output_path, project_name)
+def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None, language='english'):
+    generator = ReportGenerator(template_path, markdown_path, output_path, project_name, language)
     generator.generate()
     if not os.path.exists(output_path):
         logging.error(f"PPTX file was not created at {output_path}")

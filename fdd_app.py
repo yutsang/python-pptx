@@ -1786,7 +1786,8 @@ def main():
                         markdown_path=markdown_path,
                         output_path=output_path,
                         project_name=project_name,
-                        excel_file_path=excel_file_path
+                        excel_file_path=excel_file_path,
+                        language=language
                     )
 
                 elif statement_type == "BS":
@@ -1807,7 +1808,8 @@ def main():
                         markdown_path=markdown_path,
                         output_path=output_path,
                         project_name=project_name,
-                        excel_file_path=excel_file_path
+                        excel_file_path=excel_file_path,
+                        language=language
                     )
 
                 else:  # ALL - Generate BS first, then IS, then merge
