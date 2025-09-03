@@ -251,13 +251,16 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                         r'\d{2}-\d{2}-\d{4}',  # DD-MM-YYYY
                         r'\d{4}/\d{2}/\d{2}',  # YYYY/MM/DD
                         r'\d{4}年\d{1,2}月\d{1,2}日',  # Chinese: 2024年5月31日
-                        r'\d{4}年\d{1,2}月\d{1,2}日[？?]',  # Chinese with question mark: 2024年5月31日?
-                        r'\d{4}年\d{1,2}月\d{1,2}日[^\d]*',  # Chinese with any non-digit suffix: 2024年5月31日...
+                        r'\d{4}年\d{1,2}月\d{1,2}日[？?\s]*',  # Chinese with question mark/spaces: 2024年5月31日?
+                        r'\d{4}年\d{1,2}月\d{1,2}日[^\d年月]*',  # Chinese with any non-date suffix: 2024年5月31日...
                         r'\d{4}年\d{1,2}月',  # Chinese: 2024年5月
                         r'\d{4}年\d{1,2}月\d{1,2}號',  # Chinese Traditional: 2024年5月31號
                         r'\d{4}年\d{1,2}月\d{1,2}号',  # Chinese Simplified: 2024年5月31号
-                        r'\d{4}年\d{1,2}月\d{1,2}號[？?]',  # Chinese Traditional with question mark
-                        r'\d{4}年\d{1,2}月\d{1,2}号[？?]',  # Chinese Simplified with question mark
+                        r'\d{4}年\d{1,2}月\d{1,2}號[？?\s]*',  # Chinese Traditional with question mark/spaces
+                        r'\d{4}年\d{1,2}月\d{1,2}号[？?\s]*',  # Chinese Simplified with question mark/spaces
+                        r'\d{2}年\d{1,2}月\d{1,2}日',  # Chinese 2-digit year: 24年5月31日
+                        r'\d{2}年\d{1,2}月',  # Chinese 2-digit year: 24年5月
+                        r'\d{1,2}月\d{1,2}日',  # Chinese month-day only: 5月31日
                     ]
                     for pattern in date_patterns:
                         match = re.search(pattern, cell_str)
@@ -265,6 +268,7 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                             try:
                                 # Try to parse the date
                                 date_str = match.group()
+                                print(f"DEBUG: Found date pattern '{pattern}' in cell '{cell_str}', extracted '{date_str}'")
 
                                 if '年' in date_str and '月' in date_str:
                                     # Chinese date format: 2024年5月31日, 2024年5月31號, 2024年5月31号 or 2024年5月
@@ -281,18 +285,27 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                                         if len(parts) == 3:
                                             try:
                                                 year, month, day = map(int, parts)
+                                                # Handle 2-digit years (assume 2000s)
+                                                if year < 100:
+                                                    year += 2000
                                                 parsed_date = datetime(year, month, day)
                                             except ValueError:
                                                 # If parsing fails, try to extract just the numeric parts
                                                 numeric_parts = re.findall(r'\d+', cleaned_date)
                                                 if len(numeric_parts) >= 3:
                                                     year, month, day = map(int, numeric_parts[:3])
+                                                    # Handle 2-digit years (assume 2000s)
+                                                    if year < 100:
+                                                        year += 2000
                                                     parsed_date = datetime(year, month, day)
                                     else:
                                         # Month only: 2024年5月 (assume last day of month)
                                         parts = date_str.replace('年', '-').replace('月', '').split('-')
                                         if len(parts) == 2:
                                             year, month = map(int, parts)
+                                            # Handle 2-digit years (assume 2000s)
+                                            if year < 100:
+                                                year += 2000
                                             # Assume last day of the month for month-only dates
                                             if month == 2:
                                                 # Check for leap year
@@ -305,6 +318,13 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                                             else:
                                                 day = 31
                                             parsed_date = datetime(year, month, day)
+                                elif '月' in date_str and '日' in date_str and '年' not in date_str:
+                                    # Month-day only format: 5月31日 (assume current year)
+                                    parts = re.findall(r'\d+', date_str)
+                                    if len(parts) >= 2:
+                                        month, day = map(int, parts[:2])
+                                        current_year = datetime.now().year
+                                        parsed_date = datetime(current_year, month, day)
                                 elif '-' in date_str:
                                     if len(date_str.split('-')[0]) == 4:  # YYYY-MM-DD
                                         parsed_date = datetime.strptime(date_str, '%Y-%m-%d')
@@ -337,11 +357,12 @@ def parse_table_to_structured_format(df, entity_name, table_name):
             currency_detected = False
             if ('CNY' in desc_cell.upper() or 'CNY' in amount_cell.upper() or
                 '人民币' in desc_cell or '人民币' in amount_cell or
-                '人民幣' in desc_cell or '人民幣' in amount_cell):
+                '人民幣' in desc_cell or '人民幣' in amount_cell or
+                'RMB' in desc_cell.upper() or 'RMB' in amount_cell.upper()):
                 structured_data['currency'] = 'CNY'
                 currency_detected = True
 
-            # Check for thousands notation (English and Chinese)
+            # Enhanced check for thousands notation (English and Chinese)
             thousands_detected = (
                 "'000" in desc_cell or "'000" in amount_cell or
                 "千元" in desc_cell or "千元" in amount_cell or
@@ -353,26 +374,35 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 "人民幣千" in desc_cell or "人民幣千" in amount_cell or
                 "千元人民幣" in desc_cell or "千元人民幣" in amount_cell or
                 "人民幣千元" in desc_cell or "人民幣千元" in amount_cell or
+                "千RMB" in desc_cell or "千RMB" in amount_cell or
+                "RMB千" in desc_cell or "RMB千" in amount_cell or
                 # Also check for standalone "千" in amount column
                 amount_cell.strip() == "千" or
                 # Check for patterns like "100千" meaning 100 thousand
-                bool(re.search(r'\d+千', amount_cell)) or
+                bool(re.search(r'\d+\s*千', amount_cell)) or
+                bool(re.search(r'千\d+', amount_cell)) or
                 # Check for "000" without quotes (common in Chinese databooks)
-                "000" in amount_cell and not amount_cell.strip().startswith("'")
+                "000" in amount_cell and not amount_cell.strip().startswith("'") or
+                # Check for "千" anywhere in the amount cell
+                "千" in amount_cell
             )
 
             # Set multiplier based on detection
             if thousands_detected:
                 structured_data['multiplier'] = 1000
+                print(f"DEBUG: Set multiplier to 1000 for cell: desc='{desc_cell}', amount='{amount_cell}'")
             elif currency_detected and ("000" in desc_cell or "000" in amount_cell):
                 # Fallback: if we have currency and "000", still apply multiplier
                 structured_data['multiplier'] = 1000
+                print(f"DEBUG: Set multiplier to 1000 (currency+000) for cell: desc='{desc_cell}', amount='{amount_cell}'")
             elif "million" in desc_cell.lower() or "million" in amount_cell.lower():
                 structured_data['multiplier'] = 1000000
+                print(f"DEBUG: Set multiplier to 1000000 for cell: desc='{desc_cell}', amount='{amount_cell}'")
             elif "000" in desc_cell or "000" in amount_cell:
                 # Check if it's a standalone "000" indicating thousands
                 if re.match(r'^0*000$', desc_cell.replace("'", "")) or re.match(r'^0*000$', amount_cell.replace("'", "")):
                         structured_data['multiplier'] = 1000
+                        print(f"DEBUG: Set multiplier to 1000 (standalone 000) for cell: desc='{desc_cell}', amount='{amount_cell}'")
             
             # Extract items (skip header rows and totals)
             # Be more careful about filtering - don't filter out valid Chinese descriptions
@@ -392,12 +422,32 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 # Try to extract numeric amount (support Chinese multipliers)
                 amount_cell_clean = amount_cell.replace(',', '').strip()
 
-                # Check for Chinese multiplier patterns like "100千"
-                chinese_multiplier_match = re.search(r'(\d+(?:\.\d+)?)千', amount_cell_clean)
-                if chinese_multiplier_match:
-                    base_amount = float(chinese_multiplier_match.group(1))
+                # Check for Chinese multiplier patterns like "100千", "千100", "100 千", etc.
+                chinese_multiplier_match = None
+                amount = None
+
+                # Pattern 1: "100千" or "100 千"
+                match1 = re.search(r'(\d+(?:\.\d+)?)\s*千', amount_cell_clean)
+                if match1:
+                    chinese_multiplier_match = match1
+                    base_amount = float(match1.group(1))
                     amount = base_amount * 1000
-                else:
+                    print(f"DEBUG: Found Chinese multiplier pattern 1 '{match1.group(0)}' -> {base_amount} * 1000 = {amount}")
+
+                # Pattern 2: "千100" or "千 100"
+                match2 = re.search(r'千\s*(\d+(?:\.\d+)?)', amount_cell_clean)
+                if match2 and not chinese_multiplier_match:
+                    chinese_multiplier_match = match2
+                    base_amount = float(match2.group(1))
+                    amount = base_amount * 1000
+                    print(f"DEBUG: Found Chinese multiplier pattern 2 '{match2.group(0)}' -> {base_amount} * 1000 = {amount}")
+
+                # Pattern 3: Just "千" in the cell (standalone)
+                if not chinese_multiplier_match and amount_cell_clean == "千":
+                    amount = 1000
+                    print(f"DEBUG: Found standalone '千' -> 1000")
+
+                if amount is None:
                     # Regular numeric extraction
                     amount_match = re.search(r'[\d,]+\.?\d*', amount_cell_clean)
                     if amount_match:
@@ -409,8 +459,6 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                                 amount *= structured_data['multiplier']
                         except:
                             amount = None
-                    else:
-                        amount = None
 
                 if amount is not None:
                     structured_data['items'].append({
@@ -422,12 +470,29 @@ def parse_table_to_structured_format(df, entity_name, table_name):
             if desc_cell.lower() == 'total' and amount_cell and amount_cell != 'nan':
                 amount_cell_clean = amount_cell.replace(',', '').strip()
 
-                # Check for Chinese multiplier patterns like "100千"
-                chinese_multiplier_match = re.search(r'(\d+(?:\.\d+)?)千', amount_cell_clean)
-                if chinese_multiplier_match:
-                    base_amount = float(chinese_multiplier_match.group(1))
+                # Check for Chinese multiplier patterns like "100千", "千100", "100 千", etc.
+                chinese_multiplier_match = None
+                total_amount = None
+
+                # Pattern 1: "100千" or "100 千"
+                match1 = re.search(r'(\d+(?:\.\d+)?)\s*千', amount_cell_clean)
+                if match1:
+                    chinese_multiplier_match = match1
+                    base_amount = float(match1.group(1))
                     total_amount = base_amount * 1000
-                else:
+
+                # Pattern 2: "千100" or "千 100"
+                match2 = re.search(r'千\s*(\d+(?:\.\d+)?)', amount_cell_clean)
+                if match2 and not chinese_multiplier_match:
+                    chinese_multiplier_match = match2
+                    base_amount = float(match2.group(1))
+                    total_amount = base_amount * 1000
+
+                # Pattern 3: Just "千" in the cell (standalone)
+                if not chinese_multiplier_match and amount_cell_clean == "千":
+                    total_amount = 1000
+
+                if total_amount is None:
                     # Regular numeric extraction
                     amount_match = re.search(r'[\d,]+\.?\d*', amount_cell_clean)
                     if amount_match:
@@ -439,8 +504,6 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                                 total_amount *= structured_data['multiplier']
                         except:
                             total_amount = None
-                    else:
-                        total_amount = None
 
                 if total_amount is not None:
                     structured_data['total'] = int(total_amount) if total_amount.is_integer() else total_amount
