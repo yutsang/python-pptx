@@ -678,6 +678,11 @@ def main():
                 entity_keywords = [selected_entity]
             
             # Entity processing completed
+            print(f"🎯 APP DEBUG - Entity Setup Complete:")
+            print(f"   👤 selected_entity: '{selected_entity}'")
+            print(f"   🔑 entity_keywords: {entity_keywords}")
+            print(f"   📋 entity_mode: {entity_mode}")
+            print(f"   📄 entity_suffixes: {entity_suffixes}")
         
         # Handle different statement types
         if statement_type == "BS":
