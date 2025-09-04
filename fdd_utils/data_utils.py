@@ -161,6 +161,11 @@ def format_date_to_dd_mmm_yyyy(date_str):
         ('%m/%d/%Y', '%d-%b-%Y'),  # 09/30/2022 -> 30-Sep-2022
         ('%d-%m-%Y', '%d-%b-%Y'),  # 30-09-2022 -> 30-Sep-2022
         ('%Y/%m/%d', '%d-%b-%Y'),  # 2022/09/30 -> 30-Sep-2022
+        # Chinese date formats
+        ('%Y年%m月%d日', '%d-%b-%Y'),  # 2024年5月31日 -> 31-May-2024
+        ('%Y年%m月', '%b-%Y'),       # 2024年5月 -> May-2024
+        ('%m月%d日', '%d-%b'),       # 5月31日 -> 31-May
+        ('%Y.%m.%d', '%d-%b-%Y'),    # 2024.5.31 -> 31-May-2024
     ]
     
     for input_format, output_format in patterns:

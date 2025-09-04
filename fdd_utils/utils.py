@@ -179,7 +179,12 @@ def detect_latest_date_column(df):
             '%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y',
             '%Y-%m-%d', '%m/%d/%Y', '%m-%d-%Y',
             '%d/%b/%Y', '%d-%b-%Y', '%b/%d/%Y', '%b-%d-%Y',
-            '%d/%B/%Y', '%d-%B-%Y', '%B/%d/%Y', '%B-%d-%Y'
+            '%d/%B/%Y', '%d-%B-%Y', '%B/%d/%Y', '%B-%d-%Y',
+            # Chinese date formats
+            '%Y年%m月%d日', '%Y年%m月', '%m月%d日', '%Y/%m/%d',
+            '%Y.%m.%d', '%Y年%m月%d号',
+            # Additional flexible formats
+            '%Y%m%d', '%d%m%Y', '%m%d%Y'
         ]
         
         for fmt in date_formats:

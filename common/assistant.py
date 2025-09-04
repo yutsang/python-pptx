@@ -1169,12 +1169,20 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
             '%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y',
             '%Y-%m-%d', '%m/%d/%Y', '%m-%d-%Y',
             '%d/%b/%Y', '%d-%b-%Y', '%b/%d/%Y', '%b-%d-%Y',
-            '%d/%B/%Y', '%d-%B-%Y', '%B/%d/%Y', '%B-%d-%Y'
+            '%d/%B/%Y', '%d-%B-%Y', '%B/%d/%Y', '%B-%d-%Y',
+            # Chinese date formats
+            '%Y年%m月%d日', '%Y年%m月', '%m月%d日', '%Y/%m/%d',
+            '%Y.%m.%d', '%Y年%m月%d号',
+            # Additional flexible formats
+            '%Y%m%d', '%d%m%Y', '%m%d%Y'
         ]
         
         for fmt in date_formats:
             try:
-                return datetime.strptime(date_str, fmt)
+                result = datetime.strptime(date_str, fmt)
+                if '年' in date_str or '月' in date_str or '日' in date_str:
+                    print(f"✅ Successfully parsed Chinese date '{date_str}' using format '{fmt}' -> {result.strftime('%Y-%m-%d')}")
+                return result
             except ValueError:
                 continue
         
@@ -1252,6 +1260,7 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
                     print(f"     📋 Found 'Indicative adjusted' at Row {global_row_idx}, Col {col_idx} ({col})")
         
         # Find dates within this entity table
+        print(f"     🔍 Searching for dates in table (rows {start_row}-{end_row})...")
         for local_row_idx in range(len(entity_df)):
             global_row_idx = start_row + local_row_idx
             for col_idx, col in enumerate(columns):
@@ -1262,10 +1271,12 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
                     all_found_dates.append((date_val, col, global_row_idx, col_idx, "datetime"))
                     print(f"     📅 Found datetime in {col}[{global_row_idx}]: {date_val.strftime('%Y-%m-%d')}")
                 elif pd.notna(val):
-                    parsed_date = parse_date(str(val))
-                    if parsed_date:
-                        all_found_dates.append((parsed_date, col, global_row_idx, col_idx, "parsed"))
-                        print(f"     📅 Parsed date in {col}[{global_row_idx}]: '{val}' -> {parsed_date.strftime('%Y-%m-%d')}")
+                                    parsed_date = parse_date(str(val))
+                if parsed_date:
+                    all_found_dates.append((parsed_date, col, global_row_idx, col_idx, "parsed"))
+                    print(f"     📅 Parsed date in {col}[{global_row_idx}]: '{val}' -> {parsed_date.strftime('%Y-%m-%d')}")
+                    if '年' in str(val) or '月' in str(val) or '日' in str(val):
+                        print(f"     🎯 Chinese date detected and parsed: '{val}'")
     
     # Strategy 3: Prioritize "Indicative adjusted" columns with latest dates
     if indicative_positions and all_found_dates:
