@@ -91,13 +91,13 @@ def get_font_size_for_text(text, base_size=Pt(9), force_chinese_mode=False):
         print(f"🔤 FONT: Using {base_size}pt for English text")
         return base_size  # Default size for English
 
-def get_line_spacing_for_text(text):
+def get_line_spacing_for_text(text, force_chinese_mode=False):
     """
     Get appropriate line spacing based on text content.
     Chinese text needs tighter spacing to maximize content density.
     Enhanced for better Chinese line break handling.
     """
-    if detect_chinese_text(text, force_chinese_mode=(self.language == 'chinese')):
+    if detect_chinese_text(text, force_chinese_mode=force_chinese_mode):
         chinese_ratio = sum(1 for char in text if '\u4e00' <= char <= '\u9fff') / len(text) if text else 0
         if chinese_ratio > 0.5:  # Mostly Chinese text
             return Pt(10)  # Ultra-tight spacing for dense Chinese content
@@ -106,20 +106,20 @@ def get_line_spacing_for_text(text):
     else:
         return Pt(12)  # Standard spacing for English
 
-def get_space_after_for_text(text):
+def get_space_after_for_text(text, force_chinese_mode=False):
     """
     Get appropriate space after paragraph based on text content.
     """
-    if detect_chinese_text(text, force_chinese_mode=(self.language == 'chinese')):
+    if detect_chinese_text(text, force_chinese_mode=force_chinese_mode):
         return Pt(4)  # Much less space after for Chinese to maximize content
     else:
         return Pt(8)  # Standard space after for English
 
-def get_space_before_for_text(text):
+def get_space_before_for_text(text, force_chinese_mode=False):
     """
     Get appropriate space before paragraph based on text content.
     """
-    if detect_chinese_text(text, force_chinese_mode=(self.language == 'chinese')):
+    if detect_chinese_text(text, force_chinese_mode=force_chinese_mode):
         return Pt(2)  # Much less space before for Chinese to maximize content
     else:
         return Pt(4)  # Standard space before for English
@@ -1074,9 +1074,10 @@ class PowerPointGenerator:
                 has_chinese = True
                 break
 
-        if has_chinese:
-            # For Chinese content, use Excel tab name (accounting_type)
-            return item.accounting_type
+        if has_chinese or (hasattr(self, 'language') and self.language == 'chinese'):
+            # For Chinese content, translate section headers to Chinese
+            translated_header = self._translate_section_header(item.accounting_type)
+            return translated_header
         else:
             # For English content, use the current display format
             return item.accounting_type
@@ -1099,11 +1100,13 @@ class PowerPointGenerator:
                 p = tf.add_paragraph()
                 self._apply_paragraph_formatting(p, is_layer2_3=False)
                 if paragraph_count > 0:
-                    try: p.space_before = get_space_before_for_text(f"{display_header}{cont_text}")
-                    except: pass
-                try: p.space_after = get_space_after_for_text(f"{display_header}{cont_text}")
+                    try:
+                        p.space_before = get_space_before_for_text(f"{display_header}{cont_text}", force_chinese_mode=(self.language == 'chinese'))
+                    except:
+                        pass
+                try: p.space_after = get_space_after_for_text(f"{display_header}{cont_text}", force_chinese_mode=(self.language == 'chinese'))
                 except: pass
-                try: p.line_spacing = get_line_spacing_for_text(f"{display_header}{cont_text}")
+                try: p.line_spacing = get_line_spacing_for_text(f"{display_header}{cont_text}", force_chinese_mode=(self.language == 'chinese'))
                 except: pass
                 run = p.add_run()
                 cont_text = " (continued)" if item.layer1_continued else ""
@@ -1127,11 +1130,11 @@ class PowerPointGenerator:
                         p = tf.add_paragraph()
                         self._apply_paragraph_formatting(p, is_layer2_3=True)
                         if paragraph_count > 0:
-                            try: p.space_before = get_space_before_for_text(f"{self.BULLET_CHAR}{item.account_title}{cont_text} - {part}")
+                            try: p.space_before = get_space_before_for_text(f"{self.BULLET_CHAR}{item.account_title}{cont_text} - {part}", force_chinese_mode=(self.language == 'chinese'))
                             except: pass
-                        try: p.space_after = get_space_after_for_text(f"{self.BULLET_CHAR}{item.account_title}{cont_text} - {part}")
+                        try: p.space_after = get_space_after_for_text(f"{self.BULLET_CHAR}{item.account_title}{cont_text} - {part}", force_chinese_mode=(self.language == 'chinese'))
                         except: pass
-                        try: p.line_spacing = get_line_spacing_for_text(f"{self.BULLET_CHAR}{item.account_title}{cont_text} - {part}")
+                        try: p.line_spacing = get_line_spacing_for_text(f"{self.BULLET_CHAR}{item.account_title}{cont_text} - {part}", force_chinese_mode=(self.language == 'chinese'))
                         except: pass
                         bullet_run = p.add_run()
                         bullet_run.text = self.BULLET_CHAR
@@ -1158,11 +1161,11 @@ class PowerPointGenerator:
                         p = tf.add_paragraph()
                         self._apply_paragraph_formatting(p, is_layer2_3=True)
                         if paragraph_count > 0:
-                            try: p.space_before = get_space_before_for_text(part)
+                            try: p.space_before = get_space_before_for_text(part, force_chinese_mode=(self.language == 'chinese'))
                             except: pass
-                        try: p.space_after = get_space_after_for_text(part)
+                        try: p.space_after = get_space_after_for_text(part, force_chinese_mode=(self.language == 'chinese'))
                         except: pass
-                        try: p.line_spacing = get_line_spacing_for_text(part)
+                        try: p.line_spacing = get_line_spacing_for_text(part, force_chinese_mode=(self.language == 'chinese'))
                         except: pass
                         try: p.left_indent = Inches(0.4)
                         except: pass
@@ -1331,7 +1334,7 @@ class PowerPointGenerator:
 
         try:
             if is_chinese_mode:
-                # Chinese formatting: 0.15" indent, 0.15" hanging, 6pt after
+                # Chinese formatting: optimized for better line breaking
                 try: paragraph.left_indent = Inches(0.15)  # 0.15" left indent
                 except: pass
                 try: paragraph.first_line_indent = Inches(-0.15)  # 0.15" hanging indent
@@ -1340,7 +1343,9 @@ class PowerPointGenerator:
                 except: pass
                 try: paragraph.space_after = Pt(6)  # 6pt space after
                 except: pass
-                print("📄 CHINESE PARAGRAPH: 0.15\" indent, 0.15\" hanging, 6pt after")
+                try: paragraph.line_spacing = 1.15  # Better line spacing for Chinese text breaking
+                except: pass
+                print("📄 CHINESE PARAGRAPH: 0.15\" indent, 0.15\" hanging, 6pt after, 1.15 line spacing")
             elif is_layer2_3:
                 try: paragraph.left_indent = Inches(0.25)  # Increased left margin
                 except: pass
@@ -1350,6 +1355,13 @@ class PowerPointGenerator:
                 except: pass
                 try: paragraph.space_after = Pt(0)
                 except: pass
+                # Better line spacing for layer 2/3 content
+                if is_chinese_mode:
+                    try: paragraph.line_spacing = 1.1  # Tighter spacing for Chinese bullets
+                    except: pass
+                else:
+                    try: paragraph.line_spacing = 1.0  # Standard spacing for English bullets
+                    except: pass
             else:
                 try: paragraph.left_indent = Inches(0.35)  # Increased left margin
                 except: pass
