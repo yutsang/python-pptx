@@ -846,36 +846,66 @@ class PowerPointGenerator:
         is_chinese = chinese_chars > len(paragraph) * 0.3
 
         if is_chinese:
-            return self._split_chinese_paragraph_at_boundary(paragraph, available_lines, chars_per_line)
+            first_part, remaining = self._split_chinese_paragraph_at_boundary(paragraph, available_lines, chars_per_line)
         else:
-            return self._split_english_paragraph_at_boundary(paragraph, available_lines, chars_per_line)
+            first_part, remaining = self._split_english_paragraph_at_boundary(paragraph, available_lines, chars_per_line)
+
+        # Ensure we always have content in first_part if paragraph is not empty
+        # This prevents the fallback that allows overflow
+        if not first_part and paragraph:
+            # Force split at 80% of available space if no good boundary found
+            max_chars = int(available_lines * chars_per_line * 0.8)
+            if max_chars < len(paragraph):
+                first_part = paragraph[:max_chars].rstrip()
+                remaining = paragraph[max_chars:].lstrip()
+            else:
+                first_part = paragraph
+                remaining = ""
+
+        return first_part, remaining
 
     def _split_chinese_paragraph_at_boundary(self, paragraph: str, available_lines: int, chars_per_line: int) -> tuple[str, str]:
         """Split Chinese paragraph at optimal boundary (sentence endings preferred)"""
-        # Chinese sentence endings
-        sentence_endings = ['。', '！', '？', '；', '，']
+        # Chinese sentence endings - prioritize complete sentences
+        primary_endings = ['。', '！', '？', '；']  # Complete sentences
+        secondary_endings = ['，', '：', '；']       # Clause breaks
 
-        # Try to find sentence boundaries within the available space
         max_chars = available_lines * chars_per_line
 
-        best_split_point = 0
-        # Look for sentence boundaries that utilize at least 80% of available space
-        for i, char in enumerate(paragraph[:max_chars]):
-            if char in sentence_endings and i > max_chars * 0.8:  # At least 80% of available space
-                best_split_point = i + 1
-                break
-        else:
-            # If no good sentence boundary found, try 70% utilization
-            for i, char in enumerate(paragraph[:max_chars]):
-                if char in sentence_endings and i > max_chars * 0.7:  # At least 70% of available space
-                    best_split_point = i + 1
-                    break
-            else:
-                # If still no good boundary, use character-based split at 85% capacity
-                best_split_point = min(int(max_chars * 0.85), len(paragraph))
+        # First priority: Complete sentences (。！？；) at 75-90% utilization
+        for target_ratio in [0.9, 0.85, 0.8, 0.75]:
+            target_chars = int(max_chars * target_ratio)
+            for i in range(target_chars, min(max_chars, len(paragraph))):
+                if paragraph[i] in primary_endings:
+                    first_part = paragraph[:i + 1].rstrip()
+                    remaining_part = paragraph[i + 1:].lstrip()
+                    if first_part:  # Ensure we have content
+                        return first_part, remaining_part
 
-        first_part = paragraph[:best_split_point].rstrip()
-        remaining_part = paragraph[best_split_point:].lstrip()
+        # Second priority: Clause breaks (，：；) at 70-85% utilization
+        for target_ratio in [0.85, 0.8, 0.75, 0.7]:
+            target_chars = int(max_chars * target_ratio)
+            for i in range(target_chars, min(max_chars, len(paragraph))):
+                if paragraph[i] in secondary_endings:
+                    first_part = paragraph[:i + 1].rstrip()
+                    remaining_part = paragraph[i + 1:].lstrip()
+                    if first_part:  # Ensure we have content
+                        return first_part, remaining_part
+
+        # Third priority: Any punctuation or space at 80% utilization
+        target_chars = int(max_chars * 0.8)
+        break_chars = ['，', '、', '：', '；', ' ', '\n', '-', '—']
+        for i in range(max_chars - 1, target_chars - 1, -1):
+            if i > 0 and paragraph[i] in break_chars:
+                first_part = paragraph[:i + 1].rstrip()
+                remaining_part = paragraph[i + 1:].lstrip()
+                if first_part:
+                    return first_part, remaining_part
+
+        # Final fallback: Force split at 80% capacity
+        split_point = min(int(max_chars * 0.8), len(paragraph))
+        first_part = paragraph[:split_point].rstrip()
+        remaining_part = paragraph[split_point:].lstrip()
 
         return first_part, remaining_part
 
@@ -1019,9 +1049,12 @@ class PowerPointGenerator:
         split_index = 0
         
         # Try to fit as many whole paragraphs as possible
+        # Be more conservative to leave room for proper splitting
+        conservative_limit = int(available_lines * 0.9)  # Leave 10% buffer
+
         for i, para in enumerate(desc_paras):
             para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
-            if lines_used + para_lines > available_lines:
+            if lines_used + para_lines > conservative_limit:
                 break
             lines_used += para_lines
             split_index = i + 1
