@@ -1255,8 +1255,116 @@ def examine_databook():
         import traceback
         traceback.print_exc()
 
+def test_haining_wanpu_workflow():
+    """Test the complete workflow with 'Haining Wanpu' entity input."""
+    import pandas as pd
+    import os
+
+    print("🧪 TESTING COMPLETE WORKFLOW: 'Haining Wanpu' → Multiple Entity Mode")
+    print("=" * 70)
+
+    # Step 1: Simulate user input "Haining Wanpu"
+    user_entity_input = "Haining Wanpu"
+    print(f"👤 USER INPUT: '{user_entity_input}'")
+
+    # Step 2: Generate entity keywords (same logic as in fdd_app.py)
+    base_entity = user_entity_input.split()[0] if user_entity_input.split() else None
+    words = user_entity_input.split()
+    entity_keywords = []
+
+    # Always include the base entity
+    entity_keywords.append(base_entity)
+
+    # Generate all possible combinations
+    if len(words) >= 2:
+        # Add two-word combinations
+        for i in range(1, len(words)):
+            entity_keywords.append(f"{base_entity} {words[i]}")
+
+        # Add three-word combinations if available
+        if len(words) >= 3:
+            for i in range(1, len(words)-1):
+                for j in range(i+1, len(words)):
+                    entity_keywords.append(f"{base_entity} {words[i]} {words[j]}")
+
+    # Use full entity name for processing
+    selected_entity = user_entity_input
+    entity_keywords.append(selected_entity)  # Add the full name too
+
+    print(f"🔧 GENERATED KEYWORDS: {entity_keywords}")
+
+    # Step 3: Load databook.xlsx and test entity detection
+    databook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'databook.xlsx')
+    if not os.path.exists(databook_path):
+        print("❌ databook.xlsx not found!")
+        return
+
+    xl = pd.ExcelFile(databook_path)
+    print(f"📊 EXCEL FILE: Found {len(xl.sheet_names)} sheets")
+
+    # Step 4: Test entity detection on each sheet
+    entity_mode = 'multiple'  # User selected Multiple Entity mode
+    print(f"📋 ENTITY MODE: {entity_mode}")
+
+    for sheet_name in xl.sheet_names:
+        print(f"\n{'='*50}")
+        print(f"📄 TESTING SHEET: {sheet_name}")
+        print(f"{'='*50}")
+
+        df = xl.parse(sheet_name)
+        print(f"📊 Sheet shape: {df.shape}")
+
+        # Test entity detection with manual mode
+        print(f"🔍 Testing entity detection for '{selected_entity}'...")
+        result_df, is_multiple = determine_entity_mode_and_filter(df, selected_entity, entity_keywords, entity_mode)
+
+        print(f"🎯 Detection Result: {'MULTIPLE' if is_multiple else 'SINGLE'}")
+        print(f"📊 Filtered DataFrame: {result_df.shape}")
+
+        if len(result_df) > 0:
+            print("✅ SUCCESS: Table filtering worked!")
+            print(f"📋 First few rows of filtered table:")
+            for i in range(min(3, len(result_df))):
+                row_values = []
+                for col_idx in range(min(5, len(result_df.columns))):
+                    col_name = result_df.columns[col_idx]
+                    val = result_df.iloc[i, col_idx]
+                    if pd.notna(val):
+                        val_str = str(val)[:25]
+                        row_values.append(f"'{val_str}'")
+                    else:
+                        row_values.append("''")
+                print(f"  Row {i}: {' | '.join(row_values)}")
+
+            # Test date column detection
+            print(f"\n📅 Testing date column detection...")
+            latest_date_col = detect_latest_date_column(result_df, sheet_name, entity_keywords)
+            if latest_date_col:
+                print(f"✅ Latest date column found: '{latest_date_col}'")
+            else:
+                print("⚠️ No date column detected")
+
+            # Test table parsing
+            print(f"\n🔧 Testing table parsing...")
+            if latest_date_col:
+                parsed_table = parse_accounting_table(result_df, sheet_name, selected_entity, sheet_name,
+                                                    latest_date_col, None, False, entity_mode)
+                if parsed_table:
+                    print("✅ Table parsing successful!")
+                    if 'table_name' in parsed_table.get('metadata', {}):
+                        print(f"📋 Generated table name: {parsed_table['metadata']['table_name']}")
+                    if 'excel_row_number' in parsed_table.get('metadata', {}):
+                        print(f"📍 Excel row number: {parsed_table['metadata']['excel_row_number']}")
+                else:
+                    print("❌ Table parsing failed")
+        else:
+            print("❌ FAILED: No data after filtering")
+
+    print(f"\n{'='*70}")
+    print("✅ WORKFLOW TEST COMPLETED")
+
 if __name__ == "__main__":
-    examine_databook()
+    test_haining_wanpu_workflow()
 
 
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
