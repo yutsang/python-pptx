@@ -1122,6 +1122,10 @@ def main():
                         # Handle different statement types
                         current_statement_type = st.session_state.get('current_statement_type', 'BS')
 
+                        # Initialize variables to avoid "not associated with a value" errors
+                        agent1_results = {}
+                        agent1_success = False
+
                         if current_statement_type == "ALL":
                             # For ALL, process both BS and IS + translation + proofreading
                             ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 4, 'stage_index': 0, 'start_time': time.time()}}

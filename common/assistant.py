@@ -1184,10 +1184,11 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
     columns = df.columns.tolist()
     latest_date = None
     latest_column = None
-    
+
     print(f"🔍 {sheet_name}: Searching for latest date column...")
     print(f"   Available columns: {columns}")
-    
+    print(f"   Entity keywords provided: {entity_keywords}")
+
     # Strategy 1: Extract entity-related tables first, then find "Indicative adjusted" columns
     print(f"   🎯 STEP 1: Extracting entity-related tables from {sheet_name}")
     
@@ -1217,20 +1218,23 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
         all_cells = [str(cell).lower() for cell in section_df.values.flatten()]
         
         for keyword in entity_keywords_list:
-            if any(keyword.lower() in cell for cell in all_cells):
+            # More flexible matching: check if keyword is contained in any cell (case-insensitive)
+            keyword_lower = keyword.lower()
+            if any(keyword_lower in cell for cell in all_cells):
                 section_has_entity = True
                 entity_tables.append((start_row, end_row, section_df))
                 print(f"   ✅ Entity table found: Rows {start_row}-{end_row} (contains '{keyword}')")
                 break
     
     if not entity_tables:
-        print(f"   ⚠️  No entity-specific tables found, using first section as fallback")
+        print(f"   ⚠️  No entity-specific tables found, using all sections as fallback")
         if sections:
-            entity_tables = [sections[0]]
+            entity_tables = sections  # Use all sections instead of just the first one
     
     print(f"   📊 Found {len(entity_tables)} entity-related tables")
     
     # Strategy 2: Within entity tables, find "Indicative adjusted" and get the correct column
+    print(f"   🎯 STEP 2: Searching for 'Indicative adjusted' in {len(entity_tables)} tables")
     indicative_positions = []
     all_found_dates = []
     
