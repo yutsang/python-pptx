@@ -448,6 +448,178 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
         print(f"   ⚠️  No suitable table section found, using original table")
         return df, is_multiple_entity
 
+def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywords, manual_mode='single'):
+    """Determine if we're in single entity or multiple entity mode and return ALL matching sections.
+
+    This function is similar to determine_entity_mode_and_filter but returns ALL sections
+    that match the target entity, rather than just the first one. This is needed for
+    multi-entity Excel files where the same entity may have multiple tables in the same sheet.
+
+    Args:
+        df: DataFrame to process
+        entity_name: Target entity name
+        entity_keywords: List of entity keywords to search for
+        manual_mode: Manual selection - 'single' or 'multiple'
+
+    Returns:
+        tuple: (list_of_filtered_dfs, is_multiple_entity)
+            - list_of_filtered_dfs: List of DataFrames, one for each matching section
+            - is_multiple_entity: Boolean indicating if multiple entities were detected
+    """
+    print(f"   🔍 ENTITY ANALYSIS (ALL SECTIONS): entity_name='{entity_name}', entity_keywords={entity_keywords}")
+    print(f"   📊 MANUAL MODE: {manual_mode}")
+    print(f"   📄 DataFrame info: {len(df)} rows, {len(df.columns)} columns")
+
+    # If manual mode is 'single', skip entity filtering and return original table as single-item list
+    if manual_mode == 'single':
+        print(f"   🎯 SINGLE ENTITY MODE: Using original table (no filtering applied)")
+        return [df], False
+
+    # Step 1: Identify table sections by finding empty rows or major delimiters
+    table_sections = []
+    current_section_start = None
+
+    for row_idx in range(len(df)):
+        # Check if this row is mostly empty (indicates table boundary)
+        row_values = df.iloc[row_idx]
+        non_empty_count = row_values.notna().sum()
+        has_content = non_empty_count > 0
+
+        if has_content and current_section_start is None:
+            # Start of a new section
+            current_section_start = row_idx
+        elif not has_content and current_section_start is not None:
+            # End of current section
+            table_sections.append((current_section_start, row_idx - 1))
+            current_section_start = None
+        elif row_idx == len(df) - 1 and current_section_start is not None:
+            # Last row, close the current section
+            table_sections.append((current_section_start, row_idx))
+
+    print(f"   📊 Found {len(table_sections)} table sections in the worksheet")
+
+    # Step 2: Analyze each section to find entity associations
+    entity_sections = {}
+    all_potential_entities = set()
+
+    for section_idx, (start_row, end_row) in enumerate(table_sections):
+        # Include both cell values and column names in the section text
+        section_values = []
+        for val in df.iloc[start_row:end_row+1].values.flatten():
+            if pd.notna(val) and str(val).strip():
+                section_values.append(str(val))
+
+        # Also include column names that might contain entity information
+        for col_name in df.columns:
+            if pd.notna(col_name) and str(col_name).strip():
+                col_name_str = str(col_name).strip()
+                section_values.append(col_name_str)
+
+        section_text = ' '.join(val.lower() for val in section_values)
+
+        # Check which entities are mentioned in this section
+        for keyword in entity_keywords:
+            keyword_lower = keyword.lower()
+            section_lower = section_text.lower()
+
+            # 1. Exact match
+            if keyword_lower in section_lower:
+                if keyword not in entity_sections:
+                    entity_sections[keyword] = []
+                entity_sections[keyword].append((start_row, end_row, section_idx))
+                print(f"   ✅ EXACT MATCH: Section {section_idx} contains entity '{keyword}'")
+                continue
+
+            # 2. Partial word match (split by spaces and hyphens)
+            keyword_parts = keyword_lower.replace('-', ' ').split()
+            matches_found = 0
+            for part in keyword_parts:
+                if len(part) > 2 and part in section_lower:
+                    matches_found += 1
+
+            # If we match most parts of the keyword, consider it a match
+            if matches_found >= len(keyword_parts) * 0.6:  # 60% match threshold
+                if keyword not in entity_sections:
+                    entity_sections[keyword] = []
+                entity_sections[keyword].append((start_row, end_row, section_idx))
+                print(f"   ✅ PARTIAL MATCH: Section {section_idx} contains entity '{keyword}' (matched {matches_found}/{len(keyword_parts)} parts)")
+                continue
+
+            # 3. Special handling for patterns like "Cash and cash equivalents - Ningbo"
+            separators = [' - ', ' – ', ' and ', ' or ', ' for ']
+            for separator in separators:
+                if separator in section_text:
+                    parts = section_text.split(separator)
+                    for part in parts[1:]:  # Look in parts after the separator
+                        part = part.strip()
+                        if part and any(kw_part.lower() in part.lower() for kw_part in keyword_parts):
+                            if keyword not in entity_sections:
+                                entity_sections[keyword] = []
+                            entity_sections[keyword].append((start_row, end_row, section_idx))
+                            print(f"   ✅ SEPARATOR MATCH: Section {section_idx} contains entity '{keyword}' after '{separator.strip()}'")
+                            break
+
+    # Step 3: Determine entity mode
+    unique_entities = len(entity_sections)
+    detected_multiple = unique_entities > 1
+
+    print(f"   🔍 DEBUG INFO:")
+    print(f"   📊 Generated entity keywords: {entity_keywords}")
+    print(f"   📊 Entities found in Excel: {list(entity_sections.keys()) if entity_sections else 'None'}")
+    print(f"   📊 Total unique entities detected: {unique_entities}")
+    print(f"   📊 Detected multiple entities: {detected_multiple}")
+
+    if manual_mode == 'multiple':
+        if detected_multiple:
+            print(f"   🎯 MULTIPLE ENTITY MODE: Confirmed (found {unique_entities} unique entities)")
+            is_multiple_entity = True
+        else:
+            print(f"   ⚠️  MULTIPLE ENTITY MODE: No multiple entities detected, falling back to single entity mode")
+            print(f"   📊 Only found {unique_entities} unique entities")
+            return [df], False  # Fallback to single entity mode
+    else:
+        is_multiple_entity = False
+
+    # Step 4: Find ALL sections that match the target entity
+    matching_sections = []
+
+    # Priority 1: Exact match with entity_name
+    if entity_name in entity_sections:
+        matching_sections = entity_sections[entity_name]
+        print(f"   ✅ EXACT MATCH: Found {len(matching_sections)} sections for entity '{entity_name}'")
+
+    # Priority 2: Partial match with any entity keyword
+    elif entity_sections:
+        for keyword in entity_keywords:
+            if keyword in entity_sections:
+                matching_sections = entity_sections[keyword]
+                print(f"   ✅ PARTIAL MATCH: Found {len(matching_sections)} sections for entity '{keyword}'")
+                break
+
+    # Priority 3: If no entity found but we have sections, use all substantial sections
+    elif table_sections:
+        for start_row, end_row, section_idx in [(s[0], s[1], i) for i, s in enumerate(table_sections)]:
+            section_size = end_row - start_row + 1
+            if section_size > 3:  # At least 4 rows (header + 3 data rows)
+                matching_sections.append((start_row, end_row, section_idx))
+        print(f"   ⚠️  NO ENTITY MATCH: Using {len(matching_sections)} substantial sections")
+
+    # Step 5: Extract ALL matching table sections
+    filtered_dfs = []
+    if matching_sections:
+        for i, (start_row, end_row, section_idx) in enumerate(matching_sections):
+            df_filtered = df.iloc[start_row:end_row+1].copy()
+            # Reset index to make it cleaner but preserve column names
+            df_filtered = df_filtered.reset_index(drop=True)
+            filtered_dfs.append(df_filtered)
+            print(f"   🎯 EXTRACTED TABLE {i+1}: Section {section_idx}, rows {start_row}-{end_row} ({len(df_filtered)} rows)")
+
+        print(f"   📊 TOTAL EXTRACTED: {len(filtered_dfs)} tables for entity")
+        return filtered_dfs, is_multiple_entity
+    else:
+        print(f"   ⚠️  No suitable table sections found, using original table")
+        return [df], is_multiple_entity
+
 def find_indicative_adjusted_column_and_dates(df, entity_keywords):
     """Find 'Indicative adjusted' column and extract dates according to new logic."""
 
@@ -623,7 +795,21 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
                 entity_keywords = ai_data['entity_keywords']
 
         # Use the manual_mode parameter passed from the calling function
-        df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mode)
+        if manual_mode == 'multiple':
+            # For multiple entity mode, get ALL matching sections for the entity
+            filtered_dfs, is_multiple_entity = determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywords, manual_mode)
+            if filtered_dfs:
+                df_filtered = filtered_dfs[0]  # Use the first matching section for now, but we have all sections available
+                print(f"   📊 MULTIPLE SECTIONS FOUND: {len(filtered_dfs)} sections for entity '{entity_name}'")
+                # Store all sections for potential future use
+                if not hasattr(df_filtered, '_all_sections'):
+                    df_filtered._all_sections = filtered_dfs
+            else:
+                df_filtered = df  # Fallback
+                is_multiple_entity = False
+        else:
+            # For single entity mode, use the original function
+            df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mode)
 
         # NEW LOGIC: Step 2 - Find Indicative adjusted column and dates
         extracted_date, selected_column, row_number = find_indicative_adjusted_column_and_dates(df_filtered, entity_keywords)
@@ -1786,19 +1972,6 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                     continue
                 df = xl.parse(sheet_name)
 
-                # Split dataframes on empty rows
-                empty_rows = df.index[df.isnull().all(1)]
-                start_idx = 0
-                dataframes = []
-                for end_idx in empty_rows:
-                    if end_idx > start_idx:
-                        split_df = df[start_idx:end_idx]
-                        if not split_df.dropna(how='all').empty:
-                            dataframes.append(split_df)
-                        start_idx = end_idx + 1
-                if start_idx < len(df):
-                    dataframes.append(df[start_idx:])
-                
                 # Use entity_keywords passed from main app, or generate fallback
                 if entity_keywords is None:
                     # Fallback: generate entity_keywords from entity_suffixes
@@ -1808,107 +1981,121 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             entity_keywords.append(entity_name)
                         else:
                             entity_keywords.append(f"{entity_name} {suffix}")
-                    
+
                     if not entity_keywords:
                         entity_keywords = [entity_name]
-                
+
                 combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
-                
+
                 # Detect latest date column once per sheet (not per dataframe)
                 latest_date_col = detect_latest_date_column(df, sheet_name, entity_keywords)
-                
-                # Organize sections by key - make it less restrictive
-                for data_frame in dataframes:
 
-                    # Check if this section contains any of the financial keys
-                    matched_keys = []  # Track which keys this data_frame matches
+                # For multiple entity mode, we need to handle the entire sheet differently
+                if entity_mode == 'multiple':
+                    print(f"   🎯 MULTIPLE ENTITY MODE: Processing entire sheet '{sheet_name}' for all entities")
+                    # Get all sections for all entities in this sheet
+                    all_entity_sections = []
+                    for entity_kw in entity_keywords:
+                        entity_sections, _ = determine_entity_mode_and_filter_all_sections(df, entity_kw, entity_keywords, entity_mode)
+                        if entity_sections:
+                            for i, section_df in enumerate(entity_sections):
+                                all_entity_sections.append((entity_kw, section_df, i))
 
-                    # Get all text from the dataframe for searching
-                    all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
+                    print(f"   📊 Found {len(all_entity_sections)} total entity sections in sheet '{sheet_name}'")
 
-                    print(f"📋 PROCESSING TAB: {sheet_name}")
-                    print(f"   🔍 Available financial keys: {financial_keys}")
-                    print(f"   🔍 Entity mode: {entity_mode}")
-                    print(f"   🔍 Entity name: {entity_name}")
-                    print(f"   🔍 Entity keywords: {entity_keywords}")
-                    print(f"   📊 DataFrame shape: {data_frame.shape}")
-                    print(f"   📝 Sample content (first 3 rows):")
-                    for idx in range(min(3, len(data_frame))):
-                        row_content = ' | '.join(str(val)[:50] for val in data_frame.iloc[idx] if pd.notna(val))
-                        print(f"      Row {idx}: {row_content}")
-                    print(f"   🔍 Looking for '人民币千元' in content...")
+                    # Process each entity section
+                    for entity_name_in_section, data_frame, section_idx in all_entity_sections:
+                        print(f"   🎯 Processing entity '{entity_name_in_section}' section {section_idx+1}")
 
-                    # Check for RMB patterns
-                    rmb_found = False
-                    if "人民币千元" in all_text:
-                        print(f"   💰 FOUND: '人民币千元' detected in tab '{sheet_name}'")
-                        rmb_found = True
-                    elif "人民幣千元" in all_text:
-                        print(f"   💰 FOUND: '人民幣千元' (Traditional) detected in tab '{sheet_name}'")
-                        rmb_found = True
-                    elif "cny'000" in all_text.lower():
-                        print(f"   💰 FOUND: 'CNY'000' detected in tab '{sheet_name}'")
-                        rmb_found = True
-                    else:
-                        print(f"   ❌ RMB patterns NOT found in tab '{sheet_name}'")
+                        # Check if this section contains any of the financial keys
+                        matched_keys = []  # Track which keys this data_frame matches
 
-                    # Check each financial key - prioritize exact sheet name matches
-                    for financial_key in financial_keys:
-                        # First, check if the sheet name exactly matches this key
-                        if sheet_name.lower() == financial_key.lower():
-                            matched_keys.append(financial_key)
-                            print(f"   ✅ Exact match: {sheet_name} -> {financial_key}")
-                            continue
-                        
-                        # Check if the sheet name matches any of the key's sheet patterns
-                        # Use more restrictive matching to avoid substring conflicts
-                        if financial_key in tab_name_mapping:
-                            sheet_patterns = tab_name_mapping[financial_key]
-                            for pattern in sheet_patterns:
-                                # Use word boundary matching to avoid substring conflicts
-                                # e.g., "AR" should not match "Share capital" which contains "AR"
-                                pattern_lower = pattern.lower()
-                                sheet_lower = sheet_name.lower()
-                                
-                                # Check for exact word match or exact pattern match
-                                if (pattern_lower == sheet_lower or 
-                                    pattern_lower in sheet_lower.split() or
-                                    sheet_lower.startswith(pattern_lower + ' ') or
-                                    sheet_lower.endswith(' ' + pattern_lower) or
-                                    ' ' + pattern_lower + ' ' in ' ' + sheet_lower + ' '):
-                                    matched_keys.append(financial_key)
-                                    break
-                        
-                        # Only use exact sheet name matching - no fallback to KEY_TERMS_BY_KEY
-                        # This prevents multiple keys from matching the same sheet
-                        pass
-                    
-                    # Process this dataframe for each matched key
-                    print(f"   🔍 Sheet '{sheet_name}' matched keys: {matched_keys}")
-                    for best_key in matched_keys:
-                        print(f"   🎯 Processing key '{best_key}' for tab '{sheet_name}'")
-                        print(f"   🔍 Sheet '{sheet_name}' matches key '{best_key}' - processing...")
-                        # Initialize actual_entity_found for this key
-                        actual_entity_found = None
+                        # Get all text from the dataframe for searching
+                        all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
 
-                        # Check for entity keywords in the dataframe
-                        try:
-                            # Vectorized entity matching - much faster than row-by-row
-                            mask_series = data_frame.apply(
-                                lambda row: row.astype(str).str.contains(
-                                    combined_pattern, case=False, regex=True, na=False
-                                ).any(),
-                                axis=1
-                            )
-                            entity_mask = mask_series
-                        except Exception:
-                            # Fallback to simpler matching
-                            entity_mask = data_frame.astype(str).apply(
-                                lambda x: x.str.contains(
-                                    combined_pattern, case=False, regex=True, na=False
-                                ).any()
-                            )
-                        # entity_mask is already defined above as mask_series
+                        print(f"📋 PROCESSING TAB: {sheet_name}")
+                        print(f"   🔍 Available financial keys: {financial_keys}")
+                        print(f"   🔍 Entity mode: {entity_mode}")
+                        print(f"   🔍 Entity name: {entity_name}")
+                        print(f"   🔍 Entity keywords: {entity_keywords}")
+                        print(f"   📊 DataFrame shape: {data_frame.shape}")
+                        print(f"   📝 Sample content (first 3 rows):")
+                        for idx in range(min(3, len(data_frame))):
+                            row_content = ' | '.join(str(val)[:50] for val in data_frame.iloc[idx] if pd.notna(val))
+                            print(f"      Row {idx}: {row_content}")
+                        print(f"   🔍 Looking for '人民币千元' in content...")
+
+                        # Check for RMB patterns
+                        rmb_found = False
+                        if "人民币千元" in all_text:
+                            print(f"   💰 FOUND: '人民币千元' detected in tab '{sheet_name}'")
+                            rmb_found = True
+                        elif "人民幣千元" in all_text:
+                            print(f"   💰 FOUND: '人民幣千元' (Traditional) detected in tab '{sheet_name}'")
+                            rmb_found = True
+                        elif "cny'000" in all_text.lower():
+                            print(f"   💰 FOUND: 'CNY'000' detected in tab '{sheet_name}'")
+                            rmb_found = True
+                        else:
+                            print(f"   ❌ RMB patterns NOT found in tab '{sheet_name}'")
+
+                        # Check each financial key - prioritize exact sheet name matches
+                        for financial_key in financial_keys:
+                            # First, check if the sheet name exactly matches this key
+                            if sheet_name.lower() == financial_key.lower():
+                                matched_keys.append(financial_key)
+                                print(f"   ✅ Exact match: {sheet_name} -> {financial_key}")
+                                continue
+
+                            # Check if the sheet name matches any of the key's sheet patterns
+                            # Use more restrictive matching to avoid substring conflicts
+                            if financial_key in tab_name_mapping:
+                                sheet_patterns = tab_name_mapping[financial_key]
+                                for pattern in sheet_patterns:
+                                    # Use word boundary matching to avoid substring conflicts
+                                    # e.g., "AR" should not match "Share capital" which contains "AR"
+                                    pattern_lower = pattern.lower()
+                                    sheet_lower = sheet_name.lower()
+
+                                    # Check for exact word match or exact pattern match
+                                    if (pattern_lower == sheet_lower or
+                                        pattern_lower in sheet_lower.split() or
+                                        sheet_lower.startswith(pattern_lower + ' ') or
+                                        sheet_lower.endswith(' ' + pattern_lower) or
+                                        ' ' + pattern_lower + ' ' in ' ' + sheet_lower + ' '):
+                                        matched_keys.append(financial_key)
+                                        break
+
+                            # Only use exact sheet name matching - no fallback to KEY_TERMS_BY_KEY
+                            # This prevents multiple keys from matching the same sheet
+                            pass
+
+                        # Process this dataframe for each matched key
+                        print(f"   🔍 Sheet '{sheet_name}' matched keys: {matched_keys}")
+                        for best_key in matched_keys:
+                            print(f"   🎯 Processing key '{best_key}' for tab '{sheet_name}'")
+                            print(f"   🔍 Sheet '{sheet_name}' matches key '{best_key}' - processing...")
+                            # Initialize actual_entity_found for this key
+                            actual_entity_found = None
+
+                            # Check for entity keywords in the dataframe
+                            try:
+                                # Vectorized entity matching - much faster than row-by-row
+                                mask_series = data_frame.apply(
+                                    lambda row: row.astype(str).str.contains(
+                                        combined_pattern, case=False, regex=True, na=False
+                                    ).any(),
+                                    axis=1
+                                )
+                                entity_mask = mask_series
+                            except Exception:
+                                # Fallback to simpler matching
+                                entity_mask = data_frame.astype(str).apply(
+                                    lambda x: x.str.contains(
+                                        combined_pattern, case=False, regex=True, na=False
+                                    ).any()
+                                )
+                            # entity_mask is already defined above as mask_series
 
                         # Intelligent entity detection - automatically handle single vs multiple entity scenarios
                         # entity_mode parameter is now 'auto' and the logic adapts automatically
@@ -1944,7 +2131,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                 print(f"   🔍 Entity keywords: {entity_keywords}")
                                 print(f"   🔍 Section text sample: {section_text[:200]}...")
 
-                                                # Only process if entity is found in this section
+                        # Only process if entity is found in this section
                         if entity_found:
                             # Find the actual entity name from the section text
                             if actual_entity_found is None:  # Not already set by intelligent detection
@@ -1974,7 +2161,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                         actual_entity_found = matches[0]
                                         print(f"   🔍 Extracted actual entity name: {actual_entity_found}")
                                         break
-                            
+
                             # Use new accounting table parser with detected latest date column
                             print(f"🔍 About to parse table for key '{best_key}' in sheet '{sheet_name}':")
                             print(f"   📊 DataFrame shape: {data_frame.shape}")
@@ -1996,11 +2183,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             else:
                                 filtered_data = data_frame  # Fallback to original data
                                 print(f"   📋 Using original data (no entity filtering applied): {filtered_data.shape} rows")
-                            
+
                             print(f"   🔍 parse_accounting_table returned: {parsed_table is not None}")
                             if parsed_table:
                                 print(f"   🔍 parsed_table keys: {list(parsed_table.keys()) if isinstance(parsed_table, dict) else 'not a dict'}")
-                            
+
                             if parsed_table:
                                 # Entity validation - use the filtered data for validation if available
                                 if 'filtered_data' in parsed_table:
@@ -2079,7 +2266,278 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                     'entity_match': True,
                                     'is_selected_entity': True  # Force this to True for fallback
                                 })
-        
+                else:
+                    # SINGLE ENTITY MODE: Use the original approach with empty row splitting
+                    print(f"   🎯 SINGLE ENTITY MODE: Using traditional section splitting for sheet '{sheet_name}'")
+                    empty_rows = df.index[df.isnull().all(1)]
+                    start_idx = 0
+                    dataframes = []
+                    for end_idx in empty_rows:
+                        if end_idx > start_idx:
+                            split_df = df[start_idx:end_idx]
+                            if not split_df.dropna(how='all').empty:
+                                dataframes.append(split_df)
+                            start_idx = end_idx + 1
+                    if start_idx < len(df):
+                        dataframes.append(df[start_idx:])
+
+                    # Process each split dataframe (original logic)
+                    for data_frame in dataframes:
+                        # Check if this section contains any of the financial keys
+                        matched_keys = []  # Track which keys this data_frame matches
+
+                        # Get all text from the dataframe for searching
+                        all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
+
+                        print(f"📋 PROCESSING TAB: {sheet_name}")
+                        print(f"   🔍 Available financial keys: {financial_keys}")
+                        print(f"   🔍 Entity mode: {entity_mode}")
+                        print(f"   🔍 Entity name: {entity_name}")
+                        print(f"   🔍 Entity keywords: {entity_keywords}")
+                        print(f"   📊 DataFrame shape: {data_frame.shape}")
+                        print(f"   📝 Sample content (first 3 rows):")
+                        for idx in range(min(3, len(data_frame))):
+                            row_content = ' | '.join(str(val)[:50] for val in data_frame.iloc[idx] if pd.notna(val))
+                            print(f"      Row {idx}: {row_content}")
+                        print(f"   🔍 Looking for '人民币千元' in content...")
+
+                        # Check for RMB patterns
+                        rmb_found = False
+                        if "人民币千元" in all_text:
+                            print(f"   💰 FOUND: '人民币千元' detected in tab '{sheet_name}'")
+                            rmb_found = True
+                        elif "人民幣千元" in all_text:
+                            print(f"   💰 FOUND: '人民幣千元' (Traditional) detected in tab '{sheet_name}'")
+                            rmb_found = True
+                        elif "cny'000" in all_text.lower():
+                            print(f"   💰 FOUND: 'CNY'000' detected in tab '{sheet_name}'")
+                            rmb_found = True
+                        else:
+                            print(f"   ❌ RMB patterns NOT found in tab '{sheet_name}'")
+
+                        # Check each financial key - prioritize exact sheet name matches
+                        for financial_key in financial_keys:
+                            # First, check if the sheet name exactly matches this key
+                            if sheet_name.lower() == financial_key.lower():
+                                matched_keys.append(financial_key)
+                                print(f"   ✅ Exact match: {sheet_name} -> {financial_key}")
+                                continue
+
+                            # Check if the sheet name matches any of the key's sheet patterns
+                            # Use more restrictive matching to avoid substring conflicts
+                            if financial_key in tab_name_mapping:
+                                sheet_patterns = tab_name_mapping[financial_key]
+                                for pattern in sheet_patterns:
+                                    # Use word boundary matching to avoid substring conflicts
+                                    # e.g., "AR" should not match "Share capital" which contains "AR"
+                                    pattern_lower = pattern.lower()
+                                    sheet_lower = sheet_name.lower()
+
+                                    # Check for exact word match or exact pattern match
+                                    if (pattern_lower == sheet_lower or
+                                        pattern_lower in sheet_lower.split() or
+                                        sheet_lower.startswith(pattern_lower + ' ') or
+                                        sheet_lower.endswith(' ' + pattern_lower) or
+                                        ' ' + pattern_lower + ' ' in ' ' + sheet_lower + ' '):
+                                        matched_keys.append(financial_key)
+                                        break
+
+                            # Only use exact sheet name matching - no fallback to KEY_TERMS_BY_KEY
+                            # This prevents multiple keys from matching the same sheet
+                            pass
+
+                        # Process this dataframe for each matched key
+                        print(f"   🔍 Sheet '{sheet_name}' matched keys: {matched_keys}")
+                        for best_key in matched_keys:
+                            print(f"   🎯 Processing key '{best_key}' for tab '{sheet_name}'")
+                            print(f"   🔍 Sheet '{sheet_name}' matches key '{best_key}' - processing...")
+                            # Initialize actual_entity_found for this key
+                            actual_entity_found = None
+
+                            # Check for entity keywords in the dataframe
+                            try:
+                                # Vectorized entity matching - much faster than row-by-row
+                                mask_series = data_frame.apply(
+                                    lambda row: row.astype(str).str.contains(
+                                        combined_pattern, case=False, regex=True, na=False
+                                    ).any(),
+                                    axis=1
+                                )
+                                entity_mask = mask_series
+                            except Exception:
+                                # Fallback to simpler matching
+                                entity_mask = data_frame.astype(str).apply(
+                                    lambda x: x.str.contains(
+                                        combined_pattern, case=False, regex=True, na=False
+                                    ).any()
+                                )
+
+                            # Intelligent entity detection - automatically handle single vs multiple entity scenarios
+                            section_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
+
+                            # Check if entity keywords are found in the content
+                            entity_found = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
+
+                            if entity_found:
+                                # Entity found - use normal processing
+                                actual_entity_found = None
+                                print(f"   🔍 Entity found in content: entity_found={entity_found}")
+                                print(f"   🔍 Entity keywords: {entity_keywords}")
+                            else:
+                                # No entity found - use intelligent detection
+                                if len(section_text.strip()) > 50:  # Has substantial content
+                                    # Check if this looks like a financial table (has numbers and/or Chinese characters)
+                                    has_numbers = any(char.isdigit() for char in section_text)
+                                    has_chinese = any('\u4e00' <= char <= '\u9fff' for char in section_text)
+
+                                    if has_numbers or has_chinese:
+                                        # Likely valid financial content - assume correct entity
+                                        entity_found = True
+                                        actual_entity_found = entity_name
+                                        print(f"   🔍 No entity found but valid financial content detected - assuming correct entity for {best_key}")
+                                        print(f"   🔍 Content has numbers: {has_numbers}, Chinese: {has_chinese}")
+                                    else:
+                                        print(f"   🔍 No entity found and content doesn't appear to be financial data")
+                                        print(f"   🔍 Entity keywords: {entity_keywords}")
+                                        print(f"   🔍 Section text sample: {section_text[:200]}...")
+                                else:
+                                    print(f"   🔍 No entity found in minimal content")
+                                    print(f"   🔍 Entity keywords: {entity_keywords}")
+                                    print(f"   🔍 Section text sample: {section_text[:200]}...")
+
+                            # Only process if entity is found in this section
+                            if entity_found:
+                                # Find the actual entity name from the section text
+                                if actual_entity_found is None:  # Not already set by intelligent detection
+                                    actual_entity_found = None
+                                    # First try to find the exact entity keyword
+                                    for entity_keyword in entity_keywords:
+                                        if entity_keyword.lower() in section_text:
+                                            actual_entity_found = entity_keyword
+                                            break
+
+                                # If still not found, try to extract the actual entity name from the data
+                                if actual_entity_found is None:
+                                    # Look for entity patterns in the section text
+                                    import re
+                                    # Common patterns for entity names
+                                    entity_patterns = [
+                                        r'(\w+\s+Wanpu(?:\s+Limited)?)',
+                                        r'(\w+\s+Wanchen(?:\s+Limited)?)',
+                                        r'(Ningbo\s+\w+(?:\s+Limited)?)',
+                                        r'(Haining\s+\w+(?:\s+Limited)?)',
+                                        r'(Nanjing\s+\w+(?:\s+Limited)?)'
+                                    ]
+
+                                    for pattern in entity_patterns:
+                                        matches = re.findall(pattern, section_text, re.IGNORECASE)
+                                        if matches:
+                                            actual_entity_found = matches[0]
+                                            print(f"   🔍 Extracted actual entity name: {actual_entity_found}")
+                                            break
+
+                                # Use new accounting table parser with detected latest date column
+                                print(f"🔍 About to parse table for key '{best_key}' in sheet '{sheet_name}':")
+                                print(f"   📊 DataFrame shape: {data_frame.shape}")
+                                print(f"   🎯 entity_mode: {entity_mode}")
+                                print(f"   👤 entity_name: '{entity_name}'")
+                                print(f"   🔑 entity_keywords: {entity_keywords}")
+                                print(f"   📍 actual_entity_found: {actual_entity_found}")
+
+                                # Parse the table - this will handle entity filtering internally
+                                manual_mode = entity_mode
+                                parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found, debug, manual_mode)
+
+                                # Extract the filtered data from parsed_table if entity filtering was applied
+                                if parsed_table and 'filtered_data' in parsed_table:
+                                    filtered_data = parsed_table['filtered_data']
+                                    print(f"   🔄 Using filtered data from entity filtering: {filtered_data.shape} rows")
+                                else:
+                                    filtered_data = data_frame  # Fallback to original data
+                                    print(f"   📋 Using original data (no entity filtering applied): {filtered_data.shape} rows")
+
+                                print(f"   🔍 parse_accounting_table returned: {parsed_table is not None}")
+                                if parsed_table:
+                                    print(f"   🔍 parsed_table keys: {list(parsed_table.keys()) if isinstance(parsed_table, dict) else 'not a dict'}")
+
+                                if parsed_table:
+                                    # Entity validation - use the filtered data for validation if available
+                                    if 'filtered_data' in parsed_table:
+                                        validation_data = parsed_table['filtered_data']
+                                        print(f"   🔍 Using filtered data for entity validation: {validation_data.shape}")
+                                    else:
+                                        validation_data = data_frame
+
+                                    if actual_entity_found is not None:
+                                        # Entity was already validated in the intelligent detection above
+                                        is_selected_entity = True
+                                        section_text = ' '.join(validation_data.astype(str).values.flatten()).lower()
+                                    else:
+                                        # Perform final validation check
+                                        section_text = ' '.join(validation_data.astype(str).values.flatten()).lower()
+                                        is_selected_entity = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
+
+                                    # Debug: Print which entity was found
+                                    print(f"   🔍 Section for {best_key}: entity_found={entity_found}, is_selected_entity={is_selected_entity}")
+                                    print(f"   🔍 Looking for: {entity_keywords}")
+                                    print(f"   🔍 Found entity: {actual_entity_found}")
+                                    print(f"   🔍 Section text sample: {section_text[:100]}...")
+
+                                    # VALIDATION: Check for content mismatch (e.g., AR key showing taxes content)
+                                    if best_key == 'AR':
+                                        # Check if this section contains taxes content
+                                        if 'tax' in section_text or 'surcharge' in section_text:
+                                            print(f"⚠️ WARNING: AR key matched to sheet '{sheet_name}' but contains taxes content!")
+                                            print(f"   Section text sample: {section_text[:200]}...")
+                                            # Skip this section to avoid incorrect mapping
+                                            continue
+
+                                    # Use filtered data if available, otherwise use original
+                                    display_data = parsed_table.get('filtered_data', data_frame)
+
+                                    section_data = {
+                                        'sheet': sheet_name,
+                                        'data': display_data,
+                                        'parsed_data': parsed_table,
+                                        'markdown': create_improved_table_markdown(parsed_table),
+                                        'entity_match': True,
+                                        'is_selected_entity': is_selected_entity
+                                    }
+
+                                    # Only add this section if it's the correct sheet for this key AND matches the selected entity
+                                    if (sheet_name.lower() == best_key.lower() or
+                                        (best_key in tab_name_mapping and
+                                         any(pattern.lower() in sheet_name.lower() for pattern in tab_name_mapping[best_key]))):
+
+                                        # Only add sections that match the selected entity
+                                        if entity_found and is_selected_entity:
+                                            sections_by_key[best_key].append(section_data)
+                                            print(f"   ✅ SUCCESS: Added section for '{best_key}' from tab '{sheet_name}'")
+                                            print(f"   📊 Section contains {len(parsed_table.get('data', []))} data rows")
+                                            print(f"   💰 RMB detected: {'YES' if rmb_found else 'NO'}")
+                                            print(f"   🔍 Entity found: {actual_entity_found}")
+                                            print(f"   📊 Total sections for {best_key}: {len(sections_by_key[best_key])}")
+                                        else:
+                                            print(f"   ❌ SKIPPED: Section for '{best_key}' from tab '{sheet_name}' (entity not matched)")
+                                            print(f"   🔍 entity_found: {entity_found}, is_selected_entity: {is_selected_entity}")
+                                            print(f"   🔍 actual_entity_found: {actual_entity_found}")
+                                            print(f"   🔑 entity_keywords: {entity_keywords}")
+                                else:
+                                    # Fallback to original format if parsing fails
+                                    print(f"   ⚠️  parse_accounting_table failed for {best_key}, using fallback")
+                                    try:
+                                        markdown_content = tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
+                                    except Exception:
+                                        markdown_content = data_frame.to_markdown(index=False) + '\n\n'
+
+                                    sections_by_key[best_key].append({
+                                        'sheet': sheet_name,
+                                        'data': data_frame,
+                                        'markdown': markdown_content,
+                                        'entity_match': True,
+                                        'is_selected_entity': True  # Force this to True for fallback
+                                    })
+
         # Print summary of processed sections
         total_sections = sum(len(sections) for sections in sections_by_key.values())
         print(f"\n🎉 EXCEL PROCESSING COMPLETE!")
