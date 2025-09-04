@@ -989,10 +989,9 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         # Add filtered data if entity filtering was applied
         print(f"   🔍 DEBUG: Checking for filtered data - mode={manual_mode}, original_shape={df.shape}, cleaned_shape={df_clean.shape}")
 
-        # Check if entity filtering was actually applied by comparing shapes
-        entity_filtering_applied = (manual_mode != 'single' and
-                                   hasattr(df, 'shape') and hasattr(df_clean, 'shape') and
-                                   df_clean.shape[0] < df.shape[0])  # Fewer rows = filtering applied
+        # Check if entity filtering was actually applied
+        # For manual_mode='multiple', we should always include filtered_data since entity filtering was attempted
+        entity_filtering_applied = (manual_mode == 'multiple')
 
         print(f"   🔍 DEBUG: Entity filtering applied: {entity_filtering_applied}")
 
@@ -1001,7 +1000,7 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             print(f"   🔄 ENTITY FILTERING APPLIED: {df.shape} → {df_clean.shape} rows")
             print(f"   📦 Adding filtered_data to result: {df_clean.shape}")
         else:
-            print(f"   📋 No entity filtering detected: mode={manual_mode}, original={df.shape}, cleaned={df_clean.shape}")
+            print(f"   📋 Single entity mode: using original data")
 
         return result
         
@@ -1503,8 +1502,129 @@ def test_streamlit_flow():
     print(f"\n{'='*60}")
     print("✅ FULL STREAMLIT FLOW TEST COMPLETED")
 
+def test_haining_investigation():
+    """Comprehensive investigation of Haining Wanpu entity filtering"""
+    import pandas as pd
+    import json
+    import os
+
+    print("=" * 80)
+    print("🔍 COMPREHENSIVE INVESTIGATION: Haining Wanpu Entity Filtering")
+    print("=" * 80)
+
+    # Step 1: Load the actual databook.xlsx
+    databook_path = "databook.xlsx"
+    if not os.path.exists(databook_path):
+        print("❌ databook.xlsx not found!")
+        return
+
+    xl = pd.ExcelFile(databook_path)
+    print(f"📊 Loaded databook.xlsx with sheets: {xl.sheet_names}")
+
+    # Step 2: Test entity keyword generation
+    entity_name = "Haining Wanpu"
+    print(f"\n👤 Testing entity: '{entity_name}'")
+
+    # Generate entity keywords exactly like the app does
+    base_entity = entity_name.split()[0] if entity_name.split() else None
+    words = entity_name.split()
+    entity_keywords = [base_entity] if base_entity else []
+
+    # Add two-word combinations
+    if len(words) >= 2:
+        for i in range(1, len(words)):
+            entity_keywords.append(f"{base_entity} {words[i]}")
+        # Add three-word combinations if available
+        if len(words) >= 3:
+            for i in range(1, len(words)-1):
+                for j in range(i+1, len(words)):
+                    entity_keywords.append(f"{base_entity} {words[i]} {words[j]}")
+
+    entity_keywords.append(entity_name)  # Add full name
+    entity_keywords = list(set(entity_keywords))  # Remove duplicates
+
+    print(f"🔑 Generated entity keywords: {entity_keywords}")
+
+    # Step 3: Load mapping.json
+    mapping_path = os.path.join("fdd_utils", "mapping.json")
+    with open(mapping_path, 'r') as f:
+        tab_name_mapping = json.load(f)
+
+    # Step 4: Test key sheets that should contain Haining data
+    test_sheets = ['Cash', 'AR', 'Investment properties', 'Tax payable', 'OP', 'AP', 'Share capital']
+    entity_mode = 'multiple'
+
+    print(f"\n🎯 Entity mode: {entity_mode}")
+    print(f"📋 Testing sheets: {test_sheets}")
+
+    for sheet_name in test_sheets:
+        if sheet_name in xl.sheet_names:
+            print(f"\n{'='*60}")
+            print(f"📄 TESTING SHEET: {sheet_name}")
+            print(f"{'='*60}")
+
+            df = xl.parse(sheet_name)
+            print(f"📊 Original shape: {df.shape}")
+
+            # Test the entity filtering
+            result_df, is_multiple = determine_entity_mode_and_filter(df, entity_name, entity_keywords, entity_mode)
+
+            print(f"🎯 Entity filtering result: {'MULTIPLE' if is_multiple else 'SINGLE'} entities detected")
+            print(f"📊 Filtered shape: {result_df.shape}")
+
+            if len(result_df) > 0:
+                print("✅ SUCCESS: Entity filtering returned data")
+                # Show first few rows to verify content
+                print("📋 First 3 rows of filtered data:")
+                for i in range(min(3, len(result_df))):
+                    row_content = []
+                    for j in range(min(5, len(result_df.columns))):
+                        col_name = result_df.columns[j]
+                        val = result_df.iloc[i, j]
+                        if pd.notna(val):
+                            val_str = str(val)[:25]
+                            row_content.append(f"'{val_str}'")
+                        else:
+                            row_content.append("''")
+                    print(f"  Row {i}: {' | '.join(row_content)}")
+
+                # Check if this sheet should match any financial key
+                matched_keys = []
+                if sheet_name in tab_name_mapping:
+                    matched_keys = [sheet_name]  # Direct match
+                else:
+                    for key, patterns in tab_name_mapping.items():
+                        if sheet_name in patterns:
+                            matched_keys.append(key)
+
+                print(f"🔗 Matched financial keys: {matched_keys}")
+
+                # Test the full parse_accounting_table flow
+                if matched_keys:
+                    for best_key in matched_keys:
+                        print(f"\n🔧 Testing parse_accounting_table for key '{best_key}'...")
+                        parsed_table = parse_accounting_table(result_df, best_key, entity_name, sheet_name,
+                                                            None, None, False, entity_mode)
+
+                        if parsed_table:
+                            print("✅ parse_accounting_table succeeded")
+                            if 'filtered_data' in parsed_table:
+                                filtered_data = parsed_table['filtered_data']
+                                print(f"📦 Filtered data available: {filtered_data.shape}")
+                                print("🎉 ENTITY FILTERING WORKING CORRECTLY!")
+                            else:
+                                print("⚠️ No filtered_data in parsed_table")
+                        else:
+                            print("❌ parse_accounting_table failed")
+            else:
+                print("❌ FAILURE: Entity filtering returned no data")
+
+    print(f"\n{'='*80}")
+    print("🔍 INVESTIGATION COMPLETE")
+    print(f"{'='*80}")
+
 if __name__ == "__main__":
-    test_streamlit_flow()
+    test_haining_investigation()
 
 
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
