@@ -170,7 +170,7 @@ class PowerPointGenerator:
         self.prs = Presentation(template_path)
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
-        self.ROWS_PER_SECTION = 40  # Maximum practical value for maximum practical space utilization
+        self.ROWS_PER_SECTION = 35  # Conservative value for balanced space utilization
         self.language = language  # Store language for Chinese mode detection
         
         # Find a slide with textMainBullets shape
@@ -221,24 +221,24 @@ class PowerPointGenerator:
         effective_height_pt = shape_height_pt * 0.999  # Maximum height utilization
 
         # Calculate line height based on font size and line spacing
-        # Optimized for maximum space utilization while maintaining readability
+        # Balanced approach for good space utilization and readability
         if hasattr(self, 'language') and self.language == 'chinese':
-            font_size_pt = 8  # Smaller font for Chinese to maximize content density
-            line_spacing = 1.0  # Tighter spacing for maximum utilization
+            font_size_pt = 8.5  # Balanced font size for Chinese
+            line_spacing = 1.05  # Balanced spacing for readability
         else:
-            font_size_pt = 8.5  # Slightly smaller for English too
-            line_spacing = 1.05  # Tighter spacing for English
+            font_size_pt = 9  # Standard font size for English
+            line_spacing = 1.1  # Balanced spacing for English
         line_height_pt = font_size_pt * line_spacing
 
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
 
-        # Optimize for maximum practical utilization
-        # Balance high content density with minimal overflow
+        # Optimize for balanced utilization with overflow prevention
+        # Prevent 130% height overflow by being more conservative
         if hasattr(self, 'language') and self.language == 'chinese':
-            max_rows = max(42, max_rows)  # Maximum practical utilization for Chinese
+            max_rows = max(35, max_rows)  # Conservative utilization for Chinese
         else:
-            max_rows = max(38, max_rows)  # Maximum practical utilization for English
+            max_rows = max(32, max_rows)  # Conservative utilization for English
 
         return max_rows
 
@@ -416,11 +416,11 @@ class PowerPointGenerator:
                 shape = self._get_target_shape_for_section(slide_idx, section)
                 if shape:
                     max_lines = self._calculate_max_rows_for_shape(shape)
-                    # Optimize for maximum practical utilization
+                    # Optimize for balanced utilization with overflow prevention
                     if slide_idx == 0:  # First slide
-                        max_lines = max(max_lines, 40)  # Maximum practical utilization on first slide
+                        max_lines = max(max_lines, 35)  # Conservative utilization on first slide
                     elif section in ['b', 'c']:  # _L and _R sections
-                        max_lines = max(max_lines, 32)  # Maximum practical utilization on side sections
+                        max_lines = max(max_lines, 28)  # Conservative utilization on side sections
                     print(f"📐 SECTION {section}: Found shape '{shape.name}', max_lines = {max_lines}")
                 else:
                     max_lines = self.ROWS_PER_SECTION  # Fallback
@@ -836,6 +836,68 @@ class PowerPointGenerator:
 
         return sub_paragraphs if sub_paragraphs else [paragraph]
 
+    def _split_paragraph_at_boundary(self, paragraph: str, available_lines: int, chars_per_line: int) -> tuple[str, str]:
+        """Split a paragraph at the optimal boundary for Chinese text, respecting available lines"""
+        if not paragraph:
+            return "", ""
+
+        # For Chinese text, prefer sentence boundaries
+        chinese_chars = sum(1 for char in paragraph if '\u4e00' <= char <= '\u9fff')
+        is_chinese = chinese_chars > len(paragraph) * 0.3
+
+        if is_chinese:
+            return self._split_chinese_paragraph_at_boundary(paragraph, available_lines, chars_per_line)
+        else:
+            return self._split_english_paragraph_at_boundary(paragraph, available_lines, chars_per_line)
+
+    def _split_chinese_paragraph_at_boundary(self, paragraph: str, available_lines: int, chars_per_line: int) -> tuple[str, str]:
+        """Split Chinese paragraph at optimal boundary (sentence endings preferred)"""
+        # Chinese sentence endings
+        sentence_endings = ['。', '！', '？', '；', '，']
+
+        # Try to find sentence boundaries within the available space
+        max_chars = available_lines * chars_per_line
+
+        best_split_point = 0
+        # Look for sentence boundaries that utilize at least 80% of available space
+        for i, char in enumerate(paragraph[:max_chars]):
+            if char in sentence_endings and i > max_chars * 0.8:  # At least 80% of available space
+                best_split_point = i + 1
+                break
+        else:
+            # If no good sentence boundary found, try 70% utilization
+            for i, char in enumerate(paragraph[:max_chars]):
+                if char in sentence_endings and i > max_chars * 0.7:  # At least 70% of available space
+                    best_split_point = i + 1
+                    break
+            else:
+                # If still no good boundary, use character-based split at 85% capacity
+                best_split_point = min(int(max_chars * 0.85), len(paragraph))
+
+        first_part = paragraph[:best_split_point].rstrip()
+        remaining_part = paragraph[best_split_point:].lstrip()
+
+        return first_part, remaining_part
+
+    def _split_english_paragraph_at_boundary(self, paragraph: str, available_lines: int, chars_per_line: int) -> tuple[str, str]:
+        """Split English paragraph at optimal boundary (word boundaries preferred)"""
+        max_chars = available_lines * chars_per_line
+
+        if len(paragraph) <= max_chars:
+            return paragraph, ""
+
+        # Try to find word boundary
+        split_point = max_chars
+        for i in range(max_chars - 1, max_chars - 20, -1):  # Look back up to 20 chars
+            if i > 0 and paragraph[i] == ' ':
+                split_point = i
+                break
+
+        first_part = paragraph[:split_point].rstrip()
+        remaining_part = paragraph[split_point:].lstrip()
+
+        return first_part, remaining_part
+
     def _split_chinese_text_at_line(self, text: str, chars_per_line: int, max_lines: int) -> tuple[str, str]:
         """Split Chinese text at line boundary, preserving sentence and phrase integrity"""
         if not text:
@@ -978,48 +1040,49 @@ class PowerPointGenerator:
                 None
             )
         
-        # If no paragraph fits, split the first paragraph at line boundary
+        # If no paragraph fits, split the first paragraph at optimal boundary
         if split_index == 0:
             para = desc_paras[0]
-            wrapped = textwrap.wrap(para, width=chars_per_line)
-            first_part = wrapped[:available_lines]
-            remaining_part = wrapped[available_lines:]
-            
-            # Reconstruct text properly, preserving word boundaries and sentence continuity
-            # Use spaces instead of line breaks to avoid creating unwanted paragraphs
-            first_part_text = ' '.join(line.rstrip() for line in first_part)
-            # Ensure the first part doesn't end with incomplete sentence fragments
-            if first_part_text and not first_part_text.endswith('.') and not first_part_text.endswith('M'):
-                # If it doesn't end with a period or currency value, try to find a better break point
-                sentences = first_part_text.split('. ')
-                if len(sentences) > 1:
-                    # Keep complete sentences only
-                    first_part_text = '. '.join(sentences[:-1])
-                    if first_part_text and not first_part_text.endswith('.'):
-                        first_part_text += '.'
-            split_item = FinancialItem(
-                item.accounting_type,
-                item.account_title,
-                [first_part_text],
-                layer1_continued=item.layer1_continued,
-                layer2_continued=False,  # First part is not continued
-                is_table=item.is_table
+
+            # Use improved Chinese-aware text splitting
+            first_part_text, remaining_text = self._split_paragraph_at_boundary(
+                para, available_lines, chars_per_line
             )
-            
-            # Reconstruct remaining text properly
-            remaining_part_text = ' '.join(line.rstrip() for line in remaining_part)
-            # Ensure proper continuation formatting
-            if remaining_part_text and not remaining_part_text.startswith(' ') and remaining_part:
-                remaining_part_text = ' ' + remaining_part_text
-            remaining_item = FinancialItem(
-                item.accounting_type,
-                item.account_title,
-                [remaining_part_text] + desc_paras[1:],
-                layer1_continued=True,
-                layer2_continued=True,  # Remaining part is continued
-                is_table=item.is_table
-            ) if remaining_part or len(desc_paras) > 1 else None
-            
+
+            if first_part_text:
+                split_item = FinancialItem(
+                    item.accounting_type,
+                    item.account_title,
+                    [first_part_text],
+                    layer1_continued=item.layer1_continued,
+                    layer2_continued=False,  # First part is not continued
+                    is_table=item.is_table
+                )
+            else:
+                # If we can't split, keep the whole paragraph (will cause overflow but better than losing content)
+                split_item = FinancialItem(
+                    item.accounting_type,
+                    item.account_title,
+                    [para],
+                    layer1_continued=item.layer1_continued,
+                    layer2_continued=False,
+                    is_table=item.is_table
+                )
+                remaining_text = None
+
+            # Create remaining item if there's remaining text
+            if remaining_text:
+                remaining_item = FinancialItem(
+                    item.accounting_type,
+                    item.account_title,
+                    [remaining_text],
+                    layer1_continued=True,  # This is a continuation
+                    layer2_continued=False,
+                    is_table=item.is_table
+                )
+            else:
+                remaining_item = None
+
             return split_item, remaining_item
         
         # Otherwise, split at paragraph boundary
