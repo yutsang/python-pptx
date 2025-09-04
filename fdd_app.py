@@ -478,21 +478,24 @@ def main():
             # Generate comprehensive entity keywords from the input
             words = entity_input.split()
             entity_keywords = []
-            
+
             # Always include the base entity
             entity_keywords.append(base_entity)
-            
-            # Generate all possible combinations
+
+            # Generate all possible combinations of the input entity
             if len(words) >= 2:
                 # Add two-word combinations
                 for i in range(1, len(words)):
                     entity_keywords.append(f"{base_entity} {words[i]}")
-                
+
                 # Add three-word combinations if available
                 if len(words) >= 3:
                     for i in range(1, len(words)-1):
                         for j in range(i+1, len(words)):
                             entity_keywords.append(f"{base_entity} {words[i]} {words[j]}")
+
+            # For multiple entity mode, we want to be more inclusive
+            # The entity detection logic will handle discovering all entities in the Excel file
             
             # Use full entity name for processing
             selected_entity = entity_input

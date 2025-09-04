@@ -316,19 +316,39 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
                 print(f"   ✅ EXACT MATCH: Section {section_idx} contains entity '{keyword}'")
                 continue
 
-            # 2. Partial word match (split by spaces and hyphens)
+            # 2. Partial word match (split by spaces and hyphens) - STRICT MATCHING
             keyword_parts = keyword_lower.replace('-', ' ').split()
             matches_found = 0
-            for part in keyword_parts:
-                if len(part) > 2 and part in section_lower:
-                    matches_found += 1
+            total_parts = len(keyword_parts)
 
-            # If we match most parts of the keyword, consider it a match
-            if matches_found >= len(keyword_parts) * 0.6:  # 60% match threshold
+            # For multi-word entities, require them to appear together
+            if total_parts > 1:
+                # Check if the full phrase appears
+                if keyword_lower in section_lower:
+                    matches_found = total_parts
+                else:
+                    # Check if all parts appear (but not necessarily together)
+                    for part in keyword_parts:
+                        if len(part) > 2:
+                            # Use word boundaries to avoid substring matches
+                            if f' {part} ' in f' {section_lower} ' or section_lower.startswith(f'{part} ') or section_lower.endswith(f' {part}'):
+                                matches_found += 1
+                    # For multi-word, require 100% match
+                    if matches_found < total_parts:
+                        matches_found = 0
+            else:
+                # For single words, use the original logic
+                part = keyword_parts[0]
+                if len(part) > 2:
+                    if f' {part} ' in f' {section_lower} ' or section_lower.startswith(f'{part} ') or section_lower.endswith(f' {part}'):
+                        matches_found = 1
+
+            # Require exact match for multi-word entities
+            if matches_found >= total_parts:
                 if keyword not in entity_sections:
                     entity_sections[keyword] = []
                 entity_sections[keyword].append((start_row, end_row, section_idx))
-                print(f"   ✅ PARTIAL MATCH: Section {section_idx} contains entity '{keyword}' (matched {matches_found}/{len(keyword_parts)} parts)")
+                print(f"   ✅ PARTIAL MATCH: Section {section_idx} contains entity '{keyword}' (matched {matches_found}/{total_parts} parts)")
                 continue
 
             # 3. Special handling for patterns like "Cash and cash equivalents - Ningbo"
@@ -502,107 +522,179 @@ def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywor
     entity_sections = {}
     all_potential_entities = set()
 
-    for section_idx, (start_row, end_row) in enumerate(table_sections):
-        # Include both cell values and column names in the section text
-        section_values = []
-        for val in df.iloc[start_row:end_row+1].values.flatten():
-            if pd.notna(val) and str(val).strip():
-                section_values.append(str(val))
+    # For multiple entity mode, skip complex entity detection and use simplified filtering
+    if manual_mode != 'multiple':
+        # For single entity mode, use the original complex detection logic
+        for section_idx, (start_row, end_row) in enumerate(table_sections):
+            # Include both cell values and column names in the section text
+            section_values = []
+            for val in df.iloc[start_row:end_row+1].values.flatten():
+                if pd.notna(val) and str(val).strip():
+                    section_values.append(str(val))
 
-        # Also include column names that might contain entity information
-        for col_name in df.columns:
-            if pd.notna(col_name) and str(col_name).strip():
-                col_name_str = str(col_name).strip()
-                section_values.append(col_name_str)
+            # Also include column names that might contain entity information
+            for col_name in df.columns:
+                if pd.notna(col_name) and str(col_name).strip():
+                    col_name_str = str(col_name).strip()
+                    section_values.append(col_name_str)
 
-        section_text = ' '.join(val.lower() for val in section_values)
+            section_text = ' '.join(val.lower() for val in section_values)
 
-        # Check which entities are mentioned in this section
-        for keyword in entity_keywords:
-            keyword_lower = keyword.lower()
-            section_lower = section_text.lower()
+            # Check which entities are mentioned in this section
+            for keyword in entity_keywords:
+                keyword_lower = keyword.lower()
+                section_lower = section_text.lower()
 
-            # 1. Exact match
-            if keyword_lower in section_lower:
-                if keyword not in entity_sections:
-                    entity_sections[keyword] = []
-                entity_sections[keyword].append((start_row, end_row, section_idx))
-                print(f"   ✅ EXACT MATCH: Section {section_idx} contains entity '{keyword}'")
-                continue
+                # 1. Exact match
+                if keyword_lower in section_lower:
+                    if keyword not in entity_sections:
+                        entity_sections[keyword] = []
+                    entity_sections[keyword].append((start_row, end_row, section_idx))
+                    print(f"   ✅ EXACT MATCH: Section {section_idx} contains entity '{keyword}'")
+                    continue
 
-            # 2. Partial word match (split by spaces and hyphens)
-            keyword_parts = keyword_lower.replace('-', ' ').split()
-            matches_found = 0
-            for part in keyword_parts:
-                if len(part) > 2 and part in section_lower:
-                    matches_found += 1
+                # 2. Partial word match (split by spaces and hyphens) - STRICT MATCHING
+                keyword_parts = keyword_lower.replace('-', ' ').split()
+                matches_found = 0
+                total_parts = len(keyword_parts)
 
-            # If we match most parts of the keyword, consider it a match
-            if matches_found >= len(keyword_parts) * 0.6:  # 60% match threshold
-                if keyword not in entity_sections:
-                    entity_sections[keyword] = []
-                entity_sections[keyword].append((start_row, end_row, section_idx))
-                print(f"   ✅ PARTIAL MATCH: Section {section_idx} contains entity '{keyword}' (matched {matches_found}/{len(keyword_parts)} parts)")
-                continue
+                # For multi-word entities, require them to appear together
+                if total_parts > 1:
+                    # Check if the full phrase appears
+                    if keyword_lower in section_lower:
+                        matches_found = total_parts
+                    else:
+                        # Check if all parts appear (but not necessarily together)
+                        for part in keyword_parts:
+                            if len(part) > 2:
+                                # Use word boundaries to avoid substring matches
+                                if f' {part} ' in f' {section_lower} ' or section_lower.startswith(f'{part} ') or section_lower.endswith(f' {part}'):
+                                    matches_found += 1
+                        # For multi-word, require 100% match
+                        if matches_found < total_parts:
+                            matches_found = 0
+                else:
+                    # For single words, use the original logic
+                    part = keyword_parts[0]
+                    if len(part) > 2:
+                        if f' {part} ' in f' {section_lower} ' or section_lower.startswith(f'{part} ') or section_lower.endswith(f' {part}'):
+                            matches_found = 1
 
-            # 3. Special handling for patterns like "Cash and cash equivalents - Ningbo"
-            separators = [' - ', ' – ', ' and ', ' or ', ' for ']
-            for separator in separators:
-                if separator in section_text:
-                    parts = section_text.split(separator)
-                    for part in parts[1:]:  # Look in parts after the separator
-                        part = part.strip()
-                        if part and any(kw_part.lower() in part.lower() for kw_part in keyword_parts):
-                            if keyword not in entity_sections:
-                                entity_sections[keyword] = []
-                            entity_sections[keyword].append((start_row, end_row, section_idx))
-                            print(f"   ✅ SEPARATOR MATCH: Section {section_idx} contains entity '{keyword}' after '{separator.strip()}'")
-                            break
+                # Require exact match for multi-word entities
+                if matches_found >= total_parts:
+                    if keyword not in entity_sections:
+                        entity_sections[keyword] = []
+                    entity_sections[keyword].append((start_row, end_row, section_idx))
+                    print(f"   ✅ PARTIAL MATCH: Section {section_idx} contains entity '{keyword}' (matched {matches_found}/{total_parts} parts)")
+                    continue
 
-    # Step 3: Determine entity mode
-    unique_entities = len(entity_sections)
-    detected_multiple = unique_entities > 1
+                # 3. Special handling for patterns like "Cash and cash equivalents - Ningbo"
+                separators = [' - ', ' – ', ' and ', ' or ', ' for ']
+                for separator in separators:
+                    if separator in section_text:
+                        parts = section_text.split(separator)
+                        for part in parts[1:]:  # Look in parts after the separator
+                            part = part.strip()
+                            if part and any(kw_part.lower() in part.lower() for kw_part in keyword_parts):
+                                if keyword not in entity_sections:
+                                    entity_sections[keyword] = []
+                                entity_sections[keyword].append((start_row, end_row, section_idx))
+                                print(f"   ✅ SEPARATOR MATCH: Section {section_idx} contains entity '{keyword}' after '{separator.strip()}'")
+                                break
 
-    print(f"   🔍 DEBUG INFO:")
-    print(f"   📊 Generated entity keywords: {entity_keywords}")
-    print(f"   📊 Entities found in Excel: {list(entity_sections.keys()) if entity_sections else 'None'}")
-    print(f"   📊 Total unique entities detected: {unique_entities}")
-    print(f"   📊 Detected multiple entities: {detected_multiple}")
-
+    # Step 3: Determine entity mode and apply filtering
     if manual_mode == 'multiple':
-        if detected_multiple:
-            print(f"   🎯 MULTIPLE ENTITY MODE: Confirmed (found {unique_entities} unique entities)")
-            is_multiple_entity = True
+        # For multiple entity mode, use simplified filtering approach
+        print(f"   🎯 MULTIPLE ENTITY MODE: Filtering table groups by entity presence")
+
+        # Filter table sections to only include those that contain the target entity
+        filtered_sections = []
+
+        for section_idx, (start_row, end_row) in enumerate(table_sections):
+            # Get all text from this table section
+            section_values = []
+            for val in df.iloc[start_row:end_row+1].values.flatten():
+                if pd.notna(val) and str(val).strip():
+                    section_values.append(str(val))
+
+            # Also check column names which might contain entity info
+            for col_name in df.columns:
+                if pd.notna(col_name) and str(col_name).strip():
+                    section_values.append(str(col_name).strip())
+
+            section_text = ' '.join(section_values).lower()
+
+            # Check if this section contains the target entity
+            entity_found_in_section = False
+            for keyword in entity_keywords:
+                keyword_lower = keyword.lower()
+
+                # Simple exact match check
+                if keyword_lower in section_text:
+                    entity_found_in_section = True
+                    print(f"   ✅ ENTITY FOUND: Section {section_idx} (rows {start_row}-{end_row}) contains '{keyword}'")
+                    break
+
+                # Check for separator patterns like "Cash - Entity Name"
+                separators = [' - ', ' – ', ' and ', ' or ', ' for ']
+                for separator in separators:
+                    if separator in section_text:
+                        parts = section_text.split(separator)
+                        for part in parts[1:]:  # Look in parts after the separator
+                            part = part.strip()
+                            if part and keyword_lower in part:
+                                entity_found_in_section = True
+                                print(f"   ✅ ENTITY FOUND: Section {section_idx} (rows {start_row}-{end_row}) contains '{keyword}' after '{separator.strip()}'")
+                                break
+                        if entity_found_in_section:
+                            break
+                if entity_found_in_section:
+                    break
+
+            if entity_found_in_section:
+                filtered_sections.append((start_row, end_row, section_idx))
+
+        # Update table_sections to only include sections with the target entity
+        if filtered_sections:
+            print(f"   📊 Found {len(filtered_sections)} table sections containing target entity")
+            table_sections = filtered_sections
         else:
-            print(f"   ⚠️  MULTIPLE ENTITY MODE: No multiple entities detected, falling back to single entity mode")
-            print(f"   📊 Only found {unique_entities} unique entities")
-            return [df], False  # Fallback to single entity mode
+            print(f"   ⚠️ No table sections found containing target entity")
+            # If no sections contain the target entity, return original table
+            return [df], False
+
+    else:
+        # For single entity mode, use the original entity detection results
+        unique_entities = len(entity_sections)
+        detected_multiple = unique_entities > 1
+
+        print(f"   🔍 DEBUG INFO:")
+        print(f"   📊 Generated entity keywords: {entity_keywords}")
+        print(f"   📊 Entities found in Excel: {list(entity_sections.keys()) if entity_sections else 'None'}")
+        print(f"   📊 Total unique entities detected: {unique_entities}")
+        print(f"   📊 Detected multiple entities: {detected_multiple}")
+
+    # Update detection logic after filtering
+    if manual_mode == 'multiple':
+        num_filtered_sections = len(table_sections)
+
+        if num_filtered_sections > 0:
+            print(f"   🎯 MULTIPLE ENTITY MODE: Found {num_filtered_sections} table sections with target entity")
+            is_multiple_entity = num_filtered_sections > 1  # True if multiple sections, False if single section
+        else:
+            print(f"   ⚠️ No table sections found with target entity")
+            is_multiple_entity = False
     else:
         is_multiple_entity = False
 
-    # Step 4: Find ALL sections that match the target entity
-    matching_sections = []
+    # Step 4: Use the filtered table sections (already filtered by entity presence)
+    matching_sections = table_sections
 
-    # Priority 1: Exact match with entity_name
-    if entity_name in entity_sections:
-        matching_sections = entity_sections[entity_name]
-        print(f"   ✅ EXACT MATCH: Found {len(matching_sections)} sections for entity '{entity_name}'")
-
-    # Priority 2: Partial match with any entity keyword
-    elif entity_sections:
-        for keyword in entity_keywords:
-            if keyword in entity_sections:
-                matching_sections = entity_sections[keyword]
-                print(f"   ✅ PARTIAL MATCH: Found {len(matching_sections)} sections for entity '{keyword}'")
-                break
-
-    # Priority 3: If no entity found but we have sections, use all substantial sections
-    elif table_sections:
-        for start_row, end_row, section_idx in [(s[0], s[1], i) for i, s in enumerate(table_sections)]:
-            section_size = end_row - start_row + 1
-            if section_size > 3:  # At least 4 rows (header + 3 data rows)
-                matching_sections.append((start_row, end_row, section_idx))
-        print(f"   ⚠️  NO ENTITY MATCH: Using {len(matching_sections)} substantial sections")
+    if matching_sections:
+        print(f"   📊 Using {len(matching_sections)} filtered table sections containing target entity")
+    else:
+        print(f"   ⚠️ No matching sections found")
+        return [df], is_multiple_entity
 
     # Step 5: Extract ALL matching table sections
     filtered_dfs = []
