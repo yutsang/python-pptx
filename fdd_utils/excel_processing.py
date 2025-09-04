@@ -225,39 +225,96 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords):
     """Determine if we're in single entity or multiple entity mode and filter accordingly."""
     print(f"   🔍 ENTITY ANALYSIS: entity_name='{entity_name}', entity_keywords={entity_keywords}")
 
-    # Check if this looks like a multiple entity table
-    # Look for entity-related content in the first few rows
-    entity_indicators = 0
-    total_rows_checked = min(10, len(df))
+    # Step 1: Identify table sections by finding empty rows or major delimiters
+    table_sections = []
+    current_section_start = None
 
-    for row_idx in range(total_rows_checked):
-        row_text = ' '.join(str(val).lower() for val in df.iloc[row_idx] if pd.notna(val))
+    for row_idx in range(len(df)):
+        # Check if this row is mostly empty (indicates table boundary)
+        row_values = df.iloc[row_idx]
+        non_empty_count = row_values.notna().sum()
+        has_content = non_empty_count > 0
+
+        if has_content and current_section_start is None:
+            # Start of a new section
+            current_section_start = row_idx
+        elif not has_content and current_section_start is not None:
+            # End of current section
+            table_sections.append((current_section_start, row_idx - 1))
+            current_section_start = None
+        elif row_idx == len(df) - 1 and current_section_start is not None:
+            # Last row, close the current section
+            table_sections.append((current_section_start, row_idx))
+
+    print(f"   📊 Found {len(table_sections)} table sections in the worksheet")
+
+    # Step 2: Analyze each section to find entity associations
+    entity_sections = {}
+
+    for section_idx, (start_row, end_row) in enumerate(table_sections):
+        section_text = ' '.join(
+            str(val).lower() for val in df.iloc[start_row:end_row+1].values.flatten()
+            if pd.notna(val) and str(val).strip()
+        )
+
+        # Check which entities are mentioned in this section
         for keyword in entity_keywords:
-            if keyword.lower() in row_text:
-                entity_indicators += 1
-                print(f"   📍 Found entity indicator '{keyword}' in row {row_idx}")
+            if keyword.lower() in section_text:
+                if keyword not in entity_sections:
+                    entity_sections[keyword] = []
+                entity_sections[keyword].append((start_row, end_row, section_idx))
+                print(f"   📍 Section {section_idx} (rows {start_row}-{end_row}) contains entity '{keyword}'")
+
+    # Step 3: Determine entity mode
+    unique_entities = len(entity_sections)
+    is_multiple_entity = unique_entities > 1
+    print(f"   🎯 ENTITY MODE: {'MULTIPLE' if is_multiple_entity else 'SINGLE'} (found {unique_entities} unique entities)")
+
+    # Step 4: Find the best matching entity section
+    target_entity = None
+    best_section = None
+
+    # Priority 1: Exact match with entity_name
+    if entity_name in entity_sections:
+        target_entity = entity_name
+        best_section = entity_sections[entity_name][0]  # Take first matching section
+        print(f"   ✅ EXACT MATCH: Found entity '{entity_name}' in section {best_section[2]} (rows {best_section[0]}-{best_section[1]})")
+
+    # Priority 2: Partial match with any entity keyword
+    elif entity_sections:
+        # Find the entity that best matches our target
+        for keyword in entity_keywords:
+            if keyword in entity_sections:
+                target_entity = keyword
+                best_section = entity_sections[keyword][0]
+                print(f"   ✅ PARTIAL MATCH: Found entity '{keyword}' in section {best_section[2]} (rows {best_section[0]}-{best_section[1]})")
                 break
 
-    # If we found multiple entity indicators, this is likely a multiple entity table
-    is_multiple_entity = entity_indicators > 1
-    print(f"   🎯 ENTITY MODE: {'MULTIPLE' if is_multiple_entity else 'SINGLE'} (found {entity_indicators} entity indicators)")
+    # Priority 3: If no entity found but we have sections, use the first substantial section
+    elif table_sections:
+        # Look for the first section with substantial data (more than just headers)
+        for start_row, end_row, section_idx in [(s[0], s[1], i) for i, s in enumerate(table_sections)]:
+            section_size = end_row - start_row + 1
+            if section_size > 3:  # At least 4 rows (header + 3 data rows)
+                best_section = (start_row, end_row, section_idx)
+                print(f"   ⚠️  NO ENTITY MATCH: Using first substantial section {section_idx} (rows {start_row}-{end_row})")
+                break
 
-    if is_multiple_entity:
-        # Filter the table to only include rows that match the entity keywords
-        filtered_rows = []
-        for row_idx in range(len(df)):
-            row_text = ' '.join(str(val).lower() for val in df.iloc[row_idx] if pd.notna(val))
-            if any(keyword.lower() in row_text for keyword in entity_keywords):
-                filtered_rows.append(row_idx)
+    # Step 5: Extract the selected table section
+    if best_section:
+        start_row, end_row, section_idx = best_section
+        df_filtered = df.iloc[start_row:end_row+1].copy()
 
-        if filtered_rows:
-            df_filtered = df.iloc[filtered_rows].copy()
-            print(f"   🔄 FILTERED TABLE: {len(df)} → {len(df_filtered)} rows (entity filtering applied)")
-            return df_filtered, is_multiple_entity
-        else:
-            print(f"   ⚠️  No rows matched entity keywords, using original table")
-            return df, is_multiple_entity
+        # Reset index to make it cleaner but preserve column names
+        df_filtered = df_filtered.reset_index(drop=True)
+
+        print(f"   🎯 SELECTED TABLE: Section {section_idx}, rows {start_row}-{end_row} ({len(df_filtered)} rows extracted)")
+        if target_entity:
+            print(f"   📋 ENTITY: {target_entity}")
+
+        return df_filtered, is_multiple_entity
     else:
+        print(f"   ⚠️  No suitable table section found, using original table")
         return df, is_multiple_entity
 
 def find_indicative_adjusted_column_and_dates(df, entity_keywords):
@@ -376,11 +433,16 @@ def find_indicative_adjusted_column_and_dates(df, entity_keywords):
                 latest_date = date_val
                 latest_col = df.columns[col_idx]
                 # Extract row number from column name (e.g., "Unnamed: 23" -> 23)
-                if latest_col.startswith('Unnamed: '):
+                if isinstance(latest_col, str) and latest_col.startswith('Unnamed: '):
                     try:
                         latest_row_number = int(latest_col.split(': ')[1])
                     except (ValueError, IndexError):
                         latest_row_number = None
+                elif isinstance(latest_col, int):
+                    # If column name is an integer, use it directly as the row number
+                    latest_row_number = latest_col
+                else:
+                    latest_row_number = None
         elif pd.notna(val):
             # Use the local parse_date function defined above
             parsed_date = parse_date(str(val))
@@ -388,11 +450,16 @@ def find_indicative_adjusted_column_and_dates(df, entity_keywords):
                 latest_date = parsed_date
                 latest_col = df.columns[col_idx]
                 # Extract row number from column name
-                if latest_col.startswith('Unnamed: '):
+                if isinstance(latest_col, str) and latest_col.startswith('Unnamed: '):
                     try:
                         latest_row_number = int(latest_col.split(': ')[1])
                     except (ValueError, IndexError):
                         latest_row_number = None
+                elif isinstance(latest_col, int):
+                    # If column name is an integer, use it directly as the row number
+                    latest_row_number = latest_col
+                else:
+                    latest_row_number = None
 
     if latest_date:
         print(f"   🎯 LATEST DATE FOUND: {latest_date.strftime('%Y-%m-%d')} in column '{latest_col}' (Excel row: {latest_row_number})")
@@ -796,12 +863,13 @@ def test_new_table_logic():
     from datetime import datetime
 
     print("🧪 TESTING NEW TABLE LOGIC IMPLEMENTATION")
-    print("=" * 50)
+    print("=" * 60)
 
-    # Create sample DataFrame that mimics the expected Excel structure
-    # Row 0: Header row with "示意性调整后" in merged cell
-    # Row 1: Date row with different dates in each column
-    sample_data = {
+    # Test Case 1: Single Entity Table
+    print("\n📋 TEST CASE 1: Single Entity Table")
+    print("-" * 40)
+
+    single_entity_data = {
         'Description': ['示意性调整后', 'Revenue', 'Cost', 'Profit'],
         'Unnamed: 20': ['', '2023-12-31', 'Amount', 'Amount'],
         'Unnamed: 21': ['', '2023-11-30', 'Amount', 'Amount'],
@@ -809,32 +877,72 @@ def test_new_table_logic():
         'Unnamed: 23': ['', '2023-09-30', 'Amount', 'Amount']
     }
 
-    df = pd.DataFrame(sample_data)
-    print(f"📊 Sample DataFrame created with {len(df)} rows, {len(df.columns)} columns")
+    df_single = pd.DataFrame(single_entity_data)
+    print(f"📊 Single Entity DataFrame: {len(df_single)} rows, {len(df_single.columns)} columns")
 
-    # Test entity detection
-    entity_keywords = ['Entity A', 'Entity B']
-    df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df, 'Entity A', entity_keywords)
-    print(f"🎯 Entity Mode Detection: {'MULTIPLE' if is_multiple_entity else 'SINGLE'}")
+    entity_keywords = ['Entity A']
+    df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df_single, 'Entity A', entity_keywords)
+    print(f"🎯 Entity Mode: {'MULTIPLE' if is_multiple_entity else 'SINGLE'}")
 
-    # Test Indicative adjusted column detection
-    extracted_date, selected_column, row_number = find_indicative_adjusted_column_and_dates(df_filtered, entity_keywords)
-    print(f"📅 Date Extraction: {extracted_date}")
-    print(f"📋 Selected Column: {selected_column}")
-    print(f"📍 Excel Row Number: {row_number}")
+    # Test Case 2: Multiple Entity Tables
+    print("\n📋 TEST CASE 2: Multiple Entity Tables")
+    print("-" * 40)
 
-    # Test table name generation
-    display_entity = 'Entity A'
-    if is_multiple_entity and selected_column and row_number:
-        table_name = f"BS - {display_entity} (Row {row_number})"
-    elif selected_column and row_number:
-        table_name = f"BS - {display_entity} (Row {row_number})"
-    else:
-        table_name = f"BS - {display_entity}"
+    # Create a worksheet with multiple entity tables separated by truly empty rows
+    multi_entity_data = [
+        ['Entity A Financial Data', '', '', '', ''],  # Entity A table header
+        ['示意性调整后', '', '', '', ''],  # Indicative adjusted header
+        ['', '2023-12-31', '2023-11-30', '2023-10-31', '2023-09-30'],  # Date row
+        ['Revenue', 'Amount', 'Amount', 'Amount', 'Amount'],  # Data rows
+        ['Cost', 'Amount', 'Amount', 'Amount', 'Amount'],
+        ['Profit', 'Amount', 'Amount', 'Amount', 'Amount'],
+        [None, None, None, None, None],  # Truly empty row separator
+        [None, None, None, None, None],  # Another empty row
+        ['Entity B Financial Data', '', '', '', ''],  # Entity B table header
+        ['示意性调整后', '', '', '', ''],  # Indicative adjusted header
+        ['', '2024-01-31', '2024-02-29', '2024-03-31', '2024-04-30'],  # Date row
+        ['Revenue', 'Amount', 'Amount', 'Amount', 'Amount'],  # Data rows
+        ['Cost', 'Amount', 'Amount', 'Amount', 'Amount'],
+        ['Profit', 'Amount', 'Amount', 'Amount', 'Amount'],
+        [None, None, None, None, None],  # Truly empty row separator
+        [None, None, None, None, None],  # Another empty row
+        ['Entity C Financial Data', '', '', '', ''],  # Entity C table header
+        ['示意性调整后', '', '', '', ''],  # Indicative adjusted header
+        ['', '2024-02-28', '2024-03-31', '2024-04-30', '2024-05-31'],  # Date row
+        ['Revenue', 'Amount', 'Amount', 'Amount', 'Amount'],  # Data rows
+        ['Cost', 'Amount', 'Amount', 'Amount', 'Amount'],
+        ['Profit', 'Amount', 'Amount', 'Amount', 'Amount']
+    ]
 
-    print(f"📋 Generated Table Name: {table_name}")
-    print("=" * 50)
-    print("✅ TEST COMPLETED")
+    df_multi = pd.DataFrame(multi_entity_data)
+    print(f"📊 Multiple Entity DataFrame: {len(df_multi)} rows, {len(df_multi.columns)} columns")
+
+    # Test selecting Entity B table
+    entity_keywords_multi = ['Entity A', 'Entity B', 'Entity C']
+    df_filtered_multi, is_multiple_entity_multi = determine_entity_mode_and_filter(df_multi, 'Entity B', entity_keywords_multi)
+    print(f"🎯 Entity Mode: {'MULTIPLE' if is_multiple_entity_multi else 'SINGLE'}")
+    print(f"📊 Filtered DataFrame: {len(df_filtered_multi)} rows, {len(df_filtered_multi.columns)} columns")
+
+    # Test Indicative adjusted column detection on filtered table
+    if len(df_filtered_multi) > 0:
+        extracted_date, selected_column, row_number = find_indicative_adjusted_column_and_dates(df_filtered_multi, entity_keywords_multi)
+        print(f"📅 Date Extraction: {extracted_date}")
+        print(f"📋 Selected Column: {selected_column}")
+        print(f"📍 Excel Row Number: {row_number}")
+
+        # Test table name generation
+        display_entity = 'Entity B'
+        if is_multiple_entity_multi and selected_column and row_number:
+            table_name = f"BS - {display_entity} (Row {row_number})"
+        elif selected_column and row_number:
+            table_name = f"BS - {display_entity} (Row {row_number})"
+        else:
+            table_name = f"BS - {display_entity}"
+
+        print(f"📋 Generated Table Name: {table_name}")
+
+    print("\n" + "=" * 60)
+    print("✅ MULTIPLE ENTITY TEST COMPLETED")
 
 
 if __name__ == "__main__":
