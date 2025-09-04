@@ -420,8 +420,13 @@ class PowerPointGenerator:
                 
                 while content_queue and lines_used < max_lines:
                     item = content_queue[0]
-                    item_lines = self._calculate_item_lines(item)
-                    print(f"📝 ITEM: '{item.accounting_type}' needs {item_lines} lines, used {lines_used}/{max_lines}")
+                    # Check if this is Chinese content for line calculation
+                    is_chinese_content = any('\u4e00' <= char <= '\u9fff' for desc in item.descriptions for char in desc)
+                    if is_chinese_content:
+                        item_lines = self._calculate_chinese_item_lines(item)
+                    else:
+                        item_lines = self._calculate_item_lines(item)
+                    print(f"📝 ITEM: '{item.accounting_type}' needs {item_lines} lines, used {lines_used}/{max_lines} (Chinese: {is_chinese_content})")
 
                     # If the item fits completely, add it
                     if lines_used + item_lines <= max_lines:
@@ -432,7 +437,12 @@ class PowerPointGenerator:
                         # Try to split the item to fill remaining space
                         remaining_lines = max_lines - lines_used
                         if remaining_lines >= 3:  # Need at least 3 lines for meaningful content
-                            split_item, remaining_item = self._split_item(item, remaining_lines)
+                            # Check if this is Chinese content and use appropriate splitter
+                            is_chinese_content = any('\u4e00' <= char <= '\u9fff' for desc in item.descriptions for char in desc)
+                            if is_chinese_content:
+                                split_item, remaining_item = self._split_item_chinese(item, remaining_lines)
+                            else:
+                                split_item, remaining_item = self._split_item(item, remaining_lines)
                             if split_item and split_item.descriptions:
                                 section_items.append(split_item)
                                 lines_used = max_lines  # Mark as full
@@ -585,40 +595,49 @@ class PowerPointGenerator:
 
         # Use Chinese-aware text wrapping
         if text and any('\u4e00' <= char <= '\u9fff' for char in text):
-            # For Chinese text, try to avoid breaking in the middle of Chinese phrases
-            wrapped = []
-            current_line = ""
-            words = text.split()
-
-            for word in words:
-                # Check if word contains Chinese characters
-                has_chinese_in_word = any('\u4e00' <= char <= '\u9fff' for char in word)
-
-                if has_chinese_in_word:
-                    # For Chinese words, be more careful about line breaks
-                    if len(current_line) + len(word) + 1 <= chars_per_line:
-                        current_line += (" " + word) if current_line else word
-                    else:
-                        if current_line:
-                            wrapped.append(current_line)
-                        current_line = word
-                else:
-                    # English words - standard wrapping
-                    if len(current_line) + len(word) + 1 <= chars_per_line:
-                        current_line += (" " + word) if current_line else word
-                    else:
-                        if current_line:
-                            wrapped.append(current_line)
-                        current_line = word
-
-            if current_line:
-                wrapped.append(current_line)
-
+            # Use the sophisticated Chinese text wrapping
+            wrapped = self._wrap_chinese_text(text, chars_per_line)
             return wrapped
         else:
             # Standard text wrapping for English
             wrapped = textwrap.wrap(text, width=chars_per_line)
             return wrapped
+
+    def _wrap_chinese_text(self, text: str, chars_per_line: int) -> list[str]:
+        """Wrap Chinese text with proper sentence and phrase boundaries"""
+        if not text:
+            return []
+
+        wrapped_lines = []
+        remaining_text = text
+
+        while remaining_text:
+            # Try to fit as much as possible on this line
+            if len(remaining_text) <= chars_per_line:
+                # The remaining text fits on one line
+                wrapped_lines.append(remaining_text)
+                break
+
+            # Find the best place to break the line
+            line_text = remaining_text[:chars_per_line]
+
+            # Try to find a better break point (sentence endings)
+            break_pos = chars_per_line
+            for i in range(chars_per_line - 1, max(0, chars_per_line - 20), -1):
+                if remaining_text[i] in ['。', '！', '？', '；', '，', '、', '：', ' ', '\n']:
+                    break_pos = i + 1  # Include the punctuation/space
+                    break
+
+            line_text = remaining_text[:break_pos]
+            remaining_text = remaining_text[break_pos:]
+
+            # Clean up the line (remove trailing spaces/newlines)
+            line_text = line_text.rstrip()
+
+            if line_text:  # Only add non-empty lines
+                wrapped_lines.append(line_text)
+
+        return wrapped_lines
 
     def _calculate_item_lines(self, item: FinancialItem) -> int:
         """Calculate lines needed for an item using shape-based calculations with Chinese optimization"""
@@ -654,6 +673,202 @@ class PowerPointGenerator:
                 else:
                     # English or minimal Chinese content
                     para_lines = len(textwrap.wrap(para, width=chars_per_line)) or 1
+                desc_lines += para_lines
+
+        lines += desc_lines
+        return lines
+
+    def _split_item_chinese(self, item: FinancialItem, max_lines: int) -> tuple[FinancialItem, FinancialItem | None]:
+        """Split a Chinese item to fit within max_lines, with Chinese-aware text breaking"""
+        shape = getattr(self, 'current_shape', None)
+        chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
+
+        # Account for header line using display header
+        display_header = self._get_display_header_for_item(item)
+        header = f"{display_header} (续)" if item.layer1_continued else display_header
+        header_lines = self._calculate_chinese_text_lines(header, chars_per_line)
+        available_lines = max_lines - header_lines
+
+        desc_paras = item.descriptions
+        lines_used = 0
+        split_index = 0
+
+        # Try to fit as many whole paragraphs as possible
+        for i, para in enumerate(desc_paras):
+            para_lines = self._calculate_chinese_text_lines(para, chars_per_line)
+            if lines_used + para_lines > available_lines:
+                break
+            lines_used += para_lines
+            split_index = i + 1
+
+        # If all paragraphs fit, no split needed
+        if split_index == len(desc_paras):
+            return (
+                FinancialItem(
+                    item.accounting_type,
+                    item.account_title,
+                    desc_paras,
+                    layer1_continued=item.layer1_continued,
+                    layer2_continued=item.layer2_continued,
+                    is_table=item.is_table
+                ),
+                None
+            )
+
+        # If no paragraph fits, split the first paragraph at character boundary
+        if split_index == 0:
+            para = desc_paras[0]
+            first_part, remaining_part = self._split_chinese_text_at_line(para, chars_per_line, available_lines)
+
+            split_item = FinancialItem(
+                item.accounting_type,
+                item.account_title,
+                [first_part] if first_part else [],
+                layer1_continued=item.layer1_continued,
+                layer2_continued=False,
+                is_table=item.is_table
+            )
+
+            remaining_descriptions = ([remaining_part] if remaining_part else []) + desc_paras[1:]
+            remaining_item = FinancialItem(
+                item.accounting_type,
+                item.account_title,
+                remaining_descriptions,
+                layer1_continued=True,
+                layer2_continued=True,
+                is_table=item.is_table
+            ) if remaining_descriptions else None
+
+            return split_item, remaining_item
+
+        # Otherwise, split at paragraph boundary
+        split_item = FinancialItem(
+            item.accounting_type,
+            item.account_title,
+            desc_paras[:split_index],
+            layer1_continued=item.layer1_continued,
+            layer2_continued=False,
+            is_table=item.is_table
+        )
+
+        remaining_item = FinancialItem(
+            item.accounting_type,
+            item.account_title,
+            desc_paras[split_index:],
+            layer1_continued=True,
+            layer2_continued=True,
+            is_table=item.is_table
+        ) if split_index < len(desc_paras) else None
+
+        return split_item, remaining_item
+
+    def _calculate_chinese_text_lines(self, text: str, chars_per_line: int) -> int:
+        """Calculate how many lines Chinese text will occupy"""
+        if not text:
+            return 0
+
+        # For Chinese text, use character-based line breaking
+        total_chars = len(text)
+        lines = (total_chars + chars_per_line - 1) // chars_per_line  # Ceiling division
+
+        # Adjust for Chinese character width differences
+        chinese_chars = sum(1 for char in text if '\u4e00' <= char <= '\u9fff')
+        if chinese_chars > 0:
+            chinese_ratio = chinese_chars / total_chars
+            # Chinese characters are wider, so they need more lines
+            if chinese_ratio > 0.8:  # Mostly Chinese
+                lines = int(lines * 1.25)  # 25% more lines
+            elif chinese_ratio > 0.6:  # Mixed Chinese
+                lines = int(lines * 1.15)  # 15% more lines
+
+        return max(1, lines)
+
+    def _split_chinese_text_at_line(self, text: str, chars_per_line: int, max_lines: int) -> tuple[str, str]:
+        """Split Chinese text at line boundary, preserving sentence and phrase integrity"""
+        if not text:
+            return "", ""
+
+        # Calculate maximum characters that can fit
+        max_chars = chars_per_line * max_lines
+
+        # Try to split at sentence boundaries first (Chinese sentences)
+        sentences = []
+        current_sentence = ""
+        for char in text:
+            current_sentence += char
+            if char in ['。', '！', '？', '；']:
+                sentences.append(current_sentence)
+                current_sentence = ""
+
+        if current_sentence:
+            sentences.append(current_sentence)
+
+        # Find how many sentences fit
+        first_part_chars = 0
+        split_sentence_idx = 0
+
+        for i, sentence in enumerate(sentences):
+            if first_part_chars + len(sentence) > max_chars:
+                break
+            first_part_chars += len(sentence)
+            split_sentence_idx = i + 1
+
+        if split_sentence_idx > 0:
+            first_part = ''.join(sentences[:split_sentence_idx])
+            remaining_part = ''.join(sentences[split_sentence_idx:])
+            return first_part, remaining_part
+
+        # If no sentence boundary found, split at character boundary
+        # Try to avoid breaking in the middle of Chinese phrases
+        first_part = text[:max_chars]
+
+        # Try to find a better break point (avoid breaking inside Chinese words)
+        if max_chars < len(text):
+            # Look for punctuation or spaces to break at
+            break_chars = ['，', '、', '：', '；', ' ', '\n']
+            for i in range(max_chars - 1, max(0, max_chars - 20), -1):
+                if text[i] in break_chars:
+                    first_part = text[:i + 1]
+                    break
+
+        remaining_part = text[len(first_part):]
+        return first_part, remaining_part
+
+    def _calculate_chinese_item_lines(self, item: FinancialItem) -> int:
+        """Calculate lines needed for a Chinese item using Chinese-aware calculations"""
+        # Use the current shape for calculations, or fallback to default
+        shape = getattr(self, 'current_shape', None)
+        chars_per_line = self._calculate_chars_per_line(shape) if shape else self.CHARS_PER_ROW
+
+        lines = 0
+
+        # Calculate header lines using display header
+        display_header = self._get_display_header_for_item(item)
+        header = f"{display_header} (续)" if item.layer1_continued else display_header
+        header_lines = self._calculate_chinese_text_lines(header, chars_per_line)
+        lines += header_lines
+
+        # Calculate description lines with Chinese-aware optimization
+        desc_lines = 0
+        for desc in item.descriptions:
+            # Check Chinese character ratio for better optimization
+            chinese_chars = sum(1 for char in desc if '\u4e00' <= char <= '\u9fff')
+            total_chars = len(desc)
+            chinese_ratio = chinese_chars / total_chars if total_chars > 0 else 0
+
+            # Split by paragraphs (using Chinese line breaks)
+            for para in desc.split('\n'):
+                if chinese_ratio > 0.3:  # Has significant Chinese content
+                    if chinese_ratio > 0.8:  # Almost entirely Chinese
+                        # Chinese characters are wider, so they need more lines - more conservative
+                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.75)))  # 25% more lines
+                    elif chinese_ratio > 0.6:  # Mostly Chinese
+                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.78)))  # 22% more lines
+                    else:  # Mixed Chinese/English
+                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.82)))  # 18% more lines
+                else:
+                    # English or minimal Chinese content
+                    para_lines = max(1, self._calculate_chinese_text_lines(para, chars_per_line))
                 desc_lines += para_lines
 
         lines += desc_lines
