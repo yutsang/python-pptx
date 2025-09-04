@@ -539,7 +539,7 @@ class PowerPointGenerator:
             # Default - assume mixed content, use conservative estimate
             avg_char_px = 7.0  # Conservative estimate for mixed content
 
-        chars_per_line = max(50, int(effective_width // avg_char_px))  # Minimum 50 chars for Chinese optimization - more conservative
+        chars_per_line = max(20, int(effective_width // avg_char_px))  # Minimum 20 chars for Chinese optimization - extremely aggressive
         return chars_per_line
 
     def _calculate_max_rows_for_summary(self, shape):
@@ -775,11 +775,15 @@ class PowerPointGenerator:
         chinese_chars = sum(1 for char in text if '\u4e00' <= char <= '\u9fff')
         if chinese_chars > 0:
             chinese_ratio = chinese_chars / total_chars
-            # Chinese characters are wider, so they need more lines
+            # Chinese characters are wider, so they need more lines - extremely aggressive
             if chinese_ratio > 0.8:  # Mostly Chinese
-                lines = int(lines * 1.25)  # 25% more lines
+                lines = int(lines * 2.5)  # 150% more lines (2.5x)
             elif chinese_ratio > 0.6:  # Mixed Chinese
-                lines = int(lines * 1.15)  # 15% more lines
+                lines = int(lines * 2.2)  # 120% more lines
+            elif chinese_ratio > 0.3:  # Some Chinese
+                lines = int(lines * 1.8)  # 80% more lines
+            else:  # Minimal Chinese
+                lines = int(lines * 1.5)  # 50% more lines
 
         return max(1, lines)
 
@@ -860,12 +864,12 @@ class PowerPointGenerator:
             for para in desc.split('\n'):
                 if chinese_ratio > 0.3:  # Has significant Chinese content
                     if chinese_ratio > 0.8:  # Almost entirely Chinese
-                        # Chinese characters are wider, so they need more lines - more conservative
-                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.75)))  # 25% more lines
+                        # Chinese characters are wider, so they need more lines - extremely aggressive
+                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.3)))  # 70% more lines
                     elif chinese_ratio > 0.6:  # Mostly Chinese
-                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.78)))  # 22% more lines
+                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.35)))  # 65% more lines
                     else:  # Mixed Chinese/English
-                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.82)))  # 18% more lines
+                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.4)))  # 60% more lines
                 else:
                     # English or minimal Chinese content
                     para_lines = max(1, self._calculate_chinese_text_lines(para, chars_per_line))
@@ -1259,6 +1263,9 @@ class PowerPointGenerator:
             else:
                 summary_content = self._generate_ai_summary_content(md_content, distribution)
 
+            # Generate per-page summaries based on each page's content
+            page_summaries = self._generate_per_page_summaries(distribution, md_content)
+
             # Ensure summary_content is valid
             if not summary_content or summary_content is None:
                 summary_content = "Comprehensive financial analysis with detailed commentary on key financial metrics and performance indicators."
@@ -1300,8 +1307,11 @@ class PowerPointGenerator:
                     summary_shape = next((s for s in slide.shapes if hasattr(s, 'text_frame') and s.name != "textMainBullets" and "Title" not in s.name), None)
                 
                 if summary_shape:
-                    chunk_content = summary_chunks[slide_idx] if slide_idx < len(summary_chunks) else ""
-                    self._populate_summary_section_safe(summary_shape, chunk_content)
+                    # Use per-page summary if available, otherwise use chunked summary
+                    page_content = page_summaries.get(slide_idx, "")
+                    if not page_content:
+                        page_content = summary_chunks[slide_idx] if slide_idx < len(summary_chunks) else ""
+                    self._populate_summary_section_safe(summary_shape, page_content)
                     logging.info(f"✅ Populated summary on slide {slide_idx + 1} using shape: {summary_shape.name}")
                 else:
                     logging.warning(f"⚠️ No summary shape found on slide {slide_idx + 1}")
@@ -1605,6 +1615,120 @@ class PowerPointGenerator:
             # Ensure we always return a valid string
             fallback_summary = "Comprehensive financial analysis with detailed commentary on key financial metrics and performance indicators."
             return str(fallback_summary) if fallback_summary else "Financial analysis summary."
+
+    def _generate_per_page_summaries(self, distribution, md_content: str) -> dict[int, str]:
+        """Generate AI-powered summaries for each page based on that page's content"""
+        page_summaries = {}
+
+        # Group items by slide
+        slides_content = {}
+        for slide_idx, section, section_items in distribution:
+            if slide_idx not in slides_content:
+                slides_content[slide_idx] = []
+            slides_content[slide_idx].extend(section_items)
+
+        # Generate summary for each slide
+        for slide_idx, items in slides_content.items():
+            if not items:
+                continue
+
+            # Extract content from items on this slide
+            page_content_parts = []
+            for item in items:
+                if hasattr(item, 'descriptions') and item.descriptions:
+                    # Translate section headers to Chinese if in Chinese mode
+                    header = item.accounting_type
+                    if hasattr(self, 'language') and self.language == 'chinese':
+                        header = self._translate_section_header(header)
+
+                    page_content_parts.append(f"{header}: {' '.join(item.descriptions)}")
+
+            page_content = ' '.join(page_content_parts)
+
+            if page_content.strip():
+                # Generate a concise summary for this page
+                if hasattr(self, 'language') and self.language == 'chinese':
+                    summary = self._generate_chinese_page_summary(page_content, slide_idx + 1)
+                else:
+                    summary = self._generate_english_page_summary(page_content, slide_idx + 1)
+
+                page_summaries[slide_idx] = summary
+
+        return page_summaries
+
+    def _translate_section_header(self, header: str) -> str:
+        """Translate common section headers to Chinese"""
+        translation_map = {
+            'Current Assets': '流动资产',
+            'Non-current Assets': '非流动资产',
+            'Current Liabilities': '流动负债',
+            'Non-current Liabilities': '非流动负债',
+            'Equity': '股东权益',
+            'Assets': '资产',
+            'Liabilities': '负债',
+            'Cash and Cash Equivalents': '货币资金',
+            'Accounts Receivable': '应收账款',
+            'Inventory': '存货',
+            'Property, Plant and Equipment': '固定资产',
+            'Intangible Assets': '无形资产',
+            'Accounts Payable': '应付账款',
+            'Loans Payable': '借款',
+            'Revenue': '收入',
+            'Cost of Sales': '销售成本',
+            'Operating Expenses': '营业费用',
+            'Net Income': '净利润'
+        }
+
+        # Return translated header or original if no translation found
+        return translation_map.get(header.strip(), header.strip())
+
+    def _generate_chinese_page_summary(self, page_content: str, page_number: int) -> str:
+        """Generate a concise Chinese summary for a page"""
+        try:
+            # Extract key points from the page content
+            sentences = page_content.split('。')
+            key_points = []
+
+            for sentence in sentences[:3]:  # Take first 3 sentences
+                if sentence.strip():
+                    # Keep it concise - first 50 characters
+                    summary_point = sentence.strip()[:50]
+                    if summary_point:
+                        key_points.append(summary_point)
+
+            if key_points:
+                summary = f"第{page_number}页：{'。'.join(key_points)}。"
+                return summary
+            else:
+                return f"第{page_number}页财务分析摘要。"
+
+        except Exception as e:
+            print(f"Error generating Chinese page summary: {e}")
+            return f"第{page_number}页财务分析摘要。"
+
+    def _generate_english_page_summary(self, page_content: str, page_number: int) -> str:
+        """Generate a concise English summary for a page"""
+        try:
+            # Extract key points from the page content
+            sentences = page_content.split('.')
+            key_points = []
+
+            for sentence in sentences[:2]:  # Take first 2 sentences
+                if sentence.strip():
+                    # Keep it concise - first 60 characters
+                    summary_point = sentence.strip()[:60]
+                    if summary_point:
+                        key_points.append(summary_point)
+
+            if key_points:
+                summary = f"Page {page_number}: {'. '.join(key_points)}."
+                return summary
+            else:
+                return f"Page {page_number} financial analysis summary."
+
+        except Exception as e:
+            print(f"Error generating English page summary: {e}")
+            return f"Page {page_number} financial analysis summary."
 
     def _distribute_summary_across_slides(self, summary_content: str, total_slides: int) -> List[str]:
         """Distribute summary content across multiple slides with different content on each"""
