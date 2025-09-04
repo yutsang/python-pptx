@@ -446,6 +446,9 @@ def main():
 
         st.info(f"📊 **Selected Mode:** {entity_mode} - {'Process single entity table' if entity_mode_internal == 'single' else 'Automatically detect and filter multiple entity tables'}")
 
+        # Debug info to confirm entity mode is set
+        st.write(f"**DEBUG:** Entity mode set to: `{entity_mode_internal}`")
+
         # Show entity matching status if we have processed data
         if 'ai_data' in st.session_state and st.session_state['ai_data']:
             ai_data = st.session_state['ai_data']
@@ -660,10 +663,10 @@ def main():
         
         # Use the pre-generated entity keywords
         if 'entity_keywords' not in locals() or not entity_keywords:
-            # Fallback: generate entity keywords from entity_helpers
-            entity_mode = st.session_state.get('entity_mode', 'auto')
+            # Get the manual entity mode selection
+            entity_mode = st.session_state.get('entity_mode', 'single')
 
-            # Auto mode: Generate comprehensive entity keywords for intelligent detection
+            # Generate entity keywords based on the selected entity
             entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
 
             # Create entity keywords based on the selected entity
@@ -711,7 +714,7 @@ def main():
                                 entity_name=selected_entity,
                                 entity_suffixes=entity_suffixes,
                                 entity_keywords=entity_keywords,
-                                entity_mode='auto',  # Always use auto mode for intelligent detection
+                                entity_mode=entity_mode,  # Use the manual entity mode selection
                                 debug=True  # Set to True for debugging
                             )
                             result_container['result'] = result
@@ -808,7 +811,7 @@ def main():
                                 entity_name=selected_entity,
                                 entity_suffixes=entity_suffixes,
                                 entity_keywords=entity_keywords,
-                                entity_mode='auto',  # Always use auto mode for intelligent detection
+                                entity_mode=entity_mode,  # Use the manual entity mode selection
                                 debug=True  # Set to True for debugging
                             )
                             result_container['result'] = result
@@ -900,7 +903,7 @@ def main():
                                 entity_name=selected_entity,
                                 entity_suffixes=entity_suffixes,
                                 entity_keywords=entity_keywords,
-                                entity_mode='auto',  # Always use auto mode for intelligent detection
+                                entity_mode=entity_mode,  # Use the manual entity mode selection
                                 debug=False
                             )
                             result_container['result'] = result

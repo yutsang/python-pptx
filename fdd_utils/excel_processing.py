@@ -535,11 +535,12 @@ def find_indicative_adjusted_column_and_dates(df, entity_keywords):
         print(f"   ❌ No valid dates found in the date row")
         return None, None, None
 
-def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=None, actual_entity=None, debug=False):
+def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=None, actual_entity=None, debug=False, entity_mode='single'):
     """
     Parse accounting table with proper header detection and figure column identification
     Returns structured table data with metadata
     """
+    print(f"🔧 parse_accounting_table called with entity_mode: {entity_mode}")
     import re  # Import re inside function to avoid scope issues
     try:
         
@@ -557,12 +558,8 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             if 'entity_keywords' in ai_data:
                 entity_keywords = ai_data['entity_keywords']
 
-        # Get manual mode selection from session state
-        manual_mode = 'single'  # Default fallback
-        if hasattr(st, 'session_state') and 'entity_mode' in st.session_state:
-            manual_mode = st.session_state['entity_mode']
-
-        df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mode)
+        # Use the entity_mode parameter passed from the calling function
+        df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df, entity_name, entity_keywords, entity_mode)
 
         # NEW LOGIC: Step 2 - Find Indicative adjusted column and dates
         extracted_date, selected_column, row_number = find_indicative_adjusted_column_and_dates(df_filtered, entity_keywords)
@@ -929,6 +926,46 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         return None
 
 
+def test_entity_mode_flow():
+    """Test function to verify entity mode parameter flow."""
+    import pandas as pd
+
+    print("🧪 TESTING ENTITY MODE PARAMETER FLOW")
+    print("=" * 50)
+
+    # Test the entity mode parameter flow
+    test_data = [
+        ['Test Company Data', '', '', '', ''],
+        ['示意性调整后', '', '', '', ''],
+        ['', '2023-12-31', '2023-11-30', '2023-10-31', '2023-09-30'],
+        ['Revenue', '100', '200', '300', '400'],
+        ['Cost', '50', '60', '70', '80']
+    ]
+
+    df = pd.DataFrame(test_data)
+    print(f"📊 Test DataFrame: {len(df)} rows, {len(df.columns)} columns")
+
+    # Test with manual mode = 'single'
+    print("\n📋 TEST: Manual mode = 'single'")
+    result_single, is_multi_single = determine_entity_mode_and_filter(df, 'Test Company', ['Test Company'], 'single')
+    print(f"🎯 Result: {'MULTIPLE' if is_multi_single else 'SINGLE'} (expected: SINGLE)")
+
+    # Test with manual mode = 'multiple' but no multiple entities
+    print("\n📋 TEST: Manual mode = 'multiple' with single entity")
+    result_multi, is_multi_multi = determine_entity_mode_and_filter(df, 'Test Company', ['Test Company'], 'multiple')
+    print(f"🎯 Result: {'MULTIPLE' if is_multi_multi else 'SINGLE'} (expected: SINGLE with fallback)")
+
+    # Test parse_accounting_table with entity_mode parameter
+    print("\n📋 TEST: parse_accounting_table with entity_mode='single'")
+    try:
+        parsed = parse_accounting_table(df, 'BS', 'Test Company', 'Test Sheet', entity_mode='single')
+        print(f"✅ parse_accounting_table succeeded with entity_mode='single'")
+    except Exception as e:
+        print(f"❌ parse_accounting_table failed: {e}")
+
+    print("\n" + "=" * 50)
+    print("✅ ENTITY MODE FLOW TEST COMPLETED")
+
 def test_new_table_logic():
     """Test function for the new table logic implementation."""
     import pandas as pd
@@ -1178,6 +1215,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
 
 
 def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, entity_keywords=None, entity_mode='multiple', debug=False):
+    print(f"🔧 get_worksheet_sections_by_keys called with entity_mode: {entity_mode}")
     """
     Get worksheet sections organized by financial keys with enhanced entity filtering and latest date detection.
     For single entity mode, entity filtering is skipped as there's only one entity table.
@@ -1402,7 +1440,7 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                         break
                             
                             # Use new accounting table parser with detected latest date column
-                            parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found)
+                            parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found, debug, entity_mode)
                             
                             print(f"   🔍 parse_accounting_table returned: {parsed_table is not None}")
                             if parsed_table:
