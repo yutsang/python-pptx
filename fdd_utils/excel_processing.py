@@ -221,6 +221,186 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
     return latest_column
 
 
+def determine_entity_mode_and_filter(df, entity_name, entity_keywords):
+    """Determine if we're in single entity or multiple entity mode and filter accordingly."""
+    print(f"   🔍 ENTITY ANALYSIS: entity_name='{entity_name}', entity_keywords={entity_keywords}")
+
+    # Check if this looks like a multiple entity table
+    # Look for entity-related content in the first few rows
+    entity_indicators = 0
+    total_rows_checked = min(10, len(df))
+
+    for row_idx in range(total_rows_checked):
+        row_text = ' '.join(str(val).lower() for val in df.iloc[row_idx] if pd.notna(val))
+        for keyword in entity_keywords:
+            if keyword.lower() in row_text:
+                entity_indicators += 1
+                print(f"   📍 Found entity indicator '{keyword}' in row {row_idx}")
+                break
+
+    # If we found multiple entity indicators, this is likely a multiple entity table
+    is_multiple_entity = entity_indicators > 1
+    print(f"   🎯 ENTITY MODE: {'MULTIPLE' if is_multiple_entity else 'SINGLE'} (found {entity_indicators} entity indicators)")
+
+    if is_multiple_entity:
+        # Filter the table to only include rows that match the entity keywords
+        filtered_rows = []
+        for row_idx in range(len(df)):
+            row_text = ' '.join(str(val).lower() for val in df.iloc[row_idx] if pd.notna(val))
+            if any(keyword.lower() in row_text for keyword in entity_keywords):
+                filtered_rows.append(row_idx)
+
+        if filtered_rows:
+            df_filtered = df.iloc[filtered_rows].copy()
+            print(f"   🔄 FILTERED TABLE: {len(df)} → {len(df_filtered)} rows (entity filtering applied)")
+            return df_filtered, is_multiple_entity
+        else:
+            print(f"   ⚠️  No rows matched entity keywords, using original table")
+            return df, is_multiple_entity
+    else:
+        return df, is_multiple_entity
+
+def find_indicative_adjusted_column_and_dates(df, entity_keywords):
+    """Find 'Indicative adjusted' column and extract dates according to new logic."""
+
+    def parse_date(date_str):
+        """Parse date string in various formats including xMxx."""
+        if not date_str or pd.isna(date_str):
+            return None
+
+        date_str = str(date_str).strip()
+
+        # Handle xMxx format (e.g., 9M22, 12M23) - END OF MONTH
+        xmxx_match = re.match(r'^(\d+)M(\d{2})$', date_str)
+        if xmxx_match:
+            month = int(xmxx_match.group(1))
+            year = 2000 + int(xmxx_match.group(2))  # Assume 20xx for 2-digit years
+            # Use end of month, not beginning (last day of the month)
+            if month == 12:
+                return datetime(year, 12, 31)  # December 31st
+            elif month in [1, 3, 5, 7, 8, 10]:
+                return datetime(year, month, 31)  # 31-day months
+            elif month in [4, 6, 9, 11]:
+                return datetime(year, month, 30)  # 30-day months
+            elif month == 2:
+                # February - handle leap years
+                if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+                    return datetime(year, 2, 29)  # Leap year
+                else:
+                    return datetime(year, 2, 28)  # Non-leap year
+
+        # Handle standard date formats
+        date_formats = [
+            '%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y',
+            '%Y-%m-%d', '%m/%d/%Y', '%m-%d-%Y',
+            '%d/%b/%Y', '%d-%b-%Y', '%b/%d/%Y', '%b-%d-%Y',
+            '%d/%B/%Y', '%d-%B-%Y', '%B/%d/%Y', '%B-%d-%Y',
+            # Chinese date formats
+            '%Y年%m月%d日', '%Y年%m月', '%m月%d日', '%Y/%m/%d',
+            '%Y.%m.%d', '%Y年%m月%d日', '%Y年%m月%d号',
+            # Additional flexible formats
+            '%Y%m%d', '%d%m%Y', '%m%d%Y'
+        ]
+
+        for fmt in date_formats:
+            try:
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+
+        return None
+
+    print(f"   🔍 SEARCHING for 'Indicative adjusted' (English/Chinese) with new logic...")
+
+    # Step 1: Find "Indicative adjusted" (English/Chinese) positions
+    indicative_positions = []
+
+    # Search in first 10 rows for "Indicative adjusted" (English and Chinese)
+    for row_idx in range(min(10, len(df))):
+        for col_idx, col in enumerate(df.columns):
+            val = df.iloc[row_idx, col_idx]
+            val_str = str(val).lower()
+            # Check for English "indicative adjusted" or Chinese "示意性調整後" / "示意性调整后"
+            if pd.notna(val) and (
+                ('indicative' in val_str and 'adjusted' in val_str) or
+                '示意性調整後' in val_str or
+                '示意性调整后' in val_str
+            ):
+                indicative_positions.append((row_idx, col_idx))
+                print(f"   📋 FOUND 'Indicative adjusted' at Row {row_idx}, Col {col_idx} ({col}): '{df.iloc[row_idx, col_idx]}'")
+                break  # Found one, move to next row
+
+    if not indicative_positions:
+        print(f"   ❌ No 'Indicative adjusted' (English/Chinese) found")
+        return None, None, None
+
+    print(f"   📊 Found {len(indicative_positions)} instances of 'Indicative adjusted'")
+
+    # Step 2: Process the first "Indicative adjusted" position (usually the most relevant)
+    indic_row, indic_col = indicative_positions[0]
+    col_name = df.columns[indic_col]
+
+    # Step 3: Find merged range by looking right until we hit a different value or end
+    merge_start = indic_col
+    merge_end = indic_col
+
+    # Check if this is a merged cell by looking right
+    header_value = str(df.iloc[indic_row, indic_col]).strip()
+    for check_col in range(indic_col + 1, len(df.columns)):
+        check_value = str(df.iloc[indic_row, check_col]).strip()
+        if pd.isna(df.iloc[indic_row, check_col]) or check_value == '' or check_value == header_value:
+            merge_end = check_col
+        else:
+            break
+
+    print(f"   📍 MERGED RANGE: columns {merge_start}-{merge_end} ({col_name} to {df.columns[merge_end]})")
+
+    # Step 4: Look one row below for dates
+    date_row = indic_row + 1
+    if date_row >= len(df):
+        print(f"   ❌ No date row found below 'Indicative adjusted'")
+        return None, None, None
+
+    dates_found = []
+    latest_date = None
+    latest_col = None
+    latest_row_number = None
+
+    # Look for dates in the merged range
+    for col_idx in range(merge_start, merge_end + 1):
+        val = df.iloc[date_row, col_idx]
+
+        if isinstance(val, (pd.Timestamp, datetime)):
+            date_val = val if isinstance(val, datetime) else val.to_pydatetime()
+            if latest_date is None or date_val > latest_date:
+                latest_date = date_val
+                latest_col = df.columns[col_idx]
+                # Extract row number from column name (e.g., "Unnamed: 23" -> 23)
+                if latest_col.startswith('Unnamed: '):
+                    try:
+                        latest_row_number = int(latest_col.split(': ')[1])
+                    except (ValueError, IndexError):
+                        latest_row_number = None
+        elif pd.notna(val):
+            # Use the local parse_date function defined above
+            parsed_date = parse_date(str(val))
+            if parsed_date and (latest_date is None or parsed_date > latest_date):
+                latest_date = parsed_date
+                latest_col = df.columns[col_idx]
+                # Extract row number from column name
+                if latest_col.startswith('Unnamed: '):
+                    try:
+                        latest_row_number = int(latest_col.split(': ')[1])
+                    except (ValueError, IndexError):
+                        latest_row_number = None
+
+    if latest_date:
+        print(f"   🎯 LATEST DATE FOUND: {latest_date.strftime('%Y-%m-%d')} in column '{latest_col}' (Excel row: {latest_row_number})")
+        return latest_date.strftime('%Y-%m-%d'), latest_col, latest_row_number
+    else:
+        print(f"   ❌ No valid dates found in the date row")
+        return None, None, None
+
 def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=None, actual_entity=None, debug=False):
     """
     Parse accounting table with proper header detection and figure column identification
@@ -236,8 +416,20 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         if debug:  # Only show if explicitly debugging
             print(f"DEBUG: DataFrame shape: {df.shape}")
         
+        # NEW LOGIC: Step 1 - Determine entity mode and filter table if needed
+        entity_keywords = [entity_name]  # Start with base entity name
+        if hasattr(st, 'session_state') and hasattr(st.session_state, 'get') and 'ai_data' in st.session_state:
+            ai_data = st.session_state['ai_data']
+            if 'entity_keywords' in ai_data:
+                entity_keywords = ai_data['entity_keywords']
+
+        df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df, entity_name, entity_keywords)
+
+        # NEW LOGIC: Step 2 - Find Indicative adjusted column and dates
+        extracted_date, selected_column, row_number = find_indicative_adjusted_column_and_dates(df_filtered, entity_keywords)
+
         # Keep the original dataframe structure - don't filter columns
-        df_clean = df.copy()
+        df_clean = df_filtered.copy()
         
         # Debug: Print the original and cleaned dataframe info
         # print(f"   🔍 DEBUG: Original df shape: {df.shape}")
@@ -440,36 +632,37 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         #         value_cell = str(df_str.iloc[i, value_col_idx]).strip()
         #         print(f"   🔍 DEBUG: Final Row {i}: desc='{desc_cell}', value='{value_cell}'")
         
-        # Extract date from the detected latest date column
-        extracted_date = None
-        
-        if latest_date_col and latest_date_col in df_str.columns and value_col_idx is not None:
-            # Look for date in the detected latest date column
-            from datetime import datetime
-            col_idx = df_str.columns.get_loc(latest_date_col)
-            for i in range(min(5, len(df_str))):
-                val = df_str.iloc[i, col_idx]
-                print(f"   🔍 Checking row {i}, value: {repr(val)} (type: {type(val)})")
-                
-                if isinstance(val, datetime):
-                    extracted_date = val.strftime('%Y-%m-%d')
-                    print(f"   📅 Extracted date from detected column {latest_date_col}: {extracted_date}")
-                    break
-                elif isinstance(val, pd.Timestamp):
-                    date_val = val.to_pydatetime()
-                    extracted_date = date_val.strftime('%Y-%m-%d')
-                    print(f"   📅 Extracted timestamp from detected column {latest_date_col}: {extracted_date}")
-                    break
-                elif pd.notna(val):
-                    # Try to convert to datetime if it's a different type
-                    try:
-                        date_val = pd.to_datetime(val)
-                        extracted_date = date_val.strftime('%Y-%m-%d')
-                        print(f"   📅 Converted and extracted date from detected column {latest_date_col}: {extracted_date}")
+        # Use the extracted date from new logic if available, otherwise fallback to old logic
+        if extracted_date is None:
+            extracted_date = None
+
+            if latest_date_col and latest_date_col in df_str.columns and value_col_idx is not None:
+                # Look for date in the detected latest date column
+                from datetime import datetime
+                col_idx = df_str.columns.get_loc(latest_date_col)
+                for i in range(min(5, len(df_str))):
+                    val = df_str.iloc[i, col_idx]
+                    print(f"   🔍 Checking row {i}, value: {repr(val)} (type: {type(val)})")
+
+                    if isinstance(val, datetime):
+                        extracted_date = val.strftime('%Y-%m-%d')
+                        print(f"   📅 Extracted date from detected column {latest_date_col}: {extracted_date}")
                         break
-                    except:
-                        print(f"   ⚠️  Could not convert {repr(val)} to date")
-                        continue
+                    elif isinstance(val, pd.Timestamp):
+                        date_val = val.to_pydatetime()
+                        extracted_date = date_val.strftime('%Y-%m-%d')
+                        print(f"   📅 Extracted timestamp from detected column {latest_date_col}: {extracted_date}")
+                        break
+                    elif pd.notna(val):
+                        # Try to convert to datetime if it's a different type
+                        try:
+                            date_val = pd.to_datetime(val)
+                            extracted_date = date_val.strftime('%Y-%m-%d')
+                            print(f"   📅 Converted and extracted date from detected column {latest_date_col}: {extracted_date}")
+                            break
+                        except:
+                            print(f"   ⚠️  Could not convert {repr(val)} to date")
+                            continue
         
         # Fallback: Extract date using pattern matching if not found in detected column
         if not extracted_date:
@@ -515,14 +708,29 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         # Extract table metadata (first few rows before data)
         # Use actual entity found in data if available, otherwise use entity_name
         display_entity = actual_entity if actual_entity else entity_name
+
+        # NEW LOGIC: Generate dynamic table name based on entity mode and selected column
+        if is_multiple_entity and selected_column and row_number:
+            # Multiple entity mode with Indicative adjusted column found
+            table_name = f"{key} - {display_entity} (Row {row_number})"
+        elif selected_column and row_number:
+            # Single entity mode with Indicative adjusted column found
+            table_name = f"{key} - {display_entity} (Row {row_number})"
+        else:
+            # Fallback to original logic
+            table_name = f"{key} - {display_entity}"
+
         table_metadata = {
-            'table_name': f"{key} - {display_entity}",
+            'table_name': table_name,
             'sheet_name': sheet_name,
             'date': extracted_date,
             'currency_info': currency_info,
             'multiplier': multiplier,
             'value_column': value_col_name,
-            'data_start_row': data_start_row
+            'data_start_row': data_start_row,
+            'selected_column': selected_column,
+            'excel_row_number': row_number,
+            'entity_mode': 'multiple' if is_multiple_entity else 'single'
         }
         
         # Extract data rows
@@ -580,6 +788,57 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
     except Exception as e:
         print(f"Error parsing accounting table: {e}")
         return None
+
+
+def test_new_table_logic():
+    """Test function for the new table logic implementation."""
+    import pandas as pd
+    from datetime import datetime
+
+    print("🧪 TESTING NEW TABLE LOGIC IMPLEMENTATION")
+    print("=" * 50)
+
+    # Create sample DataFrame that mimics the expected Excel structure
+    # Row 0: Header row with "示意性调整后" in merged cell
+    # Row 1: Date row with different dates in each column
+    sample_data = {
+        'Description': ['示意性调整后', 'Revenue', 'Cost', 'Profit'],
+        'Unnamed: 20': ['', '2023-12-31', 'Amount', 'Amount'],
+        'Unnamed: 21': ['', '2023-11-30', 'Amount', 'Amount'],
+        'Unnamed: 22': ['', '2023-10-31', 'Amount', 'Amount'],
+        'Unnamed: 23': ['', '2023-09-30', 'Amount', 'Amount']
+    }
+
+    df = pd.DataFrame(sample_data)
+    print(f"📊 Sample DataFrame created with {len(df)} rows, {len(df.columns)} columns")
+
+    # Test entity detection
+    entity_keywords = ['Entity A', 'Entity B']
+    df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df, 'Entity A', entity_keywords)
+    print(f"🎯 Entity Mode Detection: {'MULTIPLE' if is_multiple_entity else 'SINGLE'}")
+
+    # Test Indicative adjusted column detection
+    extracted_date, selected_column, row_number = find_indicative_adjusted_column_and_dates(df_filtered, entity_keywords)
+    print(f"📅 Date Extraction: {extracted_date}")
+    print(f"📋 Selected Column: {selected_column}")
+    print(f"📍 Excel Row Number: {row_number}")
+
+    # Test table name generation
+    display_entity = 'Entity A'
+    if is_multiple_entity and selected_column and row_number:
+        table_name = f"BS - {display_entity} (Row {row_number})"
+    elif selected_column and row_number:
+        table_name = f"BS - {display_entity} (Row {row_number})"
+    else:
+        table_name = f"BS - {display_entity}"
+
+    print(f"📋 Generated Table Name: {table_name}")
+    print("=" * 50)
+    print("✅ TEST COMPLETED")
+
+
+if __name__ == "__main__":
+    test_new_table_logic()
 
 
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):

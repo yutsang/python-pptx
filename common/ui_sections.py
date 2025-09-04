@@ -76,15 +76,22 @@ def render_balance_sheet_sections(
                     multiplier = metadata.get('multiplier', 1)
                     st.markdown(f"**Multiplier:** {multiplier}x")
                 with col5:
-                    # Show currency and multiplier info instead of "Value Column"
-                    currency_info = metadata.get('currency', 'CNY')
-                    multiplier_info = metadata.get('multiplier', 1)
-                    if multiplier_info > 1:
-                        st.markdown(f"**Processed:** {currency_info} × {multiplier_info}")
+                    # Show Excel row number from new logic
+                    excel_row = metadata.get('excel_row_number')
+                    if excel_row:
+                        st.markdown(f"**Excel Row:** {excel_row}")
                     else:
-                        st.markdown(f"**Processed:** {currency_info}")
+                        # Fallback to currency info
+                        currency_info = metadata.get('currency', 'CNY')
+                        multiplier_info = metadata.get('multiplier', 1)
+                        if multiplier_info > 1:
+                            st.markdown(f"**Processed:** {currency_info} × {multiplier_info}")
+                        else:
+                            st.markdown(f"**Processed:** {currency_info}")
                 with col6:
-                    st.markdown("**Entity:** ✅" if first_section.get('entity_match', False) else "**Entity:** ⚠️")
+                    entity_mode = metadata.get('entity_mode', 'unknown')
+                    entity_status = "✅" if first_section.get('entity_match', False) else "⚠️"
+                    st.markdown(f"**Entity:** {entity_status} ({entity_mode})")
 
                 if data_rows:
                     structured_data = []
@@ -299,15 +306,22 @@ def render_income_statement_sections(
                     multiplier = metadata.get('multiplier', 1)
                     st.markdown(f"**Multiplier:** {multiplier}x")
                 with col5:
-                    # Show currency and multiplier info instead of "Value Column"
-                    currency_info = metadata.get('currency', 'CNY')
-                    multiplier_info = metadata.get('multiplier', 1)
-                    if multiplier_info > 1:
-                        st.markdown(f"**Processed:** {currency_info} × {multiplier_info}")
+                    # Show Excel row number from new logic
+                    excel_row = metadata.get('excel_row_number')
+                    if excel_row:
+                        st.markdown(f"**Excel Row:** {excel_row}")
                     else:
-                        st.markdown(f"**Processed:** {currency_info}")
+                        # Fallback to currency info
+                        currency_info = metadata.get('currency', 'CNY')
+                        multiplier_info = metadata.get('multiplier', 1)
+                        if multiplier_info > 1:
+                            st.markdown(f"**Processed:** {currency_info} × {multiplier_info}")
+                        else:
+                            st.markdown(f"**Processed:** {currency_info}")
                 with col6:
-                    st.markdown("**Entity:** ✅" if first_section.get('entity_match', False) else "**Entity:** ⚠️")
+                    entity_mode = metadata.get('entity_mode', 'unknown')
+                    entity_status = "✅" if first_section.get('entity_match', False) else "⚠️"
+                    st.markdown(f"**Entity:** {entity_status} ({entity_mode})")
 
                 if data_rows:
                     structured_data = []
