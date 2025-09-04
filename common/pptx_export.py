@@ -170,7 +170,7 @@ class PowerPointGenerator:
         self.prs = Presentation(template_path)
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
-        self.ROWS_PER_SECTION = 30  # Use the same value for all sections
+        self.ROWS_PER_SECTION = 40  # Maximum practical value for maximum practical space utilization
         self.language = language  # Store language for Chinese mode detection
         
         # Find a slide with textMainBullets shape
@@ -221,24 +221,24 @@ class PowerPointGenerator:
         effective_height_pt = shape_height_pt * 0.999  # Maximum height utilization
 
         # Calculate line height based on font size and line spacing
-        # Use appropriate sizing for readability
+        # Optimized for maximum space utilization while maintaining readability
         if hasattr(self, 'language') and self.language == 'chinese':
-            font_size_pt = 9  # Standard 9pt for Chinese readability
-            line_spacing = 1.15  # Better spacing for Chinese text readability
+            font_size_pt = 8  # Smaller font for Chinese to maximize content density
+            line_spacing = 1.0  # Tighter spacing for maximum utilization
         else:
-            font_size_pt = 9  # Standard 9pt for English
-            line_spacing = 1.2  # Standard spacing for English readability
+            font_size_pt = 8.5  # Slightly smaller for English too
+            line_spacing = 1.05  # Tighter spacing for English
         line_height_pt = font_size_pt * line_spacing
 
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
 
-        # Use realistic line count based on actual shape dimensions
-        # For Chinese text, use slightly more aggressive line counting
+        # Optimize for maximum practical utilization
+        # Balance high content density with minimal overflow
         if hasattr(self, 'language') and self.language == 'chinese':
-            max_rows = max(30, max_rows)  # More realistic minimum for Chinese
+            max_rows = max(42, max_rows)  # Maximum practical utilization for Chinese
         else:
-            max_rows = max(25, max_rows)  # Standard minimum for English
+            max_rows = max(38, max_rows)  # Maximum practical utilization for English
 
         return max_rows
 
@@ -416,11 +416,11 @@ class PowerPointGenerator:
                 shape = self._get_target_shape_for_section(slide_idx, section)
                 if shape:
                     max_lines = self._calculate_max_rows_for_shape(shape)
-                    # Use appropriate minimums for Chinese content - balanced approach
+                    # Optimize for maximum practical utilization
                     if slide_idx == 0:  # First slide
-                        max_lines = max(max_lines, 25)  # Reasonable content on first slide
+                        max_lines = max(max_lines, 40)  # Maximum practical utilization on first slide
                     elif section in ['b', 'c']:  # _L and _R sections
-                        max_lines = max(max_lines, 18)  # Allow reasonable content on side sections
+                        max_lines = max(max_lines, 32)  # Maximum practical utilization on side sections
                     print(f"📐 SECTION {section}: Found shape '{shape.name}', max_lines = {max_lines}")
                 else:
                     max_lines = self.ROWS_PER_SECTION  # Fallback
@@ -795,6 +795,47 @@ class PowerPointGenerator:
 
         return max(1, lines)
 
+    def _split_chinese_paragraph(self, paragraph: str, chars_per_line: int) -> list[str]:
+        """Split long Chinese paragraphs at sentence boundaries for better space utilization"""
+        if len(paragraph) <= 100:
+            return [paragraph]
+
+        # Chinese sentence endings
+        sentence_endings = ['。', '！', '？', '；']
+        sub_paragraphs = []
+        current_part = ""
+
+        # Split at sentence boundaries
+        for char in paragraph:
+            current_part += char
+            if char in sentence_endings and len(current_part) > 50:  # Minimum sentence length
+                sub_paragraphs.append(current_part.strip())
+                current_part = ""
+
+        # Add remaining part if any
+        if current_part.strip():
+            sub_paragraphs.append(current_part.strip())
+
+        # If no sentence boundaries found, split at reasonable intervals
+        if len(sub_paragraphs) == 1 and len(paragraph) > 150:
+            # Split long paragraph without sentence boundaries
+            sub_paragraphs = []
+            words = paragraph.split()
+            current_part = ""
+
+            for word in words:
+                if len(current_part + word) > 80:  # Approximate sentence length
+                    if current_part:
+                        sub_paragraphs.append(current_part.strip())
+                    current_part = word
+                else:
+                    current_part += word + " "
+
+            if current_part.strip():
+                sub_paragraphs.append(current_part.strip())
+
+        return sub_paragraphs if sub_paragraphs else [paragraph]
+
     def _split_chinese_text_at_line(self, text: str, chars_per_line: int, max_lines: int) -> tuple[str, str]:
         """Split Chinese text at line boundary, preserving sentence and phrase integrity"""
         if not text:
@@ -868,19 +909,33 @@ class PowerPointGenerator:
             total_chars = len(desc)
             chinese_ratio = chinese_chars / total_chars if total_chars > 0 else 0
 
-            # Split by paragraphs (using Chinese line breaks)
-            for para in desc.split('\n'):
-                if chinese_ratio > 0.3:  # Has significant Chinese content
-                    if chinese_ratio > 0.8:  # Almost entirely Chinese
-                        # Chinese characters are wider, so they need more lines - extremely aggressive
-                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.3)))  # 70% more lines
-                    elif chinese_ratio > 0.6:  # Mostly Chinese
-                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.35)))  # 65% more lines
-                    else:  # Mixed Chinese/English
-                        para_lines = max(1, self._calculate_chinese_text_lines(para, int(chars_per_line * 0.4)))  # 60% more lines
+            # Split by paragraphs and further split long paragraphs for better utilization
+            paragraphs = desc.split('\n') if desc.strip() else ['']
+
+            for para in paragraphs:
+                # Skip empty paragraphs
+                if not para.strip():
+                    continue
+
+                # For long Chinese paragraphs, split them further to utilize space better
+                if chinese_ratio > 0.3 and len(para) > 100:  # Long Chinese paragraph
+                    # Split long paragraphs at sentence boundaries for Chinese
+                    sub_paragraphs = self._split_chinese_paragraph(para, chars_per_line)
+                else:
+                    sub_paragraphs = [para]
+
+                for sub_para in sub_paragraphs:
+                    if chinese_ratio > 0.3:  # Has significant Chinese content
+                        if chinese_ratio > 0.8:  # Almost entirely Chinese
+                            # Chinese characters are wider, so they need more lines - extremely aggressive
+                            para_lines = max(1, self._calculate_chinese_text_lines(sub_para, int(chars_per_line * 0.25)))  # 75% more lines
+                        elif chinese_ratio > 0.6:  # Mostly Chinese
+                            para_lines = max(1, self._calculate_chinese_text_lines(sub_para, int(chars_per_line * 0.3)))  # 70% more lines
+                        else:  # Mixed Chinese/English
+                            para_lines = max(1, self._calculate_chinese_text_lines(sub_para, int(chars_per_line * 0.35)))  # 65% more lines
                 else:
                     # English or minimal Chinese content
-                    para_lines = max(1, self._calculate_chinese_text_lines(para, chars_per_line))
+                    para_lines = max(1, self._calculate_chinese_text_lines(sub_para, chars_per_line))
                 desc_lines += para_lines
 
         lines += desc_lines
