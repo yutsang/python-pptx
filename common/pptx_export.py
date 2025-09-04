@@ -221,16 +221,24 @@ class PowerPointGenerator:
         effective_height_pt = shape_height_pt * 0.999  # Maximum height utilization
 
         # Calculate line height based on font size and line spacing
-        # Use smaller font size for Chinese to fit more content
-        font_size_pt = 8  # Reduced from 9pt for Chinese optimization
-        line_spacing = 1.0  # Ultra-tight spacing for maximum height utilization
+        # Use appropriate sizing for readability
+        if hasattr(self, 'language') and self.language == 'chinese':
+            font_size_pt = 9  # Standard 9pt for Chinese readability
+            line_spacing = 1.15  # Better spacing for Chinese text readability
+        else:
+            font_size_pt = 9  # Standard 9pt for English
+            line_spacing = 1.2  # Standard spacing for English readability
         line_height_pt = font_size_pt * line_spacing
 
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
 
-        # Use all available space - increased minimum for better content density
-        max_rows = max(55, max_rows)  # Increased minimum for ultra-maximum text capacity
+        # Use realistic line count based on actual shape dimensions
+        # For Chinese text, use slightly more aggressive line counting
+        if hasattr(self, 'language') and self.language == 'chinese':
+            max_rows = max(30, max_rows)  # More realistic minimum for Chinese
+        else:
+            max_rows = max(25, max_rows)  # Standard minimum for English
 
         return max_rows
 
@@ -410,9 +418,9 @@ class PowerPointGenerator:
                     max_lines = self._calculate_max_rows_for_shape(shape)
                     # Use appropriate minimums for Chinese content - balanced approach
                     if slide_idx == 0:  # First slide
-                        max_lines = max(max_lines, 28)  # Reasonable content on first slide
+                        max_lines = max(max_lines, 25)  # Reasonable content on first slide
                     elif section in ['b', 'c']:  # _L and _R sections
-                        max_lines = max(max_lines, 20)  # Allow reasonable content on side sections
+                        max_lines = max(max_lines, 18)  # Allow reasonable content on side sections
                     print(f"📐 SECTION {section}: Found shape '{shape.name}', max_lines = {max_lines}")
                 else:
                     max_lines = self.ROWS_PER_SECTION  # Fallback
