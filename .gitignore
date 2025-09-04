@@ -16,6 +16,13 @@ final_report*
 *.ipynb
 FDD.Draft Report.For AI solution purpose Only.pptx
 
+# old backups
+archive/
+.archive/
+
+# Streamlit configuration
+.streamlit/
+
 # Ignore pptx templates and databooks
 *template*.pptx
 *databook*.pptx
