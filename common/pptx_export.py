@@ -91,6 +91,22 @@ def get_font_size_for_text(text, base_size=Pt(9), force_chinese_mode=False):
         print(f"🔤 FONT: Using {base_size}pt for English text")
         return base_size  # Default size for English
 
+def get_font_name_for_text(text, default_font='Arial'):
+    """
+    Get appropriate font name based on text content.
+    Chinese text uses Microsoft YaHei, English uses Arial.
+    """
+    if not text:
+        return default_font
+
+    # Check if text contains Chinese characters
+    has_chinese = any('\u4e00' <= char <= '\u9fff' for char in text)
+
+    if has_chinese:
+        return 'Microsoft YaHei'
+    else:
+        return default_font
+
 def get_line_spacing_for_text(text, force_chinese_mode=False):
     """
     Get appropriate line spacing based on text content.
@@ -1272,7 +1288,7 @@ class PowerPointGenerator:
                 run.text = f"{display_header}{cont_text}"
                 run.font.size = get_font_size_for_text(run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                 run.font.bold = True
-                run.font.name = 'Arial'
+                run.font.name = get_font_name_for_text(run.text, 'Arial')
                 try:
                     run.font.color.rgb = self.DARK_BLUE
                 except:
@@ -1301,18 +1317,18 @@ class PowerPointGenerator:
                             bullet_run.font.color.rgb = self.DARK_GREY
                         except:
                             bullet_run.font.color.rgb = RGBColor(128, 128, 128)  # Fallback grey
-                        bullet_run.font.name = 'Arial'
+                        bullet_run.font.name = get_font_name_for_text(bullet_run.text, 'Arial')
                         bullet_run.font.size = get_font_size_for_text(bullet_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         title_run = p.add_run()
                         cont_text = " (continued)" if item.layer2_continued else ""
                         title_run.text = f"{item.account_title}{cont_text}"
                         title_run.font.bold = True
-                        title_run.font.name = 'Arial'
+                        title_run.font.name = get_font_name_for_text(title_run.text, 'Arial')
                         title_run.font.size = get_font_size_for_text(title_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         desc_run = p.add_run()
                         desc_run.text = f" - {part}"
                         desc_run.font.bold = False
-                        desc_run.font.name = 'Arial'
+                        desc_run.font.name = get_font_name_for_text(desc_run.text, 'Arial')
                         desc_run.font.size = get_font_size_for_text(desc_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         paragraph_count += 1
                     else:
@@ -1333,7 +1349,7 @@ class PowerPointGenerator:
                         cont_run = p.add_run()
                         cont_run.text = part
                         cont_run.font.bold = False
-                        cont_run.font.name = 'Arial'
+                        cont_run.font.name = get_font_name_for_text(cont_run.text, 'Arial')
                         cont_run.font.size = get_font_size_for_text(cont_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         paragraph_count += 1
                     # Add an empty row between split parts (but not after the last)
@@ -1572,7 +1588,7 @@ class PowerPointGenerator:
         cont_text = " (continued)" if item.layer2_continued else ""
         header_run.text = f"{self.BULLET_CHAR}{item.account_title}{cont_text}"
         header_run.font.bold = True
-        header_run.font.name = 'Arial'
+        header_run.font.name = get_font_name_for_text(header_run.text, 'Arial')
         header_run.font.size = get_font_size_for_text(header_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
         # Process table content
         content = ' '.join(item.descriptions)
@@ -1589,7 +1605,7 @@ class PowerPointGenerator:
                 except: pass
                 run = p.add_run()
                 run.text = f"• {current_category}"
-                run.font.name = 'Arial'
+                run.font.name = get_font_name_for_text(run.text, 'Arial')
                 run.font.bold = True
                 run.font.size = get_font_size_for_text(run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
             elif line.startswith('- '):
@@ -1599,7 +1615,7 @@ class PowerPointGenerator:
                 except: pass
                 run = p.add_run()
                 run.text = f"◦ {line[2:]}"
-                run.font.name = 'Arial'
+                run.font.name = get_font_name_for_text(run.text, 'Arial')
                 run.font.size = get_font_size_for_text(run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
 
     def _populate_summary_section_safe(self, shape, summary_content: str):
@@ -1626,7 +1642,7 @@ class PowerPointGenerator:
         except:
             run.font.color.rgb = RGBColor(0, 51, 102)  # Same color as fallback
         run.font.bold = False
-        run.font.name = 'Arial'
+        run.font.name = get_font_name_for_text(run.text, 'Arial')
 
         # Configure text frame for optimal filling
         tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
@@ -2009,7 +2025,7 @@ class PowerPointGenerator:
             run = p.add_run()
             clean_line = line.lstrip('- ').strip() if isinstance(line, str) else line[1].lstrip('- ').strip()
             run.text = f"• {clean_line}"
-            run.font.name = 'Arial'
+            run.font.name = get_font_name_for_text(run.text, 'Arial')
             run.font.size = Pt(9)
             run.font.bold = False
 
@@ -2051,10 +2067,10 @@ def replace_text_preserve_formatting(shape, replacements):
                 if old_text in run.text:
                     run.text = run.text.replace(old_text, new_text)
 
-def update_project_titles(presentation_path, project_name, output_path=None):
+def update_project_titles(presentation_path, project_name, output_path=None, language='english', statement_type='BS'):
     prs = Presentation(presentation_path)
     total_slides = len(prs.slides)
-    
+
     # Extract first two words for professional display
     if project_name:
         words = project_name.split()
@@ -2062,17 +2078,42 @@ def update_project_titles(presentation_path, project_name, output_path=None):
         display_entity = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else project_name
     else:
         display_entity = project_name
-    
+
+    # Define title templates based on language and statement type
+    if statement_type.upper() == 'BS':  # Balance Sheet
+        if language.lower() == 'chinese':
+            title_template = f"资产负债表概览 - {display_entity}"
+        else:
+            title_template = f"Entity Overview - {display_entity}"
+    elif statement_type.upper() == 'IS':  # Income Statement
+        if language.lower() == 'chinese':
+            title_template = f"利润表概览 - {display_entity}"
+        else:
+            title_template = f"Income Statement - {display_entity}"
+    else:  # Default/Unknown
+        if language.lower() == 'chinese':
+            title_template = f"财务报表概览 - {display_entity}"
+        else:
+            title_template = f"Financial Report - {display_entity}"
+
     for slide_index, slide in enumerate(prs.slides):
         current_slide_number = slide_index + 1
         projTitle_shape = find_shape_by_name(slide.shapes, "projTitle")
         if projTitle_shape:
-            replacements = {
-                "[PROJECT]": display_entity,  # Use abbreviated entity name for professional display
-                "[Current]": str(current_slide_number),
-                "[Total]": str(total_slides)
-            }
-            replace_text_preserve_formatting(projTitle_shape, replacements)
+            # Replace the entire title with the language-appropriate template
+            # First try to replace placeholders if they exist, otherwise replace the whole text
+            current_text = projTitle_shape.text
+            if "[PROJECT]" in current_text:
+                replacements = {
+                    "[PROJECT]": display_entity,
+                    "[Current]": str(current_slide_number),
+                    "[Total]": str(total_slides)
+                }
+                replace_text_preserve_formatting(projTitle_shape, replacements)
+            else:
+                # Replace the entire title text
+                projTitle_shape.text = title_template
+
     # Save the presentation
     if output_path is None:
         output_path = presentation_path
@@ -2267,7 +2308,7 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                         run = cell.text_frame.paragraphs[0].runs[0]
                         run.font.bold = True
                         run.font.size = Pt(12)
-                        run.font.name = 'Arial'
+                        run.font.name = get_font_name_for_text(run.text, 'Arial')
                         # Header background color (light blue)
                         cell.fill.solid()
                         try:
@@ -2283,7 +2324,7 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                         if cell.text_frame.paragraphs[0].runs:
                             run = cell.text_frame.paragraphs[0].runs[0]
                             run.font.size = Pt(10)
-                            run.font.name = 'Arial'
+                            run.font.name = get_font_name_for_text(run.text, 'Arial')
                             # Alternate row colors for readability
                             if row_idx % 2 == 0:
                                 cell.fill.solid()
@@ -2304,15 +2345,15 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
         logging.error(f"❌ Failed to update Excel data: {str(e)}")
         raise
 
-def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None, language='english'):
+def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None, language='english', statement_type='BS'):
     generator = ReportGenerator(template_path, markdown_path, output_path, project_name, language)
     generator.generate()
     if not os.path.exists(output_path):
         logging.error(f"PPTX file was not created at {output_path}")
         raise FileNotFoundError(f"PPTX file was not created at {output_path}")
     if project_name:
-        update_project_titles(output_path, project_name)
-    
+        update_project_titles(output_path, project_name, language=language, statement_type=statement_type)
+
     # Embed Excel data if provided
     if excel_file_path and project_name:
         # Get the appropriate sheet name based on project
@@ -2322,7 +2363,7 @@ def export_pptx(template_path, markdown_path, output_path, project_name=None, ex
                 embed_excel_data_in_pptx(output_path, excel_file_path, sheet_name, project_name)
             except Exception as e:
                 logging.warning(f"⚠️ Could not embed Excel data: {str(e)}")
-    
+
     # Add success message
     logging.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
     return output_path
