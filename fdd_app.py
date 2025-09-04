@@ -446,6 +446,24 @@ def main():
 
         st.info(f"📊 **Selected Mode:** {entity_mode} - {'Process single entity table' if entity_mode_internal == 'single' else 'Automatically detect and filter multiple entity tables'}")
 
+        # Show entity matching status if we have processed data
+        if 'ai_data' in st.session_state and st.session_state['ai_data']:
+            ai_data = st.session_state['ai_data']
+            if 'entity_keywords' in ai_data:
+                with st.expander("🔍 Entity Detection Status", expanded=False):
+                    st.markdown("**Your Entity Keywords:**")
+                    entity_keywords = ai_data.get('entity_keywords', [])
+                    if entity_keywords:
+                        for keyword in entity_keywords:
+                            st.markdown(f"• `{keyword}`")
+                    else:
+                        st.warning("No entity keywords found")
+
+                    st.markdown("**📋 Note:** If you're using Multiple Entity mode and it's falling back to single mode, check that:")
+                    st.markdown("• Your entered entity name matches exactly what's in your Excel file")
+                    st.markdown("• The entity name appears in row 0 or early rows of your Excel sheet")
+                    st.markdown("• Try using just the base entity name (first word only)")
+
 
         
 

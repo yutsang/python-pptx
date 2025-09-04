@@ -233,6 +233,19 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
     print(f"   🔍 ENTITY ANALYSIS: entity_name='{entity_name}', entity_keywords={entity_keywords}")
     print(f"   📊 MANUAL MODE: {manual_mode}")
 
+    # Show first few rows to help debug entity matching
+    print(f"   📋 SAMPLE EXCEL CONTENT (first 3 rows):")
+    for i in range(min(3, len(df))):
+        row_content = []
+        for j in range(min(5, len(df.columns))):  # Show first 5 columns
+            val = df.iloc[i, j]
+            if pd.notna(val) and str(val).strip():
+                row_content.append(f"'{str(val)[:30]}'")
+            else:
+                row_content.append("''")
+        print(f"      Row {i}: {row_content}")
+    print(f"   📋 Total rows: {len(df)}, Total columns: {len(df.columns)}")
+
     # If manual mode is 'single', skip entity filtering and return original table
     if manual_mode == 'single':
         print(f"   🎯 SINGLE ENTITY MODE: Using original table (no filtering applied)")
@@ -264,6 +277,9 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
     # Step 2: Analyze each section to find entity associations
     entity_sections = {}
 
+    # Also try to find any potential entity names in the Excel file
+    all_potential_entities = set()
+
     for section_idx, (start_row, end_row) in enumerate(table_sections):
         section_text = ' '.join(
             str(val).lower() for val in df.iloc[start_row:end_row+1].values.flatten()
@@ -278,9 +294,36 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
                 entity_sections[keyword].append((start_row, end_row, section_idx))
                 print(f"   📍 Section {section_idx} (rows {start_row}-{end_row}) contains entity '{keyword}'")
 
+        # Try to identify potential entity names in the section
+        # Look for patterns that might indicate entity names
+        section_words = section_text.split()
+        for word in section_words:
+            word = word.strip('.,;:!?()[]{}"\'')
+            # Look for capitalized words or words that might be company names
+            if (len(word) > 2 and
+                word[0].isupper() and
+                not word.endswith(('the', 'and', 'for', 'with', 'from', 'into', 'onto', 'data', 'table', 'sheet', 'file'))):
+                all_potential_entities.add(word)
+
     # Step 3: Determine entity mode and handle fallback
     unique_entities = len(entity_sections)
     detected_multiple = unique_entities > 1
+
+    print(f"   🔍 DEBUG INFO:")
+    print(f"   📊 Generated entity keywords: {entity_keywords}")
+    print(f"   📊 Entities found in Excel: {list(entity_sections.keys()) if entity_sections else 'None'}")
+    if all_potential_entities:
+        print(f"   📊 Potential entity names found in Excel: {sorted(list(all_potential_entities))[:10]}")  # Show first 10
+    print(f"   📊 Total unique entities detected: {unique_entities}")
+    print(f"   📊 Detected multiple entities: {detected_multiple}")
+
+    # Additional help for the user
+    if manual_mode == 'multiple' and not detected_multiple:
+        print(f"   💡 TROUBLESHOOTING:")
+        print(f"   💡 - Your entered entity: '{entity_name}'")
+        print(f"   💡 - Make sure the entity name in your Excel file matches exactly")
+        print(f"   💡 - Check row 0 content above - does it contain your entity name?")
+        print(f"   💡 - Try using just the base entity name (first word only)")
 
     if manual_mode == 'multiple':
         if detected_multiple:
@@ -289,6 +332,7 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
         else:
             print(f"   ⚠️  MULTIPLE ENTITY MODE: No multiple entities detected, falling back to single entity mode")
             print(f"   📊 Only found {unique_entities} unique entities")
+            print(f"   💡 TIP: Check if your entered entity name matches the actual entity names in your Excel file")
             return df, False  # Fallback to single entity mode
     else:
         is_multiple_entity = False
@@ -890,7 +934,7 @@ def test_new_table_logic():
     import pandas as pd
     from datetime import datetime
 
-    print("🧪 TESTING NEW TABLE LOGIC IMPLEMENTATION")
+    print("🧪 TESTING NEW TABLE LOGIC IMPLEMENTATION WITH DEBUGGING")
     print("=" * 60)
 
     # Test Case 1: Single Entity Table
@@ -912,9 +956,46 @@ def test_new_table_logic():
     df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df_single, 'Entity A', entity_keywords, 'single')
     print(f"🎯 Entity Mode: {'MULTIPLE' if is_multiple_entity else 'SINGLE'} (Manual: Single)")
 
-    # Test Case 2: Multiple Entity Tables
-    print("\n📋 TEST CASE 2: Multiple Entity Tables")
-    print("-" * 40)
+    # Test Case 2: Multiple Entity Mode with Mismatched Entity Names
+    print("\n📋 TEST CASE 2: Multiple Entity Mode with Mismatched Names")
+    print("-" * 50)
+
+    # Create a worksheet with different entity names than what user enters
+    mismatch_data = [
+        ['XYZ Corporation Financial Data', '', '', '', ''],  # Different entity name
+        ['示意性调整后', '', '', '', ''],
+        ['', '2023-12-31', '2023-11-30', '2023-10-31', '2023-09-30'],
+        ['Revenue', 'Amount', 'Amount', 'Amount', 'Amount'],
+        ['Cost', 'Amount', 'Amount', 'Amount', 'Amount'],
+        ['Profit', 'Amount', 'Amount', 'Amount', 'Amount'],
+        [None, None, None, None, None],  # Empty row
+        ['ABC Company Financial Data', '', '', '', ''],  # Another different entity
+        ['示意性调整后', '', '', '', ''],
+        ['', '2024-01-31', '2024-02-29', '2024-03-31', '2024-04-30'],
+        ['Revenue', 'Amount', 'Amount', 'Amount', 'Amount'],
+        ['Cost', 'Amount', 'Amount', 'Amount', 'Amount'],
+        ['Profit', 'Amount', 'Amount', 'Amount', 'Amount']
+    ]
+
+    df_mismatch = pd.DataFrame(mismatch_data)
+    print(f"📊 Mismatch DataFrame: {len(df_mismatch)} rows, {len(df_mismatch.columns)} columns")
+
+    # User enters "My Company" but Excel has "XYZ Corporation" and "ABC Company"
+    user_entity = "My Company"
+    user_keywords = ['My', 'My Company']
+
+    print(f"🔍 User enters: '{user_entity}'")
+    print(f"🔍 Generated keywords: {user_keywords}")
+    print(f"🔍 Excel contains: 'XYZ Corporation', 'ABC Company'")
+
+    df_filtered_mismatch, is_multiple_mismatch = determine_entity_mode_and_filter(
+        df_mismatch, user_entity, user_keywords, 'multiple'
+    )
+    print(f"🎯 Result: {'MULTIPLE' if is_multiple_mismatch else 'SINGLE'} (Should fallback to single due to mismatch)")
+
+    # Test Case 3: Multiple Entity Tables (Working Case)
+    print("\n📋 TEST CASE 3: Multiple Entity Tables (Working Case)")
+    print("-" * 50)
 
     # Create a worksheet with multiple entity tables separated by truly empty rows
     multi_entity_data = [
