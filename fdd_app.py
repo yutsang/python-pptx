@@ -1126,32 +1126,32 @@ def main():
                         agent1_results = {}
                         agent1_success = False
 
+                        # Define key lists for BS and IS
+                        bs_key_list = [
+                            "Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
+                            "AP", "Taxes payable", "OP", "Capital", "Reserve"
+                        ]
+                        is_key_list = [
+                            "OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
+                            "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"
+                        ]
+
                         if current_statement_type == "ALL":
                             # For ALL, process both BS and IS + translation + proofreading
                             ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 4, 'stage_index': 0, 'start_time': time.time()}}
-                            
-                            # Define key lists for BS and IS
-                            bs_key_list = [
-                                "Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
-                                "AP", "Taxes payable", "OP", "Capital", "Reserve"
-                            ]
-                            is_key_list = [
-                                "OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
-                                "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"
-                            ]
-                            
+
                             # Process all keys for ALL mode
                             status_text.text("📊 Processing all financial data...")
                             progress_bar.progress(20)
                             st.session_state['current_statement_type'] = 'ALL'
                             agent1_results_bs = run_agent_1_simple(filtered_keys_for_ai, temp_ai_data, external_progress=ext, language=selected_language)
-                            
+
                             # Store all results in session state
                             if agent1_results_bs:
                                 # Initialize content store if not exists
                                 if 'ai_content_store' not in st.session_state:
                                     st.session_state['ai_content_store'] = {}
-                                
+
                                 # Store all results
                                 for key, result in agent1_results_bs.items():
                                     if key not in st.session_state['ai_content_store']:
@@ -1159,22 +1159,98 @@ def main():
                                     st.session_state['ai_content_store'][key]['agent1_content'] = result
                                     st.session_state['ai_content_store'][key]['current_content'] = result
                                     st.session_state['ai_content_store'][key]['agent1_timestamp'] = datetime.datetime.now().isoformat()
-                            
+
                             # Generate content files
                             if agent1_results_bs:
                                 status_text.text("📝 Generating content files...")
                                 progress_bar.progress(90)
                                 generate_content_from_session_storage(selected_entity)
-                            
+
                             # Content files are already generated above
                             pass
-                            
+
                             # Use all results
                             agent1_results = agent1_results_bs
                             agent1_success = bool(agent1_results and any(agent1_results.values()))
-                            
+
                             # Reset to ALL for future operations
                             st.session_state['current_statement_type'] = 'ALL'
+
+                        elif current_statement_type == "BS":
+                            # Handle Balance Sheet processing
+                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
+
+                            # Filter BS keys
+                            bs_filtered_keys = [key for key in filtered_keys_for_ai if key in bs_key_list]
+
+                            if not bs_filtered_keys:
+                                status_text.text("⚠️ No Balance Sheet keys found to process")
+                                agent1_results = {}
+                                agent1_success = False
+                            else:
+                                status_text.text("📊 Processing Balance Sheet data...")
+                                progress_bar.progress(30)
+                                agent1_results = run_agent_1_simple(bs_filtered_keys, temp_ai_data, external_progress=ext, language=selected_language)
+                                agent1_success = bool(agent1_results and any(agent1_results.values()))
+
+                                # Store BS results in session state
+                                if agent1_results:
+                                    if 'ai_content_store' not in st.session_state:
+                                        st.session_state['ai_content_store'] = {}
+
+                                    for key, result in agent1_results.items():
+                                        if key not in st.session_state['ai_content_store']:
+                                            st.session_state['ai_content_store'][key] = {}
+                                        st.session_state['ai_content_store'][key]['agent1_content'] = result
+                                        st.session_state['ai_content_store'][key]['current_content'] = result
+                                        st.session_state['ai_content_store'][key]['agent1_timestamp'] = datetime.datetime.now().isoformat()
+
+                                # Generate content files
+                                if agent1_results:
+                                    status_text.text("📝 Generating Balance Sheet content files...")
+                                    progress_bar.progress(90)
+                                    generate_content_from_session_storage(selected_entity)
+
+                        elif current_statement_type == "IS":
+                            # Handle Income Statement processing
+                            ext = {'bar': progress_bar, 'status': status_text, 'combined': {'stages': 2, 'stage_index': 0, 'start_time': time.time()}}
+
+                            # Filter IS keys
+                            is_filtered_keys = [key for key in filtered_keys_for_ai if key in is_key_list]
+
+                            if not is_filtered_keys:
+                                status_text.text("⚠️ No Income Statement keys found to process")
+                                agent1_results = {}
+                                agent1_success = False
+                            else:
+                                status_text.text("📊 Processing Income Statement data...")
+                                progress_bar.progress(30)
+                                agent1_results = run_agent_1_simple(is_filtered_keys, temp_ai_data, external_progress=ext, language=selected_language)
+                                agent1_success = bool(agent1_results and any(agent1_results.values()))
+
+                                # Store IS results in session state
+                                if agent1_results:
+                                    if 'ai_content_store' not in st.session_state:
+                                        st.session_state['ai_content_store'] = {}
+
+                                    for key, result in agent1_results.items():
+                                        if key not in st.session_state['ai_content_store']:
+                                            st.session_state['ai_content_store'][key] = {}
+                                        st.session_state['ai_content_store'][key]['agent1_content'] = result
+                                        st.session_state['ai_content_store'][key]['current_content'] = result
+                                        st.session_state['ai_content_store'][key]['agent1_timestamp'] = datetime.datetime.now().isoformat()
+
+                                # Generate content files
+                                if agent1_results:
+                                    status_text.text("📝 Generating Income Statement content files...")
+                                    progress_bar.progress(90)
+                                    generate_content_from_session_storage(selected_entity)
+
+                        else:
+                            # Unknown statement type
+                            status_text.text(f"⚠️ Unknown statement type: {current_statement_type}")
+                            agent1_results = {}
+                            agent1_success = False
                         
                         st.session_state['agent_states']['agent1_results'] = agent1_results
                         st.session_state['agent_states']['agent1_completed'] = True
@@ -3829,6 +3905,7 @@ def run_agent_1_simple(filtered_keys, ai_data, external_progress=None, language=
         # Get data from ai_data
         entity_name = ai_data.get('entity_name', '')
         entity_keywords = ai_data.get('entity_keywords', [])
+        print(f"🔍 DEBUG: entity_name='{entity_name}', entity_keywords={entity_keywords}")
 
         # Get AI model settings
         use_local_ai = st.session_state.get('use_local_ai', False)
