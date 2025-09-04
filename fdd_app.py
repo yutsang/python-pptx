@@ -446,8 +446,7 @@ def main():
 
         st.info(f"📊 **Selected Mode:** {entity_mode} - {'Process single entity table' if entity_mode_internal == 'single' else 'Automatically detect and filter multiple entity tables'}")
 
-        # Debug info to confirm entity mode is set
-        st.write(f"**DEBUG:** Entity mode set to: `{entity_mode_internal}`")
+        # Entity mode is now properly passed through the system
 
         # Show entity matching status if we have processed data
         if 'ai_data' in st.session_state and st.session_state['ai_data']:

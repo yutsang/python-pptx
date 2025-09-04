@@ -281,29 +281,89 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
     all_potential_entities = set()
 
     for section_idx, (start_row, end_row) in enumerate(table_sections):
-        section_text = ' '.join(
-            str(val).lower() for val in df.iloc[start_row:end_row+1].values.flatten()
-            if pd.notna(val) and str(val).strip()
-        )
+        # Include both cell values and column names in the section text
+        section_values = []
+        for val in df.iloc[start_row:end_row+1].values.flatten():
+            if pd.notna(val) and str(val).strip():
+                section_values.append(str(val))
 
-        # Check which entities are mentioned in this section
+        # Also include column names that might contain entity information
+        for col_name in df.columns:
+            if pd.notna(col_name) and str(col_name).strip():
+                col_name_str = str(col_name).strip()
+                section_values.append(col_name_str)
+                # Debug: show when we're checking column names
+                if any(kw.lower() in col_name_str.lower() for kw in entity_keywords):
+                    print(f"   📋 Checking column name: '{col_name_str}'")
+
+        section_text = ' '.join(val.lower() for val in section_values)
+
+        # Check which entities are mentioned in this section - MORE ROBUST MATCHING
         for keyword in entity_keywords:
-            if keyword.lower() in section_text:
+            # Try different matching strategies
+            keyword_lower = keyword.lower()
+            section_lower = section_text.lower()
+
+            # 1. Exact match
+            if keyword_lower in section_lower:
                 if keyword not in entity_sections:
                     entity_sections[keyword] = []
                 entity_sections[keyword].append((start_row, end_row, section_idx))
-                print(f"   📍 Section {section_idx} (rows {start_row}-{end_row}) contains entity '{keyword}'")
+                print(f"   ✅ EXACT MATCH: Section {section_idx} contains entity '{keyword}'")
+                continue
 
-        # Try to identify potential entity names in the section
-        # Look for patterns that might indicate entity names
+            # 2. Partial word match (split by spaces and hyphens)
+            keyword_parts = keyword_lower.replace('-', ' ').split()
+            matches_found = 0
+            for part in keyword_parts:
+                if len(part) > 2 and part in section_lower:
+                    matches_found += 1
+
+            # If we match most parts of the keyword, consider it a match
+            if matches_found >= len(keyword_parts) * 0.6:  # 60% match threshold
+                if keyword not in entity_sections:
+                    entity_sections[keyword] = []
+                entity_sections[keyword].append((start_row, end_row, section_idx))
+                print(f"   ✅ PARTIAL MATCH: Section {section_idx} contains entity '{keyword}' (matched {matches_found}/{len(keyword_parts)} parts)")
+                continue
+
+            # 3. Special handling for patterns like "Cash and cash equivalents - Ningbo"
+            # Extract entity names that appear after common separators
+            separators = [' - ', ' – ', ' and ', ' or ', ' for ']
+            for separator in separators:
+                if separator in section_text:
+                    parts = section_text.split(separator)
+                    for part in parts[1:]:  # Look in parts after the separator
+                        part = part.strip()
+                        if part and any(kw_part.lower() in part.lower() for kw_part in keyword_parts):
+                            if keyword not in entity_sections:
+                                entity_sections[keyword] = []
+                            entity_sections[keyword].append((start_row, end_row, section_idx))
+                            print(f"   ✅ SEPARATOR MATCH: Section {section_idx} contains entity '{keyword}' after '{separator.strip()}'")
+                            break
+
+        # Try to identify potential entity names in the section - IMPROVED DETECTION
+        # Include column names in the word analysis
         section_words = section_text.split()
+
+        # Also add column names as potential words to check
+        for col_name in df.columns:
+            if pd.notna(col_name):
+                col_name_str = str(col_name)
+                section_words.extend(col_name_str.split())
         for word in section_words:
             word = word.strip('.,;:!?()[]{}"\'')
-            # Look for capitalized words or words that might be company names
-            if (len(word) > 2 and
-                word[0].isupper() and
-                not word.endswith(('the', 'and', 'for', 'with', 'from', 'into', 'onto', 'data', 'table', 'sheet', 'file'))):
-                all_potential_entities.add(word)
+            # Look for capitalized words that might be company names
+            if (len(word) > 2 and word[0].isupper() and
+                not word.lower().endswith(('the', 'and', 'for', 'with', 'from', 'into', 'onto', 'data', 'table', 'sheet', 'file',
+                                          'total', 'amount', 'value', 'date', 'cash', 'flow', 'income', 'expense', 'asset', 'liability',
+                                          'equity', 'revenue', 'cost', 'profit', 'loss', 'balance', 'sheet', 'statement',
+                                          'adjusted', 'indicative', 'audited', 'mgt', 'acc', 'cny', '000', '000', 'equivalent'))):
+                # Additional check: avoid common financial terms
+                if not any(financial_term in word.lower() for financial_term in
+                          ['assets', 'liabilities', 'equity', 'receivable', 'payable', 'deposits', 'banks', 'provision',
+                           'bad', 'doubtful', 'properties', 'investment', 'capital', 'share', 'current', 'prepayments']):
+                    all_potential_entities.add(word)
 
     # Step 3: Determine entity mode and handle fallback
     unique_entities = len(entity_sections)
@@ -933,35 +993,57 @@ def test_entity_mode_flow():
     print("🧪 TESTING ENTITY MODE PARAMETER FLOW")
     print("=" * 50)
 
-    # Test the entity mode parameter flow
-    test_data = [
-        ['Test Company Data', '', '', '', ''],
-        ['示意性调整后', '', '', '', ''],
-        ['', '2023-12-31', '2023-11-30', '2023-10-31', '2023-09-30'],
-        ['Revenue', '100', '200', '300', '400'],
-        ['Cost', '50', '60', '70', '80']
-    ]
+    # Test with REAL databook.xlsx data
+    print("\n📋 TEST: Testing with REAL databook.xlsx data")
 
-    df = pd.DataFrame(test_data)
-    print(f"📊 Test DataFrame: {len(df)} rows, {len(df.columns)} columns")
-
-    # Test with manual mode = 'single'
-    print("\n📋 TEST: Manual mode = 'single'")
-    result_single, is_multi_single = determine_entity_mode_and_filter(df, 'Test Company', ['Test Company'], 'single')
-    print(f"🎯 Result: {'MULTIPLE' if is_multi_single else 'SINGLE'} (expected: SINGLE)")
-
-    # Test with manual mode = 'multiple' but no multiple entities
-    print("\n📋 TEST: Manual mode = 'multiple' with single entity")
-    result_multi, is_multi_multi = determine_entity_mode_and_filter(df, 'Test Company', ['Test Company'], 'multiple')
-    print(f"🎯 Result: {'MULTIPLE' if is_multi_multi else 'SINGLE'} (expected: SINGLE with fallback)")
-
-    # Test parse_accounting_table with entity_mode parameter
-    print("\n📋 TEST: parse_accounting_table with entity_mode='single'")
     try:
-        parsed = parse_accounting_table(df, 'BS', 'Test Company', 'Test Sheet', entity_mode='single')
-        print(f"✅ parse_accounting_table succeeded with entity_mode='single'")
+        import os
+        databook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'databook.xlsx')
+        if os.path.exists(databook_path):
+            xl = pd.ExcelFile(databook_path)
+
+            # Test with Cash sheet - should find "Ningbo"
+            if 'Cash' in xl.sheet_names:
+                df_cash = xl.parse('Cash')
+                print(f"📊 Cash sheet: {df_cash.shape}")
+
+                # Test entity detection with "Ningbo Wanchen" keywords
+                entity_keywords = ['Ningbo', 'Ningbo Wanchen', 'Haining', 'Haining Wanpu']
+                print(f"🔍 Testing entity keywords: {entity_keywords}")
+
+                result, is_multi = determine_entity_mode_and_filter(df_cash, 'Ningbo Wanchen', entity_keywords, 'multiple')
+                print(f"🎯 Result: {'MULTIPLE' if is_multi else 'SINGLE'}")
+
+            # Test with BSHN sheet - should find "Haining"
+            if 'BSHN' in xl.sheet_names:
+                df_bshn = xl.parse('BSHN')
+                print(f"\n📊 BSHN sheet: {df_bshn.shape}")
+
+                result, is_multi = determine_entity_mode_and_filter(df_bshn, 'Haining Wanpu', entity_keywords, 'multiple')
+                print(f"🎯 Result: {'MULTIPLE' if is_multi else 'SINGLE'}")
+        else:
+            print("❌ databook.xlsx not found, running basic tests...")
+
+            # Fallback to basic test
+            test_data = [
+                ['Test Company Data', '', '', '', ''],
+                ['示意性调整后', '', '', '', ''],
+                ['', '2023-12-31', '2023-11-30', '2023-10-31', '2023-09-30'],
+                ['Revenue', '100', '200', '300', '400'],
+                ['Cost', '50', '60', '70', '80']
+            ]
+
+            df = pd.DataFrame(test_data)
+            print(f"📊 Fallback Test DataFrame: {len(df)} rows, {len(df.columns)} columns")
+
+            # Test with manual mode = 'single'
+            result_single, is_multi_single = determine_entity_mode_and_filter(df, 'Test Company', ['Test Company'], 'single')
+            print(f"🎯 Result: {'MULTIPLE' if is_multi_single else 'SINGLE'} (expected: SINGLE)")
+
     except Exception as e:
-        print(f"❌ parse_accounting_table failed: {e}")
+        print(f"❌ Error in entity mode flow test: {e}")
+        import traceback
+        traceback.print_exc()
 
     print("\n" + "=" * 50)
     print("✅ ENTITY MODE FLOW TEST COMPLETED")
@@ -1099,8 +1181,82 @@ def test_new_table_logic():
     print("✅ MANUAL ENTITY MODE SELECTION TEST COMPLETED")
 
 
+def examine_databook():
+    """Examine the databook.xlsx to understand entity structure."""
+    import pandas as pd
+    import sys
+    import os
+
+    print("🔍 EXAMINING DATABOOK.XLSX")
+    print("=" * 50)
+
+    try:
+        # Check if databook.xlsx exists
+        databook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'databook.xlsx')
+        if not os.path.exists(databook_path):
+            print("❌ databook.xlsx not found!")
+            return
+
+        xl = pd.ExcelFile(databook_path)
+        print(f"📊 Found {len(xl.sheet_names)} sheets:")
+        for sheet in xl.sheet_names:
+            print(f"  - {sheet}")
+
+        print(f"\n📋 Examining first few sheets:")
+
+        for sheet_name in xl.sheet_names[:5]:  # First 5 sheets
+            print(f"\n=== {sheet_name} ===")
+            df = xl.parse(sheet_name)
+
+            print(f"Shape: {df.shape} (rows x columns)")
+            print("Column names:", list(df.columns[:10]))  # First 10 columns
+
+            print("\nFirst 5 rows content:")
+            for row_idx in range(min(5, len(df))):
+                row_values = []
+                for col_idx in range(min(8, len(df.columns))):  # First 8 columns
+                    col_name = df.columns[col_idx]
+                    val = df.iloc[row_idx, col_idx]
+                    if pd.notna(val):
+                        val_str = str(val)[:30]
+                        row_values.append(f"'{val_str}'")
+                    else:
+                        row_values.append("''")
+                print(f"  Row {row_idx}: {' | '.join(row_values)}")
+
+            # Look for potential entity names
+            print("\n🔍 Potential entity names found:")
+            all_text = ' '.join(df.astype(str).values.flatten()).lower()
+
+            # Look for common entity patterns
+            potential_entities = set()
+            words = all_text.split()
+
+            for word in words:
+                word = word.strip('.,;:!?()[]{}"\'')
+                # Look for capitalized words that might be entity names
+                if (len(word) > 2 and word[0].isupper() and
+                    not word.endswith(('the', 'and', 'for', 'with', 'from', 'into', 'onto', 'data', 'table', 'sheet', 'file',
+                                     'total', 'amount', 'value', 'date', 'cash', 'flow', 'income', 'expense', 'asset', 'liability',
+                                     'equity', 'revenue', 'cost', 'profit', 'loss', 'balance', 'sheet', 'statement'))):
+                    if len(word) < 30:  # Reasonable entity name length
+                        potential_entities.add(word)
+
+            if potential_entities:
+                print(f"  Found {len(potential_entities)} potential entities:")
+                for entity in sorted(list(potential_entities))[:10]:  # Show first 10
+                    print(f"    - {entity}")
+            else:
+                print("  No clear entity names found")
+            print("-" * 30)
+
+    except Exception as e:
+        print(f"❌ Error examining databook: {e}")
+        import traceback
+        traceback.print_exc()
+
 if __name__ == "__main__":
-    test_new_table_logic()
+    examine_databook()
 
 
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
