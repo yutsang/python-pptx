@@ -432,9 +432,19 @@ def main():
         
         # Entity Selection Mode (Single vs Multiple)
         st.markdown("---")
-        # Entity mode is now automatically detected - no manual selection needed
-        entity_mode = 'auto'  # System will automatically detect single vs multiple entity scenarios
-        st.session_state['entity_mode'] = entity_mode
+        st.markdown("**Entity Mode Selection:**")
+        entity_mode = st.radio(
+            "Choose entity processing mode:",
+            ["Single Entity", "Multiple Entity"],
+            index=0,  # Default to Single Entity
+            help="Single Entity: Process one entity table | Multiple Entity: Detect and filter multiple entity tables in the same sheet"
+        )
+
+        # Convert to internal format
+        entity_mode_internal = 'single' if entity_mode == "Single Entity" else 'multiple'
+        st.session_state['entity_mode'] = entity_mode_internal
+
+        st.info(f"📊 **Selected Mode:** {entity_mode} - {'Process single entity table' if entity_mode_internal == 'single' else 'Automatically detect and filter multiple entity tables'}")
 
 
         

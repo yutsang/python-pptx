@@ -221,9 +221,22 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
     return latest_column
 
 
-def determine_entity_mode_and_filter(df, entity_name, entity_keywords):
-    """Determine if we're in single entity or multiple entity mode and filter accordingly."""
+def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mode='single'):
+    """Determine if we're in single entity or multiple entity mode and filter accordingly.
+
+    Args:
+        df: DataFrame to process
+        entity_name: Target entity name
+        entity_keywords: List of entity keywords to search for
+        manual_mode: Manual selection - 'single' or 'multiple'
+    """
     print(f"   🔍 ENTITY ANALYSIS: entity_name='{entity_name}', entity_keywords={entity_keywords}")
+    print(f"   📊 MANUAL MODE: {manual_mode}")
+
+    # If manual mode is 'single', skip entity filtering and return original table
+    if manual_mode == 'single':
+        print(f"   🎯 SINGLE ENTITY MODE: Using original table (no filtering applied)")
+        return df, False
 
     # Step 1: Identify table sections by finding empty rows or major delimiters
     table_sections = []
@@ -265,10 +278,20 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords):
                 entity_sections[keyword].append((start_row, end_row, section_idx))
                 print(f"   📍 Section {section_idx} (rows {start_row}-{end_row}) contains entity '{keyword}'")
 
-    # Step 3: Determine entity mode
+    # Step 3: Determine entity mode and handle fallback
     unique_entities = len(entity_sections)
-    is_multiple_entity = unique_entities > 1
-    print(f"   🎯 ENTITY MODE: {'MULTIPLE' if is_multiple_entity else 'SINGLE'} (found {unique_entities} unique entities)")
+    detected_multiple = unique_entities > 1
+
+    if manual_mode == 'multiple':
+        if detected_multiple:
+            print(f"   🎯 MULTIPLE ENTITY MODE: Confirmed (found {unique_entities} unique entities)")
+            is_multiple_entity = True
+        else:
+            print(f"   ⚠️  MULTIPLE ENTITY MODE: No multiple entities detected, falling back to single entity mode")
+            print(f"   📊 Only found {unique_entities} unique entities")
+            return df, False  # Fallback to single entity mode
+    else:
+        is_multiple_entity = False
 
     # Step 4: Find the best matching entity section
     target_entity = None
@@ -490,7 +513,12 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             if 'entity_keywords' in ai_data:
                 entity_keywords = ai_data['entity_keywords']
 
-        df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df, entity_name, entity_keywords)
+        # Get manual mode selection from session state
+        manual_mode = 'single'  # Default fallback
+        if hasattr(st, 'session_state') and 'entity_mode' in st.session_state:
+            manual_mode = st.session_state['entity_mode']
+
+        df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mode)
 
         # NEW LOGIC: Step 2 - Find Indicative adjusted column and dates
         extracted_date, selected_column, row_number = find_indicative_adjusted_column_and_dates(df_filtered, entity_keywords)
@@ -881,8 +909,8 @@ def test_new_table_logic():
     print(f"📊 Single Entity DataFrame: {len(df_single)} rows, {len(df_single.columns)} columns")
 
     entity_keywords = ['Entity A']
-    df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df_single, 'Entity A', entity_keywords)
-    print(f"🎯 Entity Mode: {'MULTIPLE' if is_multiple_entity else 'SINGLE'}")
+    df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df_single, 'Entity A', entity_keywords, 'single')
+    print(f"🎯 Entity Mode: {'MULTIPLE' if is_multiple_entity else 'SINGLE'} (Manual: Single)")
 
     # Test Case 2: Multiple Entity Tables
     print("\n📋 TEST CASE 2: Multiple Entity Tables")
@@ -917,10 +945,18 @@ def test_new_table_logic():
     df_multi = pd.DataFrame(multi_entity_data)
     print(f"📊 Multiple Entity DataFrame: {len(df_multi)} rows, {len(df_multi.columns)} columns")
 
-    # Test selecting Entity B table
+    # Test Multiple Entity Mode with Manual Selection
     entity_keywords_multi = ['Entity A', 'Entity B', 'Entity C']
-    df_filtered_multi, is_multiple_entity_multi = determine_entity_mode_and_filter(df_multi, 'Entity B', entity_keywords_multi)
-    print(f"🎯 Entity Mode: {'MULTIPLE' if is_multiple_entity_multi else 'SINGLE'}")
+    df_filtered_multi, is_multiple_entity_multi = determine_entity_mode_and_filter(df_multi, 'Entity B', entity_keywords_multi, 'multiple')
+    print(f"🎯 Entity Mode: {'MULTIPLE' if is_multiple_entity_multi else 'SINGLE'} (Manual: Multiple)")
+
+    # Test Fallback: Multiple mode selected but only single entity found
+    print("\n📋 TEST CASE 3: Multiple Mode with Single Entity (Fallback Test)")
+    print("-" * 50)
+
+    # Test with single entity data but multiple mode selected - should fallback to single
+    df_fallback, is_multiple_fallback = determine_entity_mode_and_filter(df_single, 'Entity A', ['Entity A'], 'multiple')
+    print(f"🎯 Fallback Mode: {'MULTIPLE' if is_multiple_fallback else 'SINGLE'} (Manual: Multiple, but single entity detected)")
     print(f"📊 Filtered DataFrame: {len(df_filtered_multi)} rows, {len(df_filtered_multi.columns)} columns")
 
     # Test Indicative adjusted column detection on filtered table
@@ -942,7 +978,7 @@ def test_new_table_logic():
         print(f"📋 Generated Table Name: {table_name}")
 
     print("\n" + "=" * 60)
-    print("✅ MULTIPLE ENTITY TEST COMPLETED")
+    print("✅ MANUAL ENTITY MODE SELECTION TEST COMPLETED")
 
 
 if __name__ == "__main__":
