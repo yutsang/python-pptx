@@ -530,18 +530,16 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
             table_sections = filtered_sections
             is_multiple_entity = len(filtered_sections) > 1
 
-            # Extract the first (or only) table section for multiple entity mode
-            if filtered_sections:
-                start_row, end_row, section_idx = filtered_sections[0]  # Use first matching section
-                df_filtered = df.iloc[start_row:end_row+1].copy()
+            # Extract DataFrame sections and return them
+            filtered_dfs = []
+            for start_row, end_row, section_idx in filtered_sections:
+                df_section = df.iloc[start_row:end_row+1].copy()
+                df_section = df_section.reset_index(drop=True)
+                filtered_dfs.append(df_section)
+                print(f"   🎯 EXTRACTED: Section {section_idx}, rows {start_row}-{end_row} ({len(df_section)} rows)")
 
-                # Reset index to make it cleaner but preserve column names
-                df_filtered = df_filtered.reset_index(drop=True)
-
-                print(f"   🎯 SELECTED TABLE: Section {section_idx}, rows {start_row}-{end_row} ({len(df_filtered)} rows extracted)")
-                print(f"   📋 ENTITY: {entity_name}")
-
-                return [df_filtered], is_multiple_entity
+            # Return the filtered DataFrames for parse_accounting_table to process
+            return filtered_dfs, is_multiple_entity
         else:
             print(f"   ⚠️ No table sections found containing target entity")
             # If no sections contain the target entity, return original table
