@@ -255,7 +255,31 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
         print(f"   🎯 SINGLE ENTITY MODE: Using original table (no filtering applied)")
         return df, False
 
-    # Step 1: Identify table sections by finding empty rows or major delimiters
+    # Step 1: FIRST - Scan entire sheet for multiple entities to determine mode
+    print(f"   🔍 SCANNING ENTIRE SHEET for entity detection...")
+    entities_found_in_sheet = []
+
+    for row_idx in range(len(df)):
+        row = df.iloc[row_idx]
+        row_text = ' '.join(str(val).lower() for val in row if pd.notna(val))
+
+        for keyword in entity_keywords:
+            if keyword.lower() in row_text and keyword not in entities_found_in_sheet:
+                entities_found_in_sheet.append(keyword)
+                print(f"   ✅ FOUND ENTITY: {keyword} in row {row_idx}")
+
+    total_entities_detected = len(entities_found_in_sheet)
+    print(f"   📊 TOTAL ENTITIES DETECTED: {total_entities_detected}")
+
+    # Determine if this is truly a multiple entity file
+    is_actually_multiple = total_entities_detected > 1
+
+    if manual_mode == 'multiple' and not is_actually_multiple:
+        print(f"   ⚠️  WARNING: Manual mode set to 'multiple' but only {total_entities_detected} entities detected")
+    elif manual_mode != 'multiple' and is_actually_multiple:
+        print(f"   ℹ️  INFO: {total_entities_detected} entities detected, consider using 'multiple' mode")
+
+    # Step 2: Identify table sections by finding empty rows or major delimiters
     table_sections = []
     current_section_start = None
 
@@ -413,9 +437,11 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
         print(f"   💡 - Check row 0 content above - does it contain your entity name?")
         print(f"   💡 - Try using just the base entity name (first word only)")
 
-    # Set defaults based on mode
+    # Set entity mode based on detection results
     if manual_mode == 'multiple':
-        is_multiple_entity = False  # Will be set properly in simplified filtering
+        # For multiple entity mode, use the detected multiple status
+        is_multiple_entity = detected_multiple
+        print(f"   🎯 MULTIPLE ENTITY MODE: {'CONFIRMED' if detected_multiple else 'NOT DETECTED'} ({unique_entities} entities found)")
     else:
         is_multiple_entity = False
 
