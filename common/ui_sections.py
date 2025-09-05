@@ -76,10 +76,10 @@ def render_balance_sheet_sections(
                     multiplier = metadata.get('multiplier', 1)
                     st.markdown(f"**Multiplier:** {multiplier}x")
                 with col5:
-                    # Show Excel row number from new logic
-                    excel_row = metadata.get('excel_row_number')
-                    if excel_row:
-                        st.markdown(f"**Excel Row:** {excel_row}")
+                    # Show Indicative adjusted column info instead of Excel row
+                    selected_column = metadata.get('selected_column')
+                    if selected_column:
+                        st.markdown(f"**Indicative adjusted:** {selected_column}")
                     else:
                         # Fallback to currency info
                         currency_info = metadata.get('currency', 'CNY')
@@ -306,10 +306,10 @@ def render_income_statement_sections(
                     multiplier = metadata.get('multiplier', 1)
                     st.markdown(f"**Multiplier:** {multiplier}x")
                 with col5:
-                    # Show Excel row number from new logic
-                    excel_row = metadata.get('excel_row_number')
-                    if excel_row:
-                        st.markdown(f"**Excel Row:** {excel_row}")
+                    # Show Indicative adjusted column info instead of Excel row
+                    selected_column = metadata.get('selected_column')
+                    if selected_column:
+                        st.markdown(f"**Indicative adjusted:** {selected_column}")
                     else:
                         # Fallback to currency info
                         currency_info = metadata.get('currency', 'CNY')

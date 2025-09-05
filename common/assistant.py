@@ -1096,11 +1096,29 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                             markdown_content += f"**Currency:** {structured_table['currency']}\n"
                             markdown_content += f"**Multiplier:** {structured_table['multiplier']}\n\n"
 
-                            # Add items
+                            # Add items with properly formatted values
                             for item in structured_table['items']:
-                                markdown_content += f"- {item['description']}: {item['amount']}\n"
+                                # Format numeric values with commas and 2 decimal places
+                                try:
+                                    if isinstance(item['amount'], (int, float)):
+                                        formatted_amount = ",.2f"
+                                    else:
+                                        formatted_amount = item['amount']
+                                except:
+                                    formatted_amount = item['amount']
 
-                            markdown_content += f"\n**Total:** {structured_table['total']}\n\n"
+                                markdown_content += f"- {item['description']}: {formatted_amount}\n"
+
+                            # Format total value
+                            try:
+                                if isinstance(structured_table['total'], (int, float)):
+                                    formatted_total = ",.2f"
+                                else:
+                                    formatted_total = structured_table['total']
+                            except:
+                                formatted_total = structured_table['total']
+
+                            markdown_content += f"\n**Total:** {formatted_total}\n\n"
                         else:
                             # Fallback to original format if parsing fails
                             try:

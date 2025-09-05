@@ -1135,16 +1135,8 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         # Use actual entity found in data if available, otherwise use entity_name
         display_entity = actual_entity if actual_entity else entity_name
 
-        # NEW LOGIC: Generate dynamic table name based on entity mode and selected column
-        if is_multiple_entity and selected_column and row_number:
-            # Multiple entity mode with Indicative adjusted column found
-            table_name = f"{key} - {display_entity} (Row {row_number})"
-        elif selected_column and row_number:
-            # Single entity mode with Indicative adjusted column found
-            table_name = f"{key} - {display_entity} (Row {row_number})"
-        else:
-            # Fallback to original logic
-            table_name = f"{key} - {display_entity}"
+        # NEW LOGIC: Generate clean table name without row numbers
+        table_name = f"{key} - {display_entity}"
 
         table_metadata = {
             'table_name': table_name,
@@ -1988,8 +1980,20 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 if entity_found_in_sheet:
                     # Use the current column selection improvements
                     if latest_date_col and latest_date_col in selected_data_frame.columns:
-                        # Keep essential columns for better processing
-                        desc_col = selected_data_frame.columns[0]  # Usually first column
+                        # Find the actual description column (contains text like "Deposits with banks", "Total")
+                        desc_col = None
+                        for col in selected_data_frame.columns:
+                            # Check if this column contains the descriptions we want
+                            col_values = selected_data_frame[col].dropna().astype(str)
+                            if any('deposits' in val.lower() or 'total' in val.lower() or 'banks' in val.lower()
+                                   for val in col_values if val.strip()):
+                                desc_col = col
+                                break
+
+                        # Fallback to column 1 if we can't find the description column
+                        if desc_col is None:
+                            desc_col = selected_data_frame.columns[min(1, len(selected_data_frame.columns)-1)]
+
                         essential_cols = [desc_col, latest_date_col]
                         filtered_df = selected_data_frame[essential_cols].dropna(how='all')
                     else:
