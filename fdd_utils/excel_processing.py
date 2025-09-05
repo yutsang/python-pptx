@@ -31,8 +31,6 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
 
     from datetime import datetime
     timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-    print(f"🔍 [{timestamp}] DETECT_LATEST_DATE_COLUMN called for sheet '{sheet_name}' with {len(df)} rows, {len(df.columns)} columns")
-    print(f"🔍 [{timestamp}] Entity keywords: {entity_keywords}")
 
     def parse_date(date_str):
         """Parse date string in various formats including xMxx."""
@@ -2122,7 +2120,6 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
         # Process sheets within context manager
         with pd.ExcelFile(excel_source) as xl:
-            print(f"🔍 DEBUG: Excel sheets available: {xl.sheet_names}")
             for sheet_name in xl.sheet_names:
                 # Skip sheets not in mapping to avoid using undefined df
                 if sheet_name not in reverse_mapping:
@@ -2175,15 +2172,13 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
                         print(f"      📋 ALL TEXT FROM DATAFRAME: {all_text}")
 
+                        print(f"----------------------------------------------------------------------------------------------------")
                         print(f"📋 PROCESSING TAB: {sheet_name}")
+                        print(f"----------------------------------------------------------------------------------------------------")
                         print(f"   🔍 Entity mode: {entity_mode}")
                         print(f"   🔍 Entity name: {entity_name}")
                         print(f"   🔍 Entity keywords: {entity_keywords}")
                         print(f"   📊 DataFrame shape: {data_frame.shape}")
-                        print(f"   📝 Sample content (first 3 rows):")
-                        for idx in range(min(3, len(data_frame))):
-                            row_content = ' | '.join(str(val)[:50] for val in data_frame.iloc[idx] if pd.notna(val))
-                            print(f"      Row {idx}: {row_content}")
                         print(f"   🔍 Looking for '人民币千元' in content...")
 
                         # Check for RMB patterns
@@ -2479,15 +2474,13 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         # Get all text from the dataframe for searching
                         all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
 
+                        print(f"----------------------------------------------------------------------------------------------------")
                         print(f"📋 PROCESSING TAB: {sheet_name}")
+                        print(f"----------------------------------------------------------------------------------------------------")
                         print(f"   🔍 Entity mode: {entity_mode}")
                         print(f"   🔍 Entity name: {entity_name}")
                         print(f"   🔍 Entity keywords: {entity_keywords}")
                         print(f"   📊 DataFrame shape: {data_frame.shape}")
-                        print(f"   📝 Sample content (first 3 rows):")
-                        for idx in range(min(3, len(data_frame))):
-                            row_content = ' | '.join(str(val)[:50] for val in data_frame.iloc[idx] if pd.notna(val))
-                            print(f"      Row {idx}: {row_content}")
                         print(f"   🔍 Looking for '人民币千元' in content...")
 
                         # Check for RMB patterns

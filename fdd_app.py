@@ -350,8 +350,9 @@ def main():
     configure_streamlit_page()
     st.title("🏢 Real Estate DD Report Writer")
 
-    # Add navigation description
-    st.info("📋 **Welcome!** Please navigate to the left sidebar to upload your databook and configure input data.")
+    # Add navigation description (hide when processing starts)
+    if 'processing_started' not in st.session_state or not st.session_state['processing_started']:
+        st.info("📋 **Welcome!** Please navigate to the left sidebar to upload your databook and configure input data.")
 
     # Sidebar for controls
     with st.sidebar:
