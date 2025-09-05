@@ -1436,39 +1436,41 @@ def main():
 
 
 
-                                translated_results = run_chinese_translator(filtered_keys_for_ai, translation_input, temp_ai_data, external_progress=ext)
+                                # Check if we need translation (only for non-English languages)
+                                if selected_language == '中文':
+                                    translated_results = run_chinese_translator(filtered_keys_for_ai, translation_input, temp_ai_data, external_progress=ext)
+                                    proof_results = translated_results  # Final results are the translated content
 
-                                proof_results = translated_results  # Final results are the translated content
+                                    # Check if translation actually produced Chinese content
+                                    if translated_results:
+                                        # Verify that at least some content is in Chinese
+                                        has_chinese_content = False
+                                        has_translation_failure = False
 
-                                # Check if translation actually produced Chinese content
-                                if translated_results:
-                                    # Verify that at least some content is in Chinese
-                                    has_chinese_content = False
-                                    has_translation_failure = False
+                                        for key, result in translated_results.items():
+                                            content = result.get('content', '') if isinstance(result, dict) else str(result)
+                                            if isinstance(result, dict) and result.get('translation_failed'):
+                                                has_translation_failure = True
+                                                break
+                                            elif content and any('\u4e00' <= char <= '\u9fff' for char in content):
+                                                has_chinese_content = True
+                                                break
 
-                                    for key, result in translated_results.items():
-                                        content = result.get('content', '') if isinstance(result, dict) else str(result)
-                                        if isinstance(result, dict) and result.get('translation_failed'):
-                                            has_translation_failure = True
-                                            break
-                                        elif content and any('\u4e00' <= char <= '\u9fff' for char in content):
-                                            has_chinese_content = True
-                                            break
-
-                                    if has_translation_failure:
-                                        st.error("❌ 翻译完全失败。请检查AI配置和网络连接。")
-                                        status_text.text("❌ 翻译失败")
-                                    elif not has_chinese_content:
-                                        st.warning("⚠️ 翻译可能失败，内容仍为英文。请检查AI配置。")
-                                        status_text.text("⚠️ 翻译警告：内容可能仍为英文")
-
+                                        if has_translation_failure:
+                                            st.error("❌ 翻译完全失败。请检查AI配置和网络连接。")
+                                            status_text.text("❌ 翻译失败")
+                                        elif not has_chinese_content:
+                                            st.warning("⚠️ 翻译可能失败，内容仍为英文。请检查AI配置。")
+                                            status_text.text("⚠️ 翻译警告：内容可能仍为英文")
+                                    else:
+                                        proof_results = None
                                 else:
-                                    # English version: Generate → Proofread
+                                    # English version: Skip translation, go directly to proofread
+                                    translated_results = combined_results  # No translation needed
                                     ext['combined']['stage_index'] = 2
                                     status_text.text("🧐 运行校对...")
                                     progress_bar.progress(70)
                                     proof_results = run_ai_proofreader(filtered_keys_for_ai, combined_results, temp_ai_data, external_progress=ext, language=selected_language)
-                                    translated_results = combined_results  # No translation for English
 
                                 if proof_results:
                                     # Storing translation results

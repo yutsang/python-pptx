@@ -2113,13 +2113,9 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                 # Also map the key name directly to itself (for sheet names like "Cash", "AR")
                 reverse_mapping[key] = key
 
-        print(f"🔍 DEBUG: reverse_mapping created: {reverse_mapping}")
-
         # Get financial keys
         from fdd_utils.data_utils import get_financial_keys
         financial_keys = get_financial_keys()
-
-        print(f"🔍 DEBUG: financial_keys: {financial_keys}")
 
         # Initialize sections by key
         sections_by_key = {key: [] for key in financial_keys}
@@ -2165,9 +2161,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         print(f"   📊 SECTION DATA DEBUG:")
                         print(f"      📋 DataFrame shape: {data_frame.shape}")
                         print(f"      📋 First row content: {data_frame.iloc[0].fillna('').astype(str).str.cat(sep=' ')}")
-                        print(f"      📋 All rows content:")
-                        for i in range(min(3, len(data_frame))):
-                            row_content = data_frame.iloc[i].fillna('').astype(str).str.cat(sep=' ')
+
+                        # Print FULL table content (not just first 3 rows)
+                        print(f"      📋 FULL TABLE CONTENT:")
+                        for i in range(len(data_frame)):
+                            row_content = data_frame.iloc[i].fillna('').astype(str).str.cat(sep=' | ')
                             print(f"         Row {i}: {row_content}")
 
                         # Check if this section contains any of the financial keys
@@ -2178,7 +2176,6 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         print(f"      📋 ALL TEXT FROM DATAFRAME: {all_text}")
 
                         print(f"📋 PROCESSING TAB: {sheet_name}")
-                        print(f"   🔍 Available financial keys: {financial_keys}")
                         print(f"   🔍 Entity mode: {entity_mode}")
                         print(f"   🔍 Entity name: {entity_name}")
                         print(f"   🔍 Entity keywords: {entity_keywords}")
@@ -2483,7 +2480,6 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
 
                         print(f"📋 PROCESSING TAB: {sheet_name}")
-                        print(f"   🔍 Available financial keys: {financial_keys}")
                         print(f"   🔍 Entity mode: {entity_mode}")
                         print(f"   🔍 Entity name: {entity_name}")
                         print(f"   🔍 Entity keywords: {entity_keywords}")
