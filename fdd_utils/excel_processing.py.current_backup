@@ -1897,64 +1897,62 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 else:
                     print(f"⚠️  Sheet {sheet_name}: No date column detected")
                 
-                # RESTORED WORKING LOGIC: Simple table splitting that worked well
-                if len(df) > 50:  # Split medium to large sheets
-                    # Split dataframes on empty rows - SIMPLIFIED APPROACH
+                # Performance optimization: Skip splitting for small sheets
+                if len(df) > 100:  # Only split very large sheets
+                    # Split dataframes on empty rows
                     empty_rows = df.index[df.isnull().all(1)]
                     start_idx = 0
                     dataframes = []
-
+                    
                     for end_idx in empty_rows:
                         if end_idx > start_idx:
-                            split_df = df.iloc[start_idx:end_idx]
+                            split_df = df[start_idx:end_idx]
                             if not split_df.dropna(how='all').empty:
                                 dataframes.append(split_df)
                             start_idx = end_idx + 1
-
+                    
                     if start_idx < len(df):
-                        dataframes.append(df.iloc[start_idx:])
+                        dataframes.append(df[start_idx:])
                 else:
                     # Process small sheets as single dataframe
                     print(f"📈 [{reverse_mapping[sheet_name]}] Processing as single dataframe (size: {len(df)})")
                     dataframes = [df]
                 
-                # RESTORED WORKING ENTITY MATCHING: Simple and effective approach
-                entity_keywords = [entity_name]  # Start with base entity name
-                # Add variations that were working before
-                entity_keywords.extend([f"{entity_name} {suffix}" for suffix in entity_suffixes if suffix])
-
-                print(f"🔑 Entity keywords for {sheet_name}: {entity_keywords}")
-
+                # Vectorized entity matching for better performance
+                entity_keywords = [f"{entity_name} {suffix}" for suffix in entity_suffixes if suffix]
+                if not entity_keywords:  # If no helpers, just use entity name
+                    entity_keywords = [entity_name]
+                
+                combined_pattern = '|'.join(re.escape(kw) for kw in entity_keywords)
+                
                 # Track if we found entity data in this sheet
                 entity_found_in_sheet = False
-
+                
                 for data_frame in dataframes:
-                    # RESTORED WORKING LOGIC: Simple entity matching that worked well
-                    all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
-                    entity_match = any(kw.lower() in all_text for kw in entity_keywords)
-
-                    if entity_match:
-                        print(f"🚀 [{reverse_mapping[sheet_name]}] Found entity data, processing section...")
-                        entity_found_in_sheet = True
-
-                        # Use the current column selection improvements
-                        if latest_date_col and latest_date_col in data_frame.columns:
-                            # Keep essential columns for better processing
-                            desc_col = data_frame.columns[0]  # Usually first column
-                            essential_cols = [desc_col, latest_date_col]
-                            filtered_df = data_frame[essential_cols].dropna(how='all')
-                        else:
-                            # Fallback to full dataframe
-                            filtered_df = data_frame
-
+                    # Fast filtering: only keep essential columns
+                    if latest_date_col and latest_date_col in data_frame.columns:
+                        # Find description column efficiently
+                        desc_col = data_frame.columns[0]  # Usually first column
+                        
+                        # Keep only 2 columns for faster processing
+                        essential_cols = [desc_col, latest_date_col]
+                        filtered_df = data_frame[essential_cols].dropna(how='all')
+                        
                         if not filtered_df.empty:
-                            # Convert to markdown format (RESTORED WORKING FORMAT)
-                            try:
-                                markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
-                            except Exception:
-                                markdown_content += filtered_df.to_markdown(index=False) + '\n\n'
-                            print(f"✅ [{reverse_mapping[sheet_name]}] Processed section with {len(filtered_df)} rows")
-
+                            # Vectorized entity matching
+                            all_text = ' '.join(filtered_df.astype(str).values.flatten()).lower()
+                            entity_match = any(kw.lower() in all_text for kw in entity_keywords)
+                            
+                            if entity_match:
+                                print(f"🚀 [{reverse_mapping[sheet_name]}] Found entity data for {reverse_mapping[sheet_name]}, continuing...")
+                                entity_found_in_sheet = True
+                                
+                                # Convert to markdown format
+                                try:
+                                    markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
+                                except Exception:
+                                    markdown_content += filtered_df.to_markdown(index=False) + '\n\n'
+                
                 # Early exit if entity data found in this sheet
                 if entity_found_in_sheet:
                     print(f"✅ [{reverse_mapping[sheet_name]}] Entity data found and processed")
