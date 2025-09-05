@@ -4,7 +4,7 @@ import streamlit as st
 
 def configure_streamlit_page():
     """Centralize Streamlit page setup and config cleanup to avoid local unbound variables."""
-    st.set_page_config(page_title="Financial Data Processor", page_icon="📊", layout="wide")
+    st.set_page_config(page_title="Real Estate DD Report Writer", page_icon="🏢", layout="wide")
     # Clean any deprecated/invalid options that might be in session
     if 'client.caching' in st.session_state:
         del st.session_state['client.caching']

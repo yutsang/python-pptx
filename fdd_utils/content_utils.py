@@ -36,6 +36,11 @@ def clean_content_quotes(content):
     if not content:
         return content
 
+    # Handle case where content is a dict instead of string
+    if isinstance(content, dict):
+        # Convert dict to string representation
+        content = str(content)
+
     # Split content into lines to process each line separately
     lines = content.split('\n')
     cleaned_lines = []

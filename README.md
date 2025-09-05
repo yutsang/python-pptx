@@ -1,6 +1,6 @@
-# Financial Data Processor - Streamlit App
+# Real Estate DD Report Writer - Streamlit App
 
-A Streamlit-based web application for processing and analyzing financial data from Excel files, built on the functionality from the original `old_ver` implementation.
+A Streamlit-based web application for processing and analyzing financial data from Excel files to generate Due Diligence reports for real estate investments, built on the functionality from the original `old_ver` implementation.
 
 ## Features
 

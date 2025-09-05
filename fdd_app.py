@@ -348,7 +348,10 @@ def main():
     # Configure Streamlit page and sanitize deprecated options
     from common.ui import configure_streamlit_page
     configure_streamlit_page()
-    st.title("📊 Financial Data Processor")
+    st.title("🏢 Real Estate DD Report Writer")
+
+    # Add navigation description
+    st.info("📋 **Welcome!** Please navigate to the left sidebar to upload your databook and configure input data.")
 
     # Sidebar for controls
     with st.sidebar:
