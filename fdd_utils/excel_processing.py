@@ -259,6 +259,36 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
     print(f"   🔍 SCANNING ENTIRE SHEET for entity detection...")
     entities_found_in_sheet = []
 
+    # Check for all known entity patterns in the sheet
+    # Only match full entity names, not partial words
+    entity_patterns = [
+        'ningbo wanchen',
+        'haining wanpu',
+        'nanjing jingya'
+    ]
+
+    for row_idx in range(len(df)):
+        row = df.iloc[row_idx]
+        row_text = ' '.join(str(val).lower() for val in row if pd.notna(val))
+
+        for pattern in entity_patterns:
+            if pattern in row_text:
+                # Map the pattern to the actual entity name
+                if 'ningbo wanchen' in pattern:
+                    entity_name = 'Ningbo Wanchen'
+                elif 'haining wanpu' in pattern:
+                    entity_name = 'Haining Wanpu'
+                elif 'nanjing jingya' in pattern:
+                    entity_name = 'Nanjing Jingya'
+                else:
+                    entity_name = pattern.title()
+
+                if entity_name not in entities_found_in_sheet:
+                    entities_found_in_sheet.append(entity_name)
+                    print(f"   ✅ FOUND ENTITY: {entity_name} in row {row_idx}")
+                break  # Stop checking other patterns for this row
+
+    # Also check with the provided entity keywords
     for row_idx in range(len(df)):
         row = df.iloc[row_idx]
         row_text = ' '.join(str(val).lower() for val in row if pd.notna(val))
@@ -270,6 +300,7 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
 
     total_entities_detected = len(entities_found_in_sheet)
     print(f"   📊 TOTAL ENTITIES DETECTED: {total_entities_detected}")
+    print(f"   📋 ENTITIES FOUND: {entities_found_in_sheet}")
 
     # Determine if this is truly a multiple entity file
     is_actually_multiple = total_entities_detected > 1
@@ -303,6 +334,10 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
     print(f"   📊 Found {len(table_sections)} table sections in the worksheet")
 
     # Step 2: Analyze each section to find entity associations
+    # Use both user-specified keywords AND all entities found in the sheet
+    all_entity_keywords = list(set(entity_keywords + entities_found_in_sheet))
+    print(f"   🔑 ALL ENTITY KEYWORDS FOR SECTION ANALYSIS: {all_entity_keywords}")
+
     entity_sections = {}
 
     # Always use the original complex detection logic for all modes
@@ -324,13 +359,13 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
                 col_name_str = str(col_name).strip()
                 section_values.append(col_name_str)
                 # Debug: show when we're checking column names
-                if any(kw.lower() in col_name_str.lower() for kw in entity_keywords):
+                if any(kw.lower() in col_name_str.lower() for kw in all_entity_keywords):
                     print(f"   📋 Checking column name: '{col_name_str}'")
 
         section_text = ' '.join(val.lower() for val in section_values)
 
         # Check which entities are mentioned in this section - MORE ROBUST MATCHING
-        for keyword in entity_keywords:
+        for keyword in all_entity_keywords:
             # Try different matching strategies
             keyword_lower = keyword.lower()
             section_lower = section_text.lower()
@@ -494,52 +529,10 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
             print(f"   ⚠️  No suitable table section found, using original table")
             return df, is_multiple_entity
 
-    # Step 4: Find the best matching entity section
-    target_entity = None
-    best_section = None
-
-    # Priority 1: Exact match with entity_name
-    if entity_name in entity_sections:
-        target_entity = entity_name
-        best_section = entity_sections[entity_name][0]  # Take first matching section
-        print(f"   ✅ EXACT MATCH: Found entity '{entity_name}' in section {best_section[2]} (rows {best_section[0]}-{best_section[1]})")
-
-    # Priority 2: Partial match with any entity keyword
-    elif entity_sections:
-        # Find the entity that best matches our target
-        for keyword in entity_keywords:
-            if keyword in entity_sections:
-                target_entity = keyword
-                best_section = entity_sections[keyword][0]
-                print(f"   ✅ PARTIAL MATCH: Found entity '{keyword}' in section {best_section[2]} (rows {best_section[0]}-{best_section[1]})")
-                break
-
-    # Priority 3: If no entity found but we have sections, use the first substantial section
-    elif table_sections:
-        # Look for the first section with substantial data (more than just headers)
-        for start_row, end_row, section_idx in [(s[0], s[1], i) for i, s in enumerate(table_sections)]:
-            section_size = end_row - start_row + 1
-            if section_size > 3:  # At least 4 rows (header + 3 data rows)
-                best_section = (start_row, end_row, section_idx)
-                print(f"   ⚠️  NO ENTITY MATCH: Using first substantial section {section_idx} (rows {start_row}-{end_row})")
-                break
-
-    # Step 5: Extract the selected table section
-    if best_section:
-        start_row, end_row, section_idx = best_section
-        df_filtered = df.iloc[start_row:end_row+1].copy()
-
-        # Reset index to make it cleaner but preserve column names
-        df_filtered = df_filtered.reset_index(drop=True)
-
-        print(f"   🎯 SELECTED TABLE: Section {section_idx}, rows {start_row}-{end_row} ({len(df_filtered)} rows extracted)")
-        if target_entity:
-            print(f"   📋 ENTITY: {target_entity}")
-
-        return df_filtered, is_multiple_entity
-    else:
-        print(f"   ⚠️  No suitable table section found, using original table")
-        return df, is_multiple_entity
+    # MULTI-ENTITY MODE: Return the entire dataframe without filtering
+    # The calling function will handle section selection
+    print(f"   🎯 MULTIPLE ENTITY MODE: Returning entire dataframe for section-by-section processing")
+    return df, is_multiple_entity
 
 def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywords, manual_mode='single'):
     """Determine if we're in single entity or multiple entity mode and return ALL matching sections.
@@ -1046,17 +1039,19 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         
         # Find data start row (first row with actual numeric data)
         data_start_row = None
+        desc_col_idx = 1  # Use column 1 for descriptions (not column 0)
         for i in range(len(df_str)):
             cell_value = str(df_str.iloc[i, value_col_idx])
             # Look for cells that contain numbers (more flexible)
             if re.search(r'\d+', cell_value) and cell_value.strip() not in ['nan', '']:
                 # Check if this looks like a data row (has both description and value)
-                desc_cell = str(df_str.iloc[i, 0]).strip()
+                desc_cell = str(df_str.iloc[i, desc_col_idx]).strip()
                 if desc_cell and desc_cell.lower() not in ['nan', '']:
                     # Simplified check: just make sure it's not a pure number and not a header
-                    if (not re.match(r'^\d+\.?\d*$', desc_cell) and 
+                    if (not re.match(r'^\d+\.?\d*$', desc_cell) and
                         desc_cell.lower() not in ['cny\'000', 'audited', 'mgt acc', 'indicative adjusted', 'indicative adjustment']):
                         data_start_row = i
+                        # print(f"   🔍 Found data start row at {i}: desc='{desc_cell}', value='{cell_value}'")
                         break
         
         # Debug: Print the data start row and first few rows for verification
@@ -1177,22 +1172,70 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             'entity_mode': 'multiple' if is_multiple_entity else 'single'
         }
         
-        # Extract data rows
+        # Extract data rows - FILTER FOR SELECTED ENTITY ONLY
         data_rows = []
+
+        # For single entity mode, we need to identify which rows belong to the selected entity
+        if manual_mode == 'single' and actual_entity:
+            # First, try to find the entity in the current dataframe
+            entity_found_in_current_df = False
+            for row_idx in range(len(df_str)):
+                row_text = ' '.join(str(val).lower() for val in df_str.iloc[row_idx] if pd.notna(val))
+                if actual_entity.lower() in row_text:
+                    entity_found_in_current_df = True
+                    print(f"   ✅ Found {actual_entity} in current dataframe at row {row_idx}")
+                    break
+
+            # If entity is not found in current dataframe, it means we already extracted the correct section
+            # Trust the extraction logic and process all data (since it's already filtered)
+            if not entity_found_in_current_df:
+                print(f"   ℹ️  {actual_entity} not found in current section (already pre-filtered), processing all data")
+                # Don't modify data_start_row/data_end_row - process the entire provided dataframe
+            else:
+                # Entity found, apply section filtering
+                entity_start_row = None
+                entity_end_row = None
+
+                for row_idx in range(len(df_str)):
+                    row_text = ' '.join(str(val).lower() for val in df_str.iloc[row_idx] if pd.notna(val))
+                    if actual_entity.lower() in row_text:
+                        if entity_start_row is None:
+                            entity_start_row = row_idx
+                        # Continue until we find the next entity or end of sheet
+                        for next_row in range(row_idx + 1, len(df_str)):
+                            next_row_text = ' '.join(str(val).lower() for val in df_str.iloc[next_row] if pd.notna(val))
+                            if any(other_entity.lower() in next_row_text for other_entity in ['ningbo', 'haining', 'nanjing'] if other_entity != actual_entity.lower().split()[0]):
+                                entity_end_row = next_row - 1
+                                break
+                        if entity_end_row is None:
+                            entity_end_row = len(df_str) - 1
+                        break
+
+                if entity_start_row is not None:
+                    data_start_row = max(data_start_row, entity_start_row + 1)  # Start after entity header
+                    data_end_row = min(len(df_str), entity_end_row)
+                    print(f"   🎯 FILTERED FOR {actual_entity}: rows {data_start_row}-{data_end_row}")
+                else:
+                    print(f"   ⚠️  Could not find {actual_entity} section, using all data")
+
         for i in range(data_start_row, len(df_str)):
+            # Stop if we've reached the end of the selected entity's section
+            if 'data_end_row' in locals() and i > data_end_row:
+                break
+
             # Get description from column 1 (index 1) which contains the actual descriptions
             # Based on the Excel structure, descriptions are in column 1, not column 0
             desc_col_idx = 1
             desc_cell = str(df_str.iloc[i, desc_col_idx]).strip()
             value_cell = str(df_str.iloc[i, value_col_idx]).strip()
-            
+
             # Debug: Print what we're extracting
             # print(f"   🔍 DEBUG: Extracting from row {i}: desc_col={desc_col_idx}='{desc_cell}', value_col={value_col_idx}='{value_cell}'")
-            
+
             # Skip empty rows
             if desc_cell.lower() in ['nan', ''] and value_cell.lower() in ['nan', '']:
                 continue
-            
+
             # Skip header rows
             if desc_cell.lower() in ['description', 'item', 'account', 'details']:
                 continue
@@ -1210,6 +1253,7 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
                         # Determine if this is a total row
                         is_total = 'total' in desc_cell.lower()
                         
+                        # print(f"   📊 ADDING ITEM: {desc_cell} = {final_value} (is_total: {is_total})")
                         data_rows.append({
                             'description': desc_cell,
                             'value': final_value,
@@ -1231,13 +1275,9 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         }
 
         # Add filtered data if entity filtering was applied
-        print(f"   🔍 DEBUG: Checking for filtered data - mode={manual_mode}, original_shape={df.shape}, cleaned_shape={df_clean.shape}")
-
         # Check if entity filtering was actually applied
         # For manual_mode='multiple', we should always include filtered_data since entity filtering was attempted
         entity_filtering_applied = (manual_mode == 'multiple')
-
-        print(f"   🔍 DEBUG: Entity filtering applied: {entity_filtering_applied}")
 
         if entity_filtering_applied:
             result['filtered_data'] = df_clean
@@ -2113,26 +2153,29 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
                 # For multiple entity mode, we need to handle the entire sheet differently
                 if entity_mode == 'multiple':
-                    print(f"   🎯 MULTIPLE ENTITY MODE: Processing entire sheet '{sheet_name}' for all entities")
-                    # Get all sections for all entities in this sheet
-                    all_entity_sections = []
-                    for entity_kw in entity_keywords:
-                        entity_sections, _ = determine_entity_mode_and_filter_all_sections(df, entity_kw, entity_keywords, entity_mode)
-                        if entity_sections:
-                            for i, section_df in enumerate(entity_sections):
-                                all_entity_sections.append((entity_kw, section_df, i))
+                    print(f"   🎯 MULTIPLE ENTITY MODE: Processing sheet '{sheet_name}' for SELECTED entity '{entity_name}'")
+                    # Get sections ONLY for the selected entity
+                    entity_sections, _ = determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywords, entity_mode)
+                    
+                    print(f"   📊 Found {len(entity_sections)} sections for selected entity '{entity_name}' in sheet '{sheet_name}'")
 
-                    print(f"   📊 Found {len(all_entity_sections)} total entity sections in sheet '{sheet_name}'")
-
-                    # Process each entity section
-                    for entity_name_in_section, data_frame, section_idx in all_entity_sections:
-                        print(f"   🎯 Processing entity '{entity_name_in_section}' section {section_idx+1}")
+                    # Process each section for the selected entity only
+                    for section_idx, data_frame in enumerate(entity_sections):
+                        print(f"   🎯 Processing entity '{entity_name}' section {section_idx+1}")
+                        print(f"   📊 SECTION DATA DEBUG:")
+                        print(f"      📋 DataFrame shape: {data_frame.shape}")
+                        print(f"      📋 First row content: {data_frame.iloc[0].fillna('').astype(str).str.cat(sep=' ')}")
+                        print(f"      📋 All rows content:")
+                        for i in range(min(3, len(data_frame))):
+                            row_content = data_frame.iloc[i].fillna('').astype(str).str.cat(sep=' ')
+                            print(f"         Row {i}: {row_content}")
 
                         # Check if this section contains any of the financial keys
                         matched_keys = []  # Track which keys this data_frame matches
 
                         # Get all text from the dataframe for searching
                         all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
+                        print(f"      📋 ALL TEXT FROM DATAFRAME: {all_text}")
 
                         print(f"📋 PROCESSING TAB: {sheet_name}")
                         print(f"   🔍 Available financial keys: {financial_keys}")
@@ -2252,8 +2295,31 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                 print(f"   🔍 Entity keywords: {entity_keywords}")
                                 print(f"   🔍 Section text sample: {section_text[:200]}...")
 
-                        # Only process if entity is found in this section
-                        if entity_found:
+                        # CRITICAL FIX: Only process if this section matches the SELECTED entity
+                        # Check if this section contains the selected entity name
+                        print(f"   🔍 DECISION LOGIC DEBUG:")
+                        print(f"      📋 Looking for entity keywords: {entity_keywords}")
+                        print(f"      📋 Section text (first 200 chars): {section_text[:200]}")
+                        print(f"      📋 Section text (full): {section_text}")
+                        
+                        section_contains_selected_entity = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
+                        
+                        print(f"      🎯 DECISION RESULT: section_contains_selected_entity = {section_contains_selected_entity}")
+                        
+                        # Detailed keyword matching
+                        for entity_keyword in entity_keywords:
+                            keyword_found = entity_keyword.lower() in section_text
+                            print(f"      🔍 Keyword '{entity_keyword}' found: {keyword_found}")
+                            if keyword_found:
+                                # Find where the keyword appears
+                                keyword_pos = section_text.find(entity_keyword.lower())
+                                context_start = max(0, keyword_pos - 50)
+                                context_end = min(len(section_text), keyword_pos + len(entity_keyword) + 50)
+                                context = section_text[context_start:context_end]
+                                print(f"         📍 Found at position {keyword_pos}, context: '{context}'")
+                        
+                        if section_contains_selected_entity:
+                            print(f"   ✅ SECTION MATCHES SELECTED ENTITY: '{entity_name}' found in section")
                             # Find the actual entity name from the section text
                             if actual_entity_found is None:  # Not already set by intelligent detection
                                 actual_entity_found = None
@@ -2282,111 +2348,117 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                         actual_entity_found = matches[0]
                                         print(f"   🔍 Extracted actual entity name: {actual_entity_found}")
                                         break
+                        else:
+                            print(f"   ❌ SECTION SKIPPED: Does not contain selected entity '{entity_name}'")
+                            print(f"   🔍 Section text sample: {section_text[:100]}...")
+                            print(f"   🔍 FULL SECTION TEXT: {section_text}")
+                            print(f"   🔍 ENTITY KEYWORDS SEARCHED: {entity_keywords}")
+                            continue  # Skip this section entirely
 
-                            # Use new accounting table parser with detected latest date column
-                            print(f"🔍 About to parse table for key '{best_key}' in sheet '{sheet_name}':")
-                            print(f"   📊 DataFrame shape: {data_frame.shape}")
-                            print(f"   🎯 entity_mode: {entity_mode}")
-                            print(f"   👤 entity_name: '{entity_name}'")
-                            print(f"   🔑 entity_keywords: {entity_keywords}")
-                            print(f"   📍 actual_entity_found: {actual_entity_found}")
+                        # Use new accounting table parser with detected latest date column
+                        print(f"🔍 About to parse table for key '{best_key}' in sheet '{sheet_name}':")
+                        print(f"   📊 DataFrame shape: {data_frame.shape}")
+                        print(f"   🎯 entity_mode: {entity_mode}")
+                        print(f"   👤 entity_name: '{entity_name}'")
+                        print(f"   🔑 entity_keywords: {entity_keywords}")
+                        print(f"   📍 actual_entity_found: {actual_entity_found}")
 
-                            # Parse the table - this will handle entity filtering internally
-                            # Convert entity_mode to manual_mode for parse_accounting_table
-                            manual_mode = entity_mode
-                            parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found, debug, manual_mode)
+                        # Parse the table - this will handle entity filtering internally
+                        # Convert entity_mode to manual_mode for parse_accounting_table
+                        manual_mode = entity_mode
+                        parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found, debug, manual_mode)
 
-                            # IMPORTANT: Extract the filtered data from parsed_table if entity filtering was applied
-                            # This ensures we use the filtered data for all subsequent processing
-                            if parsed_table and 'filtered_data' in parsed_table:
-                                filtered_data = parsed_table['filtered_data']
-                                print(f"   🔄 Using filtered data from entity filtering: {filtered_data.shape} rows")
+                        # IMPORTANT: Extract the filtered data from parsed_table if entity filtering was applied
+                        # This ensures we use the filtered data for all subsequent processing
+                        if parsed_table and 'filtered_data' in parsed_table:
+                            filtered_data = parsed_table['filtered_data']
+                            print(f"   🔄 Using filtered data from entity filtering: {filtered_data.shape} rows")
+                        else:
+                            filtered_data = data_frame  # Fallback to original data
+                            print(f"   📋 Using original data (no entity filtering applied): {filtered_data.shape} rows")
+
+                        print(f"   🔍 parse_accounting_table returned: {parsed_table is not None}")
+                        if parsed_table:
+                            print(f"   🔍 parsed_table keys: {list(parsed_table.keys()) if isinstance(parsed_table, dict) else 'not a dict'}")
+
+                        if parsed_table:
+                            # Entity validation - use the filtered data for validation if available
+                            if 'filtered_data' in parsed_table:
+                                validation_data = parsed_table['filtered_data']
+                                print(f"   🔍 Using filtered data for entity validation: {validation_data.shape}")
                             else:
-                                filtered_data = data_frame  # Fallback to original data
-                                print(f"   📋 Using original data (no entity filtering applied): {filtered_data.shape} rows")
+                                validation_data = data_frame
 
-                            print(f"   🔍 parse_accounting_table returned: {parsed_table is not None}")
-                            if parsed_table:
-                                print(f"   🔍 parsed_table keys: {list(parsed_table.keys()) if isinstance(parsed_table, dict) else 'not a dict'}")
-
-                            if parsed_table:
-                                # Entity validation - use the filtered data for validation if available
-                                if 'filtered_data' in parsed_table:
-                                    validation_data = parsed_table['filtered_data']
-                                    print(f"   🔍 Using filtered data for entity validation: {validation_data.shape}")
-                                else:
-                                    validation_data = data_frame
-
-                                if actual_entity_found is not None:
-                                    # Entity was already validated in the intelligent detection above
-                                    is_selected_entity = True
-                                    section_text = ' '.join(validation_data.astype(str).values.flatten()).lower()
-                                else:
-                                    # Perform final validation check
-                                    section_text = ' '.join(validation_data.astype(str).values.flatten()).lower()
-                                    is_selected_entity = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
-
-                                # Debug: Print which entity was found
-                                print(f"   🔍 Section for {best_key}: entity_found={entity_found}, is_selected_entity={is_selected_entity}")
-                                print(f"   🔍 Looking for: {entity_keywords}")
-                                print(f"   🔍 Found entity: {actual_entity_found}")
-                                print(f"   🔍 Section text sample: {section_text[:100]}...")
-
-                                # VALIDATION: Check for content mismatch (e.g., AR key showing taxes content)
-                                if best_key == 'AR':
-                                    # Check if this section contains taxes content
-                                    if 'tax' in section_text or 'surcharge' in section_text:
-                                        print(f"⚠️ WARNING: AR key matched to sheet '{sheet_name}' but contains taxes content!")
-                                        print(f"   Section text sample: {section_text[:200]}...")
-                                        # Skip this section to avoid incorrect mapping
-                                        continue
-
-                                # Use filtered data if available, otherwise use original
-                                display_data = parsed_table.get('filtered_data', data_frame)
-
-                                section_data = {
-                                    'sheet': sheet_name,
-                                    'data': display_data,  # Use filtered data if available
-                                    'parsed_data': parsed_table,
-                                    'markdown': create_improved_table_markdown(parsed_table),
-                                    'entity_match': True,
-                                    'is_selected_entity': is_selected_entity
-                                }
-                                
-                                # Only add this section if it's the correct sheet for this key AND matches the selected entity
-                                # This prevents wrong sheets from being assigned to keys
-                                if (sheet_name.lower() == best_key.lower() or
-                                    (best_key in tab_name_mapping and
-                                     any(pattern.lower() in sheet_name.lower() for pattern in tab_name_mapping[best_key]))):
-
-                                    # Only add sections that match the selected entity
-                                    if entity_found and is_selected_entity:
-                                        sections_by_key[best_key].append(section_data)
-                                        print(f"   ✅ SUCCESS: Added section for '{best_key}' from tab '{sheet_name}'")
-                                        print(f"   📊 Section contains {len(parsed_table.get('data', []))} data rows")
-                                        print(f"   💰 RMB detected: {'YES' if rmb_found else 'NO'}")
-                                        print(f"   🔍 Entity found: {actual_entity_found}")
-                                        print(f"   📊 Total sections for {best_key}: {len(sections_by_key[best_key])}")
-                                    else:
-                                        print(f"   ❌ SKIPPED: Section for '{best_key}' from tab '{sheet_name}' (entity not matched)")
-                                        print(f"   🔍 entity_found: {entity_found}, is_selected_entity: {is_selected_entity}")
-                                        print(f"   🔍 actual_entity_found: {actual_entity_found}")
-                                        print(f"   🔑 entity_keywords: {entity_keywords}")
+                            if actual_entity_found is not None:
+                                # Entity was already validated in the intelligent detection above
+                                is_selected_entity = True
+                                section_text = ' '.join(validation_data.astype(str).values.flatten()).lower()
                             else:
-                                # Fallback to original format if parsing fails
-                                print(f"   ⚠️  parse_accounting_table failed for {best_key}, using fallback")
-                                try:
-                                    markdown_content = tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
-                                except Exception:
-                                    markdown_content = data_frame.to_markdown(index=False) + '\n\n'
-                                
-                                sections_by_key[best_key].append({
-                                    'sheet': sheet_name,
-                                    'data': data_frame,
-                                    'markdown': markdown_content,
-                                    'entity_match': True,
-                                    'is_selected_entity': True  # Force this to True for fallback
-                                })
+                                # Perform final validation check
+                                section_text = ' '.join(validation_data.astype(str).values.flatten()).lower()
+                                is_selected_entity = any(entity_keyword.lower() in section_text for entity_keyword in entity_keywords)
+
+                            # Debug: Print which entity was found
+                            print(f"   🔍 Section for {best_key}: entity_found={entity_found}, is_selected_entity={is_selected_entity}")
+                            print(f"   🔍 Looking for: {entity_keywords}")
+                            print(f"   🔍 Found entity: {actual_entity_found}")
+                            print(f"   🔍 Section text sample: {section_text[:100]}...")
+
+                            # VALIDATION: Check for content mismatch (e.g., AR key showing taxes content)
+                            if best_key == 'AR':
+                                # Check if this section contains taxes content
+                                if 'tax' in section_text or 'surcharge' in section_text:
+                                    print(f"⚠️ WARNING: AR key matched to sheet '{sheet_name}' but contains taxes content!")
+                                    print(f"   Section text sample: {section_text[:200]}...")
+                                    # Skip this section to avoid incorrect mapping
+                                    continue
+
+                            # Use filtered data if available, otherwise use original
+                            display_data = parsed_table.get('filtered_data', data_frame)
+
+                            section_data = {
+                                'sheet': sheet_name,
+                                'data': display_data,  # Use filtered data if available
+                                'parsed_data': parsed_table,
+                                'markdown': create_improved_table_markdown(parsed_table),
+                                'entity_match': True,
+                                'is_selected_entity': is_selected_entity
+                            }
+                            
+                            # Only add this section if it's the correct sheet for this key AND matches the selected entity
+                            # This prevents wrong sheets from being assigned to keys
+                            if (sheet_name.lower() == best_key.lower() or
+                                (best_key in tab_name_mapping and
+                                 any(pattern.lower() in sheet_name.lower() for pattern in tab_name_mapping[best_key]))):
+
+                                # Only add sections that match the selected entity
+                                if entity_found and is_selected_entity:
+                                    sections_by_key[best_key].append(section_data)
+                                    print(f"   ✅ SUCCESS: Added section for '{best_key}' from tab '{sheet_name}'")
+                                    print(f"   📊 Section contains {len(parsed_table.get('data', []))} data rows")
+                                    print(f"   💰 RMB detected: {'YES' if rmb_found else 'NO'}")
+                                    print(f"   🔍 Entity found: {actual_entity_found}")
+                                    print(f"   📊 Total sections for {best_key}: {len(sections_by_key[best_key])}")
+                                else:
+                                    print(f"   ❌ SKIPPED: Section for '{best_key}' from tab '{sheet_name}' (entity not matched)")
+                                    print(f"   🔍 entity_found: {entity_found}, is_selected_entity: {is_selected_entity}")
+                                    print(f"   🔍 actual_entity_found: {actual_entity_found}")
+                                    print(f"   🔑 entity_keywords: {entity_keywords}")
+                        else:
+                            # Fallback to original format if parsing fails
+                            print(f"   ⚠️  parse_accounting_table failed for {best_key}, using fallback")
+                            try:
+                                markdown_content = tabulate(data_frame, headers='keys', tablefmt='pipe') + '\n\n'
+                            except Exception:
+                                markdown_content = data_frame.to_markdown(index=False) + '\n\n'
+                            
+                            sections_by_key[best_key].append({
+                                'sheet': sheet_name,
+                                'data': data_frame,
+                                'markdown': markdown_content,
+                                'entity_match': True,
+                                'is_selected_entity': True  # Force this to True for fallback
+                            })
                 else:
                     # SINGLE ENTITY MODE: Use the original approach with empty row splitting
                     print(f"   🎯 SINGLE ENTITY MODE: Using traditional section splitting for sheet '{sheet_name}'")

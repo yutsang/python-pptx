@@ -99,7 +99,10 @@ def render_balance_sheet_sections(
                         description = row['description']
                         value = row['value']
                         actual_value = value
-                        if isinstance(actual_value, (int, float)):
+                        # Convert datetime objects to strings to avoid Arrow serialization errors
+                        if hasattr(actual_value, 'strftime'):  # datetime object
+                            formatted_value = actual_value.strftime('%Y-%m-%d')
+                        elif isinstance(actual_value, (int, float)):
                             formatted_value = f"{actual_value:,.2f}"
                         else:
                             formatted_value = str(actual_value)
@@ -140,7 +143,12 @@ def render_balance_sheet_sections(
                 raw_df.columns = [f"{key} (Description)"]
 
             if len(raw_df.columns) > 0:
-                st.dataframe(raw_df, use_container_width=True)
+                # Convert datetime objects to strings to avoid Arrow serialization errors
+                raw_df_copy = raw_df.copy()
+                for col in raw_df_copy.columns:
+                    if raw_df_copy[col].dtype == 'object':
+                        raw_df_copy[col] = raw_df_copy[col].astype(str)
+                st.dataframe(raw_df_copy, use_container_width=True)
             else:
                 st.error("No valid columns found after cleaning")
                 st.write("**Original DataFrame:**")
@@ -329,7 +337,10 @@ def render_income_statement_sections(
                         description = row['description']
                         value = row['value']
                         actual_value = value
-                        if isinstance(actual_value, (int, float)):
+                        # Convert datetime objects to strings to avoid Arrow serialization errors
+                        if hasattr(actual_value, 'strftime'):  # datetime object
+                            formatted_value = actual_value.strftime('%Y-%m-%d')
+                        elif isinstance(actual_value, (int, float)):
                             formatted_value = f"{actual_value:,.2f}"
                         else:
                             formatted_value = str(actual_value)
