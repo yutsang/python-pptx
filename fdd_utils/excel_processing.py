@@ -1928,32 +1928,81 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 # Track if we found entity data in this sheet
                 entity_found_in_sheet = False
 
-                for data_frame in dataframes:
-                    # RESTORED WORKING LOGIC: Simple entity matching that worked well
-                    all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
-                    entity_match = any(kw.lower() in all_text for kw in entity_keywords)
+                # ENHANCED ENTITY MATCHING: Scan entire sheet for entity names
+                entity_found_in_sheet = False
+                selected_data_frame = None
 
-                    if entity_match:
-                        print(f"🚀 [{reverse_mapping[sheet_name]}] Found entity data, processing section...")
+                # Scan the entire sheet for entity names (not just first 5 rows)
+                for row_idx in range(len(df)):
+                    row = df.iloc[row_idx]
+                    row_text = ' '.join(str(val).lower() for val in row if pd.notna(val))
+
+                    # Check if this row contains any entity keyword
+                    entity_in_row = any(kw.lower() in row_text for kw in entity_keywords)
+
+                    if entity_in_row:
+                        print(f"   📍 Found entity '{[kw for kw in entity_keywords if kw.lower() in row_text][0]}' in row {row_idx}: {row_text[:100]}...")
                         entity_found_in_sheet = True
 
-                        # Use the current column selection improvements
-                        if latest_date_col and latest_date_col in data_frame.columns:
-                            # Keep essential columns for better processing
-                            desc_col = data_frame.columns[0]  # Usually first column
-                            essential_cols = [desc_col, latest_date_col]
-                            filtered_df = data_frame[essential_cols].dropna(how='all')
-                        else:
-                            # Fallback to full dataframe
-                            filtered_df = data_frame
+                        # Find the table section that starts after this entity row
+                        # Look for the next substantial data block (skip empty rows)
+                        table_start_row = row_idx + 1
 
-                        if not filtered_df.empty:
-                            # Convert to markdown format (RESTORED WORKING FORMAT)
-                            try:
-                                markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
-                            except Exception:
-                                markdown_content += filtered_df.to_markdown(index=False) + '\n\n'
-                            print(f"✅ [{reverse_mapping[sheet_name]}] Processed section with {len(filtered_df)} rows")
+                        # Skip empty rows to find the actual table start
+                        while table_start_row < len(df):
+                            table_row = df.iloc[table_start_row]
+                            has_data = any(pd.notna(val) and str(val).strip() for val in table_row)
+                            if has_data:
+                                break
+                            table_start_row += 1
+
+                        # Extract the table section from this point
+                        if table_start_row < len(df):
+                            # Find where this table section ends (next empty row or end of sheet)
+                            table_end_row = table_start_row
+                            while table_end_row < len(df):
+                                end_row = df.iloc[table_end_row]
+                                has_data = any(pd.notna(val) and str(val).strip() for val in end_row)
+                                if not has_data:
+                                    break
+                                table_end_row += 1
+
+                            # Extract this specific entity table section
+                            selected_data_frame = df.iloc[table_start_row:table_end_row+1].copy()
+                            print(f"   🎯 Extracted entity table: rows {table_start_row}-{table_end_row} ({len(selected_data_frame)} rows)")
+                            break
+
+                # If no entity-specific section found, fall back to original logic
+                if not entity_found_in_sheet:
+                    for data_frame in dataframes:
+                        all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
+                        entity_match = any(kw.lower() in all_text for kw in entity_keywords)
+
+                        if entity_match:
+                            print(f"🚀 [{reverse_mapping[sheet_name]}] Found entity data, processing section...")
+                            entity_found_in_sheet = True
+                            selected_data_frame = data_frame
+                            break
+
+                # Process the selected dataframe
+                if entity_found_in_sheet:
+                    # Use the current column selection improvements
+                    if latest_date_col and latest_date_col in selected_data_frame.columns:
+                        # Keep essential columns for better processing
+                        desc_col = selected_data_frame.columns[0]  # Usually first column
+                        essential_cols = [desc_col, latest_date_col]
+                        filtered_df = selected_data_frame[essential_cols].dropna(how='all')
+                    else:
+                        # Fallback to full dataframe
+                        filtered_df = selected_data_frame
+
+                    if not filtered_df.empty:
+                        # Convert to markdown format (RESTORED WORKING FORMAT)
+                        try:
+                            markdown_content += tabulate(filtered_df, headers='keys', tablefmt='pipe') + '\n\n'
+                        except Exception:
+                            markdown_content += filtered_df.to_markdown(index=False) + '\n\n'
+                        print(f"✅ [{reverse_mapping[sheet_name]}] Processed section with {len(filtered_df)} rows")
 
                 # Early exit if entity data found in this sheet
                 if entity_found_in_sheet:
