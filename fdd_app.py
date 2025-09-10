@@ -109,7 +109,7 @@ def initialize_session_state():
         }
     
     if 'ai_logger' not in st.session_state:
-        from fdd_utils.enhanced_logging_config import AIAgentLogger
+        from fdd_utils.app_helpers import AIAgentLogger
         st.session_state.ai_logger = AIAgentLogger()
 
 
