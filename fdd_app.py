@@ -89,6 +89,542 @@ import logging
 logging.getLogger('streamlit.watcher.event_based_path_watcher').setLevel(logging.ERROR)
 logging.getLogger('streamlit.watcher.util').setLevel(logging.ERROR)
 
+# Import enhanced utility functions
+from fdd_utils.app_helpers import derive_entity_parts
+
+# Enhanced utility functions for better organization
+class MockUploadedFile:
+    """Mock uploaded file object for default file handling"""
+    
+    def __init__(self, file_path):
+        self.name = file_path
+        self.file_path = file_path
+        self._file = None
+    
+    def read(self, size=-1):
+        if self._file is None:
+            self._file = open(self.file_path, 'rb')
+        return self._file.read(size)
+    
+    def getbuffer(self):
+        with open(self.file_path, 'rb') as f:
+            return f.read()
+    
+    def getvalue(self):
+        return self.getbuffer()
+    
+    def seek(self, offset, whence=0):
+        if self._file is None:
+            self._file = open(self.file_path, 'rb')
+        return self._file.seek(offset, whence)
+    
+    def tell(self):
+        if self._file is None:
+            return 0
+        return self._file.tell()
+    
+    def seekable(self):
+        return True
+    
+    def close(self):
+        if self._file:
+            self._file.close()
+            self._file = None
+
+
+def initialize_session_state():
+    """Initialize session state variables"""
+    if 'processing_started' not in st.session_state:
+        st.session_state['processing_started'] = False
+    
+    if 'agent_states' not in st.session_state:
+        st.session_state['agent_states'] = {
+            'agent1_completed': False,
+            'agent2_completed': False, 
+            'agent3_completed': False,
+            'agent1_results': {},
+            'agent2_results': {},
+            'agent3_results': {},
+            'agent1_success': False,
+            'agent2_success': False,
+            'agent3_success': False
+        }
+    
+    if 'ai_logger' not in st.session_state:
+        st.session_state.ai_logger = AIAgentLogger()
+
+
+def generate_entity_keywords(entity_input):
+    """Generate comprehensive entity keywords from input"""
+    if not entity_input:
+        return [], None, []
+    
+    # Extract base entity name (first word)
+    base_entity = entity_input.split()[0] if entity_input.split() else None
+    
+    # Generate comprehensive entity keywords from the input
+    words = entity_input.split()
+    entity_keywords = []
+
+    # Always include the base entity
+    if base_entity:
+        entity_keywords.append(base_entity)
+
+    # Generate all possible combinations of the input entity
+    if len(words) >= 2:
+        # Add two-word combinations
+        for i in range(1, len(words)):
+            entity_keywords.append(f"{base_entity} {words[i]}")
+
+        # Add three-word combinations if available
+        if len(words) >= 3:
+            for i in range(1, len(words)-1):
+                for j in range(i+1, len(words)):
+                    entity_keywords.append(f"{base_entity} {words[i]} {words[j]}")
+
+    # Generate entity_helpers dynamically from the input entity name
+    if len(words) > 1:
+        # Use all words after the first as potential suffixes
+        entity_helpers = ",".join(words[1:]) + ","
+    else:
+        # Default suffix for single-word entities
+        entity_helpers = "Limited,"
+    
+    # Generate entity_suffixes from entity_helpers for backward compatibility
+    entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
+    
+    return entity_keywords, entity_input, entity_suffixes
+
+
+def process_excel_with_timeout(uploaded_file, mapping, selected_entity, entity_suffixes, entity_keywords, entity_mode, timeout=30):
+    """Process Excel file with timeout protection"""
+    import threading
+    
+    result_container = {}
+    exception_container = {}
+
+    def process_excel_worker():
+        try:
+            result = get_worksheet_sections_by_keys(
+                uploaded_file=uploaded_file,
+                tab_name_mapping=mapping,
+                entity_name=selected_entity,
+                entity_suffixes=entity_suffixes,
+                entity_keywords=entity_keywords,
+                entity_mode=entity_mode,
+                debug=True
+            )
+            result_container['result'] = result
+        except Exception as e:
+            exception_container['exception'] = e
+
+    # Start processing in a separate thread
+    processing_thread = threading.Thread(target=process_excel_worker)
+    processing_thread.daemon = True
+    processing_thread.start()
+
+    # Wait for completion with timeout
+    processing_thread.join(timeout=timeout)
+
+    if processing_thread.is_alive():
+        # Thread is still running after timeout
+        return None, "timeout"
+    elif 'exception' in exception_container:
+        # Exception occurred during processing
+        raise exception_container['exception']
+    else:
+        # Processing completed successfully
+        return result_container['result'], "success"
+
+
+def show_api_configuration_status(mode_display, config):
+    """Show API configuration status for selected provider"""
+    if mode_display == "Open AI":
+        if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_BASE'):
+            st.success("✅ OpenAI configured")
+            model = config.get('OPENAI_CHAT_MODEL', 'Not configured')
+            st.info(f"🤖 Model: {model}")
+        else:
+            st.warning("⚠️ OpenAI not configured. Add OPENAI_API_KEY and OPENAI_API_BASE in fdd_utils/config.json")
+    elif mode_display == "DeepSeek":
+        if config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_BASE'):
+            st.success("✅ DeepSeek configured")
+            model = config.get('DEEPSEEK_CHAT_MODEL', 'Not configured')
+            st.info(f"🤖 Model: {model}")
+        else:
+            st.warning("⚠️ DeepSeek not configured. Add DEEPSEEK_API_KEY and DEEPSEEK_API_BASE in fdd_utils/config.json")
+    elif mode_display == "Local AI":
+        if config.get('LOCAL_AI_API_BASE') and config.get('LOCAL_AI_ENABLED'):
+            st.success("✅ Local AI configured")
+            model = config.get('LOCAL_AI_CHAT_MODEL', 'Not configured')
+            endpoint = config.get('LOCAL_AI_API_BASE', 'Not configured')
+            st.info(f"🏠 Model: {model}")
+            st.info(f"🔗 Endpoint: {endpoint}")
+        else:
+            st.warning("⚠️ Local AI not configured. Configure LOCAL_AI_* in fdd_utils/config.json")
+
+
+def show_table_mapping_info():
+    """Show table mapping configuration information"""
+    st.subheader("📊 Table Mapping Configuration")
+    config, mapping, pattern, prompts = load_config_files()
+    if mapping:
+        with st.expander("View Sheet Name Mappings", expanded=False):
+            # Create a table to show mapping information
+            mapping_data = []
+            for key, values in mapping.items():
+                if isinstance(values, list):
+                    mapping_data.append({
+                        "Financial Key": key,
+                        "Mapped Sheet Names": ", ".join(values[:3]) + ("..." if len(values) > 3 else "")
+                    })
+
+            if mapping_data:
+                st.table(mapping_data)
+            else:
+                st.info("No mapping data available")
+
+
+def render_ai_results_display():
+    """Render AI results display section"""
+    # Check if any agent has run
+    agent_states = st.session_state.get('agent_states', {})
+    any_agent_completed = any([
+        agent_states.get('agent1_completed', False),
+        agent_states.get('agent2_completed', False),
+        agent_states.get('agent3_completed', False)
+    ])
+    
+    if any_agent_completed:
+        # Get available keys
+        filtered_keys = st.session_state.get('filtered_keys_for_ai', [])
+        
+        if filtered_keys:
+            # Create tabs for each key with content-aware display names
+            tab_labels = []
+            for key in filtered_keys:
+                # Try to get content for language detection
+                content_for_detection = None
+
+                # Check agent3_results first
+                agent3_results_all = agent_states.get('agent3_results', {}) or {}
+                if key in agent3_results_all:
+                    pr = agent3_results_all[key]
+                    if isinstance(pr, dict):
+                        translated_content = pr.get('translated_content', '')
+                        corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
+                        content_for_detection = translated_content if translated_content and pr.get('is_chinese', False) else corrected_content
+
+                # Fallback to agent1_results if no agent3 content
+                if not content_for_detection:
+                    agent1_results_all = agent_states.get('agent1_results', {}) or {}
+                    if key in agent1_results_all:
+                        agent1_content = agent1_results_all[key]
+                        if isinstance(agent1_content, dict):
+                            content_for_detection = agent1_content.get('content', str(agent1_content))
+                        else:
+                            content_for_detection = str(agent1_content)
+
+                # Use content-aware display name
+                display_name = get_key_display_name(key, content=content_for_detection)
+                tab_labels.append(display_name)
+
+            key_tabs = st.tabs(tab_labels)
+            
+            # Display results for each key in its tab
+            for i, key in enumerate(filtered_keys):
+                with key_tabs[i]:
+                    # Display key results
+                    agent3_results_all = agent_states.get('agent3_results', {}) or {}
+                    agent3_final_content = None
+
+                    # Check for agent3_final content from JSON file if not in session state
+                    if key not in agent3_results_all:
+                        agent3_final_content = get_content_from_json(key)
+
+                    if key in agent3_results_all:
+                        pr = agent3_results_all[key]
+                        # PRIORITY: Check for translated Chinese content first
+                        translated_content = pr.get('translated_content', '')
+                        corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
+                        # Use translated content if available and it's actually Chinese, otherwise use corrected content
+                        final_content = translated_content if translated_content and pr.get('is_chinese', False) else corrected_content
+
+                        # Check if this is a translation failure
+                        if isinstance(pr, dict) and pr.get('translation_failed'):
+                            st.error(f"❌ 翻译失败: {corrected_content}")
+                            # Show original English content if available
+                            original_content = pr.get('original_content', '')
+                            if original_content:
+                                st.info("📝 显示原始英文内容:")
+                                st.markdown(original_content)
+                        elif corrected_content:
+                            st.markdown(corrected_content)
+                    elif agent3_final_content:
+                        # Display agent3_final content from JSON
+                        st.markdown(agent3_final_content)
+                        agent3_results_all[key] = {"content": agent3_final_content}
+
+                    # AI1 Results (collapsible if proofreader exists)
+                    with st.expander("📝 AI: Generation (details)", expanded=key not in agent3_results_all and not agent3_final_content):
+                        agent1_results = agent_states.get('agent1_results', {}) or {}
+                        if key in agent1_results and agent1_results[key]:
+                            content = agent1_results[key]
+                            
+                            # Handle both string and dict content
+                            if isinstance(content, dict):
+                                content_str = content.get('content', str(content))
+                            else:
+                                content_str = str(content)
+                            
+                            st.markdown("**Generated Content:**")
+                            st.markdown(content_str)
+                            
+                            # Metadata
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Characters", len(content_str))
+                            with col2:
+                                st.metric("Words", len(content_str.split()))
+                            with col3:
+                                st.metric("Status", "✅ Generated" if content else "❌ Failed")
+                        else:
+                            st.info("No AI results available. Run AI first.")
+
+                    # If Proofreader made changes or found issues, show a compact summary
+                    if key in agent3_results_all:
+                        pr = agent3_results_all[key]
+                        issues = pr.get('issues', []) or []
+                        changed = bool(pr.get('corrected_content'))
+                        if issues or changed:
+                            with st.expander("🧐 AI Proofreader: Changes & Notes", expanded=False):
+                                if changed and not issues:
+                                    st.markdown("- Corrected content applied")
+                                if issues:
+                                    st.markdown("- Detected issues (reference only):")
+                                    for issue in issues:
+                                        st.write(f"  • {issue}")
+                                runs = pr.get('translation_runs', 0)
+                                if runs:
+                                    st.markdown(f"- Heuristic translation applied: {runs} run(s)")
+                    
+                    if key not in agent3_results_all:
+                        st.info("No compliance results available. Run AI Proofreader.")
+        else:
+            st.info("No financial keys available for results display.")
+    else:
+        st.info("No AI agents have run yet. Use the buttons above to start processing.")
+
+
+def render_pptx_export_section(selected_entity, statement_type):
+    """Render PowerPoint export section"""
+    st.markdown("---")
+    st.subheader("📊 PowerPoint Generation")
+
+    # Create combined buttons for English and Chinese exports
+    col1, col2 = st.columns([1, 1])
+
+    # English PPTX Export Button
+    with col1:
+        if st.button("📊 Export English PPTX", type="primary", use_container_width=True):
+            export_pptx_with_download(selected_entity, statement_type, language='english')
+
+    # Chinese PPTX Export Button
+    with col2:
+        if st.button("📊 Export Chinese PPTX", type="primary", use_container_width=True):
+            export_pptx_with_download(selected_entity, statement_type, language='chinese')
+
+
+def export_pptx_with_download(selected_entity, statement_type, language='english'):
+    """Export PowerPoint presentation with download functionality"""
+    try:
+        # Show language-specific progress message
+        if language == 'chinese':
+            st.info("📊 开始生成中文 PowerPoint 演示文稿...")
+        else:
+            st.info("📊 Generating English PowerPoint presentation...")
+
+        # Get the project name based on selected entity (use first two words)
+        if selected_entity:
+            words = selected_entity.split()
+            project_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else selected_entity
+        else:
+            project_name = selected_entity
+
+        # Check for template file in common locations
+        possible_templates = [
+            "fdd_utils/template.pptx",
+            "template.pptx",
+            "old_ver/template.pptx",
+            "common/template.pptx"
+        ]
+
+        template_path = None
+        for template in possible_templates:
+            if os.path.exists(template):
+                template_path = template
+                break
+
+        if not template_path:
+            st.error("❌ PowerPoint template not found. Please ensure 'template.pptx' exists in the fdd_utils/ directory.")
+            st.info("💡 You can copy a template file from the old_ver/ directory or create a new one.")
+            return
+
+        # Add language suffix to filename
+        language_suffix = "_CN" if language == 'chinese' else "_EN"
+
+        # Define output path with timestamp
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"{project_name}_{statement_type.upper()}_{timestamp}{language_suffix}.pptx"
+        output_path = f"fdd_utils/output/{output_filename}"
+
+        # Ensure output directory exists
+        os.makedirs("fdd_utils/output", exist_ok=True)
+
+        # Get Excel file path for embedding data
+        excel_file_path = None
+        current_uploaded_file = st.session_state.get('uploaded_file', None)
+        if current_uploaded_file is not None:
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
+                    if hasattr(current_uploaded_file, 'getvalue'):
+                        temp_file.write(current_uploaded_file.getvalue())
+                    elif hasattr(current_uploaded_file, 'getbuffer'):
+                        temp_file.write(current_uploaded_file.getbuffer())
+                    excel_file_path = temp_file.name
+            except Exception as e:
+                print(f"⚠️ Failed to save uploaded file: {e}")
+                if os.path.exists("databook.xlsx"):
+                    excel_file_path = "databook.xlsx"
+        else:
+            if os.path.exists("databook.xlsx"):
+                excel_file_path = "databook.xlsx"
+
+        # Handle different statement types
+        if statement_type == "IS":
+            markdown_path = "fdd_utils/is_content.md"
+            if not os.path.exists(markdown_path):
+                st.error(f"❌ Content file not found: {markdown_path}")
+                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                return
+
+            export_pptx(
+                template_path=template_path,
+                markdown_path=markdown_path,
+                output_path=output_path,
+                project_name=project_name,
+                excel_file_path=excel_file_path,
+                language=language
+            )
+
+        elif statement_type == "BS":
+            markdown_path = "fdd_utils/bs_content.md"
+            if not os.path.exists(markdown_path):
+                st.error(f"❌ Content file not found: {markdown_path}")
+                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                return
+
+            export_pptx(
+                template_path=template_path,
+                markdown_path=markdown_path,
+                output_path=output_path,
+                project_name=project_name,
+                excel_file_path=excel_file_path,
+                language=language
+            )
+
+        else:  # ALL - Generate BS first, then IS, then merge
+            st.info("🔄 Generating combined Balance Sheet and Income Statement presentation...")
+
+            bs_markdown_path = "fdd_utils/bs_content.md"
+            is_markdown_path = "fdd_utils/is_content.md"
+
+            if not os.path.exists(bs_markdown_path):
+                st.error(f"❌ Balance Sheet content file not found: {bs_markdown_path}")
+                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                return
+
+            if not os.path.exists(is_markdown_path):
+                st.error(f"❌ Income Statement content file not found: {is_markdown_path}")
+                st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
+                return
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                bs_temp_path = os.path.join(temp_dir, "bs_temp.pptx")
+                is_temp_path = os.path.join(temp_dir, "is_temp.pptx")
+
+                # Generate BS presentation
+                if language == 'chinese':
+                    st.info("📊 使用中文优化设置生成资产负债表...")
+                else:
+                    st.info("📊 Generating Balance Sheet section...")
+                
+                export_pptx(
+                    template_path=template_path,
+                    markdown_path=bs_markdown_path,
+                    output_path=bs_temp_path,
+                    project_name=project_name,
+                    excel_file_path=excel_file_path,
+                    language=language
+                )
+
+                # Generate IS presentation
+                if language == 'chinese':
+                    st.info("📈 使用中文优化设置生成损益表...")
+                else:
+                    st.info("📈 Generating Income Statement section...")
+                
+                export_pptx(
+                    template_path=template_path,
+                    markdown_path=is_markdown_path,
+                    output_path=is_temp_path,
+                    project_name=project_name,
+                    excel_file_path=excel_file_path,
+                    language=language
+                )
+
+                # Merge the presentations
+                if language == 'chinese':
+                    st.info("🔗 合并中文演示文稿...")
+                else:
+                    st.info("🔗 Merging presentations...")
+                
+                merge_presentations(bs_temp_path, is_temp_path, output_path)
+
+                if language == 'chinese':
+                    st.success("✅ 中文组合演示文稿生成成功!")
+                else:
+                    st.success("✅ Combined presentation generated successfully!")
+
+        # Show download button
+        if os.path.exists(output_path):
+            with open(output_path, "rb") as file:
+                if language == 'chinese':
+                    download_label = f"📥 下载中文 PowerPoint: {output_filename}"
+                else:
+                    download_label = f"📥 Download English PowerPoint: {output_filename}"
+
+                st.download_button(
+                    label=download_label,
+                    data=file.read(),
+                    file_name=output_filename,
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    use_container_width=True
+                )
+
+            if language == 'chinese':
+                st.success(f"✅ 中文 PowerPoint 生成完成: {output_filename}")
+            else:
+                st.success(f"✅ English PowerPoint generated successfully: {output_filename}")
+
+    except FileNotFoundError as e:
+        st.error(f"❌ Template file not found: {e}")
+    except Exception as e:
+        st.error(f"❌ Export failed: {e}")
+        st.error(f"Error details: {str(e)}")
+
+
 # AI Agent Logging System
 class AIAgentLogger:
     """Single-file JSON logging per session (inputs, outputs, errors)."""
@@ -350,8 +886,11 @@ def main():
     configure_streamlit_page()
     st.title("🏢 Real Estate DD Report Writer")
 
+    # Initialize session state
+    initialize_session_state()
+
     # Add navigation description (hide when processing starts)
-    if 'processing_started' not in st.session_state or not st.session_state['processing_started']:
+    if not st.session_state.get('processing_started', False):
         st.info("📋 **Welcome!** Please navigate to the left sidebar to upload your databook and configure input data.")
 
     # Sidebar for controls
@@ -368,40 +907,6 @@ def main():
             default_file_path = "databook.xlsx"
             if os.path.exists(default_file_path):
                 st.caption(f"Using default file: {default_file_path}")
-                # Create a proper mock uploaded file object for the default file
-                class MockUploadedFile:
-                    def __init__(self, file_path):
-                        self.name = file_path
-                        self.file_path = file_path
-                        self._file = None
-                    
-                    def read(self, size=-1):
-                        if self._file is None:
-                            self._file = open(self.file_path, 'rb')
-                        return self._file.read(size)
-                    
-                    def getbuffer(self):
-                        with open(self.file_path, 'rb') as f:
-                            return f.read()
-                    
-                    def seek(self, offset, whence=0):
-                        if self._file is None:
-                            self._file = open(self.file_path, 'rb')
-                        return self._file.seek(offset, whence)
-                    
-                    def tell(self):
-                        if self._file is None:
-                            return 0
-                        return self._file.tell()
-                    
-                    def seekable(self):
-                        return True
-                    
-                    def close(self):
-                        if self._file:
-                            self._file.close()
-                            self._file = None
-                
                 uploaded_file = MockUploadedFile(default_file_path)
             else:
                 st.error(f"❌ Default file not found: {default_file_path}")
@@ -474,70 +979,19 @@ def main():
         
 
         
-        # Auto-extract base entity and generate comprehensive entity keywords
-        if entity_input:
-            # Extract base entity name (first word)
-            base_entity = entity_input.split()[0] if entity_input.split() else None
-            
-            # Generate comprehensive entity keywords from the input
-            words = entity_input.split()
-            entity_keywords = []
-
-            # Always include the base entity
-            entity_keywords.append(base_entity)
-
-            # Generate all possible combinations of the input entity
-            if len(words) >= 2:
-                # Add two-word combinations
-                for i in range(1, len(words)):
-                    entity_keywords.append(f"{base_entity} {words[i]}")
-
-                # Add three-word combinations if available
-                if len(words) >= 3:
-                    for i in range(1, len(words)-1):
-                        for j in range(i+1, len(words)):
-                            entity_keywords.append(f"{base_entity} {words[i]} {words[j]}")
-
-            # For multiple entity mode, we want to be more inclusive
-            # The entity detection logic will handle discovering all entities in the Excel file
-            
-            # Use full entity name for processing
-            selected_entity = entity_input
-            
-            # Show entity info with first two words for display
-            if entity_input:
-                words = entity_input.split()
-                # Use first two words, or first word if only one word
-                display_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else entity_input
-            else:
-                display_name = base_entity
-            st.info(f"📋 Entity: {display_name}")
-            # Entity keywords generated successfully
-        else:
-            selected_entity = None
-            entity_keywords = []
-            st.warning("⚠️ Please enter an entity name to start processing")
+        # Generate entity configuration using modular function
+        entity_keywords, selected_entity, entity_suffixes = generate_entity_keywords(entity_input)
         
-        # Check if entity is provided (file can be default)
+        # Validate entity input
         if not selected_entity:
-            st.warning("Please select an entity first")
+            st.warning("⚠️ Please enter an entity name to start processing")
             st.stop()
-
-        # Generate entity_helpers dynamically from the input entity name
-        if selected_entity:
-            words = selected_entity.split()
-        else:
-            # Fallback if somehow we got here without an entity
-            words = ["Unknown"]
-        if len(words) > 1:
-            # Use all words after the first as potential suffixes
-            entity_helpers = ",".join(words[1:]) + ","
-        else:
-            # Default suffix for single-word entities
-            entity_helpers = "Limited,"
         
-        # Generate entity_suffixes from entity_helpers for backward compatibility
-        entity_suffixes = [s.strip() for s in entity_helpers.split(',') if s.strip()]
+        # Show entity info
+        if entity_input:
+            words = entity_input.split()
+            display_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else entity_input
+            st.info(f"📋 Entity: {display_name}")
 
 
         
@@ -573,51 +1027,13 @@ def main():
                 help="Choose AI provider. Models are taken from fdd_utils/config.json"
             )
             
-            # Show API configuration status
+            # Show API configuration status using modular function
             config, _, _, _ = load_config_files()
             if config:
-                if mode_display == "Open AI":
-                    if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_BASE'):
-                        st.success("✅ OpenAI configured")
-                        model = config.get('OPENAI_CHAT_MODEL', 'Not configured')
-                        st.info(f"🤖 Model: {model}")
-                    else:
-                        st.warning("⚠️ OpenAI not configured. Add OPENAI_API_KEY and OPENAI_API_BASE in fdd_utils/config.json")
-                elif mode_display == "DeepSeek":
-                    if config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_BASE'):
-                        st.success("✅ DeepSeek configured")
-                        model = config.get('DEEPSEEK_CHAT_MODEL', 'Not configured')
-                        st.info(f"🤖 Model: {model}")
-                    else:
-                        st.warning("⚠️ DeepSeek not configured. Add DEEPSEEK_API_KEY and DEEPSEEK_API_BASE in fdd_utils/config.json")
-                elif mode_display == "Local AI":
-                    if config.get('LOCAL_AI_API_BASE') and config.get('LOCAL_AI_ENABLED'):
-                        st.success("✅ Local AI configured")
-                        model = config.get('LOCAL_AI_CHAT_MODEL', 'Not configured')
-                        endpoint = config.get('LOCAL_AI_API_BASE', 'Not configured')
-                        st.info(f"🏠 Model: {model}")
-                        st.info(f"🔗 Endpoint: {endpoint}")
-                    else:
-                        st.warning("⚠️ Local AI not configured. Configure LOCAL_AI_* in fdd_utils/config.json")
+                show_api_configuration_status(mode_display, config)
 
-            # Show table mapping information
-            st.subheader("📊 Table Mapping Configuration")
-            config, mapping, pattern, prompts = load_config_files()
-            if mapping:
-                with st.expander("View Sheet Name Mappings", expanded=False):
-                    # Create a table to show mapping information
-                    mapping_data = []
-                    for key, values in mapping.items():
-                        if isinstance(values, list):
-                            mapping_data.append({
-                                "Financial Key": key,
-                                "Mapped Sheet Names": ", ".join(values[:3]) + ("..." if len(values) > 3 else "")
-                            })
-
-                    if mapping_data:
-                        st.table(mapping_data)
-                    else:
-                        st.info("No mapping data available")
+            # Show table mapping information using modular function
+            show_table_mapping_info()
 
             # Map display names to internal mode names
             provider_mapping = {
@@ -711,54 +1127,27 @@ def main():
                     print(f"{'='*80}\n")
                     start_excel_time = time.time()
 
-                    # Add timeout protection for Excel processing (cross-platform)
-                    import threading
+                    # Use modular timeout protection for Excel processing
+                    sections_by_key, status = process_excel_with_timeout(
+                        uploaded_file=uploaded_file,
+                        mapping=mapping,
+                        selected_entity=selected_entity,
+                        entity_suffixes=entity_suffixes,
+                        entity_keywords=entity_keywords,
+                        entity_mode=entity_mode,
+                        timeout=30
+                    )
 
-                    result_container = {}
-                    exception_container = {}
-
-                    def process_excel_with_timeout():
-                        try:
-                            result = get_worksheet_sections_by_keys(
-                                uploaded_file=uploaded_file,
-                                tab_name_mapping=mapping,
-                                entity_name=selected_entity,
-                                entity_suffixes=entity_suffixes,
-                                entity_keywords=entity_keywords,
-                                entity_mode=entity_mode,  # Use the manual entity mode selection
-                                debug=True  # Set to True for debugging
-                            )
-                            result_container['result'] = result
-                        except Exception as e:
-                            exception_container['exception'] = e
-
-                    # Start processing in a separate thread
-                    processing_thread = threading.Thread(target=process_excel_with_timeout)
-                    processing_thread.daemon = True
-                    processing_thread.start()
-
-                    # Wait for completion with timeout
-                    processing_thread.join(timeout=30)
-
-                    if processing_thread.is_alive():
-                        # Thread is still running after timeout
+                    if status == "timeout":
                         print("❌ Excel processing timed out after 30 seconds")
-
-                        # Provide option to continue without Excel data
                         if st.button("⚠️ Continue Without Excel Data", key="continue_without_excel_bs"):
                             st.warning("⚠️ Continuing without Excel data. Some features may be limited.")
-                            sections_by_key = {}  # Empty data structure
+                            sections_by_key = {}
                             st.session_state['excel_processing_skipped'] = True
                         else:
                             st.error("❌ Excel processing timed out. Click 'Continue Without Excel Data' to proceed or try a smaller file.")
                             st.stop()
                             return
-                    elif 'exception' in exception_container:
-                        # Exception occurred during processing
-                        raise exception_container['exception']
-                    else:
-                        # Processing completed successfully
-                        sections_by_key = result_container['result']
 
                     excel_processing_time = time.time() - start_excel_time
                     print(f"\n{'='*60}")
@@ -772,13 +1161,13 @@ def main():
                     total_sections = sum(len(sections) for sections in sections_by_key.values())
 
 
-                    # Store in session state for AI section to use
+                    # Store processed data using modular function
                     if 'ai_data' not in st.session_state:
                         st.session_state['ai_data'] = {}
                     st.session_state['ai_data']['sections_by_key'] = sections_by_key
                     st.session_state['ai_data']['entity_name'] = selected_entity
                     st.session_state['ai_data']['entity_keywords'] = entity_keywords
-                    st.session_state['last_processed_entity'] = selected_entity  # Track last processed entity
+                    st.session_state['last_processed_entity'] = selected_entity
                     print(f"💾 Stored processed data for Balance Sheet entity: {selected_entity}")
             else:
                 # Use the data that was already processed
@@ -1646,405 +2035,10 @@ def main():
             st.info("Please upload an Excel file first.")
         
         # --- AI Results Display ---
-        # Check if any agent has run
-        agent_states = st.session_state.get('agent_states', {})
-        any_agent_completed = any([
-            agent_states.get('agent1_completed', False),
-            agent_states.get('agent2_completed', False),
-            agent_states.get('agent3_completed', False)
-        ])
-        
-        if any_agent_completed:
-            # Get available keys
-            filtered_keys = st.session_state.get('filtered_keys_for_ai', [])
-            
-            if filtered_keys:
-                # Create tabs for each key with content-aware display names
-                tab_labels = []
-                for key in filtered_keys:
-                    # Try to get content for language detection
-                    content_for_detection = None
-
-                    # Check agent3_results first
-                    agent3_results_all = agent_states.get('agent3_results', {}) or {}
-                    if key in agent3_results_all:
-                        pr = agent3_results_all[key]
-                        if isinstance(pr, dict):
-                            # Use the same logic as in the display section
-                            translated_content = pr.get('translated_content', '')
-                            corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
-                            content_for_detection = translated_content if translated_content and pr.get('is_chinese', False) else corrected_content
-
-                    # Fallback to agent1_results if no agent3 content
-                    if not content_for_detection:
-                        agent1_results_all = agent_states.get('agent1_results', {}) or {}
-                        if key in agent1_results_all:
-                            agent1_content = agent1_results_all[key]
-                            if isinstance(agent1_content, dict):
-                                content_for_detection = agent1_content.get('content', str(agent1_content))
-                            else:
-                                content_for_detection = str(agent1_content)
-
-                    # Use content-aware display name
-                    display_name = get_key_display_name(key, content=content_for_detection)
-                    tab_labels.append(display_name)
-
-                key_tabs = st.tabs(tab_labels)
-                
-                # Display results for each key in its tab
-                for i, key in enumerate(filtered_keys):
-                    with key_tabs[i]:
-                        # Display key results
-                        # Show Compliance (Proofreader) first if available
-                        agent3_results_all = agent_states.get('agent3_results', {}) or {}
-                        agent3_final_content = None
-
-                        # Check for agent3_final content from JSON file if not in session state
-                        if key not in agent3_results_all:
-                            agent3_final_content = get_content_from_json(key)
-
-                        if key in agent3_results_all:
-                            pr = agent3_results_all[key]
-
-                            # PRIORITY: Check for translated Chinese content first
-                            translated_content = pr.get('translated_content', '')
-                            corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
-
-                            # Use translated content if available and it's actually Chinese, otherwise use corrected content
-                            final_content = translated_content if translated_content and pr.get('is_chinese', False) else corrected_content
-
-                            # Determine content to display
-
-                            # Check for Chinese characters in final content
-                            chinese_chars = sum(1 for char in final_content if '\u4e00' <= char <= '\u9fff')
-                            english_chars = sum(1 for char in final_content if char.isascii() and char.isalnum())
-                            total_chars = len(final_content)
-
-                            # Content analysis for display
-
-                            # Content is ready for display
-
-                            # Check if this is a translation failure
-                            if isinstance(pr, dict) and pr.get('translation_failed'):
-                                st.error(f"❌ 翻译失败: {corrected_content}")
-                                # Show original English content if available
-                                original_content = pr.get('original_content', '')
-                                if original_content:
-                                    st.info("📝 显示原始英文内容:")
-                                    st.markdown(original_content)
-                            elif corrected_content:
-                                st.markdown(corrected_content)
-                        elif agent3_final_content:
-                            # Display agent3_final content from JSON (without label)
-                            st.markdown(agent3_final_content)
-                            agent3_results_all[key] = {"content": agent3_final_content}  # Add to results for expander logic
-
-                        # AI1 Results (collapsible if proofreader exists)
-                        with st.expander("📝 AI: Generation (details)", expanded=key not in agent3_results_all and not agent3_final_content):
-                            agent1_results = agent_states.get('agent1_results', {}) or {}
-                            if key in agent1_results and agent1_results[key]:
-                                content = agent1_results[key]
-                                
-                                # Handle both string and dict content
-                                if isinstance(content, dict):
-                                    content_str = content.get('content', str(content))
-                                else:
-                                    content_str = str(content)
-                                
-                                st.markdown("**Generated Content:**")
-                                st.markdown(content_str)
-                                
-                                # Metadata
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    st.metric("Characters", len(content_str))
-                                with col2:
-                                    st.metric("Words", len(content_str.split()))
-                                with col3:
-                                    st.metric("Status", "✅ Generated" if content else "❌ Failed")
-                            else:
-                                st.info("No AI results available. Run AI first.")
-
-                        # If Proofreader made changes or found issues, show a compact summary
-                        if key in agent3_results_all:
-                            pr = agent3_results_all[key]
-                            issues = pr.get('issues', []) or []
-                            changed = bool(pr.get('corrected_content'))
-                            if issues or changed:
-                                with st.expander("🧐 AI Proofreader: Changes & Notes", expanded=False):
-                                    if changed and not issues:
-                                        st.markdown("- Corrected content applied")
-                                    if issues:
-                                        st.markdown("- Detected issues (reference only):")
-                                        for issue in issues:
-                                            st.write(f"  • {issue}")
-                                    runs = pr.get('translation_runs', 0)
-                                    if runs:
-                                        st.markdown(f"- Heuristic translation applied: {runs} run(s)")
-                        if key not in agent3_results_all:
-                            st.info("No compliance results available. Run AI Proofreader.")
-            else:
-                st.info("No financial keys available for results display.")
-        else:
-            st.info("No AI agents have run yet. Use the buttons above to start processing.")
+        render_ai_results_display()
         
         # --- PowerPoint Generation Section (Bottom) ---
-        st.markdown("---")
-        st.subheader("📊 PowerPoint Generation")
-
-        # Define the export function that combines prepare and download
-        def export_pptx_with_download(selected_entity, statement_type, language='english'):
-            try:
-                # Show language-specific progress message
-                if language == 'chinese':
-                    st.info("📊 开始生成中文 PowerPoint 演示文稿...")
-                else:
-                    st.info("📊 Generating English PowerPoint presentation...")
-
-                # Get the project name based on selected entity (use first two words)
-                if selected_entity:
-                    words = selected_entity.split()
-                    # Use first two words, or first word if only one word
-                    project_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else selected_entity
-                else:
-                    project_name = selected_entity
-
-                # Check for template file in common locations
-                possible_templates = [
-                    "fdd_utils/template.pptx",
-                    "template.pptx",
-                    "old_ver/template.pptx",
-                    "common/template.pptx"
-                ]
-
-                template_path = None
-                for template in possible_templates:
-                    if os.path.exists(template):
-                        template_path = template
-                        break
-
-                if not template_path:
-                    st.error("❌ PowerPoint template not found. Please ensure 'template.pptx' exists in the fdd_utils/ directory.")
-                    st.info("💡 You can copy a template file from the old_ver/ directory or create a new one.")
-                    return
-
-                # Add language suffix to filename
-                language_suffix = "_CN" if language == 'chinese' else "_EN"
-
-                # Define output path with timestamp in fdd_utils/output directory
-                from datetime import datetime
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_filename = f"{project_name}_{statement_type.upper()}_{timestamp}{language_suffix}.pptx"
-                output_path = f"fdd_utils/output/{output_filename}"
-
-                # Ensure output directory exists
-                os.makedirs("fdd_utils/output", exist_ok=True)
-
-                # 1. Get the correct filtered keys for export
-                ai_data = st.session_state.get('ai_data', {})
-                sections_by_key = ai_data.get('sections_by_key', {})
-                entity_name = ai_data.get('entity_name', selected_entity)
-                keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-
-                # Dynamic BS key selection (as in your old logic)
-                bs_keys = [
-                    "Cash", "AR", "Prepayments", "OR", "Other CA", "IP", "Other NCA",
-                    "AP", "Taxes payable", "OP", "Capital", "Reserve"
-                ]
-                if entity_name in ['Ningbo', 'Nanjing']:
-                    bs_keys = [key for key in bs_keys if key != "Reserve"]
-
-                is_keys = [
-                    "OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
-                    "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"
-                ]
-
-                if statement_type == "BS":
-                    filtered_keys = [key for key in keys_with_data if key in bs_keys]
-                elif statement_type == "IS":
-                    filtered_keys = [key for key in keys_with_data if key in is_keys]
-                else:  # ALL
-                    filtered_keys = keys_with_data
-
-                # 2. Use appropriate content file based on statement type
-                # Note: Content files should contain narrative content from AI processing, not table data
-
-                # Get the Excel file path for embedding data
-                excel_file_path = None
-                # Get uploaded_file from session state or use default
-                current_uploaded_file = st.session_state.get('uploaded_file', None)
-                if current_uploaded_file is not None:
-                    try:
-                        # Save uploaded file to temporary location for PowerPoint processing
-                        import tempfile
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
-                            temp_file.write(current_uploaded_file.getvalue())
-                            excel_file_path = temp_file.name
-                        print(f"💾 Saved uploaded file to temporary location: {excel_file_path}")
-                    except Exception as e:
-                        print(f"⚠️ Failed to save uploaded file: {e}")
-                        # Fallback to default file
-                        if os.path.exists("databook.xlsx"):
-                            excel_file_path = "databook.xlsx"
-                else:
-                    # Fallback to default file
-                    if os.path.exists("databook.xlsx"):
-                        excel_file_path = "databook.xlsx"
-
-                # Handle different statement types
-                if statement_type == "IS":
-                    # Income Statement only
-                    markdown_path = "fdd_utils/is_content.md"
-                    if not os.path.exists(markdown_path):
-                        st.error(f"❌ Content file not found: {markdown_path}")
-                        st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
-                        return
-
-                    # Use language-specific export settings
-                    if language == 'chinese':
-                        st.info("📊 使用中文优化设置生成演示文稿...")
-                        # Chinese-specific settings are handled in pptx_export.py functions
-
-                    export_pptx(
-                        template_path=template_path,
-                        markdown_path=markdown_path,
-                        output_path=output_path,
-                        project_name=project_name,
-                        excel_file_path=excel_file_path,
-                        language=language
-                    )
-
-                elif statement_type == "BS":
-                    # Balance Sheet only
-                    markdown_path = "fdd_utils/bs_content.md"
-                    if not os.path.exists(markdown_path):
-                        st.error(f"❌ Content file not found: {markdown_path}")
-                        st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
-                        return
-
-                    # Use language-specific export settings
-                    if language == 'chinese':
-                        st.info("📊 使用中文优化设置生成演示文稿...")
-                        # Chinese-specific settings are handled in pptx_export.py functions
-
-                    export_pptx(
-                        template_path=template_path,
-                        markdown_path=markdown_path,
-                        output_path=output_path,
-                        project_name=project_name,
-                        excel_file_path=excel_file_path,
-                        language=language
-                    )
-
-                else:  # ALL - Generate BS first, then IS, then merge
-                    st.info("🔄 Generating combined Balance Sheet and Income Statement presentation...")
-
-                    # Check if both content files exist
-                    bs_markdown_path = "fdd_utils/bs_content.md"
-                    is_markdown_path = "fdd_utils/is_content.md"
-
-                    if not os.path.exists(bs_markdown_path):
-                        st.error(f"❌ Balance Sheet content file not found: {bs_markdown_path}")
-                        st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
-                        return
-
-                    if not os.path.exists(is_markdown_path):
-                        st.error(f"❌ Income Statement content file not found: {is_markdown_path}")
-                        st.info("💡 Please run AI processing first to generate content for PowerPoint export.")
-                        return
-
-                    # Generate temporary files for BS and IS
-                    import tempfile
-                    import shutil
-
-                    with tempfile.TemporaryDirectory() as temp_dir:
-                        bs_temp_path = os.path.join(temp_dir, "bs_temp.pptx")
-                        is_temp_path = os.path.join(temp_dir, "is_temp.pptx")
-
-                        # Generate BS presentation
-                        if language == 'chinese':
-                            st.info("📊 使用中文优化设置生成资产负债表...")
-                        else:
-                            st.info("📊 Generating Balance Sheet section...")
-                        export_pptx(
-                            template_path=template_path,
-                            markdown_path=bs_markdown_path,
-                            output_path=bs_temp_path,
-                            project_name=project_name,
-                            excel_file_path=excel_file_path
-                        )
-
-                        # Generate IS presentation
-                        if language == 'chinese':
-                            st.info("📈 使用中文优化设置生成损益表...")
-                        else:
-                            st.info("📈 Generating Income Statement section...")
-                        export_pptx(
-                            template_path=template_path,
-                            markdown_path=is_markdown_path,
-                            output_path=is_temp_path,
-                            project_name=project_name,
-                            excel_file_path=excel_file_path
-                        )
-
-                        # Merge the presentations
-                        if language == 'chinese':
-                            st.info("🔗 合并中文演示文稿...")
-                        else:
-                            st.info("🔗 Merging presentations...")
-                        merge_presentations(bs_temp_path, is_temp_path, output_path)
-
-                        if language == 'chinese':
-                            st.success("✅ 中文组合演示文稿生成成功!")
-                        else:
-                            st.success("✅ Combined presentation generated successfully!")
-
-                # Store session state and show download
-                st.session_state['pptx_exported'] = True
-                st.session_state['pptx_filename'] = output_filename
-                st.session_state['pptx_path'] = output_path
-
-                # Immediately show download button after successful generation
-                if os.path.exists(output_path):
-                    with open(output_path, "rb") as file:
-                        if language == 'chinese':
-                            download_label = f"📥 下载中文 PowerPoint: {output_filename}"
-                        else:
-                            download_label = f"📥 Download English PowerPoint: {output_filename}"
-
-                        st.download_button(
-                            label=download_label,
-                            data=file.read(),
-                            file_name=output_filename,
-                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                            use_container_width=True
-                        )
-
-                    if language == 'chinese':
-                        st.success(f"✅ 中文 PowerPoint 生成完成: {output_filename}")
-                    else:
-                        st.success(f"✅ English PowerPoint generated successfully: {output_filename}")
-
-            except FileNotFoundError as e:
-                st.error(f"❌ Template file not found: {e}")
-            except Exception as e:
-                st.error(f"❌ Export failed: {e}")
-                st.error(f"Error details: {str(e)}")
-
-        # Create combined buttons for English and Chinese exports
-        col1, col2 = st.columns([1, 1])
-
-        # English PPTX Export Button (combines prepare and download)
-        with col1:
-            if st.button("📊 Export English PPTX", type="primary", use_container_width=True):
-                export_pptx_with_download(selected_entity, statement_type, language='english')
-
-        # Chinese PPTX Export Button (combines prepare and download)
-        with col2:
-            if st.button("📊 Export Chinese PPTX", type="primary", use_container_width=True):
-                export_pptx_with_download(selected_entity, statement_type, language='chinese')
-
-        # Download buttons are now integrated into the export functions above
+        render_pptx_export_section(selected_entity, statement_type)
         
 
 
@@ -3519,422 +3513,7 @@ def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress
                 print(f"❌ Proofreading error: {e}")
         return agent1_results
 
-def run_ai_proofreader(filtered_keys, agent1_results, ai_data, external_progress=None, language='English'):
-    """Run AI Proofreader for all keys (Compliance, Figures, Entities, Grammar)."""
-    try:
-        # Initialize is_cli flag properly
-        is_cli = True  # Default to CLI mode
-
-        # Check if we're in a Streamlit environment (not CLI)
-        try:
-            import streamlit as st
-            # Try to access Streamlit session state - if it succeeds, we're in Streamlit
-            _ = st.session_state
-            is_cli = False
-        except (ImportError, AttributeError):
-            # If Streamlit is not available or session state doesn't exist, we're in CLI
-            is_cli = True
-
-        # Only show verbose output in CLI mode
-        if is_cli:
-            print(f"🔍 run_ai_proofreader called with {len(filtered_keys)} keys")
-
-        # Get logger only if available
-        logger = None
-        if not is_cli:
-            try:
-                logger = st.session_state.ai_logger
-            except:
-                pass
-
-        # Model/provider selection - try session state regardless of CLI mode
-        use_local_ai = False
-        use_openai = False
-
-        try:
-            # Try to get settings from session state (works even in CLI mode if Streamlit is imported)
-            import streamlit as st
-            use_local_ai = st.session_state.get('use_local_ai', False)
-            use_openai = st.session_state.get('use_openai', False)
-
-            # Also check selected_provider for more specific control
-            selected_provider = st.session_state.get('selected_provider')
-            if selected_provider == 'Open AI':
-                use_openai = True
-                use_local_ai = False
-            elif selected_provider == 'Local AI' or selected_provider == 'Server AI':
-                use_local_ai = True
-                use_openai = False
-
-        except Exception as e:
-            # Fallback to config detection
-            try:
-                from common.assistant import load_config
-                config_details = load_config('fdd_utils/config.json')
-                if config_details.get('LOCAL_AI_API_BASE'):
-                    use_local_ai = True
-                elif config_details.get('OPENAI_API_KEY'):
-                    use_openai = True
-            except Exception:
-                pass
-
-        proof_agent = ProofreadingAgent(use_local_ai=use_local_ai, use_openai=use_openai, language=language)
-
-        results = {}
-        entity_name = ai_data.get('entity_name', '')
-        sections_by_key = ai_data.get('sections_by_key', {})
-
-        # Prepare per-key tables markdown (from processed tables)
-        def get_tables_for_key(k):
-            key_sections = sections_by_key.get(k, [])
-            parts = []
-            for section in key_sections:
-                if isinstance(section, dict):
-                    try:
-                        parts.append(json.dumps(section, indent=2, default=str))
-                    except Exception:
-                        parts.append(str(section))
-                elif hasattr(section, 'to_string'):
-                    df = section.copy()
-                    for col in list(df.columns):
-                        if df[col].isna().all() or (df[col].astype(str) == 'None').all():
-                            df = df.drop(columns=[col])
-                    parts.append(df.to_string(index=False, na_rep=''))
-                else:
-                    parts.append(str(section))
-            return "\n".join(parts)
-        
-        if is_cli:
-            # Use tqdm for command-line progress
-            progress_bar = tqdm(total=len(filtered_keys), desc="🤖 AI Proofreader", unit="key")
-            status_text = None
-        else:
-            # Use Streamlit progress
-            if external_progress:
-                progress_bar = external_progress.get('bar')
-                status_text = external_progress.get('status')
-            else:
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-
-        start_time = time.time()
-        total = len(filtered_keys)
-
-        for idx, key in enumerate(filtered_keys):
-            # Debug output for all modes
-            print(f"\n🔍 [{idx+1}/{len(filtered_keys)}] 校对中: {key}")
-
-            if not is_cli:
-                elapsed = time.time() - start_time
-                # Simple ETA: average time per processed item * remaining
-                avg = (elapsed / (idx or 1)) if idx else 0
-                remaining = total - idx
-                eta_seconds = int(avg * remaining) if idx else 0
-                mins, secs = divmod(eta_seconds, 60)
-                eta_str = f"ETA {mins:02d}:{secs:02d}" if eta_seconds > 0 else "ETA --:--"
-                # Enhanced proofreading progress message
-                progress_pct = int((idx + 1) / total * 100)
-                enhanced_msg = f"🔍 校对中: {key} ({idx+1}/{total}) {eta_str}"
-
-                # Add compliance status if available from previous results
-                if results and key in results:
-                    is_compliant = results[key].get('is_compliant', False)
-                    status_icon = "✅" if is_compliant else "⚠️"
-                    enhanced_msg += f" {status_icon}"
-
-                if status_text:
-                    status_text.text(enhanced_msg)
-                try:
-                    combined = external_progress.get('combined') if external_progress else None
-                    if combined and isinstance(combined, dict):
-                        stages = combined.get('stages', 2)
-                        stage_index = combined.get('stage_index', 1)
-                        stage_weight = 1.0 / max(1, stages)
-                        progress = (idx+1)/len(filtered_keys)
-                        combined_progress = min(1.0, max(0.0, stage_index * stage_weight + progress * stage_weight))
-                        progress_bar.progress(combined_progress)
-                    else:
-                        progress_bar.progress((idx+1)/len(filtered_keys))
-                except Exception:
-                    pass
-            elif is_cli:
-                # Update tqdm progress bar
-                progress_bar.set_description(f"🔍 校对 {key} ({idx+1}/{len(filtered_keys)})")
-                progress_bar.update(1)
-            
-            try:
-                content = agent1_results.get(key, '')
-                if isinstance(content, dict):
-                    content_text = content.get('content', '')
-                    tables_md = content.get('table_data', '') or get_tables_for_key(key)
-                else:
-                    content_text = str(content)
-                    tables_md = get_tables_for_key(key)
-
-                if not content_text:
-                    results[key] = {'is_compliant': False, 'issues': ["No Agent 1 content"], 'corrected_content': ''}
-                    if is_cli:
-                        progress_bar.update(1)
-                    continue
-
-                # DEBUG: Print proofreading input
-                print(f"\n{'='*80}")
-
-                print(f"{'='*80}")
-                print(f"📝 CONTENT TO PROOFREAD ({len(content_text)} chars):")
-                print(f"{content_text}")
-                print(f"🔧 ENTITY NAME: {entity_name}")
-                print(f"{'='*80}")
-
-                # Pass progress_bar to proofread method
-                result = proof_agent.proofread(content_text, key, tables_md, entity_name, progress_bar if is_cli else None)
-
-                # DEBUG: Print proofreading output
-                print(f"\n{'='*80}")
-
-                print(f"{'='*80}")
-                if isinstance(result, dict):
-                    print(f"📤 PROOFREAD RESULT:")
-                    for k, v in result.items():
-                        if k == 'corrected_content' and v:
-                            print(f"  {k}: {v[:100]}..." if len(str(v)) > 100 else f"  {k}: {v}")
-                        else:
-                            print(f"  {k}: {v}")
-                else:
-                    print(f"📤 PROOFREAD RESULT: {result}")
-                print(f"{'='*80}")
-
-                # Debug output for proofreading result
-                print(f"✅ 校对完成: {key}")
-                if isinstance(result, dict):
-                    corrected_content = result.get('corrected_content', '')
-                    issues_found = len(result.get('issues', []))
-                    is_compliant = result.get('is_compliant', False)
-                    print(f"🔧 校对结果: {issues_found} 个问题发现, 合规性: {'✅' if is_compliant else '⚠️'}")
-                    if corrected_content:
-                        print(f"📝 修正内容预览: {corrected_content[:50]}..." if len(corrected_content) > 50 else f"📝 修正内容: {corrected_content}")
-
-                results[key] = result
-
-                # Log output only if logger is available
-                if logger:
-                    try:
-                        logger.log_agent_output('agent3', key, result, 0)
-                    except Exception:
-                        pass
-
-                # Update session store with corrected content
-                if not is_cli:
-                    try:
-                        content_store = st.session_state.get('ai_content_store', {})
-                        if key not in content_store:
-                            content_store[key] = {}
-                        corrected = result.get('corrected_content') or content_text
-                        content_store[key]['agent3_content'] = corrected
-                        content_store[key]['current_content'] = corrected
-                        st.session_state['ai_content_store'] = content_store
-                    except Exception:
-                        pass
-
-            except Exception as e:
-                results[key] = {'is_compliant': False, 'issues': [str(e)], 'corrected_content': ''}
-                if is_cli and progress_bar:
-                    progress_bar.update(1)
-
-        # Final summary and close progress bar
-        total_processed = len([k for k in results.keys() if results[k]])
-        success_rate = total_processed / len(filtered_keys) if filtered_keys else 0
-
-        summary_msg = f"✅ 校对完成 - 成功处理 {total_processed}/{len(filtered_keys)} 个项目 ({success_rate:.1%})"
-
-        if is_cli and progress_bar:
-            progress_bar.close()
-            print(f"\n{summary_msg}")
-            print(f"🔍 校对质量统计:")
-            for key in results:
-                if results[key] and isinstance(results[key], dict):
-                    issues = len(results[key].get('issues', []))
-                    is_compliant = results[key].get('is_compliant', False)
-                    status = "✅" if issues == 0 and is_compliant else "⚠️" if issues < 3 else "❌"
-                    print(f"  {status} {key}: {issues} 个问题, 合规性: {'是' if is_compliant else '否'}")
-        elif not is_cli:
-            try:
-                st.success(summary_msg)
-            except Exception:
-                pass
-
-        print(f"\n{'─' * 60}")
-        print(f"🎯 校对任务完成总结:")
-        print(f"   总项目数: {len(filtered_keys)}")
-        print(f"   成功校对: {total_processed}")
-        print(f"   成功率: {success_rate:.1%}")
-        print(f"   耗时: {time.time() - start_time:.1f} 秒")
-        print(f"{'─' * 60}")
-
-        return results
-    except Exception as e:
-        if is_cli:
-            print(f"❌ AI Proofreader Error: {e}")
-        else:
-            try:
-                st.error(f"❌ AI Proofreader Error: {e}")
-            except Exception:
-                print(f"❌ AI Proofreader Error: {e}")
-        return {}
-
-def update_bs_content_with_agent_corrections(corrections_dict, entity_name, agent_name):
-    """Update bs_content.md with corrections from Agent 2 or Agent 3"""
-    try:
-        import re
-        
-        # Read current bs_content.md
-        bs_content_path = 'fdd_utils/bs_content.md'
-        if not os.path.exists(bs_content_path):
-            st.warning(f"bs_content.md not found at {bs_content_path}")
-            return False
-        
-        with open(bs_content_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # Define category mappings based on entity name
-        if entity_name in ['Ningbo', 'Nanjing']:
-            from fdd_utils.mappings import DISPLAY_NAME_MAPPING_NB_NJ as name_mapping
-        else:  # Haining and others
-            from fdd_utils.mappings import DISPLAY_NAME_MAPPING_DEFAULT as name_mapping
-        
-        # Update content for each corrected key
-        for key, corrected_content in corrections_dict.items():
-            if key in name_mapping:
-                section_name = name_mapping[key]
-                # Find and replace the section content
-                pattern = rf'(### {re.escape(section_name)}\n)(.*?)(?=\n### |\Z)'
-                
-                # Clean the corrected content
-                cleaned_content = clean_content_quotes(corrected_content)
-                replacement = f'\\1{cleaned_content}\n'
-                
-                content = re.sub(pattern, replacement, content, flags=re.DOTALL)
-        
-        # Write updated content back
-        with open(bs_content_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        
-        # Also update the AI generated copy
-        try:
-            import shutil
-            shutil.copy2(bs_content_path, 'fdd_utils/bs_content_ai_generated.md')
-        except Exception as e:
-            print(f"Could not update AI reference copy: {e}")
-        
-        return True
-        
-    except Exception as e:
-        st.error(f"Error updating bs_content.md with {agent_name} corrections: {e}")
-        return False
-
-# run_agent_2 function removed as requested
-
-def read_bs_content_by_key():
-    """Read BS content by key - simplified since AI2 removed"""
-    return {}
-
-# Previous run_agent_2 code removed - this section will be cleaned up
-# All content below was part of the old run_agent_2 function and needs to be removed
-
-def run_agent_3(filtered_keys, agent1_results, ai_data):
-    # Deprecated legacy agent (kept for backward compatibility); no-op.
-    return {}
-
-def read_bs_content_by_key(entity_name):
-    """Read bs_content.md and return content organized by key"""
-    try:
-        import re
-        
-        # Read current bs_content.md
-        bs_content_path = 'fdd_utils/bs_content.md'
-        if not os.path.exists(bs_content_path):
-            return {}
-        
-        with open(bs_content_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # Define category mappings based on entity name
-        if entity_name in ['Ningbo', 'Nanjing']:
-            name_mapping = {
-                'Cash at bank': 'Cash',
-                'Accounts receivables': 'AR',
-                'Prepayments': 'Prepayments',
-                'Other receivables': 'OR',
-                'Other current assets': 'Other CA',
-                'Investment properties': 'IP',
-                'Other non-current assets': 'Other NCA',
-                'Accounts payable': 'AP',
-                'Taxes payables': 'Taxes payable',
-                'Other payables': 'OP',
-                'Capital': 'Capital'
-            }
-        else:  # Haining and others
-            name_mapping = {
-                'Cash at bank': 'Cash',
-                'Accounts receivables': 'AR',
-                'Prepayments': 'Prepayments',
-                'Other receivables': 'OR',
-                'Other current assets': 'Other CA',
-                'Investment properties': 'IP',
-                'Other non-current assets': 'Other NCA',
-                'Accounts payable': 'AP',
-                'Taxes payables': 'Taxes payable',
-                'Other payables': 'OP',
-                'Capital': 'Capital',
-                'Surplus reserve': 'Reserve'
-            }
-        
-        # Extract content by section
-        content_by_key = {}
-        
-        # Split by section headers (### Section Name)
-        sections = re.split(r'(^### .+$)', content, flags=re.MULTILINE)
-        
-        for i in range(1, len(sections), 2):
-            if i + 1 < len(sections):
-                section_header = sections[i].strip()
-                section_content = sections[i + 1].strip()
-                
-                # Extract section name from header
-                section_name = section_header.replace('### ', '').strip()
-                
-                # Map section name to key
-                if section_name in name_mapping:
-                    key = name_mapping[section_name]
-                    content_by_key[key] = section_content
-        
-        return content_by_key
-        
-    except Exception as e:
-        print(f"Error reading bs_content.md: {e}")
-        return {}
-
-def convert_sections_to_markdown(sections_by_key):
-    """Convert sections_by_key format to markdown format expected by process_keys"""
-    processed_table_data = {}
-
-    for key, sections in sections_by_key.items():
-        if not sections:
-            continue
-
-        # Combine all markdown content from sections for this key
-        markdown_parts = []
-        for section in sections:
-            if isinstance(section, dict) and 'markdown' in section:
-                markdown_parts.append(section['markdown'])
-            elif isinstance(section, str):
-                markdown_parts.append(section)
-
-        # Join all sections for this key
-        if markdown_parts:
-            processed_table_data[key] = '\n\n'.join(markdown_parts)
-
-    return processed_table_data
+# Duplicate function removed - keeping only the first definition
 
 def run_agent_1_simple(filtered_keys, ai_data, external_progress=None, language='English'):
     """Optimized Agent 1 using process_keys directly - eliminates redundant Excel processing"""
