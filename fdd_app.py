@@ -1,8 +1,3 @@
-"""
-Clean, modular FDD Application
-Main application file - properly modularized and lightweight
-"""
-
 import streamlit as st
 import pandas as pd
 import json
