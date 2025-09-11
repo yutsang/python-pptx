@@ -2300,24 +2300,40 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             print(f"   🔍 Entity found in content: entity_found={entity_found}")
                             print(f"   🔍 Entity keywords: {entity_keywords}")
                         else:
-                            # No entity found - use intelligent detection
-                            if len(section_text.strip()) > 50:  # Has substantial content
-                                # Check if this looks like a financial table (has numbers and/or Chinese characters)
-                                has_numbers = any(char.isdigit() for char in section_text)
-                                has_chinese = any('\u4e00' <= char <= '\u9fff' for char in section_text)
-
-                                if has_numbers or has_chinese:
-                                    # Likely valid financial content - assume correct entity
-                                    entity_found = True
-                                    actual_entity_found = entity_name
-                                    print(f"   🔍 No entity found but valid financial content detected - assuming correct entity for {best_key}")
-                                    print(f"   🔍 Content has numbers: {has_numbers}, Chinese: {has_chinese}")
-                                else:
-                                    print(f"   🔍 No entity found and content doesn't appear to be financial data")
-                                    print(f"   🔍 Entity keywords: {entity_keywords}")
-                                    print(f"   🔍 Section text sample: {section_text[:200]}...")
+                            # No entity found - be more strict about entity matching
+                            print(f"   ❌ STRICT MODE: No entity keywords found in section")
+                            print(f"   🔍 Looking for: {entity_keywords}")
+                            print(f"   🔍 In content: {section_text[:200]}...")
+                            
+                            # Check if this section contains OTHER entities that we should skip
+                            other_entities = ['ningbo wanchen', 'haining wanpu', 'nanjing jingya']
+                            found_other_entity = None
+                            for other_entity in other_entities:
+                                if other_entity in section_text and other_entity not in [kw.lower() for kw in entity_keywords]:
+                                    found_other_entity = other_entity
+                                    break
+                            
+                            if found_other_entity:
+                                print(f"   ❌ SKIPPING: Section contains different entity '{found_other_entity}'")
+                                entity_found = False
+                                actual_entity_found = None
                             else:
-                                print(f"   🔍 No entity found in minimal content")
+                                # Only assume it's the correct entity if no other entities are found
+                                if len(section_text.strip()) > 50:  # Has substantial content
+                                    has_numbers = any(char.isdigit() for char in section_text)
+                                    has_chinese = any('\u4e00' <= char <= '\u9fff' for char in section_text)
+
+                                    if has_numbers or has_chinese:
+                                        print(f"   ⚠️ CAUTIOUS ASSUMPTION: Financial content found, no conflicting entities")
+                                        entity_found = True
+                                        actual_entity_found = entity_name
+                                        print(f"   🔍 Content has numbers: {has_numbers}, Chinese: {has_chinese}")
+                                    else:
+                                        print(f"   ❌ No entity found and content doesn't appear to be financial data")
+                                        entity_found = False
+                                else:
+                                    print(f"   ❌ No entity found in minimal content")
+                                    entity_found = False
                                 print(f"   🔍 Entity keywords: {entity_keywords}")
                                 print(f"   🔍 Section text sample: {section_text[:200]}...")
 
@@ -2605,26 +2621,40 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                 print(f"   🔍 Entity found in content: entity_found={entity_found}")
                                 print(f"   🔍 Entity keywords: {entity_keywords}")
                             else:
-                                # No entity found - use intelligent detection
-                                if len(section_text.strip()) > 50:  # Has substantial content
-                                    # Check if this looks like a financial table (has numbers and/or Chinese characters)
-                                    has_numbers = any(char.isdigit() for char in section_text)
-                                    has_chinese = any('\u4e00' <= char <= '\u9fff' for char in section_text)
-
-                                    if has_numbers or has_chinese:
-                                        # Likely valid financial content - assume correct entity
-                                        entity_found = True
-                                        actual_entity_found = entity_name
-                                        print(f"   🔍 No entity found but valid financial content detected - assuming correct entity for {best_key}")
-                                        print(f"   🔍 Content has numbers: {has_numbers}, Chinese: {has_chinese}")
-                                    else:
-                                        print(f"   🔍 No entity found and content doesn't appear to be financial data")
-                                        print(f"   🔍 Entity keywords: {entity_keywords}")
-                                        print(f"   🔍 Section text sample: {section_text[:200]}...")
+                                # No entity found - be more strict about entity matching
+                                print(f"   ❌ STRICT MODE: No entity keywords found in section")
+                                print(f"   🔍 Looking for: {entity_keywords}")
+                                print(f"   🔍 In content: {section_text[:200]}...")
+                                
+                                # Check if this section contains OTHER entities that we should skip
+                                other_entities = ['ningbo wanchen', 'haining wanpu', 'nanjing jingya']
+                                found_other_entity = None
+                                for other_entity in other_entities:
+                                    if other_entity in section_text and other_entity not in [kw.lower() for kw in entity_keywords]:
+                                        found_other_entity = other_entity
+                                        break
+                                
+                                if found_other_entity:
+                                    print(f"   ❌ SKIPPING: Section contains different entity '{found_other_entity}'")
+                                    entity_found = False
+                                    actual_entity_found = None
                                 else:
-                                    print(f"   🔍 No entity found in minimal content")
-                                    print(f"   🔍 Entity keywords: {entity_keywords}")
-                                    print(f"   🔍 Section text sample: {section_text[:200]}...")
+                                    # Only assume it's the correct entity if no other entities are found
+                                    if len(section_text.strip()) > 50:  # Has substantial content
+                                        has_numbers = any(char.isdigit() for char in section_text)
+                                        has_chinese = any('\u4e00' <= char <= '\u9fff' for char in section_text)
+
+                                        if has_numbers or has_chinese:
+                                            print(f"   ⚠️ CAUTIOUS ASSUMPTION: Financial content found, no conflicting entities")
+                                            entity_found = True
+                                            actual_entity_found = entity_name
+                                            print(f"   🔍 Content has numbers: {has_numbers}, Chinese: {has_chinese}")
+                                        else:
+                                            print(f"   ❌ No entity found and content doesn't appear to be financial data")
+                                            entity_found = False
+                                    else:
+                                        print(f"   ❌ No entity found in minimal content")
+                                        entity_found = False
 
                             # Only process if entity is found in this section
                             if entity_found:
