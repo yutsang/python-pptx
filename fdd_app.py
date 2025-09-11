@@ -253,8 +253,8 @@ def main():
         
         st.session_state['last_entity_input'] = entity_input
         
-        # Auto-detect entity mode (no manual selection needed)
-        entity_mode_internal = 'auto'  # Let the system auto-detect
+        # Auto-detect entity mode (default to multiple for better detection)
+        entity_mode_internal = 'multiple'  # Use multiple mode for better entity detection
         st.session_state['entity_mode'] = entity_mode_internal
 
         # Generate entity configuration
