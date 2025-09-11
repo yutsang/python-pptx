@@ -43,41 +43,50 @@ def render_balance_sheet_sections(
                     metadata_entity = metadata.get('entity_name', 'NO_METADATA_ENTITY')
                     print(f"🔍 DEBUG DETAILED: Section {idx} metadata entity: '{metadata_entity}'")
 
-            # Filter sections by selected entity
+            # Filter sections by selected entity - check the actual data content
             filtered_sections = []
             for section in sections:
                 section_entity = section.get('entity_name', '')
+                detected_entity = section.get('detected_entity', '')
                 
-                # Try multiple matching strategies
+                print(f"🔍 Section entity: '{section_entity}', detected: '{detected_entity}', selected: '{selected_entity}'")
+                
+                # Check if the section actually contains data for the selected entity
+                # Look in the parsed data for the selected entity
                 match_found = False
-                if section_entity:
-                    # Strategy 1: Exact match (case insensitive)
-                    if selected_entity.lower() == section_entity.lower():
-                        match_found = True
-                        print(f"✅ EXACT MATCH: '{section_entity}' == '{selected_entity}'")
-                    
-                    # Strategy 2: Selected entity contains section entity
-                    elif selected_entity.lower() in section_entity.lower():
-                        match_found = True
-                        print(f"✅ CONTAINS MATCH: '{selected_entity}' in '{section_entity}'")
-                    
-                    # Strategy 3: Section entity contains selected entity
-                    elif section_entity.lower() in selected_entity.lower():
-                        match_found = True
-                        print(f"✅ REVERSE CONTAINS MATCH: '{section_entity}' in '{selected_entity}'")
-                    
-                    # Strategy 4: Check for partial word matches
-                    else:
-                        selected_words = selected_entity.lower().split()
-                        section_words = section_entity.lower().split()
-                        if any(word in section_words for word in selected_words):
-                            match_found = True
-                            print(f"✅ WORD MATCH: Common words between '{selected_entity}' and '{section_entity}'")
+                
+                # Strategy 1: Check if selected entity matches the section entity
+                if section_entity and selected_entity.lower() in section_entity.lower():
+                    match_found = True
+                    print(f"✅ ENTITY MATCH: '{selected_entity}' matches section entity '{section_entity}'")
+                
+                # Strategy 2: Check the actual data content for the selected entity
+                if not match_found and 'parsed_data' in section and section['parsed_data']:
+                    data_rows = section['parsed_data'].get('data', [])
+                    for row in data_rows[:5]:  # Check first 5 rows
+                        if isinstance(row, dict):
+                            row_text = ' '.join(str(v).lower() for v in row.values() if v)
+                            if selected_entity.lower() in row_text:
+                                match_found = True
+                                print(f"✅ DATA CONTENT MATCH: Found '{selected_entity}' in row data")
+                                break
+                
+                # Strategy 3: Check raw data content
+                if not match_found and 'data' in section:
+                    try:
+                        df = section['data']
+                        if hasattr(df, 'to_string'):
+                            df_text = df.to_string().lower()
+                            if selected_entity.lower() in df_text:
+                                match_found = True
+                                print(f"✅ RAW DATA MATCH: Found '{selected_entity}' in raw data")
+                    except:
+                        pass
                 
                 if match_found:
                     filtered_sections.append(section)
                 else:
-                    print(f"❌ NO MATCH: '{section_entity}' vs '{selected_entity}'")
+                    print(f"❌ NO MATCH: Section does not contain data for '{selected_entity}'")
             
             print(f"🔍 DEBUG DETAILED: Filtered {len(sections)} -> {len(filtered_sections)} sections")
             
@@ -234,14 +243,49 @@ def render_combined_sections(
                 st.info("No sections found for this key.")
                 continue
 
-            # Filter sections by selected entity
+            # Filter sections by selected entity - check the actual data content
             filtered_sections = []
             for section in sections:
                 section_entity = section.get('entity_name', '')
-                if selected_entity.lower() in section_entity.lower() or section_entity.lower() in selected_entity.lower():
+                detected_entity = section.get('detected_entity', '')
+                
+                print(f"🔍 Combined Section entity: '{section_entity}', detected: '{detected_entity}', selected: '{selected_entity}'")
+                
+                # Check if the section actually contains data for the selected entity
+                match_found = False
+                
+                # Strategy 1: Check if selected entity matches the section entity
+                if section_entity and selected_entity.lower() in section_entity.lower():
+                    match_found = True
+                    print(f"✅ Combined ENTITY MATCH: '{selected_entity}' matches section entity '{section_entity}'")
+                
+                # Strategy 2: Check the actual data content for the selected entity
+                if not match_found and 'parsed_data' in section and section['parsed_data']:
+                    data_rows = section['parsed_data'].get('data', [])
+                    for row in data_rows[:5]:  # Check first 5 rows
+                        if isinstance(row, dict):
+                            row_text = ' '.join(str(v).lower() for v in row.values() if v)
+                            if selected_entity.lower() in row_text:
+                                match_found = True
+                                print(f"✅ Combined DATA CONTENT MATCH: Found '{selected_entity}' in row data")
+                                break
+                
+                # Strategy 3: Check raw data content
+                if not match_found and 'data' in section:
+                    try:
+                        df = section['data']
+                        if hasattr(df, 'to_string'):
+                            df_text = df.to_string().lower()
+                            if selected_entity.lower() in df_text:
+                                match_found = True
+                                print(f"✅ Combined RAW DATA MATCH: Found '{selected_entity}' in raw data")
+                    except:
+                        pass
+                
+                if match_found:
                     filtered_sections.append(section)
                 else:
-                    print(f"🔍 DEBUG Combined: Filtering out section for entity '{section_entity}' (selected: '{selected_entity}')")
+                    print(f"❌ Combined NO MATCH: Section does not contain data for '{selected_entity}'")
             
             if not filtered_sections:
                 st.info(f"No sections found for entity '{selected_entity}' in this key.")
@@ -333,14 +377,49 @@ def render_income_statement_sections(
                 st.info("No sections found for this key.")
                 continue
 
-            # Filter sections by selected entity
+            # Filter sections by selected entity - check the actual data content
             filtered_sections = []
             for section in sections:
                 section_entity = section.get('entity_name', '')
-                if selected_entity.lower() in section_entity.lower() or section_entity.lower() in selected_entity.lower():
+                detected_entity = section.get('detected_entity', '')
+                
+                print(f"🔍 IS Section entity: '{section_entity}', detected: '{detected_entity}', selected: '{selected_entity}'")
+                
+                # Check if the section actually contains data for the selected entity
+                match_found = False
+                
+                # Strategy 1: Check if selected entity matches the section entity
+                if section_entity and selected_entity.lower() in section_entity.lower():
+                    match_found = True
+                    print(f"✅ IS ENTITY MATCH: '{selected_entity}' matches section entity '{section_entity}'")
+                
+                # Strategy 2: Check the actual data content for the selected entity
+                if not match_found and 'parsed_data' in section and section['parsed_data']:
+                    data_rows = section['parsed_data'].get('data', [])
+                    for row in data_rows[:5]:  # Check first 5 rows
+                        if isinstance(row, dict):
+                            row_text = ' '.join(str(v).lower() for v in row.values() if v)
+                            if selected_entity.lower() in row_text:
+                                match_found = True
+                                print(f"✅ IS DATA CONTENT MATCH: Found '{selected_entity}' in row data")
+                                break
+                
+                # Strategy 3: Check raw data content
+                if not match_found and 'data' in section:
+                    try:
+                        df = section['data']
+                        if hasattr(df, 'to_string'):
+                            df_text = df.to_string().lower()
+                            if selected_entity.lower() in df_text:
+                                match_found = True
+                                print(f"✅ IS RAW DATA MATCH: Found '{selected_entity}' in raw data")
+                    except:
+                        pass
+                
+                if match_found:
                     filtered_sections.append(section)
                 else:
-                    print(f"🔍 DEBUG IS: Filtering out section for entity '{section_entity}' (selected: '{selected_entity}')")
+                    print(f"❌ IS NO MATCH: Section does not contain data for '{selected_entity}'")
             
             if not filtered_sections:
                 st.info(f"No sections found for entity '{selected_entity}' in this key.")
