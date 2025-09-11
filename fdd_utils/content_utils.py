@@ -173,8 +173,14 @@ def generate_content_from_session_storage(entity_name):
         content_store = st.session_state.get('ai_content_store', {})
         current_statement_type = st.session_state.get('current_statement_type', 'BS')
 
+        # Debug: Print session state info
+        print(f"🔍 DEBUG CONTENT GENERATION: content_store keys: {list(content_store.keys())}")
+        print(f"🔍 DEBUG CONTENT GENERATION: content_store size: {len(content_store)}")
+        print(f"🔍 DEBUG CONTENT GENERATION: current_statement_type: {current_statement_type}")
+
         if not content_store:
             st.error("❌ No AI-generated content available. Please run AI processing first.")
+            print("🔍 DEBUG CONTENT GENERATION: No content_store found in session state")
             return
 
         # Get current statement type from session state
@@ -199,11 +205,17 @@ def generate_content_from_session_storage(entity_name):
         # Process each key in the content store
         for key, content_data in content_store.items():
             if isinstance(content_data, dict):
-                # Get the most appropriate content (prioritize corrected_content)
-                final_content = (content_data.get('corrected_content') or
+                # Get the most appropriate content (prioritize current_content, then agent3, then agent1)
+                final_content = (content_data.get('current_content') or
+                               content_data.get('agent3_content') or
+                               content_data.get('agent1_content') or
+                               content_data.get('corrected_content') or
                                content_data.get('content') or
-                               content_data.get('agent3_final') or
                                'No content available')
+
+                # Debug: Print content info
+                print(f"🔍 DEBUG CONTENT GENERATION: Key '{key}' - final_content length: {len(final_content) if final_content else 0}")
+                print(f"🔍 DEBUG CONTENT GENERATION: Key '{key}' - content_data keys: {list(content_data.keys())}")
 
                 json_content['financial_items'][key] = {
                     'content': final_content,

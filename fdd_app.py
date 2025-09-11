@@ -660,6 +660,10 @@ def main():
                         st.session_state['ai_content_store'][key]['agent1_content'] = content
                         st.session_state['ai_content_store'][key]['current_content'] = content
                         st.session_state['ai_content_store'][key]['agent1_timestamp'] = datetime.datetime.now().isoformat()
+                        
+                        # Debug: Print what's being stored
+                        print(f"🔍 DEBUG AI STORAGE: Stored content for key '{key}' - length: {len(content) if content else 0}")
+                        print(f"🔍 DEBUG AI STORAGE: Content preview: {content[:100] if content else 'None'}...")
 
                     st.session_state['agent_states']['agent1_results'] = agent1_results
                     st.session_state['agent_states']['agent1_completed'] = True
@@ -710,6 +714,10 @@ def main():
                     st.session_state['ai_content_store'][key]['agent3_content'] = content
                     st.session_state['ai_content_store'][key]['current_content'] = content
                     st.session_state['ai_content_store'][key]['agent3_timestamp'] = time.time()
+                    
+                    # Debug: Print what's being stored
+                    print(f"🔍 DEBUG CHINESE AI STORAGE: Stored content for key '{key}' - length: {len(content) if content else 0}")
+                    print(f"🔍 DEBUG CHINESE AI STORAGE: Content preview: {content[:100] if content else 'None'}...")
 
                 st.session_state['agent_states']['agent3_results'] = translated_results
                 st.session_state['agent_states']['agent3_completed'] = True
