@@ -1716,6 +1716,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
 
     for key_index, key in enumerate(pbar):
         # Determine AI model being used for display
+        print(f"🔍 DEBUG: Processing key {key_index}: {repr(key)} (type: {type(key)})")
         config_details = load_config(config_file)
         if use_local_ai:
             ai_model = "Local AI"
@@ -1757,6 +1758,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         print(f"🔍 DEBUG: processed_table_data keys: {list(processed_table_data.keys()) if processed_table_data else 'None'}")
         print(f"🔍 DEBUG: Looking for key: {key}")
         print(f"🔍 DEBUG: processed_table_data type: {type(processed_table_data)}")
+        print(f"🔍 DEBUG: Key '{key}' in processed_table_data: {key in processed_table_data if processed_table_data else False}")
+        
         if processed_table_data and key in processed_table_data:
             excel_tables = processed_table_data[key]
             data_source = "cached"
@@ -1765,15 +1768,11 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         else:
             print(f"⚠️ DEBUG: No cached data for key: {key}, processing Excel file")
             print(f"⚠️ DEBUG: Key '{key}' not found in processed_table_data")
-            # Ensure mapping is in the correct format for process_and_filter_excel
-            if isinstance(mapping, dict) and all(isinstance(v, list) for v in mapping.values()):
-                tab_name_mapping = mapping
-                print(f"✅ DEBUG: Mapping format is correct")
-            else:
-                print(f"⚠️ DEBUG: Mapping format incorrect, using empty mapping")
-                tab_name_mapping = {}
-            excel_tables = process_and_filter_excel(input_file, tab_name_mapping, entity_name, entity_helpers)
-            data_source = "processed"
+            print(f"⚠️ DEBUG: This should not happen - AI processing should use cached data")
+            # Instead of calling process_and_filter_excel, return empty data
+            print(f"⚠️ DEBUG: Returning empty data instead of processing Excel file")
+            excel_tables = []
+            data_source = "empty"
 
         # Update progress: Data processing phase
         if not use_streamlit_progress:

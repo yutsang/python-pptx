@@ -447,9 +447,13 @@ def run_ai_processing(filtered_keys, ai_data, language='English', progress_callb
 
         # Process keys using the assistant
         print(f"🔍 DEBUG: AI processing keys: {filtered_keys}")
+        print(f"🔍 DEBUG: AI processing keys types: {[type(k) for k in filtered_keys]}")
+        print(f"🔍 DEBUG: AI processing keys repr: {[repr(k) for k in filtered_keys]}")
         print(f"🔍 DEBUG: AI processing entity: {entity_name}")
         print(f"🔍 DEBUG: AI processing entity_helpers: {entity_keywords}")
         print(f"🔍 DEBUG: AI processing processed_table_data keys: {list(ai_data.get('sections_by_key', {}).keys())}")
+        print(f"🔍 DEBUG: AI processing processed_table_data keys types: {[type(k) for k in ai_data.get('sections_by_key', {}).keys()]}")
+        print(f"🔍 DEBUG: AI processing processed_table_data keys repr: {[repr(k) for k in ai_data.get('sections_by_key', {}).keys()]}")
         results = process_keys(
             keys=filtered_keys,
             entity_name=entity_name,
@@ -716,6 +720,10 @@ def main():
         
         # Prepare AI data
         keys_with_data = [key for key, sections in sections_by_key.items() if sections]
+        print(f"🔍 DEBUG: Raw keys from sections_by_key: {list(sections_by_key.keys())}")
+        print(f"🔍 DEBUG: Keys with data: {keys_with_data}")
+        print(f"🔍 DEBUG: Key types: {[type(k) for k in keys_with_data[:5]]}")
+        print(f"🔍 DEBUG: Key values: {[repr(k) for k in keys_with_data[:5]]}")
                 
         # Filter keys by statement type
         bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
@@ -725,10 +733,17 @@ def main():
         
         if statement_type == "BS":
             filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
+            print(f"🔍 DEBUG: BS filtering - keys_with_data: {keys_with_data}")
+            print(f"🔍 DEBUG: BS filtering - bs_keys: {bs_keys}")
+            print(f"🔍 DEBUG: BS filtering - filtered_keys_for_ai: {filtered_keys_for_ai}")
         elif statement_type == "IS":
             filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
+            print(f"🔍 DEBUG: IS filtering - keys_with_data: {keys_with_data}")
+            print(f"🔍 DEBUG: IS filtering - is_keys: {is_keys}")
+            print(f"🔍 DEBUG: IS filtering - filtered_keys_for_ai: {filtered_keys_for_ai}")
         else:  # ALL
             filtered_keys_for_ai = keys_with_data
+            print(f"🔍 DEBUG: ALL filtering - filtered_keys_for_ai: {filtered_keys_for_ai}")
         
         st.session_state['filtered_keys_for_ai'] = filtered_keys_for_ai
         
