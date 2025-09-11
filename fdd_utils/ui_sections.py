@@ -93,8 +93,18 @@ def render_balance_sheet_sections(
                 if data_rows:
                     structured_data = []
                     for row in data_rows:
-                        description = row['description']
-                        value = row['value']
+                        # Handle different data structures safely
+                        try:
+                            if isinstance(row, dict):
+                                description = row.get('description') or row.get('Description') or row.get('desc') or row.get('item') or str(list(row.keys())[0] if row.keys() else 'Unknown')
+                                value = row.get('value') or row.get('Value') or row.get('amount') or str(list(row.values())[1] if len(row.values()) > 1 else list(row.values())[0] if row.values() else 'N/A')
+                            else:
+                                description = str(row)
+                                value = 'N/A'
+                        except Exception as e:
+                            print(f"❌ Error processing row: {e}, row: {row}")
+                            description = "Error"
+                            value = "N/A"
                         actual_value = value
                         # Convert datetime objects to strings to avoid Arrow serialization errors
                         if hasattr(actual_value, 'strftime'):  # datetime object
@@ -322,8 +332,18 @@ def render_income_statement_sections(
                 if data_rows:
                     structured_data = []
                     for row in data_rows:
-                        description = row['description']
-                        value = row['value']
+                        # Handle different data structures safely
+                        try:
+                            if isinstance(row, dict):
+                                description = row.get('description') or row.get('Description') or row.get('desc') or row.get('item') or str(list(row.keys())[0] if row.keys() else 'Unknown')
+                                value = row.get('value') or row.get('Value') or row.get('amount') or str(list(row.values())[1] if len(row.values()) > 1 else list(row.values())[0] if row.values() else 'N/A')
+                            else:
+                                description = str(row)
+                                value = 'N/A'
+                        except Exception as e:
+                            print(f"❌ Error processing row: {e}, row: {row}")
+                            description = "Error"
+                            value = "N/A"
                         actual_value = value
                         # Convert datetime objects to strings to avoid Arrow serialization errors
                         if hasattr(actual_value, 'strftime'):  # datetime object
