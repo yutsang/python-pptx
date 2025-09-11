@@ -230,10 +230,8 @@ def generate_content_from_session_storage(entity_name):
         with open(json_filename, 'w', encoding='utf-8') as f:
             json.dump(json_content, f, indent=2, ensure_ascii=False)
 
-        # Generate markdown file for human readability
-        markdown_content = f"# Balance Sheet Content - {entity_name}\n\n"
-        markdown_content += f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        markdown_content += f"**Statement Type:** {current_statement_type}\n\n"
+        # Generate markdown file for human readability (without metadata headers for PowerPoint)
+        markdown_content = ""
 
         # Group by categories
         categorized_content = {}
@@ -277,8 +275,7 @@ def generate_markdown_from_ai_results(ai_results, entity_name):
             st.error("❌ No AI results available to generate markdown")
             return
 
-        markdown_content = f"# AI Generated Financial Content - {entity_name}\n\n"
-        markdown_content += f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        markdown_content = ""
 
         # Process each key in the AI results
         for key, result in ai_results.items():
@@ -301,8 +298,7 @@ def generate_markdown_from_ai_results(ai_results, entity_name):
 def convert_sections_to_markdown(sections_by_key):
     """Convert sections dictionary to markdown format"""
     try:
-        markdown_content = "# Financial Data Sections\n\n"
-        markdown_content += f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        markdown_content = ""
 
         for key, sections in sections_by_key.items():
             markdown_content += f"## {key}\n\n"
