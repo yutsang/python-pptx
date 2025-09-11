@@ -2159,6 +2159,39 @@ def match_sheet_to_financial_key(sheet_name, financial_key, tab_name_mapping):
     return False
 
 
+def extract_financial_keys_from_content(df, tab_name_mapping):
+    """Extract financial keys by looking at the actual content of the DataFrame."""
+    found_keys = []
+    
+    if df.empty or len(df) == 0:
+        return found_keys
+    
+    # Convert all data to string for searching
+    all_text = ""
+    try:
+        for row_idx in range(min(20, len(df))):  # Check first 20 rows
+            for col_idx in range(len(df.columns)):
+                try:
+                    cell_value = str(df.iloc[row_idx, col_idx])
+                    if cell_value and cell_value != 'nan':
+                        all_text += cell_value.lower() + " "
+                except:
+                    continue
+    except:
+        return found_keys
+    
+    # Look for financial terms in the content
+    for financial_key, patterns in tab_name_mapping.items():
+        for pattern in patterns:
+            if pattern.lower() in all_text:
+                if financial_key not in found_keys:
+                    found_keys.append(financial_key)
+                    print(f"   🔍 Found '{pattern}' -> key '{financial_key}'")
+                break
+    
+    return found_keys
+
+
 def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, entity_keywords=None, entity_mode='multiple', debug=False):
     print(f"🔧 get_worksheet_sections_by_keys called with:")
     print(f"   📋 entity_mode: {entity_mode}")
@@ -2210,68 +2243,50 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
             print(f"🇨🇳 Chinese sheet names found: {chinese_sheets}")
             
             print(f"🔍 DEBUG: All sheet names in Excel file: {xl.sheet_names}")
-            print(f"🔍 DEBUG: reverse_mapping keys: {list(reverse_mapping.keys())}")
+            
+            # NEW APPROACH: Process ALL sheets and look for financial data structure
+            # Skip obvious non-financial sheets
+            skip_sheets = ['Cover', 'Overview', 'Summary', 'Snapshot', 'Choice', 'Check', 'Violations', 'NAVI']
             
             for sheet_name in xl.sheet_names:
                 print(f"🔍 DEBUG: Processing sheet: '{sheet_name}'")
-                # First try exact match
-                if sheet_name in reverse_mapping:
-                    print(f"✅ Exact match found for sheet: {sheet_name}")
-                else:
-                    # Try fuzzy matching for Chinese sheets
-                    matched_key = None
-                    for key, patterns in tab_name_mapping.items():
-                        for pattern in patterns:
-                            # Check if sheet name contains the pattern or vice versa
-                            if (pattern.lower() in sheet_name.lower() or 
-                                sheet_name.lower() in pattern.lower() or
-                                pattern in sheet_name or 
-                                sheet_name in pattern):
-                                matched_key = key
-                                print(f"🔍 Fuzzy match found: sheet '{sheet_name}' matches pattern '{pattern}' for key '{key}'")
-                                break
-                        if matched_key:
-                            break
-                    
-                    if not matched_key:
-                        print(f"⚠️ No match found for sheet: {sheet_name}")
-                        # For Chinese sheets, try a more aggressive approach
-                        if any('\u4e00' <= char <= '\u9fff' for char in sheet_name):
-                            print(f"🇨🇳 Chinese sheet detected, trying aggressive matching...")
-                            # Try to match based on common Chinese financial terms
-                            chinese_term_mapping = {
-                                '货币': 'Cash', '現金': 'Cash', '资金': 'Cash',
-                                '应收': 'AR', '應收': 'AR', '账款': 'AR',
-                                '预付': 'Prepayments', '預付': 'Prepayments',
-                                '其他应收': 'OR', '其他應收': 'OR',
-                                '投资': 'IP', '投資': 'IP', '物业': 'IP',
-                                '固定资产': 'NCA', '固定資產': 'NCA',
-                                '应付': 'AP', '應付': 'AP', '帐款': 'AP',
-                                '税费': 'Taxes payable', '稅費': 'Taxes payable',
-                                '其他应付': 'OP', '其他應付': 'OP',
-                                '资本': 'Capital', '資本': 'Capital', '股本': 'Capital',
-                                '公积': 'Reserve', '公積': 'Reserve'
-                            }
-                            
-                            for chinese_term, financial_key in chinese_term_mapping.items():
-                                if chinese_term in sheet_name:
-                                    matched_key = financial_key
-                                    print(f"🇨🇳 Aggressive match: '{sheet_name}' contains '{chinese_term}' -> '{financial_key}'")
-                                    break
-                        
-                        if not matched_key:
-                            continue
-                        else:
-                            # Add to reverse mapping for this session
-                            reverse_mapping[sheet_name] = matched_key
-                    else:
-                        # Add to reverse mapping for this session
-                        reverse_mapping[sheet_name] = matched_key
+                
+                # Skip obvious non-financial sheets
+                if any(skip_word.lower() in sheet_name.lower() for skip_word in skip_sheets):
+                    print(f"⏭️ Skipping non-financial sheet: {sheet_name}")
+                    continue
+                
+                # Skip sheets that are clearly entity history or engineering records
+                if any(term in sheet_name for term in ['历史沿革', '工程台账', '关联方', 'Rent roll', 'Property']):
+                    print(f"⏭️ Skipping entity/property sheet: {sheet_name}")
+                    continue
                 df = xl.parse(sheet_name)
                 
                 # Check if the sheet is empty
                 if df.empty or len(df) == 0:
                     print(f"   ⚠️ Sheet '{sheet_name}' is empty, skipping...")
+                    continue
+
+                # Check if this sheet contains financial data by looking for "Indicative adjusted" or Chinese equivalents
+                has_financial_data = False
+                for row_idx in range(min(10, len(df))):
+                    for col_idx in range(min(10, len(df.columns))):
+                        try:
+                            cell_value = str(df.iloc[row_idx, col_idx]).lower()
+                            if ('indicative adjusted' in cell_value or 
+                                '示意性调整' in cell_value or 
+                                '示意性調整' in cell_value or
+                                'adjusted' in cell_value):
+                                has_financial_data = True
+                                print(f"   ✅ Found financial data indicator in sheet '{sheet_name}' at row {row_idx}, col {col_idx}")
+                                break
+                        except:
+                            continue
+                    if has_financial_data:
+                        break
+                
+                if not has_financial_data:
+                    print(f"   ⏭️ No financial data indicators found in sheet '{sheet_name}', skipping...")
                     continue
 
                 # Use entity_keywords passed from main app, or generate fallback

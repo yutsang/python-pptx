@@ -20,7 +20,7 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 # Import all required modules
 from fdd_utils.mappings import KEY_TO_SECTION_MAPPING, KEY_TERMS_BY_KEY
 from fdd_utils.category_config import DISPLAY_NAME_MAPPING_DEFAULT, DISPLAY_NAME_MAPPING_NB_NJ
-from fdd_utils.excel_processing import get_worksheet_sections_by_keys
+from fdd_utils.simple_excel_processing import simple_process_excel
 from fdd_utils.data_utils import (
     get_tab_name, get_financial_keys, get_key_display_name,
     format_date_to_dd_mmm_yyyy, load_config_files
@@ -137,14 +137,11 @@ def process_excel_with_timeout(uploaded_file, mapping, selected_entity, entity_s
 
     def excel_worker():
         try:
-            result = get_worksheet_sections_by_keys(
+            result = simple_process_excel(
                 uploaded_file=uploaded_file,
                 tab_name_mapping=mapping,
                 entity_name=selected_entity,
-                entity_suffixes=entity_suffixes,
-                entity_keywords=entity_keywords,
-                entity_mode=entity_mode,
-                debug=True
+                entity_keywords=entity_keywords
             )
             result_container['result'] = result
         except Exception as e:
