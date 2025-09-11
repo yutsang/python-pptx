@@ -2117,6 +2117,43 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         return ""
 
 
+def match_sheet_to_financial_key(sheet_name, financial_key, tab_name_mapping):
+    """
+    Improved matching function that handles both English and Chinese sheet names
+    """
+    if financial_key not in tab_name_mapping:
+        return False
+    
+    sheet_patterns = tab_name_mapping[financial_key]
+    for pattern in sheet_patterns:
+        pattern_lower = pattern.lower()
+        sheet_lower = sheet_name.lower()
+
+        # For Chinese text, use simple substring matching
+        # For English text, use word boundary matching
+        is_chinese_pattern = any('\u4e00' <= char <= '\u9fff' for char in pattern)
+        is_chinese_sheet = any('\u4e00' <= char <= '\u9fff' for char in sheet_name)
+        
+        if is_chinese_pattern or is_chinese_sheet:
+            # Chinese matching: simple substring match
+            if (pattern_lower == sheet_lower or
+                pattern_lower in sheet_lower or
+                sheet_lower in pattern_lower):
+                print(f"   ✅ Chinese match: '{sheet_name}' matches pattern '{pattern}' for key '{financial_key}'")
+                return True
+        else:
+            # English matching: word boundary matching to avoid conflicts
+            if (pattern_lower == sheet_lower or
+                pattern_lower in sheet_lower.split() or
+                sheet_lower.startswith(pattern_lower + ' ') or
+                sheet_lower.endswith(' ' + pattern_lower) or
+                ' ' + pattern_lower + ' ' in ' ' + sheet_lower + ' '):
+                print(f"   ✅ English match: '{sheet_name}' matches pattern '{pattern}' for key '{financial_key}'")
+                return True
+    
+    return False
+
+
 def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, entity_keywords=None, entity_mode='multiple', debug=False):
     print(f"🔧 get_worksheet_sections_by_keys called with:")
     print(f"   📋 entity_mode: {entity_mode}")
@@ -2154,10 +2191,73 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
         # Process sheets within context manager
         with pd.ExcelFile(excel_source) as xl:
+            print(f"📋 Excel sheet names found: {xl.sheet_names}")
+            print(f"🔍 Reverse mapping keys: {list(reverse_mapping.keys())[:10]}...")  # Show first 10
+            
+            # Debug: Show which Chinese patterns we have in mapping
+            chinese_patterns = {}
+            for key, patterns in tab_name_mapping.items():
+                chinese_patterns[key] = [p for p in patterns if any('\u4e00' <= char <= '\u9fff' for char in p)]
+            print(f"🇨🇳 Chinese patterns available: {chinese_patterns}")
+            
+            # Debug: Check which sheets contain Chinese characters
+            chinese_sheets = [s for s in xl.sheet_names if any('\u4e00' <= char <= '\u9fff' for char in s)]
+            print(f"🇨🇳 Chinese sheet names found: {chinese_sheets}")
+            
             for sheet_name in xl.sheet_names:
-                # Skip sheets not in mapping to avoid using undefined df
-                if sheet_name not in reverse_mapping:
-                    continue
+                # First try exact match
+                if sheet_name in reverse_mapping:
+                    print(f"✅ Exact match found for sheet: {sheet_name}")
+                else:
+                    # Try fuzzy matching for Chinese sheets
+                    matched_key = None
+                    for key, patterns in tab_name_mapping.items():
+                        for pattern in patterns:
+                            # Check if sheet name contains the pattern or vice versa
+                            if (pattern.lower() in sheet_name.lower() or 
+                                sheet_name.lower() in pattern.lower() or
+                                pattern in sheet_name or 
+                                sheet_name in pattern):
+                                matched_key = key
+                                print(f"🔍 Fuzzy match found: sheet '{sheet_name}' matches pattern '{pattern}' for key '{key}'")
+                                break
+                        if matched_key:
+                            break
+                    
+                    if not matched_key:
+                        print(f"⚠️ No match found for sheet: {sheet_name}")
+                        # For Chinese sheets, try a more aggressive approach
+                        if any('\u4e00' <= char <= '\u9fff' for char in sheet_name):
+                            print(f"🇨🇳 Chinese sheet detected, trying aggressive matching...")
+                            # Try to match based on common Chinese financial terms
+                            chinese_term_mapping = {
+                                '货币': 'Cash', '現金': 'Cash', '资金': 'Cash',
+                                '应收': 'AR', '應收': 'AR', '账款': 'AR',
+                                '预付': 'Prepayments', '預付': 'Prepayments',
+                                '其他应收': 'OR', '其他應收': 'OR',
+                                '投资': 'IP', '投資': 'IP', '物业': 'IP',
+                                '固定资产': 'NCA', '固定資產': 'NCA',
+                                '应付': 'AP', '應付': 'AP', '帐款': 'AP',
+                                '税费': 'Taxes payable', '稅費': 'Taxes payable',
+                                '其他应付': 'OP', '其他應付': 'OP',
+                                '资本': 'Capital', '資本': 'Capital', '股本': 'Capital',
+                                '公积': 'Reserve', '公積': 'Reserve'
+                            }
+                            
+                            for chinese_term, financial_key in chinese_term_mapping.items():
+                                if chinese_term in sheet_name:
+                                    matched_key = financial_key
+                                    print(f"🇨🇳 Aggressive match: '{sheet_name}' contains '{chinese_term}' -> '{financial_key}'")
+                                    break
+                        
+                        if not matched_key:
+                            continue
+                        else:
+                            # Add to reverse mapping for this session
+                            reverse_mapping[sheet_name] = matched_key
+                    else:
+                        # Add to reverse mapping for this session
+                        reverse_mapping[sheet_name] = matched_key
                 df = xl.parse(sheet_name)
 
                 # Use entity_keywords passed from main app, or generate fallback
