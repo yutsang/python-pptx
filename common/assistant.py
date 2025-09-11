@@ -148,10 +148,20 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
     # Include context data in the user query instead of as a separate assistant message
     enhanced_user_query = f"Context data:\n{context_content}\n\nUser query:\n{user_query}"
     
+    # Validate content before creating conversation
+    if not system_prompt:
+        raise ValueError("System prompt is None or empty")
+    if not enhanced_user_query:
+        raise ValueError("User query is None or empty")
+    
     conversation = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": enhanced_user_query}
     ]
+    
+    print(f"🔍 DEBUG: Conversation created with {len(conversation)} messages")
+    print(f"🔍 DEBUG: System prompt length: {len(system_prompt)}")
+    print(f"🔍 DEBUG: User query length: {len(enhanced_user_query)}")
     
     try:
         # For local AI with thinking support (DeepSeek 671B), enable reasoning
@@ -1659,12 +1669,23 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         prompts_config = json.load(f)
 
     # Use the passed language parameter (defaults to 'english')
+    print(f"🔍 DEBUG: Language parameter: '{language}'")
+    print(f"🔍 DEBUG: Available languages in prompts: {list(prompts_config.get('system_prompts', {}).keys())}")
+    
     system_prompts = prompts_config.get('system_prompts', {}).get(language, {})
+    print(f"🔍 DEBUG: System prompts for language '{language}': {list(system_prompts.keys())}")
 
     system_prompt = system_prompts.get('Agent 1')
     if not system_prompt:
         # Fallback to direct access if nested structure fails
         system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1')
+        print(f"🔍 DEBUG: Using fallback system prompt")
+    
+    if not system_prompt:
+        print(f"❌ ERROR: No system prompt found for language '{language}' or fallback")
+        raise RuntimeError(f"No system prompt found for language '{language}'")
+    
+    print(f"✅ DEBUG: System prompt loaded successfully (length: {len(system_prompt)})")
     
     # Initialize financial figures without pre-processing (will check '000 per key)
     financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), None, convert_thousands=False, entity_keywords=entity_helpers)

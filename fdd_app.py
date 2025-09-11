@@ -653,7 +653,7 @@ def main():
                 status_text.text("🤖 Generating English content...")
                 progress_bar.progress(30)
                 
-                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='English')
+                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english')
                 
                 if agent1_results:
                     # Store results
@@ -699,7 +699,7 @@ def main():
                 # Generate English first, then translate
                 status_text.text("📊 生成英文内容...")
                 progress_bar.progress(30)
-                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='English')
+                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english')
                 
                 # Simple translation (placeholder - you can enhance this)
                 status_text.text("🌐 翻译为中文...")
