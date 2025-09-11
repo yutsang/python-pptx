@@ -28,6 +28,22 @@ def render_balance_sheet_sections(
                 st.info("No sections found for this key.")
                 continue
 
+            # Filter sections by selected entity
+            filtered_sections = []
+            for section in sections:
+                section_entity = section.get('entity_name', '')
+                if selected_entity.lower() in section_entity.lower() or section_entity.lower() in selected_entity.lower():
+                    filtered_sections.append(section)
+                else:
+                    print(f"🔍 DEBUG: Filtering out section for entity '{section_entity}' (selected: '{selected_entity}')")
+            
+            if not filtered_sections:
+                st.info(f"No sections found for entity '{selected_entity}' in this key.")
+                continue
+            
+            sections = filtered_sections
+            print(f"🔍 DEBUG: Showing {len(sections)} sections for entity '{selected_entity}' in key '{key}'")
+
             # Debug information (only shown if needed)
             if 'parsed_data' in sections[0] and sections[0]['parsed_data']:
                 metadata = sections[0]['parsed_data']['metadata']
@@ -174,6 +190,22 @@ def render_combined_sections(
                 st.info("No sections found for this key.")
                 continue
 
+            # Filter sections by selected entity
+            filtered_sections = []
+            for section in sections:
+                section_entity = section.get('entity_name', '')
+                if selected_entity.lower() in section_entity.lower() or section_entity.lower() in selected_entity.lower():
+                    filtered_sections.append(section)
+                else:
+                    print(f"🔍 DEBUG Combined: Filtering out section for entity '{section_entity}' (selected: '{selected_entity}')")
+            
+            if not filtered_sections:
+                st.info(f"No sections found for entity '{selected_entity}' in this key.")
+                continue
+            
+            sections = filtered_sections
+            print(f"🔍 DEBUG Combined: Showing {len(sections)} sections for entity '{selected_entity}' in key '{key}'")
+
             # Debug information (only shown if needed)
             if 'parsed_data' in sections[0] and sections[0]['parsed_data']:
                 metadata = sections[0]['parsed_data']['metadata']
@@ -256,6 +288,22 @@ def render_income_statement_sections(
             if not sections:
                 st.info("No sections found for this key.")
                 continue
+
+            # Filter sections by selected entity
+            filtered_sections = []
+            for section in sections:
+                section_entity = section.get('entity_name', '')
+                if selected_entity.lower() in section_entity.lower() or section_entity.lower() in selected_entity.lower():
+                    filtered_sections.append(section)
+                else:
+                    print(f"🔍 DEBUG IS: Filtering out section for entity '{section_entity}' (selected: '{selected_entity}')")
+            
+            if not filtered_sections:
+                st.info(f"No sections found for entity '{selected_entity}' in this key.")
+                continue
+            
+            sections = filtered_sections
+            print(f"🔍 DEBUG IS: Showing {len(sections)} sections for entity '{selected_entity}' in key '{key}'")
 
             # Debug information (only shown if needed)
             if 'parsed_data' in sections[0] and sections[0]['parsed_data']:
