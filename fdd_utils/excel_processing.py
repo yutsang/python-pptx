@@ -1241,17 +1241,14 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             # Process value
             if value_cell and value_cell.lower() not in ['nan', '']:
                 try:
-                    # First try to parse as number
-                    clean_value = re.sub(r'[^\d.-]', '', value_cell)
-                    if clean_value:
-                        numeric_value = float(clean_value)
-                        # Apply multiplier
-                        final_value = numeric_value * multiplier
-
-                        # Determine if this is a total row
+                    # FIRST: Check if it's a date format BEFORE attempting numeric conversion
+                    if re.search(r'\d{4}年\d{1,2}月\d{1,2}日', value_cell) or \
+                       re.search(r'\d{4}/\d{1,2}/\d{1,2}', value_cell) or \
+                       re.search(r'\d{1,2}/\d{1,2}/\d{4}', value_cell):
+                        # This looks like a date, preserve original format
+                        final_value = value_cell  # Keep original date format
                         is_total = 'total' in desc_cell.lower()
 
-                        # print(f"   📊 ADDING ITEM: {desc_cell} = {final_value} (is_total: {is_total})")
                         data_rows.append({
                             'description': desc_cell,
                             'value': final_value,
@@ -1259,15 +1256,17 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
                             'is_total': is_total
                         })
                     else:
-                        # If no numeric content found, check if it's a date format
-                        # Preserve original date format if it looks like a date
-                        if re.search(r'\d{4}年\d{1,2}月\d{1,2}日', value_cell) or \
-                           re.search(r'\d{4}/\d{1,2}/\d{1,2}', value_cell) or \
-                           re.search(r'\d{1,2}/\d{1,2}/\d{4}', value_cell):
-                            # This looks like a date, preserve original format
-                            final_value = value_cell  # Keep original date format
+                        # Try to parse as number only if it's not a date
+                        clean_value = re.sub(r'[^\d.-]', '', value_cell)
+                        if clean_value:
+                            numeric_value = float(clean_value)
+                            # Apply multiplier
+                            final_value = numeric_value * multiplier
+
+                            # Determine if this is a total row
                             is_total = 'total' in desc_cell.lower()
 
+                            # print(f"   📊 ADDING ITEM: {desc_cell} = {final_value} (is_total: {is_total})")
                             data_rows.append({
                                 'description': desc_cell,
                                 'value': final_value,

@@ -381,8 +381,12 @@ def run_proofreader(agent1_results, ai_data):
         # Get entity information
         entity_name = ai_data.get('entity_name', '')
         
-        # Initialize proofreader
-        proofreader = ProofreadingAgent(language='english')
+        # Initialize proofreader with proper AI configuration
+        proofreader = ProofreadingAgent(
+            use_local_ai=st.session_state.get('use_local_ai', False),
+            use_openai=st.session_state.get('use_openai', False),
+            language='english'
+        )
         
         proofreader_results = {}
         
@@ -409,7 +413,7 @@ def run_proofreader(agent1_results, ai_data):
         return {}
 
 
-def run_ai_processing(filtered_keys, ai_data, language='English'):
+def run_ai_processing(filtered_keys, ai_data, language='English', progress_callback=None):
     """Run AI processing for content generation"""
     try:
         # Create temporary file for processing
@@ -441,6 +445,7 @@ def run_ai_processing(filtered_keys, ai_data, language='English'):
             config_file='fdd_utils/config.json',
             prompts_file='fdd_utils/prompts.json',
             use_ai=True,
+            progress_callback=progress_callback,
             processed_table_data=ai_data.get('sections_by_key', {}),
             use_local_ai=st.session_state.get('use_local_ai', False),
             use_openai=st.session_state.get('use_openai', False),
@@ -760,7 +765,12 @@ def main():
                 status_text.text("🤖 Generating English content...")
                 progress_bar.progress(30)
                 
-                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english')
+                # Create progress callback for detailed progress
+                def update_progress(progress, message):
+                    progress_bar.progress(int(30 + progress * 30))  # 30-60% for AI generation
+                    status_text.text(message)
+                
+                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=update_progress)
                 
                 if agent1_results:
                     # Store Agent 1 results
@@ -823,7 +833,13 @@ def main():
                 # MVP: Generate English first, then translate
                 status_text.text("📊 生成英文内容...")
                 progress_bar.progress(30)
-                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english')
+                
+                # Create progress callback for English generation
+                def update_english_progress(progress, message):
+                    progress_bar.progress(int(30 + progress * 20))  # 30-50% for English generation
+                    status_text.text(f"📊 {message}")
+                
+                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=update_english_progress)
                 
                 if not agent1_results:
                     raise Exception("English content generation failed")
