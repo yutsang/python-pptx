@@ -113,6 +113,104 @@ def initialize_session_state():
         st.session_state.ai_logger = AIAgentLogger()
 
 
+def detect_entity_mode_automatically(uploaded_file, selected_entity, entity_keywords):
+    """Automatically detect if the Excel file contains single or multiple entities"""
+    try:
+        if not uploaded_file:
+            # If no file uploaded, check default file
+            if os.path.exists('databook.xlsx'):
+                file_to_check = 'databook.xlsx'
+            else:
+                return 'single'  # Default to single if no file
+        else:
+            file_to_check = uploaded_file
+        
+        # Read Excel file and check for multiple entities
+        xl = pd.ExcelFile(file_to_check)
+        
+        # Known entity patterns to look for (including the selected entity)
+        entity_patterns = [
+            'ningbo wanchen', 'haining wanpu', 'nanjing jingya',
+            '宁波万晨', '海宁万普', '南京京亚'
+        ]
+        
+        # Add the selected entity and its keywords to the patterns
+        if selected_entity:
+            entity_patterns.append(selected_entity.lower())
+        if entity_keywords:
+            entity_patterns.extend([kw.lower() for kw in entity_keywords])
+        
+        entities_found = set()
+        selected_entity_found = False
+        sheets_checked = 0
+        
+        print(f"🔍 AUTO-DETECT: Looking for entities in Excel file...")
+        print(f"🔍 AUTO-DETECT: Selected entity: '{selected_entity}'")
+        print(f"🔍 AUTO-DETECT: Entity keywords: {entity_keywords}")
+        
+        # Check first few sheets for entity patterns
+        for sheet_name in xl.sheet_names[:8]:  # Check first 8 sheets
+            try:
+                df = xl.parse(sheet_name)
+                if df.empty:
+                    continue
+                    
+                sheets_checked += 1
+                
+                # Convert all data to text for searching
+                all_text = ""
+                for row_idx in range(min(25, len(df))):  # Check first 25 rows
+                    for col_idx in range(len(df.columns)):
+                        try:
+                            cell_value = str(df.iloc[row_idx, col_idx]).lower()
+                            if cell_value and cell_value != 'nan':
+                                all_text += cell_value + " "
+                        except:
+                            continue
+                
+                # Look for entity patterns
+                sheet_entities = set()
+                for pattern in entity_patterns:
+                    if pattern in all_text:
+                        sheet_entities.add(pattern)
+                        entities_found.add(pattern)
+                        
+                        # Check if this is the selected entity
+                        if (selected_entity and pattern.lower() == selected_entity.lower()) or \
+                           (entity_keywords and pattern in [kw.lower() for kw in entity_keywords]):
+                            selected_entity_found = True
+                
+                if sheet_entities:
+                    print(f"🔍 AUTO-DETECT: Sheet '{sheet_name}' contains entities: {sheet_entities}")
+                        
+            except Exception as e:
+                print(f"Error checking sheet {sheet_name}: {e}")
+                continue
+        
+        # Decision logic
+        unique_entities = len(entities_found)
+        print(f"🔍 AUTO-DETECT: Total unique entities found: {unique_entities}")
+        print(f"🔍 AUTO-DETECT: Entities found: {entities_found}")
+        print(f"🔍 AUTO-DETECT: Selected entity found: {selected_entity_found}")
+        
+        if unique_entities > 1:
+            print(f"🔍 AUTO-DETECT: Multiple entities detected -> MULTIPLE mode")
+            return 'multiple'
+        elif unique_entities == 1 and selected_entity_found:
+            print(f"🔍 AUTO-DETECT: Only selected entity found -> SINGLE mode")
+            return 'single'
+        elif unique_entities >= 1:
+            print(f"🔍 AUTO-DETECT: Other entities found but not selected entity -> MULTIPLE mode (for filtering)")
+            return 'multiple'
+        else:
+            print(f"🔍 AUTO-DETECT: No specific entities detected -> SINGLE mode (default)")
+            return 'single'
+                
+    except Exception as e:
+        print(f"Error in auto-detection: {e}")
+        return 'single'  # Default to single on error
+
+
 def generate_entity_keywords(entity_input):
     """Generate comprehensive entity keywords from input"""
     if not entity_input:
@@ -266,19 +364,43 @@ def main():
         
         st.session_state['last_entity_input'] = entity_input
         
-        # Entity mode selection
-        st.markdown("---")
-        entity_mode = st.radio(
-            "Choose entity processing mode:",
-            ["Single Entity", "Multiple Entity"],
-            index=0,
-            help="Single Entity: Process one entity table | Multiple Entity: Detect and filter multiple entity tables"
-        )
-        entity_mode_internal = 'single' if entity_mode == "Single Entity" else 'multiple'
-        st.session_state['entity_mode'] = entity_mode_internal
-
-        # Generate entity configuration
+        # Generate entity configuration first
         entity_keywords, selected_entity, entity_suffixes = generate_entity_keywords(entity_input)
+        
+        if not selected_entity:
+            st.warning("⚠️ Please enter an entity name to start processing")
+            st.stop()
+
+        # Automatic entity mode detection
+        st.markdown("---")
+        entity_mode_internal = detect_entity_mode_automatically(uploaded_file, selected_entity, entity_keywords)
+        st.session_state['entity_mode'] = entity_mode_internal
+        
+        # Show detected mode with manual override option
+        mode_display = "Single Entity" if entity_mode_internal == 'single' else "Multiple Entity"
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.info(f"🔍 **Auto-detected mode:** {mode_display}")
+        with col2:
+            if st.button("🔄 Override", help="Click to manually choose entity mode"):
+                # Show manual selection
+                manual_mode = st.radio(
+                    "Choose mode:",
+                    ["Single Entity", "Multiple Entity"],
+                    index=0 if entity_mode_internal == 'single' else 1,
+                    key="manual_entity_mode"
+                )
+                entity_mode_internal = 'single' if manual_mode == "Single Entity" else 'multiple'
+                st.session_state['entity_mode'] = entity_mode_internal
+                st.success(f"✅ Mode set to: {manual_mode}")
+        
+        if entity_mode_internal == 'multiple':
+            st.info(f"💡 Multiple entities detected in the Excel file. The system will automatically filter data for **{selected_entity}**.")
+        else:
+            st.info(f"💡 Single entity mode. Processing all data for **{selected_entity}**.")
+
+
         
         if not selected_entity:
             st.warning("⚠️ Please enter an entity name to start processing")
