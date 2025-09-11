@@ -152,7 +152,7 @@ def detect_entity_mode_automatically(uploaded_file, selected_entity, entity_keyw
             # If no file uploaded, check default file
             if os.path.exists('databook.xlsx'):
                 file_to_check = 'databook.xlsx'
-        else:
+            else:
                 return 'single'  # Default to single if no file
         else:
             file_to_check = uploaded_file
@@ -160,8 +160,11 @@ def detect_entity_mode_automatically(uploaded_file, selected_entity, entity_keyw
         # Read Excel file and check for multiple entities
         xl = pd.ExcelFile(file_to_check)
         
-        # Use the selected entity and its keywords as patterns (no hardcoding)
-        entity_patterns = []
+        # Known entity patterns to look for (including the selected entity)
+        entity_patterns = [
+            'ningbo wanchen', 'haining wanpu', 'nanjing jingya',
+            '宁波万晨', '海宁万普', '南京京亚'
+        ]
         
         # Add the selected entity and its keywords to the patterns
         if selected_entity:
@@ -211,7 +214,7 @@ def detect_entity_mode_automatically(uploaded_file, selected_entity, entity_keyw
                 
                 if sheet_entities:
                     print(f"🔍 AUTO-DETECT: Sheet '{sheet_name}' contains entities: {sheet_entities}")
-                
+                        
         except Exception as e:
                 print(f"Error checking sheet {sheet_name}: {e}")
                 continue
@@ -295,136 +298,7 @@ def process_excel_with_timeout(uploaded_file, mapping, selected_entity, entity_s
         return result_container['result'], "success"
 
 
-def run_chinese_translation(english_results, ai_data):
-    """Translate English content to Chinese using AI"""
-    try:
-        # Validate input
-        if not english_results:
-            st.error("❌ No English results available for translation")
-            return {}
-        
-        # Create temporary file for processing
-        temp_file_path = None
-        uploaded_file_data = st.session_state.get('uploaded_file_data')
-        if uploaded_file_data:
-            unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
-            temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
-            with open(temp_file_path, 'wb') as tmp_file:
-                tmp_file.write(uploaded_file_data)
-        elif os.path.exists('databook.xlsx'):
-            temp_file_path = 'databook.xlsx'
-        
-        if not temp_file_path:
-            st.error("❌ No databook available for translation")
-            return {}
-        
-        # Get entity information
-        entity_name = ai_data.get('entity_name', '')
-        entity_keywords = ai_data.get('entity_keywords', [])
-        
-        # Use process_keys with Chinese language for translation
-        filtered_keys = list(english_results.keys())
-        
-        if not filtered_keys:
-            st.error("❌ No keys found in English results for translation")
-            return {}
-        
-        # Process keys using Chinese AI for translation
-        translation_results = process_keys(
-            keys=filtered_keys,
-            entity_name=entity_name,
-            entity_helpers=entity_keywords,
-            input_file=temp_file_path,
-            mapping_file="fdd_utils/mapping.json",
-            pattern_file="fdd_utils/pattern.json",
-            config_file='fdd_utils/config.json',
-            prompts_file='fdd_utils/prompts.json',
-            use_ai=True,
-            processed_table_data=ai_data.get('sections_by_key', {}),
-            use_local_ai=st.session_state.get('use_local_ai', False),
-            use_openai=st.session_state.get('use_openai', False),
-            language='chinese'  # Use Chinese language for translation
-        )
-        
-        # Check if translation was successful
-        if not translation_results:
-            st.error("❌ Chinese translation failed - no results returned")
-            return {}
-        
-        # Format results for Chinese
-        chinese_results = {}
-        for key, result in translation_results.items():
-            content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
-            chinese_results[key] = {
-                'content': content,
-                'translated_content': content,
-                'is_chinese': True,
-                'original_english': english_results.get(key, {}).get('content', '')
-            }
-        
-        return chinese_results
-        
-        except Exception as e:
-        st.error(f"❌ Chinese translation failed: {e}")
-        return {}
-
-
-def run_proofreader(agent1_results, ai_data):
-    """Run proofreader on Agent 1 results"""
-    try:
-        from common.assistant import ProofreadingAgent
-        
-        # Create temporary file for processing
-        temp_file_path = None
-        uploaded_file_data = st.session_state.get('uploaded_file_data')
-        if uploaded_file_data:
-            unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
-            temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
-            with open(temp_file_path, 'wb') as tmp_file:
-                tmp_file.write(uploaded_file_data)
-        elif os.path.exists('databook.xlsx'):
-            temp_file_path = 'databook.xlsx'
-        
-        if not temp_file_path:
-            st.error("❌ No databook available for proofreading")
-            return {}
-        
-        # Get entity information
-        entity_name = ai_data.get('entity_name', '')
-        
-        # Initialize proofreader with proper AI configuration
-        proofreader = ProofreadingAgent(
-            use_local_ai=st.session_state.get('use_local_ai', False),
-            use_openai=st.session_state.get('use_openai', False),
-            language='english'
-        )
-        
-        proofreader_results = {}
-        
-        # Process each key
-        for key, result in agent1_results.items():
-            content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
-            
-            # Get table data for this key
-            sections_by_key = ai_data.get('sections_by_key', {})
-            tables_markdown = ""
-            if key in sections_by_key:
-                for section in sections_by_key[key]:
-                    if 'markdown' in section:
-                        tables_markdown += section['markdown'] + "\n\n"
-            
-            # Run proofreader
-            proofread_result = proofreader.proofread(content, key, tables_markdown, entity_name)
-            proofreader_results[key] = proofread_result
-        
-        return proofreader_results
-        
-    except Exception as e:
-        st.error(f"❌ Proofreader failed: {e}")
-        return {}
-
-
-def run_ai_processing(filtered_keys, ai_data, language='English', progress_callback=None):
+def run_ai_processing(filtered_keys, ai_data, language='english', progress_callback=None):
     """Run AI processing for content generation"""
     try:
         # Create temporary file for processing
@@ -446,14 +320,6 @@ def run_ai_processing(filtered_keys, ai_data, language='English', progress_callb
         entity_keywords = ai_data.get('entity_keywords', [])
 
         # Process keys using the assistant
-        print(f"🔍 DEBUG: AI processing keys: {filtered_keys}")
-        print(f"🔍 DEBUG: AI processing keys types: {[type(k) for k in filtered_keys]}")
-        print(f"🔍 DEBUG: AI processing keys repr: {[repr(k) for k in filtered_keys]}")
-        print(f"🔍 DEBUG: AI processing entity: {entity_name}")
-        print(f"🔍 DEBUG: AI processing entity_helpers: {entity_keywords}")
-        print(f"🔍 DEBUG: AI processing processed_table_data keys: {list(ai_data.get('sections_by_key', {}).keys())}")
-        print(f"🔍 DEBUG: AI processing processed_table_data keys types: {[type(k) for k in ai_data.get('sections_by_key', {}).keys()]}")
-        print(f"🔍 DEBUG: AI processing processed_table_data keys repr: {[repr(k) for k in ai_data.get('sections_by_key', {}).keys()]}")
         results = process_keys(
             keys=filtered_keys,
             entity_name=entity_name,
@@ -464,11 +330,11 @@ def run_ai_processing(filtered_keys, ai_data, language='English', progress_callb
             config_file='fdd_utils/config.json',
             prompts_file='fdd_utils/prompts.json',
             use_ai=True,
-            progress_callback=progress_callback,
             processed_table_data=ai_data.get('sections_by_key', {}),
             use_local_ai=st.session_state.get('use_local_ai', False),
             use_openai=st.session_state.get('use_openai', False),
-            language=language
+            language=language,
+            progress_callback=progress_callback
         )
 
         return results or {}
@@ -543,15 +409,11 @@ def main():
         entity_mode_internal = detect_entity_mode_automatically(uploaded_file, selected_entity, entity_keywords)
         st.session_state['entity_mode'] = entity_mode_internal
 
-        # Auto-detect entity mode (no UI display needed)
-
-
-        
-        if not selected_entity:
-            st.warning("⚠️ Please enter an entity name to start processing")
-            st.stop()
-
-        # Entity info removed to save space
+        # Show entity info
+        if entity_input:
+            words = entity_input.split()
+                display_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else entity_input
+            st.info(f"📋 Entity: {display_name}")
 
         # Statement type selection
         st.markdown("---")
@@ -719,10 +581,7 @@ def main():
         st.markdown("## 🤖 AI Processing & Results")
         
         # Prepare AI data
-        print(f"🔍 DEBUG: Raw sections_by_key: {sections_by_key}")
                 keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-        print(f"🔍 DEBUG: Keys with data: {keys_with_data}")
-        print(f"🔍 DEBUG: Statement type: {statement_type}")
                 
         # Filter keys by statement type
         bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
@@ -732,25 +591,13 @@ def main():
                 
                 if statement_type == "BS":
                     filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
-            print(f"🔍 DEBUG: BS filtering - keys_with_data: {keys_with_data}")
-            print(f"🔍 DEBUG: BS filtering - bs_keys: {bs_keys}")
-            print(f"🔍 DEBUG: BS filtering - filtered_keys_for_ai: {filtered_keys_for_ai}")
                 elif statement_type == "IS":
                     filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
-            print(f"🔍 DEBUG: IS filtering - keys_with_data: {keys_with_data}")
-            print(f"🔍 DEBUG: IS filtering - is_keys: {is_keys}")
-            print(f"🔍 DEBUG: IS filtering - filtered_keys_for_ai: {filtered_keys_for_ai}")
         else:  # ALL
                     filtered_keys_for_ai = keys_with_data
-            print(f"🔍 DEBUG: ALL filtering - filtered_keys_for_ai: {filtered_keys_for_ai}")
                 
                 st.session_state['filtered_keys_for_ai'] = filtered_keys_for_ai
-                
-        # Check if we have keys to process
-                if not filtered_keys_for_ai:
-            st.warning("⚠️ No financial keys found for AI processing. Please check your Excel data and entity selection.")
-            st.stop()
-                
+        
         # Store uploaded file data for AI processing
         if hasattr(uploaded_file, 'getbuffer'):
                 st.session_state['uploaded_file_data'] = uploaded_file.getbuffer()
@@ -758,9 +605,6 @@ def main():
             st.session_state['uploaded_file_data'] = uploaded_file.getvalue()
                 
                 # Prepare AI data
-        print(f"🔍 DEBUG: sections_by_key keys: {list(sections_by_key.keys())}")
-        print(f"🔍 DEBUG: keys_with_data: {keys_with_data}")
-        print(f"🔍 DEBUG: sections_by_key sample: {list(sections_by_key.items())[:2] if sections_by_key else 'Empty'}")
                 temp_ai_data = {
                     'entity_name': selected_entity,
                     'entity_keywords': entity_keywords,
@@ -794,141 +638,97 @@ def main():
             )
 
         # Handle AI processing
-                if run_eng_clicked:
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
+        if run_eng_clicked:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
             try:
                 status_text.text("🤖 Generating English content...")
                 progress_bar.progress(30)
                 
-                # Create progress callback for detailed progress
-                def update_progress(progress, message):
-                    progress_bar.progress(int(30 + progress * 30))  # 30-60% for AI generation
-                    status_text.text(message)
+                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=lambda p, msg: progress_bar.progress(p))
                 
-                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=update_progress)
-                
-                                if agent1_results:
-                    # Store Agent 1 results
-                                    if 'ai_content_store' not in st.session_state:
-                                        st.session_state['ai_content_store'] = {}
+                if agent1_results:
+                    # Store results
+                    if 'ai_content_store' not in st.session_state:
+                        st.session_state['ai_content_store'] = {}
 
-                                    for key, result in agent1_results.items():
-                                        if key not in st.session_state['ai_content_store']:
-                                            st.session_state['ai_content_store'][key] = {}
+                    for key, result in agent1_results.items():
+                        if key not in st.session_state['ai_content_store']:
+                            st.session_state['ai_content_store'][key] = {}
                         content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
                         st.session_state['ai_content_store'][key]['agent1_content'] = content
-                                        st.session_state['ai_content_store'][key]['agent1_timestamp'] = datetime.datetime.now().isoformat()
+                        st.session_state['ai_content_store'][key]['current_content'] = content
+                        st.session_state['ai_content_store'][key]['agent1_timestamp'] = datetime.datetime.now().isoformat()
 
                     st.session_state['agent_states']['agent1_results'] = agent1_results
                     st.session_state['agent_states']['agent1_completed'] = True
                     st.session_state['agent_states']['agent1_success'] = True
                     
-                    # MVP: Run proofreader for English AI
-                    status_text.text("🔍 Running proofreader...")
-                    progress_bar.progress(60)
-                    
-                    proofreader_results = run_proofreader(agent1_results, temp_ai_data)
-                    
-                    if proofreader_results:
-                        # Store final proofread results
-                        for key, result in proofreader_results.items():
-                            content = result.get('corrected_content', result.get('content', str(result)))
-                            st.session_state['ai_content_store'][key]['current_content'] = content
-                            st.session_state['ai_content_store'][key]['proofreader_content'] = content
-                            st.session_state['ai_content_store'][key]['proofreader_timestamp'] = datetime.datetime.now().isoformat()
+                    # Generate content files
+                    status_text.text("📝 Generating content files...")
+                    progress_bar.progress(90)
+                    generate_content_from_session_storage(selected_entity)
                         
-                        st.session_state['agent_states']['agent2_results'] = proofreader_results
-                        st.session_state['agent_states']['agent2_completed'] = True
-                        st.session_state['agent_states']['agent2_success'] = True
-
-                                # Generate content files
-                        status_text.text("📝 Generating content files...")
-                                    progress_bar.progress(90)
-                                    generate_content_from_session_storage(selected_entity)
-                        
-                        progress_bar.progress(100)
-                        status_text.text("✅ English AI processing completed")
-                        time.sleep(1)
-                        st.rerun()
+                    progress_bar.progress(100)
+                    status_text.text("✅ English AI processing completed")
+                    time.sleep(1)
+                    st.rerun()
                 
-                    except Exception as e:
-                        progress_bar.progress(100)
+            except Exception as e:
+                progress_bar.progress(100)
                 status_text.text(f"❌ English AI processing failed: {e}")
-                        time.sleep(1)
-                        st.rerun()
+                time.sleep(1)
+                st.rerun()
 
-                if run_chi_clicked:
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
+        if run_chi_clicked:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-                    try:
+            try:
                 status_text.text("🤖 初始化中文AI处理...")
-                        progress_bar.progress(10)
+                progress_bar.progress(10)
                 
-                # MVP: Generate English first, then translate
+                # Generate English first, then translate
                 status_text.text("📊 生成英文内容...")
                 progress_bar.progress(30)
+                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=lambda p, msg: progress_bar.progress(0.1 + p * 0.4))
                 
-                # Create progress callback for English generation
-                def update_english_progress(progress, message):
-                    progress_bar.progress(int(30 + progress * 20))  # 30-50% for English generation
-                    status_text.text(f"📊 {message}")
-                
-                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=update_english_progress)
-                
-                if not agent1_results:
-                    raise Exception("English content generation failed")
-                
-                # Run proofreader on English content
-                status_text.text("🔍 校对英文内容...")
-                progress_bar.progress(50)
-                proofreader_results = run_proofreader(agent1_results, temp_ai_data)
-                
-                # Use proofreader results if available, otherwise use original
-                content_to_translate = proofreader_results if proofreader_results else agent1_results
-                
-                # Check if we have content to translate
-                if not content_to_translate:
-                    raise Exception("No content available for translation")
-                
-                # Translate to Chinese using AI
-                                    status_text.text("🌐 翻译为中文...")
-                                    progress_bar.progress(70)
-                
-                translated_results = run_chinese_translation(content_to_translate, temp_ai_data)
+                # Use AI for actual translation
+                status_text.text("🌐 翻译为中文...")
+                progress_bar.progress(70)
+                translated_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='chinese', progress_callback=lambda p, msg: progress_bar.progress(0.5 + p * 0.4))
                 
                 # Store results
-                                    if 'ai_content_store' not in st.session_state:
-                                        st.session_state['ai_content_store'] = {}
+                if 'ai_content_store' not in st.session_state:
+                    st.session_state['ai_content_store'] = {}
 
                 for key, result in translated_results.items():
-                                                if key not in st.session_state['ai_content_store']:
-                                                    st.session_state['ai_content_store'][key] = {}
-                    content = result.get('translated_content', result.get('content', ''))
+                    if key not in st.session_state['ai_content_store']:
+                        st.session_state['ai_content_store'][key] = {}
+                    content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
                     st.session_state['ai_content_store'][key]['agent3_content'] = content
                     st.session_state['ai_content_store'][key]['current_content'] = content
-                                                st.session_state['ai_content_store'][key]['agent3_timestamp'] = time.time()
+                    st.session_state['ai_content_store'][key]['agent3_timestamp'] = time.time()
 
                 st.session_state['agent_states']['agent3_results'] = translated_results
-                            st.session_state['agent_states']['agent3_completed'] = True
+                st.session_state['agent_states']['agent3_completed'] = True
                 st.session_state['agent_states']['agent3_success'] = True
                 
                 # Generate content files
-                                status_text.text("📝 生成内容文件...")
-                                progress_bar.progress(95)
-                                generate_content_from_session_storage(selected_entity)
+                status_text.text("📝 生成内容文件...")
+                progress_bar.progress(95)
+                generate_content_from_session_storage(selected_entity)
 
-                            progress_bar.progress(100)
-                            status_text.text("✅ 中文AI处理完成")
-                            time.sleep(1)
+                progress_bar.progress(100)
+                status_text.text("✅ 中文AI处理完成")
+                time.sleep(1)
                 st.rerun()
                 
-                    except Exception as e:
-                        st.error(f"❌ 中文AI处理失败: {e}")
-                        progress_bar.progress(0)
-                        status_text.text("❌ 处理失败")
+            except Exception as e:
+                st.error(f"❌ 中文AI处理失败: {e}")
+                progress_bar.progress(0)
+                status_text.text("❌ 处理失败")
 
         # Display AI Results
         agent_states = st.session_state.get('agent_states', {})
@@ -962,16 +762,10 @@ def main():
                         # Show Agent 1 results (collapsible)
                         with st.expander("📝 AI: Generation (details)", expanded=key not in agent3_results_all):
                             agent1_results = agent_states.get('agent1_results', {}) or {}
-                            if key in agent1_results:
+                            if key in agent1_results and agent1_results[key]:
                                 content = agent1_results[key]
-                                content_str = ""
+                                content_str = content.get('content', str(content)) if isinstance(content, dict) else str(content)
                                 
-                                if isinstance(content, dict):
-                                    content_str = content.get('content', str(content))
-                                else:
-                                    content_str = str(content) if content else ""
-                                
-                                if content_str and content_str.strip():
                                 st.markdown("**Generated Content:**")
                                 st.markdown(content_str)
                                 
@@ -982,10 +776,7 @@ def main():
                                 with col2:
                                     st.metric("Words", len(content_str.split()))
                                 with col3:
-                                        st.metric("Status", "✅ Generated")
-                                else:
-                                    st.warning("Content generated but appears to be empty.")
-                                    st.json(content)  # Debug: show raw content
+                                    st.metric("Status", "✅ Generated" if content else "❌ Failed")
                             else:
                                 st.info("No AI results available. Run AI first.")
             else:
