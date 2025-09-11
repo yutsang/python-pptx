@@ -1756,15 +1756,19 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         # Use processed table data if provided, otherwise process Excel file
         print(f"🔍 DEBUG: processed_table_data keys: {list(processed_table_data.keys()) if processed_table_data else 'None'}")
         print(f"🔍 DEBUG: Looking for key: {key}")
+        print(f"🔍 DEBUG: processed_table_data type: {type(processed_table_data)}")
         if processed_table_data and key in processed_table_data:
             excel_tables = processed_table_data[key]
             data_source = "cached"
             print(f"✅ DEBUG: Using cached data for key: {key}")
+            print(f"✅ DEBUG: Cached data has {len(excel_tables) if excel_tables else 0} tables")
         else:
             print(f"⚠️ DEBUG: No cached data for key: {key}, processing Excel file")
+            print(f"⚠️ DEBUG: Key '{key}' not found in processed_table_data")
             # Ensure mapping is in the correct format for process_and_filter_excel
             if isinstance(mapping, dict) and all(isinstance(v, list) for v in mapping.values()):
                 tab_name_mapping = mapping
+                print(f"✅ DEBUG: Mapping format is correct")
             else:
                 print(f"⚠️ DEBUG: Mapping format incorrect, using empty mapping")
                 tab_name_mapping = {}

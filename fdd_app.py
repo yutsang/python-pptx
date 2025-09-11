@@ -746,6 +746,7 @@ def main():
         # Prepare AI data
         print(f"🔍 DEBUG: sections_by_key keys: {list(sections_by_key.keys())}")
         print(f"🔍 DEBUG: keys_with_data: {keys_with_data}")
+        print(f"🔍 DEBUG: sections_by_key sample: {list(sections_by_key.items())[:2] if sections_by_key else 'Empty'}")
         temp_ai_data = {
             'entity_name': selected_entity,
             'entity_keywords': entity_keywords,

@@ -273,8 +273,17 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
 
         for pattern in entity_patterns:
             if pattern in row_text:
-                # Use the pattern as the entity name (no hardcoding)
-                entity_name_found = pattern.title()
+                # Use the original entity name if it matches the pattern, otherwise use the pattern
+                if entity_name and entity_name.lower() == pattern:
+                    entity_name_found = entity_name
+                else:
+                    # Find the original keyword that matches this pattern
+                    original_keyword = None
+                    for kw in entity_keywords:
+                        if kw.lower() == pattern:
+                            original_keyword = kw
+                            break
+                    entity_name_found = original_keyword if original_keyword else pattern.title()
                 
                 if entity_name_found not in entities_found_in_sheet:
                     entities_found_in_sheet.append(entity_name_found)
