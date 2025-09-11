@@ -1748,16 +1748,12 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         oai_client, search_client = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
 
         pattern = load_ip(pattern_file, key)
-        mapping = load_ip(mapping_file)
-        print(f"🔍 DEBUG: Mapping loaded: {type(mapping)}")
-        if isinstance(mapping, dict):
-            print(f"🔍 DEBUG: Mapping keys: {list(mapping.keys())[:5]}...")  # Show first 5 keys
-            print(f"🔍 DEBUG: Mapping sample: {list(mapping.items())[:2]}")  # Show first 2 items
+        # No need to load mapping since we're using cached data
+        print(f"🔍 DEBUG: Using cached data - no need to load mapping")
 
-        # Use processed table data if provided, otherwise process Excel file
+        # Use processed table data - this should always be available
         print(f"🔍 DEBUG: processed_table_data keys: {list(processed_table_data.keys()) if processed_table_data else 'None'}")
         print(f"🔍 DEBUG: Looking for key: {key}")
-        print(f"🔍 DEBUG: processed_table_data type: {type(processed_table_data)}")
         print(f"🔍 DEBUG: Key '{key}' in processed_table_data: {key in processed_table_data if processed_table_data else False}")
         
         if processed_table_data and key in processed_table_data:
@@ -1766,11 +1762,10 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             print(f"✅ DEBUG: Using cached data for key: {key}")
             print(f"✅ DEBUG: Cached data has {len(excel_tables) if excel_tables else 0} tables")
         else:
-            print(f"⚠️ DEBUG: No cached data for key: {key}, processing Excel file")
-            print(f"⚠️ DEBUG: Key '{key}' not found in processed_table_data")
-            print(f"⚠️ DEBUG: This should not happen - AI processing should use cached data")
-            # Instead of calling process_and_filter_excel, return empty data
-            print(f"⚠️ DEBUG: Returning empty data instead of processing Excel file")
+            print(f"❌ ERROR: Key '{key}' not found in processed_table_data")
+            print(f"❌ ERROR: Available keys: {list(processed_table_data.keys()) if processed_table_data else 'None'}")
+            print(f"❌ ERROR: This should not happen - AI processing requires cached data")
+            # Return empty data - this will cause the AI processing to skip this key
             excel_tables = []
             data_source = "empty"
 

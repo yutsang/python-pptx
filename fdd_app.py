@@ -719,11 +719,10 @@ def main():
         st.markdown("## 🤖 AI Processing & Results")
         
         # Prepare AI data
+        print(f"🔍 DEBUG: Raw sections_by_key: {sections_by_key}")
         keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-        print(f"🔍 DEBUG: Raw keys from sections_by_key: {list(sections_by_key.keys())}")
         print(f"🔍 DEBUG: Keys with data: {keys_with_data}")
-        print(f"🔍 DEBUG: Key types: {[type(k) for k in keys_with_data[:5]]}")
-        print(f"🔍 DEBUG: Key values: {[repr(k) for k in keys_with_data[:5]]}")
+        print(f"🔍 DEBUG: Statement type: {statement_type}")
                 
         # Filter keys by statement type
         bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
