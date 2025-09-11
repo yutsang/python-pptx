@@ -8,22 +8,22 @@ def render_balance_sheet_sections(
     selected_entity: str,
     format_date_to_dd_mmm_yyyy,
 ):
-    """Render Balance Sheet sections UI using existing parsed/cleaned data."""
+    """Render Balance Sheet sections UI using existing parsed/cleaned data.
+
+    Parameters
+    - sections_by_key: mapping key -> list of sections
+    - get_key_display_name: function to map key code to display
+    - selected_entity: entity string for context
+    - format_date_to_dd_mmm_yyyy: callable to format dates
+    """
 
     st.markdown("#### View Table by Key")
     
     # High-level debug only
-    print(f"🔍 DEBUG UI: Received sections_by_key with {len(sections_by_key)} total keys")
-    print(f"🔍 DEBUG UI: sections_by_key keys: {list(sections_by_key.keys())}")
-    
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-    print(f"🔍 DEBUG UI: Processing {len(keys_with_data)} keys with data: {keys_with_data}")
+    print(f"DEBUG UI: Processing {len(keys_with_data)} keys with data")
     
-    # Check what's in each key
-    for key, sections in sections_by_key.items():
-        print(f"🔍 DEBUG UI: Key '{key}' -> {len(sections) if sections else 0} sections, type: {type(sections)}")
-        if sections and len(sections) > 0:
-            print(f"🔍 DEBUG UI: First section type: {type(sections[0])}, keys: {list(sections[0].keys()) if isinstance(sections[0], dict) else 'Not a dict'}")
+
     
     if not keys_with_data:
         st.warning("No data found for any financial keys.")
@@ -36,6 +36,8 @@ def render_balance_sheet_sections(
             if not sections:
                 st.info("No sections found for this key.")
                 continue
+
+
 
             # Debug information (only shown if needed)
             if 'parsed_data' in sections[0] and sections[0]['parsed_data']:
@@ -50,6 +52,8 @@ def render_balance_sheet_sections(
                 parsed_data = first_section['parsed_data']
                 metadata = parsed_data['metadata']
                 data_rows = parsed_data['data']
+                
+
 
                 # Metadata summary row
                 col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -87,14 +91,20 @@ def render_balance_sheet_sections(
                 with col6:
                     entity_mode = metadata.get('entity_mode', 'unknown')
                     entity_status = "✅" if first_section.get('entity_match', False) else "⚠️"
-                    # Remove entity mode display as requested
-                    st.markdown(f"**Entity:** {entity_status}")
+                    st.markdown(f"**Entity:** {entity_status} ({entity_mode})")
 
                 if data_rows:
                     structured_data = []
                     for row in data_rows:
-                        description = row['description']
-                        value = row['value']
+                        # Handle different data structures safely
+                        if isinstance(row, dict):
+                            description = row.get('description') or row.get('Description') or row.get('desc') or row.get('item') or str(list(row.keys())[0] if row.keys() else 'Unknown')
+                        else:
+                            description = str(row)
+                        if isinstance(row, dict):
+                            value = row.get('value') or row.get('Value') or row.get('amount') or str(list(row.values())[1] if len(row.values()) > 1 else list(row.values())[0] if row.values() else 'N/A')
+                        else:
+                            value = 'N/A'
                         actual_value = value
                         # Convert datetime objects to strings to avoid Arrow serialization errors
                         if hasattr(actual_value, 'strftime'):  # datetime object
@@ -239,20 +249,28 @@ def render_combined_sections(
                 st.markdown("**📋 Raw Data:**")
                 st.json(first_section)
 
-
 def render_income_statement_sections(
     sections_by_key: dict,
     get_key_display_name,
     selected_entity: str,
     format_date_to_dd_mmm_yyyy,
 ):
-    """Render Income Statement sections UI using existing parsed/cleaned data."""
+    """Render Income Statement sections UI using existing parsed/cleaned data.
+
+    Parameters
+    - sections_by_key: mapping key -> list of sections
+    - get_key_display_name: function to map key code to display
+    - selected_entity: entity string for context
+    - format_date_to_dd_mmm_yyyy: callable to format dates
+    """
 
     st.markdown("#### View Income Statement by Key")
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
     print(f"DEBUG UI IS: Processing {len(keys_with_data)} income statement keys with data")
+    
+
     
     if not keys_with_data:
         st.warning("No income statement data found for any financial keys.")
@@ -279,6 +297,8 @@ def render_income_statement_sections(
                 parsed_data = first_section['parsed_data']
                 metadata = parsed_data['metadata']
                 data_rows = parsed_data['data']
+                
+
 
                 # Metadata summary row
                 col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -316,14 +336,20 @@ def render_income_statement_sections(
                 with col6:
                     entity_mode = metadata.get('entity_mode', 'unknown')
                     entity_status = "✅" if first_section.get('entity_match', False) else "⚠️"
-                    # Remove entity mode display as requested
-                    st.markdown(f"**Entity:** {entity_status}")
+                    st.markdown(f"**Entity:** {entity_status} ({entity_mode})")
 
                 if data_rows:
                     structured_data = []
                     for row in data_rows:
-                        description = row['description']
-                        value = row['value']
+                        # Handle different data structures safely
+                        if isinstance(row, dict):
+                            description = row.get('description') or row.get('Description') or row.get('desc') or row.get('item') or str(list(row.keys())[0] if row.keys() else 'Unknown')
+                        else:
+                            description = str(row)
+                        if isinstance(row, dict):
+                            value = row.get('value') or row.get('Value') or row.get('amount') or str(list(row.values())[1] if len(row.values()) > 1 else list(row.values())[0] if row.values() else 'N/A')
+                        else:
+                            value = 'N/A'
                         actual_value = value
                         # Convert datetime objects to strings to avoid Arrow serialization errors
                         if hasattr(actual_value, 'strftime'):  # datetime object
@@ -398,3 +424,5 @@ def render_income_statement_sections(
             if 'parsed_data' in first_section:
                 with st.expander("🔍 Debug: Parsed Data Structure", expanded=False):
                     st.json(first_section['parsed_data'])
+
+

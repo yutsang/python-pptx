@@ -224,9 +224,9 @@ def show_logging_help():
         - Content modifications and style corrections
         
         #### 📁 Log File Locations
-        - **Main logs**: `fdd_utils/logs/ai_agents_YYYYMMDD_HHMMSS.log`
-        - **JSON data**: `fdd_utils/logs/ai_agents_YYYYMMDD_HHMMSS.json`
-        - **Enhanced logs**: `fdd_utils/logs/enhanced/` (if enabled)
+        - **Main logs**: `logging/ai_agents_YYYYMMDD_HHMMSS.log`
+        - **JSON data**: `logging/ai_agents_YYYYMMDD_HHMMSS.json`
+        - **Enhanced logs**: `logging/enhanced/` (if enabled)
         
         #### 🎯 How to Use Logs
         1. **Debugging**: Check error messages and processing details

@@ -59,3 +59,5 @@ def select_ai_provider_and_model(config: dict):
         st.warning("⚠️ No AI provider configured yet")
 
     return provider, model
+
+

@@ -4,10 +4,10 @@ import datetime
 
 
 class AIAgentLogger:
-    """Records each button click and associated AI I/O in a single JSON file under fdd_utils/logs/."""
+    """Records each button click and associated AI I/O in a single JSON file under logging/."""
     def __init__(self):
         from pathlib import Path
-        self.log_dir = Path("fdd_utils/logs")
+        self.log_dir = Path("logging")
         self.log_dir.mkdir(exist_ok=True)
         self.session_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.session_file = self.log_dir / f"session_{self.session_id}.json"
