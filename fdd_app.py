@@ -215,7 +215,7 @@ def detect_entity_mode_automatically(uploaded_file, selected_entity, entity_keyw
                 if sheet_entities:
                     print(f"🔍 AUTO-DETECT: Sheet '{sheet_name}' contains entities: {sheet_entities}")
                         
-        except Exception as e:
+            except Exception as e:
                 print(f"Error checking sheet {sheet_name}: {e}")
                 continue
         
