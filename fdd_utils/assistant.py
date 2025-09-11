@@ -42,13 +42,22 @@ def initialize_ai_services(config_details, use_local=False, use_openai=False):
     
     httpx_client = httpx.Client(verify=False)
     
-    if use_openai and config_details.get('OPENAI_API_KEY'):
+    # Get selected provider from session state for better detection
+    try:
+        selected_provider = st.session_state.get('selected_provider', 'Local AI')
+        print(f"🔧 Initializing AI services for provider: {selected_provider}")
+    except:
+        selected_provider = 'Local AI'
+    
+    if (selected_provider == 'Open AI' or use_openai) and config_details.get('OPENAI_API_KEY'):
+        print(f"🔗 Connecting to OpenAI: {config_details.get('OPENAI_API_BASE')}")
         return OpenAI(
             api_key=config_details['OPENAI_API_KEY'],
             base_url=config_details.get('OPENAI_API_BASE', 'https://api.openai.com/v1'),
             http_client=httpx_client
         )
-    elif use_local and config_details.get('LOCAL_AI_API_BASE'):
+    elif (selected_provider == 'Local AI' or use_local) and config_details.get('LOCAL_AI_API_BASE'):
+        print(f"🏠 Connecting to Local AI: {config_details.get('LOCAL_AI_API_BASE')}")
         return OpenAI(
             api_key=config_details.get('LOCAL_AI_API_KEY', 'local'),
             base_url=config_details['LOCAL_AI_API_BASE'],
@@ -56,9 +65,10 @@ def initialize_ai_services(config_details, use_local=False, use_openai=False):
         )
     else:
         # Default to DeepSeek
+        print(f"🚀 Connecting to DeepSeek: {config_details.get('DEEPSEEK_API_BASE')}")
         return OpenAI(
             api_key=config_details.get('DEEPSEEK_API_KEY', ''),
-            base_url=config_details.get('DEEPSEEK_API_BASE', 'https://api.deepseek.com'),
+            base_url=config_details.get('DEEPSEEK_API_BASE', 'https://api.deepseek.com/v1'),
             http_client=httpx_client
         )
 
@@ -102,6 +112,19 @@ def process_keys(keys, uploaded_file_path, entity_name, entity_keywords, languag
         
         client = initialize_ai_services(config_details, use_local, use_openai)
         
+        # Get the correct model name based on provider
+        selected_provider = st.session_state.get('selected_provider', 'Local AI')
+        
+        if selected_provider == 'Open AI' or use_openai:
+            model_name = config_details.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini')
+        elif selected_provider == 'Local AI' or use_local:
+            model_name = config_details.get('LOCAL_AI_CHAT_MODEL', 'local-qwen2')
+        else:
+            # DeepSeek or default
+            model_name = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
+        
+        print(f"🤖 Using AI model: {model_name} (Provider: {selected_provider})")
+        
         results = {}
         
         for key in keys:
@@ -109,9 +132,11 @@ def process_keys(keys, uploaded_file_path, entity_name, entity_keywords, languag
                 # Create a simple prompt for each key
                 prompt = f"Analyze the financial data for {key} for entity {entity_name}. Provide a brief analysis in {language}."
                 
-                # Make AI request
+                print(f"🔄 Processing {key} with model: {model_name}")
+                
+                # Make AI request with correct model
                 response = client.chat.completions.create(
-                    model=config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat'),
+                    model=model_name,
                     messages=[
                         {"role": "system", "content": "You are a financial analyst."},
                         {"role": "user", "content": prompt}
@@ -122,10 +147,20 @@ def process_keys(keys, uploaded_file_path, entity_name, entity_keywords, languag
                 
                 content = response.choices[0].message.content
                 results[key] = {"content": content}
+                print(f"✅ Successfully processed {key}")
                 
             except Exception as e:
-                print(f"Error processing key {key}: {e}")
+                error_msg = f"❌ Error processing {key} with model '{model_name}': {str(e)}"
+                print(error_msg)
                 results[key] = {"content": f"Error processing {key}: {str(e)}"}
+                
+                # Show helpful error message in Streamlit
+                try:
+                    st.error(f"AI Error for {key}: {str(e)}")
+                    if "400" in str(e) and "not granted access" in str(e):
+                        st.warning(f"💡 Model '{model_name}' not available. Please check your config.json and update the model name for your server.")
+                except:
+                    pass
         
         return results
         
