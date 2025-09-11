@@ -357,7 +357,7 @@ def main():
     # Main processing area
     if uploaded_file is not None:
         # Start processing button
-        if not st.session_state['processing_started']:
+        if not st.session_state.get('processing_started', False):
             st.markdown("### 🎯 Ready to Process")
             st.info("📋 Configuration loaded. Click 'Start Processing' to begin data analysis and AI processing.")
 
@@ -420,7 +420,7 @@ def main():
                 st.session_state['ai_data']['entity_keywords'] = entity_keywords
                 st.session_state['last_processed_entity'] = selected_entity
         else:
-            sections_by_key = st.session_state['ai_data']['sections_by_key']
+            sections_by_key = st.session_state.get('ai_data', {}).get('sections_by_key', {})
 
         # Display financial statements
         if statement_type == "BS":
