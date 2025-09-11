@@ -301,6 +301,11 @@ def process_excel_with_timeout(uploaded_file, mapping, selected_entity, entity_s
 def run_chinese_translation(english_results, ai_data):
     """Translate English content to Chinese using AI"""
     try:
+        # Validate input
+        if not english_results:
+            st.error("❌ No English results available for translation")
+            return {}
+        
         # Create temporary file for processing
         temp_file_path = None
         uploaded_file_data = st.session_state.get('uploaded_file_data')
@@ -323,6 +328,10 @@ def run_chinese_translation(english_results, ai_data):
         # Use process_keys with Chinese language for translation
         filtered_keys = list(english_results.keys())
         
+        if not filtered_keys:
+            st.error("❌ No keys found in English results for translation")
+            return {}
+        
         # Process keys using Chinese AI for translation
         translation_results = process_keys(
             keys=filtered_keys,
@@ -339,6 +348,11 @@ def run_chinese_translation(english_results, ai_data):
             use_openai=st.session_state.get('use_openai', False),
             language='chinese'  # Use Chinese language for translation
         )
+        
+        # Check if translation was successful
+        if not translation_results:
+            st.error("❌ Chinese translation failed - no results returned")
+            return {}
         
         # Format results for Chinese
         chinese_results = {}
@@ -717,6 +731,11 @@ def main():
 
         st.session_state['filtered_keys_for_ai'] = filtered_keys_for_ai
         
+        # Check if we have keys to process
+        if not filtered_keys_for_ai:
+            st.warning("⚠️ No financial keys found for AI processing. Please check your Excel data and entity selection.")
+            st.stop()
+        
         # Store uploaded file data for AI processing
         if hasattr(uploaded_file, 'getbuffer'):
             st.session_state['uploaded_file_data'] = uploaded_file.getbuffer()
@@ -851,6 +870,10 @@ def main():
                 
                 # Use proofreader results if available, otherwise use original
                 content_to_translate = proofreader_results if proofreader_results else agent1_results
+                
+                # Check if we have content to translate
+                if not content_to_translate:
+                    raise Exception("No content available for translation")
                 
                 # Translate to Chinese using AI
                 status_text.text("🌐 翻译为中文...")

@@ -1245,16 +1245,8 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
                     if re.search(r'\d{4}年\d{1,2}月\d{1,2}日', value_cell) or \
                        re.search(r'\d{4}/\d{1,2}/\d{1,2}', value_cell) or \
                        re.search(r'\d{1,2}/\d{1,2}/\d{4}', value_cell):
-                        # This looks like a date, preserve original format
-                        final_value = value_cell  # Keep original date format
-                        is_total = 'total' in desc_cell.lower()
-
-                        data_rows.append({
-                            'description': desc_cell,
-                            'value': final_value,
-                            'original_value': value_cell,
-                            'is_total': is_total
-                        })
+                        # This is a date row - skip it since date is already shown in info bar
+                        continue
                     else:
                         # Try to parse as number only if it's not a date
                         clean_value = re.sub(r'[^\d.-]', '', value_cell)
@@ -1277,20 +1269,12 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
                             # Skip non-numeric, non-date values
                             continue
                 except (ValueError, TypeError):
-                    # For non-numeric values that might be dates, preserve original format
+                    # For non-numeric values that might be dates, skip them
                     if re.search(r'\d{4}年\d{1,2}月\d{1,2}日', value_cell) or \
                        re.search(r'\d{4}/\d{1,2}/\d{1,2}', value_cell) or \
                        re.search(r'\d{1,2}/\d{1,2}/\d{4}', value_cell):
-                        # This looks like a date, preserve original format
-                        final_value = value_cell  # Keep original date format
-                        is_total = 'total' in desc_cell.lower()
-
-                        data_rows.append({
-                            'description': desc_cell,
-                            'value': final_value,
-                            'original_value': value_cell,
-                            'is_total': is_total
-                        })
+                        # This is a date row - skip it since date is already shown in info bar
+                        continue
                     else:
                         # Skip rows with non-numeric, non-date values
                         continue
