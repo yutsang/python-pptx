@@ -429,7 +429,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         
         # Load pattern and mapping
         pattern = load_ip(pattern_file, key)
-        mapping = {key: load_ip(mapping_file, key)}
+        mapping = load_ip(mapping_file)
         
         excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers)
         detect_zeros = "3. The figures in this table is already expressed in k, express the number in M " \

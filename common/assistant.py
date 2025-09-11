@@ -1007,13 +1007,22 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
 
         try:
             wb = openpyxl.load_workbook(file_path, data_only=True)
+            
+            # Create reverse mapping from sheet names to keys
+            reverse_mapping = {}
+            for key, sheet_names in tab_name_mapping.items():
+                for sheet_name in sheet_names:
+                    reverse_mapping[sheet_name] = key
+            
+            print(f"🚨 SERVER DEBUG: Reverse mapping created: {reverse_mapping}")
+            
             for ws in wb.worksheets:
-                if ws.title not in tab_name_mapping:
+                if ws.title not in reverse_mapping:
                     print(f"⏭️ SKIPPING WORKSHEET: {ws.title} (not in mapping)")
                     continue
 
                 print(f"\n🔍 PROCESSING WORKSHEET: {ws.title}")
-                print(f"🔍 Mapped to: {tab_name_mapping[ws.title]}")
+                print(f"🔍 Mapped to: {reverse_mapping[ws.title]}")
 
                 # Processing worksheet: {ws.title}
 
@@ -1736,7 +1745,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         oai_client, search_client = initialize_ai_services(config_details, use_local=use_local_ai, use_openai=use_openai)
 
         pattern = load_ip(pattern_file, key)
-        mapping = {key: load_ip(mapping_file)}
+        mapping = load_ip(mapping_file)
 
         # Use processed table data if provided, otherwise process Excel file
         if processed_table_data and key in processed_table_data:
