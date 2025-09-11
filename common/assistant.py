@@ -991,7 +991,9 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         print(f"🚨 SERVER DEBUG: Filename: '{filename}'")
         print(f"🚨 SERVER DEBUG: Entity: '{entity_name}'")
         print(f"🚨 SERVER DEBUG: Entity suffixes: {entity_suffixes}")
-        print(f"🚨 SERVER DEBUG: Tab mapping: {tab_name_mapping}")
+        print(f"🚨 SERVER DEBUG: Tab mapping type: {type(tab_name_mapping)}")
+        print(f"🚨 SERVER DEBUG: Tab mapping keys: {list(tab_name_mapping.keys()) if isinstance(tab_name_mapping, dict) else 'Not a dict'}")
+        print(f"🚨 SERVER DEBUG: Tab mapping sample: {list(tab_name_mapping.items())[:2] if isinstance(tab_name_mapping, dict) else 'Not a dict'}")
         print(f"🚨 SERVER DEBUG: Current working directory: {os.getcwd()}")
 
         main_dir = Path(__file__).parent.parent
@@ -1746,13 +1748,27 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
 
         pattern = load_ip(pattern_file, key)
         mapping = load_ip(mapping_file)
+        print(f"🔍 DEBUG: Mapping loaded: {type(mapping)}")
+        if isinstance(mapping, dict):
+            print(f"🔍 DEBUG: Mapping keys: {list(mapping.keys())[:5]}...")  # Show first 5 keys
+            print(f"🔍 DEBUG: Mapping sample: {list(mapping.items())[:2]}")  # Show first 2 items
 
         # Use processed table data if provided, otherwise process Excel file
+        print(f"🔍 DEBUG: processed_table_data keys: {list(processed_table_data.keys()) if processed_table_data else 'None'}")
+        print(f"🔍 DEBUG: Looking for key: {key}")
         if processed_table_data and key in processed_table_data:
             excel_tables = processed_table_data[key]
             data_source = "cached"
+            print(f"✅ DEBUG: Using cached data for key: {key}")
         else:
-            excel_tables = process_and_filter_excel(input_file, mapping, entity_name, entity_helpers)
+            print(f"⚠️ DEBUG: No cached data for key: {key}, processing Excel file")
+            # Ensure mapping is in the correct format for process_and_filter_excel
+            if isinstance(mapping, dict) and all(isinstance(v, list) for v in mapping.values()):
+                tab_name_mapping = mapping
+            else:
+                print(f"⚠️ DEBUG: Mapping format incorrect, using empty mapping")
+                tab_name_mapping = {}
+            excel_tables = process_and_filter_excel(input_file, tab_name_mapping, entity_name, entity_helpers)
             data_source = "processed"
 
         # Update progress: Data processing phase

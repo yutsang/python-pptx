@@ -446,6 +446,10 @@ def run_ai_processing(filtered_keys, ai_data, language='English', progress_callb
         entity_keywords = ai_data.get('entity_keywords', [])
 
         # Process keys using the assistant
+        print(f"🔍 DEBUG: AI processing keys: {filtered_keys}")
+        print(f"🔍 DEBUG: AI processing entity: {entity_name}")
+        print(f"🔍 DEBUG: AI processing entity_helpers: {entity_keywords}")
+        print(f"🔍 DEBUG: AI processing processed_table_data keys: {list(ai_data.get('sections_by_key', {}).keys())}")
         results = process_keys(
             keys=filtered_keys,
             entity_name=entity_name,
@@ -740,6 +744,8 @@ def main():
             st.session_state['uploaded_file_data'] = uploaded_file.getvalue()
         
         # Prepare AI data
+        print(f"🔍 DEBUG: sections_by_key keys: {list(sections_by_key.keys())}")
+        print(f"🔍 DEBUG: keys_with_data: {keys_with_data}")
         temp_ai_data = {
             'entity_name': selected_entity,
             'entity_keywords': entity_keywords,
