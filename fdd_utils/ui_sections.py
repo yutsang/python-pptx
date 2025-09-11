@@ -28,14 +28,58 @@ def render_balance_sheet_sections(
                 st.info("No sections found for this key.")
                 continue
 
+            # Debug: Show all sections and their entity names
+            print(f"\n🔍 DEBUG DETAILED: Key '{key}' has {len(sections)} total sections")
+            print(f"🔍 DEBUG DETAILED: Selected entity: '{selected_entity}'")
+            
+            for idx, section in enumerate(sections):
+                section_entity = section.get('entity_name', 'NO_ENTITY_NAME')
+                sheet_name = section.get('sheet_name', 'NO_SHEET_NAME')
+                print(f"🔍 DEBUG DETAILED: Section {idx}: entity='{section_entity}', sheet='{sheet_name}'")
+                
+                # Check if section has parsed_data and what entity info is there
+                if 'parsed_data' in section and section['parsed_data']:
+                    metadata = section['parsed_data'].get('metadata', {})
+                    metadata_entity = metadata.get('entity_name', 'NO_METADATA_ENTITY')
+                    print(f"🔍 DEBUG DETAILED: Section {idx} metadata entity: '{metadata_entity}'")
+
             # Filter sections by selected entity
             filtered_sections = []
             for section in sections:
                 section_entity = section.get('entity_name', '')
-                if selected_entity.lower() in section_entity.lower() or section_entity.lower() in selected_entity.lower():
+                
+                # Try multiple matching strategies
+                match_found = False
+                if section_entity:
+                    # Strategy 1: Exact match (case insensitive)
+                    if selected_entity.lower() == section_entity.lower():
+                        match_found = True
+                        print(f"✅ EXACT MATCH: '{section_entity}' == '{selected_entity}'")
+                    
+                    # Strategy 2: Selected entity contains section entity
+                    elif selected_entity.lower() in section_entity.lower():
+                        match_found = True
+                        print(f"✅ CONTAINS MATCH: '{selected_entity}' in '{section_entity}'")
+                    
+                    # Strategy 3: Section entity contains selected entity
+                    elif section_entity.lower() in selected_entity.lower():
+                        match_found = True
+                        print(f"✅ REVERSE CONTAINS MATCH: '{section_entity}' in '{selected_entity}'")
+                    
+                    # Strategy 4: Check for partial word matches
+                    else:
+                        selected_words = selected_entity.lower().split()
+                        section_words = section_entity.lower().split()
+                        if any(word in section_words for word in selected_words):
+                            match_found = True
+                            print(f"✅ WORD MATCH: Common words between '{selected_entity}' and '{section_entity}'")
+                
+                if match_found:
                     filtered_sections.append(section)
                 else:
-                    print(f"🔍 DEBUG: Filtering out section for entity '{section_entity}' (selected: '{selected_entity}')")
+                    print(f"❌ NO MATCH: '{section_entity}' vs '{selected_entity}'")
+            
+            print(f"🔍 DEBUG DETAILED: Filtered {len(sections)} -> {len(filtered_sections)} sections")
             
             if not filtered_sections:
                 st.info(f"No sections found for entity '{selected_entity}' in this key.")
