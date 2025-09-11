@@ -1,0 +1,22 @@
+@echo off
+REM Batch script to download ChromeDriver from GitHub
+REM This script opens Chrome, navigates to the ChromeDriver download page, and closes Chrome
+
+echo Starting ChromeDriver download process...
+
+REM Start Chrome and navigate to ChromeDriver download page
+start chrome "https://chromedriver.chromium.org/downloads"
+
+echo Chrome opened to ChromeDriver download page.
+echo Please download the appropriate ChromeDriver version for your Chrome browser.
+echo After downloading, close this window.
+
+REM Wait for user input
+pause
+
+echo Closing Chrome...
+REM Close Chrome
+taskkill /f /im chrome.exe
+
+echo ChromeDriver download process completed.
+pause
