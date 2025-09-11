@@ -412,7 +412,7 @@ def main():
         # Show entity info
         if entity_input:
             words = entity_input.split()
-                display_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else entity_input
+            display_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else entity_input
             st.info(f"📋 Entity: {display_name}")
 
         # Statement type selection
@@ -431,49 +431,49 @@ def main():
         statement_type = statement_type_mapping[statement_type_display]
         
         # Store uploaded file
-            st.session_state['uploaded_file'] = uploaded_file
+        st.session_state['uploaded_file'] = uploaded_file
             
         # AI Provider Selection - Load from config
         config, _, _, _ = load_config_files()
         ai_providers = get_available_ai_providers(config)
         
-            mode_display = st.selectbox(
-                "Select Mode", 
+        mode_display = st.selectbox(
+            "Select Mode", 
             ai_providers,
             index=0,
-                help="Choose AI provider. Models are taken from fdd_utils/config.json"
-            )
+            help="Choose AI provider. Models are taken from fdd_utils/config.json"
+        )
             
-            # Show API configuration status
-            if config:
-                if mode_display == "Open AI":
-                    if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_BASE'):
-                        st.success("✅ OpenAI configured")
-                        model = config.get('OPENAI_CHAT_MODEL', 'Not configured')
-                        st.info(f"🤖 Model: {model}")
-                    else:
+        # Show API configuration status
+        if config:
+            if mode_display == "Open AI":
+                if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_BASE'):
+                    st.success("✅ OpenAI configured")
+                    model = config.get('OPENAI_CHAT_MODEL', 'Not configured')
+                    st.info(f"🤖 Model: {model}")
+                else:
                     st.warning("⚠️ OpenAI not configured")
-                elif mode_display == "DeepSeek":
-                    if config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_BASE'):
-                        st.success("✅ DeepSeek configured")
-                        model = config.get('DEEPSEEK_CHAT_MODEL', 'Not configured')
-                        st.info(f"🤖 Model: {model}")
-                    else:
+            elif mode_display == "DeepSeek":
+                if config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_BASE'):
+                    st.success("✅ DeepSeek configured")
+                    model = config.get('DEEPSEEK_CHAT_MODEL', 'Not configured')
+                    st.info(f"🤖 Model: {model}")
+                else:
                     st.warning("⚠️ DeepSeek not configured")
-                elif mode_display == "Local AI":
-                    if config.get('LOCAL_AI_API_BASE') and config.get('LOCAL_AI_ENABLED'):
-                        st.success("✅ Local AI configured")
-                        model = config.get('LOCAL_AI_CHAT_MODEL', 'Not configured')
-                        st.info(f"🏠 Model: {model}")
-                    else:
+            elif mode_display == "Local AI":
+                if config.get('LOCAL_AI_API_BASE') and config.get('LOCAL_AI_ENABLED'):
+                    st.success("✅ Local AI configured")
+                    model = config.get('LOCAL_AI_CHAT_MODEL', 'Not configured')
+                    st.info(f"🏠 Model: {model}")
+                else:
                     st.warning("⚠️ Local AI not configured")
 
         # Store mode configuration
         st.session_state['selected_mode'] = f"AI Mode - {mode_display}"
-            st.session_state['ai_model'] = mode_display
+        st.session_state['ai_model'] = mode_display
         st.session_state['selected_provider'] = mode_display
-            st.session_state['use_local_ai'] = (mode_display == "Local AI")
-            st.session_state['use_openai'] = (mode_display == "Open AI")
+        st.session_state['use_local_ai'] = (mode_display == "Local AI")
+        st.session_state['use_openai'] = (mode_display == "Open AI")
             
     # Main processing area
     if uploaded_file is not None:
@@ -502,38 +502,38 @@ def main():
         config, mapping, pattern, prompts = load_config_files()
         
         # Process Excel data
-            entity_changed = st.session_state.get('last_processed_entity') != selected_entity
-            needs_processing = 'ai_data' not in st.session_state or 'sections_by_key' not in st.session_state['ai_data'] or entity_changed
+        entity_changed = st.session_state.get('last_processed_entity') != selected_entity
+        needs_processing = 'ai_data' not in st.session_state or 'sections_by_key' not in st.session_state['ai_data'] or entity_changed
 
-            if needs_processing:
-                with st.spinner("🔄 Processing Excel file..."):
+        if needs_processing:
+            with st.spinner("🔄 Processing Excel file..."):
                 print(f"🔄 Processing Excel for {selected_entity}")
                 print(f"🔍 DEBUG: Entity keywords: {entity_keywords}")
                 print(f"🔍 DEBUG: Entity mode: {entity_mode_internal}")
                 start_time = time.time()
 
                 sections_by_key, status = process_excel_with_timeout(
-                                uploaded_file=uploaded_file,
+                    uploaded_file=uploaded_file,
                     mapping=mapping,
                     selected_entity=selected_entity,
-                                entity_suffixes=entity_suffixes,
-                                entity_keywords=entity_keywords,
+                    entity_suffixes=entity_suffixes,
+                    entity_keywords=entity_keywords,
                     entity_mode=entity_mode_internal,
                     timeout=30
                 )
 
                 if status == "timeout":
                     if st.button("⚠️ Continue Without Excel Data", key="continue_without_excel"):
-                            st.warning("⚠️ Continuing without Excel data. Some features may be limited.")
+                        st.warning("⚠️ Continuing without Excel data. Some features may be limited.")
                         sections_by_key = {}
-                            st.session_state['excel_processing_skipped'] = True
-                        else:
+                        st.session_state['excel_processing_skipped'] = True
+                    else:
                         st.error("❌ Excel processing timed out. Click 'Continue Without Excel Data' to proceed.")
-                            st.stop()
+                        st.stop()
 
                 processing_time = time.time() - start_time
                 print(f"✅ Excel processing completed in {processing_time:.2f}s")
-                    print(f"📊 Found {len(sections_by_key)} financial keys with data")
+                print(f"📊 Found {len(sections_by_key)} financial keys with data")
                 
                 # Debug: Check what's actually in sections_by_key
                 print(f"🔍 DEBUG MAIN: sections_by_key keys: {list(sections_by_key.keys())}")
@@ -547,13 +547,13 @@ def main():
                             print(f"🔍 DEBUG MAIN: Section {i}: entity='{entity_name}', detected='{detected_entity}', sheet='{sheet_name}'")
 
                 # Store processed data
-                    if 'ai_data' not in st.session_state:
-                        st.session_state['ai_data'] = {}
-                    st.session_state['ai_data']['sections_by_key'] = sections_by_key
-                    st.session_state['ai_data']['entity_name'] = selected_entity
-                    st.session_state['ai_data']['entity_keywords'] = entity_keywords
+                if 'ai_data' not in st.session_state:
+                    st.session_state['ai_data'] = {}
+                st.session_state['ai_data']['sections_by_key'] = sections_by_key
+                st.session_state['ai_data']['entity_name'] = selected_entity
+                st.session_state['ai_data']['entity_keywords'] = entity_keywords
                 st.session_state['last_processed_entity'] = selected_entity
-            else:
+        else:
             sections_by_key = st.session_state.get('ai_data', {}).get('sections_by_key', {})
 
         # Display financial statements
@@ -581,7 +581,7 @@ def main():
         st.markdown("## 🤖 AI Processing & Results")
         
         # Prepare AI data
-                keys_with_data = [key for key, sections in sections_by_key.items() if sections]
+        keys_with_data = [key for key, sections in sections_by_key.items() if sections]
                 
         # Filter keys by statement type
         bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
@@ -589,51 +589,51 @@ def main():
         is_keys = ["OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
                    "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"]
                 
-                if statement_type == "BS":
-                    filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
-                elif statement_type == "IS":
-                    filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
+        if statement_type == "BS":
+            filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
+        elif statement_type == "IS":
+            filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
         else:  # ALL
-                    filtered_keys_for_ai = keys_with_data
+            filtered_keys_for_ai = keys_with_data
                 
-                st.session_state['filtered_keys_for_ai'] = filtered_keys_for_ai
+        st.session_state['filtered_keys_for_ai'] = filtered_keys_for_ai
         
         # Store uploaded file data for AI processing
         if hasattr(uploaded_file, 'getbuffer'):
-                st.session_state['uploaded_file_data'] = uploaded_file.getbuffer()
+            st.session_state['uploaded_file_data'] = uploaded_file.getbuffer()
         elif hasattr(uploaded_file, 'getvalue'):
             st.session_state['uploaded_file_data'] = uploaded_file.getvalue()
                 
-                # Prepare AI data
-                temp_ai_data = {
-                    'entity_name': selected_entity,
-                    'entity_keywords': entity_keywords,
-                    'sections_by_key': sections_by_key,
-                    'pattern': pattern,
-                    'mapping': mapping,
-                    'config': config
-                }
-                st.session_state['ai_data'] = temp_ai_data
+        # Prepare AI data
+        temp_ai_data = {
+            'entity_name': selected_entity,
+            'entity_keywords': entity_keywords,
+            'sections_by_key': sections_by_key,
+            'pattern': pattern,
+            'mapping': mapping,
+            'config': config
+        }
+        st.session_state['ai_data'] = temp_ai_data
 
         # AI Processing Buttons
-                st.markdown("### 🤖 AI Report Generation")
-                col_eng, col_chi = st.columns(2)
+        st.markdown("### 🤖 AI Report Generation")
+        col_eng, col_chi = st.columns(2)
 
-                with col_eng:
-                    run_eng_clicked = st.button(
-                        "🇺🇸 Generate English Report",
-                        type="primary",
-                        use_container_width=True,
-                        key="btn_ai_eng",
+        with col_eng:
+            run_eng_clicked = st.button(
+                "🇺🇸 Generate English Report",
+                type="primary",
+                use_container_width=True,
+                key="btn_ai_eng",
                 help="Generate AI report in English"
-                    )
+            )
 
-                with col_chi:
-                    run_chi_clicked = st.button(
-                        "🇨🇳 生成中文报告",
-                        type="primary",
-                        use_container_width=True,
-                        key="btn_ai_chi",
+        with col_chi:
+            run_chi_clicked = st.button(
+                "🇨🇳 生成中文报告",
+                type="primary",
+                use_container_width=True,
+                key="btn_ai_chi",
                 help="Generate AI report in Chinese"
             )
 
@@ -802,40 +802,40 @@ def main():
 def export_pptx_simple(selected_entity, statement_type, language='english'):
     """Simple PowerPoint export function"""
     try:
-                if language == 'chinese':
-                    st.info("📊 开始生成中文 PowerPoint 演示文稿...")
-                else:
-                    st.info("📊 Generating English PowerPoint presentation...")
+        if language == 'chinese':
+            st.info("📊 开始生成中文 PowerPoint 演示文稿...")
+        else:
+            st.info("📊 Generating English PowerPoint presentation...")
 
         # Get project name
         words = selected_entity.split() if selected_entity else ['Project']
         project_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else 'Project'
 
         # Find template
-                template_path = None
+        template_path = None
         for template in ["fdd_utils/template.pptx", "template.pptx"]:
-                    if os.path.exists(template):
-                        template_path = template
-                        break
+            if os.path.exists(template):
+                template_path = template
+                break
 
-                if not template_path:
+        if not template_path:
             st.error("❌ PowerPoint template not found")
-                    return
+            return
 
         # Create output filename
-                language_suffix = "_CN" if language == 'chinese' else "_EN"
+        language_suffix = "_CN" if language == 'chinese' else "_EN"
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_filename = f"{project_name}_{statement_type.upper()}_{timestamp}{language_suffix}.pptx"
-                output_path = f"fdd_utils/output/{output_filename}"
+        output_filename = f"{project_name}_{statement_type.upper()}_{timestamp}{language_suffix}.pptx"
+        output_path = f"fdd_utils/output/{output_filename}"
 
-                # Ensure output directory exists
-                os.makedirs("fdd_utils/output", exist_ok=True)
+        # Ensure output directory exists
+        os.makedirs("fdd_utils/output", exist_ok=True)
 
         # Get content file
-                if statement_type == "IS":
-                    markdown_path = "fdd_utils/is_content.md"
-                elif statement_type == "BS":
-                    markdown_path = "fdd_utils/bs_content.md"
+        if statement_type == "IS":
+            markdown_path = "fdd_utils/is_content.md"
+        elif statement_type == "BS":
+            markdown_path = "fdd_utils/bs_content.md"
         else:  # ALL
             st.info("🔄 Generating combined presentation...")
             # For combined, create both BS and IS then merge
@@ -844,9 +844,9 @@ def export_pptx_simple(selected_entity, statement_type, language='english'):
             
             if not os.path.exists(bs_path) or not os.path.exists(is_path):
                 st.error("❌ Content files not found. Please run AI processing first.")
-                        return
+                return
 
-                    with tempfile.TemporaryDirectory() as temp_dir:
+            with tempfile.TemporaryDirectory() as temp_dir:
                 bs_temp = os.path.join(temp_dir, "bs_temp.pptx")
                 is_temp = os.path.join(temp_dir, "is_temp.pptx")
                 
@@ -857,10 +857,10 @@ def export_pptx_simple(selected_entity, statement_type, language='english'):
                 # Merge presentations
                 merge_presentations(bs_temp, is_temp, output_path)
 
-                        if language == 'chinese':
-                            st.success("✅ 中文组合演示文稿生成成功!")
-                        else:
-                            st.success("✅ Combined presentation generated successfully!")
+            if language == 'chinese':
+                st.success("✅ 中文组合演示文稿生成成功!")
+            else:
+                st.success("✅ Combined presentation generated successfully!")
 
         if statement_type in ["IS", "BS"]:
             if not os.path.exists(markdown_path):
@@ -871,23 +871,23 @@ def export_pptx_simple(selected_entity, statement_type, language='english'):
             export_pptx(template_path, markdown_path, output_path, project_name, language=language)
 
         # Show download button
-                if os.path.exists(output_path):
-                    with open(output_path, "rb") as file:
+        if os.path.exists(output_path):
+            with open(output_path, "rb") as file:
                 download_label = f"📥 下载中文 PowerPoint: {output_filename}" if language == 'chinese' else f"📥 Download English PowerPoint: {output_filename}"
 
-                        st.download_button(
-                            label=download_label,
-                            data=file.read(),
-                            file_name=output_filename,
-                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                            use_container_width=True
-                        )
+                st.download_button(
+                    label=download_label,
+                    data=file.read(),
+                    file_name=output_filename,
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    use_container_width=True
+                )
 
-            success_msg = f"✅ 中文 PowerPoint 生成完成: {output_filename}" if language == 'chinese' else f"✅ English PowerPoint generated successfully: {output_filename}"
-            st.success(success_msg)
+        success_msg = f"✅ 中文 PowerPoint 生成完成: {output_filename}" if language == 'chinese' else f"✅ English PowerPoint generated successfully: {output_filename}"
+        st.success(success_msg)
 
-            except Exception as e:
-                st.error(f"❌ Export failed: {e}")
+    except Exception as e:
+        st.error(f"❌ Export failed: {e}")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 {
   "metadata": {
     "entity_name": "Haining Wanpu",
-    "generated_timestamp": "2025-09-11T16:10:46.301299",
-    "session_id": "20250911_160726",
+    "generated_timestamp": "2025-09-11T22:24:47.268218",
+    "session_id": "20250911_222000",
     "statement_type": "BS",
     "total_keys": 9
   },
@@ -11,63 +11,63 @@
       "content": "No content available",
       "display_name": "现金",
       "category": "Current Assets",
-      "last_updated": "2025-09-11T16:10:46.301317",
+      "last_updated": "2025-09-11T22:24:47.268226",
       "source_agent": "unknown"
     },
     "AR": {
       "content": "No content available",
       "display_name": "应收账款",
       "category": "Current Assets",
-      "last_updated": "2025-09-11T16:10:46.301319",
+      "last_updated": "2025-09-11T22:24:47.268228",
       "source_agent": "unknown"
     },
     "Prepayments": {
       "content": "No content available",
       "display_name": "预付款项",
       "category": "Current Assets",
-      "last_updated": "2025-09-11T16:10:46.301321",
+      "last_updated": "2025-09-11T22:24:47.268230",
       "source_agent": "unknown"
     },
     "OR": {
       "content": "No content available",
       "display_name": "其他应收款",
       "category": "Current Assets",
-      "last_updated": "2025-09-11T16:10:46.301322",
+      "last_updated": "2025-09-11T22:24:47.268232",
       "source_agent": "unknown"
     },
     "IP": {
       "content": "No content available",
       "display_name": "投资性房地产",
       "category": "Non-current Assets",
-      "last_updated": "2025-09-11T16:10:46.301323",
+      "last_updated": "2025-09-11T22:24:47.268233",
       "source_agent": "unknown"
     },
     "AP": {
       "content": "No content available",
       "display_name": "应付账款",
       "category": "Liabilities",
-      "last_updated": "2025-09-11T16:10:46.301325",
+      "last_updated": "2025-09-11T22:24:47.268235",
       "source_agent": "unknown"
     },
     "Taxes payable": {
       "content": "No content available",
       "display_name": "应交税费",
       "category": "Liabilities",
-      "last_updated": "2025-09-11T16:10:46.301327",
+      "last_updated": "2025-09-11T22:24:47.268236",
       "source_agent": "unknown"
     },
     "OP": {
       "content": "No content available",
       "display_name": "其他应付款",
       "category": "Liabilities",
-      "last_updated": "2025-09-11T16:10:46.301328",
+      "last_updated": "2025-09-11T22:24:47.268238",
       "source_agent": "unknown"
     },
     "Capital": {
       "content": "No content available",
       "display_name": "股本",
       "category": "Equity",
-      "last_updated": "2025-09-11T16:10:46.301329",
+      "last_updated": "2025-09-11T22:24:47.268239",
       "source_agent": "unknown"
     }
   }

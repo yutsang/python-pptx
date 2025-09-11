@@ -1,6 +1,6 @@
 # Balance Sheet Content - Haining Wanpu
 
-**Generated:** 2025-09-11 16:10:46
+**Generated:** 2025-09-11 22:24:47
 **Statement Type:** BS
 
 ## Current Assets
