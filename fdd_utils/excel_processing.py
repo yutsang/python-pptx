@@ -257,13 +257,15 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
     print(f"   🔍 SCANNING ENTIRE SHEET for entity detection...")
     entities_found_in_sheet = []
 
-    # Check for all known entity patterns in the sheet
-    # Only match full entity names, not partial words
-    entity_patterns = [
-        'ningbo wanchen',
-        'haining wanpu',
-        'nanjing jingya'
-    ]
+    # Check for entity patterns in the sheet
+    # Use the provided entity keywords instead of hardcoded patterns
+    entity_patterns = [kw.lower() for kw in entity_keywords if kw.strip()]
+    
+    # Also check for the entity name itself
+    if entity_name and entity_name.lower() not in entity_patterns:
+        entity_patterns.append(entity_name.lower())
+    
+    print(f"   🔍 ENTITY PATTERNS TO SEARCH: {entity_patterns}")
 
     for row_idx in range(len(df)):
         row = df.iloc[row_idx]
@@ -271,19 +273,12 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
 
         for pattern in entity_patterns:
             if pattern in row_text:
-                # Map the pattern to the actual entity name
-                if 'ningbo wanchen' in pattern:
-                    entity_name = 'Ningbo Wanchen'
-                elif 'haining wanpu' in pattern:
-                    entity_name = 'Haining Wanpu'
-                elif 'nanjing jingya' in pattern:
-                    entity_name = 'Nanjing Jingya'
-                else:
-                    entity_name = pattern.title()
-
-                if entity_name not in entities_found_in_sheet:
-                    entities_found_in_sheet.append(entity_name)
-                    print(f"   ✅ FOUND ENTITY: {entity_name} in row {row_idx}")
+                # Use the pattern as the entity name (no hardcoding)
+                entity_name_found = pattern.title()
+                
+                if entity_name_found not in entities_found_in_sheet:
+                    entities_found_in_sheet.append(entity_name_found)
+                    print(f"   ✅ FOUND ENTITY: {entity_name_found} in row {row_idx}")
                 break  # Stop checking other patterns for this row
 
     # Also check with the provided entity keywords
