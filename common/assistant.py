@@ -1789,11 +1789,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         # Process data for AI: multiply figures by 1000 if '000 notation detected
         excel_tables_for_ai = multiply_figures_for_ai_processing(excel_tables) if has_thousands_notation else excel_tables
 
-        # Apply thousands conversion to the specific financial figure for this key
-        current_financial_figure = financial_figures.get(key, 0)
-        if has_thousands_notation and current_financial_figure:
-            adjusted_financial_figure = current_financial_figure * 1000
-            financial_figures[key] = adjusted_financial_figure
+        # No need to process financial_figures since we're using cached data
+        print(f"🔍 DEBUG: Using cached data - no need to process financial_figures")
 
         # Update progress: AI processing phase
         if not use_streamlit_progress:
@@ -1813,7 +1810,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         
         # User query construction using f-strings for better prompt maintainability
         pattern_json = json.dumps(pattern, indent=2)
-        financial_figure_info = f"{key}: {get_financial_figure(financial_figures, key)}"
+        # No need for financial_figure_info since we're using cached data
+        financial_figure_info = f"{key}: Using cached table data"
         
         # Template for output requirements - language aware
         if language == 'chinese':
@@ -1950,7 +1948,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             'content': response_txt,
             'pattern_used': 'Pattern 1',  # Default, will be updated based on actual pattern
             'table_data': excel_tables_for_ai,
-            'financial_figure': financial_figures.get(key, 0),
+            'financial_figure': 0,  # Using cached data, no need for financial_figures
             'entity_name': entity_name
         }
 
