@@ -1,10 +1,20 @@
 {
+    "BS": [
+        "BS",
+        "Balance Sheet",
+        "Balance sheet",
+        "资产负债表",
+        "資產負債表",
+        "联洋",
+        "BS_联洋"
+    ],
     "Cash": [
         "Cash",
         "Cash and Cash Equivalents",
         "Cash and cash equivalents",
         "貨幣資金",
-        "货币资金"
+        "货币资金",
+        "货币资金："
     ],
     "AR": [
         "AR",
@@ -19,7 +29,8 @@
         "Prepayment",
         "Prepayments",
         "預收款項",
-        "预收款项"
+        "预收款项",
+        "预付款项"
     ],
     "OR": [
         "OR",
@@ -82,7 +93,8 @@
         "Other Fixed assets",
         "Other Fixed asset",
         "其他非流动资产",
-        "其他非流動資產"
+        "其他非流動資產",
+        "其他非流动资产，"
     ],
     "Other CA": [
         "Other CA",
@@ -94,7 +106,8 @@
         "Other Current assets",
         "Other Current asset",
         "其他流动资产",
-        "其他流動資產"
+        "其他流動資產",
+        "其他流动资产，"
     ],
     "AP": [
         "AP",
