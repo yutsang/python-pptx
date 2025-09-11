@@ -391,6 +391,13 @@ def main():
                 processing_time = time.time() - start_time
                 print(f"✅ Excel processing completed in {processing_time:.2f}s")
                 print(f"📊 Found {len(sections_by_key)} financial keys with data")
+                
+                # Debug: Check what's actually in sections_by_key
+                print(f"🔍 DEBUG: sections_by_key keys: {list(sections_by_key.keys())}")
+                for key, sections in sections_by_key.items():
+                    print(f"🔍 DEBUG: Key '{key}' has {len(sections) if sections else 0} sections")
+                    if sections:
+                        print(f"🔍 DEBUG: First section keys: {list(sections[0].keys()) if sections[0] else 'Empty section'}")
 
                 # Store processed data
                 if 'ai_data' not in st.session_state:
