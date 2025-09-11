@@ -89,9 +89,8 @@ def render_balance_sheet_sections(
                         else:
                             st.markdown(f"**Processed:** {currency_info}")
                 with col6:
-                    entity_mode = metadata.get('entity_mode', 'unknown')
-                    entity_status = "✅" if first_section.get('entity_match', False) else "⚠️"
-                    st.markdown(f"**Entity:** {entity_status} ({entity_mode})")
+                    # Entity information removed as requested
+                    st.markdown("")
 
                 if data_rows:
                     structured_data = []
@@ -334,9 +333,8 @@ def render_income_statement_sections(
                         else:
                             st.markdown(f"**Processed:** {currency_info}")
                 with col6:
-                    entity_mode = metadata.get('entity_mode', 'unknown')
-                    entity_status = "✅" if first_section.get('entity_match', False) else "⚠️"
-                    st.markdown(f"**Entity:** {entity_status} ({entity_mode})")
+                    # Entity information removed as requested
+                    st.markdown("")
 
                 if data_rows:
                     structured_data = []

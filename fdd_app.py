@@ -192,9 +192,17 @@ def run_ai_processing(filtered_keys, ai_data, language='English'):
         # Process keys using the assistant
         results = process_keys(
             keys=filtered_keys,
-            uploaded_file_path=temp_file_path,
             entity_name=entity_name,
-            entity_keywords=entity_keywords,
+            entity_helpers=entity_keywords,
+            input_file=temp_file_path,
+            mapping_file="fdd_utils/mapping.json",
+            pattern_file="fdd_utils/pattern.json",
+            config_file='fdd_utils/config.json',
+            prompts_file='fdd_utils/prompts.json',
+            use_ai=True,
+            processed_table_data=ai_data.get('sections_by_key', {}),
+            use_local_ai=(language == 'chinese'),  # Use local AI for Chinese
+            use_openai=(language == 'english'),    # Use OpenAI for English
             language=language
         )
 
