@@ -1,4 +1,4 @@
- """
+"""
 Clean, modular FDD Application
 Main application file - properly modularized and lightweight
 """
