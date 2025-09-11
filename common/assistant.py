@@ -1714,7 +1714,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     # Track start time for final summary
     start_time = time.time()
 
-    for key_index, key in enumerate(pbar):
+    for key_index, key in enumerate(keys):
         # Determine AI model being used for display
         print(f"🔍 DEBUG: Processing key {key_index}: {repr(key)} (type: {type(key)})")
         config_details = load_config(config_file)
@@ -1729,7 +1729,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             openai_model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
 
         # Initial progress update with key info
-        if not use_streamlit_progress:
+        if not use_streamlit_progress and pbar is not None:
             progress_desc = f"🔄 {key} ({ai_model})"
             pbar.set_description(progress_desc)
 
@@ -1739,7 +1739,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             progress_callback((key_index + 1) / len(keys), detailed_message)
 
         # Update progress: Data loading phase
-        if not use_streamlit_progress:
+        if not use_streamlit_progress and pbar is not None:
             pbar.set_postfix_str("📊 Loading data...")
         if progress_callback:
             progress_callback((key_index + 0.1) / len(keys), f"📊 Loading data for {key}...")
@@ -1770,7 +1770,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             data_source = "empty"
 
         # Update progress: Data processing phase
-        if not use_streamlit_progress:
+        if not use_streamlit_progress and pbar is not None:
             pbar.set_postfix_str(f"📈 Processing data ({data_source})...")
         if progress_callback:
             progress_callback((key_index + 0.2) / len(keys), f"📈 Processing {key} data...")
@@ -1793,7 +1793,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         print(f"🔍 DEBUG: Using cached data - no need to process financial_figures")
 
         # Update progress: AI processing phase
-        if not use_streamlit_progress:
+        if not use_streamlit_progress and pbar is not None:
             pbar.set_postfix_str(f"🤖 AI generating ({openai_model})...")
         if progress_callback:
             progress_callback((key_index + 0.3) / len(keys), f"🤖 AI generating {key} content...")
@@ -1927,7 +1927,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             """
         
         # Update progress: AI request phase
-        if not use_streamlit_progress:
+        if not use_streamlit_progress and pbar is not None:
             pbar.set_postfix_str(f"📤 Sending to {openai_model}...")
         if progress_callback:
             progress_callback((key_index + 0.7) / len(keys), f"📤 Sending {key} to {ai_model}...")
@@ -1935,7 +1935,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         response_txt = generate_response(user_query, system_prompt, oai_client, excel_tables, openai_model, entity_name, use_local_ai)
 
         # Update progress: Response processing phase
-        if not use_streamlit_progress:
+        if not use_streamlit_progress and pbar is not None:
             pbar.set_postfix_str("📥 Processing response...")
         if progress_callback:
             progress_callback((key_index + 0.8) / len(keys), f"📥 Processing {key} response...")
@@ -1953,7 +1953,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         }
 
         # Update progress bar with completion info and response preview
-        if not use_streamlit_progress:
+        if not use_streamlit_progress and pbar is not None:
             completion_status = f"✅ {key}: {response_txt[:15]}..." if len(response_txt) > 15 else f"✅ {key}: {response_txt}"
             pbar.set_postfix_str(completion_status)
 
