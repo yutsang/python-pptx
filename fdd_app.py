@@ -113,6 +113,38 @@ def initialize_session_state():
         st.session_state.ai_logger = AIAgentLogger()
 
 
+def get_available_ai_providers(config):
+    """Get available AI providers from config"""
+    providers = []
+    
+    if not config:
+        return ["Offline"]  # Fallback if no config
+    
+    # Check Local AI
+    if config.get('LOCAL_AI_ENABLED') and config.get('LOCAL_AI_API_BASE'):
+        providers.append("Local AI")
+    
+    # Check OpenAI
+    if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_KEY') != "placeholder-openai-api-key":
+        providers.append("Open AI")
+    
+    # Check DeepSeek
+    if config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_KEY') != "placeholder-deepseek-api-key":
+        providers.append("DeepSeek")
+    
+    # Always include Offline as fallback
+    providers.append("Offline")
+    
+    # Use default provider from config if available
+    default_provider = config.get('DEFAULT_AI_PROVIDER')
+    if default_provider and default_provider in providers:
+        # Move default to front
+        providers.remove(default_provider)
+        providers.insert(0, default_provider)
+    
+    return providers
+
+
 def detect_entity_mode_automatically(uploaded_file, selected_entity, entity_keywords):
     """Automatically detect if the Excel file contains single or multiple entities"""
     try:
@@ -299,8 +331,8 @@ def run_ai_processing(filtered_keys, ai_data, language='English'):
             prompts_file='fdd_utils/prompts.json',
             use_ai=True,
             processed_table_data=ai_data.get('sections_by_key', {}),
-            use_local_ai=(language == 'chinese'),  # Use local AI for Chinese
-            use_openai=(language == 'english'),    # Use OpenAI for English
+            use_local_ai=st.session_state.get('use_local_ai', False),
+            use_openai=st.session_state.get('use_openai', False)
             language=language
         )
 
@@ -376,29 +408,7 @@ def main():
         entity_mode_internal = detect_entity_mode_automatically(uploaded_file, selected_entity, entity_keywords)
         st.session_state['entity_mode'] = entity_mode_internal
         
-        # Show detected mode with manual override option
-        mode_display = "Single Entity" if entity_mode_internal == 'single' else "Multiple Entity"
-        
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.info(f"🔍 **Auto-detected mode:** {mode_display}")
-        with col2:
-            if st.button("🔄 Override", help="Click to manually choose entity mode"):
-                # Show manual selection
-                manual_mode = st.radio(
-                    "Choose mode:",
-                    ["Single Entity", "Multiple Entity"],
-                    index=0 if entity_mode_internal == 'single' else 1,
-                    key="manual_entity_mode"
-                )
-                entity_mode_internal = 'single' if manual_mode == "Single Entity" else 'multiple'
-                st.session_state['entity_mode'] = entity_mode_internal
-                st.success(f"✅ Mode set to: {manual_mode}")
-        
-        if entity_mode_internal == 'multiple':
-            st.info(f"💡 Multiple entities detected in the Excel file. The system will automatically filter data for **{selected_entity}**.")
-        else:
-            st.info(f"💡 Single entity mode. Processing all data for **{selected_entity}**.")
+        # Auto-detect entity mode (no UI display needed)
 
 
         
@@ -430,17 +440,18 @@ def main():
         # Store uploaded file
         st.session_state['uploaded_file'] = uploaded_file
         
-        # AI Provider Selection
-        ai_mode_options = ["Local AI", "Open AI", "DeepSeek", "Offline"]
+        # AI Provider Selection - Load from config
+        config, _, _, _ = load_config_files()
+        ai_providers = get_available_ai_providers(config)
+        
         mode_display = st.selectbox(
             "Select Mode", 
-            ai_mode_options,
+            ai_providers,
             index=0,
             help="Choose AI provider. Models are taken from fdd_utils/config.json"
         )
         
         # Show API configuration status
-        config, _, _, _ = load_config_files()
         if config:
             if mode_display == "Open AI":
                 if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_BASE'):
@@ -465,14 +476,9 @@ def main():
                     st.warning("⚠️ Local AI not configured")
 
         # Store mode configuration
-        provider_mapping = {
-            "Open AI": "Open AI",
-            "Local AI": "Local AI",
-            "DeepSeek": "DeepSeek"
-        }
-        st.session_state['selected_mode'] = f"AI Mode - {provider_mapping[mode_display]}"
+        st.session_state['selected_mode'] = f"AI Mode - {mode_display}"
         st.session_state['ai_model'] = mode_display
-        st.session_state['selected_provider'] = provider_mapping[mode_display]
+        st.session_state['selected_provider'] = mode_display
         st.session_state['use_local_ai'] = (mode_display == "Local AI")
         st.session_state['use_openai'] = (mode_display == "Open AI")
 
