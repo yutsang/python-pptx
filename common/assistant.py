@@ -1698,8 +1698,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     
     print(f"✅ DEBUG: System prompt loaded successfully (length: {len(system_prompt)})")
     
-    # Initialize financial figures without pre-processing (will check '000 per key)
-    financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), None, convert_thousands=False, entity_keywords=entity_helpers)
+    # No need to initialize financial figures - we're using cached data
+    print(f"🔍 DEBUG: Using cached data - no need to call find_financial_figures_with_context_check")
     results = {}
     
     # Use Streamlit progress instead of tqdm for better UI integration
