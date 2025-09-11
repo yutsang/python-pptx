@@ -37,7 +37,25 @@ def render_balance_sheet_sections(
                 st.info("No sections found for this key.")
                 continue
 
-
+            # Simple entity filtering - only show sections that match the selected entity
+            filtered_sections = []
+            for section in sections:
+                section_entity = section.get('entity_name', '')
+                # Use flexible matching - if either entity name contains the other
+                if (selected_entity.lower() in section_entity.lower() or 
+                    section_entity.lower() in selected_entity.lower() or
+                    selected_entity.lower() == section_entity.lower()):
+                    filtered_sections.append(section)
+                    print(f"✅ BS Including section: entity='{section_entity}' matches selected='{selected_entity}'")
+                else:
+                    print(f"❌ BS Excluding section: entity='{section_entity}' doesn't match selected='{selected_entity}'")
+            
+            if not filtered_sections:
+                st.info(f"No sections found for entity '{selected_entity}' in this key.")
+                continue
+            
+            sections = filtered_sections
+            print(f"🔍 BS Showing {len(sections)} sections for entity '{selected_entity}' in key '{key}'")
 
             # Debug information (only shown if needed)
             if 'parsed_data' in sections[0] and sections[0]['parsed_data']:
@@ -192,6 +210,26 @@ def render_combined_sections(
                 st.info("No sections found for this key.")
                 continue
 
+            # Simple entity filtering - only show sections that match the selected entity
+            filtered_sections = []
+            for section in sections:
+                section_entity = section.get('entity_name', '')
+                # Use flexible matching - if either entity name contains the other
+                if (selected_entity.lower() in section_entity.lower() or 
+                    section_entity.lower() in selected_entity.lower() or
+                    selected_entity.lower() == section_entity.lower()):
+                    filtered_sections.append(section)
+                    print(f"✅ Including section: entity='{section_entity}' matches selected='{selected_entity}'")
+                else:
+                    print(f"❌ Excluding section: entity='{section_entity}' doesn't match selected='{selected_entity}'")
+            
+            if not filtered_sections:
+                st.info(f"No sections found for entity '{selected_entity}' in this key.")
+                continue
+            
+            sections = filtered_sections
+            print(f"🔍 Showing {len(sections)} sections for entity '{selected_entity}' in key '{key}'")
+
             # Debug information (only shown if needed)
             if 'parsed_data' in sections[0] and sections[0]['parsed_data']:
                 metadata = sections[0]['parsed_data']['metadata']
@@ -282,6 +320,26 @@ def render_income_statement_sections(
             if not sections:
                 st.info("No sections found for this key.")
                 continue
+
+            # Simple entity filtering - only show sections that match the selected entity
+            filtered_sections = []
+            for section in sections:
+                section_entity = section.get('entity_name', '')
+                # Use flexible matching - if either entity name contains the other
+                if (selected_entity.lower() in section_entity.lower() or 
+                    section_entity.lower() in selected_entity.lower() or
+                    selected_entity.lower() == section_entity.lower()):
+                    filtered_sections.append(section)
+                    print(f"✅ Including section: entity='{section_entity}' matches selected='{selected_entity}'")
+                else:
+                    print(f"❌ Excluding section: entity='{section_entity}' doesn't match selected='{selected_entity}'")
+            
+            if not filtered_sections:
+                st.info(f"No sections found for entity '{selected_entity}' in this key.")
+                continue
+            
+            sections = filtered_sections
+            print(f"🔍 Showing {len(sections)} sections for entity '{selected_entity}' in key '{key}'")
 
             # Debug information (only shown if needed)
             if 'parsed_data' in sections[0] and sections[0]['parsed_data']:

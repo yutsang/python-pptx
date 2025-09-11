@@ -2444,11 +2444,14 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
                             section_data = {
                                 'sheet': sheet_name,
+                                'sheet_name': sheet_name,  # Add sheet_name for compatibility
+                                'entity_name': actual_entity_found or entity_name,  # Use detected entity or fallback to selected entity
                                 'data': display_data,  # Use filtered data if available
                                 'parsed_data': parsed_table,
                                 'markdown': create_improved_table_markdown(parsed_table),
                                 'entity_match': True,
-                                'is_selected_entity': is_selected_entity
+                                'is_selected_entity': is_selected_entity,
+                                'detected_entity': actual_entity_found  # Store the detected entity separately
                             }
                             
                             # Only add this section if it's the correct sheet for this key AND matches the selected entity
@@ -2480,6 +2483,8 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             
                             sections_by_key[best_key].append({
                                 'sheet': sheet_name,
+                                'sheet_name': sheet_name,  # Add sheet_name for compatibility
+                                'entity_name': entity_name,  # Fallback case - use selected entity name
                                 'data': data_frame,
                                 'markdown': markdown_content,
                                 'entity_match': True,
@@ -2713,11 +2718,14 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
                                     section_data = {
                                         'sheet': sheet_name,
+                                        'sheet_name': sheet_name,  # Add sheet_name for compatibility
+                                        'entity_name': actual_entity_found or entity_name,  # Use detected entity or fallback to selected entity
                                         'data': display_data,
                                         'parsed_data': parsed_table,
                                         'markdown': create_improved_table_markdown(parsed_table),
                                         'entity_match': True,
-                                        'is_selected_entity': is_selected_entity
+                                        'is_selected_entity': is_selected_entity,
+                                        'detected_entity': actual_entity_found  # Store the detected entity separately
                                     }
 
                                     # Only add this section if it's the correct sheet for this key AND matches the selected entity
@@ -2748,6 +2756,8 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
                                     sections_by_key[best_key].append({
                                         'sheet': sheet_name,
+                                        'sheet_name': sheet_name,  # Add sheet_name for compatibility
+                                        'entity_name': entity_name,  # Fallback case - use selected entity name
                                         'data': data_frame,
                                         'markdown': markdown_content,
                                         'entity_match': True,
