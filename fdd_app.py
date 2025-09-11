@@ -298,6 +298,117 @@ def process_excel_with_timeout(uploaded_file, mapping, selected_entity, entity_s
         return result_container['result'], "success"
 
 
+def run_chinese_translation(english_results, ai_data):
+    """Translate English content to Chinese using AI"""
+    try:
+        # Create temporary file for processing
+        temp_file_path = None
+        uploaded_file_data = st.session_state.get('uploaded_file_data')
+        if uploaded_file_data:
+            unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
+            temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
+            with open(temp_file_path, 'wb') as tmp_file:
+                tmp_file.write(uploaded_file_data)
+        elif os.path.exists('databook.xlsx'):
+            temp_file_path = 'databook.xlsx'
+        
+        if not temp_file_path:
+            st.error("❌ No databook available for translation")
+            return {}
+        
+        # Get entity information
+        entity_name = ai_data.get('entity_name', '')
+        entity_keywords = ai_data.get('entity_keywords', [])
+        
+        # Use process_keys with Chinese language for translation
+        filtered_keys = list(english_results.keys())
+        
+        # Process keys using Chinese AI for translation
+        translation_results = process_keys(
+            keys=filtered_keys,
+            entity_name=entity_name,
+            entity_helpers=entity_keywords,
+            input_file=temp_file_path,
+            mapping_file="fdd_utils/mapping.json",
+            pattern_file="fdd_utils/pattern.json",
+            config_file='fdd_utils/config.json',
+            prompts_file='fdd_utils/prompts.json',
+            use_ai=True,
+            processed_table_data=ai_data.get('sections_by_key', {}),
+            use_local_ai=st.session_state.get('use_local_ai', False),
+            use_openai=st.session_state.get('use_openai', False),
+            language='chinese'  # Use Chinese language for translation
+        )
+        
+        # Format results for Chinese
+        chinese_results = {}
+        for key, result in translation_results.items():
+            content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
+            chinese_results[key] = {
+                'content': content,
+                'translated_content': content,
+                'is_chinese': True,
+                'original_english': english_results.get(key, {}).get('content', '')
+            }
+        
+        return chinese_results
+        
+    except Exception as e:
+        st.error(f"❌ Chinese translation failed: {e}")
+        return {}
+
+
+def run_proofreader(agent1_results, ai_data):
+    """Run proofreader on Agent 1 results"""
+    try:
+        from common.assistant import ProofreadingAgent
+        
+        # Create temporary file for processing
+        temp_file_path = None
+        uploaded_file_data = st.session_state.get('uploaded_file_data')
+        if uploaded_file_data:
+            unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
+            temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
+            with open(temp_file_path, 'wb') as tmp_file:
+                tmp_file.write(uploaded_file_data)
+        elif os.path.exists('databook.xlsx'):
+            temp_file_path = 'databook.xlsx'
+        
+        if not temp_file_path:
+            st.error("❌ No databook available for proofreading")
+            return {}
+        
+        # Get entity information
+        entity_name = ai_data.get('entity_name', '')
+        
+        # Initialize proofreader
+        proofreader = ProofreadingAgent(language='english')
+        
+        proofreader_results = {}
+        
+        # Process each key
+        for key, result in agent1_results.items():
+            content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
+            
+            # Get table data for this key
+            sections_by_key = ai_data.get('sections_by_key', {})
+            tables_markdown = ""
+            if key in sections_by_key:
+                for section in sections_by_key[key]:
+                    if 'markdown' in section:
+                        tables_markdown += section['markdown'] + "\n\n"
+            
+            # Run proofreader
+            proofread_result = proofreader.proofread(content, key, tables_markdown, entity_name)
+            proofreader_results[key] = proofread_result
+        
+        return proofreader_results
+        
+    except Exception as e:
+        st.error(f"❌ Proofreader failed: {e}")
+        return {}
+
+
 def run_ai_processing(filtered_keys, ai_data, language='English'):
     """Run AI processing for content generation"""
     try:
@@ -416,11 +527,7 @@ def main():
             st.warning("⚠️ Please enter an entity name to start processing")
             st.stop()
 
-        # Show entity info
-        if entity_input:
-            words = entity_input.split()
-            display_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else entity_input
-            st.info(f"📋 Entity: {display_name}")
+        # Entity info removed to save space
 
         # Statement type selection
         st.markdown("---")
@@ -656,7 +763,7 @@ def main():
                 agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english')
                 
                 if agent1_results:
-                    # Store results
+                    # Store Agent 1 results
                     if 'ai_content_store' not in st.session_state:
                         st.session_state['ai_content_store'] = {}
                     
@@ -665,12 +772,29 @@ def main():
                             st.session_state['ai_content_store'][key] = {}
                         content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
                         st.session_state['ai_content_store'][key]['agent1_content'] = content
-                        st.session_state['ai_content_store'][key]['current_content'] = content
                         st.session_state['ai_content_store'][key]['agent1_timestamp'] = datetime.datetime.now().isoformat()
                     
                     st.session_state['agent_states']['agent1_results'] = agent1_results
                     st.session_state['agent_states']['agent1_completed'] = True
                     st.session_state['agent_states']['agent1_success'] = True
+                    
+                    # MVP: Run proofreader for English AI
+                    status_text.text("🔍 Running proofreader...")
+                    progress_bar.progress(60)
+                    
+                    proofreader_results = run_proofreader(agent1_results, temp_ai_data)
+                    
+                    if proofreader_results:
+                        # Store final proofread results
+                        for key, result in proofreader_results.items():
+                            content = result.get('corrected_content', result.get('content', str(result)))
+                            st.session_state['ai_content_store'][key]['current_content'] = content
+                            st.session_state['ai_content_store'][key]['proofreader_content'] = content
+                            st.session_state['ai_content_store'][key]['proofreader_timestamp'] = datetime.datetime.now().isoformat()
+                        
+                        st.session_state['agent_states']['agent2_results'] = proofreader_results
+                        st.session_state['agent_states']['agent2_completed'] = True
+                        st.session_state['agent_states']['agent2_success'] = True
                     
                     # Generate content files
                     status_text.text("📝 Generating content files...")
@@ -696,24 +820,27 @@ def main():
                 status_text.text("🤖 初始化中文AI处理...")
                 progress_bar.progress(10)
                 
-                # Generate English first, then translate
+                # MVP: Generate English first, then translate
                 status_text.text("📊 生成英文内容...")
                 progress_bar.progress(30)
                 agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english')
                 
-                # Simple translation (placeholder - you can enhance this)
+                if not agent1_results:
+                    raise Exception("English content generation failed")
+                
+                # Run proofreader on English content
+                status_text.text("🔍 校对英文内容...")
+                progress_bar.progress(50)
+                proofreader_results = run_proofreader(agent1_results, temp_ai_data)
+                
+                # Use proofreader results if available, otherwise use original
+                content_to_translate = proofreader_results if proofreader_results else agent1_results
+                
+                # Translate to Chinese using AI
                 status_text.text("🌐 翻译为中文...")
                 progress_bar.progress(70)
                 
-                translated_results = {}
-                for key, result in agent1_results.items():
-                    content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
-                    # Simple placeholder translation - replace with actual translation logic
-                    translated_results[key] = {
-                        'content': f"[中文翻译] {content}",
-                        'translated_content': f"[中文翻译] {content}",
-                        'is_chinese': True
-                    }
+                translated_results = run_chinese_translation(content_to_translate, temp_ai_data)
                 
                 # Store results
                 if 'ai_content_store' not in st.session_state:
@@ -778,21 +905,30 @@ def main():
                         # Show Agent 1 results (collapsible)
                         with st.expander("📝 AI: Generation (details)", expanded=key not in agent3_results_all):
                             agent1_results = agent_states.get('agent1_results', {}) or {}
-                            if key in agent1_results and agent1_results[key]:
+                            if key in agent1_results:
                                 content = agent1_results[key]
-                                content_str = content.get('content', str(content)) if isinstance(content, dict) else str(content)
+                                content_str = ""
                                 
-                                st.markdown("**Generated Content:**")
-                                st.markdown(content_str)
+                                if isinstance(content, dict):
+                                    content_str = content.get('content', str(content))
+                                else:
+                                    content_str = str(content) if content else ""
                                 
-                                # Metadata
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    st.metric("Characters", len(content_str))
-                                with col2:
-                                    st.metric("Words", len(content_str.split()))
-                                with col3:
-                                    st.metric("Status", "✅ Generated" if content else "❌ Failed")
+                                if content_str and content_str.strip():
+                                    st.markdown("**Generated Content:**")
+                                    st.markdown(content_str)
+                                    
+                                    # Metadata
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric("Characters", len(content_str))
+                                    with col2:
+                                        st.metric("Words", len(content_str.split()))
+                                    with col3:
+                                        st.metric("Status", "✅ Generated")
+                                else:
+                                    st.warning("Content generated but appears to be empty.")
+                                    st.json(content)  # Debug: show raw content
                             else:
                                 st.info("No AI results available. Run AI first.")
             else:

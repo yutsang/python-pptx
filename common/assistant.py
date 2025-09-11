@@ -1691,9 +1691,14 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
     financial_figures = find_financial_figures_with_context_check(input_file, get_tab_name(entity_name), None, convert_thousands=False, entity_keywords=entity_helpers)
     results = {}
     
-    # Enhanced tqdm progress bar with detailed information
-    pbar = tqdm(keys, desc="🤖 AI Processing", unit="key", total=len(keys),
-                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+    # Use Streamlit progress instead of tqdm for better UI integration
+    use_streamlit_progress = progress_callback is not None
+    if not use_streamlit_progress:
+        # Fallback to tqdm for console-only usage
+        pbar = tqdm(keys, desc="🤖 AI Processing", unit="key", total=len(keys),
+                    bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+    else:
+        pbar = None
 
     # Track start time for final summary
     start_time = time.time()
@@ -1712,8 +1717,9 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             openai_model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
 
         # Initial progress update with key info
-        progress_desc = f"🔄 {key} ({ai_model})"
-        pbar.set_description(progress_desc)
+        if not use_streamlit_progress:
+            progress_desc = f"🔄 {key} ({ai_model})"
+            pbar.set_description(progress_desc)
 
         # Enhanced Streamlit progress with detailed status
         if progress_callback:
@@ -1721,7 +1727,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             progress_callback((key_index + 1) / len(keys), detailed_message)
 
         # Update progress: Data loading phase
-        pbar.set_postfix_str("📊 Loading data...")
+        if not use_streamlit_progress:
+            pbar.set_postfix_str("📊 Loading data...")
         if progress_callback:
             progress_callback((key_index + 0.1) / len(keys), f"📊 Loading data for {key}...")
 
@@ -1740,7 +1747,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             data_source = "processed"
 
         # Update progress: Data processing phase
-        pbar.set_postfix_str(f"📈 Processing data ({data_source})...")
+        if not use_streamlit_progress:
+            pbar.set_postfix_str(f"📈 Processing data ({data_source})...")
         if progress_callback:
             progress_callback((key_index + 0.2) / len(keys), f"📈 Processing {key} data...")
 
@@ -1765,7 +1773,8 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             financial_figures[key] = adjusted_financial_figure
 
         # Update progress: AI processing phase
-        pbar.set_postfix_str(f"🤖 AI generating ({openai_model})...")
+        if not use_streamlit_progress:
+            pbar.set_postfix_str(f"🤖 AI generating ({openai_model})...")
         if progress_callback:
             progress_callback((key_index + 0.3) / len(keys), f"🤖 AI generating {key} content...")
         
@@ -1897,14 +1906,16 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             """
         
         # Update progress: AI request phase
-        pbar.set_postfix_str(f"📤 Sending to {openai_model}...")
+        if not use_streamlit_progress:
+            pbar.set_postfix_str(f"📤 Sending to {openai_model}...")
         if progress_callback:
             progress_callback((key_index + 0.7) / len(keys), f"📤 Sending {key} to {ai_model}...")
 
         response_txt = generate_response(user_query, system_prompt, oai_client, excel_tables, openai_model, entity_name, use_local_ai)
 
         # Update progress: Response processing phase
-        pbar.set_postfix_str("📥 Processing response...")
+        if not use_streamlit_progress:
+            pbar.set_postfix_str("📥 Processing response...")
         if progress_callback:
             progress_callback((key_index + 0.8) / len(keys), f"📥 Processing {key} response...")
 
@@ -1921,15 +1932,17 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         }
 
         # Update progress bar with completion info and response preview
-        completion_status = f"✅ {key}: {response_txt[:15]}..." if len(response_txt) > 15 else f"✅ {key}: {response_txt}"
-        pbar.set_postfix_str(completion_status)
+        if not use_streamlit_progress:
+            completion_status = f"✅ {key}: {response_txt[:15]}..." if len(response_txt) > 15 else f"✅ {key}: {response_txt}"
+            pbar.set_postfix_str(completion_status)
 
         # Enhanced Streamlit progress with completion details
         if progress_callback:
             completion_msg = f"✅ Completed {key} • Generated {len(response_txt)} chars"
             progress_callback((key_index + 1) / len(keys), completion_msg)
 
-    pbar.close()
+    if not use_streamlit_progress and pbar:
+        pbar.close()
 
     # Enhanced final progress update with summary
     total_keys = len(keys)
