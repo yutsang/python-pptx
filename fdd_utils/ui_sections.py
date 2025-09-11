@@ -8,22 +8,13 @@ def render_balance_sheet_sections(
     selected_entity: str,
     format_date_to_dd_mmm_yyyy,
 ):
-    """Render Balance Sheet sections UI using existing parsed/cleaned data.
-
-    Parameters
-    - sections_by_key: mapping key -> list of sections
-    - get_key_display_name: function to map key code to display
-    - selected_entity: entity string for context
-    - format_date_to_dd_mmm_yyyy: callable to format dates
-    """
+    """Render Balance Sheet sections UI using existing parsed/cleaned data."""
 
     st.markdown("#### View Table by Key")
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
     print(f"DEBUG UI: Processing {len(keys_with_data)} keys with data")
-    
-
     
     if not keys_with_data:
         st.warning("No data found for any financial keys.")
@@ -36,8 +27,6 @@ def render_balance_sheet_sections(
             if not sections:
                 st.info("No sections found for this key.")
                 continue
-
-
 
             # Debug information (only shown if needed)
             if 'parsed_data' in sections[0] and sections[0]['parsed_data']:
@@ -52,8 +41,6 @@ def render_balance_sheet_sections(
                 parsed_data = first_section['parsed_data']
                 metadata = parsed_data['metadata']
                 data_rows = parsed_data['data']
-                
-
 
                 # Metadata summary row
                 col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -91,7 +78,8 @@ def render_balance_sheet_sections(
                 with col6:
                     entity_mode = metadata.get('entity_mode', 'unknown')
                     entity_status = "✅" if first_section.get('entity_match', False) else "⚠️"
-                    st.markdown(f"**Entity:** {entity_status} ({entity_mode})")
+                    # Remove entity mode display as requested
+                    st.markdown(f"**Entity:** {entity_status}")
 
                 if data_rows:
                     structured_data = []
@@ -242,28 +230,20 @@ def render_combined_sections(
                 st.markdown("**📋 Raw Data:**")
                 st.json(first_section)
 
+
 def render_income_statement_sections(
     sections_by_key: dict,
     get_key_display_name,
     selected_entity: str,
     format_date_to_dd_mmm_yyyy,
 ):
-    """Render Income Statement sections UI using existing parsed/cleaned data.
-
-    Parameters
-    - sections_by_key: mapping key -> list of sections
-    - get_key_display_name: function to map key code to display
-    - selected_entity: entity string for context
-    - format_date_to_dd_mmm_yyyy: callable to format dates
-    """
+    """Render Income Statement sections UI using existing parsed/cleaned data."""
 
     st.markdown("#### View Income Statement by Key")
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
     print(f"DEBUG UI IS: Processing {len(keys_with_data)} income statement keys with data")
-    
-
     
     if not keys_with_data:
         st.warning("No income statement data found for any financial keys.")
@@ -290,8 +270,6 @@ def render_income_statement_sections(
                 parsed_data = first_section['parsed_data']
                 metadata = parsed_data['metadata']
                 data_rows = parsed_data['data']
-                
-
 
                 # Metadata summary row
                 col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -329,7 +307,8 @@ def render_income_statement_sections(
                 with col6:
                     entity_mode = metadata.get('entity_mode', 'unknown')
                     entity_status = "✅" if first_section.get('entity_match', False) else "⚠️"
-                    st.markdown(f"**Entity:** {entity_status} ({entity_mode})")
+                    # Remove entity mode display as requested
+                    st.markdown(f"**Entity:** {entity_status}")
 
                 if data_rows:
                     structured_data = []
@@ -410,5 +389,3 @@ def render_income_statement_sections(
             if 'parsed_data' in first_section:
                 with st.expander("🔍 Debug: Parsed Data Structure", expanded=False):
                     st.json(first_section['parsed_data'])
-
-

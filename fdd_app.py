@@ -1,4 +1,4 @@
-"""
+ """
 Clean, modular FDD Application
 Main application file - properly modularized and lightweight
 """
@@ -34,13 +34,13 @@ from fdd_utils.content_utils import (
     clean_content_quotes, get_content_from_json,
     generate_content_from_session_storage
 )
-from common.ui import configure_streamlit_page
-from common.ui_sections import (
+from fdd_utils.ui import configure_streamlit_page
+from fdd_utils.ui_sections import (
     render_balance_sheet_sections, render_income_statement_sections,
     render_combined_sections
 )
-from common.pptx_export import export_pptx, merge_presentations
-from common.assistant import (
+from fdd_utils.pptx_export import export_pptx, merge_presentations
+from fdd_utils.assistant import (
     process_keys, QualityAssuranceAgent, DataValidationAgent,
     PatternValidationAgent, find_financial_figures_with_context_check,
     get_financial_figure, ProofreadingAgent
@@ -173,11 +173,12 @@ def run_ai_processing(filtered_keys, ai_data, language='English'):
     try:
         # Create temporary file for processing
         temp_file_path = None
-        if 'uploaded_file_data' in st.session_state:
+        uploaded_file_data = st.session_state.get('uploaded_file_data')
+        if uploaded_file_data:
             unique_filename = f"databook_{uuid.uuid4().hex[:8]}.xlsx"
             temp_file_path = os.path.join(tempfile.gettempdir(), unique_filename)
             with open(temp_file_path, 'wb') as tmp_file:
-                tmp_file.write(st.session_state['uploaded_file_data'])
+                tmp_file.write(uploaded_file_data)
         elif os.path.exists('databook.xlsx'):
             temp_file_path = 'databook.xlsx'
         
@@ -207,12 +208,12 @@ def run_ai_processing(filtered_keys, ai_data, language='English'):
 
 def main():
     """Main application function"""
+    # Initialize session state FIRST - before any other operations
+    initialize_session_state()
+    
     # Configure Streamlit
     configure_streamlit_page()
     st.title("🏢 Real Estate DD Report Writer")
-    
-    # Initialize session state
-    initialize_session_state()
 
     # Navigation description
     if not st.session_state.get('processing_started', False):
@@ -247,26 +248,18 @@ def main():
         )
         
         # Clear session state when entity changes
-        if 'last_entity_input' in st.session_state:
-            if st.session_state['last_entity_input'] != entity_input:
-                if 'ai_data' in st.session_state:
-                    del st.session_state['ai_data']
-                if 'filtered_keys_for_ai' in st.session_state:
-                    del st.session_state['filtered_keys_for_ai']
-                if 'processing_started' in st.session_state:
-                    del st.session_state['processing_started']
+        if st.session_state.get('last_entity_input') != entity_input:
+            if 'ai_data' in st.session_state:
+                del st.session_state['ai_data']
+            if 'filtered_keys_for_ai' in st.session_state:
+                del st.session_state['filtered_keys_for_ai']
+            if 'processing_started' in st.session_state:
+                del st.session_state['processing_started']
         
         st.session_state['last_entity_input'] = entity_input
         
-        # Entity mode selection
-        st.markdown("---")
-        entity_mode = st.radio(
-            "Choose entity processing mode:",
-            ["Single Entity", "Multiple Entity"],
-            index=0,
-            help="Single Entity: Process one entity table | Multiple Entity: Detect and filter multiple entity tables"
-        )
-        entity_mode_internal = 'single' if entity_mode == "Single Entity" else 'multiple'
+        # Auto-detect entity mode (no manual selection needed)
+        entity_mode_internal = 'auto'  # Let the system auto-detect
         st.session_state['entity_mode'] = entity_mode_internal
 
         # Generate entity configuration
@@ -349,7 +342,7 @@ def main():
     # Main processing area
     if uploaded_file is not None:
         # Start processing button
-        if not st.session_state['processing_started']:
+        if not st.session_state.get('processing_started', False):
             st.markdown("### 🎯 Ready to Process")
             st.info("📋 Configuration loaded. Click 'Start Processing' to begin data analysis and AI processing.")
 
@@ -374,7 +367,7 @@ def main():
         
         # Process Excel data
         entity_changed = st.session_state.get('last_processed_entity') != selected_entity
-        needs_processing = 'ai_data' not in st.session_state or 'sections_by_key' not in st.session_state['ai_data'] or entity_changed
+        needs_processing = 'ai_data' not in st.session_state or 'sections_by_key' not in st.session_state.get('ai_data', {}) or entity_changed
 
         if needs_processing:
             with st.spinner("🔄 Processing Excel file..."):
@@ -412,7 +405,7 @@ def main():
                 st.session_state['ai_data']['entity_keywords'] = entity_keywords
                 st.session_state['last_processed_entity'] = selected_entity
         else:
-            sections_by_key = st.session_state['ai_data']['sections_by_key']
+            sections_by_key = st.session_state.get('ai_data', {}).get('sections_by_key', {})
 
         # Display financial statements
         if statement_type == "BS":

@@ -24,7 +24,7 @@ class EnhancedAgentMonitor:
         self.detailed_logs = []
         
         # Create enhanced logging directory
-        self.log_dir = Path("logging/enhanced")
+        self.log_dir = Path("fdd_utils/logs/enhanced")
         self.log_dir.mkdir(parents=True, exist_ok=True)
         
         # Performance log file
@@ -161,7 +161,7 @@ class AgentCommunicationLogger:
     """Log communication between agents and data flow"""
     
     def __init__(self):
-        self.log_dir = Path("logging/communication")
+        self.log_dir = Path("fdd_utils/logs/communication")
         self.log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.comm_log = self.log_dir / f"agent_communication_{timestamp}.jsonl"
