@@ -332,7 +332,7 @@ def run_ai_processing(filtered_keys, ai_data, language='English'):
             use_ai=True,
             processed_table_data=ai_data.get('sections_by_key', {}),
             use_local_ai=st.session_state.get('use_local_ai', False),
-            use_openai=st.session_state.get('use_openai', False)
+            use_openai=st.session_state.get('use_openai', False),
             language=language
         )
 
