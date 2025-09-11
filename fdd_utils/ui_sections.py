@@ -13,17 +13,8 @@ def render_balance_sheet_sections(
     st.markdown("#### View Table by Key")
     
     # High-level debug only
-    print(f"🔍 DEBUG UI: Received sections_by_key with {len(sections_by_key)} total keys")
-    print(f"🔍 DEBUG UI: sections_by_key keys: {list(sections_by_key.keys())}")
-    
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-    print(f"🔍 DEBUG UI: Processing {len(keys_with_data)} keys with data: {keys_with_data}")
-    
-    # Check what's in each key
-    for key, sections in sections_by_key.items():
-        print(f"🔍 DEBUG UI: Key '{key}' -> {len(sections) if sections else 0} sections, type: {type(sections)}")
-        if sections and len(sections) > 0:
-            print(f"🔍 DEBUG UI: First section type: {type(sections[0])}, keys: {list(sections[0].keys()) if isinstance(sections[0], dict) else 'Not a dict'}")
+    print(f"DEBUG UI: Processing {len(keys_with_data)} keys with data")
     
     if not keys_with_data:
         st.warning("No data found for any financial keys.")
@@ -93,18 +84,8 @@ def render_balance_sheet_sections(
                 if data_rows:
                     structured_data = []
                     for row in data_rows:
-                        # Handle different data structures safely
-                        try:
-                            if isinstance(row, dict):
-                                description = row.get('description') or row.get('Description') or row.get('desc') or row.get('item') or str(list(row.keys())[0] if row.keys() else 'Unknown')
-                                value = row.get('value') or row.get('Value') or row.get('amount') or str(list(row.values())[1] if len(row.values()) > 1 else list(row.values())[0] if row.values() else 'N/A')
-                            else:
-                                description = str(row)
-                                value = 'N/A'
-                        except Exception as e:
-                            print(f"❌ Error processing row: {e}, row: {row}")
-                            description = "Error"
-                            value = "N/A"
+                        description = row['description']
+                        value = row['value']
                         actual_value = value
                         # Convert datetime objects to strings to avoid Arrow serialization errors
                         if hasattr(actual_value, 'strftime'):  # datetime object
@@ -332,18 +313,8 @@ def render_income_statement_sections(
                 if data_rows:
                     structured_data = []
                     for row in data_rows:
-                        # Handle different data structures safely
-                        try:
-                            if isinstance(row, dict):
-                                description = row.get('description') or row.get('Description') or row.get('desc') or row.get('item') or str(list(row.keys())[0] if row.keys() else 'Unknown')
-                                value = row.get('value') or row.get('Value') or row.get('amount') or str(list(row.values())[1] if len(row.values()) > 1 else list(row.values())[0] if row.values() else 'N/A')
-                            else:
-                                description = str(row)
-                                value = 'N/A'
-                        except Exception as e:
-                            print(f"❌ Error processing row: {e}, row: {row}")
-                            description = "Error"
-                            value = "N/A"
+                        description = row['description']
+                        value = row['value']
                         actual_value = value
                         # Convert datetime objects to strings to avoid Arrow serialization errors
                         if hasattr(actual_value, 'strftime'):  # datetime object

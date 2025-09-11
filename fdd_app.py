@@ -20,7 +20,7 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 # Import all required modules
 from fdd_utils.mappings import KEY_TO_SECTION_MAPPING, KEY_TERMS_BY_KEY
 from fdd_utils.category_config import DISPLAY_NAME_MAPPING_DEFAULT, DISPLAY_NAME_MAPPING_NB_NJ
-from fdd_utils.simple_excel_processing import simple_process_excel
+from fdd_utils.excel_processing import get_worksheet_sections_by_keys
 from fdd_utils.data_utils import (
     get_tab_name, get_financial_keys, get_key_display_name,
     format_date_to_dd_mmm_yyyy, load_config_files
@@ -137,11 +137,14 @@ def process_excel_with_timeout(uploaded_file, mapping, selected_entity, entity_s
 
     def excel_worker():
         try:
-            result = simple_process_excel(
+            result = get_worksheet_sections_by_keys(
                 uploaded_file=uploaded_file,
                 tab_name_mapping=mapping,
                 entity_name=selected_entity,
-                entity_keywords=entity_keywords
+                entity_suffixes=entity_suffixes,
+                entity_keywords=entity_keywords,
+                entity_mode=entity_mode,
+                debug=True
             )
             result_container['result'] = result
         except Exception as e:
@@ -250,8 +253,8 @@ def main():
         
         st.session_state['last_entity_input'] = entity_input
         
-        # Auto-detect entity mode (default to multiple for better detection)
-        entity_mode_internal = 'multiple'  # Use multiple mode for better entity detection
+        # Auto-detect entity mode (no manual selection needed)
+        entity_mode_internal = 'auto'  # Let the system auto-detect
         st.session_state['entity_mode'] = entity_mode_internal
 
         # Generate entity configuration
@@ -388,13 +391,6 @@ def main():
                 processing_time = time.time() - start_time
                 print(f"✅ Excel processing completed in {processing_time:.2f}s")
                 print(f"📊 Found {len(sections_by_key)} financial keys with data")
-                
-                # Debug: Check what's actually in sections_by_key
-                print(f"🔍 DEBUG: sections_by_key keys: {list(sections_by_key.keys())}")
-                for key, sections in sections_by_key.items():
-                    print(f"🔍 DEBUG: Key '{key}' has {len(sections) if sections else 0} sections")
-                    if sections:
-                        print(f"🔍 DEBUG: First section keys: {list(sections[0].keys()) if sections[0] else 'Empty section'}")
 
                 # Store processed data
                 if 'ai_data' not in st.session_state:
