@@ -554,6 +554,11 @@ def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywor
     print(f"   📊 MANUAL MODE: {manual_mode}")
     print(f"   📄 DataFrame info: {len(df)} rows, {len(df.columns)} columns")
 
+    # Check if DataFrame is empty
+    if df.empty or len(df) == 0:
+        print(f"   ⚠️ DataFrame is empty, returning empty list")
+        return [], False
+
     # If manual mode is 'single', skip entity filtering and return original table as single-item list
     if manual_mode == 'single':
         print(f"   🎯 SINGLE ENTITY MODE: Using original table (no filtering applied)")
@@ -2204,7 +2209,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
             chinese_sheets = [s for s in xl.sheet_names if any('\u4e00' <= char <= '\u9fff' for char in s)]
             print(f"🇨🇳 Chinese sheet names found: {chinese_sheets}")
             
+            print(f"🔍 DEBUG: All sheet names in Excel file: {xl.sheet_names}")
+            print(f"🔍 DEBUG: reverse_mapping keys: {list(reverse_mapping.keys())}")
+            
             for sheet_name in xl.sheet_names:
+                print(f"🔍 DEBUG: Processing sheet: '{sheet_name}'")
                 # First try exact match
                 if sheet_name in reverse_mapping:
                     print(f"✅ Exact match found for sheet: {sheet_name}")
@@ -2259,6 +2268,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         # Add to reverse mapping for this session
                         reverse_mapping[sheet_name] = matched_key
                 df = xl.parse(sheet_name)
+                
+                # Check if the sheet is empty
+                if df.empty or len(df) == 0:
+                    print(f"   ⚠️ Sheet '{sheet_name}' is empty, skipping...")
+                    continue
 
                 # Use entity_keywords passed from main app, or generate fallback
                 if entity_keywords is None:
@@ -2291,6 +2305,12 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         print(f"   🎯 Processing entity '{entity_name}' section {section_idx+1}")
                         print(f"   📊 SECTION DATA DEBUG:")
                         print(f"      📋 DataFrame shape: {data_frame.shape}")
+                        
+                        # Check if DataFrame is empty before accessing iloc
+                        if data_frame.empty or len(data_frame) == 0:
+                            print(f"      ⚠️ DataFrame is empty, skipping section {section_idx+1}")
+                            continue
+                            
                         print(f"      📋 First row content: {data_frame.iloc[0].fillna('').astype(str).str.cat(sep=' ')}")
 
                         # Print FULL table content (not just first 3 rows)
