@@ -554,6 +554,11 @@ def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywor
     print(f"   📊 MANUAL MODE: {manual_mode}")
     print(f"   📄 DataFrame info: {len(df)} rows, {len(df.columns)} columns")
 
+    # Check if DataFrame is empty
+    if df.empty or len(df) == 0:
+        print(f"   ⚠️ DataFrame is empty, returning empty list")
+        return [], False
+
     # If manual mode is 'single', skip entity filtering and return original table as single-item list
     if manual_mode == 'single':
         print(f"   🎯 SINGLE ENTITY MODE: Using original table (no filtering applied)")
@@ -2117,6 +2122,76 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
         return ""
 
 
+def match_sheet_to_financial_key(sheet_name, financial_key, tab_name_mapping):
+    """
+    Improved matching function that handles both English and Chinese sheet names
+    """
+    if financial_key not in tab_name_mapping:
+        return False
+    
+    sheet_patterns = tab_name_mapping[financial_key]
+    for pattern in sheet_patterns:
+        pattern_lower = pattern.lower()
+        sheet_lower = sheet_name.lower()
+
+        # For Chinese text, use simple substring matching
+        # For English text, use word boundary matching
+        is_chinese_pattern = any('\u4e00' <= char <= '\u9fff' for char in pattern)
+        is_chinese_sheet = any('\u4e00' <= char <= '\u9fff' for char in sheet_name)
+        
+        if is_chinese_pattern or is_chinese_sheet:
+            # Chinese matching: simple substring match
+            if (pattern_lower == sheet_lower or
+                pattern_lower in sheet_lower or
+                sheet_lower in pattern_lower):
+                print(f"   ✅ Chinese match: '{sheet_name}' matches pattern '{pattern}' for key '{financial_key}'")
+                return True
+        else:
+            # English matching: word boundary matching to avoid conflicts
+            if (pattern_lower == sheet_lower or
+                pattern_lower in sheet_lower.split() or
+                sheet_lower.startswith(pattern_lower + ' ') or
+                sheet_lower.endswith(' ' + pattern_lower) or
+                ' ' + pattern_lower + ' ' in ' ' + sheet_lower + ' '):
+                print(f"   ✅ English match: '{sheet_name}' matches pattern '{pattern}' for key '{financial_key}'")
+                return True
+    
+    return False
+
+
+def extract_financial_keys_from_content(df, tab_name_mapping):
+    """Extract financial keys by looking at the actual content of the DataFrame."""
+    found_keys = []
+    
+    if df.empty or len(df) == 0:
+        return found_keys
+    
+    # Convert all data to string for searching
+    all_text = ""
+    try:
+        for row_idx in range(min(20, len(df))):  # Check first 20 rows
+            for col_idx in range(len(df.columns)):
+                try:
+                    cell_value = str(df.iloc[row_idx, col_idx])
+                    if cell_value and cell_value != 'nan':
+                        all_text += cell_value.lower() + " "
+                except:
+                    continue
+    except:
+        return found_keys
+    
+    # Look for financial terms in the content
+    for financial_key, patterns in tab_name_mapping.items():
+        for pattern in patterns:
+            if pattern.lower() in all_text:
+                if financial_key not in found_keys:
+                    found_keys.append(financial_key)
+                    print(f"   🔍 Found '{pattern}' -> key '{financial_key}'")
+                break
+    
+    return found_keys
+
+
 def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, entity_keywords=None, entity_mode='multiple', debug=False):
     print(f"🔧 get_worksheet_sections_by_keys called with:")
     print(f"   📋 entity_mode: {entity_mode}")
@@ -2154,11 +2229,65 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
         # Process sheets within context manager
         with pd.ExcelFile(excel_source) as xl:
+            print(f"📋 Excel sheet names found: {xl.sheet_names}")
+            print(f"🔍 Reverse mapping keys: {list(reverse_mapping.keys())[:10]}...")  # Show first 10
+            
+            # Debug: Show which Chinese patterns we have in mapping
+            chinese_patterns = {}
+            for key, patterns in tab_name_mapping.items():
+                chinese_patterns[key] = [p for p in patterns if any('\u4e00' <= char <= '\u9fff' for char in p)]
+            print(f"🇨🇳 Chinese patterns available: {chinese_patterns}")
+            
+            # Debug: Check which sheets contain Chinese characters
+            chinese_sheets = [s for s in xl.sheet_names if any('\u4e00' <= char <= '\u9fff' for char in s)]
+            print(f"🇨🇳 Chinese sheet names found: {chinese_sheets}")
+            
+            print(f"🔍 DEBUG: All sheet names in Excel file: {xl.sheet_names}")
+            
+            # NEW APPROACH: Process ALL sheets and look for financial data structure
+            # Skip obvious non-financial sheets
+            skip_sheets = ['Cover', 'Overview', 'Summary', 'Snapshot', 'Choice', 'Check', 'Violations', 'NAVI']
+            
             for sheet_name in xl.sheet_names:
-                # Skip sheets not in mapping to avoid using undefined df
-                if sheet_name not in reverse_mapping:
+                print(f"🔍 DEBUG: Processing sheet: '{sheet_name}'")
+                
+                # Skip obvious non-financial sheets
+                if any(skip_word.lower() in sheet_name.lower() for skip_word in skip_sheets):
+                    print(f"⏭️ Skipping non-financial sheet: {sheet_name}")
+                    continue
+                
+                # Skip sheets that are clearly entity history or engineering records
+                if any(term in sheet_name for term in ['历史沿革', '工程台账', '关联方', 'Rent roll', 'Property']):
+                    print(f"⏭️ Skipping entity/property sheet: {sheet_name}")
                     continue
                 df = xl.parse(sheet_name)
+                
+                # Check if the sheet is empty
+                if df.empty or len(df) == 0:
+                    print(f"   ⚠️ Sheet '{sheet_name}' is empty, skipping...")
+                    continue
+
+                # Check if this sheet contains financial data by looking for "Indicative adjusted" or Chinese equivalents
+                has_financial_data = False
+                for row_idx in range(min(10, len(df))):
+                    for col_idx in range(min(10, len(df.columns))):
+                        try:
+                            cell_value = str(df.iloc[row_idx, col_idx]).lower()
+                            if ('indicative adjusted' in cell_value or 
+                                '示意性调整' in cell_value or 
+                                '示意性調整' in cell_value or
+                                'adjusted' in cell_value):
+                                has_financial_data = True
+                                print(f"   ✅ Found financial data indicator in sheet '{sheet_name}' at row {row_idx}, col {col_idx}")
+                                break
+                        except:
+                            continue
+                    if has_financial_data:
+                        break
+                
+                if not has_financial_data:
+                    print(f"   ⏭️ No financial data indicators found in sheet '{sheet_name}', skipping...")
+                    continue
 
                 # Use entity_keywords passed from main app, or generate fallback
                 if entity_keywords is None:
@@ -2191,6 +2320,12 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         print(f"   🎯 Processing entity '{entity_name}' section {section_idx+1}")
                         print(f"   📊 SECTION DATA DEBUG:")
                         print(f"      📋 DataFrame shape: {data_frame.shape}")
+                        
+                        # Check if DataFrame is empty before accessing iloc
+                        if data_frame.empty or len(data_frame) == 0:
+                            print(f"      ⚠️ DataFrame is empty, skipping section {section_idx+1}")
+                            continue
+                            
                         print(f"      📋 First row content: {data_frame.iloc[0].fillna('').astype(str).str.cat(sep=' ')}")
 
                         # Print FULL table content (not just first 3 rows)
@@ -2300,40 +2435,24 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             print(f"   🔍 Entity found in content: entity_found={entity_found}")
                             print(f"   🔍 Entity keywords: {entity_keywords}")
                         else:
-                            # No entity found - be more strict about entity matching
-                            print(f"   ❌ STRICT MODE: No entity keywords found in section")
-                            print(f"   🔍 Looking for: {entity_keywords}")
-                            print(f"   🔍 In content: {section_text[:200]}...")
-                            
-                            # Check if this section contains OTHER entities that we should skip
-                            other_entities = ['ningbo wanchen', 'haining wanpu', 'nanjing jingya']
-                            found_other_entity = None
-                            for other_entity in other_entities:
-                                if other_entity in section_text and other_entity not in [kw.lower() for kw in entity_keywords]:
-                                    found_other_entity = other_entity
-                                    break
-                            
-                            if found_other_entity:
-                                print(f"   ❌ SKIPPING: Section contains different entity '{found_other_entity}'")
-                                entity_found = False
-                                actual_entity_found = None
-                            else:
-                                # Only assume it's the correct entity if no other entities are found
-                                if len(section_text.strip()) > 50:  # Has substantial content
-                                    has_numbers = any(char.isdigit() for char in section_text)
-                                    has_chinese = any('\u4e00' <= char <= '\u9fff' for char in section_text)
+                            # No entity found - use intelligent detection
+                            if len(section_text.strip()) > 50:  # Has substantial content
+                                # Check if this looks like a financial table (has numbers and/or Chinese characters)
+                                has_numbers = any(char.isdigit() for char in section_text)
+                                has_chinese = any('\u4e00' <= char <= '\u9fff' for char in section_text)
 
-                                    if has_numbers or has_chinese:
-                                        print(f"   ⚠️ CAUTIOUS ASSUMPTION: Financial content found, no conflicting entities")
-                                        entity_found = True
-                                        actual_entity_found = entity_name
-                                        print(f"   🔍 Content has numbers: {has_numbers}, Chinese: {has_chinese}")
-                                    else:
-                                        print(f"   ❌ No entity found and content doesn't appear to be financial data")
-                                        entity_found = False
+                                if has_numbers or has_chinese:
+                                    # Likely valid financial content - assume correct entity
+                                    entity_found = True
+                                    actual_entity_found = entity_name
+                                    print(f"   🔍 No entity found but valid financial content detected - assuming correct entity for {best_key}")
+                                    print(f"   🔍 Content has numbers: {has_numbers}, Chinese: {has_chinese}")
                                 else:
-                                    print(f"   ❌ No entity found in minimal content")
-                                    entity_found = False
+                                    print(f"   🔍 No entity found and content doesn't appear to be financial data")
+                                    print(f"   🔍 Entity keywords: {entity_keywords}")
+                                    print(f"   🔍 Section text sample: {section_text[:200]}...")
+                            else:
+                                print(f"   🔍 No entity found in minimal content")
                                 print(f"   🔍 Entity keywords: {entity_keywords}")
                                 print(f"   🔍 Section text sample: {section_text[:200]}...")
 
@@ -2460,14 +2579,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
                             section_data = {
                                 'sheet': sheet_name,
-                                'sheet_name': sheet_name,  # Add sheet_name for compatibility
-                                'entity_name': actual_entity_found or entity_name,  # Use detected entity or fallback to selected entity
                                 'data': display_data,  # Use filtered data if available
                                 'parsed_data': parsed_table,
                                 'markdown': create_improved_table_markdown(parsed_table),
                                 'entity_match': True,
-                                'is_selected_entity': is_selected_entity,
-                                'detected_entity': actual_entity_found  # Store the detected entity separately
+                                'is_selected_entity': is_selected_entity
                             }
                             
                             # Only add this section if it's the correct sheet for this key AND matches the selected entity
@@ -2499,8 +2615,6 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                             
                             sections_by_key[best_key].append({
                                 'sheet': sheet_name,
-                                'sheet_name': sheet_name,  # Add sheet_name for compatibility
-                                'entity_name': entity_name,  # Fallback case - use selected entity name
                                 'data': data_frame,
                                 'markdown': markdown_content,
                                 'entity_match': True,
@@ -2621,40 +2735,26 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                 print(f"   🔍 Entity found in content: entity_found={entity_found}")
                                 print(f"   🔍 Entity keywords: {entity_keywords}")
                             else:
-                                # No entity found - be more strict about entity matching
-                                print(f"   ❌ STRICT MODE: No entity keywords found in section")
-                                print(f"   🔍 Looking for: {entity_keywords}")
-                                print(f"   🔍 In content: {section_text[:200]}...")
-                                
-                                # Check if this section contains OTHER entities that we should skip
-                                other_entities = ['ningbo wanchen', 'haining wanpu', 'nanjing jingya']
-                                found_other_entity = None
-                                for other_entity in other_entities:
-                                    if other_entity in section_text and other_entity not in [kw.lower() for kw in entity_keywords]:
-                                        found_other_entity = other_entity
-                                        break
-                                
-                                if found_other_entity:
-                                    print(f"   ❌ SKIPPING: Section contains different entity '{found_other_entity}'")
-                                    entity_found = False
-                                    actual_entity_found = None
-                                else:
-                                    # Only assume it's the correct entity if no other entities are found
-                                    if len(section_text.strip()) > 50:  # Has substantial content
-                                        has_numbers = any(char.isdigit() for char in section_text)
-                                        has_chinese = any('\u4e00' <= char <= '\u9fff' for char in section_text)
+                                # No entity found - use intelligent detection
+                                if len(section_text.strip()) > 50:  # Has substantial content
+                                    # Check if this looks like a financial table (has numbers and/or Chinese characters)
+                                    has_numbers = any(char.isdigit() for char in section_text)
+                                    has_chinese = any('\u4e00' <= char <= '\u9fff' for char in section_text)
 
-                                        if has_numbers or has_chinese:
-                                            print(f"   ⚠️ CAUTIOUS ASSUMPTION: Financial content found, no conflicting entities")
-                                            entity_found = True
-                                            actual_entity_found = entity_name
-                                            print(f"   🔍 Content has numbers: {has_numbers}, Chinese: {has_chinese}")
-                                        else:
-                                            print(f"   ❌ No entity found and content doesn't appear to be financial data")
-                                            entity_found = False
+                                    if has_numbers or has_chinese:
+                                        # Likely valid financial content - assume correct entity
+                                        entity_found = True
+                                        actual_entity_found = entity_name
+                                        print(f"   🔍 No entity found but valid financial content detected - assuming correct entity for {best_key}")
+                                        print(f"   🔍 Content has numbers: {has_numbers}, Chinese: {has_chinese}")
                                     else:
-                                        print(f"   ❌ No entity found in minimal content")
-                                        entity_found = False
+                                        print(f"   🔍 No entity found and content doesn't appear to be financial data")
+                                        print(f"   🔍 Entity keywords: {entity_keywords}")
+                                        print(f"   🔍 Section text sample: {section_text[:200]}...")
+                                else:
+                                    print(f"   🔍 No entity found in minimal content")
+                                    print(f"   🔍 Entity keywords: {entity_keywords}")
+                                    print(f"   🔍 Section text sample: {section_text[:200]}...")
 
                             # Only process if entity is found in this section
                             if entity_found:
@@ -2748,14 +2848,11 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
                                     section_data = {
                                         'sheet': sheet_name,
-                                        'sheet_name': sheet_name,  # Add sheet_name for compatibility
-                                        'entity_name': actual_entity_found or entity_name,  # Use detected entity or fallback to selected entity
                                         'data': display_data,
                                         'parsed_data': parsed_table,
                                         'markdown': create_improved_table_markdown(parsed_table),
                                         'entity_match': True,
-                                        'is_selected_entity': is_selected_entity,
-                                        'detected_entity': actual_entity_found  # Store the detected entity separately
+                                        'is_selected_entity': is_selected_entity
                                     }
 
                                     # Only add this section if it's the correct sheet for this key AND matches the selected entity
@@ -2786,8 +2883,6 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
                                     sections_by_key[best_key].append({
                                         'sheet': sheet_name,
-                                        'sheet_name': sheet_name,  # Add sheet_name for compatibility
-                                        'entity_name': entity_name,  # Fallback case - use selected entity name
                                         'data': data_frame,
                                         'markdown': markdown_content,
                                         'entity_match': True,
