@@ -40,6 +40,7 @@ from common.ui_sections import (
     render_combined_sections
 )
 from common.pptx_export import export_pptx, merge_presentations
+
 from common.assistant import (
     process_keys, QualityAssuranceAgent, DataValidationAgent,
     PatternValidationAgent, find_financial_figures_with_context_check,
@@ -265,6 +266,53 @@ def generate_entity_keywords(entity_input):
     return entity_keywords, entity_input, entity_suffixes
 
 
+def detect_language_from_data(sections_by_key):
+    """Auto-detect language from 'Indicative adjusted' vs '示意性调整后' columns"""
+    chinese_indicators = ['示意性调整后', '示意性調整後']
+    english_indicators = ['indicative adjusted']
+    
+    chinese_count = 0
+    english_count = 0
+    
+    for key, sections in sections_by_key.items():
+        if not sections:
+            continue
+            
+        for section in sections:
+            if 'parsed_data' in section and section['parsed_data']:
+                metadata = section['parsed_data'].get('metadata', {})
+                table_name = metadata.get('table_name', '')
+                
+                # Check table name for language indicators
+                table_lower = table_name.lower()
+                if any(indicator in table_lower for indicator in english_indicators):
+                    english_count += 1
+                elif any(indicator in table_name for indicator in chinese_indicators):
+                    chinese_count += 1
+                
+                # Also check data content for language indicators
+                data_rows = section['parsed_data'].get('data', [])
+                for row in data_rows[:5]:  # Check first 5 rows
+                    if isinstance(row, list):
+                        for cell in row:
+                            if isinstance(cell, str):
+                                cell_lower = cell.lower()
+                                if any(indicator in cell_lower for indicator in english_indicators):
+                                    english_count += 1
+                                elif any(indicator in cell for indicator in chinese_indicators):
+                                    chinese_count += 1
+    
+    # Determine language based on counts
+    if chinese_count > english_count:
+        detected_language = 'chinese'
+        print(f"🌏 LANGUAGE DETECTED: Chinese (indicators found: {chinese_count} Chinese, {english_count} English)")
+    else:
+        detected_language = 'english'
+        print(f"🌏 LANGUAGE DETECTED: English (indicators found: {english_count} English, {chinese_count} Chinese)")
+    
+    return detected_language
+
+
 def process_excel_with_timeout(uploaded_file, mapping, selected_entity, entity_suffixes, entity_keywords, entity_mode, timeout=30):
     """Process Excel file with timeout protection"""
     result_container = {}
@@ -344,6 +392,229 @@ def run_ai_processing(filtered_keys, ai_data, language='english', progress_callb
         return {}
 
 
+def run_simple_chinese_translation(english_results, ai_data, progress_callback=None):
+    """Simple Chinese translation function that fixes the translator issues"""
+    try:
+        from common.assistant import initialize_ai_services, generate_response, get_chat_model, load_config
+        
+        # Load AI configuration
+        config = load_config('fdd_utils/config.json')
+        oai_client, _ = initialize_ai_services(config, 
+                                             use_local=st.session_state.get('use_local_ai', False),
+                                             use_openai=st.session_state.get('use_openai', False))
+        
+        model_name = get_chat_model(config)
+        entity_name = ai_data.get('entity_name', '')
+        
+        # Chinese translation prompt
+        system_prompt = """您是中国财务报告翻译专家。您的任务是将英文财务分析内容完整翻译成简体中文。
+
+重要要求：
+1. 必须将所有英文内容翻译成简体中文
+2. 保留所有数字、百分比、货币符号和技术术语（如VAT、CIT、WHT、Surtax、IPO）不变
+3. 保持专业的财务报告语气和格式结构
+4. 确保最终输出100%是中文内容，除了上述保留的数字和技术术语
+5. 不要添加任何解释或额外文本
+6. 翻译必须准确、专业，适合中国财务报告使用
+7. 禁止在翻译结果中保留任何英文句子或短语
+8. 直接返回翻译后的完整中文内容"""
+        
+        translated_results = {}
+        
+        for key, result in english_results.items():
+            if progress_callback:
+                progress_callback(0.1, f"Translating {key}")
+            
+            content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
+            
+            if content:
+                user_prompt = f"""请将以下英文财务分析内容翻译成简体中文：
+
+{content}
+
+请提供准确的中文翻译，保持专业财务报告的语气和格式。"""
+                
+                try:
+                    translated_content = generate_response(
+                        user_query=user_prompt,
+                        system_prompt=system_prompt,
+                        oai_client=oai_client,
+                        context_content="",
+                        openai_chat_model=model_name,
+                        entity_name=entity_name,
+                        use_local_ai=st.session_state.get('use_local_ai', False)
+                    )
+                    
+                    translated_results[key] = {
+                        'content': translated_content,
+                        'translated_content': translated_content,
+                        'is_chinese': True,
+                        'original_english': content
+                    }
+                    
+                except Exception as e:
+                    print(f"Translation error for {key}: {e}")
+                    # Fallback: return original content with error note
+                    translated_results[key] = {
+                        'content': f"[翻译失败] {content}",
+                        'translated_content': f"[翻译失败] {content}",
+                        'is_chinese': False,
+                        'original_english': content,
+                        'error': str(e)
+                    }
+            else:
+                translated_results[key] = {
+                    'content': '',
+                    'translated_content': '',
+                    'is_chinese': True,
+                    'original_english': ''
+                }
+        
+        return translated_results
+        
+    except Exception as e:
+        st.error(f"❌ Chinese translation failed: {e}")
+        return {}
+
+
+def run_simple_proofreader(english_results, ai_data, progress_callback=None):
+    """Enhanced proofreader function that provides detailed feedback"""
+    try:
+        from common.assistant import ProofreadingAgent, load_config
+        
+        # Load AI configuration
+        config = load_config('fdd_utils/config.json')
+        entity_name = ai_data.get('entity_name', '')
+        
+        # Create proofreader agent
+        proofreader = ProofreadingAgent(
+            use_local_ai=st.session_state.get('use_local_ai', False),
+            use_openai=st.session_state.get('use_openai', False),
+            language='English'
+        )
+        
+        proofread_results = {}
+        
+        for key, result in english_results.items():
+            if progress_callback:
+                progress_callback(0.1, f"Proofreading {key}")
+            
+            content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
+            
+            if content:
+                try:
+                    # Get tables markdown for context
+                    tables_markdown = ""
+                    if 'sections_by_key' in ai_data and key in ai_data['sections_by_key']:
+                        tables_data = ai_data['sections_by_key'][key]
+                        # Ensure tables_markdown is a string, not a list
+                        if isinstance(tables_data, list):
+                            tables_markdown = "\n".join(str(item) for item in tables_data)
+                        else:
+                            tables_markdown = str(tables_data)
+                    
+                    # Use the full proofreader implementation
+                    proofread_result = proofreader.proofread(
+                        content=content,
+                        key=key,
+                        tables_markdown=tables_markdown,
+                        entity=entity_name
+                    )
+                    
+                    
+                    # Ensure issues is always a list - with robust handling
+                    issues = proofread_result.get('issues', [])
+                    if not isinstance(issues, list):
+                        print(f"⚠️ WARNING: Issues field is not a list in proofread result, converting from {type(issues)}")
+                        if isinstance(issues, str):
+                            # If it's a string, try to split it if it looks like multiple issues
+                            issues_str = issues.strip()
+                            if ',' in issues_str or '\n' in issues_str:
+                                # Try to split by comma or newline
+                                issues = [issue.strip() for issue in issues_str.replace('\n', ',').split(',') if issue.strip()]
+                            else:
+                                issues = [issues_str] if issues_str else []
+                        elif isinstance(issues, (int, float)):
+                            # If it's a number, convert to string first
+                            issues = [str(issues)]
+                        else:
+                            # For any other type, try to convert to string and wrap in list
+                            try:
+                                issues = [str(issues)] if issues else []
+                            except:
+                                issues = []
+                    
+                    # Ensure all list fields are properly handled
+                    def ensure_list_field(field_value, field_name):
+                        if not isinstance(field_value, list):
+                            print(f"⚠️ WARNING: {field_name} field is not a list, converting from {type(field_value)}")
+                            if isinstance(field_value, str):
+                                field_value_str = field_value.strip()
+                                if ',' in field_value_str or '\n' in field_value_str:
+                                    field_value = [item.strip() for item in field_value_str.replace('\n', ',').split(',') if item.strip()]
+                                else:
+                                    field_value = [field_value_str] if field_value_str else []
+                            elif isinstance(field_value, (int, float)):
+                                field_value = [str(field_value)]
+                            else:
+                                try:
+                                    field_value = [str(field_value)] if field_value else []
+                                except:
+                                    field_value = []
+                        return field_value
+                    
+                    figure_checks = ensure_list_field(proofread_result.get('figure_checks', []), 'figure_checks')
+                    entity_checks = ensure_list_field(proofread_result.get('entity_checks', []), 'entity_checks')
+                    grammar_notes = ensure_list_field(proofread_result.get('grammar_notes', []), 'grammar_notes')
+                    
+                    proofread_results[key] = {
+                        'content': proofread_result.get('corrected_content', content),
+                        'original_content': content,
+                        'is_compliant': proofread_result.get('is_compliant', True),
+                        'issues': issues,
+                        'figure_checks': figure_checks,
+                        'entity_checks': entity_checks,
+                        'grammar_notes': grammar_notes,
+                        'pattern_used': proofread_result.get('pattern_used', ''),
+                        'translation_runs': proofread_result.get('translation_runs', 0)
+                    }
+                    
+                except Exception as e:
+                    print(f"Proofreading error for {key}: {e}")
+                    # Fallback: return original content
+                    proofread_results[key] = {
+                        'content': content,
+                        'original_content': content,
+                        'error': str(e),
+                        'is_compliant': False,
+                        'issues': [f"Proofreading failed: {str(e)}"],
+                        'figure_checks': [],
+                        'entity_checks': [],
+                        'grammar_notes': [],
+                        'pattern_used': '',
+                        'translation_runs': 0
+                    }
+            else:
+                proofread_results[key] = {
+                    'content': '',
+                    'original_content': '',
+                    'is_compliant': True,
+                    'issues': [],
+                    'figure_checks': [],
+                    'entity_checks': [],
+                    'grammar_notes': [],
+                    'pattern_used': '',
+                    'translation_runs': 0
+                }
+        
+        return proofread_results
+        
+    except Exception as e:
+        st.error(f"❌ Proofreading failed: {e}")
+        return english_results  # Return original results if proofreading fails
+
+
+
 def main():
     """Main application function"""
     # Configure Streamlit
@@ -376,6 +647,9 @@ def main():
                 st.error("❌ Default file not found: databook.xlsx")
                 st.info("Please upload an Excel file to get started.")
                 st.stop()
+        
+        # Store uploaded file in session state
+        st.session_state['uploaded_file'] = uploaded_file
 
         # Entity input
         entity_input = st.text_input(
@@ -410,13 +684,7 @@ def main():
         st.session_state['entity_mode'] = entity_mode_internal
 
         # Show entity info
-        if entity_input:
-            words = entity_input.split()
-            display_name = ' '.join(words[:2]) if len(words) >= 2 else words[0] if words else entity_input
-            st.info(f"📋 Entity: {display_name}")
-
         # Statement type selection
-        st.markdown("---")
         statement_type_display = st.radio(
             "Financial Statement Type",
             ["Balance Sheet", "Income Statement", "All"],
@@ -430,8 +698,67 @@ def main():
         }
         statement_type = statement_type_mapping[statement_type_display]
         
-        # Store uploaded file
-        st.session_state['uploaded_file'] = uploaded_file
+        # Financial Data Selection (moved here from PowerPoint section)
+        st.markdown("**Financial Data Source:**")
+        
+        # Get available Excel sheets for selection
+        uploaded_file = st.session_state.get('uploaded_file')
+        
+        if uploaded_file:
+            try:
+                import pandas as pd
+                if hasattr(uploaded_file, 'file_path'):
+                    file_path = uploaded_file.file_path
+                else:
+                    # For uploaded files, we need to save them temporarily
+                    import tempfile
+                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+                    temp_file.write(uploaded_file.getvalue())
+                    temp_file.close()
+                    file_path = temp_file.name
+                
+                # Read Excel file to get sheet names
+                excel_file = pd.ExcelFile(file_path)
+                available_sheets = excel_file.sheet_names
+            except Exception as e:
+                print(f"Error reading Excel sheets: {e}")
+                available_sheets = ["BS", "IS", "BSHN", "Cash", "AR", "AP"]
+        else:
+            # Default sheets if no file uploaded
+            available_sheets = ["BS", "IS", "BSHN", "Cash", "AR", "AP"]
+        
+        # Show dropdown(s) based on statement type selection
+        if statement_type == "BS":
+            financial_statement_tab = st.selectbox(
+                "Select Excel tab for Balance Sheet data:",
+                options=available_sheets,
+                index=0 if available_sheets else 0,
+                help="Choose which Excel sheet contains the Balance Sheet data"
+            )
+        elif statement_type == "IS":
+            financial_statement_tab = st.selectbox(
+                "Select Excel tab for Income Statement data:",
+                options=available_sheets,
+                index=0 if available_sheets else 0,
+                help="Choose which Excel sheet contains the Income Statement data"
+            )
+        else:  # statement_type == "ALL"
+            col1, col2 = st.columns(2)
+            with col1:
+                bs_financial_tab = st.selectbox(
+                    "Balance Sheet data tab:",
+                    options=available_sheets,
+                    index=0 if available_sheets else 0,
+                    help="Choose Excel sheet for Balance Sheet data"
+                )
+            with col2:
+                is_financial_tab = st.selectbox(
+                    "Income Statement data tab:",
+                    options=available_sheets,
+                    index=0 if available_sheets else 0,
+                    help="Choose Excel sheet for Income Statement data"
+                )
+            financial_statement_tab = bs_financial_tab  # Use BS tab as primary for BSHN
             
         # AI Provider Selection - Load from config
         config, _, _, _ = load_config_files()
@@ -446,27 +773,19 @@ def main():
             
         # Show API configuration status
         if config:
+            # AI provider configuration status (simplified)
             if mode_display == "Open AI":
                 if config.get('OPENAI_API_KEY') and config.get('OPENAI_API_BASE'):
-                    st.success("✅ OpenAI configured")
                     model = config.get('OPENAI_CHAT_MODEL', 'Not configured')
                     st.info(f"🤖 Model: {model}")
-                else:
-                    st.warning("⚠️ OpenAI not configured")
             elif mode_display == "DeepSeek":
                 if config.get('DEEPSEEK_API_KEY') and config.get('DEEPSEEK_API_BASE'):
-                    st.success("✅ DeepSeek configured")
                     model = config.get('DEEPSEEK_CHAT_MODEL', 'Not configured')
                     st.info(f"🤖 Model: {model}")
-                else:
-                    st.warning("⚠️ DeepSeek not configured")
             elif mode_display == "Local AI":
                 if config.get('LOCAL_AI_API_BASE') and config.get('LOCAL_AI_ENABLED'):
-                    st.success("✅ Local AI configured")
                     model = config.get('LOCAL_AI_CHAT_MODEL', 'Not configured')
                     st.info(f"🏠 Model: {model}")
-                else:
-                    st.warning("⚠️ Local AI not configured")
 
         # Store mode configuration
         st.session_state['selected_mode'] = f"AI Mode - {mode_display}"
@@ -546,12 +865,16 @@ def main():
                             sheet_name = section.get('sheet_name', 'NO_SHEET')
                             print(f"🔍 DEBUG MAIN: Section {i}: entity='{entity_name}', detected='{detected_entity}', sheet='{sheet_name}'")
 
+                # Auto-detect language from data
+                detected_language = detect_language_from_data(sections_by_key)
+
                 # Store processed data
                 if 'ai_data' not in st.session_state:
                     st.session_state['ai_data'] = {}
                 st.session_state['ai_data']['sections_by_key'] = sections_by_key
                 st.session_state['ai_data']['entity_name'] = selected_entity
                 st.session_state['ai_data']['entity_keywords'] = entity_keywords
+                st.session_state['ai_data']['detected_language'] = detected_language
                 st.session_state['last_processed_entity'] = selected_entity
         else:
             sections_by_key = st.session_state.get('ai_data', {}).get('sections_by_key', {})
@@ -561,24 +884,21 @@ def main():
         print(f"🔍 DEBUG UI CALL: sections_by_key has {len(sections_by_key)} keys: {list(sections_by_key.keys())}")
         
         if statement_type == "BS":
-            st.markdown("### Balance Sheet")
             render_balance_sheet_sections(
                 sections_by_key, get_key_display_name, selected_entity, format_date_to_dd_mmm_yyyy
             )
         elif statement_type == "IS":
-            st.markdown("### Income Statement")
             render_income_statement_sections(
                 sections_by_key, get_key_display_name, selected_entity, format_date_to_dd_mmm_yyyy
             )
         elif statement_type == "ALL":
-            st.markdown("### Combined Financial Statements")
             render_combined_sections(
                 sections_by_key, get_key_display_name, selected_entity, format_date_to_dd_mmm_yyyy
             )
 
         # AI Processing Section
         st.markdown("---")
-        st.markdown("## 🤖 AI Processing & Results")
+        st.markdown("## 🤖 AI Report Generation")
         
         # Prepare AI data
         keys_with_data = [key for key, sections in sections_by_key.items() if sections]
@@ -615,128 +935,397 @@ def main():
         }
         st.session_state['ai_data'] = temp_ai_data
 
-        # AI Processing Buttons
-        st.markdown("### 🤖 AI Report Generation")
-        col_eng, col_chi = st.columns(2)
-
-        with col_eng:
-            run_eng_clicked = st.button(
-                "🇺🇸 Generate English Report",
+        # Get detected language
+        detected_language = st.session_state.get('ai_data', {}).get('detected_language', 'english')
+        language_display = "🇨🇳 Chinese" if detected_language == 'chinese' else "🇺🇸 English"
+        
+        # BSHN Sheet Options (default enabled)
+        include_bshn = True  # Always include BSHN sheet by default
+        
+        # Simplified AI Processing Buttons
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            generate_report_clicked = st.button(
+                f"🚀 Generate & Download Report ({language_display})",
                 type="primary",
                 use_container_width=True,
-                key="btn_ai_eng",
-                help="Generate AI report in English"
+                key="btn_generate_report",
+                help=f"Generate AI content and download PowerPoint in {detected_language}"
             )
+        
+        with col2:
+            # Check if AI processing has completed
+            ai_completed = st.session_state.get('agent_states', {}).get('agent1_completed', False) or st.session_state.get('agent_states', {}).get('agent3_completed', False)
+            
+            # Check if PowerPoint file exists for download
+            output_dir = "fdd_utils/output"
+            pptx_file_exists = False
+            latest_file = None
+            
+            if os.path.exists(output_dir):
+                pptx_files = [f for f in os.listdir(output_dir) if f.endswith('.pptx')]
+                if pptx_files:
+                    pptx_file_exists = True
+                    latest_file = max(pptx_files, key=lambda x: os.path.getctime(os.path.join(output_dir, x)))
+            
+            # Show download button that directly downloads the file
+            if pptx_file_exists and ai_completed:
+                file_path = os.path.join(output_dir, latest_file)
+                with open(file_path, 'rb') as f:
+                    file_data = f.read()
+                
+                st.download_button(
+                    label="📥 Download PowerPoint",
+                    data=file_data,
+                    file_name=latest_file,
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    key="btn_download_pptx",
+                    help="Download the previously generated PowerPoint file",
+                    use_container_width=True
+                )
+            else:
+                st.button(
+                    "📥 Download PowerPoint",
+                    type="secondary",
+                    use_container_width=True,
+                    key="btn_download_pptx",
+                    help="Download the previously generated PowerPoint file",
+                    disabled=True
+                )
+                if not ai_completed:
+                    st.info("💡 Complete AI processing first to enable download")
+                elif not pptx_file_exists:
+                    st.info("💡 Generate a report first to enable download")
 
-        with col_chi:
-            run_chi_clicked = st.button(
-                "🇨🇳 生成中文报告",
-                type="primary",
-                use_container_width=True,
-                key="btn_ai_chi",
-                help="Generate AI report in Chinese"
-            )
-
-        # Handle AI processing
-        if run_eng_clicked:
+        # Handle combined AI processing and PowerPoint export
+        if generate_report_clicked:
             progress_bar = st.progress(0)
             status_text = st.empty()
             
             try:
-                status_text.text("🤖 Generating English content...")
-                progress_bar.progress(30)
-                
-                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=lambda p, msg: progress_bar.progress(p))
-                
-                if agent1_results:
+                if detected_language == 'chinese':
+                    status_text.text("🤖 初始化中文AI处理...")
+                    progress_bar.progress(0.1)
+                    
+                    # First generate English content, then proofread, then translate
+                    total_keys = len(filtered_keys_for_ai)
+                    status_text.text(f"📊 生成英文内容... (0/{total_keys} keys)")
+                    progress_bar.progress(0.2)
+                    
+                    # Initialize timing for proper ETA calculation
+                    if 'processing_start_time' not in st.session_state:
+                        st.session_state['processing_start_time'] = time.time()
+                    
+                    def progress_callback_eng(p, msg):
+                        # Debug: Print the actual message to see format
+                        print(f"🔍 DEBUG PROGRESS: p={p}, msg='{msg}'")
+                        
+                        # Store debug info in session state for display
+                        if 'debug_progress' not in st.session_state:
+                            st.session_state['debug_progress'] = []
+                        st.session_state['debug_progress'].append(f"p={p}, msg='{msg}'")
+                        
+                        # Parse the detailed message from the AI processing
+                        current_key = "Processing"  # Default fallback
+                        
+                        if msg and isinstance(msg, str):
+                            # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
+                            if 'Processing' in msg and '•' in msg:
+                                parts = msg.split('•')
+                                if len(parts) >= 1:
+                                    key_part = parts[0].replace('🔄 Processing', '').strip()
+                                    if key_part:
+                                        current_key = key_part
+                            # Format: "🔄 Processing Cash" (without bullet points)
+                            elif 'Processing' in msg:
+                                key_part = msg.replace('🔄 Processing', '').strip()
+                                if key_part:
+                                    current_key = key_part
+                            # Format: Direct key name
+                            elif len(msg.strip()) < 50 and not '•' in msg and not 'Processing' in msg:
+                                current_key = msg.strip()
+                            # Format: Check if it's just a key name without "Processing"
+                            elif msg.strip() in filtered_keys_for_ai:
+                                current_key = msg.strip()
+                        
+                        # Calculate current key index from progress
+                        key_index = int(p * total_keys) if p > 0 else 0
+                        
+                        # Calculate proper ETA based on actual processing time
+                        if p > 0 and key_index > 0:
+                            elapsed_time = time.time() - st.session_state['processing_start_time']
+                            avg_time_per_key = elapsed_time / key_index
+                            remaining_keys = total_keys - key_index
+                            eta_seconds = int(remaining_keys * avg_time_per_key)
+                            
+                            if eta_seconds > 0:
+                                eta_minutes = eta_seconds // 60
+                                eta_seconds = eta_seconds % 60
+                                eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
+                            else:
+                                eta_text = "⏱️ Almost done!"
+                        else:
+                            eta_text = ""
+                        
+                        # Enhanced status display with ETA on same line
+                        status_display = f"📊 生成英文内容... ({key_index}/{total_keys} keys) - {current_key}"
+                        if eta_text:
+                            status_display += f" {eta_text}"
+                        status_text.text(status_display)
+                        progress_bar.progress(0.1 + p * 0.2)
+                    
+                    english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=progress_callback_eng)
+                    
+                    if not english_results:
+                        st.error("❌ 英文内容生成失败，无法进行中文翻译")
+                        return
+                    
+                    # Proofread English content
+                    status_text.text(f"🧐 校对英文内容... (0/{total_keys} keys)")
+                    progress_bar.progress(0.3)
+                    
+                    def progress_callback_proof(p, msg):
+                        # Parse the detailed message from the proofreader
+                        current_key = "Proofreading"  # Default fallback
+                        
+                        if msg and isinstance(msg, str):
+                            # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
+                            if 'Processing' in msg and '•' in msg:
+                                parts = msg.split('•')
+                                if len(parts) >= 1:
+                                    key_part = parts[0].replace('🔄 Processing', '').strip()
+                                    if key_part:
+                                        current_key = key_part
+                            # Format: "🔄 Processing Cash" (without bullet points)
+                            elif 'Processing' in msg:
+                                key_part = msg.replace('🔄 Processing', '').strip()
+                                if key_part:
+                                    current_key = key_part
+                            # Format: Direct key name
+                            elif len(msg.strip()) < 50 and not '•' in msg and not 'Processing' in msg:
+                                current_key = msg.strip()
+                            # Format: Check if it's just a key name without "Processing"
+                            elif msg.strip() in filtered_keys_for_ai:
+                                current_key = msg.strip()
+                        
+                        key_index = int(p * total_keys) if p > 0 else 0
+                        status_text.text(f"🧐 校对英文内容... ({key_index}/{total_keys} keys) - {current_key}")
+                        progress_bar.progress(0.3 + p * 0.1)
+                    
+                    proofread_results = run_simple_proofreader(english_results, temp_ai_data, progress_callback=progress_callback_proof)
+                    
+                    # Then translate to Chinese
+                    status_text.text(f"🌐 翻译为中文... (0/{total_keys} keys)")
+                    progress_bar.progress(0.5)
+                    
+                    def progress_callback_trans(p, msg):
+                        # Parse the detailed message from the translator
+                        current_key = "Translating"  # Default fallback
+                        
+                        if msg and isinstance(msg, str):
+                            # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
+                            if 'Processing' in msg and '•' in msg:
+                                parts = msg.split('•')
+                                if len(parts) >= 1:
+                                    key_part = parts[0].replace('🔄 Processing', '').strip()
+                                    if key_part:
+                                        current_key = key_part
+                            # Format: "🔄 Processing Cash" (without bullet points)
+                            elif 'Processing' in msg:
+                                key_part = msg.replace('🔄 Processing', '').strip()
+                                if key_part:
+                                    current_key = key_part
+                            # Format: Direct key name
+                            elif len(msg.strip()) < 50 and not '•' in msg and not 'Processing' in msg:
+                                current_key = msg.strip()
+                            # Format: Check if it's just a key name without "Processing"
+                            elif msg.strip() in filtered_keys_for_ai:
+                                current_key = msg.strip()
+                        
+                        key_index = int(p * total_keys) if p > 0 else 0
+                        status_text.text(f"🌐 翻译为中文... ({key_index}/{total_keys} keys) - {current_key}")
+                        progress_bar.progress(0.5 + p * 0.3)
+                    
+                    final_results = run_simple_chinese_translation(proofread_results, temp_ai_data, progress_callback=progress_callback_trans)
+                    
                     # Store results
                     if 'ai_content_store' not in st.session_state:
                         st.session_state['ai_content_store'] = {}
 
-                    for key, result in agent1_results.items():
+                    for key, result in final_results.items():
                         if key not in st.session_state['ai_content_store']:
                             st.session_state['ai_content_store'][key] = {}
                         content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
-                        st.session_state['ai_content_store'][key]['agent1_content'] = content
+                        st.session_state['ai_content_store'][key]['agent3_content'] = content
                         st.session_state['ai_content_store'][key]['current_content'] = content
-                        st.session_state['ai_content_store'][key]['agent1_timestamp'] = datetime.datetime.now().isoformat()
+                        st.session_state['ai_content_store'][key]['agent3_timestamp'] = time.time()
                         
-                        # Debug: Print what's being stored
-                        print(f"🔍 DEBUG AI STORAGE: Stored content for key '{key}' - length: {len(content) if content else 0}")
-                        print(f"🔍 DEBUG AI STORAGE: Content preview: {content[:100] if content else 'None'}...")
-
-                    st.session_state['agent_states']['agent1_results'] = agent1_results
-                    st.session_state['agent_states']['agent1_completed'] = True
-                    st.session_state['agent_states']['agent1_success'] = True
-                    
-                    # Generate content files
-                    status_text.text("📝 Generating content files...")
-                    progress_bar.progress(90)
-                    generate_content_from_session_storage(selected_entity)
+                        # Store proofread content for preview (store the full result object, not just content)
+                        if key in proofread_results:
+                            proofread_result = proofread_results[key]
+                            st.session_state['ai_content_store'][key]['agent2_content'] = proofread_result
                         
-                    progress_bar.progress(100)
-                    status_text.text("✅ English AI processing completed")
-                    time.sleep(1)
-                    st.rerun()
-                
-            except Exception as e:
-                progress_bar.progress(100)
-                status_text.text(f"❌ English AI processing failed: {e}")
-                time.sleep(1)
-                st.rerun()
+                        print(f"🔍 DEBUG CHINESE AI STORAGE: Stored content for key '{key}'")
 
-        if run_chi_clicked:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            try:
-                status_text.text("🤖 初始化中文AI处理...")
-                progress_bar.progress(10)
-                
-                # Generate English first, then translate
-                status_text.text("📊 生成英文内容...")
-                progress_bar.progress(30)
-                agent1_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=lambda p, msg: progress_bar.progress(0.1 + p * 0.4))
-                
-                # Use AI for actual translation
-                status_text.text("🌐 翻译为中文...")
-                progress_bar.progress(70)
-                translated_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='chinese', progress_callback=lambda p, msg: progress_bar.progress(0.5 + p * 0.4))
-                
-                # Store results
-                if 'ai_content_store' not in st.session_state:
-                    st.session_state['ai_content_store'] = {}
-
-                for key, result in translated_results.items():
-                    if key not in st.session_state['ai_content_store']:
-                        st.session_state['ai_content_store'][key] = {}
-                    content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
-                    st.session_state['ai_content_store'][key]['agent3_content'] = content
-                    st.session_state['ai_content_store'][key]['current_content'] = content
-                    st.session_state['ai_content_store'][key]['agent3_timestamp'] = time.time()
+                    st.session_state['agent_states']['agent3_results'] = final_results
+                    st.session_state['agent_states']['agent3_completed'] = True
+                    st.session_state['agent_states']['agent3_success'] = True
                     
-                    # Debug: Print what's being stored
-                    print(f"🔍 DEBUG CHINESE AI STORAGE: Stored content for key '{key}' - length: {len(content) if content else 0}")
-                    print(f"🔍 DEBUG CHINESE AI STORAGE: Content preview: {content[:100] if content else 'None'}...")
+                else:
+                    total_keys = len(filtered_keys_for_ai)
+                    status_text.text(f"🤖 Generating English content... (0/{total_keys} keys)")
+                    progress_bar.progress(0.3)
+                    
+                    # Initialize timing for proper ETA calculation
+                    if 'processing_start_time' not in st.session_state:
+                        st.session_state['processing_start_time'] = time.time()
+                    
+                    def progress_callback_eng_simple(p, msg):
+                        # Parse the detailed message from the AI processing
+                        current_key = "Processing"  # Default fallback
+                        
+                        if msg and isinstance(msg, str):
+                            # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
+                            if 'Processing' in msg and '•' in msg:
+                                parts = msg.split('•')
+                                if len(parts) >= 1:
+                                    key_part = parts[0].replace('🔄 Processing', '').strip()
+                                    if key_part:
+                                        current_key = key_part
+                            # Format: "🔄 Processing Cash" (without bullet points)
+                            elif 'Processing' in msg:
+                                key_part = msg.replace('🔄 Processing', '').strip()
+                                if key_part:
+                                    current_key = key_part
+                            # Format: Direct key name
+                            elif len(msg.strip()) < 50 and not '•' in msg and not 'Processing' in msg:
+                                current_key = msg.strip()
+                            # Format: Check if it's just a key name without "Processing"
+                            elif msg.strip() in filtered_keys_for_ai:
+                                current_key = msg.strip()
+                        
+                        key_index = int(p * total_keys) if p > 0 else 0
+                        
+                        # Calculate proper ETA based on actual processing time
+                        if p > 0 and key_index > 0:
+                            elapsed_time = time.time() - st.session_state['processing_start_time']
+                            avg_time_per_key = elapsed_time / key_index
+                            remaining_keys = total_keys - key_index
+                            eta_seconds = int(remaining_keys * avg_time_per_key)
+                            
+                            if eta_seconds > 0:
+                                eta_minutes = eta_seconds // 60
+                                eta_seconds = eta_seconds % 60
+                                eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
+                            else:
+                                eta_text = "⏱️ Almost done!"
+                        else:
+                            eta_text = ""
+                        
+                        # Enhanced status display with ETA on same line
+                        status_display = f"🤖 Generating English content... ({key_index}/{total_keys} keys) - {current_key}"
+                        if eta_text:
+                            status_display += f" {eta_text}"
+                        status_text.text(status_display)
+                        progress_bar.progress(p)
+                    
+                    english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=progress_callback_eng_simple)
+                    
+                    if not english_results:
+                        st.error("❌ English content generation failed")
+                        return
+                    
+                    # Proofread English content
+                    status_text.text(f"🧐 Proofreading English content... (0/{total_keys} keys)")
+                    progress_bar.progress(0.6)
+                    
+                    def progress_callback_proof_eng(p, msg):
+                        # Parse the detailed message from the proofreader
+                        current_key = "Proofreading"  # Default fallback
+                        
+                        if msg and isinstance(msg, str):
+                            # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
+                            if 'Processing' in msg and '•' in msg:
+                                parts = msg.split('•')
+                                if len(parts) >= 1:
+                                    key_part = parts[0].replace('🔄 Processing', '').strip()
+                                    if key_part:
+                                        current_key = key_part
+                            # Format: "🔄 Processing Cash" (without bullet points)
+                            elif 'Processing' in msg:
+                                key_part = msg.replace('🔄 Processing', '').strip()
+                                if key_part:
+                                    current_key = key_part
+                            # Format: Direct key name
+                            elif len(msg.strip()) < 50 and not '•' in msg and not 'Processing' in msg:
+                                current_key = msg.strip()
+                            # Format: Check if it's just a key name without "Processing"
+                            elif msg.strip() in filtered_keys_for_ai:
+                                current_key = msg.strip()
+                        
+                        key_index = int(p * total_keys) if p > 0 else 0
+                        status_text.text(f"🧐 Proofreading English content... ({key_index}/{total_keys} keys) - {current_key}")
+                        progress_bar.progress(0.6 + p * 0.1)
+                    
+                    proofread_results = run_simple_proofreader(english_results, temp_ai_data, progress_callback=progress_callback_proof_eng)
+                    
+                    if proofread_results:
+                        # Store results
+                        if 'ai_content_store' not in st.session_state:
+                            st.session_state['ai_content_store'] = {}
 
-                st.session_state['agent_states']['agent3_results'] = translated_results
-                st.session_state['agent_states']['agent3_completed'] = True
-                st.session_state['agent_states']['agent3_success'] = True
+                        for key, result in proofread_results.items():
+                            if key not in st.session_state['ai_content_store']:
+                                st.session_state['ai_content_store'][key] = {}
+                            content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
+                            st.session_state['ai_content_store'][key]['agent1_content'] = content
+                            st.session_state['ai_content_store'][key]['current_content'] = content
+                            st.session_state['ai_content_store'][key]['agent1_timestamp'] = datetime.datetime.now().isoformat()
+                            
+                            # Store proofread content for preview (store the full result object, not just content)
+                            st.session_state['ai_content_store'][key]['agent2_content'] = result
+                            
+                            print(f"🔍 DEBUG AI STORAGE: Stored content for key '{key}'")
+
+                        st.session_state['agent_states']['agent1_results'] = proofread_results
+                        st.session_state['agent_states']['agent1_completed'] = True
+                        st.session_state['agent_states']['agent1_success'] = True
                 
                 # Generate content files
-                status_text.text("📝 生成内容文件...")
-                progress_bar.progress(95)
+                status_text.text("📝 Generating content files...")
+                progress_bar.progress(0.8)
                 generate_content_from_session_storage(selected_entity)
-
-                progress_bar.progress(100)
-                status_text.text("✅ 中文AI处理完成")
+                
+                # Export PowerPoint
+                status_text.text("📊 Exporting PowerPoint...")
+                progress_bar.progress(0.9)
+                
+                try:
+                    # Export PowerPoint and automatically show download
+                    export_enhanced_pptx(selected_entity, statement_type, language=detected_language, 
+                                       financial_statement_tab=financial_statement_tab, include_bshn=include_bshn)
+                    progress_bar.progress(1.0)
+                    status_text.text(f"✅ Report generation and export completed ({language_display})")
+                    
+                    # Show success message with download info
+                    st.success(f"🎉 Report generated successfully! The download button should appear above.")
+                    
+                except Exception as export_error:
+                    progress_bar.progress(1.0)
+                    status_text.text(f"⚠️ Report generated but export failed: {str(export_error)}")
+                    st.error(f"❌ PowerPoint export failed: {str(export_error)}")
+                    st.info("💡 Content has been generated successfully. You can try the export again.")
                 time.sleep(1)
                 st.rerun()
                 
             except Exception as e:
-                st.error(f"❌ 中文AI处理失败: {e}")
-                progress_bar.progress(0)
-                status_text.text("❌ 处理失败")
+                progress_bar.progress(1.0)
+                status_text.text(f"❌ Report generation failed: {e}")
+                time.sleep(1)
+                st.rerun()
+
 
         # Display AI Results
         agent_states = st.session_state.get('agent_states', {})
@@ -756,59 +1345,438 @@ def main():
                 
                 for i, key in enumerate(filtered_keys):
                     with key_tabs[i]:
-                        # Show Agent 3 results first (translated/proofread)
+                        # Get all available content
+                        ai_content_store = st.session_state.get('ai_content_store', {})
+                        agent1_results = agent_states.get('agent1_results', {}) or {}
                         agent3_results_all = agent_states.get('agent3_results', {}) or {}
+                        
+                        # Show final content (Agent 3 if available, otherwise Agent 1)
+                        final_content = None
                         if key in agent3_results_all:
                             pr = agent3_results_all[key]
                             translated_content = pr.get('translated_content', '')
                             corrected_content = pr.get('corrected_content', '') or pr.get('content', '')
                             final_content = translated_content if translated_content and pr.get('is_chinese', False) else corrected_content
-
-                            if final_content:
-                                st.markdown(final_content)
+                        elif key in agent1_results and agent1_results[key]:
+                            content = agent1_results[key]
+                            final_content = content.get('content', str(content)) if isinstance(content, dict) else str(content)
                         
-                        # Show Agent 1 results (collapsible)
-                        with st.expander("📝 AI: Generation (details)", expanded=key not in agent3_results_all):
-                            agent1_results = agent_states.get('agent1_results', {}) or {}
-                            if key in agent1_results and agent1_results[key]:
-                                content = agent1_results[key]
-                                content_str = content.get('content', str(content)) if isinstance(content, dict) else str(content)
-                                
-                                st.markdown("**Generated Content:**")
+                        if final_content:
+                            st.markdown("**Final Content:**")
+                            st.markdown(final_content)
+                        
+                        # Show Agent 1 results (AI Generation)
+                        if key in agent1_results and agent1_results[key]:
+                            content = agent1_results[key]
+                            content_str = content.get('content', str(content)) if isinstance(content, dict) else str(content)
+                            
+                            with st.expander("📝 AI Generation (Original)", expanded=False):
                                 st.markdown(content_str)
-                                
-                                # Metadata
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    st.metric("Characters", len(content_str))
-                                with col2:
-                                    st.metric("Words", len(content_str.split()))
-                                with col3:
-                                    st.metric("Status", "✅ Generated" if content else "❌ Failed")
-                            else:
-                                st.info("No AI results available. Run AI first.")
+                        
+                        # Show Agent 2 results (Proofreading) with detailed feedback
+                        if key in ai_content_store:
+                            proofread_result = ai_content_store[key].get('agent2_content', '')
+                            if proofread_result:
+                                with st.expander("🧐 Proofread Content", expanded=False):
+                                    # Display the corrected content
+                                    if isinstance(proofread_result, dict):
+                                        corrected_content = proofread_result.get('content', '')
+                                        st.markdown(corrected_content)
+                                        
+                                        # Show detailed proofreader feedback
+                                        st.markdown("**🔍 Proofreader Analysis:**")
+                                        
+                                        # Show compliance status
+                                        is_compliant = proofread_result.get('is_compliant', True)
+                                        if is_compliant:
+                                            st.success("✅ Content is compliant")
+                                        else:
+                                            st.warning("⚠️ Content has compliance issues")
+                                        
+                                        # Show issues found - with robust type checking
+                                        issues = proofread_result.get('issues', [])
+                                        if not isinstance(issues, list):
+                                            print(f"⚠️ WARNING: Issues field is not a list in display, converting from {type(issues)}")
+                                            if isinstance(issues, str):
+                                                issues_str = issues.strip()
+                                                if ',' in issues_str or '\n' in issues_str:
+                                                    issues = [issue.strip() for issue in issues_str.replace('\n', ',').split(',') if issue.strip()]
+                                                else:
+                                                    issues = [issues_str] if issues_str else []
+                                            elif isinstance(issues, (int, float)):
+                                                issues = [str(issues)]
+                                            else:
+                                                try:
+                                                    issues = [str(issues)] if issues else []
+                                                except:
+                                                    issues = []
+                                        
+                                        if issues:
+                                            st.markdown("**Issues Found:**")
+                                            for issue in issues:
+                                                st.markdown(f"• {issue}")
+                                        
+                                        # Show figure checks - with robust type checking
+                                        figure_checks = proofread_result.get('figure_checks', [])
+                                        if not isinstance(figure_checks, list):
+                                            print(f"⚠️ WARNING: figure_checks field is not a list in display, converting from {type(figure_checks)}")
+                                            if isinstance(figure_checks, str):
+                                                figure_checks_str = figure_checks.strip()
+                                                if ',' in figure_checks_str or '\n' in figure_checks_str:
+                                                    figure_checks = [check.strip() for check in figure_checks_str.replace('\n', ',').split(',') if check.strip()]
+                                                else:
+                                                    figure_checks = [figure_checks_str] if figure_checks_str else []
+                                            elif isinstance(figure_checks, (int, float)):
+                                                figure_checks = [str(figure_checks)]
+                                            else:
+                                                try:
+                                                    figure_checks = [str(figure_checks)] if figure_checks else []
+                                                except:
+                                                    figure_checks = []
+                                        
+                                        if figure_checks:
+                                            st.markdown("**Figure Validation:**")
+                                            for check in figure_checks:
+                                                st.markdown(f"• {check}")
+                                        
+                                        # Show entity checks - with robust type checking
+                                        entity_checks = proofread_result.get('entity_checks', [])
+                                        if not isinstance(entity_checks, list):
+                                            print(f"⚠️ WARNING: entity_checks field is not a list in display, converting from {type(entity_checks)}")
+                                            if isinstance(entity_checks, str):
+                                                entity_checks_str = entity_checks.strip()
+                                                if ',' in entity_checks_str or '\n' in entity_checks_str:
+                                                    entity_checks = [check.strip() for check in entity_checks_str.replace('\n', ',').split(',') if check.strip()]
+                                                else:
+                                                    entity_checks = [entity_checks_str] if entity_checks_str else []
+                                            elif isinstance(entity_checks, (int, float)):
+                                                entity_checks = [str(entity_checks)]
+                                            else:
+                                                try:
+                                                    entity_checks = [str(entity_checks)] if entity_checks else []
+                                                except:
+                                                    entity_checks = []
+                                        
+                                        if entity_checks:
+                                            st.markdown("**Entity Validation:**")
+                                            for check in entity_checks:
+                                                st.markdown(f"• {check}")
+                                        
+                                        # Show grammar notes - with robust type checking
+                                        grammar_notes = proofread_result.get('grammar_notes', [])
+                                        if not isinstance(grammar_notes, list):
+                                            print(f"⚠️ WARNING: grammar_notes field is not a list in display, converting from {type(grammar_notes)}")
+                                            if isinstance(grammar_notes, str):
+                                                grammar_notes_str = grammar_notes.strip()
+                                                if ',' in grammar_notes_str or '\n' in grammar_notes_str:
+                                                    grammar_notes = [note.strip() for note in grammar_notes_str.replace('\n', ',').split(',') if note.strip()]
+                                                else:
+                                                    grammar_notes = [grammar_notes_str] if grammar_notes_str else []
+                                            elif isinstance(grammar_notes, (int, float)):
+                                                grammar_notes = [str(grammar_notes)]
+                                            else:
+                                                try:
+                                                    grammar_notes = [str(grammar_notes)] if grammar_notes else []
+                                                except:
+                                                    grammar_notes = []
+                                        
+                                        if grammar_notes:
+                                            st.markdown("**Grammar & Style:**")
+                                            for note in grammar_notes:
+                                                st.markdown(f"• {note}")
+                                        
+                                        # Show pattern used
+                                        pattern_used = proofread_result.get('pattern_used', '')
+                                        if pattern_used:
+                                            st.markdown(f"**Pattern Used:** {pattern_used}")
+                                        
+                                        # Show translation runs
+                                        translation_runs = proofread_result.get('translation_runs', 0)
+                                        if translation_runs > 0:
+                                            st.markdown(f"**Heuristic Translation:** {translation_runs} run(s) applied")
+                                    else:
+                                        # Fallback for string content
+                                        st.markdown(proofread_result)
+                        
+                        # Show Agent 3 results (Translation) if different from final content
+                        if key in agent3_results_all and key not in agent1_results:
+                            pr = agent3_results_all[key]
+                            translated_content = pr.get('translated_content', '')
+                            if translated_content and translated_content != final_content:
+                                with st.expander("🌐 Translated Content", expanded=False):
+                                    st.markdown(translated_content)
             else:
                 st.info("No financial keys available for results display.")
         else:
             st.info("No AI agents have run yet. Use the buttons above to start processing.")
         
-        # PowerPoint Export Section
-        st.markdown("---")
-        st.subheader("📊 PowerPoint Generation")
-
-        col1, col2 = st.columns([1, 1])
-
-        with col1:
-            if st.button("📊 Export English PPTX", type="primary", use_container_width=True):
-                export_pptx_simple(selected_entity, statement_type, language='english')
-
-        with col2:
-            if st.button("📊 Export Chinese PPTX", type="primary", use_container_width=True):
-                export_pptx_simple(selected_entity, statement_type, language='chinese')
+        # Debug section for progress messages
+        if 'debug_progress' in st.session_state and st.session_state['debug_progress']:
+            with st.expander("🔍 Debug: Progress Messages", expanded=False):
+                for i, debug_msg in enumerate(st.session_state['debug_progress'][-10:]):  # Show last 10 messages
+                    st.text(f"{i+1}. {debug_msg}")
+        
+        
 
 
-def export_pptx_simple(selected_entity, statement_type, language='english'):
-    """Simple PowerPoint export function"""
+
+
+
+def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, project_name, language='english'):
+    """Add BSHN data table to the first slide (BS1)"""
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN, MSO_VERTICAL_ANCHOR
+        import pandas as pd
+        import os
+        
+        # Load the presentation
+        prs = Presentation(presentation_path)
+        
+        # Read Excel data
+        df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
+        
+        # Get the first slide (BS1)
+        first_slide = prs.slides[0]
+        
+        # Create table with proper header structure
+        rows = len(df) + 1  # +1 for header only (no separate currency row)
+        cols = len(df.columns)
+        
+        # Convert cm to inches (1 inch = 2.54 cm)
+        table_width = 12.14 / 2.54  # 4.78 inches
+        table_height = 10.49 / 2.54  # 4.13 inches
+        
+        # Position table at specific coordinates (5.01cm from top, 0.36cm from left)
+        table_x = 0.36 / 2.54  # 0.14 inches from left
+        table_y = 5.01 / 2.54  # 1.97 inches from top
+        
+        # Add table to the first slide with specific dimensions and position
+        table_shape = first_slide.shapes.add_table(rows, cols, Inches(table_x), Inches(table_y), Inches(table_width), Inches(table_height))
+        
+        # Force the table to maintain exact dimensions
+        table_shape.width = Inches(table_width)
+        table_shape.height = Inches(table_height)
+        table = table_shape.table
+        
+        # Set table properties to prevent auto-sizing
+        table.autofit = False
+        
+        # Reduce cell margins and padding for more compact table
+        for row in table.rows:
+            for cell in row.cells:
+                # Set minimal margins
+                cell.margin_left = Inches(0.05)
+                cell.margin_right = Inches(0.05)
+                cell.margin_top = Inches(0.02)
+                cell.margin_bottom = Inches(0.02)
+        
+        # Set table name for future reference
+        table_shape.name = "financialData"
+        
+        # Extract first word from project name for header
+        entity_first_word = project_name.split()[0] if project_name else "Entity"
+        
+        # Fill header row (row 0) - language-aware title
+        cell = table.cell(0, 0)
+        if language.lower() == 'chinese':
+            cell.text = f"經示意性調整後資產負債表 - {entity_first_word}"
+        else:
+            cell.text = f"Indicative adjusted balance sheet - Project {entity_first_word}"
+        # Format header with highlighting
+        cell.text_frame.paragraphs[0].font.bold = True
+        cell.text_frame.paragraphs[0].font.size = Pt(9)  # Font size 9
+        cell.text_frame.paragraphs[0].alignment = PP_ALIGN.LEFT  # Left align
+        cell.text_frame.word_wrap = False  # Disable text wrapping
+        cell.text_frame.vertical_anchor = MSO_VERTICAL_ANCHOR.MIDDLE  # Vertically center
+        # Add background color for header - RGB(42, 72, 121)
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = RGBColor(42, 72, 121)  # Custom blue background
+        cell.text_frame.paragraphs[0].font.color.rgb = RGBColor(255, 255, 255)  # White text
+        
+        # Merge header cells across all columns
+        if cols > 1:
+            table.cell(0, 0).merge(table.cell(0, cols-1))
+        
+        # Set row height for header row - 0.64cm
+        table.rows[0].height = Inches(0.64 / 2.54)  # 0.25 inches (0.64cm)
+        
+        # Adjust column widths - make first column about half the table width
+        if cols >= 4:
+            # First column about half the table width
+            first_col_width = table_width * 0.5  # Half the table width
+            remaining_width = table_width * 0.5
+            other_col_width = remaining_width / (cols - 1)  # Distribute remaining width
+            
+            table.columns[0].width = Inches(first_col_width)  # First column half width
+            for i in range(1, cols):
+                table.columns[i].width = Inches(other_col_width)  # Other columns share remaining half
+        else:
+            # If less than 4 columns, distribute evenly
+            for i in range(cols):
+                table.columns[i].width = Inches(table_width / cols)
+        
+        # No separate currency row - integrate into header
+        
+        # Fill data rows with special formatting for totals/subtotals
+        for row_idx, (_, row_data) in enumerate(df.iterrows()):
+            for col_idx, value in enumerate(row_data):
+                cell = table.cell(row_idx + 1, col_idx)  # +1 because we only have header row
+                
+                # Check if this is a total or subtotal row (case-insensitive)
+                row_text = str(row_data.iloc[0]).lower() if len(row_data) > 0 else ""
+                is_total_row = any(keyword in row_text for keyword in ['total', 'subtotal', 'sum', '合计', '小计'])
+                
+                # Check if this is a date column and format accordingly
+                if col_idx > 0:
+                    # Try to detect and convert date format
+                    try:
+                        date_str = str(value)
+                        if ' ' in date_str:
+                            date_part = date_str.split(' ')[0]  # Get date part only
+                        else:
+                            date_part = date_str
+                        
+                        # Parse and reformat date
+                        from datetime import datetime
+                        if '-' in date_part and len(date_part) >= 8:
+                            # Try different date formats
+                            for fmt in ['%Y-%m-%d', '%d-%m-%Y', '%m-%d-%Y']:
+                                try:
+                                    date_obj = datetime.strptime(date_part, fmt)
+                                    cell_text = date_obj.strftime('%d-%b-%Y')
+                                    break
+                                except:
+                                    continue
+                            else:
+                                cell_text = date_part  # Keep original if can't parse
+                        elif '/' in date_part and len(date_part) >= 8:
+                            # Try different date formats with /
+                            for fmt in ['%Y/%m/%d', '%d/%m/%Y', '%m/%d/%Y']:
+                                try:
+                                    date_obj = datetime.strptime(date_part, fmt)
+                                    cell_text = date_obj.strftime('%d-%b-%Y')
+                                    break
+                                except:
+                                    continue
+                            else:
+                                cell_text = date_part  # Keep original if can't parse
+                        else:
+                            # Regular value formatting
+                            if pd.isna(value):
+                                cell_text = ""
+                            elif isinstance(value, (int, float)):
+                                if abs(value) >= 1000:
+                                    cell_text = f"{value:,.0f}"
+                                else:
+                                    cell_text = f"{value:,.1f}"
+                            else:
+                                cell_text = str(value)
+                    except:
+                        # Regular value formatting
+                        if pd.isna(value):
+                            cell_text = ""
+                        elif isinstance(value, (int, float)):
+                            if abs(value) >= 1000:
+                                cell_text = f"{value:,.0f}"
+                            else:
+                                cell_text = f"{value:,.1f}"
+                        else:
+                            cell_text = str(value)
+                else:
+                    # Regular value formatting for first column
+                    if pd.isna(value):
+                        cell_text = ""
+                    elif isinstance(value, (int, float)):
+                        if abs(value) >= 1000:
+                            cell_text = f"{value:,.0f}"
+                        else:
+                            cell_text = f"{value:,.1f}"
+                    else:
+                        cell_text = str(value)
+                
+                cell.text = cell_text
+                
+                if is_total_row:
+                    # Special formatting for total/subtotal rows
+                    cell.text_frame.paragraphs[0].font.bold = True
+                    cell.text_frame.paragraphs[0].font.size = Pt(7)
+                    cell.text_frame.word_wrap = False
+                    # Light gray background for totals
+                    cell.fill.solid()
+                    cell.fill.fore_color.rgb = RGBColor(217, 217, 217)  # Light gray
+                    cell.text_frame.paragraphs[0].font.color.rgb = RGBColor(0, 0, 0)  # Black text
+                else:
+                    # Regular data formatting
+                    cell.text_frame.paragraphs[0].font.bold = False
+                    cell.text_frame.paragraphs[0].font.size = Pt(7)
+                    cell.text_frame.word_wrap = False
+                    # White background for regular data
+                    cell.fill.solid()
+                    cell.fill.fore_color.rgb = RGBColor(255, 255, 255)  # White
+                    cell.text_frame.paragraphs[0].font.color.rgb = RGBColor(0, 0, 0)  # Black text
+                
+                # Right-align numbers
+                if col_idx > 0:
+                    cell.text_frame.paragraphs[0].alignment = PP_ALIGN.RIGHT
+        
+        # Set row heights for all data rows to be smaller
+        for row_idx in range(1, len(table.rows)):
+            table.rows[row_idx].height = Inches(0.15)  # Extremely small row height
+        
+        # Add dark blue borders to the entire table using shape-level borders
+        try:
+            # Set borders on the table shape itself
+            table_shape.line.color.rgb = RGBColor(42, 72, 121)
+            table_shape.line.width = Pt(2)  # Thicker border for visibility
+            
+            # Also try to set borders on individual cells using a different approach
+            for row_idx in range(len(table.rows)):
+                for col_idx in range(len(table.columns)):
+                    cell = table.cell(row_idx, col_idx)
+                    
+                    # Try to access the cell's XML directly for borders
+                    try:
+                        tc = cell._tc
+                        tcPr = tc.get_or_add_tcPr()
+                        
+                        # Remove any existing borders first
+                        for border_elem in tcPr.xpath('.//*[local-name()="top" or local-name()="bottom" or local-name()="left" or local-name()="right"]'):
+                            tcPr.remove(border_elem)
+                        
+                        # Add new borders
+                        from pptx.oxml.xmlchemy import OxmlElement
+                        from pptx.oxml.ns import qn
+                        
+                        for border_name in ['top', 'bottom', 'left', 'right']:
+                            border = OxmlElement(f'a:{border_name}')
+                            border.set(qn('w:val'), 'single')
+                            border.set(qn('w:sz'), '8')  # 1pt border
+                            border.set(qn('w:space'), '0')
+                            border.set(qn('w:color'), '2A4879')  # RGB(42, 72, 121) in hex
+                            tcPr.append(border)
+                            
+                    except Exception as cell_border_error:
+                        print(f"⚠️ Could not set cell borders: {cell_border_error}")
+                        continue
+                        
+        except Exception as border_error:
+            print(f"⚠️ Could not set table borders: {border_error}")
+            # Continue without borders - table will still work
+        
+        # Save the updated presentation
+        prs.save(presentation_path)
+        print(f"✅ BSHN data successfully embedded from sheet '{sheet_name}' in first slide (BS1)")
+        
+    except Exception as e:
+        print(f"❌ Error embedding BSHN data: {e}")
+        raise
+
+
+def export_enhanced_pptx(selected_entity, statement_type, language='english', financial_statement_tab=None, include_bshn=True):
+    """Enhanced PowerPoint export function with BSHN sheet and page designer using template"""
     try:
         if language == 'chinese':
             st.info("📊 开始生成中文 PowerPoint 演示文稿...")
@@ -830,10 +1798,12 @@ def export_pptx_simple(selected_entity, statement_type, language='english'):
             st.error("❌ PowerPoint template not found")
             return
 
-        # Create output filename
+        # Create output filename (sanitize project name)
+        import re
+        sanitized_project_name = re.sub(r'[^\w\-_]', '_', project_name).strip('_')
         language_suffix = "_CN" if language == 'chinese' else "_EN"
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"{project_name}_{statement_type.upper()}_{timestamp}{language_suffix}.pptx"
+        output_filename = f"{sanitized_project_name}_{statement_type.upper()}_{timestamp}{language_suffix}.pptx"
         output_path = f"fdd_utils/output/{output_filename}"
 
         # Ensure output directory exists
@@ -858,7 +1828,7 @@ def export_pptx_simple(selected_entity, statement_type, language='english'):
                 bs_temp = os.path.join(temp_dir, "bs_temp.pptx")
                 is_temp = os.path.join(temp_dir, "is_temp.pptx")
                 
-                # Generate BS and IS presentations
+                # Generate BS and IS presentations using template
                 export_pptx(template_path, bs_path, bs_temp, project_name, language=language)
                 export_pptx(template_path, is_path, is_temp, project_name, language=language)
                 
@@ -876,7 +1846,40 @@ def export_pptx_simple(selected_entity, statement_type, language='english'):
                 st.info("💡 Please run AI processing first.")
                 return
 
-            export_pptx(template_path, markdown_path, output_path, project_name, language=language)
+            # Get Excel file path for BSHN integration
+            excel_file_path = None
+            if include_bshn and statement_type == "BS" and financial_statement_tab:
+                # Get the uploaded file path
+                uploaded_file = st.session_state.get('uploaded_file')
+                if uploaded_file:
+                    if hasattr(uploaded_file, 'file_path'):
+                        excel_file_path = uploaded_file.file_path
+                    else:
+                        # For uploaded files, save temporarily
+                        import tempfile
+                        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+                        temp_file.write(uploaded_file.getvalue())
+                        temp_file.close()
+                        excel_file_path = temp_file.name
+                        st.info(f"📊 BSHN sheet will be included in BS1 from Excel tab: {financial_statement_tab}")
+            
+            # Use the template with the original export_pptx function (without automatic Excel embedding)
+            try:
+                export_pptx(template_path, markdown_path, output_path, project_name, excel_file_path=None, language=language, statement_type=statement_type)
+            except Exception as export_error:
+                st.error(f"❌ PowerPoint generation failed: {str(export_error)}")
+                st.info(f"💡 Check if content file exists: {markdown_path}")
+                st.info(f"💡 Check if template exists: {template_path}")
+                raise
+            
+            # Add BSHN data if requested
+            if include_bshn and statement_type == "BS" and excel_file_path and financial_statement_tab:
+                try:
+                    embed_bshn_data_simple(output_path, excel_file_path, financial_statement_tab, project_name, language)
+                    st.success(f"✅ BSHN data from '{financial_statement_tab}' sheet added to BS1")
+                except Exception as e:
+                    st.warning(f"⚠️ Could not add BSHN data: {str(e)}")
+                    st.info("💡 The presentation was created but BSHN data could not be embedded")
 
         # Show download button
         if os.path.exists(output_path):
@@ -896,6 +1899,8 @@ def export_pptx_simple(selected_entity, statement_type, language='english'):
 
     except Exception as e:
         st.error(f"❌ Export failed: {e}")
+
+
 
 
 if __name__ == "__main__":

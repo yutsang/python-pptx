@@ -186,8 +186,11 @@ class PowerPointGenerator:
         self.prs = Presentation(template_path)
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
-        self.ROWS_PER_SECTION = 35  # Conservative value for balanced space utilization
+        self.ROWS_PER_SECTION = 35  # Reduced for less crowding on page 1
         self.language = language  # Store language for Chinese mode detection
+        
+        # Debug: Print language initialization
+        print(f"🔍 DEBUG PPTX GENERATOR: Initialized with language='{self.language}'")
         
         # Find a slide with textMainBullets shape
         shape = None
@@ -237,24 +240,24 @@ class PowerPointGenerator:
         effective_height_pt = shape_height_pt * 0.999  # Maximum height utilization
 
         # Calculate line height based on font size and line spacing
-        # Balanced approach for good space utilization and readability
+        # Use 8pt font for better space utilization
         if hasattr(self, 'language') and self.language == 'chinese':
-            font_size_pt = 8.5  # Balanced font size for Chinese
+            font_size_pt = 8  # 8pt font size for Chinese
             line_spacing = 1.05  # Balanced spacing for readability
         else:
-            font_size_pt = 9  # Standard font size for English
+            font_size_pt = 8  # 8pt font size for English
             line_spacing = 1.1  # Balanced spacing for English
         line_height_pt = font_size_pt * line_spacing
 
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
 
-        # Optimize for balanced utilization with overflow prevention
-        # Prevent 130% height overflow by being more conservative
+        # Optimize for better space utilization with 8pt font
+        # Allow more content to fit while preventing overflow
         if hasattr(self, 'language') and self.language == 'chinese':
-            max_rows = max(35, max_rows)  # Conservative utilization for Chinese
+            max_rows = max(40, max_rows)  # Adjusted for 8pt font and less crowding
         else:
-            max_rows = max(32, max_rows)  # Conservative utilization for English
+            max_rows = max(38, max_rows)  # Adjusted for 8pt font and less crowding
 
         return max_rows
 
@@ -432,11 +435,8 @@ class PowerPointGenerator:
                 shape = self._get_target_shape_for_section(slide_idx, section)
                 if shape:
                     max_lines = self._calculate_max_rows_for_shape(shape)
-                    # Optimize for balanced utilization with overflow prevention
-                    if slide_idx == 0:  # First slide
-                        max_lines = max(max_lines, 35)  # Conservative utilization on first slide
-                    elif section in ['b', 'c']:  # _L and _R sections
-                        max_lines = max(max_lines, 28)  # Conservative utilization on side sections
+                    # Set all slide limits to 35 lines
+                    max_lines = 35  # All slides limited to 35 lines
                     print(f"📐 SECTION {section}: Found shape '{shape.name}', max_lines = {max_lines}")
                 else:
                     max_lines = self.ROWS_PER_SECTION  # Fallback
@@ -673,7 +673,8 @@ class PowerPointGenerator:
 
         # Calculate header lines using display header
         display_header = self._get_display_header_for_item(item)
-        header = f"{display_header} (continued)" if item.layer1_continued else display_header
+        cont_text = self._get_continuation_text(item.layer1_continued)
+        header = f"{display_header}{cont_text}"
         header_lines = len(textwrap.wrap(header, width=chars_per_line))
         lines += header_lines
 
@@ -709,7 +710,8 @@ class PowerPointGenerator:
 
         # Account for header line using display header
         display_header = self._get_display_header_for_item(item)
-        header = f"{display_header} (续)" if item.layer1_continued else display_header
+        cont_text = self._get_continuation_text(item.layer1_continued)
+        header = f"{display_header}{cont_text}"
         header_lines = self._calculate_chinese_text_lines(header, chars_per_line)
         available_lines = max_lines - header_lines
 
@@ -1005,7 +1007,8 @@ class PowerPointGenerator:
 
         # Calculate header lines using display header
         display_header = self._get_display_header_for_item(item)
-        header = f"{display_header} (续)" if item.layer1_continued else display_header
+        cont_text = self._get_continuation_text(item.layer1_continued)
+        header = f"{display_header}{cont_text}"
         header_lines = self._calculate_chinese_text_lines(header, chars_per_line)
         lines += header_lines
 
@@ -1056,7 +1059,8 @@ class PowerPointGenerator:
 
         # Account for header line using display header
         display_header = self._get_display_header_for_item(item)
-        header = f"{display_header} (continued)" if item.layer1_continued else display_header
+        cont_text = self._get_continuation_text(item.layer1_continued)
+        header = f"{display_header}{cont_text}"
         header_lines = len(textwrap.wrap(header, width=chars_per_line))
         available_lines = max_lines - header_lines
         
@@ -1284,7 +1288,7 @@ class PowerPointGenerator:
                 try: p.line_spacing = get_line_spacing_for_text(f"{display_header}{cont_text}", force_chinese_mode=(self.language == 'chinese'))
                 except: pass
                 run = p.add_run()
-                cont_text = " (continued)" if item.layer1_continued else ""
+                cont_text = self._get_continuation_text(item.layer1_continued)
                 run.text = f"{display_header}{cont_text}"
                 run.font.size = get_font_size_for_text(run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                 run.font.bold = True
@@ -1320,8 +1324,9 @@ class PowerPointGenerator:
                         bullet_run.font.name = get_font_name_for_text(bullet_run.text, 'Arial')
                         bullet_run.font.size = get_font_size_for_text(bullet_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         title_run = p.add_run()
-                        cont_text = " (continued)" if item.layer2_continued else ""
-                        title_run.text = f"{item.account_title}{cont_text}"
+                        cont_text = self._get_continuation_text(item.layer2_continued)
+                        translated_title = self._translate_account_title(item.account_title)
+                        title_run.text = f"{translated_title}{cont_text}"
                         title_run.font.bold = True
                         title_run.font.name = get_font_name_for_text(title_run.text, 'Arial')
                         title_run.font.size = get_font_size_for_text(title_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
@@ -1439,6 +1444,7 @@ class PowerPointGenerator:
             if hasattr(self, 'language') and self.language == 'chinese' and summary_md and any('\u4e00' <= char <= '\u9fff' for char in summary_md):
                 summary_content = summary_md.strip()
             else:
+                # Always generate AI summary content if summary_md is None or empty
                 summary_content = self._generate_ai_summary_content(md_content, distribution)
 
             # Generate per-page summaries based on each page's content
@@ -1585,8 +1591,9 @@ class PowerPointGenerator:
         p = tf.add_paragraph()
         self._apply_paragraph_formatting(p, is_layer2_3=True)
         header_run = p.add_run()
-        cont_text = " (continued)" if item.layer2_continued else ""
-        header_run.text = f"{self.BULLET_CHAR}{item.account_title}{cont_text}"
+        cont_text = self._get_continuation_text(item.layer2_continued)
+        translated_title = self._translate_account_title(item.account_title)
+        header_run.text = f"{self.BULLET_CHAR}{translated_title}{cont_text}"
         header_run.font.bold = True
         header_run.font.name = get_font_name_for_text(header_run.text, 'Arial')
         header_run.font.size = get_font_size_for_text(header_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
@@ -1623,26 +1630,39 @@ class PowerPointGenerator:
         tf = shape.text_frame
         tf.clear()
 
-        # Create a single paragraph and let PowerPoint handle natural wrapping
-        p = tf.add_paragraph()
-        run = p.add_run()
+        # Create first row as 18pt placeholder
+        p1 = tf.add_paragraph()
+        placeholder_run = p1.add_run()
+        placeholder_run.text = " "  # Single space placeholder
+        placeholder_run.font.size = Pt(18)  # 18pt placeholder
+        placeholder_run.font.name = 'Arial'
+        placeholder_run.font.bold = True
+        try:
+            placeholder_run.font.color.rgb = RGBColor(0, 51, 102)
+        except:
+            placeholder_run.font.color.rgb = RGBColor(0, 51, 102)
+
+        # Create second paragraph for actual content
+        p2 = tf.add_paragraph()
+        run = p2.add_run()
 
         # Set the full summary content - let PowerPoint handle wrapping naturally
         run.text = summary_content
 
-        # Apply Chinese-optimized font settings
-        # Use smaller font for Chinese to maximize content density
+        # Apply proper font settings for coSummary
+        # Use appropriate font size and ensure proper font name
         if summary_content and any('\u4e00' <= char <= '\u9fff' for char in summary_content):
-            run.font.size = Pt(9)  # Smaller font for Chinese content density
+            run.font.size = Pt(8)  # 8pt font for Chinese content
+            run.font.name = 'Microsoft YaHei'  # Use YaHei for Chinese text
         else:
-            run.font.size = Pt(10)  # Standard font for English
+            run.font.size = Pt(8)  # 8pt font for English
+            run.font.name = 'Arial'  # Use Arial for English text
 
         try:
             run.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue text
         except:
             run.font.color.rgb = RGBColor(0, 51, 102)  # Same color as fallback
         run.font.bold = False
-        run.font.name = get_font_name_for_text(run.text, 'Arial')
 
         # Configure text frame for optimal filling
         tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
@@ -1660,18 +1680,18 @@ class PowerPointGenerator:
 
         # Apply Chinese-optimized paragraph formatting for natural text flow
         try:
-            p.alignment = PP_ALIGN.LEFT
+            p2.alignment = PP_ALIGN.LEFT
             # Use tighter spacing for Chinese content
             if summary_content and any('\u4e00' <= char <= '\u9fff' for char in summary_content):
-                p.line_spacing = 1.0  # Tighter line spacing for Chinese
-                p.space_before = Pt(2)  # Less space before for Chinese
-                p.space_after = Pt(2)  # Less space after for Chinese
+                p2.line_spacing = 1.0  # Tighter line spacing for Chinese
+                p2.space_before = Pt(2)  # Less space before for Chinese
+                p2.space_after = Pt(2)  # Less space after for Chinese
             else:
-                p.line_spacing = 1.1  # Standard line spacing for English
-                p.space_before = Pt(4)  # Standard space before for English
-                p.space_after = Pt(4)  # Standard space after for English
+                p2.line_spacing = 1.1  # Standard line spacing for English
+                p2.space_before = Pt(4)  # Standard space before for English
+                p2.space_after = Pt(4)  # Standard space after for English
         except AttributeError:
-            self._handle_legacy_alignment(p)
+            self._handle_legacy_alignment(p2)
 
     def _generate_ai_summary_content(self, md_content: str, distribution) -> str:
         """Generate AI summary content based on commentary length and distribution"""
@@ -1865,9 +1885,59 @@ class PowerPointGenerator:
             'Operating Expenses': '营业费用',
             'Net Income': '净利润'
         }
-
-        # Return translated header or original if no translation found
-        return translation_map.get(header.strip(), header.strip())
+        return translation_map.get(header, header)
+    
+    def _translate_account_title(self, account_title: str) -> str:
+        """Translate account titles based on language - Chinese only for Chinese databooks, English only for English databooks"""
+        translation_map = {
+            'Cash': '现金',
+            'AR': '应收账款',
+            'Prepayments': '预付账款',
+            'OR': '其他应收款',
+            'Other CA': '其他流动资产',
+            'IP': '投资性房地产',
+            'Other NCA': '其他非流动资产',
+            'AP': '应付账款',
+            'Advances': '预收账款',
+            'Taxes payable': '应交税费',
+            'OP': '其他应付款',
+            'Capital': '实收资本',
+            'Reserve': '盈余公积',
+            'Capital reserve': '资本公积',
+            'OI': '营业收入',
+            'OC': '营业成本',
+            'Tax and Surcharges': '税金及附加',
+            'GA': '管理费用',
+            'Fin Exp': '财务费用',
+            'Cr Loss': '信用减值损失',
+            'Other Income': '其他收益',
+            'Non-operating Income': '营业外收入',
+            'Non-operating Exp': '营业外支出',
+            'Income tax': '所得税费用',
+            'LT DTA': '递延所得税资产'
+        }
+        
+        # For Chinese databooks, return Chinese only
+        if hasattr(self, 'language') and self.language == 'chinese':
+            chinese_title = translation_map.get(account_title, account_title)
+            return chinese_title
+        else:
+            # For English databooks, return English only
+            return account_title
+    
+    def _get_continuation_text(self, is_continued: bool) -> str:
+        """Get appropriate continuation text based on language"""
+        if not is_continued:
+            return ""
+        
+        # Debug: Print language detection info
+        current_language = getattr(self, 'language', 'unknown')
+        print(f"🔍 DEBUG CONTINUATION: is_continued={is_continued}, language='{current_language}'")
+        
+        if hasattr(self, 'language') and self.language == 'chinese':
+            return " (续)"
+        else:
+            return " (continued)"
 
     def _generate_chinese_page_summary(self, page_content: str, page_number: int) -> str:
         """Generate a concise Chinese summary for a page"""
@@ -1878,16 +1948,17 @@ class PowerPointGenerator:
 
             for sentence in sentences[:3]:  # Take first 3 sentences
                 if sentence.strip():
-                    # Keep it concise - first 50 characters
-                    summary_point = sentence.strip()[:50]
+                    # Keep it concise - first 60 characters for more informative content
+                    summary_point = sentence.strip()[:60]
                     if summary_point:
                         key_points.append(summary_point)
 
             if key_points:
-                summary = f"第{page_number}页：{'。'.join(key_points)}。"
+                # Remove page number and make more informative
+                summary = f"{'。'.join(key_points)}。"
                 return summary
             else:
-                return f"第{page_number}页财务分析摘要。"
+                return "财务分析摘要：本页包含重要的财务指标和业务分析内容。"
 
         except Exception as e:
             print(f"Error generating Chinese page summary: {e}")
@@ -1908,10 +1979,11 @@ class PowerPointGenerator:
                         key_points.append(summary_point)
 
             if key_points:
-                summary = f"Page {page_number}: {'. '.join(key_points)}."
+                # Remove page number and make more informative
+                summary = f"{'. '.join(key_points)}."
                 return summary
             else:
-                return f"Page {page_number} financial analysis summary."
+                return "Financial Analysis Summary: This page contains important financial metrics and business analysis."
 
         except Exception as e:
             print(f"Error generating English page summary: {e}")
@@ -2010,8 +2082,9 @@ class PowerPointGenerator:
         bullet_run.font.name = 'Arial'
         bullet_run.font.size = Pt(9)
         title_run = p.add_run()
-        cont_text = " (continued)" if item.layer2_continued else ""
-        title_run.text = f"{item.account_title}{cont_text}"
+        cont_text = self._get_continuation_text(item.layer2_continued)
+        translated_title = self._translate_account_title(item.account_title)
+        title_run.text = f"{translated_title}{cont_text}"
         title_run.font.bold = True
         title_run.font.name = 'Arial'
         title_run.font.size = Pt(9)
@@ -2047,9 +2120,11 @@ class ReportGenerator:
         
         try: 
             # Generate the report with AI summary content
-            generator.generate_full_report(md_content, "", self.output_path)
+            # Pass None for summary_md so it generates AI summary automatically
+            generator.generate_full_report(md_content, None, self.output_path)
         except Exception as e:
-            pass  # Generation error handled silently
+            logging.error(f"❌ Report generation failed: {str(e)}")
+            raise  # Re-raise the exception so it can be handled properly
 
 # --- Project Title Update Logic (from 3.wrap_up.py) ---
 def find_shape_by_name(shapes, name):

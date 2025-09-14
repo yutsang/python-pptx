@@ -3,8 +3,8 @@ Category configuration for FDD application
 Centralized category mappings for different statement types and entities
 """
 
-# Display name mappings
-DISPLAY_NAME_MAPPING_DEFAULT = {
+# Display name mappings - Chinese versions
+DISPLAY_NAME_MAPPING_DEFAULT_CHINESE = {
     'Cash': '现金', 'AR': '应收账款', 'Prepayments': '预付款项',
     'OR': '其他应收款', 'Other CA': '其他流动资产', 'Other NCA': '其他非流动资产',
     'IP': '投资性房地产', 'NCA': '无形资产', 'AP': '应付账款',
@@ -16,7 +16,7 @@ DISPLAY_NAME_MAPPING_DEFAULT = {
     'Income tax': '所得税', 'LT DTA': '递延所得税资产'
 }
 
-DISPLAY_NAME_MAPPING_NB_NJ = {
+DISPLAY_NAME_MAPPING_NB_NJ_CHINESE = {
     'Cash': '现金', 'AR': '应收账款', 'Prepayments': '预付款项',
     'OR': '其他应收款', 'Other CA': '其他流动资产', 'Other NCA': '其他非流动资产',
     'IP': '投资性房地产', 'NCA': '无形资产', 'AP': '应付账款',
@@ -28,26 +28,59 @@ DISPLAY_NAME_MAPPING_NB_NJ = {
     'Income tax': '所得税', 'LT DTA': '递延所得税资产'
 }
 
-def get_category_mapping(statement_type, entity_name):
+# Display name mappings - English versions
+DISPLAY_NAME_MAPPING_DEFAULT_ENGLISH = {
+    'Cash': 'Cash at bank', 'AR': 'Accounts receivables', 'Prepayments': 'Prepayments',
+    'OR': 'Other receivables', 'Other CA': 'Other current assets', 'Other NCA': 'Other non-current assets',
+    'IP': 'Investment properties', 'NCA': 'Intangible assets', 'AP': 'Accounts payable',
+    'Taxes payable': 'Taxes payables', 'OP': 'Other payables', 'Capital': 'Capital',
+    'Reserve': 'Surplus reserve', 'OI': 'Operating Income', 'OC': 'Operating Cost',
+    'Tax and Surcharges': 'Tax and Surcharges', 'GA': 'G&A expenses', 'Fin Exp': 'Finance Expenses',
+    'Cr Loss': 'Credit Losses', 'Other Income': 'Other Income',
+    'Non-operating Income': 'Non-operating Income', 'Non-operating Exp': 'Non-operating Expenses',
+    'Income tax': 'Income tax', 'LT DTA': 'Long-term Deferred Tax Assets'
+}
+
+DISPLAY_NAME_MAPPING_NB_NJ_ENGLISH = {
+    'Cash': 'Cash at bank', 'AR': 'Accounts receivables', 'Prepayments': 'Prepayments',
+    'OR': 'Other receivables', 'Other CA': 'Other current assets', 'Other NCA': 'Other non-current assets',
+    'IP': 'Investment properties', 'NCA': 'Intangible assets', 'AP': 'Accounts payable',
+    'Taxes payable': 'Taxes payables', 'OP': 'Other payables', 'Capital': 'Capital',
+    'Reserve': 'Surplus reserve', 'OI': 'Operating Income', 'OC': 'Operating Cost',
+    'Tax and Surcharges': 'Tax and Surcharges', 'GA': 'G&A expenses', 'Fin Exp': 'Finance Expenses',
+    'Cr Loss': 'Credit Losses', 'Other Income': 'Other Income',
+    'Non-operating Income': 'Non-operating Income', 'Non-operating Exp': 'Non-operating Expenses',
+    'Income tax': 'Income tax', 'LT DTA': 'Long-term Deferred Tax Assets'
+}
+
+# Backward compatibility - default to Chinese for now
+DISPLAY_NAME_MAPPING_DEFAULT = DISPLAY_NAME_MAPPING_DEFAULT_CHINESE
+DISPLAY_NAME_MAPPING_NB_NJ = DISPLAY_NAME_MAPPING_NB_NJ_CHINESE
+
+def get_category_mapping(statement_type, entity_name, language='chinese'):
     """
-    Get category mapping based on statement type and entity name
+    Get category mapping based on statement type, entity name, and language
     """
+    # Select the appropriate display name mapping based on language and entity
+    if language.lower() == 'english':
+        if entity_name in ['Ningbo', 'Nanjing']:
+            name_mapping = DISPLAY_NAME_MAPPING_NB_NJ_ENGLISH
+        else:
+            name_mapping = DISPLAY_NAME_MAPPING_DEFAULT_ENGLISH
+    else:  # Chinese (default)
+        if entity_name in ['Ningbo', 'Nanjing']:
+            name_mapping = DISPLAY_NAME_MAPPING_NB_NJ_CHINESE
+        else:
+            name_mapping = DISPLAY_NAME_MAPPING_DEFAULT_CHINESE
+    
     if statement_type == "IS":
         # Income Statement categories
-        if entity_name in ['Ningbo', 'Nanjing']:
-            return {
-                'Revenue': ['OI', 'Other Income', 'Non-operating Income'],
-                'Expenses': ['OC', 'GA', 'Fin Exp', 'Cr Loss', 'Non-operating Exp'],
-                'Taxes': ['Tax and Surcharges', 'Income tax'],
-                'Other': ['LT DTA']
-            }, DISPLAY_NAME_MAPPING_NB_NJ
-        else:  # Haining and others
-            return {
-                'Revenue': ['OI', 'Other Income', 'Non-operating Income'],
-                'Expenses': ['OC', 'GA', 'Fin Exp', 'Cr Loss', 'Non-operating Exp'],
-                'Taxes': ['Tax and Surcharges', 'Income tax'],
-                'Other': ['LT DTA']
-            }, DISPLAY_NAME_MAPPING_DEFAULT
+        return {
+            'Revenue': ['OI', 'Other Income', 'Non-operating Income'],
+            'Expenses': ['OC', 'GA', 'Fin Exp', 'Cr Loss', 'Non-operating Exp'],
+            'Taxes': ['Tax and Surcharges', 'Income tax'],
+            'Other': ['LT DTA']
+        }, name_mapping
     else:
         # Balance Sheet categories (default)
         if entity_name in ['Ningbo', 'Nanjing']:
@@ -56,14 +89,14 @@ def get_category_mapping(statement_type, entity_name):
                 'Non-current Assets': ['IP', 'Other NCA'],
                 'Liabilities': ['AP', 'Taxes payable', 'OP'],
                 'Equity': ['Capital']
-            }, DISPLAY_NAME_MAPPING_NB_NJ
+            }, name_mapping
         else:  # Haining and others
             return {
                 'Current Assets': ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA'],
                 'Non-current Assets': ['IP', 'Other NCA'],
                 'Liabilities': ['AP', 'Taxes payable', 'OP'],
                 'Equity': ['Capital', 'Reserve']
-            }, DISPLAY_NAME_MAPPING_DEFAULT
+            }, name_mapping
 
 def get_statement_keys(statement_type):
     """

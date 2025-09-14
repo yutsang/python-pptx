@@ -459,7 +459,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         - Replace ALL 'xxx' or placeholders with actaul data values
         - Do not use bullet point for listing
         - Check all numbers if they are in thousands (K) or millions (M) and express accordingly, do appropriate convertion (K or M) for any number > 1000
-        - No foreign contents, if any, translate to English
+        - If any foreign language content is encountered, translate it directly to English without using translation placeholders
         - Stick to Template format, no extra explanations or comments
         - For entity name to be filled into template, it should not be the reporting entity ({entity_name}) itself, it must be from the DATA SOURCE
         - For all listing figures, please check the total, together should be around the same or consituing majority of FINANCIAL FIGURE

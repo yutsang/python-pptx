@@ -1844,7 +1844,7 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
             - CRITICAL: Use the SPECIFIC entity names from the table data (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name
             - Do not use bullet point for listing
             - Express all figures with proper K/M conversion (e.g., 9,076,000 = 9.1M, 1,500 = 1.5K)
-            - No foreign contents, if any, translate to English
+            - If any foreign language content is encountered, translate it directly to English without using translation placeholders
             - Stick to Template format, no extra explanations or comments
             - For entity name to be filled into template, use the specific entity names from the DATA SOURCE table
             - For all listing figures, please check the total, together should be around the same or constituting majority of FINANCIAL FIGURE
@@ -2511,15 +2511,22 @@ class ProofreadingAgent:
                 else:
                     system_prompt = (
                         "You are an AI proofreader for financial due diligence narratives. Focus on pattern compliance, "
-                        "K/M figure formatting, entity correctness, grammar/pro tone, and language normalization (keep original language). Return JSON."
+                        "K/M figure formatting, entity correctness, grammar/pro tone, and language normalization (keep original language). "
+                        "CRITICAL: Flag any [Translate: ...] artifacts as non-compliant - these indicate incomplete translation and must be cleaned up. "
+                        "Return JSON."
                     )
 
             # Truncate content and tables to fit within context limits
             max_content_length = 8000  # Leave room for other parts
             max_tables_length = 4000
 
-            truncated_content = content[:max_content_length] + ("..." if len(content) > max_content_length else "")
-            truncated_tables = tables_markdown[:max_tables_length] + ("..." if len(tables_markdown) > max_tables_length else "")
+            # Ensure content is a string
+            content_str = str(content) if content else ""
+            truncated_content = content_str[:max_content_length] + ("..." if len(content_str) > max_content_length else "")
+            
+            # Ensure tables_markdown is a string before truncation
+            tables_markdown_str = str(tables_markdown) if tables_markdown else ""
+            truncated_tables = tables_markdown_str[:max_tables_length] + ("..." if len(tables_markdown_str) > max_tables_length else "")
 
             # Build user query with truncated content (language-aware)
             if language_key == 'chinese':
@@ -2564,6 +2571,7 @@ class ProofreadingAgent:
                 {truncated_tables}
 
                 TASK: Analyze the content for compliance, figure formatting, entity correctness, and grammar.
+                CRITICAL: Check for [Translate: ...] artifacts - these indicate incomplete translation and must be flagged as non-compliant.
                 Return ONLY a JSON object with these exact fields:
                 {{
                   "is_compliant": true,
@@ -2586,7 +2594,7 @@ class ProofreadingAgent:
             else:
                 model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
 
-            response = generate_response(user_query, system_prompt, oai_client, tables_markdown, model, entity, self.use_local_ai)
+            response = generate_response(user_query, system_prompt, oai_client, tables_markdown_str, model, entity, self.use_local_ai)
             response = response.strip()
             if response.startswith('```json'):
                 response = response.replace('```json', '').replace('```', '').strip()
@@ -2595,7 +2603,11 @@ class ProofreadingAgent:
 
             try:
                 result = json.loads(response)
-                # Fill defaults
+                
+                # Debug: Log the raw result to understand what the AI is returning
+                print(f"🔍 DEBUG PROOFREADER RAW RESULT: {result}")
+                
+                # Fill defaults and ensure proper types
                 result.setdefault('is_compliant', True)
                 result.setdefault('issues', [])
                 result.setdefault('corrected_content', content)
@@ -2604,6 +2616,37 @@ class ProofreadingAgent:
                 result.setdefault('grammar_notes', [])
                 result.setdefault('pattern_used', '')
                 result.setdefault('translation_runs', 0)
+                
+                # Debug: Log the issues field specifically
+                issues_field = result.get('issues')
+                print(f"🔍 DEBUG ISSUES FIELD: {issues_field} (type: {type(issues_field)})")
+                
+                # Ensure issues is always a list - with more robust handling
+                if not isinstance(result.get('issues'), list):
+                    print(f"⚠️ WARNING: Issues field is not a list, converting from {type(result.get('issues'))}")
+                    if isinstance(result.get('issues'), str):
+                        # If it's a string, try to split it if it looks like multiple issues
+                        issues_str = result['issues'].strip()
+                        if ',' in issues_str or '\n' in issues_str:
+                            # Try to split by comma or newline
+                            result['issues'] = [issue.strip() for issue in issues_str.replace('\n', ',').split(',') if issue.strip()]
+                        else:
+                            result['issues'] = [issues_str] if issues_str else []
+                    elif isinstance(result.get('issues'), (int, float)):
+                        # If it's a number, convert to string first
+                        result['issues'] = [str(result['issues'])]
+                    else:
+                        # For any other type, try to convert to string and wrap in list
+                        try:
+                            result['issues'] = [str(result['issues'])] if result['issues'] else []
+                        except:
+                            result['issues'] = []
+                
+                # Ensure other list fields are actually lists
+                for field in ['figure_checks', 'entity_checks', 'grammar_notes']:
+                    if not isinstance(result.get(field), list):
+                        print(f"⚠️ WARNING: {field} field is not a list, converting from {type(result.get(field))}")
+                        result[field] = []
 
                 # Only apply heuristic translation for English language (not for Chinese)
                 def contains_cjk(txt: str) -> bool:
@@ -2625,7 +2668,7 @@ class ProofreadingAgent:
                             "no brackets or explanations, output final English text only."
                         )
                         trans_user = f"Translate to English (final text only):\n{corrected}"
-                        trans = generate_response(trans_user, trans_system, oai_client, tables_markdown, model, entity, self.use_local_ai)
+                        trans = generate_response(trans_user, trans_system, oai_client, tables_markdown_str, model, entity, self.use_local_ai)
                         corrected = clean_response_text(trans, 'english')  # Explicitly pass english for translation
                         runs += 1
                         if not contains_cjk(corrected):
@@ -2635,7 +2678,7 @@ class ProofreadingAgent:
                     result['corrected_content'] = corrected
                     result['translation_runs'] = runs
 
-                # Post-process: Replace any remaining xxx placeholders
+                # Post-process: Replace any remaining xxx placeholders and translation artifacts
                 corrected = result.get('corrected_content') or content
                 if corrected:
                     # Replace common xxx patterns with appropriate content
@@ -2643,6 +2686,11 @@ class ProofreadingAgent:
                     corrected = corrected.replace('XXX', 'the relevant amount')
                     corrected = corrected.replace('xxx', 'applicable')
                     corrected = corrected.replace('XXX', 'applicable')
+                    
+                    # Clean up any [Translate: ...] artifacts that might have slipped through
+                    import re
+                    corrected = re.sub(r'\[Translate:\s*([^\]]+)\]', r'\1', corrected)
+                    
                     result['corrected_content'] = corrected
 
                 # Debug: Log final result (remove after testing)
@@ -2666,9 +2714,14 @@ class ProofreadingAgent:
                     except Exception:
                         pass
 
+                # Ensure all fields are proper types
+                error_issues = [f"AI response parsing failed: {str(parse_error)}", "Used original content due to parsing error"]
+                if not isinstance(error_issues, list):
+                    error_issues = [str(error_issues)]
+                
                 return {
                     'is_compliant': False,
-                    'issues': [f"AI response parsing failed: {str(parse_error)}", "Used original content due to parsing error"],
+                    'issues': error_issues,
                     'corrected_content': corrected_content,
                     'figure_checks': ["Unable to validate - parsing error"],
                     'entity_checks': ["Unable to validate - parsing error"],
@@ -2678,16 +2731,40 @@ class ProofreadingAgent:
                 }
         except Exception as e:
             print(f"Proofreading error: {e}")
-            return {
-                'is_compliant': False,
-                'issues': [f"Proofreading error: {e}"],
-                'corrected_content': content,
-                'figure_checks': [],
-                'entity_checks': [],
-                'grammar_notes': [],
-                'pattern_used': '',
-                'translation_runs': 0
-            }
+            print(f"🔍 DEBUG: Exception type: {type(e)}")
+            import traceback
+            print(f"🔍 DEBUG: Full traceback: {traceback.format_exc()}")
+            
+            # Ensure we always return proper types
+            try:
+                error_message = [f"Proofreading error: {str(e)}"]
+                # Double-check that error_message is actually a list
+                if not isinstance(error_message, list):
+                    error_message = [str(error_message)]
+                
+                
+                return {
+                    'is_compliant': False,
+                    'issues': error_message,
+                    'corrected_content': content,
+                    'figure_checks': [],
+                    'entity_checks': [],
+                    'grammar_notes': [],
+                    'pattern_used': '',
+                    'translation_runs': 0
+                }
+            except Exception as inner_e:
+                print(f"🔍 DEBUG: Error in exception handler: {inner_e}")
+                return {
+                    'is_compliant': False,
+                    'issues': ["Proofreading failed with internal error"],
+                    'corrected_content': content or "",
+                    'figure_checks': [],
+                    'entity_checks': [],
+                    'grammar_notes': [],
+                    'pattern_used': '',
+                    'translation_runs': 0
+                }
 
 def clean_response_text(text: str, language: str = 'english') -> str:
     """Clean up AI response text: remove outer quotes, translate Chinese, etc."""
@@ -2729,13 +2806,54 @@ def clean_response_text(text: str, language: str = 'english') -> str:
         for chinese, english in chinese_translations.items():
             text = text.replace(chinese, english)
 
-        # Fallback: detect any residual CJK characters and annotate/remedy
+        # Fallback: detect any residual CJK characters and handle them properly
         try:
             import re
             if re.search(r"[\u4e00-\u9fff]", text):
-                # As a minimal remediation, wrap unknown Chinese segments in brackets with a note
-                # while keeping the rest English; prevents raw Chinese leaking to final output
-                text = re.sub(r"([\u4e00-\u9fff]+)", r"[Translate: \1]", text)
+                # Instead of adding [Translate: ...] artifacts, try to translate common terms
+                # or replace with appropriate English equivalents
+                chinese_fallback_translations = {
+                    '暫估成本': 'estimated costs',
+                    '暫估': 'estimated',
+                    '成本': 'costs',
+                    '費用': 'expenses',
+                    '收入': 'revenue',
+                    '資產': 'assets',
+                    '負債': 'liabilities',
+                    '權益': 'equity',
+                    '現金': 'cash',
+                    '應收': 'receivables',
+                    '應付': 'payables',
+                    '存貨': 'inventory',
+                    '固定資產': 'fixed assets',
+                    '無形資產': 'intangible assets',
+                    '長期投資': 'long-term investments',
+                    '短期投資': 'short-term investments',
+                    '預付': 'prepaid',
+                    '預收': 'deferred revenue',
+                    '其他': 'other',
+                    '相關': 'related',
+                    '公司': 'company',
+                    '有限公司': 'Co., Ltd.',
+                    '股份有限公司': 'Corp.',
+                    '集團': 'Group',
+                    '控股': 'Holdings',
+                    '投資': 'Investment',
+                    '基金': 'Fund',
+                    '合夥': 'Partnership',
+                    '有限合夥': 'Limited Partnership',
+                    '普通合夥': 'General Partnership',
+                    '特殊普通合夥': 'Special General Partnership'
+                }
+                
+                # Try to translate known terms first
+                for chinese_term, english_term in chinese_fallback_translations.items():
+                    text = text.replace(chinese_term, english_term)
+                
+                # If there are still Chinese characters, replace with generic placeholder
+                # instead of [Translate: ...] artifacts
+                if re.search(r"[\u4e00-\u9fff]", text):
+                    text = re.sub(r"([\u4e00-\u9fff]+)", "relevant amount", text)
         except Exception:
             pass
 

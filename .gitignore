@@ -1,11 +1,5 @@
 # Logs
-logging/
-logging/**
 *.pptx
-
-# library folder
-./ai_pptx
-/ai_pptx
 
 # Output
 final_report*
@@ -30,6 +24,7 @@ archive/
 # Add any other input/output file types as needed
 /utils/config.json
 fdd_utils/config.json
+3/8/2025
 
 # Python cache and build files
 __pycache__/

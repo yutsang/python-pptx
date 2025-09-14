@@ -185,10 +185,13 @@ def generate_content_from_session_storage(entity_name):
 
         # Get current statement type from session state
         current_statement_type = st.session_state.get('current_statement_type', 'BS')
+        
+        # Get detected language from session state
+        detected_language = st.session_state.get('ai_data', {}).get('detected_language', 'chinese')
 
         # Get category mappings from centralized config
         from fdd_utils.category_config import get_category_mapping
-        category_mapping, name_mapping = get_category_mapping(current_statement_type, entity_name)
+        category_mapping, name_mapping = get_category_mapping(current_statement_type, entity_name, detected_language)
 
         # Generate JSON content from session storage (for AI2 easy access)
         json_content = {
