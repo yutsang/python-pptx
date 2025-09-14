@@ -268,47 +268,102 @@ def generate_entity_keywords(entity_input):
 
 def detect_language_from_data(sections_by_key):
     """Auto-detect language from 'Indicative adjusted' vs '示意性调整后' columns"""
-    chinese_indicators = ['示意性调整后', '示意性調整後']
-    english_indicators = ['indicative adjusted']
+    chinese_indicators = ['示意性调整后', '示意性調整後', '现金', '应收账款', '预付款项', '其他应收款', '应付账款', '应交税费', '其他应付款', '股本', '资本公积', '营业收入', '营业成本', '管理费用', '财务费用', '所得税']
+    english_indicators = ['indicative adjusted', 'cash', 'accounts receivable', 'prepayments', 'other receivables', 'accounts payable', 'taxes payable', 'other payables', 'capital', 'reserve', 'operating income', 'operating cost', 'general and administrative', 'finance expenses', 'income tax']
     
     chinese_count = 0
     english_count = 0
     
+    print(f"🔍 DEBUG LANGUAGE DETECTION: Starting language detection with {len(sections_by_key)} keys")
+    
     for key, sections in sections_by_key.items():
         if not sections:
+            print(f"🔍 DEBUG LANGUAGE DETECTION: Key '{key}' has no sections")
             continue
             
+        print(f"🔍 DEBUG LANGUAGE DETECTION: Checking key '{key}' with {len(sections)} sections")
+        
         for section in sections:
             if 'parsed_data' in section and section['parsed_data']:
                 metadata = section['parsed_data'].get('metadata', {})
                 table_name = metadata.get('table_name', '')
                 
+                print(f"🔍 DEBUG LANGUAGE DETECTION: Table name: '{table_name}'")
+                
                 # Check table name for language indicators
                 table_lower = table_name.lower()
                 if any(indicator in table_lower for indicator in english_indicators):
                     english_count += 1
+                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in table name: '{table_name}'")
                 elif any(indicator in table_name for indicator in chinese_indicators):
                     chinese_count += 1
+                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found Chinese indicator in table name: '{table_name}'")
                 
                 # Also check data content for language indicators
                 data_rows = section['parsed_data'].get('data', [])
-                for row in data_rows[:5]:  # Check first 5 rows
+                print(f"🔍 DEBUG LANGUAGE DETECTION: Checking {len(data_rows)} data rows")
+                
+                for row_idx, row in enumerate(data_rows[:5]):  # Check first 5 rows
                     if isinstance(row, list):
-                        for cell in row:
+                        for cell_idx, cell in enumerate(row):
                             if isinstance(cell, str):
                                 cell_lower = cell.lower()
                                 if any(indicator in cell_lower for indicator in english_indicators):
                                     english_count += 1
+                                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in data: '{cell}' (row {row_idx}, cell {cell_idx})")
                                 elif any(indicator in cell for indicator in chinese_indicators):
                                     chinese_count += 1
+                                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found Chinese indicator in data: '{cell}' (row {row_idx}, cell {cell_idx})")
+            else:
+                print(f"🔍 DEBUG LANGUAGE DETECTION: Section has no parsed_data")
     
-    # Determine language based on counts
-    if chinese_count > english_count:
-        detected_language = 'chinese'
-        print(f"🌏 LANGUAGE DETECTED: Chinese (indicators found: {chinese_count} Chinese, {english_count} English)")
+    print(f"🔍 DEBUG LANGUAGE DETECTION: Final counts - Chinese: {chinese_count}, English: {english_count}")
+    
+    # If no indicators found, try to detect from any Chinese characters in the data
+    if chinese_count == 0 and english_count == 0:
+        print("🔍 DEBUG LANGUAGE DETECTION: No specific indicators found, checking for Chinese characters...")
+        chinese_char_count = 0
+        total_char_count = 0
+        
+        for key, sections in sections_by_key.items():
+            if not sections:
+                continue
+                
+            for section in sections:
+                if 'parsed_data' in section and section['parsed_data']:
+                    data_rows = section['parsed_data'].get('data', [])
+                    for row in data_rows[:10]:  # Check first 10 rows
+                        if isinstance(row, list):
+                            for cell in row:
+                                if isinstance(cell, str):
+                                    total_char_count += len(cell)
+                                    # Count Chinese characters (CJK Unified Ideographs)
+                                    for char in cell:
+                                        if '\u4e00' <= char <= '\u9fff':
+                                            chinese_char_count += 1
+        
+        if total_char_count > 0:
+            chinese_ratio = chinese_char_count / total_char_count
+            print(f"🔍 DEBUG LANGUAGE DETECTION: Chinese character ratio: {chinese_ratio:.2f} ({chinese_char_count}/{total_char_count})")
+            
+            if chinese_ratio > 0.1:  # If more than 10% Chinese characters
+                detected_language = 'chinese'
+                print(f"🌏 LANGUAGE DETECTED: Chinese (based on character ratio: {chinese_ratio:.2f})")
+            else:
+                detected_language = 'english'
+                print(f"🌏 LANGUAGE DETECTED: English (based on character ratio: {chinese_ratio:.2f})")
+        else:
+            # Default to English if no characters found
+            detected_language = 'english'
+            print("🌏 LANGUAGE DETECTED: English (default - no characters found)")
     else:
-        detected_language = 'english'
-        print(f"🌏 LANGUAGE DETECTED: English (indicators found: {english_count} English, {chinese_count} Chinese)")
+        # Determine language based on counts
+        if chinese_count > english_count:
+            detected_language = 'chinese'
+            print(f"🌏 LANGUAGE DETECTED: Chinese (indicators found: {chinese_count} Chinese, {english_count} English)")
+        else:
+            detected_language = 'english'
+            print(f"🌏 LANGUAGE DETECTED: English (indicators found: {english_count} English, {chinese_count} Chinese)")
     
     return detected_language
 
@@ -938,6 +993,15 @@ def main():
         # Get detected language
         detected_language = st.session_state.get('ai_data', {}).get('detected_language', 'english')
         language_display = "🇨🇳 Chinese" if detected_language == 'chinese' else "🇺🇸 English"
+        
+        # Debug: Print detected language
+        print(f"🔍 DEBUG AI BUTTON: detected_language='{detected_language}', language_display='{language_display}'")
+        
+        # Show detected language prominently
+        if detected_language == 'chinese':
+            st.info(f"🌏 **Language Detected**: Chinese databook - AI will generate content in Chinese")
+        else:
+            st.info(f"🌏 **Language Detected**: English databook - AI will generate content in English")
         
         # BSHN Sheet Options (default enabled)
         include_bshn = True  # Always include BSHN sheet by default
