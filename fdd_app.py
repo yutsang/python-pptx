@@ -267,7 +267,7 @@ def generate_entity_keywords(entity_input):
 
 
 def detect_language_from_data(sections_by_key):
-    """Auto-detect language from 'Indicative adjusted' vs '示意性调整后' columns"""
+    """Auto-detect language from 'Indicative adjusted' vs '示意性调整后' columns in Excel data"""
     chinese_indicators = ['示意性调整后', '示意性調整後', '现金', '应收账款', '预付款项', '其他应收款', '应付账款', '应交税费', '其他应付款', '股本', '资本公积', '营业收入', '营业成本', '管理费用', '财务费用', '所得税']
     english_indicators = ['indicative adjusted', 'cash', 'accounts receivable', 'prepayments', 'other receivables', 'accounts payable', 'taxes payable', 'other payables', 'capital', 'reserve', 'operating income', 'operating cost', 'general and administrative', 'finance expenses', 'income tax']
     
@@ -299,9 +299,42 @@ def detect_language_from_data(sections_by_key):
                     chinese_count += 1
                     print(f"🔍 DEBUG LANGUAGE DETECTION: Found Chinese indicator in table name: '{table_name}'")
                 
-                # Also check data content for language indicators
+                # Check the raw Excel data for language indicators (this is where "示意性调整后" actually appears)
+                raw_data = section.get('data', None)  # The raw Excel data is stored in 'data' field
+                if raw_data is not None:
+                    print(f"🔍 DEBUG LANGUAGE DETECTION: Checking raw Excel data with shape {raw_data.shape if hasattr(raw_data, 'shape') else 'unknown'}")
+                    
+                    # Convert DataFrame to list of lists for processing
+                    if hasattr(raw_data, 'values'):
+                        data_rows = raw_data.values.tolist()
+                    elif isinstance(raw_data, list):
+                        data_rows = raw_data
+                    else:
+                        data_rows = []
+                    
+                    for row_idx, row in enumerate(data_rows[:10]):  # Check first 10 rows of raw data
+                        if isinstance(row, list):
+                            for cell_idx, cell in enumerate(row):
+                                if isinstance(cell, str):
+                                    cell_lower = cell.lower()
+                                    # Check for the specific "indicative adjusted" vs "示意性调整后" indicators
+                                    if "indicative adjusted" in cell_lower:
+                                        english_count += 1
+                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found 'indicative adjusted' in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                    elif "示意性调整后" in cell or "示意性調整後" in cell:
+                                        chinese_count += 1
+                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found '示意性调整后' in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                    # Also check for other language indicators
+                                    elif any(indicator in cell_lower for indicator in english_indicators):
+                                        english_count += 1
+                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                    elif any(indicator in cell for indicator in chinese_indicators):
+                                        chinese_count += 1
+                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found Chinese indicator in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                
+                # Also check parsed data content for language indicators
                 data_rows = section['parsed_data'].get('data', [])
-                print(f"🔍 DEBUG LANGUAGE DETECTION: Checking {len(data_rows)} data rows")
+                print(f"🔍 DEBUG LANGUAGE DETECTION: Checking {len(data_rows)} parsed data rows")
                 
                 for row_idx, row in enumerate(data_rows[:5]):  # Check first 5 rows
                     if isinstance(row, list):
@@ -310,10 +343,10 @@ def detect_language_from_data(sections_by_key):
                                 cell_lower = cell.lower()
                                 if any(indicator in cell_lower for indicator in english_indicators):
                                     english_count += 1
-                                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in parsed data: '{cell}' (row {row_idx}, cell {cell_idx})")
                                 elif any(indicator in cell for indicator in chinese_indicators):
                                     chinese_count += 1
-                                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found Chinese indicator in data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found Chinese indicator in parsed data: '{cell}' (row {row_idx}, cell {cell_idx})")
             else:
                 print(f"🔍 DEBUG LANGUAGE DETECTION: Section has no parsed_data")
     
@@ -330,6 +363,28 @@ def detect_language_from_data(sections_by_key):
                 continue
                 
             for section in sections:
+                # Check raw data first (stored in 'data' field)
+                raw_data = section.get('data', None)
+                if raw_data is not None:
+                    # Convert DataFrame to list of lists for processing
+                    if hasattr(raw_data, 'values'):
+                        data_rows = raw_data.values.tolist()
+                    elif isinstance(raw_data, list):
+                        data_rows = raw_data
+                    else:
+                        data_rows = []
+                    
+                    for row in data_rows[:10]:  # Check first 10 rows
+                        if isinstance(row, list):
+                            for cell in row:
+                                if isinstance(cell, str):
+                                    total_char_count += len(cell)
+                                    # Count Chinese characters (CJK Unified Ideographs)
+                                    for char in cell:
+                                        if '\u4e00' <= char <= '\u9fff':
+                                            chinese_char_count += 1
+                
+                # Also check parsed data
                 if 'parsed_data' in section and section['parsed_data']:
                     data_rows = section['parsed_data'].get('data', [])
                     for row in data_rows[:10]:  # Check first 10 rows
