@@ -190,8 +190,6 @@ class PowerPointGenerator:
         self.language = language  # Store language for Chinese mode detection
         self.row_limit = row_limit  # Maximum number of rows per shape
         
-        # Debug: Print language initialization
-        print(f"🔍 DEBUG PPTX GENERATOR: Initialized with language='{self.language}'")
         
         # Find a slide with textMainBullets shape
         shape = None
@@ -1939,9 +1937,6 @@ class PowerPointGenerator:
         if not is_continued:
             return ""
         
-        # Debug: Print language detection info
-        current_language = getattr(self, 'language', 'unknown')
-        print(f"🔍 DEBUG CONTINUATION: is_continued={is_continued}, language='{current_language}'")
         
         if hasattr(self, 'language') and self.language == 'chinese':
             return " (续)"

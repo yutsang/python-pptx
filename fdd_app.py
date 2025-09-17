@@ -951,8 +951,6 @@ def main():
         if needs_processing:
             with st.spinner("🔄 Processing Excel file..."):
                 print(f"🔄 Processing Excel for {selected_entity}")
-                print(f"🔍 DEBUG: Entity keywords: {entity_keywords}")
-                print(f"🔍 DEBUG: Entity mode: {entity_mode_internal}")
                 start_time = time.time()
 
                 sections_by_key, status = process_excel_with_timeout(
@@ -978,16 +976,6 @@ def main():
                 print(f"✅ Excel processing completed in {processing_time:.2f}s")
                 print(f"📊 Found {len(sections_by_key)} financial keys with data")
                 
-                # Debug: Check what's actually in sections_by_key
-                print(f"🔍 DEBUG MAIN: sections_by_key keys: {list(sections_by_key.keys())}")
-                for key, sections in sections_by_key.items():
-                    print(f"🔍 DEBUG MAIN: Key '{key}' has {len(sections) if sections else 0} sections")
-                    if sections:
-                        for i, section in enumerate(sections):
-                            entity_name = section.get('entity_name', 'NO_ENTITY')
-                            detected_entity = section.get('detected_entity', 'NO_DETECTED')
-                            sheet_name = section.get('sheet_name', 'NO_SHEET')
-                            print(f"🔍 DEBUG MAIN: Section {i}: entity='{entity_name}', detected='{detected_entity}', sheet='{sheet_name}'")
 
                 # Auto-detect language from data
                 detected_language = detect_language_from_data(sections_by_key)
@@ -1004,8 +992,6 @@ def main():
             sections_by_key = st.session_state.get('ai_data', {}).get('sections_by_key', {})
 
         # Display financial statements
-        print(f"🔍 DEBUG UI CALL: About to render UI with selected_entity='{selected_entity}'")
-        print(f"🔍 DEBUG UI CALL: sections_by_key has {len(sections_by_key)} keys: {list(sections_by_key.keys())}")
         
         if statement_type == "BS":
             render_balance_sheet_sections(
@@ -1063,8 +1049,6 @@ def main():
         detected_language = st.session_state.get('ai_data', {}).get('detected_language', 'english')
         language_display = "🇨🇳 Chinese" if detected_language == 'chinese' else "🇺🇸 English"
         
-        # Debug: Print detected language
-        print(f"🔍 DEBUG AI BUTTON: detected_language='{detected_language}', language_display='{language_display}'")
         
         # Show detected language prominently
         if detected_language == 'chinese':
@@ -1152,10 +1136,7 @@ def main():
                         st.session_state['processing_start_time'] = time.time()
                     
                     def progress_callback_eng(p, msg):
-                        # Debug: Print the actual message to see format
-                        print(f"🔍 DEBUG PROGRESS: p={p}, msg='{msg}'")
-                        
-                        # Store debug info in session state for display
+                        # Store progress info in session state for display
                         if 'debug_progress' not in st.session_state:
                             st.session_state['debug_progress'] = []
                         st.session_state['debug_progress'].append(f"p={p}, msg='{msg}'")
@@ -1300,7 +1281,6 @@ def main():
                             proofread_result = proofread_results[key]
                             st.session_state['ai_content_store'][key]['agent2_content'] = proofread_result
                         
-                        print(f"🔍 DEBUG CHINESE AI STORAGE: Stored content for key '{key}'")
 
                     st.session_state['agent_states']['agent3_results'] = final_results
                     st.session_state['agent_states']['agent3_completed'] = True
@@ -1420,7 +1400,6 @@ def main():
                             # Store proofread content for preview (store the full result object, not just content)
                             st.session_state['ai_content_store'][key]['agent2_content'] = result
                             
-                            print(f"🔍 DEBUG AI STORAGE: Stored content for key '{key}'")
 
                         st.session_state['agent_states']['agent1_results'] = proofread_results
                         st.session_state['agent_states']['agent1_completed'] = True

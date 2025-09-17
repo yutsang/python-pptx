@@ -458,7 +458,6 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
     unique_entities = len(entity_sections)
     detected_multiple = unique_entities > 1
 
-    print(f"   🔍 DEBUG INFO:")
     print(f"   📊 Generated entity keywords: {entity_keywords}")
     print(f"   📊 Entities found in Excel: {list(entity_sections.keys()) if entity_sections else 'None'}")
     if manual_mode != 'multiple' and all_potential_entities:
@@ -917,8 +916,6 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         thousand_indicators = ["'000", "'000", "cny'000", "thousands", "人民币千元", "人民幣千元"]
         million_indicators = ["'000,000", "millions", "cny'000,000", "人民币万元", "人民幣萬元"]
 
-        # Debug: Print what we're looking for
-        print(f"   🔍 DEBUG: Looking for currency indicators in first 3 rows of sheet '{sheet_name}'")
 
         for i in range(min(3, len(df_str))):
             for j in range(len(df_str.columns)):
@@ -2310,7 +2307,6 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
                         # CRITICAL FIX: Only process if this section matches the SELECTED entity
                         # Check if this section contains the selected entity name
-                        print(f"   🔍 DECISION LOGIC DEBUG:")
                         print(f"      📋 Looking for entity keywords: {entity_keywords}")
                         print(f"      📋 Section text (first 200 chars): {section_text[:200]}")
                         print(f"      📋 Section text (full): {section_text}")

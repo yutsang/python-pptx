@@ -159,9 +159,6 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
         {"role": "user", "content": enhanced_user_query}
     ]
     
-    print(f"🔍 DEBUG: Conversation created with {len(conversation)} messages")
-    print(f"🔍 DEBUG: System prompt length: {len(system_prompt)}")
-    print(f"🔍 DEBUG: User query length: {len(enhanced_user_query)}")
     
     try:
         # For local AI with thinking support (DeepSeek 671B), enable reasoning
@@ -287,7 +284,6 @@ def parse_table_to_structured_format(df, entity_name, table_name):
         print(f"{'='*100}")
         print(f"🔍 Starting detailed processing of table '{table_name}'...")
         print(f"{'='*100}")
-        print(f"🔍 DEBUG: First 5 rows of data:")
         for i, row in enumerate(df.head(5).values.tolist()):
             print(f"   Row {i}: {row}")
 
@@ -308,8 +304,6 @@ def parse_table_to_structured_format(df, entity_name, table_name):
             print(f"⚠️ DEBUG: No rows found in table '{table_name}'")
             return None
 
-        print(f"🔍 DEBUG: Total rows to process: {len(rows)}")
-        print(f"🔍 DEBUG: Sample row data:")
         for i, row in enumerate(rows[:3]):  # Show first 3 rows
             print(f"   Row {i}: {row}")
 
@@ -398,7 +392,6 @@ def parse_table_to_structured_format(df, entity_name, table_name):
         amount_col = 1
         
         # Look for columns with numbers in the amount column
-        print(f"🔍 DEBUG: Analyzing columns for numeric content...")
         for col_idx in range(min(2, len(df.columns))):
             numeric_count = 0
             for row in rows:
@@ -408,11 +401,9 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                     if re.match(r'^[\d,]+\.?\d*$', cell_value.replace(',', '')):
                         numeric_count += 1
 
-            print(f"🔍 DEBUG: Column {col_idx}: {numeric_count}/{len(rows)} numeric values")
             if numeric_count > len(rows) * 0.3:  # At least 30% of rows have numbers
                 amount_col = col_idx
                 desc_col = 1 if col_idx == 0 else 0
-                print(f"✅ DEBUG: Identified amount column as {col_idx}, desc column as {desc_col}")
                 print(f"📋 COLUMN MAPPING: Description='{df.columns[desc_col]}', Amount='{df.columns[amount_col]}'")
                 break
         
@@ -427,8 +418,6 @@ def parse_table_to_structured_format(df, entity_name, table_name):
             desc_cell = str(row[desc_col]).strip() if desc_col < len(row) else ""
             amount_cell = str(row[amount_col]).strip() if amount_col < len(row) else ""
 
-            # DEBUG: Log every row we're processing
-            print(f"🔍 DEBUG: Processing row {row_idx}: desc='{desc_cell}', amount='{amount_cell}'")
 
             # Skip empty rows
             if not desc_cell and not amount_cell:
@@ -1680,26 +1669,20 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         prompts_config = json.load(f)
 
     # Use the passed language parameter (defaults to 'english')
-    print(f"🔍 DEBUG: Language parameter: '{language}'")
-    print(f"🔍 DEBUG: Available languages in prompts: {list(prompts_config.get('system_prompts', {}).keys())}")
     
     system_prompts = prompts_config.get('system_prompts', {}).get(language, {})
-    print(f"🔍 DEBUG: System prompts for language '{language}': {list(system_prompts.keys())}")
 
     system_prompt = system_prompts.get('Agent 1')
     if not system_prompt:
         # Fallback to direct access if nested structure fails
         system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1')
-        print(f"🔍 DEBUG: Using fallback system prompt")
     
     if not system_prompt:
         print(f"❌ ERROR: No system prompt found for language '{language}' or fallback")
         raise RuntimeError(f"No system prompt found for language '{language}'")
     
-    print(f"✅ DEBUG: System prompt loaded successfully (length: {len(system_prompt)})")
     
     # No need to initialize financial figures - we're using cached data
-    print(f"🔍 DEBUG: Using cached data - no need to call find_financial_figures_with_context_check")
     results = {}
     
     # Use Streamlit progress instead of tqdm for better UI integration
@@ -1716,7 +1699,6 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
 
     for key_index, key in enumerate(keys):
         # Determine AI model being used for display
-        print(f"🔍 DEBUG: Processing key {key_index}: {repr(key)} (type: {type(key)})")
         config_details = load_config(config_file)
         if use_local_ai:
             ai_model = "Local AI"
@@ -1749,18 +1731,12 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
 
         pattern = load_ip(pattern_file, key)
         # No need to load mapping since we're using cached data
-        print(f"🔍 DEBUG: Using cached data - no need to load mapping")
 
         # Use processed table data - this should always be available
-        print(f"🔍 DEBUG: processed_table_data keys: {list(processed_table_data.keys()) if processed_table_data else 'None'}")
-        print(f"🔍 DEBUG: Looking for key: {key}")
-        print(f"🔍 DEBUG: Key '{key}' in processed_table_data: {key in processed_table_data if processed_table_data else False}")
         
         if processed_table_data and key in processed_table_data:
             excel_tables = processed_table_data[key]
             data_source = "cached"
-            print(f"✅ DEBUG: Using cached data for key: {key}")
-            print(f"✅ DEBUG: Cached data has {len(excel_tables) if excel_tables else 0} tables")
         else:
             print(f"❌ ERROR: Key '{key}' not found in processed_table_data")
             print(f"❌ ERROR: Available keys: {list(processed_table_data.keys()) if processed_table_data else 'None'}")
@@ -1790,7 +1766,6 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         excel_tables_for_ai = multiply_figures_for_ai_processing(excel_tables) if has_thousands_notation else excel_tables
 
         # No need to process financial_figures since we're using cached data
-        print(f"🔍 DEBUG: Using cached data - no need to process financial_figures")
 
         # Update progress: AI processing phase
         if not use_streamlit_progress and pbar is not None:
