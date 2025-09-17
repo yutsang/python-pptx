@@ -45,7 +45,6 @@ def render_balance_sheet_sections(
                     section_entity.lower() in selected_entity.lower() or
                     selected_entity.lower() == section_entity.lower()):
                     filtered_sections.append(section)
-                else:
             
             if not filtered_sections:
                 st.info(f"No sections found for entity '{selected_entity}' in this key.")
