@@ -275,7 +275,7 @@ def detect_language_from_data(sections_by_key):
     english_count = 0
     
     print(f"🔍 DEBUG LANGUAGE DETECTION: Starting language detection with {len(sections_by_key)} keys")
-    
+     
     for key, sections in sections_by_key.items():
         if not sections:
             print(f"🔍 DEBUG LANGUAGE DETECTION: Key '{key}' has no sections")
@@ -760,6 +760,24 @@ def main():
         
         # Store uploaded file in session state
         st.session_state['uploaded_file'] = uploaded_file
+        
+        # Check if file has changed and clear AI content if so
+        current_file_name = uploaded_file.name if hasattr(uploaded_file, 'name') else 'default'
+        previous_file_name = st.session_state.get('previous_uploaded_file_name', '')
+        
+        if current_file_name != previous_file_name and previous_file_name != '':
+            # File has changed, clear AI content
+            if 'ai_content_store' in st.session_state:
+                del st.session_state['ai_content_store']
+            if 'ai_data' in st.session_state:
+                del st.session_state['ai_data']
+            if 'uploaded_file_data' in st.session_state:
+                del st.session_state['uploaded_file_data']
+            
+            st.warning("🔄 **New databook uploaded!** AI content has been cleared. Please re-run the AI processing to generate new content.")
+            st.session_state['previous_uploaded_file_name'] = current_file_name
+        elif previous_file_name == '':
+            st.session_state['previous_uploaded_file_name'] = current_file_name
 
         # Entity input
         entity_input = st.text_input(
@@ -767,6 +785,15 @@ def main():
             value="",
             placeholder="e.g., Company Name Limited, Entity Name Corp",
             help="Enter the full entity name to configure processing"
+        )
+        
+        # Slide limit input
+        slide_limit = st.number_input(
+            "Maximum Slides",
+            min_value=1,
+            max_value=100,
+            value=20,
+            help="Maximum number of slides to generate in the PowerPoint presentation"
         )
         
         # Clear session state when entity changes
@@ -1424,7 +1451,7 @@ def main():
                 try:
                     # Export PowerPoint and automatically show download
                     export_enhanced_pptx(selected_entity, statement_type, language=detected_language, 
-                                       financial_statement_tab=financial_statement_tab, include_bshn=include_bshn)
+                                       financial_statement_tab=financial_statement_tab, include_bshn=include_bshn, slide_limit=slide_limit)
                     progress_bar.progress(1.0)
                     status_text.text(f"✅ Report generation and export completed ({language_display})")
                     
@@ -1894,7 +1921,7 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         raise
 
 
-def export_enhanced_pptx(selected_entity, statement_type, language='english', financial_statement_tab=None, include_bshn=True):
+def export_enhanced_pptx(selected_entity, statement_type, language='english', financial_statement_tab=None, include_bshn=True, slide_limit=20):
     """Enhanced PowerPoint export function with BSHN sheet and page designer using template"""
     try:
         if language == 'chinese':
@@ -1948,8 +1975,8 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
                 is_temp = os.path.join(temp_dir, "is_temp.pptx")
                 
                 # Generate BS and IS presentations using template
-                export_pptx(template_path, bs_path, bs_temp, project_name, language=language)
-                export_pptx(template_path, is_path, is_temp, project_name, language=language)
+                export_pptx(template_path, bs_path, bs_temp, project_name, language=language, slide_limit=slide_limit)
+                export_pptx(template_path, is_path, is_temp, project_name, language=language, slide_limit=slide_limit)
                 
                 # Merge presentations
                 merge_presentations(bs_temp, is_temp, output_path)
@@ -1984,7 +2011,7 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
             
             # Use the template with the original export_pptx function (without automatic Excel embedding)
             try:
-                export_pptx(template_path, markdown_path, output_path, project_name, excel_file_path=None, language=language, statement_type=statement_type)
+                export_pptx(template_path, markdown_path, output_path, project_name, excel_file_path=None, language=language, statement_type=statement_type, slide_limit=slide_limit)
             except Exception as export_error:
                 st.error(f"❌ PowerPoint generation failed: {str(export_error)}")
                 st.info(f"💡 Check if content file exists: {markdown_path}")

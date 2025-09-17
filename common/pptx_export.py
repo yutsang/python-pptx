@@ -182,12 +182,13 @@ class FinancialItem:
     is_table: bool = False
 
 class PowerPointGenerator:
-    def __init__(self, template_path: str, language: str = 'english'):
+    def __init__(self, template_path: str, language: str = 'english', slide_limit: int = 20):
         self.prs = Presentation(template_path)
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
         self.ROWS_PER_SECTION = 35  # Reduced for less crowding on page 1
         self.language = language  # Store language for Chinese mode detection
+        self.slide_limit = slide_limit  # Maximum number of slides to generate
         
         # Debug: Print language initialization
         print(f"🔍 DEBUG PPTX GENERATOR: Initialized with language='{self.language}'")
@@ -1331,7 +1332,9 @@ class PowerPointGenerator:
                         title_run.font.name = get_font_name_for_text(title_run.text, 'Arial')
                         title_run.font.size = get_font_size_for_text(title_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         desc_run = p.add_run()
-                        desc_run.text = f" - {part}"
+                        # Add language marking to layer 2 commentary
+                        language_marker = " [CHI]" if self.language == 'chinese' else " [ENG]"
+                        desc_run.text = f" - {part}{language_marker}"
                         desc_run.font.bold = False
                         desc_run.font.name = get_font_name_for_text(desc_run.text, 'Arial')
                         desc_run.font.size = get_font_size_for_text(desc_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
@@ -1352,7 +1355,9 @@ class PowerPointGenerator:
                         try: p.first_line_indent = Inches(-0.19)
                         except: pass
                         cont_run = p.add_run()
-                        cont_run.text = part
+                        # Add language marking to continuation commentary
+                        language_marker = " [CHI]" if self.language == 'chinese' else " [ENG]"
+                        cont_run.text = f"{part}{language_marker}"
                         cont_run.font.bold = False
                         cont_run.font.name = get_font_name_for_text(cont_run.text, 'Arial')
                         cont_run.font.size = get_font_size_for_text(cont_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
@@ -1458,6 +1463,13 @@ class PowerPointGenerator:
 
             max_slide_used = max((slide_idx for slide_idx, _, _ in distribution), default=0)
             total_slides_needed = max_slide_used + 1
+            
+            # Apply slide limit
+            if total_slides_needed > self.slide_limit:
+                print(f"⚠️ WARNING: Requested {total_slides_needed} slides but limit is {self.slide_limit}. Truncating content.")
+                total_slides_needed = self.slide_limit
+                # Filter distribution to only include slides within limit
+                distribution = [(slide_idx, section, section_items) for slide_idx, section, section_items in distribution if slide_idx < self.slide_limit]
 
             while len(self.prs.slides) < total_slides_needed:
                 self.prs.slides.add_slide(self.prs.slide_layouts[1])
@@ -2103,12 +2115,13 @@ class PowerPointGenerator:
             run.font.bold = False
 
 class ReportGenerator:
-    def __init__(self, template_path, markdown_file, output_path, project_name=None, language='english'):
+    def __init__(self, template_path, markdown_file, output_path, project_name=None, language='english', slide_limit=20):
         self.template_path = template_path
         self.markdown_file = markdown_file
         self.output_path = output_path
         self.project_name = project_name
         self.language = language
+        self.slide_limit = slide_limit
         
     def generate(self):
         # Read the markdown content
@@ -2116,7 +2129,7 @@ class ReportGenerator:
             md_content = f.read()
         
         # Create PowerPoint generator with language support
-        generator = PowerPointGenerator(self.template_path, self.language)
+        generator = PowerPointGenerator(self.template_path, self.language, slide_limit=self.slide_limit)
         
         try: 
             # Generate the report with AI summary content
@@ -2420,8 +2433,8 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
         logging.error(f"❌ Failed to update Excel data: {str(e)}")
         raise
 
-def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None, language='english', statement_type='BS'):
-    generator = ReportGenerator(template_path, markdown_path, output_path, project_name, language)
+def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None, language='english', statement_type='BS', slide_limit=20):
+    generator = ReportGenerator(template_path, markdown_path, output_path, project_name, language, slide_limit)
     generator.generate()
     if not os.path.exists(output_path):
         logging.error(f"PPTX file was not created at {output_path}")
