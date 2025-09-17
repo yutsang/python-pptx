@@ -269,7 +269,7 @@ def generate_entity_keywords(entity_input):
 def detect_language_from_data(sections_by_key):
     """Auto-detect language from 'Indicative adjusted' vs '示意性调整后' columns in Excel data"""
     chinese_indicators = ['示意性调整后', '示意性調整後']
-    english_indicators = ['indicative adjusted']
+    english_indicators = ['Indicative adjusted']
     
     chinese_count = 0
     english_count = 0
@@ -291,8 +291,7 @@ def detect_language_from_data(sections_by_key):
                 print(f"🔍 DEBUG LANGUAGE DETECTION: Table name: '{table_name}'")
                 
                 # Check table name for language indicators
-                table_lower = table_name.lower()
-                if any(indicator in table_lower for indicator in english_indicators):
+                if any(indicator in table_name for indicator in english_indicators):
                     english_count += 1
                     print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in table name: '{table_name}'")
                 elif any(indicator in table_name for indicator in chinese_indicators):
@@ -317,15 +316,15 @@ def detect_language_from_data(sections_by_key):
                             for cell_idx, cell in enumerate(row):
                                 if isinstance(cell, str):
                                     cell_lower = cell.lower()
-                                    # Check for the specific "indicative adjusted" vs "示意性调整后" indicators
-                                    if "indicative adjusted" in cell_lower:
+                                    # Check for the specific "Indicative adjusted" vs "示意性调整后" indicators
+                                    if "Indicative adjusted" in cell:
                                         english_count += 1
-                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found 'indicative adjusted' in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found 'Indicative adjusted' in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
                                     elif "示意性调整后" in cell or "示意性調整後" in cell:
                                         chinese_count += 1
                                         print(f"🔍 DEBUG LANGUAGE DETECTION: Found '示意性调整后' in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
                                     # Also check for other language indicators
-                                    elif any(indicator in cell_lower for indicator in english_indicators):
+                                    elif any(indicator in cell for indicator in english_indicators):
                                         english_count += 1
                                         print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
                                     elif any(indicator in cell for indicator in chinese_indicators):
@@ -339,14 +338,13 @@ def detect_language_from_data(sections_by_key):
                 for row_idx, row in enumerate(data_rows[:5]):  # Check first 5 rows
                     if isinstance(row, list):
                         for cell_idx, cell in enumerate(row):
-                            if isinstance(cell, str):
-                                cell_lower = cell.lower()
-                                if any(indicator in cell_lower for indicator in english_indicators):
-                                    english_count += 1
-                                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in parsed data: '{cell}' (row {row_idx}, cell {cell_idx})")
-                                elif any(indicator in cell for indicator in chinese_indicators):
-                                    chinese_count += 1
-                                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found Chinese indicator in parsed data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                if isinstance(cell, str):
+                                    if any(indicator in cell for indicator in english_indicators):
+                                        english_count += 1
+                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in parsed data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                    elif any(indicator in cell for indicator in chinese_indicators):
+                                        chinese_count += 1
+                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found Chinese indicator in parsed data: '{cell}' (row {row_idx}, cell {cell_idx})")
             else:
                 print(f"🔍 DEBUG LANGUAGE DETECTION: Section has no parsed_data")
     
