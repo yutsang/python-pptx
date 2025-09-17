@@ -1338,9 +1338,8 @@ class PowerPointGenerator:
                         title_run.font.name = get_font_name_for_text(title_run.text, 'Arial')
                         title_run.font.size = get_font_size_for_text(title_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         desc_run = p.add_run()
-                        # Add language marking to layer 2 commentary (only for Chinese)
-                        language_marker = " [CHI]" if self.language == 'chinese' else ""
-                        desc_run.text = f" - {part}{language_marker}"
+                        # No language marking needed - language detected from databook type
+                        desc_run.text = f" - {part}"
                         desc_run.font.bold = False
                         desc_run.font.name = get_font_name_for_text(desc_run.text, 'Arial')
                         desc_run.font.size = get_font_size_for_text(desc_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
@@ -1361,9 +1360,8 @@ class PowerPointGenerator:
                         try: p.first_line_indent = Inches(-0.19)
                         except: pass
                         cont_run = p.add_run()
-                        # Add language marking to continuation commentary (only for Chinese)
-                        language_marker = " [CHI]" if self.language == 'chinese' else ""
-                        cont_run.text = f"{part}{language_marker}"
+                        # No language marking needed - language detected from databook type
+                        cont_run.text = f"{part}"
                         cont_run.font.bold = False
                         cont_run.font.name = get_font_name_for_text(cont_run.text, 'Arial')
                         cont_run.font.size = get_font_size_for_text(cont_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))

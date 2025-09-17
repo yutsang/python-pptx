@@ -268,8 +268,8 @@ def generate_entity_keywords(entity_input):
 
 def detect_language_from_data(sections_by_key):
     """Auto-detect language from 'Indicative adjusted' vs '示意性调整后' columns in Excel data"""
-    chinese_indicators = ['示意性调整后', '示意性調整後', '现金', '应收账款', '预付款项', '其他应收款', '应付账款', '应交税费', '其他应付款', '股本', '资本公积', '营业收入', '营业成本', '管理费用', '财务费用', '所得税']
-    english_indicators = ['indicative adjusted', 'cash', 'accounts receivable', 'prepayments', 'other receivables', 'accounts payable', 'taxes payable', 'other payables', 'capital', 'reserve', 'operating income', 'operating cost', 'general and administrative', 'finance expenses', 'income tax']
+    chinese_indicators = ['示意性调整后', '示意性調整後']
+    english_indicators = ['indicative adjusted']
     
     chinese_count = 0
     english_count = 0
@@ -787,14 +787,8 @@ def main():
             help="Enter the full entity name to configure processing"
         )
         
-        # Row limit input
-        row_limit = st.number_input(
-            "Maximum Rows per Shape",
-            min_value=1,
-            max_value=100,
-            value=20,
-            help="Maximum number of commentary rows to display in each slide shape"
-        )
+        # Row limit is hardcoded in settings
+        row_limit = 20  # Fixed limit for all slides
         
         # Clear session state when entity changes
         if 'last_entity_input' in st.session_state:
@@ -1749,16 +1743,16 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         # Set row height for header row - 0.64cm
         table.rows[0].height = Inches(0.64 / 2.54)  # 0.25 inches (0.64cm)
         
-        # Adjust column widths - make first column about half the table width
+        # Adjust column widths - make first column 35-40% of the table width
         if cols >= 4:
-            # First column about half the table width
-            first_col_width = table_width * 0.5  # Half the table width
-            remaining_width = table_width * 0.5
+            # First column 37.5% of the table width (middle of 35-40% range)
+            first_col_width = table_width * 0.375  # 37.5% of the table width
+            remaining_width = table_width * 0.625
             other_col_width = remaining_width / (cols - 1)  # Distribute remaining width
             
-            table.columns[0].width = Inches(first_col_width)  # First column half width
+            table.columns[0].width = Inches(first_col_width)  # First column 37.5% width
             for i in range(1, cols):
-                table.columns[i].width = Inches(other_col_width)  # Other columns share remaining half
+                table.columns[i].width = Inches(other_col_width)  # Other columns share remaining 62.5%
         else:
             # If less than 4 columns, distribute evenly
             for i in range(cols):
@@ -1814,10 +1808,7 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
                             if pd.isna(value):
                                 cell_text = ""
                             elif isinstance(value, (int, float)):
-                                if abs(value) >= 1000:
-                                    cell_text = f"{value:,.0f}"
-                                else:
-                                    cell_text = f"{value:,.1f}"
+                                cell_text = f"{value:,.0f}"
                             else:
                                 cell_text = str(value)
                     except:
@@ -1825,10 +1816,7 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
                         if pd.isna(value):
                             cell_text = ""
                         elif isinstance(value, (int, float)):
-                            if abs(value) >= 1000:
-                                cell_text = f"{value:,.0f}"
-                            else:
-                                cell_text = f"{value:,.1f}"
+                            cell_text = f"{value:,.0f}"
                         else:
                             cell_text = str(value)
                 else:
@@ -1836,10 +1824,7 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
                     if pd.isna(value):
                         cell_text = ""
                     elif isinstance(value, (int, float)):
-                        if abs(value) >= 1000:
-                            cell_text = f"{value:,.0f}"
-                        else:
-                            cell_text = f"{value:,.1f}"
+                        cell_text = f"{value:,.0f}"
                     else:
                         cell_text = str(value)
                 
