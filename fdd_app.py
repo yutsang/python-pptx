@@ -787,13 +787,13 @@ def main():
             help="Enter the full entity name to configure processing"
         )
         
-        # Slide limit input
-        slide_limit = st.number_input(
-            "Maximum Slides",
+        # Row limit input
+        row_limit = st.number_input(
+            "Maximum Rows per Shape",
             min_value=1,
             max_value=100,
             value=20,
-            help="Maximum number of slides to generate in the PowerPoint presentation"
+            help="Maximum number of commentary rows to display in each slide shape"
         )
         
         # Clear session state when entity changes
@@ -1451,7 +1451,7 @@ def main():
                 try:
                     # Export PowerPoint and automatically show download
                     export_enhanced_pptx(selected_entity, statement_type, language=detected_language, 
-                                       financial_statement_tab=financial_statement_tab, include_bshn=include_bshn, slide_limit=slide_limit)
+                                       financial_statement_tab=financial_statement_tab, include_bshn=include_bshn, row_limit=row_limit)
                     progress_bar.progress(1.0)
                     status_text.text(f"✅ Report generation and export completed ({language_display})")
                     
@@ -1921,7 +1921,7 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         raise
 
 
-def export_enhanced_pptx(selected_entity, statement_type, language='english', financial_statement_tab=None, include_bshn=True, slide_limit=20):
+def export_enhanced_pptx(selected_entity, statement_type, language='english', financial_statement_tab=None, include_bshn=True, row_limit=20):
     """Enhanced PowerPoint export function with BSHN sheet and page designer using template"""
     try:
         if language == 'chinese':
@@ -1975,8 +1975,8 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
                 is_temp = os.path.join(temp_dir, "is_temp.pptx")
                 
                 # Generate BS and IS presentations using template
-                export_pptx(template_path, bs_path, bs_temp, project_name, language=language, slide_limit=slide_limit)
-                export_pptx(template_path, is_path, is_temp, project_name, language=language, slide_limit=slide_limit)
+                export_pptx(template_path, bs_path, bs_temp, project_name, language=language, row_limit=row_limit)
+                export_pptx(template_path, is_path, is_temp, project_name, language=language, row_limit=row_limit)
                 
                 # Merge presentations
                 merge_presentations(bs_temp, is_temp, output_path)
@@ -2011,7 +2011,7 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
             
             # Use the template with the original export_pptx function (without automatic Excel embedding)
             try:
-                export_pptx(template_path, markdown_path, output_path, project_name, excel_file_path=None, language=language, statement_type=statement_type, slide_limit=slide_limit)
+                export_pptx(template_path, markdown_path, output_path, project_name, excel_file_path=None, language=language, statement_type=statement_type, row_limit=row_limit)
             except Exception as export_error:
                 st.error(f"❌ PowerPoint generation failed: {str(export_error)}")
                 st.info(f"💡 Check if content file exists: {markdown_path}")

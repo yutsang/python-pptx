@@ -182,13 +182,13 @@ class FinancialItem:
     is_table: bool = False
 
 class PowerPointGenerator:
-    def __init__(self, template_path: str, language: str = 'english', slide_limit: int = 20):
+    def __init__(self, template_path: str, language: str = 'english', row_limit: int = 20):
         self.prs = Presentation(template_path)
         self.current_slide_index = 0
         self.LINE_HEIGHT = Pt(12)
         self.ROWS_PER_SECTION = 35  # Reduced for less crowding on page 1
         self.language = language  # Store language for Chinese mode detection
-        self.slide_limit = slide_limit  # Maximum number of slides to generate
+        self.row_limit = row_limit  # Maximum number of rows per shape
         
         # Debug: Print language initialization
         print(f"🔍 DEBUG PPTX GENERATOR: Initialized with language='{self.language}'")
@@ -1272,7 +1272,13 @@ class PowerPointGenerator:
         prev_account_title = None
         prev_continued = False
         paragraph_count = 0  # Track paragraph index in the shape
-        for idx, item in enumerate(items):
+        
+        # Apply row limit (row_limit represents max rows per shape)
+        limited_items = items[:self.row_limit] if len(items) > self.row_limit else items
+        if len(items) > self.row_limit:
+            print(f"⚠️ WARNING: Limiting commentary to {self.row_limit} rows per shape (was {len(items)} rows)")
+        
+        for idx, item in enumerate(limited_items):
             is_first_part = not (item.layer1_continued or item.layer2_continued)
             # Layer 1 Header
             display_header = self._get_display_header_for_item(item)
@@ -1463,13 +1469,6 @@ class PowerPointGenerator:
 
             max_slide_used = max((slide_idx for slide_idx, _, _ in distribution), default=0)
             total_slides_needed = max_slide_used + 1
-            
-            # Apply slide limit
-            if total_slides_needed > self.slide_limit:
-                print(f"⚠️ WARNING: Requested {total_slides_needed} slides but limit is {self.slide_limit}. Truncating content.")
-                total_slides_needed = self.slide_limit
-                # Filter distribution to only include slides within limit
-                distribution = [(slide_idx, section, section_items) for slide_idx, section, section_items in distribution if slide_idx < self.slide_limit]
 
             while len(self.prs.slides) < total_slides_needed:
                 self.prs.slides.add_slide(self.prs.slide_layouts[1])
@@ -2115,13 +2114,13 @@ class PowerPointGenerator:
             run.font.bold = False
 
 class ReportGenerator:
-    def __init__(self, template_path, markdown_file, output_path, project_name=None, language='english', slide_limit=20):
+    def __init__(self, template_path, markdown_file, output_path, project_name=None, language='english', row_limit=20):
         self.template_path = template_path
         self.markdown_file = markdown_file
         self.output_path = output_path
         self.project_name = project_name
         self.language = language
-        self.slide_limit = slide_limit
+        self.row_limit = row_limit
         
     def generate(self):
         # Read the markdown content
@@ -2129,7 +2128,7 @@ class ReportGenerator:
             md_content = f.read()
         
         # Create PowerPoint generator with language support
-        generator = PowerPointGenerator(self.template_path, self.language, slide_limit=self.slide_limit)
+        generator = PowerPointGenerator(self.template_path, self.language, row_limit=self.row_limit)
         
         try: 
             # Generate the report with AI summary content
@@ -2433,8 +2432,8 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
         logging.error(f"❌ Failed to update Excel data: {str(e)}")
         raise
 
-def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None, language='english', statement_type='BS', slide_limit=20):
-    generator = ReportGenerator(template_path, markdown_path, output_path, project_name, language, slide_limit)
+def export_pptx(template_path, markdown_path, output_path, project_name=None, excel_file_path=None, language='english', statement_type='BS', row_limit=20):
+    generator = ReportGenerator(template_path, markdown_path, output_path, project_name, language, row_limit)
     generator.generate()
     if not os.path.exists(output_path):
         logging.error(f"PPTX file was not created at {output_path}")
