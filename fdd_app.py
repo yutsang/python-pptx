@@ -1024,20 +1024,21 @@ def main():
         elif hasattr(uploaded_file, 'getvalue'):
             st.session_state['uploaded_file_data'] = uploaded_file.getvalue()
                 
-        # Prepare AI data
+        # Get detected language before preparing AI data
+        detected_language = st.session_state.get('ai_data', {}).get('detected_language', 'english')
+        print(f"🔍 DEBUG: Retrieved detected_language from session state: '{detected_language}'")
+        
+        # Prepare AI data (preserve the detected_language)
         temp_ai_data = {
             'entity_name': selected_entity,
             'entity_keywords': entity_keywords,
             'sections_by_key': sections_by_key,
             'pattern': pattern,
             'mapping': mapping,
-            'config': config
+            'config': config,
+            'detected_language': detected_language  # Preserve the detected language
         }
         st.session_state['ai_data'] = temp_ai_data
-
-        # Get detected language
-        detected_language = st.session_state.get('ai_data', {}).get('detected_language', 'english')
-        print(f"🔍 DEBUG: Retrieved detected_language from session state: '{detected_language}'")
         language_display = "🇨🇳 Chinese" if detected_language == 'chinese' else "🇺🇸 English"
         
         

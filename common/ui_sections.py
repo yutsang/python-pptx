@@ -21,7 +21,6 @@ def render_balance_sheet_sections(
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-    print(f"DEBUG UI: Processing {len(keys_with_data)} keys with data")
     
 
     
@@ -46,9 +45,7 @@ def render_balance_sheet_sections(
                     section_entity.lower() in selected_entity.lower() or
                     selected_entity.lower() == section_entity.lower()):
                     filtered_sections.append(section)
-                    print(f"✅ BS Including section: entity='{section_entity}' matches selected='{selected_entity}'")
                 else:
-                    print(f"❌ BS Excluding section: entity='{section_entity}' doesn't match selected='{selected_entity}'")
             
             if not filtered_sections:
                 st.info(f"No sections found for entity '{selected_entity}' in this key.")
@@ -196,7 +193,6 @@ def render_combined_sections(
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-    print(f"DEBUG UI Combined: Processing {len(keys_with_data)} combined keys with data")
     
     if not keys_with_data:
         st.warning("No data found for any financial keys.")
@@ -219,7 +215,6 @@ def render_combined_sections(
                     section_entity.lower() in selected_entity.lower() or
                     selected_entity.lower() == section_entity.lower()):
                     filtered_sections.append(section)
-                    print(f"✅ Including section: entity='{section_entity}' matches selected='{selected_entity}'")
                 else:
                     print(f"❌ Excluding section: entity='{section_entity}' doesn't match selected='{selected_entity}'")
             
@@ -305,7 +300,6 @@ def render_income_statement_sections(
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
-    print(f"DEBUG UI IS: Processing {len(keys_with_data)} income statement keys with data")
     
 
     
@@ -330,7 +324,6 @@ def render_income_statement_sections(
                     section_entity.lower() in selected_entity.lower() or
                     selected_entity.lower() == section_entity.lower()):
                     filtered_sections.append(section)
-                    print(f"✅ Including section: entity='{section_entity}' matches selected='{selected_entity}'")
                 else:
                     print(f"❌ Excluding section: entity='{section_entity}' doesn't match selected='{selected_entity}'")
             
