@@ -1338,8 +1338,8 @@ class PowerPointGenerator:
                         title_run.font.name = get_font_name_for_text(title_run.text, 'Arial')
                         title_run.font.size = get_font_size_for_text(title_run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
                         desc_run = p.add_run()
-                        # Add language marking to layer 2 commentary
-                        language_marker = " [CHI]" if self.language == 'chinese' else " [ENG]"
+                        # Add language marking to layer 2 commentary (only for Chinese)
+                        language_marker = " [CHI]" if self.language == 'chinese' else ""
                         desc_run.text = f" - {part}{language_marker}"
                         desc_run.font.bold = False
                         desc_run.font.name = get_font_name_for_text(desc_run.text, 'Arial')
@@ -1361,8 +1361,8 @@ class PowerPointGenerator:
                         try: p.first_line_indent = Inches(-0.19)
                         except: pass
                         cont_run = p.add_run()
-                        # Add language marking to continuation commentary
-                        language_marker = " [CHI]" if self.language == 'chinese' else " [ENG]"
+                        # Add language marking to continuation commentary (only for Chinese)
+                        language_marker = " [CHI]" if self.language == 'chinese' else ""
                         cont_run.text = f"{part}{language_marker}"
                         cont_run.font.bold = False
                         cont_run.font.name = get_font_name_for_text(cont_run.text, 'Arial')
@@ -2239,6 +2239,10 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
         
         if financial_data_shape:
             # Found the financialData shape - update its content
+            # Remove any placeholder text or empty content first
+            if hasattr(financial_data_shape, 'text_frame') and financial_data_shape.text_frame:
+                if financial_data_shape.text_frame.text.strip() in ['', ' ', 'Placeholder', 'Financial Data', 'Table']:
+                    financial_data_shape.text_frame.clear()
             if hasattr(financial_data_shape, 'table'):
                 # It's a table shape - update the table data while preserving formatting
                 table = financial_data_shape.table
@@ -2420,6 +2424,9 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
                                 except:
                                     cell.fill.fore_color.rgb = RGBColor(242, 242, 242)  # Same color as fallback
         
+        # Clean up any unused placeholder shapes
+        _cleanup_placeholder_shapes(prs)
+        
         # Save the presentation
         if output_path is None:
             output_path = presentation_path
@@ -2557,4 +2564,39 @@ def merge_presentations(bs_presentation_path, is_presentation_path, output_path)
         
     except Exception as e:
         logging.error(f"❌ Failed to merge presentations: {str(e)}")
-        raise 
+        raise
+
+
+def _cleanup_placeholder_shapes(prs):
+    """Remove unused placeholder shapes from the presentation"""
+    try:
+        placeholder_names_to_remove = [
+            'Placeholder', 'Financial Data', 'Table', 'Data', 'Content',
+            'financialData_placeholder', 'table_placeholder'
+        ]
+        
+        for slide in prs.slides:
+            shapes_to_remove = []
+            for shape in slide.shapes:
+                # Check if shape name contains placeholder indicators
+                if any(placeholder in shape.name for placeholder in placeholder_names_to_remove):
+                    # Check if shape is empty or contains only placeholder text
+                    if hasattr(shape, 'text_frame') and shape.text_frame:
+                        text_content = shape.text_frame.text.strip()
+                        if text_content in ['', ' ', 'Placeholder', 'Financial Data', 'Table', 'Data', 'Content']:
+                            shapes_to_remove.append(shape)
+                    elif hasattr(shape, 'table') and shape.table:
+                        # Check if table is empty
+                        if len(shape.table.rows) == 0 or (len(shape.table.rows) == 1 and not shape.table.cell(0, 0).text.strip()):
+                            shapes_to_remove.append(shape)
+            
+            # Remove identified placeholder shapes
+            for shape in shapes_to_remove:
+                try:
+                    slide.shapes._spTree.remove(shape._element)
+                    print(f"🗑️ Removed placeholder shape: {shape.name}")
+                except Exception as e:
+                    print(f"⚠️ Could not remove shape {shape.name}: {e}")
+                    
+    except Exception as e:
+        print(f"⚠️ Error during placeholder cleanup: {e}") 

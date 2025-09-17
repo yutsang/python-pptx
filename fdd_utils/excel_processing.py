@@ -2819,9 +2819,9 @@ def create_improved_table_markdown(parsed_table):
             value = row['value']
             is_total = row.get('is_total', False)
             
-            # Format value with commas
+            # Format value with commas (1 decimal place for financial figures)
             if isinstance(value, (int, float)):
-                formatted_value = f"{value:,.2f}"
+                formatted_value = f"{value:,.1f}"
             elif isinstance(value, str) and (re.search(r'\d{4}年\d{1,2}月\d{1,2}日', value) or \
                                           re.search(r'\d{4}/\d{1,2}/\d{1,2}', value) or \
                                           re.search(r'\d{1,2}/\d{1,2}/\d{4}', value)):
