@@ -338,6 +338,8 @@ def detect_language_from_data(sections_by_key):
                                         print(f"🌏 DETECTED: Chinese indicator in parsed data: '{cell}'")
     
     print(f"🌏 LANGUAGE DETECTION: Final counts - Chinese: {chinese_count}, English: {english_count}")
+    print(f"🌏 LANGUAGE DETECTION: Chinese indicators searched: {chinese_indicators}")
+    print(f"🌏 LANGUAGE DETECTION: English indicators searched: {english_indicators}")
     
     # If no indicators found, try to detect from any Chinese characters in the data
     if chinese_count == 0 and english_count == 0:
@@ -399,13 +401,17 @@ def detect_language_from_data(sections_by_key):
             detected_language = 'english'
             print("🌏 LANGUAGE DETECTED: English (default - no characters found)")
     else:
-        # Determine language based on counts
-        if chinese_count > english_count:
+        # Determine language based on counts - prioritize Chinese if any Chinese indicators found
+        if chinese_count > 0:
             detected_language = 'chinese'
             print(f"🌏 LANGUAGE DETECTED: Chinese (indicators found: {chinese_count} Chinese, {english_count} English)")
-        else:
+        elif english_count > 0:
             detected_language = 'english'
             print(f"🌏 LANGUAGE DETECTED: English (indicators found: {english_count} English, {chinese_count} Chinese)")
+        else:
+            # This shouldn't happen if the logic above is correct, but just in case
+            detected_language = 'english'
+            print(f"🌏 LANGUAGE DETECTED: English (default fallback)")
     
     return detected_language
 
