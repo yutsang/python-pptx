@@ -288,10 +288,8 @@ def detect_language_from_data(sections_by_key):
                 # Check table name for language indicators
                 if any(indicator in table_name for indicator in english_indicators):
                     english_count += 1
-                    print(f"🌏 DETECTED: English indicator in table name: '{table_name}'")
                 elif any(indicator in table_name for indicator in chinese_indicators):
                     chinese_count += 1
-                    print(f"🌏 DETECTED: Chinese indicator in table name: '{table_name}'")
                 
                 # Check the raw Excel data for language indicators (this is where "示意性调整后" actually appears)
                 raw_data = section.get('data', None)  # The raw Excel data is stored in 'data' field
@@ -311,17 +309,13 @@ def detect_language_from_data(sections_by_key):
                                     # Check for the specific "Indicative adjusted" vs "示意性调整后" indicators
                                     if "Indicative adjusted" in cell:
                                         english_count += 1
-                                        print(f"🌏 DETECTED: 'Indicative adjusted' in raw data: '{cell}'")
                                     elif "示意性调整后" in cell or "示意性調整後" in cell:
                                         chinese_count += 1
-                                        print(f"🌏 DETECTED: '示意性调整后' in raw data: '{cell}'")
                                     # Also check for other language indicators
                                     elif any(indicator in cell for indicator in english_indicators):
                                         english_count += 1
-                                        print(f"🌏 DETECTED: English indicator in raw data: '{cell}'")
                                     elif any(indicator in cell for indicator in chinese_indicators):
                                         chinese_count += 1
-                                        print(f"🌏 DETECTED: Chinese indicator in raw data: '{cell}'")
                 
                 # Also check parsed data content for language indicators
                 data_rows = section['parsed_data'].get('data', [])
@@ -332,10 +326,8 @@ def detect_language_from_data(sections_by_key):
                                 if isinstance(cell, str):
                                     if any(indicator in cell for indicator in english_indicators):
                                         english_count += 1
-                                        print(f"🌏 DETECTED: English indicator in parsed data: '{cell}'")
                                     elif any(indicator in cell for indicator in chinese_indicators):
                                         chinese_count += 1
-                                        print(f"🌏 DETECTED: Chinese indicator in parsed data: '{cell}'")
     
     print(f"🌏 LANGUAGE DETECTION: Final counts - Chinese: {chinese_count}, English: {english_count}")
     print(f"🌏 LANGUAGE DETECTION: Chinese indicators searched: {chinese_indicators}")
@@ -1190,14 +1182,20 @@ def main():
                         status_text.text(status_display)
                         progress_bar.progress(0.1 + p * 0.2)
                     
-                    english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=progress_callback_eng)
+                    english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language=detected_language, progress_callback=progress_callback_eng)
                     
                     if not english_results:
-                        st.error("❌ 英文内容生成失败，无法进行中文翻译")
+                        if detected_language == 'chinese':
+                            st.error("❌ 中文内容生成失败")
+                        else:
+                            st.error("❌ 英文内容生成失败，无法进行中文翻译")
                         return
                     
-                    # Proofread English content
-                    status_text.text(f"🧐 校对英文内容... (0/{total_keys} keys)")
+                    # Proofread content
+                    if detected_language == 'chinese':
+                        status_text.text(f"🧐 校对中文内容... (0/{total_keys} keys)")
+                    else:
+                        status_text.text(f"🧐 校对英文内容... (0/{total_keys} keys)")
                     progress_bar.progress(0.3)
                     
                     def progress_callback_proof(p, msg):
@@ -1344,14 +1342,20 @@ def main():
                         status_text.text(status_display)
                         progress_bar.progress(p)
                     
-                    english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language='english', progress_callback=progress_callback_eng_simple)
+                    english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language=detected_language, progress_callback=progress_callback_eng_simple)
                     
                     if not english_results:
-                        st.error("❌ English content generation failed")
+                        if detected_language == 'chinese':
+                            st.error("❌ 中文内容生成失败")
+                        else:
+                            st.error("❌ English content generation failed")
                         return
                     
-                    # Proofread English content
-                    status_text.text(f"🧐 Proofreading English content... (0/{total_keys} keys)")
+                    # Proofread content
+                    if detected_language == 'chinese':
+                        status_text.text(f"🧐 校对中文内容... (0/{total_keys} keys)")
+                    else:
+                        status_text.text(f"🧐 Proofreading English content... (0/{total_keys} keys)")
                     progress_bar.progress(0.6)
                     
                     def progress_callback_proof_eng(p, msg):
