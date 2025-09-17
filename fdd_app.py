@@ -274,8 +274,7 @@ def detect_language_from_data(sections_by_key):
     chinese_count = 0
     english_count = 0
     
-    print(f"🌏 LANGUAGE DETECTION: Starting detection with {len(sections_by_key)} keys")
-     
+    # Silently scan all data for language indicators
     for key, sections in sections_by_key.items():
         if not sections:
             continue
@@ -291,8 +290,8 @@ def detect_language_from_data(sections_by_key):
                 elif any(indicator in table_name for indicator in chinese_indicators):
                     chinese_count += 1
                 
-                # Check the raw Excel data for language indicators (this is where "示意性调整后" actually appears)
-                raw_data = section.get('data', None)  # The raw Excel data is stored in 'data' field
+                # Check the raw Excel data for language indicators
+                raw_data = section.get('data', None)
                 if raw_data is not None:
                     # Convert DataFrame to list of lists for processing
                     if hasattr(raw_data, 'values'):
@@ -329,9 +328,7 @@ def detect_language_from_data(sections_by_key):
                                     elif any(indicator in cell for indicator in chinese_indicators):
                                         chinese_count += 1
     
-    print(f"🌏 LANGUAGE DETECTION: Final counts - Chinese: {chinese_count}, English: {english_count}")
-    print(f"🌏 LANGUAGE DETECTION: Chinese indicators searched: {chinese_indicators}")
-    print(f"🌏 LANGUAGE DETECTION: English indicators searched: {english_indicators}")
+    print(f"🌏 LANGUAGE DETECTION: Chinese: {chinese_count}, English: {english_count}")
     
     # If no indicators found, try to detect from any Chinese characters in the data
     if chinese_count == 0 and english_count == 0:
@@ -396,10 +393,10 @@ def detect_language_from_data(sections_by_key):
         # Determine language based on counts - prioritize Chinese if any Chinese indicators found
         if chinese_count > 0:
             detected_language = 'chinese'
-            print(f"🌏 LANGUAGE DETECTED: Chinese (indicators found: {chinese_count} Chinese, {english_count} English)")
+            print(f"🌏 LANGUAGE DETECTED: Chinese ({chinese_count} indicators found)")
         elif english_count > 0:
             detected_language = 'english'
-            print(f"🌏 LANGUAGE DETECTED: English (indicators found: {english_count} English, {chinese_count} Chinese)")
+            print(f"🌏 LANGUAGE DETECTED: English ({english_count} indicators found)")
         else:
             # This shouldn't happen if the logic above is correct, but just in case
             detected_language = 'english'
@@ -443,6 +440,7 @@ def process_excel_with_timeout(uploaded_file, mapping, selected_entity, entity_s
 
 def run_ai_processing(filtered_keys, ai_data, language='english', progress_callback=None):
     """Run AI processing for content generation"""
+    print(f"🔍 DEBUG: run_ai_processing called with language='{language}'")
     try:
         # Create temporary file for processing
         temp_file_path = None
@@ -1039,6 +1037,7 @@ def main():
 
         # Get detected language
         detected_language = st.session_state.get('ai_data', {}).get('detected_language', 'english')
+        print(f"🔍 DEBUG: Retrieved detected_language from session state: '{detected_language}'")
         language_display = "🇨🇳 Chinese" if detected_language == 'chinese' else "🇺🇸 English"
         
         
@@ -1182,6 +1181,7 @@ def main():
                         status_text.text(status_display)
                         progress_bar.progress(0.1 + p * 0.2)
                     
+                    print(f"🔍 DEBUG: About to run AI processing with language='{detected_language}'")
                     english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language=detected_language, progress_callback=progress_callback_eng)
                     
                     if not english_results:
@@ -1342,6 +1342,7 @@ def main():
                         status_text.text(status_display)
                         progress_bar.progress(p)
                     
+                    print(f"🔍 DEBUG: About to run AI processing with language='{detected_language}'")
                     english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language=detected_language, progress_callback=progress_callback_eng_simple)
                     
                     if not english_results:
