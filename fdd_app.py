@@ -274,35 +274,28 @@ def detect_language_from_data(sections_by_key):
     chinese_count = 0
     english_count = 0
     
-    print(f"🔍 DEBUG LANGUAGE DETECTION: Starting language detection with {len(sections_by_key)} keys")
+    print(f"🌏 LANGUAGE DETECTION: Starting detection with {len(sections_by_key)} keys")
      
     for key, sections in sections_by_key.items():
         if not sections:
-            print(f"🔍 DEBUG LANGUAGE DETECTION: Key '{key}' has no sections")
             continue
             
-        print(f"🔍 DEBUG LANGUAGE DETECTION: Checking key '{key}' with {len(sections)} sections")
-        
         for section in sections:
             if 'parsed_data' in section and section['parsed_data']:
                 metadata = section['parsed_data'].get('metadata', {})
                 table_name = metadata.get('table_name', '')
                 
-                print(f"🔍 DEBUG LANGUAGE DETECTION: Table name: '{table_name}'")
-                
                 # Check table name for language indicators
                 if any(indicator in table_name for indicator in english_indicators):
                     english_count += 1
-                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in table name: '{table_name}'")
+                    print(f"🌏 DETECTED: English indicator in table name: '{table_name}'")
                 elif any(indicator in table_name for indicator in chinese_indicators):
                     chinese_count += 1
-                    print(f"🔍 DEBUG LANGUAGE DETECTION: Found Chinese indicator in table name: '{table_name}'")
+                    print(f"🌏 DETECTED: Chinese indicator in table name: '{table_name}'")
                 
                 # Check the raw Excel data for language indicators (this is where "示意性调整后" actually appears)
                 raw_data = section.get('data', None)  # The raw Excel data is stored in 'data' field
                 if raw_data is not None:
-                    print(f"🔍 DEBUG LANGUAGE DETECTION: Checking raw Excel data with shape {raw_data.shape if hasattr(raw_data, 'shape') else 'unknown'}")
-                    
                     # Convert DataFrame to list of lists for processing
                     if hasattr(raw_data, 'values'):
                         data_rows = raw_data.values.tolist()
@@ -315,25 +308,23 @@ def detect_language_from_data(sections_by_key):
                         if isinstance(row, list):
                             for cell_idx, cell in enumerate(row):
                                 if isinstance(cell, str):
-                                    cell_lower = cell.lower()
                                     # Check for the specific "Indicative adjusted" vs "示意性调整后" indicators
                                     if "Indicative adjusted" in cell:
                                         english_count += 1
-                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found 'Indicative adjusted' in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                        print(f"🌏 DETECTED: 'Indicative adjusted' in raw data: '{cell}'")
                                     elif "示意性调整后" in cell or "示意性調整後" in cell:
                                         chinese_count += 1
-                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found '示意性调整后' in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                        print(f"🌏 DETECTED: '示意性调整后' in raw data: '{cell}'")
                                     # Also check for other language indicators
                                     elif any(indicator in cell for indicator in english_indicators):
                                         english_count += 1
-                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                        print(f"🌏 DETECTED: English indicator in raw data: '{cell}'")
                                     elif any(indicator in cell for indicator in chinese_indicators):
                                         chinese_count += 1
-                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found Chinese indicator in raw data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                        print(f"🌏 DETECTED: Chinese indicator in raw data: '{cell}'")
                 
                 # Also check parsed data content for language indicators
                 data_rows = section['parsed_data'].get('data', [])
-                print(f"🔍 DEBUG LANGUAGE DETECTION: Checking {len(data_rows)} parsed data rows")
                 
                 for row_idx, row in enumerate(data_rows[:5]):  # Check first 5 rows
                     if isinstance(row, list):
@@ -341,18 +332,16 @@ def detect_language_from_data(sections_by_key):
                                 if isinstance(cell, str):
                                     if any(indicator in cell for indicator in english_indicators):
                                         english_count += 1
-                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found English indicator in parsed data: '{cell}' (row {row_idx}, cell {cell_idx})")
+                                        print(f"🌏 DETECTED: English indicator in parsed data: '{cell}'")
                                     elif any(indicator in cell for indicator in chinese_indicators):
                                         chinese_count += 1
-                                        print(f"🔍 DEBUG LANGUAGE DETECTION: Found Chinese indicator in parsed data: '{cell}' (row {row_idx}, cell {cell_idx})")
-            else:
-                print(f"🔍 DEBUG LANGUAGE DETECTION: Section has no parsed_data")
+                                        print(f"🌏 DETECTED: Chinese indicator in parsed data: '{cell}'")
     
-    print(f"🔍 DEBUG LANGUAGE DETECTION: Final counts - Chinese: {chinese_count}, English: {english_count}")
+    print(f"🌏 LANGUAGE DETECTION: Final counts - Chinese: {chinese_count}, English: {english_count}")
     
     # If no indicators found, try to detect from any Chinese characters in the data
     if chinese_count == 0 and english_count == 0:
-        print("🔍 DEBUG LANGUAGE DETECTION: No specific indicators found, checking for Chinese characters...")
+        print("🌏 LANGUAGE DETECTION: No specific indicators found, checking for Chinese characters...")
         chinese_char_count = 0
         total_char_count = 0
         
@@ -397,7 +386,7 @@ def detect_language_from_data(sections_by_key):
         
         if total_char_count > 0:
             chinese_ratio = chinese_char_count / total_char_count
-            print(f"🔍 DEBUG LANGUAGE DETECTION: Chinese character ratio: {chinese_ratio:.2f} ({chinese_char_count}/{total_char_count})")
+            print(f"🌏 LANGUAGE DETECTION: Chinese character ratio: {chinese_ratio:.2f} ({chinese_char_count}/{total_char_count})")
             
             if chinese_ratio > 0.1:  # If more than 10% Chinese characters
                 detected_language = 'chinese'
