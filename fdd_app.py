@@ -1683,8 +1683,43 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         # Load the presentation
         prs = Presentation(presentation_path)
         
-        # Read Excel data
+        # Read Excel data and apply column filtering
         df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
+        
+        # Apply Indicative adjusted column filtering
+        from fdd_utils.excel_processing import filter_to_indicative_adjusted_columns
+        df = filter_to_indicative_adjusted_columns(df)
+        
+        # Filter out zero rows (all columns except first are zero)
+        if len(df.columns) > 1:
+            desc_col = df.columns[0]
+            value_cols = df.columns[1:]
+            
+            # Keep rows where description exists AND at least one value is non-zero
+            mask = []
+            for idx, row in df.iterrows():
+                desc_value = str(row[desc_col]).strip()
+                has_description = desc_value not in ['', 'nan', 'None', 'NaN']
+                
+                # Check if any value column is non-zero
+                has_nonzero_value = False
+                for col in value_cols:
+                    val = pd.to_numeric(row[col], errors='coerce')
+                    if pd.notna(val) and val != 0:
+                        has_nonzero_value = True
+                        break
+                
+                # Keep if has description AND (has non-zero values OR is header row)
+                if has_description and (has_nonzero_value or any(keyword in desc_value.lower() for keyword in ['assets', 'total', 'current', 'liabilities', 'equity'])):
+                    mask.append(True)
+                else:
+                    mask.append(False)
+            
+            if any(mask):
+                df = df[mask]
+                print(f"🎯 PPT Table: Filtered zero rows → {df.shape}")
+        
+        print(f"🎯 PPT Table: Final data → {df.shape}")
         
         # Get the first slide (BS1)
         first_slide = prs.slides[0]
