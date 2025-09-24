@@ -229,27 +229,28 @@ def render_balance_sheet_sections(
                         # Keep rows where at least one value column is non-zero OR has description
                         mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
                         
-                        # Check each row
+                        # Check each row using improved logic
                         for idx, row in filtered_df.iterrows():
-                            # Keep if description is not empty
                             desc_value = str(row[desc_col]).strip()
                             has_description = desc_value not in ['', 'nan', 'None', 'NaN']
                             
-                            # Check if any value column is non-zero
-                            has_nonzero_value = False
-                            for col in value_cols:
-                                val = row[col]
-                                if pd.notna(val) and val != 0:
-                                    has_nonzero_value = True
-                                    break
-                            
-                            # Keep row if it has description AND at least one non-zero value
-                            if has_description and has_nonzero_value:
-                                mask[idx] = True
-                            # Also keep header/category rows (description but no values)
-                            elif has_description and all(pd.isna(row[col]) or row[col] == 0 for col in value_cols):
-                                # Check if this looks like a header (contains text like "assets", "total", etc.)
-                                if any(keyword in desc_value.lower() for keyword in ['assets', 'total', 'current', 'liabilities', 'equity', 'income', 'revenue', 'expenses', 'cost']):
+                            if has_description:
+                                # Check if ALL value columns are exactly zero (not NaN)
+                                all_values_zero = True
+                                has_any_data = False
+                                for col in value_cols:
+                                    val = pd.to_numeric(row[col], errors='coerce')
+                                    if pd.notna(val):
+                                        has_any_data = True
+                                        if val != 0:
+                                            all_values_zero = False
+                                            break
+                                
+                                # Keep row if:
+                                # 1. Has non-zero values
+                                # 2. Is header row (NaN values)
+                                # 3. Only filter if ALL values are exactly 0
+                                if not has_any_data or not all_values_zero:
                                     mask[idx] = True
                         
                         if mask.any():

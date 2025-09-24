@@ -777,22 +777,36 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         
         # For column header cases, we need to extract the entire table
         if header_row == -1:
-            # For column headers, the entire dataframe is the table
-            # Look for significant empty sections to determine end
-            consecutive_empty = 0
+            # Look for table end indicators:
+            # 1. Empty rows separating tables
+            # 2. Income statement headers (if this is BS table)
+            # 3. Significant data gaps
             for check_row in range(data_start_row + 1, len(df)):
                 row_data = df.iloc[check_row]
                 
-                # Check if this row is mostly empty
+                # Check for income statement indicators
+                row_text = ' '.join(str(val).lower() for val in row_data if pd.notna(val))
+                if ('利润表' in row_text or 'income statement' in row_text or 
+                    '示意性调整后利润表' in row_text):
+                    data_end_row = check_row
+                    print(f"📍 Income statement detected at row {check_row}")
+                    break
+                
+                # Check for empty row separators
                 non_empty_count = row_data.notna().sum()
-                if non_empty_count <= 1:  # 1 or fewer non-empty cells
-                    consecutive_empty += 1
-                    if consecutive_empty >= 3:  # 3 consecutive empty rows = end of table
-                        data_end_row = check_row - 2  # Go back to last data row
-                        print(f"   📍 Found end of table at row {data_end_row} (3+ consecutive empty rows)")
+                if non_empty_count == 0:  # Completely empty row
+                    # Look ahead to see if next section starts
+                    next_section_start = None
+                    for look_ahead in range(check_row + 1, min(check_row + 5, len(df))):
+                        next_row = df.iloc[look_ahead]
+                        if next_row.notna().sum() > len(df.columns) * 0.3:
+                            next_section_start = look_ahead
+                            break
+                    
+                    if next_section_start:
+                        data_end_row = check_row
+                        print(f"📍 Table boundary at row {check_row}")
                         break
-                else:
-                    consecutive_empty = 0
         else:
             # For embedded headers, look for next table header or empty rows
             for check_row in range(data_start_row + 1, len(df)):
@@ -907,13 +921,24 @@ def filter_to_indicative_adjusted_columns(df):
     """
         # Reduced output
     
-    # Find description column (first column or text-heavy column)
+    # Find description column - must contain actual text (not tick symbols)
     desc_col_idx = 0
     for col_idx, col in enumerate(df.columns):
         sample_values = df[col].dropna().head(5)
         if len(sample_values) > 0:
-            text_count = sum(1 for val in sample_values if isinstance(val, str) and not str(val).replace(',', '').replace('.', '').replace('-', '').isdigit())
-            if text_count >= len(sample_values) * 0.6:  # 60% or more are text
+            # Check for actual English/Chinese text content (not symbols)
+            text_count = 0
+            for val in sample_values:
+                if isinstance(val, str):
+                    val_clean = str(val).strip()
+                    # Must contain actual words (English or Chinese characters)
+                    has_english = any(c.isalpha() for c in val_clean)
+                    has_chinese = any('\u4e00' <= c <= '\u9fff' for c in val_clean)
+                    # Exclude tick symbols and short non-descriptive text
+                    if (has_english or has_chinese) and len(val_clean) > 2 and val_clean not in ['✓', '√', '○', '●', '■', '□']:
+                        text_count += 1
+            
+            if text_count >= len(sample_values) * 0.6:  # 60% or more are real text
                 desc_col_idx = col_idx
                 break
     
@@ -928,12 +953,14 @@ def filter_to_indicative_adjusted_columns(df):
             if pd.notna(cell_value):
                 cell_str = str(cell_value).lower()
                 if ('indicative' in cell_str and 'adjusted' in cell_str) or '示意性调整后' in cell_str:
-                    # Include this column and up to 3 columns to the right (most recent periods)
-                    for offset in range(4):  # Current + 3 to the right
+                    # Include this column and all columns to the right (all financial periods)
+                    remaining_cols = len(df.columns) - col_idx
+                    max_cols = min(remaining_cols, 6)  # Up to 6 columns (current + 5 periods)
+                    for offset in range(max_cols):
                         target_col = col_idx + offset
                         if target_col < len(df.columns):
                             indicative_cols.append(target_col)
-                    print(f"🎯 Indicative cols: {len(indicative_cols)}")
+                    print(f"🎯 Indicative: {len(indicative_cols)} cols")
                     break
         if indicative_cols:  # Found indicative columns, stop searching
             break
@@ -2274,7 +2301,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                 df = xl.parse(sheet_name)
                 
                 # Detect latest date column for this sheet
-                print(f"\n📊 Processing sheet: {sheet_name}")
+                # Processing sheet
                 # Create entity keywords for this function call
                 sheet_entity_keywords = [f"{entity_name} {suffix}" for suffix in entity_suffixes if suffix]
                 if not sheet_entity_keywords:
@@ -2416,11 +2443,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
 
 
 def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name, entity_suffixes, entity_keywords=None, entity_mode='multiple', debug=False):
-    print(f"🔧 get_worksheet_sections_by_keys called with:")
-    print(f"   📋 entity_mode: {entity_mode}")
-    print(f"   👤 entity_name: '{entity_name}'")
-    print(f"   🔑 entity_keywords: {entity_keywords}")
-    print(f"   📄 entity_suffixes: {entity_suffixes}")
+        # Processing worksheet sections
 
     """
     Get worksheet sections organized by financial keys with enhanced entity filtering and latest date detection.

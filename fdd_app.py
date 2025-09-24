@@ -1690,28 +1690,42 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         from fdd_utils.excel_processing import filter_to_indicative_adjusted_columns
         df = filter_to_indicative_adjusted_columns(df)
         
-        # Filter out zero rows (all columns except first are zero)
+        # Filter out zero rows (all values under Indicative adjusted columns are 0, not NaN)
         if len(df.columns) > 1:
             desc_col = df.columns[0]
             value_cols = df.columns[1:]
             
-            # Keep rows where description exists AND at least one value is non-zero
+            # Keep rows where description exists AND (has non-zero values OR is header/category row)
             mask = []
             for idx, row in df.iterrows():
                 desc_value = str(row[desc_col]).strip()
                 has_description = desc_value not in ['', 'nan', 'None', 'NaN']
                 
-                # Check if any value column is non-zero
-                has_nonzero_value = False
+                # Check if ALL value columns are exactly zero (not NaN)
+                all_values_zero = True
+                has_any_data = False
                 for col in value_cols:
                     val = pd.to_numeric(row[col], errors='coerce')
-                    if pd.notna(val) and val != 0:
-                        has_nonzero_value = True
-                        break
+                    if pd.notna(val):
+                        has_any_data = True
+                        if val != 0:
+                            all_values_zero = False
+                            break
                 
-                # Keep if has description AND (has non-zero values OR is header row)
-                if has_description and (has_nonzero_value or any(keyword in desc_value.lower() for keyword in ['assets', 'total', 'current', 'liabilities', 'equity'])):
-                    mask.append(True)
+                # Keep row if:
+                # 1. Has description AND has non-zero values
+                # 2. Is header/category row (has description but NaN values - like "Current assets")
+                # 3. Only filter if ALL values are exactly 0 (not NaN)
+                if has_description:
+                    if not has_any_data:
+                        # NaN values - keep as header row
+                        mask.append(True)
+                    elif not all_values_zero:
+                        # Has non-zero values - keep
+                        mask.append(True)
+                    else:
+                        # All values are exactly 0 - filter out
+                        mask.append(False)
                 else:
                     mask.append(False)
             
