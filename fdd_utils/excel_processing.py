@@ -228,25 +228,8 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
         entity_keywords: List of entity keywords to search for
         manual_mode: Manual selection - 'single' or 'multiple'
     """
-    print(f"   🔍 ENTITY ANALYSIS: entity_name='{entity_name}', entity_keywords={entity_keywords}")
-    print(f"   📊 MANUAL MODE: {manual_mode}")
-    print(f"   📄 DataFrame info: {len(df)} rows, {len(df.columns)} columns")
-    print(f"   📋 Column names: {list(df.columns)[:10]}")  # Show first 10 column names
-
-    # Show first few rows to help debug entity matching
-    print(f"   📋 SAMPLE EXCEL CONTENT (first 5 rows):")
-    for i in range(min(5, len(df))):
-        row_content = []
-        for j in range(min(8, len(df.columns))):  # Show first 8 columns
-            col_name = df.columns[j]
-            val = df.iloc[i, j]
-            if pd.notna(val) and str(val).strip():
-                val_str = str(val)[:25]
-                row_content.append(f"'{val_str}'")
-            else:
-                row_content.append("''")
-        print(f"      Row {i}: {' | '.join(row_content)}")
-    print(f"   📋 Total rows: {len(df)}, Total columns: {len(df.columns)}")
+    # Reduced noise - only essential info
+    print(f"   Entity: '{entity_name}', Mode: {manual_mode}, Shape: {df.shape}")
 
     # If manual mode is 'single', skip entity filtering and return original table
     if manual_mode == 'single':
@@ -685,13 +668,17 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     Separate balance sheet and income statement tables from a combined Excel sheet.
     
     Looks for table headers like:
-    - English: "Indicative adjusted balance sheet - Project Ningbo", "Indicative adjusted income statement - Project Ningbo"
+    - English: "Indicative adjusted balance sheet - Project Ningbo", "Indicative adjusted income statement - Project Ningbo"  
     - Chinese: "经示意性调整后资产负债表 - 东莞岭南", "经示意性调整后利润表 - 东莞岭南"
     
     Returns:
         tuple: (balance_sheet_df, income_statement_df, metadata)
     """
-    print(f"   🔍 SEPARATING Balance Sheet and Income Statement tables...")
+    print(f"\n{'='*80}")
+    print(f"🔍 DEBUG: SEPARATING Balance Sheet and Income Statement tables")
+    print(f"   📊 Input DataFrame shape: {df.shape}")
+    print(f"   📋 Columns: {list(df.columns)}")
+    print(f"   🔑 Entity keywords: {entity_keywords}")
     
     balance_sheet_sections = []
     income_statement_sections = []
@@ -701,6 +688,10 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     is_keywords_english = ['income statement', 'profit and loss', 'statement of comprehensive income']
     bs_keywords_chinese = ['资产负债表', '财务状况表']
     is_keywords_chinese = ['利润表', '损益表', '综合收益表']
+    
+    # Enhanced patterns for better detection
+    bs_patterns = ['资产负债表', 'balance sheet', '财务状况表', 'statement of financial position']
+    is_patterns = ['利润表', 'income statement', '损益表', 'profit and loss', '综合收益表']
     
     # First check column headers for table identification
     for col_idx, col_name in enumerate(df.columns):
@@ -715,14 +706,18 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             )
             
             if is_indicative_header:
-                print(f"   📋 Found indicative header in COLUMN {col_idx}: '{col_name}'")
+                print(f"   🎯 FOUND INDICATIVE HEADER in COLUMN {col_idx}: '{col_name}'")
+                print(f"      Column text (lowercase): '{col_str}'")
                 
-                # Determine if it's balance sheet or income statement
-                is_balance_sheet = any(keyword in col_str for keyword in bs_keywords_english + bs_keywords_chinese)
-                is_income_statement = any(keyword in col_str for keyword in is_keywords_english + is_keywords_chinese)
+                # Determine if it's balance sheet or income statement using enhanced patterns
+                is_balance_sheet = any(pattern in col_str for pattern in bs_patterns)
+                is_income_statement = any(pattern in col_str for pattern in is_patterns)
+                
+                print(f"      BS patterns found: {[p for p in bs_patterns if p in col_str]}")
+                print(f"      IS patterns found: {[p for p in is_patterns if p in col_str]}")
                 
                 if is_balance_sheet:
-                    print(f"   📊 Identified as BALANCE SHEET table (from column header)")
+                    print(f"   ✅ IDENTIFIED as BALANCE SHEET table (from column header)")
                     balance_sheet_sections.append({
                         'header_row': -1,  # Column header
                         'header_col': col_idx,
@@ -730,13 +725,15 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                         'type': 'balance_sheet'
                     })
                 elif is_income_statement:
-                    print(f"   📈 Identified as INCOME STATEMENT table (from column header)")
+                    print(f"   ✅ IDENTIFIED as INCOME STATEMENT table (from column header)")
                     income_statement_sections.append({
                         'header_row': -1,  # Column header
                         'header_col': col_idx,
                         'header_text': str(col_name),
                         'type': 'income_statement'
                     })
+                else:
+                    print(f"   ❌ NEITHER BS nor IS - might be generic 'Indicative adjusted'")
     
     # Then search through the dataframe data for table headers (fallback)
     if not balance_sheet_sections and not income_statement_sections:
@@ -756,9 +753,9 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                     if is_indicative_header:
                         print(f"   📋 Found indicative header at Row {row_idx}, Col {col_idx}: '{cell_value}'")
                         
-                        # Determine if it's balance sheet or income statement
-                        is_balance_sheet = any(keyword in cell_str for keyword in bs_keywords_english + bs_keywords_chinese)
-                        is_income_statement = any(keyword in cell_str for keyword in is_keywords_english + is_keywords_chinese)
+                        # Determine if it's balance sheet or income statement using enhanced patterns
+                        is_balance_sheet = any(pattern in cell_str for pattern in bs_patterns)
+                        is_income_statement = any(pattern in cell_str for pattern in is_patterns)
                         
                         if is_balance_sheet:
                             print(f"   📊 Identified as BALANCE SHEET table")
@@ -847,42 +844,87 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         # Remove completely empty rows and columns
         table_df = table_df.dropna(how='all').dropna(axis=1, how='all')
         
-        # Intelligent column selection - focus on description + most recent dates
-        if len(table_df.columns) > 2:
-            # Find description column (usually first non-empty column)
-            desc_col = None
+        # Intelligent column selection - focus on "Indicative adjusted" columns
+        selected_cols = []
+        desc_col_idx = None
+        indicative_cols = []
+        
+        # Step 1: Find description column (first column or text-heavy column)
+        for col_idx, col in enumerate(table_df.columns):
+            sample_values = table_df[col].dropna().head(5)
+            if len(sample_values) > 0:
+                text_count = sum(1 for val in sample_values if isinstance(val, str) and not str(val).replace(',', '').replace('.', '').replace('-', '').isdigit())
+                if text_count >= len(sample_values) * 0.6:  # 60% or more are text
+                    desc_col_idx = col_idx
+                    break
+        
+        if desc_col_idx is None:
+            desc_col_idx = 0  # Fallback to first column
+        
+        # Step 2: Find "Indicative adjusted" or "示意性调整后" columns
+        print(f"   🔍 SEARCHING for 'Indicative adjusted' columns in data rows...")
+        for row_idx in range(min(5, len(table_df))):  # Check first 5 rows
+            print(f"      Row {row_idx} content: {[str(table_df.iloc[row_idx, j])[:30] for j in range(min(6, len(table_df.columns)))]}")
             for col_idx, col in enumerate(table_df.columns):
-                # Check if this column contains mostly text descriptions
-                sample_values = table_df[col].dropna().head(5)
-                if len(sample_values) > 0:
-                    text_count = sum(1 for val in sample_values if isinstance(val, str) and not str(val).replace(',', '').replace('.', '').replace('-', '').isdigit())
-                    if text_count >= len(sample_values) * 0.6:  # 60% or more are text
-                        desc_col = col_idx
+                if col_idx == desc_col_idx:
+                    continue  # Skip description column
+                    
+                cell_value = table_df.iloc[row_idx, col_idx]
+                if pd.notna(cell_value):
+                    cell_str = str(cell_value).lower()
+                    if ('indicative' in cell_str and 'adjusted' in cell_str) or '示意性调整后' in cell_str:
+                        # Found an "Indicative adjusted" header - include this column and columns to the right
+                        print(f"   🎯 FOUND 'Indicative adjusted' at Row {row_idx}, Col {col_idx}: '{cell_value}'")
+                        
+                        # Include this column and up to 3 columns to the right (most recent periods)
+                        for offset in range(4):  # Current + 3 to the right
+                            target_col = col_idx + offset
+                            if target_col < len(table_df.columns):
+                                indicative_cols.append(target_col)
+                        print(f"      Selected column indices: {indicative_cols}")
                         break
-            
-            # Select description column plus 2-3 most recent date columns
-            selected_cols = []
-            if desc_col is not None:
-                selected_cols.append(table_df.columns[desc_col])
-                # Add up to 3 of the rightmost columns (most recent dates)
-                remaining_cols = [col for i, col in enumerate(table_df.columns) if i != desc_col]
-                selected_cols.extend(remaining_cols[-3:])  # Last 3 columns
-            else:
-                # Fallback: use first column + last 2-3 columns
-                selected_cols = [table_df.columns[0]] + list(table_df.columns[-3:])
-            
-            # Remove duplicates while preserving order
-            seen = set()
-            final_cols = []
-            for col in selected_cols:
-                if col not in seen:
-                    final_cols.append(col)
-                    seen.add(col)
-            
-            table_df = table_df[final_cols]
-            print(f"   🎯 Selected columns for display: {final_cols}")
+            if indicative_cols:  # Found indicative columns, stop searching
+                break
+        
+        if not indicative_cols:
+            print(f"   ❌ NO 'Indicative adjusted' columns found in data rows")
+        
+        # Step 3: Build final column selection
+        selected_cols = [table_df.columns[desc_col_idx]]  # Always include description
+        
+        if indicative_cols:
+            # Add indicative adjusted columns
+            for col_idx in indicative_cols:
+                if col_idx != desc_col_idx:  # Don't duplicate description column
+                    selected_cols.append(table_df.columns[col_idx])
+            print(f"   ✅ USING 'Indicative adjusted' column selection")
+            print(f"      Description column: {table_df.columns[desc_col_idx]}")
+            print(f"      Indicative columns: {[table_df.columns[i] for i in indicative_cols if i != desc_col_idx]}")
         else:
-            print(f"   📋 Using all columns (only {len(table_df.columns)} available)")
+            # Fallback: use description + last 2-3 columns (most recent dates)
+            remaining_cols = [col for i, col in enumerate(table_df.columns) if i != desc_col_idx]
+            selected_cols.extend(remaining_cols[-3:])  # Last 3 columns
+            print(f"   ⚠️  FALLBACK: No 'Indicative adjusted' found, using last 3 columns")
+            print(f"      Description column: {table_df.columns[desc_col_idx]}")
+            print(f"      Last 3 columns: {remaining_cols[-3:]}")
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        final_cols = []
+        for col in selected_cols:
+            if col not in seen:
+                final_cols.append(col)
+                seen.add(col)
+        
+        print(f"   📊 FINAL COLUMN SELECTION:")
+        print(f"      Before filtering: {len(table_df.columns)} columns")
+        print(f"      After filtering: {len(final_cols)} columns")
+        print(f"      Selected: {final_cols}")
+        
+        if len(final_cols) > 1:  # Only filter if we have more than description column
+            table_df = table_df[final_cols]
+        else:
+            print(f"   ⚠️  Keeping all columns (selection resulted in only 1 column)")
         
         print(f"   ✅ Extracted {table_type} table: rows {data_start_row}-{data_end_row-1}, shape {table_df.shape}")
         
@@ -901,11 +943,92 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         'separation_successful': balance_sheet_data is not None or income_statement_data is not None
     }
     
-    print(f"   📊 TABLE SEPARATION RESULTS:")
+    print(f"\n📊 TABLE SEPARATION FINAL RESULTS:")
     print(f"   📋 Balance Sheet sections: {len(balance_sheet_sections)}")
     print(f"   📈 Income Statement sections: {len(income_statement_sections)}")
     
+    if balance_sheet_data:
+        print(f"   ✅ BS data extracted: {balance_sheet_data['data'].shape}")
+        print(f"      BS columns: {list(balance_sheet_data['data'].columns)}")
+    else:
+        print(f"   ❌ No BS data extracted")
+        
+    if income_statement_data:
+        print(f"   ✅ IS data extracted: {income_statement_data['data'].shape}")  
+        print(f"      IS columns: {list(income_statement_data['data'].columns)}")
+    else:
+        print(f"   ❌ No IS data extracted")
+    
+    print(f"{'='*80}\n")
+    
     return balance_sheet_data, income_statement_data, metadata
+
+
+def filter_to_indicative_adjusted_columns(df):
+    """
+    Filter dataframe to only show description column + Indicative adjusted columns.
+    This is used when no BS/IS separation occurs but we still want to filter columns.
+    """
+    print(f"\n🔧 FILTERING TO INDICATIVE ADJUSTED COLUMNS")
+    print(f"   📊 Input shape: {df.shape}")
+    
+    # Step 1: Find description column (first column or text-heavy column)
+    desc_col_idx = 0
+    for col_idx, col in enumerate(df.columns):
+        sample_values = df[col].dropna().head(5)
+        if len(sample_values) > 0:
+            text_count = sum(1 for val in sample_values if isinstance(val, str) and not str(val).replace(',', '').replace('.', '').replace('-', '').isdigit())
+            if text_count >= len(sample_values) * 0.6:  # 60% or more are text
+                desc_col_idx = col_idx
+                break
+    
+    # Step 2: Find "Indicative adjusted" columns
+    indicative_cols = []
+    print(f"   🔍 SEARCHING for 'Indicative adjusted' columns...")
+    
+    for row_idx in range(min(5, len(df))):  # Check first 5 rows
+        for col_idx, col in enumerate(df.columns):
+            if col_idx == desc_col_idx:
+                continue  # Skip description column
+                
+            cell_value = df.iloc[row_idx, col_idx]
+            if pd.notna(cell_value):
+                cell_str = str(cell_value).lower()
+                if ('indicative' in cell_str and 'adjusted' in cell_str) or '示意性调整后' in cell_str:
+                    print(f"   🎯 FOUND 'Indicative adjusted' at Row {row_idx}, Col {col_idx}: '{cell_value}'")
+                    
+                    # Include this column and up to 3 columns to the right (most recent periods)
+                    for offset in range(4):  # Current + 3 to the right
+                        target_col = col_idx + offset
+                        if target_col < len(df.columns):
+                            indicative_cols.append(target_col)
+                    break
+        if indicative_cols:  # Found indicative columns, stop searching
+            break
+    
+    # Step 3: Build final column selection
+    if indicative_cols:
+        selected_cols = [df.columns[desc_col_idx]]  # Always include description
+        for col_idx in indicative_cols:
+            if col_idx != desc_col_idx:  # Don't duplicate description column
+                selected_cols.append(df.columns[col_idx])
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        final_cols = []
+        for col in selected_cols:
+            if col not in seen:
+                final_cols.append(col)
+                seen.add(col)
+        
+        filtered_df = df[final_cols]
+        print(f"   ✅ FILTERED to Indicative adjusted columns")
+        print(f"      Selected: {final_cols}")
+        print(f"      Output shape: {filtered_df.shape}")
+        return filtered_df
+    else:
+        print(f"   ❌ No 'Indicative adjusted' columns found - returning original")
+        return df
 
 
 def find_indicative_adjusted_column_and_dates(df, entity_keywords):

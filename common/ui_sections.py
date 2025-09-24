@@ -215,25 +215,48 @@ def render_balance_sheet_sections(
                     except:
                         pass
                 
-                # Filter out rows where all numeric columns are zero
-                if numeric_cols:
-                    for col in numeric_cols:
-                        filtered_df[col] = pd.to_numeric(filtered_df[col], errors='coerce')
+                # Filter out rows where ALL non-description columns are zero
+                if len(filtered_df.columns) > 1:  # Only filter if we have more than description column
+                    # Assume first column is description, check others for zero values
+                    desc_col = filtered_df.columns[0]
+                    value_cols = [col for col in filtered_df.columns if col != desc_col]
                     
-                    # Keep rows where at least one numeric column is non-zero or non-null
-                    mask = False
-                    for col in numeric_cols:
-                        mask |= (filtered_df[col] != 0) & (filtered_df[col].notna())
-                    
-                    # Also keep rows that have non-numeric data
-                    non_numeric_mask = False
-                    for col in filtered_df.columns:
-                        if col not in numeric_cols:
-                            non_numeric_mask |= filtered_df[col].notna() & (filtered_df[col].astype(str).str.strip() != '')
-                    
-                    final_mask = mask | non_numeric_mask
-                    if final_mask.any():
-                        filtered_df = filtered_df[final_mask]
+                    if value_cols:
+                        # Convert value columns to numeric
+                        for col in value_cols:
+                            filtered_df[col] = pd.to_numeric(filtered_df[col], errors='coerce')
+                        
+                        # Keep rows where at least one value column is non-zero OR has description
+                        mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
+                        
+                        # Check each row
+                        for idx, row in filtered_df.iterrows():
+                            # Keep if description is not empty
+                            desc_value = str(row[desc_col]).strip()
+                            has_description = desc_value not in ['', 'nan', 'None', 'NaN']
+                            
+                            # Check if any value column is non-zero
+                            has_nonzero_value = False
+                            for col in value_cols:
+                                val = row[col]
+                                if pd.notna(val) and val != 0:
+                                    has_nonzero_value = True
+                                    break
+                            
+                            # Keep row if it has description AND at least one non-zero value
+                            if has_description and has_nonzero_value:
+                                mask[idx] = True
+                            # Also keep header/category rows (description but no values)
+                            elif has_description and all(pd.isna(row[col]) or row[col] == 0 for col in value_cols):
+                                # Check if this looks like a header (contains text like "assets", "total", etc.)
+                                if any(keyword in desc_value.lower() for keyword in ['assets', 'total', 'current', 'liabilities', 'equity', 'income', 'revenue', 'expenses', 'cost']):
+                                    mask[idx] = True
+                        
+                        if mask.any():
+                            filtered_df = filtered_df[mask]
+                        else:
+                            # If no rows pass the filter, keep original data
+                            filtered_df = raw_df.copy()
                 
                 # Convert datetime objects to strings to avoid Arrow serialization errors
                 for col in filtered_df.columns:
