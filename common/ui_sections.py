@@ -17,7 +17,7 @@ def render_balance_sheet_sections(
     - format_date_to_dd_mmm_yyyy: callable to format dates
     """
 
-    st.markdown("#### View Table by Key")
+    st.markdown("#### View Data")
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
@@ -85,23 +85,34 @@ def render_balance_sheet_sections(
                         st.markdown("**Date:** Unknown")
                 with col3:
                     currency = metadata.get('currency', 'CNY')
-                    st.markdown(f"**Currency:** {currency}")
-                with col4:
                     multiplier = metadata.get('multiplier', 1)
-                    st.markdown(f"**Multiplier:** {multiplier}x")
-                with col5:
-                    # Show Indicative adjusted column info instead of Excel row
+                    if multiplier > 1:
+                        if multiplier == 1000:
+                            st.markdown(f"**Currency:** {currency}'000")
+                        elif multiplier == 1000000:
+                            st.markdown(f"**Currency:** {currency}'000,000")
+                        else:
+                            st.markdown(f"**Currency:** {currency} (×{multiplier})")
+                    else:
+                        st.markdown(f"**Currency:** {currency}")
+                with col4:
+                    # Show data column info instead of multiplier
                     selected_column = metadata.get('selected_column')
                     if selected_column:
-                        st.markdown(f"**Indicative adjusted:** {selected_column}")
-                    else:
-                        # Fallback to currency info
-                        currency_info = metadata.get('currency', 'CNY')
-                        multiplier_info = metadata.get('multiplier', 1)
-                        if multiplier_info > 1:
-                            st.markdown(f"**Processed:** {currency_info} × {multiplier_info}")
+                        # Extract column number from "Unnamed: 23" format
+                        if isinstance(selected_column, str) and selected_column.startswith('Unnamed: '):
+                            try:
+                                col_number = selected_column.split(': ')[1]
+                                st.markdown(f"**Data Column:** {col_number}")
+                            except (ValueError, IndexError):
+                                st.markdown(f"**Data Column:** {selected_column}")
                         else:
-                            st.markdown(f"**Processed:** {currency_info}")
+                            st.markdown(f"**Data Column:** {selected_column}")
+                    else:
+                        st.markdown("**Data Column:** N/A")
+                with col5:
+                    # Empty column (removed Indicative adjusted display)
+                    st.markdown("")
                 with col6:
                     # Entity information removed as requested
                     st.markdown("")
@@ -188,7 +199,7 @@ def render_combined_sections(
 ):
     """Render combined Balance Sheet and Income Statement sections UI."""
     
-    st.markdown("#### View Combined Financial Statements by Key")
+    st.markdown("#### View Data")
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
@@ -254,10 +265,31 @@ def render_combined_sections(
                         st.markdown("**Date:** Unknown")
                 with col3:
                     currency = metadata.get('currency', 'CNY')
-                    st.markdown(f"**Currency:** {currency}")
-                with col4:
                     multiplier = metadata.get('multiplier', 1)
-                    st.markdown(f"**Multiplier:** {multiplier}x")
+                    if multiplier > 1:
+                        if multiplier == 1000:
+                            st.markdown(f"**Currency:** {currency}'000")
+                        elif multiplier == 1000000:
+                            st.markdown(f"**Currency:** {currency}'000,000")
+                        else:
+                            st.markdown(f"**Currency:** {currency} (×{multiplier})")
+                    else:
+                        st.markdown(f"**Currency:** {currency}")
+                with col4:
+                    # Show data column info instead of multiplier
+                    selected_column = metadata.get('selected_column')
+                    if selected_column:
+                        # Extract column number from "Unnamed: 23" format
+                        if isinstance(selected_column, str) and selected_column.startswith('Unnamed: '):
+                            try:
+                                col_number = selected_column.split(': ')[1]
+                                st.markdown(f"**Data Column:** {col_number}")
+                            except (ValueError, IndexError):
+                                st.markdown(f"**Data Column:** {selected_column}")
+                        else:
+                            st.markdown(f"**Data Column:** {selected_column}")
+                    else:
+                        st.markdown("**Data Column:** N/A")
                 with col5:
                     # Show currency and multiplier info instead of "Value Column"
                     currency_info = metadata.get('currency', 'CNY')
@@ -295,7 +327,7 @@ def render_income_statement_sections(
     - format_date_to_dd_mmm_yyyy: callable to format dates
     """
 
-    st.markdown("#### View Income Statement by Key")
+    st.markdown("#### View Data")
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
@@ -365,23 +397,34 @@ def render_income_statement_sections(
                         st.markdown("**Date:** Unknown")
                 with col3:
                     currency = metadata.get('currency', 'CNY')
-                    st.markdown(f"**Currency:** {currency}")
-                with col4:
                     multiplier = metadata.get('multiplier', 1)
-                    st.markdown(f"**Multiplier:** {multiplier}x")
-                with col5:
-                    # Show Indicative adjusted column info instead of Excel row
+                    if multiplier > 1:
+                        if multiplier == 1000:
+                            st.markdown(f"**Currency:** {currency}'000")
+                        elif multiplier == 1000000:
+                            st.markdown(f"**Currency:** {currency}'000,000")
+                        else:
+                            st.markdown(f"**Currency:** {currency} (×{multiplier})")
+                    else:
+                        st.markdown(f"**Currency:** {currency}")
+                with col4:
+                    # Show data column info instead of multiplier
                     selected_column = metadata.get('selected_column')
                     if selected_column:
-                        st.markdown(f"**Indicative adjusted:** {selected_column}")
-                    else:
-                        # Fallback to currency info
-                        currency_info = metadata.get('currency', 'CNY')
-                        multiplier_info = metadata.get('multiplier', 1)
-                        if multiplier_info > 1:
-                            st.markdown(f"**Processed:** {currency_info} × {multiplier_info}")
+                        # Extract column number from "Unnamed: 23" format
+                        if isinstance(selected_column, str) and selected_column.startswith('Unnamed: '):
+                            try:
+                                col_number = selected_column.split(': ')[1]
+                                st.markdown(f"**Data Column:** {col_number}")
+                            except (ValueError, IndexError):
+                                st.markdown(f"**Data Column:** {selected_column}")
                         else:
-                            st.markdown(f"**Processed:** {currency_info}")
+                            st.markdown(f"**Data Column:** {selected_column}")
+                    else:
+                        st.markdown("**Data Column:** N/A")
+                with col5:
+                    # Empty column (removed Indicative adjusted display)
+                    st.markdown("")
                 with col6:
                     # Entity information removed as requested
                     st.markdown("")

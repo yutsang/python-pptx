@@ -762,13 +762,40 @@ def main():
         elif previous_file_name == '':
             st.session_state['previous_uploaded_file_name'] = current_file_name
 
-        # Entity input
-        entity_input = st.text_input(
-            "Enter Entity Name",
-            value="",
-            placeholder="e.g., Company Name Limited, Entity Name Corp",
-            help="Enter the full entity name to configure processing"
-        )
+        # Entity input with dropdown
+        from fdd_utils.data_utils import extract_entity_names_from_databook
+        
+        # Get entity names from databook
+        entity_names = extract_entity_names_from_databook()
+        
+        # Multi-entity mode: Use dropdown with option to type custom entity
+        if entity_names:
+            # Create selectbox with custom option
+            entity_options = entity_names + ["[Custom Entity]"]
+            
+            selected_entity_option = st.selectbox(
+                "Select Entity Name", 
+                options=entity_options,
+                help="Select entity from databook or choose '[Custom Entity]' to type your own"
+            )
+            
+            if selected_entity_option == "[Custom Entity]":
+                entity_input = st.text_input(
+                    "Enter Custom Entity Name",
+                    value="",
+                    placeholder="e.g., Company Name Limited, Entity Name Corp",
+                    help="Enter the full entity name to configure processing"
+                )
+            else:
+                entity_input = selected_entity_option
+        else:
+            # Fallback to text input if no entities found
+            entity_input = st.text_input(
+                "Enter Entity Name",
+                value="",
+                placeholder="e.g., Company Name Limited, Entity Name Corp",
+                help="Enter the full entity name to configure processing"
+            )
         
         # Row limit is hardcoded in settings
         row_limit = 20  # Fixed limit for all slides
@@ -1626,7 +1653,7 @@ def main():
             else:
                 st.info("No financial keys available for results display.")
         else:
-            st.info("No AI agents have run yet. Use the buttons above to start processing.")
+            pass  # AI processing section ready
         
         # Debug section for progress messages
         if 'debug_progress' in st.session_state and st.session_state['debug_progress']:

@@ -179,6 +179,54 @@ def format_date_to_dd_mmm_yyyy(date_str):
     return date_str
 
 
+def extract_entity_names_from_databook(databook_path='databook.xlsx'):
+    """Extract entity names from databook Excel headers using pattern ' - EntityName'."""
+    import pandas as pd
+    import os
+    
+    entity_names = set()
+    
+    try:
+        # Check if databook exists (in parent directory if path is relative)
+        if not os.path.isabs(databook_path):
+            base_path = Path(__file__).parent.parent
+            full_path = base_path / databook_path
+        else:
+            full_path = Path(databook_path)
+            
+        if not full_path.exists():
+            print(f"Databook not found at {full_path}")
+            return []
+        
+        # Scan all sheets for entity name patterns
+        xl = pd.ExcelFile(full_path)
+        for sheet_name in xl.sheet_names:
+            try:
+                df = xl.parse(sheet_name)
+                for i in range(len(df)):
+                    for j in range(len(df.columns)):
+                        val = df.iloc[i, j]
+                        if pd.notna(val) and isinstance(val, str):
+                            val_str = str(val)
+                            # Look for pattern ' - EntityName'
+                            if ' - ' in val_str:
+                                parts = val_str.split(' - ')
+                                if len(parts) >= 2:
+                                    entity_name = parts[-1].strip()
+                                    # Filter reasonable entity names
+                                    if len(entity_name) > 2 and len(entity_name) < 50:
+                                        entity_names.add(entity_name)
+            except Exception as e:
+                print(f"Error processing sheet {sheet_name}: {e}")
+                continue
+        
+        return sorted(list(entity_names))
+        
+    except Exception as e:
+        print(f"Error extracting entity names from databook: {e}")
+        return []
+
+
 def load_config_files():
     """Load configuration files."""
     base_path = Path(__file__).parent
