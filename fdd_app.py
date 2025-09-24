@@ -1717,9 +1717,7 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
             
             if any(mask):
                 df = df[mask]
-                print(f"🎯 PPT Table: Filtered zero rows → {df.shape}")
-        
-        print(f"🎯 PPT Table: Final data → {df.shape}")
+        print(f"🎯 PPT: {df.shape}")
         
         # Get the first slide (BS1)
         first_slide = prs.slides[0]

@@ -108,7 +108,7 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
         print(f"   ⚠️  No 'Indicative adjusted' (English/Chinese) found, using fallback date detection")
         # Fallback: find any date column
     else:
-        print(f"   📊 Found {len(indicative_positions)} instances of 'Indicative adjusted' (English/Chinese)")
+        # Compact output
         # Step 2: For each "Indicative adjusted" (English/Chinese) position, find the merged range and get the date
         for instance_idx, (indic_row, indic_col) in enumerate(indicative_positions):
             col_name = columns[indic_col]
@@ -177,7 +177,7 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
 
             # If still no date found in merged range, search entire sheet for dates (Chinese files might have dates elsewhere)
             if latest_column is None:
-                print(f"   🔍 Extended search: Looking for dates in entire sheet...")
+                # Extended search
                 for row_idx in range(min(15, len(df))):  # Search first 15 rows
                     for col_idx in range(len(columns)):
                         val = df.iloc[row_idx, col_idx]
@@ -228,8 +228,7 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
         entity_keywords: List of entity keywords to search for
         manual_mode: Manual selection - 'single' or 'multiple'
     """
-    # Reduced noise - only essential info
-    print(f"   Entity: '{entity_name}', Mode: {manual_mode}, Shape: {df.shape}")
+    # Minimal output
 
     # If manual mode is 'single', skip entity filtering and return original table
     if manual_mode == 'single':
@@ -237,18 +236,11 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
         return df, False
 
     # Step 1: FIRST - Scan entire sheet for multiple entities to determine mode
-    print(f"   🔍 SCANNING ENTIRE SHEET for entity detection...")
+    # Entity detection
     entities_found_in_sheet = []
-
-    # Check for entity patterns in the sheet
-    # Use the provided entity keywords instead of hardcoded patterns
     entity_patterns = [kw.lower() for kw in entity_keywords if kw.strip()]
-    
-    # Also check for the entity name itself
     if entity_name and entity_name.lower() not in entity_patterns:
         entity_patterns.append(entity_name.lower())
-    
-    print(f"   🔍 ENTITY PATTERNS TO SEARCH: {entity_patterns}")
 
     for row_idx in range(len(df)):
         row = df.iloc[row_idx]
@@ -270,7 +262,7 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
                 
                 if entity_name_found not in entities_found_in_sheet:
                     entities_found_in_sheet.append(entity_name_found)
-                    print(f"   ✅ FOUND ENTITY: {entity_name_found} in row {row_idx}")
+                    # Entity found
                 break  # Stop checking other patterns for this row
 
     # Also check with the provided entity keywords
@@ -281,11 +273,10 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
         for keyword in entity_keywords:
             if keyword.lower() in row_text and keyword not in entities_found_in_sheet:
                 entities_found_in_sheet.append(keyword)
-                print(f"   ✅ FOUND ENTITY: {keyword} in row {row_idx}")
+                # Entity found
 
     total_entities_detected = len(entities_found_in_sheet)
-    print(f"   📊 TOTAL ENTITIES DETECTED: {total_entities_detected}")
-    print(f"   📋 ENTITIES FOUND: {entities_found_in_sheet}")
+    # Compact entity summary
 
     # Determine if this is truly a multiple entity file
     is_actually_multiple = total_entities_detected > 1
@@ -441,12 +432,7 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
     unique_entities = len(entity_sections)
     detected_multiple = unique_entities > 1
 
-    print(f"   📊 Generated entity keywords: {entity_keywords}")
-    print(f"   📊 Entities found in Excel: {list(entity_sections.keys()) if entity_sections else 'None'}")
-    if manual_mode != 'multiple' and all_potential_entities:
-        print(f"   📊 Potential entity names found in Excel: {sorted(list(all_potential_entities))[:10]}")  # Show first 10
-    print(f"   📊 Total unique entities detected: {unique_entities}")
-    print(f"   📊 Detected multiple entities: {detected_multiple}")
+    # Entity summary: {unique_entities} entities detected
 
     # For single entity mode only, show troubleshooting if no entities found
     if manual_mode != 'multiple' and not detected_multiple:
@@ -536,9 +522,8 @@ def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywor
             - list_of_filtered_dfs: List of DataFrames, one for each matching section
             - is_multiple_entity: Boolean indicating if multiple entities were detected
     """
-    print(f"   🔍 ENTITY ANALYSIS (ALL SECTIONS): entity_name='{entity_name}', entity_keywords={entity_keywords}")
-    print(f"   📊 MANUAL MODE: {manual_mode}")
-    print(f"   📄 DataFrame info: {len(df)} rows, {len(df.columns)} columns")
+        # Entity analysis
+    # Processing info
 
     # If manual mode is 'single', skip entity filtering and return original table as single-item list
     if manual_mode == 'single':
@@ -577,7 +562,7 @@ def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywor
     # Step 3b: For multiple entity mode, apply simplified entity filtering
     if manual_mode == 'multiple':
         print(f"   🎯 MULTIPLE ENTITY MODE: Applying simplified entity filtering")
-        print(f"   📊 Processing {len(table_sections)} table sections")
+        # Processing sections
 
         # Filter table sections to only include those that contain the target entity
         filtered_sections = []
@@ -628,7 +613,7 @@ def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywor
 
         # Update table_sections to only include sections with the target entity
         if filtered_sections:
-            print(f"   📊 Found {len(filtered_sections)} table sections containing target entity")
+            # Found matching sections
             table_sections = filtered_sections
             is_multiple_entity = len(filtered_sections) > 1
         else:
@@ -642,7 +627,7 @@ def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywor
     matching_sections = table_sections
 
     if matching_sections:
-        print(f"   📊 Using {len(matching_sections)} filtered table sections containing target entity")
+        pass  # Using filtered sections
     else:
         print(f"   ⚠️ No matching sections found")
         return [df], is_multiple_entity
@@ -674,7 +659,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     Returns:
         tuple: (balance_sheet_df, income_statement_df, metadata)
     """
-    print(f"🔍 BS/IS Separation: {df.shape}, Keywords: {entity_keywords}")
+    print(f"🔍 BS/IS: {df.shape}")
     
     balance_sheet_sections = []
     income_statement_sections = []
@@ -707,7 +692,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                 is_income_statement = any(pattern in col_str for pattern in is_patterns)
                 
                 if is_balance_sheet:
-                    print(f"✅ Found BS table in column {col_idx}")
+                    print(f"✅ BS found")
                     balance_sheet_sections.append({
                         'header_row': -1,  # Column header
                         'header_col': col_idx,
@@ -715,15 +700,13 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                         'type': 'balance_sheet'
                     })
                 elif is_income_statement:
-                    print(f"✅ Found IS table in column {col_idx}")
+                    print(f"✅ IS found")
                     income_statement_sections.append({
                         'header_row': -1,  # Column header
                         'header_col': col_idx,
                         'header_text': str(col_name),
                         'type': 'income_statement'
                     })
-                else:
-                    print(f"ℹ️ Generic 'Indicative adjusted' found (not BS/IS)")
     
     # Then search through the dataframe data for table headers (fallback)
     if not balance_sheet_sections and not income_statement_sections:
@@ -748,7 +731,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                         is_income_statement = any(pattern in cell_str for pattern in is_patterns)
                         
                         if is_balance_sheet:
-                            print(f"   📊 Identified as BALANCE SHEET table")
+                            print(f"✅ BS in data")
                             balance_sheet_sections.append({
                                 'header_row': row_idx,
                                 'header_col': col_idx,
@@ -756,7 +739,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                                 'type': 'balance_sheet'
                             })
                         elif is_income_statement:
-                            print(f"   📈 Identified as INCOME STATEMENT table")
+                            print(f"✅ IS in data")
                             income_statement_sections.append({
                                 'header_row': row_idx,
                                 'header_col': col_idx,
@@ -778,7 +761,6 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         # If header is in column header (header_row = -1), start from row 0
         if header_row == -1:
             data_start_row = 0
-            print(f"   📍 Table header in column, starting data extraction from row 0")
         else:
             # Find the data start row (usually 1-2 rows after header)
             data_start_row = header_row + 1
@@ -879,12 +861,11 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             for col_idx in indicative_cols:
                 if col_idx != desc_col_idx:  # Don't duplicate description column
                     selected_cols.append(table_df.columns[col_idx])
-            print(f"✅ Using Indicative adjusted columns ({len(indicative_cols)} selected)")
+            print(f"✅ Indicative cols: {len(indicative_cols)}")
         else:
             # Fallback: use description + last 2-3 columns (most recent dates)
             remaining_cols = [col for i, col in enumerate(table_df.columns) if i != desc_col_idx]
             selected_cols.extend(remaining_cols[-3:])  # Last 3 columns
-            print(f"⚠️ Fallback: using last 3 columns")
         
         # Remove duplicates while preserving order
         seen = set()
@@ -896,9 +877,6 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         
         if len(final_cols) > 1:  # Only filter if we have more than description column
             table_df = table_df[final_cols]
-            print(f"📊 Filtered: {len(table_df.columns)} cols → {table_df.shape}")
-        
-        print(f"   ✅ Extracted {table_type} table: rows {data_start_row}-{data_end_row-1}, shape {table_df.shape}")
         
         return {
             'data': table_df,
@@ -915,11 +893,9 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         'separation_successful': balance_sheet_data is not None or income_statement_data is not None
     }
     
-    print(f"📊 Results: BS={len(balance_sheet_sections)}, IS={len(income_statement_sections)}")
-    if balance_sheet_data:
-        print(f"✅ BS extracted: {balance_sheet_data['data'].shape}")
-    if income_statement_data:
-        print(f"✅ IS extracted: {income_statement_data['data'].shape}")
+    # Compact results
+    if balance_sheet_data or income_statement_data:
+        print(f"📊 Extracted: BS={len(balance_sheet_sections)}, IS={len(income_statement_sections)}")
     
     return balance_sheet_data, income_statement_data, metadata
 
@@ -929,7 +905,7 @@ def filter_to_indicative_adjusted_columns(df):
     Filter dataframe to only show description column + Indicative adjusted columns.
     This is used when no BS/IS separation occurs but we still want to filter columns.
     """
-    print(f"🔧 Column filter: {df.shape}")
+        # Reduced output
     
     # Find description column (first column or text-heavy column)
     desc_col_idx = 0
@@ -957,7 +933,7 @@ def filter_to_indicative_adjusted_columns(df):
                         target_col = col_idx + offset
                         if target_col < len(df.columns):
                             indicative_cols.append(target_col)
-                    print(f"🎯 Found Indicative adjusted → {len(indicative_cols)} cols selected")
+                    print(f"🎯 Indicative cols: {len(indicative_cols)}")
                     break
         if indicative_cols:  # Found indicative columns, stop searching
             break
@@ -978,10 +954,9 @@ def filter_to_indicative_adjusted_columns(df):
                 seen.add(col)
         
         filtered_df = df[final_cols]
-        print(f"✅ Filtered to Indicative adjusted: {df.shape} → {filtered_df.shape}")
+        print(f"✅ Filtered: {df.shape} → {filtered_df.shape}")
         return filtered_df
     else:
-        print(f"ℹ️ No Indicative adjusted found, keeping original")
         return df
 
 
@@ -1206,6 +1181,9 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             # Fallback to original data if separation didn't work or no preference
             df_to_process = df_filtered
             print(f"   ⚠️  Using original combined data for processing")
+        
+        # Apply column filtering to the selected table
+        df_to_process = filter_to_indicative_adjusted_columns(df_to_process)
         
         # Continue with date detection on the selected table
         extracted_date, selected_column, row_number = find_indicative_adjusted_column_and_dates(df_to_process, entity_keywords)
