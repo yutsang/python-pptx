@@ -680,6 +680,134 @@ def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywor
         print(f"   ⚠️  No suitable table sections found, using original table")
         return [df], is_multiple_entity
 
+def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
+    """
+    Separate balance sheet and income statement tables from a combined Excel sheet.
+    
+    Looks for table headers like:
+    - English: "Indicative adjusted balance sheet - Project Ningbo", "Indicative adjusted income statement - Project Ningbo"
+    - Chinese: "经示意性调整后资产负债表 - 东莞岭南", "经示意性调整后利润表 - 东莞岭南"
+    
+    Returns:
+        tuple: (balance_sheet_df, income_statement_df, metadata)
+    """
+    print(f"   🔍 SEPARATING Balance Sheet and Income Statement tables...")
+    
+    balance_sheet_sections = []
+    income_statement_sections = []
+    
+    # Define keywords for table identification
+    bs_keywords_english = ['balance sheet', 'statement of financial position']
+    is_keywords_english = ['income statement', 'profit and loss', 'statement of comprehensive income']
+    bs_keywords_chinese = ['资产负债表', '财务状况表']
+    is_keywords_chinese = ['利润表', '损益表', '综合收益表']
+    
+    # Search through the dataframe for table headers
+    for row_idx in range(min(20, len(df))):  # Check first 20 rows
+        for col_idx in range(len(df.columns)):
+            cell_value = df.iloc[row_idx, col_idx]
+            if pd.notna(cell_value):
+                cell_str = str(cell_value).lower()
+                
+                # Check if this cell contains "Indicative adjusted" or "示意性调整后"
+                is_indicative_header = (
+                    ('indicative' in cell_str and 'adjusted' in cell_str) or
+                    '示意性调整后' in cell_str or
+                    '经示意性调整后' in cell_str
+                )
+                
+                if is_indicative_header:
+                    print(f"   📋 Found indicative header at Row {row_idx}, Col {col_idx}: '{cell_value}'")
+                    
+                    # Determine if it's balance sheet or income statement
+                    is_balance_sheet = any(keyword in cell_str for keyword in bs_keywords_english + bs_keywords_chinese)
+                    is_income_statement = any(keyword in cell_str for keyword in is_keywords_english + is_keywords_chinese)
+                    
+                    if is_balance_sheet:
+                        print(f"   📊 Identified as BALANCE SHEET table")
+                        balance_sheet_sections.append({
+                            'header_row': row_idx,
+                            'header_col': col_idx,
+                            'header_text': str(cell_value),
+                            'type': 'balance_sheet'
+                        })
+                    elif is_income_statement:
+                        print(f"   📈 Identified as INCOME STATEMENT table")
+                        income_statement_sections.append({
+                            'header_row': row_idx,
+                            'header_col': col_idx,
+                            'header_text': str(cell_value),
+                            'type': 'income_statement'
+                        })
+    
+    # Extract table data for each identified section
+    def extract_table_data(sections, table_type):
+        """Extract table data for given sections"""
+        if not sections:
+            print(f"   ❌ No {table_type} sections found")
+            return None
+            
+        # Use the first section found (most common case)
+        section = sections[0]
+        header_row = section['header_row']
+        
+        # Find the data start row (usually 1-2 rows after header)
+        data_start_row = header_row + 1
+        
+        # Look for the actual data start by finding non-empty rows
+        for check_row in range(header_row + 1, min(header_row + 5, len(df))):
+            row_data = df.iloc[check_row]
+            if row_data.notna().sum() > len(df.columns) * 0.3:  # At least 30% non-empty cells
+                data_start_row = check_row
+                break
+        
+        # Find the data end row (look for next table header or empty rows)
+        data_end_row = len(df)
+        for check_row in range(data_start_row + 1, len(df)):
+            row_data = df.iloc[check_row]
+            
+            # Check if this row contains another table header
+            row_text = ' '.join(str(val).lower() for val in row_data if pd.notna(val))
+            if ('indicative' in row_text and 'adjusted' in row_text) or '示意性调整后' in row_text or '经示意性调整后' in row_text:
+                data_end_row = check_row
+                print(f"   📍 Found next table header at row {check_row}, ending current table")
+                break
+            
+            # Check for empty rows
+            if row_data.notna().sum() < 2:  # Less than 2 non-empty cells indicates end
+                data_end_row = check_row
+                break
+        
+        # Extract the table data
+        table_df = df.iloc[data_start_row:data_end_row].copy()
+        
+        # Remove completely empty rows and columns
+        table_df = table_df.dropna(how='all').dropna(axis=1, how='all')
+        
+        print(f"   ✅ Extracted {table_type} table: rows {data_start_row}-{data_end_row-1}, shape {table_df.shape}")
+        
+        return {
+            'data': table_df,
+            'header_info': section,
+            'data_range': (data_start_row, data_end_row-1)
+        }
+    
+    balance_sheet_data = extract_table_data(balance_sheet_sections, 'Balance Sheet')
+    income_statement_data = extract_table_data(income_statement_sections, 'Income Statement')
+    
+    metadata = {
+        'bs_sections_found': len(balance_sheet_sections),
+        'is_sections_found': len(income_statement_sections),
+        'separation_successful': balance_sheet_data is not None or income_statement_data is not None
+    }
+    
+    print(f"   📊 TABLE SEPARATION RESULTS:")
+    print(f"   📋 Balance Sheet sections: {len(balance_sheet_sections)}")
+    print(f"   📈 Income Statement sections: {len(income_statement_sections)}")
+    
+    return balance_sheet_data, income_statement_data, metadata
+
+
 def find_indicative_adjusted_column_and_dates(df, entity_keywords):
     """Find 'Indicative adjusted' column and extract dates according to new logic."""
 
@@ -871,8 +999,39 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             # For single entity mode, use the original function
             df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mode)
 
-        # NEW LOGIC: Step 2 - Find Indicative adjusted column and dates
-        extracted_date, selected_column, row_number = find_indicative_adjusted_column_and_dates(df_filtered, entity_keywords)
+        # NEW LOGIC: Step 2 - Separate Balance Sheet and Income Statement tables
+        bs_data, is_data, separation_metadata = separate_balance_sheet_and_income_statement_tables(df_filtered, entity_keywords)
+        
+        # Store separation results in session state for later use
+        if hasattr(st, 'session_state'):
+            if 'separated_tables' not in st.session_state:
+                st.session_state['separated_tables'] = {}
+            st.session_state['separated_tables'][sheet_name] = {
+                'balance_sheet': bs_data,
+                'income_statement': is_data,
+                'metadata': separation_metadata
+            }
+        
+        # For current processing, choose the appropriate table based on context
+        # If we have a specific statement type preference, use that table
+        current_statement_type = 'BS'  # Default
+        if hasattr(st, 'session_state') and hasattr(st.session_state, 'get'):
+            current_statement_type = st.session_state.get('current_statement_type', 'BS')
+        
+        # Select the appropriate data based on statement type
+        if current_statement_type == 'BS' and bs_data:
+            df_to_process = bs_data['data']
+            print(f"   🎯 Using BALANCE SHEET data for processing")
+        elif current_statement_type == 'IS' and is_data:
+            df_to_process = is_data['data'] 
+            print(f"   🎯 Using INCOME STATEMENT data for processing")
+        else:
+            # Fallback to original data if separation didn't work or no preference
+            df_to_process = df_filtered
+            print(f"   ⚠️  Using original combined data for processing")
+        
+        # Continue with date detection on the selected table
+        extracted_date, selected_column, row_number = find_indicative_adjusted_column_and_dates(df_to_process, entity_keywords)
 
         # Keep the original dataframe structure - don't filter columns
         df_clean = df_filtered.copy()
@@ -2372,10 +2531,28 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         print(f"   🔑 entity_keywords: {entity_keywords}")
                         print(f"   📍 actual_entity_found: {actual_entity_found}")
 
+                        # Check if we have separated tables for this sheet
+                        current_statement_type = 'BS'  # Default
+                        if hasattr(st, 'session_state') and hasattr(st.session_state, 'get'):
+                            current_statement_type = st.session_state.get('current_statement_type', 'BS')
+                        
+                        # Get separated table data if available
+                        separated_tables = getattr(st.session_state, 'separated_tables', {}) if hasattr(st, 'session_state') else {}
+                        
+                        df_to_parse = data_frame
+                        if sheet_name in separated_tables:
+                            sheet_separated = separated_tables[sheet_name]
+                            if current_statement_type == 'BS' and sheet_separated['balance_sheet']:
+                                df_to_parse = sheet_separated['balance_sheet']['data']
+                                print(f"   🎯 Using separated BALANCE SHEET data for {sheet_name}")
+                            elif current_statement_type == 'IS' and sheet_separated['income_statement']:
+                                df_to_parse = sheet_separated['income_statement']['data']
+                                print(f"   🎯 Using separated INCOME STATEMENT data for {sheet_name}")
+                        
                         # Parse the table - this will handle entity filtering internally
                         # Convert entity_mode to manual_mode for parse_accounting_table
                         manual_mode = entity_mode
-                        parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found, debug, manual_mode)
+                        parsed_table = parse_accounting_table(df_to_parse, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found, debug, manual_mode)
 
                         # IMPORTANT: Extract the filtered data from parsed_table if entity filtering was applied
                         # This ensures we use the filtered data for all subsequent processing
@@ -2648,9 +2825,27 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                                 print(f"   🔑 entity_keywords: {entity_keywords}")
                                 print(f"   📍 actual_entity_found: {actual_entity_found}")
 
+                                # Check if we have separated tables for this sheet
+                                current_statement_type = 'BS'  # Default
+                                if hasattr(st, 'session_state') and hasattr(st.session_state, 'get'):
+                                    current_statement_type = st.session_state.get('current_statement_type', 'BS')
+                                
+                                # Get separated table data if available
+                                separated_tables = getattr(st.session_state, 'separated_tables', {}) if hasattr(st, 'session_state') else {}
+                                
+                                df_to_parse = data_frame
+                                if sheet_name in separated_tables:
+                                    sheet_separated = separated_tables[sheet_name]
+                                    if current_statement_type == 'BS' and sheet_separated['balance_sheet']:
+                                        df_to_parse = sheet_separated['balance_sheet']['data']
+                                        print(f"   🎯 Using separated BALANCE SHEET data for {sheet_name}")
+                                    elif current_statement_type == 'IS' and sheet_separated['income_statement']:
+                                        df_to_parse = sheet_separated['income_statement']['data']
+                                        print(f"   🎯 Using separated INCOME STATEMENT data for {sheet_name}")
+                                
                                 # Parse the table - this will handle entity filtering internally
                                 manual_mode = entity_mode
-                                parsed_table = parse_accounting_table(data_frame, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found, debug, manual_mode)
+                                parsed_table = parse_accounting_table(df_to_parse, best_key, entity_name, sheet_name, latest_date_col, actual_entity_found, debug, manual_mode)
 
                                 # Extract the filtered data from parsed_table if entity filtering was applied
                                 if parsed_table and 'filtered_data' in parsed_table:

@@ -839,6 +839,9 @@ def main():
         }
         statement_type = statement_type_mapping[statement_type_display]
         
+        # Store statement type in session state for excel processing
+        st.session_state['current_statement_type'] = statement_type
+        
         # Financial Data Selection (moved here from PowerPoint section)
         st.markdown("**Financial Data Source:**")
         
