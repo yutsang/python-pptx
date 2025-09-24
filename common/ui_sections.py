@@ -130,25 +130,53 @@ def render_balance_sheet_sections(
                         else:
                             value = 'N/A'
                         actual_value = value
+                        
+                        # Skip rows with zero values
+                        try:
+                            if isinstance(actual_value, (int, float)) and actual_value == 0:
+                                continue
+                            elif isinstance(actual_value, str) and actual_value.strip() in ['0', '0.0', '0.00', '-']:
+                                continue
+                        except:
+                            pass  # If conversion fails, keep the row
+                        
                         # Convert datetime objects to strings to avoid Arrow serialization errors
                         if hasattr(actual_value, 'strftime'):  # datetime object
                             formatted_value = actual_value.strftime('%Y-%m-%d')
                         elif isinstance(actual_value, (int, float)):
-                            formatted_value = f"{actual_value:,.2f}"
+                            formatted_value = f"{actual_value:,.0f}"  # No decimals for cleaner display
                         else:
                             formatted_value = str(actual_value)
                         structured_data.append({'Description': description, 'Value': formatted_value})
 
-                    df_structured = pd.DataFrame(structured_data)
-                    display_df = df_structured[["Description", "Value"]].copy()
+                    if structured_data:  # Only display if we have data after filtering zeros
+                        df_structured = pd.DataFrame(structured_data)
+                        display_df = df_structured[["Description", "Value"]].copy()
 
-                    def highlight_totals(row):
-                        if row['Description'].lower() in ['total', 'subtotal']:
-                            return ['background-color: rgba(173, 216, 230, 0.3)'] * len(row)
-                        return [''] * len(row)
+                        def highlight_totals(row):
+                            if row['Description'].lower() in ['total', 'subtotal']:
+                                return ['background-color: rgba(173, 216, 230, 0.3)'] * len(row)
+                            return [''] * len(row)
 
-                    styled_df = display_df.style.apply(highlight_totals, axis=1)
-                    st.dataframe(styled_df, use_container_width=True)
+                        styled_df = display_df.style.apply(highlight_totals, axis=1)
+                        
+                        # Configure dataframe display to prevent wrapping
+                        st.dataframe(
+                            styled_df, 
+                            use_container_width=True,
+                            column_config={
+                                "Description": st.column_config.TextColumn(
+                                    "Description",
+                                    width="medium"
+                                ),
+                                "Value": st.column_config.TextColumn(
+                                    "Value", 
+                                    width="small"
+                                )
+                            }
+                        )
+                    else:
+                        st.info("No data rows with non-zero values found")
                 else:
                     st.info("No structured data rows found")
 
@@ -174,12 +202,53 @@ def render_balance_sheet_sections(
                 raw_df.columns = [f"{key} (Description)"]
 
             if len(raw_df.columns) > 0:
+                # Filter out rows with all zero values
+                filtered_df = raw_df.copy()
+                
+                # Identify numeric columns
+                numeric_cols = []
+                for col in filtered_df.columns:
+                    try:
+                        # Convert to numeric, errors='coerce' will set non-numeric to NaN
+                        pd.to_numeric(filtered_df[col], errors='coerce')
+                        numeric_cols.append(col)
+                    except:
+                        pass
+                
+                # Filter out rows where all numeric columns are zero
+                if numeric_cols:
+                    for col in numeric_cols:
+                        filtered_df[col] = pd.to_numeric(filtered_df[col], errors='coerce')
+                    
+                    # Keep rows where at least one numeric column is non-zero or non-null
+                    mask = False
+                    for col in numeric_cols:
+                        mask |= (filtered_df[col] != 0) & (filtered_df[col].notna())
+                    
+                    # Also keep rows that have non-numeric data
+                    non_numeric_mask = False
+                    for col in filtered_df.columns:
+                        if col not in numeric_cols:
+                            non_numeric_mask |= filtered_df[col].notna() & (filtered_df[col].astype(str).str.strip() != '')
+                    
+                    final_mask = mask | non_numeric_mask
+                    if final_mask.any():
+                        filtered_df = filtered_df[final_mask]
+                
                 # Convert datetime objects to strings to avoid Arrow serialization errors
-                raw_df_copy = raw_df.copy()
-                for col in raw_df_copy.columns:
-                    if raw_df_copy[col].dtype == 'object':
-                        raw_df_copy[col] = raw_df_copy[col].astype(str)
-                st.dataframe(raw_df_copy, use_container_width=True)
+                for col in filtered_df.columns:
+                    if filtered_df[col].dtype == 'object':
+                        filtered_df[col] = filtered_df[col].astype(str)
+                
+                # Configure display
+                if len(filtered_df) > 0:
+                    st.dataframe(
+                        filtered_df, 
+                        use_container_width=True,
+                        column_config={col: st.column_config.TextColumn(col, width="medium") for col in filtered_df.columns}
+                    )
+                else:
+                    st.info("No rows with non-zero values found")
             else:
                 st.error("No valid columns found after cleaning")
                 st.write("**Original DataFrame:**")
@@ -442,30 +511,58 @@ def render_income_statement_sections(
                         else:
                             value = 'N/A'
                         actual_value = value
+                        
+                        # Skip rows with zero values
+                        try:
+                            if isinstance(actual_value, (int, float)) and actual_value == 0:
+                                continue
+                            elif isinstance(actual_value, str) and actual_value.strip() in ['0', '0.0', '0.00', '-']:
+                                continue
+                        except:
+                            pass  # If conversion fails, keep the row
+                        
                         # Convert datetime objects to strings to avoid Arrow serialization errors
                         if hasattr(actual_value, 'strftime'):  # datetime object
                             formatted_value = actual_value.strftime('%Y-%m-%d')
                         elif isinstance(actual_value, (int, float)):
-                            formatted_value = f"{actual_value:,.2f}"
+                            formatted_value = f"{actual_value:,.0f}"  # No decimals for cleaner display
                         else:
                             formatted_value = str(actual_value)
                         structured_data.append({'Description': description, 'Value': formatted_value})
 
-                    df_structured = pd.DataFrame(structured_data)
-                    display_df = df_structured[["Description", "Value"]].copy()
+                    if structured_data:  # Only display if we have data after filtering zeros
+                        df_structured = pd.DataFrame(structured_data)
+                        display_df = df_structured[["Description", "Value"]].copy()
 
-                    def highlight_income_items(row):
-                        desc_lower = row['Description'].lower()
-                        if any(term in desc_lower for term in ['total', 'subtotal', 'net income', 'gross profit', 'operating income']):
-                            return ['background-color: rgba(173, 216, 230, 0.3)'] * len(row)
-                        elif any(term in desc_lower for term in ['income', 'revenue', 'gain']):
-                            return ['background-color: rgba(144, 238, 144, 0.2)'] * len(row)  # Light green for income
-                        elif any(term in desc_lower for term in ['expense', 'cost', 'loss']):
-                            return ['background-color: rgba(255, 182, 193, 0.2)'] * len(row)  # Light red for expenses
-                        return [''] * len(row)
+                        def highlight_income_items(row):
+                            desc_lower = row['Description'].lower()
+                            if any(term in desc_lower for term in ['total', 'subtotal', 'net income', 'gross profit', 'operating income']):
+                                return ['background-color: rgba(173, 216, 230, 0.3)'] * len(row)
+                            elif any(term in desc_lower for term in ['income', 'revenue', 'gain']):
+                                return ['background-color: rgba(144, 238, 144, 0.2)'] * len(row)  # Light green for income
+                            elif any(term in desc_lower for term in ['expense', 'cost', 'loss']):
+                                return ['background-color: rgba(255, 182, 193, 0.2)'] * len(row)  # Light red for expenses
+                            return [''] * len(row)
 
-                    styled_df = display_df.style.apply(highlight_income_items, axis=1)
-                    st.dataframe(styled_df, use_container_width=True)
+                        styled_df = display_df.style.apply(highlight_income_items, axis=1)
+                        
+                        # Configure dataframe display to prevent wrapping
+                        st.dataframe(
+                            styled_df, 
+                            use_container_width=True,
+                            column_config={
+                                "Description": st.column_config.TextColumn(
+                                    "Description",
+                                    width="medium"
+                                ),
+                                "Value": st.column_config.TextColumn(
+                                    "Value", 
+                                    width="small"
+                                )
+                            }
+                        )
+                    else:
+                        st.info("No data rows with non-zero values found")
                 else:
                     st.info("No structured data rows found")
 

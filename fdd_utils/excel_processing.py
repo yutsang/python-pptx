@@ -702,43 +702,80 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     bs_keywords_chinese = ['资产负债表', '财务状况表']
     is_keywords_chinese = ['利润表', '损益表', '综合收益表']
     
-    # Search through the dataframe for table headers
-    for row_idx in range(min(20, len(df))):  # Check first 20 rows
-        for col_idx in range(len(df.columns)):
-            cell_value = df.iloc[row_idx, col_idx]
-            if pd.notna(cell_value):
-                cell_str = str(cell_value).lower()
+    # First check column headers for table identification
+    for col_idx, col_name in enumerate(df.columns):
+        if pd.notna(col_name):
+            col_str = str(col_name).lower()
+            
+            # Check if this column header contains "Indicative adjusted" or "示意性调整后"
+            is_indicative_header = (
+                ('indicative' in col_str and 'adjusted' in col_str) or
+                '示意性调整后' in col_str or
+                '经示意性调整后' in col_str
+            )
+            
+            if is_indicative_header:
+                print(f"   📋 Found indicative header in COLUMN {col_idx}: '{col_name}'")
                 
-                # Check if this cell contains "Indicative adjusted" or "示意性调整后"
-                is_indicative_header = (
-                    ('indicative' in cell_str and 'adjusted' in cell_str) or
-                    '示意性调整后' in cell_str or
-                    '经示意性调整后' in cell_str
-                )
+                # Determine if it's balance sheet or income statement
+                is_balance_sheet = any(keyword in col_str for keyword in bs_keywords_english + bs_keywords_chinese)
+                is_income_statement = any(keyword in col_str for keyword in is_keywords_english + is_keywords_chinese)
                 
-                if is_indicative_header:
-                    print(f"   📋 Found indicative header at Row {row_idx}, Col {col_idx}: '{cell_value}'")
+                if is_balance_sheet:
+                    print(f"   📊 Identified as BALANCE SHEET table (from column header)")
+                    balance_sheet_sections.append({
+                        'header_row': -1,  # Column header
+                        'header_col': col_idx,
+                        'header_text': str(col_name),
+                        'type': 'balance_sheet'
+                    })
+                elif is_income_statement:
+                    print(f"   📈 Identified as INCOME STATEMENT table (from column header)")
+                    income_statement_sections.append({
+                        'header_row': -1,  # Column header
+                        'header_col': col_idx,
+                        'header_text': str(col_name),
+                        'type': 'income_statement'
+                    })
+    
+    # Then search through the dataframe data for table headers (fallback)
+    if not balance_sheet_sections and not income_statement_sections:
+        for row_idx in range(min(20, len(df))):  # Check first 20 rows
+            for col_idx in range(len(df.columns)):
+                cell_value = df.iloc[row_idx, col_idx]
+                if pd.notna(cell_value):
+                    cell_str = str(cell_value).lower()
                     
-                    # Determine if it's balance sheet or income statement
-                    is_balance_sheet = any(keyword in cell_str for keyword in bs_keywords_english + bs_keywords_chinese)
-                    is_income_statement = any(keyword in cell_str for keyword in is_keywords_english + is_keywords_chinese)
+                    # Check if this cell contains "Indicative adjusted" or "示意性调整后"
+                    is_indicative_header = (
+                        ('indicative' in cell_str and 'adjusted' in cell_str) or
+                        '示意性调整后' in cell_str or
+                        '经示意性调整后' in cell_str
+                    )
                     
-                    if is_balance_sheet:
-                        print(f"   📊 Identified as BALANCE SHEET table")
-                        balance_sheet_sections.append({
-                            'header_row': row_idx,
-                            'header_col': col_idx,
-                            'header_text': str(cell_value),
-                            'type': 'balance_sheet'
-                        })
-                    elif is_income_statement:
-                        print(f"   📈 Identified as INCOME STATEMENT table")
-                        income_statement_sections.append({
-                            'header_row': row_idx,
-                            'header_col': col_idx,
-                            'header_text': str(cell_value),
-                            'type': 'income_statement'
-                        })
+                    if is_indicative_header:
+                        print(f"   📋 Found indicative header at Row {row_idx}, Col {col_idx}: '{cell_value}'")
+                        
+                        # Determine if it's balance sheet or income statement
+                        is_balance_sheet = any(keyword in cell_str for keyword in bs_keywords_english + bs_keywords_chinese)
+                        is_income_statement = any(keyword in cell_str for keyword in is_keywords_english + is_keywords_chinese)
+                        
+                        if is_balance_sheet:
+                            print(f"   📊 Identified as BALANCE SHEET table")
+                            balance_sheet_sections.append({
+                                'header_row': row_idx,
+                                'header_col': col_idx,
+                                'header_text': str(cell_value),
+                                'type': 'balance_sheet'
+                            })
+                        elif is_income_statement:
+                            print(f"   📈 Identified as INCOME STATEMENT table")
+                            income_statement_sections.append({
+                                'header_row': row_idx,
+                                'header_col': col_idx,
+                                'header_text': str(cell_value),
+                                'type': 'income_statement'
+                            })
     
     # Extract table data for each identified section
     def extract_table_data(sections, table_type):
@@ -751,38 +788,101 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         section = sections[0]
         header_row = section['header_row']
         
-        # Find the data start row (usually 1-2 rows after header)
-        data_start_row = header_row + 1
+        # If header is in column header (header_row = -1), start from row 0
+        if header_row == -1:
+            data_start_row = 0
+            print(f"   📍 Table header in column, starting data extraction from row 0")
+        else:
+            # Find the data start row (usually 1-2 rows after header)
+            data_start_row = header_row + 1
+            
+            # Look for the actual data start by finding non-empty rows
+            for check_row in range(header_row + 1, min(header_row + 5, len(df))):
+                row_data = df.iloc[check_row]
+                if row_data.notna().sum() > len(df.columns) * 0.3:  # At least 30% non-empty cells
+                    data_start_row = check_row
+                    break
         
-        # Look for the actual data start by finding non-empty rows
-        for check_row in range(header_row + 1, min(header_row + 5, len(df))):
-            row_data = df.iloc[check_row]
-            if row_data.notna().sum() > len(df.columns) * 0.3:  # At least 30% non-empty cells
-                data_start_row = check_row
-                break
-        
-        # Find the data end row (look for next table header or empty rows)
+        # Find the data end row (look for next table header or end of data)
         data_end_row = len(df)
-        for check_row in range(data_start_row + 1, len(df)):
-            row_data = df.iloc[check_row]
-            
-            # Check if this row contains another table header
-            row_text = ' '.join(str(val).lower() for val in row_data if pd.notna(val))
-            if ('indicative' in row_text and 'adjusted' in row_text) or '示意性调整后' in row_text or '经示意性调整后' in row_text:
-                data_end_row = check_row
-                print(f"   📍 Found next table header at row {check_row}, ending current table")
-                break
-            
-            # Check for empty rows
-            if row_data.notna().sum() < 2:  # Less than 2 non-empty cells indicates end
-                data_end_row = check_row
-                break
+        
+        # For column header cases, we need to extract the entire table
+        if header_row == -1:
+            # For column headers, the entire dataframe is the table
+            # Look for significant empty sections to determine end
+            consecutive_empty = 0
+            for check_row in range(data_start_row + 1, len(df)):
+                row_data = df.iloc[check_row]
+                
+                # Check if this row is mostly empty
+                non_empty_count = row_data.notna().sum()
+                if non_empty_count <= 1:  # 1 or fewer non-empty cells
+                    consecutive_empty += 1
+                    if consecutive_empty >= 3:  # 3 consecutive empty rows = end of table
+                        data_end_row = check_row - 2  # Go back to last data row
+                        print(f"   📍 Found end of table at row {data_end_row} (3+ consecutive empty rows)")
+                        break
+                else:
+                    consecutive_empty = 0
+        else:
+            # For embedded headers, look for next table header or empty rows
+            for check_row in range(data_start_row + 1, len(df)):
+                row_data = df.iloc[check_row]
+                
+                # Check if this row contains another table header
+                row_text = ' '.join(str(val).lower() for val in row_data if pd.notna(val))
+                if ('indicative' in row_text and 'adjusted' in row_text) or '示意性调整后' in row_text or '经示意性调整后' in row_text:
+                    data_end_row = check_row
+                    print(f"   📍 Found next table header at row {check_row}, ending current table")
+                    break
+                
+                # Check for empty rows
+                if row_data.notna().sum() < 2:  # Less than 2 non-empty cells indicates end
+                    data_end_row = check_row
+                    break
         
         # Extract the table data
         table_df = df.iloc[data_start_row:data_end_row].copy()
         
         # Remove completely empty rows and columns
         table_df = table_df.dropna(how='all').dropna(axis=1, how='all')
+        
+        # Intelligent column selection - focus on description + most recent dates
+        if len(table_df.columns) > 2:
+            # Find description column (usually first non-empty column)
+            desc_col = None
+            for col_idx, col in enumerate(table_df.columns):
+                # Check if this column contains mostly text descriptions
+                sample_values = table_df[col].dropna().head(5)
+                if len(sample_values) > 0:
+                    text_count = sum(1 for val in sample_values if isinstance(val, str) and not str(val).replace(',', '').replace('.', '').replace('-', '').isdigit())
+                    if text_count >= len(sample_values) * 0.6:  # 60% or more are text
+                        desc_col = col_idx
+                        break
+            
+            # Select description column plus 2-3 most recent date columns
+            selected_cols = []
+            if desc_col is not None:
+                selected_cols.append(table_df.columns[desc_col])
+                # Add up to 3 of the rightmost columns (most recent dates)
+                remaining_cols = [col for i, col in enumerate(table_df.columns) if i != desc_col]
+                selected_cols.extend(remaining_cols[-3:])  # Last 3 columns
+            else:
+                # Fallback: use first column + last 2-3 columns
+                selected_cols = [table_df.columns[0]] + list(table_df.columns[-3:])
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            final_cols = []
+            for col in selected_cols:
+                if col not in seen:
+                    final_cols.append(col)
+                    seen.add(col)
+            
+            table_df = table_df[final_cols]
+            print(f"   🎯 Selected columns for display: {final_cols}")
+        else:
+            print(f"   📋 Using all columns (only {len(table_df.columns)} available)")
         
         print(f"   ✅ Extracted {table_type} table: rows {data_start_row}-{data_end_row-1}, shape {table_df.shape}")
         
