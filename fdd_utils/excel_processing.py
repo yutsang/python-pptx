@@ -858,11 +858,9 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                     cell_str = str(cell_value).lower()
                     if ('indicative' in cell_str and 'adjusted' in cell_str) or '示意性调整后' in cell_str:
                         # Found an "Indicative adjusted" header - include this column and columns to the right
-                        for offset in range(4):  # Current + 3 to the right
-                            target_col = col_idx + offset
-                            if target_col < len(table_df.columns):
-                                indicative_cols.append(target_col)
-                        print(f"🎯 Found Indicative adjusted → selected {len(indicative_cols)} cols")
+                        # Include ONLY this column (the one with 示意性调整后)
+                        indicative_cols.append(col_idx)
+                        print(f"🎯 Found 示意性调整后 at col {col_idx}")
                         break
             if indicative_cols:  # Found indicative columns, stop searching
                 break
@@ -953,14 +951,9 @@ def filter_to_indicative_adjusted_columns(df):
             if pd.notna(cell_value):
                 cell_str = str(cell_value).lower()
                 if ('indicative' in cell_str and 'adjusted' in cell_str) or '示意性调整后' in cell_str:
-                    # Include this column and all columns to the right (all financial periods)
-                    remaining_cols = len(df.columns) - col_idx
-                    max_cols = min(remaining_cols, 6)  # Up to 6 columns (current + 5 periods)
-                    for offset in range(max_cols):
-                        target_col = col_idx + offset
-                        if target_col < len(df.columns):
-                            indicative_cols.append(target_col)
-                    print(f"🎯 Indicative: {len(indicative_cols)} cols")
+                    # Include ONLY this column (the one with 示意性调整后)
+                    indicative_cols.append(col_idx)
+                    print(f"🎯 Found 示意性调整后 at col {col_idx}")
                     break
         if indicative_cols:  # Found indicative columns, stop searching
             break
