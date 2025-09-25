@@ -280,10 +280,7 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
     # Determine if this is truly a multiple entity file
     is_actually_multiple = total_entities_detected > 1
 
-    if manual_mode == 'multiple' and not is_actually_multiple:
-        print(f"   ⚠️  WARNING: Manual mode set to 'multiple' but only {total_entities_detected} entities detected")
-    elif manual_mode != 'multiple' and is_actually_multiple:
-        print(f"   ℹ️  INFO: {total_entities_detected} entities detected, consider using 'multiple' mode")
+    # Entity mode validation (reduced output)
 
     # Step 2: Identify table sections by finding empty rows or major delimiters
     table_sections = []
@@ -434,12 +431,7 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
     # Entity summary: {unique_entities} entities detected
 
     # For single entity mode only, show troubleshooting if no entities found
-    if manual_mode != 'multiple' and not detected_multiple:
-        print(f"   💡 TROUBLESHOOTING:")
-        print(f"   💡 - Your entered entity: '{entity_name}'")
-        print(f"   💡 - Make sure the entity name in your Excel file matches exactly")
-        print(f"   💡 - Check row 0 content above - does it contain your entity name?")
-        print(f"   💡 - Try using just the base entity name (first word only)")
+    # Troubleshooting reduced
 
     # Set entity mode based on detection results
     if manual_mode == 'multiple':
@@ -762,7 +754,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             is_header_row = income_statement_sections[0]['header_row']
             if is_header_row > header_row:
                 end_boundary = is_header_row
-                print(f"📍 BS boundary set at IS header row {is_header_row}")
+                print(f"📍 BS ends at IS row {is_header_row}")
         
         # If header is in column header (header_row = -1), start from row 0
         if header_row == -1:
@@ -841,6 +833,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         
         # Extract the table data
         table_df = df.iloc[data_start_row:data_end_row].copy()
+        print(f"📊 {table_type}: rows {data_start_row}-{data_end_row-1} → {table_df.shape}")
         
         # Remove completely empty rows and columns
         table_df = table_df.dropna(how='all').dropna(axis=1, how='all')
@@ -1150,7 +1143,7 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
     Parse accounting table with proper header detection and figure column identification
     Returns structured table data with metadata
     """
-    print(f"🔧 parse_accounting_table START: manual_mode={manual_mode}, df_shape={df.shape}")
+        # Parse accounting table
     import re  # Import re inside function to avoid scope issues
     try:
         

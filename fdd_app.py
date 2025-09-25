@@ -1685,10 +1685,19 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         
         # Read Excel data and apply column filtering
         df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
+        print(f"🎯 PPT: Processing {sheet_name} for Balance Sheet mode")
         
-        # Apply Indicative adjusted column filtering
-        from fdd_utils.excel_processing import filter_to_indicative_adjusted_columns
-        df = filter_to_indicative_adjusted_columns(df)
+        # Apply BS/IS separation first
+        from fdd_utils.excel_processing import separate_balance_sheet_and_income_statement_tables, filter_to_indicative_adjusted_columns
+        bs_data, is_data, separation_metadata = separate_balance_sheet_and_income_statement_tables(df, [project_name])
+        
+        # Use only Balance Sheet data (since this function is for BS mode)
+        if bs_data:
+            df = bs_data['data']
+            print(f"✅ PPT: Using ONLY Balance Sheet data {df.shape}")
+        else:
+            print(f"⚠️ PPT: No BS data found, using filtered original")
+            df = filter_to_indicative_adjusted_columns(df)
         
         # Filter out zero rows (all values under Indicative adjusted columns are 0, not NaN)
         if len(df.columns) > 1:
