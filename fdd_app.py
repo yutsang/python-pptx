@@ -1706,13 +1706,18 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
             print(f"⚠️ NO BS DATA FOUND - using filtered original")
             df = filter_to_indicative_adjusted_columns(df)
         
-        # Filter out zero rows (all values under Indicative adjusted columns are 0, not NaN)
+        # Filter out zero rows (all values are exactly 0, not NaN)
+        original_row_count = len(df)
         if len(df.columns) > 1:
             desc_col = df.columns[0]
             value_cols = df.columns[1:]
             
-            # Keep rows where description exists AND (has non-zero values OR is header/category row)
+            print(f"🔍 ZERO ROW FILTERING: {original_row_count} rows")
+            
             mask = []
+            kept_count = 0
+            filtered_count = 0
+            
             for idx, row in df.iterrows():
                 desc_value = str(row[desc_col]).strip()
                 has_description = desc_value not in ['', 'nan', 'None', 'NaN']
@@ -1728,25 +1733,22 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
                             all_values_zero = False
                             break
                 
-                # Keep row if:
-                # 1. Has description AND has non-zero values
-                # 2. Is header/category row (has description but NaN values - like "Current assets")
-                # 3. Only filter if ALL values are exactly 0 (not NaN)
+                # Keep row if has description AND (has non-zero values OR is header with NaN)
                 if has_description:
-                    if not has_any_data:
-                        # NaN values - keep as header row
+                    if not has_any_data or not all_values_zero:
                         mask.append(True)
-                    elif not all_values_zero:
-                        # Has non-zero values - keep
-                        mask.append(True)
+                        kept_count += 1
                     else:
-                        # All values are exactly 0 - filter out
                         mask.append(False)
+                        filtered_count += 1
                 else:
                     mask.append(False)
+                    filtered_count += 1
             
             if any(mask):
                 df = df[mask]
+            
+            print(f"   Kept: {kept_count}, Filtered: {filtered_count}")
         print(f"📊 FINAL PPT TABLE DATA: {df.shape}")
         print(f"   📋 Rows after zero filtering: {len(df)}")
         print(f"   📋 Columns: {list(df.columns)}")

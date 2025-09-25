@@ -778,29 +778,38 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         
         # For column header cases, we need to extract the entire table
         if header_row == -1:
-            # Look for table end indicators:
-            # 1. Empty rows separating tables
-            # 2. Income statement headers (if this is BS table)
-            # 3. Significant data gaps
+            # Look for table end indicators - scan every row for IS headers
+            print(f"🔍 SCANNING rows {data_start_row+1} to {len(df)-1} for 示意性调整后利润表...")
+            
             for check_row in range(data_start_row + 1, len(df)):
                 row_data = df.iloc[check_row]
                 
-                # Check for income statement indicators - stop balance sheet extraction
+                # Check ALL cells in this row for IS header
+                found_is_header = False
                 for col_check in range(len(row_data)):
                     cell_val = row_data.iloc[col_check]
                     if pd.notna(cell_val):
-                        cell_text = str(cell_val).lower()
+                        cell_text = str(cell_val)
+                        cell_text_lower = cell_text.lower()
+                        
+                        # Debug: Show what we're checking around potential IS rows
+                        if check_row % 20 == 0:  # Every 20th row
+                            print(f"   Row {check_row}: checking \"{cell_text[:30]}...\"")
+                        
                         # Look for EXACT income statement phrases
-                        if ('示意性调整后利润表' in cell_text or 
-                            'indicative adjusted income statement' in cell_text):
+                        if ('示意性调整后利润表' in cell_text_lower or 
+                            'indicative adjusted income statement' in cell_text_lower):
                             data_end_row = check_row
+                            found_is_header = True
                             print(f"\n{'='*50}")
                             print(f"📍 FOUND: 示意性调整后利润表 at row {check_row}")
+                            print(f"📍 CELL CONTENT: \"{cell_text}\"")
                             print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
                             print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
                             print(f"{'='*50}")
                             break
-                if data_end_row != end_boundary:  # If we found IS, break outer loop too
+                
+                if found_is_header:
                     break
                 
                 # Check for empty row separators
@@ -895,11 +904,13 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             for col_idx in indicative_cols:
                 if col_idx != desc_col_idx:  # Don't duplicate description column
                     selected_cols.append(table_df.columns[col_idx])
-            print(f"✅ Indicative cols: {len(indicative_cols)}")
+            print(f"✅ Found {len(indicative_cols)} 示意性调整后 columns")
+            print(f"   Columns: {[table_df.columns[i] for i in indicative_cols]}")
         else:
             # Fallback: use description + last 2-3 columns (most recent dates)
             remaining_cols = [col for i, col in enumerate(table_df.columns) if i != desc_col_idx]
             selected_cols.extend(remaining_cols[-3:])  # Last 3 columns
+            print(f"⚠️ No 示意性调整后 found, using last 3 columns")
         
         # Remove duplicates while preserving order
         seen = set()
