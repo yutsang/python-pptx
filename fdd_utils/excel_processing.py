@@ -795,14 +795,13 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                     cell_val = row_data.iloc[col_check]
                     if pd.notna(cell_val):
                         cell_text = str(cell_val).lower()
-                        # Look for income statement keywords
+                        # Look for SPECIFIC income statement table headers (not just 示意性调整后)
                         if ('利润表' in cell_text or 'income statement' in cell_text or
-                            '示意性调整后利润表' in cell_text or 
-                            ('示意性' in cell_text and '利润' in cell_text)):
+                            '示意性调整后利润表' in cell_text):
                             data_end_row = check_row
-                            print(f"📍 IS detected, stopping BS at row {check_row}")
+                            print(f"📍 IS table header at row {check_row}, stopping BS")
                             break
-                if data_end_row != len(df):  # If we found IS, break outer loop too
+                if data_end_row != end_boundary:  # If we found IS, break outer loop too
                     break
                 
                 # Check for empty row separators
@@ -825,11 +824,12 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             for check_row in range(data_start_row + 1, len(df)):
                 row_data = df.iloc[check_row]
                 
-                # Check if this row contains another table header
+                # Check if this row contains SPECIFIC table headers (BS/IS, not generic 示意性调整后)
                 row_text = ' '.join(str(val).lower() for val in row_data if pd.notna(val))
-                if ('indicative' in row_text and 'adjusted' in row_text) or '示意性调整后' in row_text or '经示意性调整后' in row_text:
+                if ('利润表' in row_text or 'income statement' in row_text or 
+                    '资产负债表' in row_text or 'balance sheet' in row_text):
                     data_end_row = check_row
-                    print(f"   📍 Found next table header at row {check_row}, ending current table")
+                    print(f"📍 Table header at row {check_row}, ending current table")
                     break
                 
                 # Check for empty rows
