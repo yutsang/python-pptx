@@ -699,43 +699,35 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                         'type': 'income_statement'
                     })
     
-    # Then search through the dataframe data for table headers (fallback)
+    # Then search through ENTIRE dataframe for table headers (not just first 20 rows)
     if not balance_sheet_sections and not income_statement_sections:
-        for row_idx in range(min(20, len(df))):  # Check first 20 rows
+        print(f"🔍 SCANNING ENTIRE SHEET for BS/IS headers...")
+        for row_idx in range(len(df)):  # Check ALL rows, not just first 20
             for col_idx in range(len(df.columns)):
                 cell_value = df.iloc[row_idx, col_idx]
                 if pd.notna(cell_value):
                     cell_str = str(cell_value).lower()
                     
-                    # Check if this cell contains "Indicative adjusted" or "示意性调整后"
-                    is_indicative_header = (
-                        ('indicative' in cell_str and 'adjusted' in cell_str) or
-                        '示意性调整后' in cell_str or
-                        '经示意性调整后' in cell_str
-                    )
+                    # Check for EXACT phrases only
+                    is_balance_sheet = any(pattern in cell_str for pattern in bs_patterns)
+                    is_income_statement = any(pattern in cell_str for pattern in is_patterns)
                     
-                    if is_indicative_header:
-                        # Determine if it's balance sheet or income statement using enhanced patterns
-                        is_balance_sheet = any(pattern in cell_str for pattern in bs_patterns)
-                        is_income_statement = any(pattern in cell_str for pattern in is_patterns)
-                        
-                        if is_balance_sheet:
-                            print(f"✅ BS header at row {row_idx}")
-                            balance_sheet_sections.append({
-                                'header_row': row_idx,
-                                'header_col': col_idx,
-                                'header_text': str(cell_value),
-                                'type': 'balance_sheet'
-                            })
-                        elif is_income_statement:
-                            print(f"✅ IS header at row {row_idx}")
-                            income_statement_sections.append({
-                                'header_row': row_idx,
-                                'header_col': col_idx,
-                                'header_text': str(cell_value),
-                                'type': 'income_statement'
-                            })
-                        # Don't break here - continue looking for more headers
+                    if is_balance_sheet:
+                        print(f"✅ BS header found at row {row_idx}")
+                        balance_sheet_sections.append({
+                            'header_row': row_idx,
+                            'header_col': col_idx,
+                            'header_text': str(cell_value),
+                            'type': 'balance_sheet'
+                        })
+                    elif is_income_statement:
+                        print(f"✅ IS header found at row {row_idx}")
+                        income_statement_sections.append({
+                            'header_row': row_idx,
+                            'header_col': col_idx,
+                            'header_text': str(cell_value),
+                            'type': 'income_statement'
+                        })
     
     # Extract table data for each identified section
     def extract_table_data(sections, table_type):
@@ -973,9 +965,11 @@ def filter_to_indicative_adjusted_columns(df):
                 desc_col_idx = col_idx
                 break
     
-    # Find ALL "Indicative adjusted" columns
+    # Find ALL "Indicative adjusted" columns - scan MORE rows and ALL columns
     indicative_cols = []
-    for row_idx in range(min(5, len(df))):  # Check first 5 rows
+    print(f"🔍 SCANNING for ALL 示意性调整后 columns in {len(df)} rows...")
+    
+    for row_idx in range(min(10, len(df))):  # Check first 10 rows (was only 5)
         for col_idx, col in enumerate(df.columns):
             if col_idx == desc_col_idx:
                 continue  # Skip description column
@@ -987,8 +981,9 @@ def filter_to_indicative_adjusted_columns(df):
                     # Include this column if not already added
                     if col_idx not in indicative_cols:
                         indicative_cols.append(col_idx)
-                        print(f"🎯 示意性调整后 col {col_idx}")
-        # Continue searching all rows to find ALL indicative columns
+                        print(f"🎯 Found 示意性调整后 at row {row_idx}, col {col_idx}")
+    
+    print(f"📊 TOTAL 示意性调整后 COLUMNS FOUND: {len(indicative_cols)}")
     
     # Build final column selection
     if indicative_cols:
