@@ -856,28 +856,46 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         desc_col_idx = None
         indicative_cols = []
         
-        # Step 1: Find description column (first column or text-heavy column)
-        # Handle tick symbols and mixed English/Chinese content
+        # Step 1: Find description column (avoid tick symbol columns)
+        # Look for columns with actual English/Chinese text, not tick symbols
+        desc_col_idx = None
+
+        # First, try to find the column containing "示意性调整后资产负债表"
         for col_idx, col in enumerate(table_df.columns):
-            sample_values = table_df[col].dropna().head(10)  # Check more rows
+            sample_values = table_df[col].dropna().head(10)
             if len(sample_values) > 0:
-                # Check for tick symbols (✓, √, etc.) or mixed text content
-                tick_symbols = ['✓', '√', '✔', '☑', '✓', '■', '□', '●', '○', '★', '☆']
-                has_tick_symbols = sum(1 for val in sample_values if isinstance(val, str) and any(tick in val for tick in tick_symbols))
-
-                # Check for text content (including Chinese and English)
-                text_count = sum(1 for val in sample_values if isinstance(val, str) and len(val.strip()) > 1)
-
-                # Consider it a description column if:
-                # - Has tick symbols, OR
-                # - Has significant text content (including Chinese/English), OR
-                # - Is the first column (fallback)
-                if (has_tick_symbols > 0 or text_count >= len(sample_values) * 0.3):
+                # Check if this column contains the BS header text
+                has_bs_header = sum(1 for val in sample_values if isinstance(val, str) and '示意性调整后资产负债表' in str(val))
+                if has_bs_header > 0:
                     desc_col_idx = col_idx
+                    print(f"🎯 Found description column: contains '示意性调整后资产负债表' at col {col_idx}")
                     break
 
+        # If not found, look for columns with significant text content (English/Chinese)
         if desc_col_idx is None:
-            desc_col_idx = 0  # Fallback to first column
+            for col_idx, col in enumerate(table_df.columns):
+                sample_values = table_df[col].dropna().head(10)  # Check more rows
+                if len(sample_values) > 0:
+                    # Check for tick symbols (✓, √, etc.) - SKIP these columns
+                    tick_symbols = ['✓', '√', '✔', '☑', '✓', '■', '□', '●', '○', '★', '☆']
+                    has_tick_symbols = sum(1 for val in sample_values if isinstance(val, str) and any(tick in val for tick in tick_symbols))
+
+                    # Check for text content (including Chinese and English)
+                    text_count = sum(1 for val in sample_values if isinstance(val, str) and len(val.strip()) > 2)
+
+                    # Consider it a description column if:
+                    # - Has NO tick symbols AND has significant text content (including Chinese/English)
+                    if has_tick_symbols == 0 and text_count >= len(sample_values) * 0.4:
+                        desc_col_idx = col_idx
+                        print(f"🎯 Found description column: text content at col {col_idx}")
+                        break
+
+        # Final fallback: use first column if no good description column found
+        if desc_col_idx is None:
+            desc_col_idx = 0
+            print(f"⚠️ Using first column as description (fallback)")
+        else:
+            print(f"✅ Description column set to: {table_df.columns[desc_col_idx]}")
         
         # Step 2: Find ALL "Indicative adjusted" or "示意性调整后" columns
         # Multiple columns with 示意性调整后 indicate which data columns should be included
@@ -2022,22 +2040,24 @@ def test_haining_wanpu_workflow():
             print(f"   Shape: {result_df.shape}")
             print(f"   Columns: {list(result_df.columns)}")
 
-            # Print full table for debugging (limit to 20 rows for readability)
-            max_rows = min(20, len(result_df))
-            for i in range(max_rows):
+            # Print FULL table for debugging (show all rows for complete analysis)
+            print(f"🔍 DEBUGGING: Printing ALL {len(result_df)} rows of filtered data:")
+            print(f"   Total columns: {len(result_df.columns)}")
+
+            # Show ALL rows (user needs full data for debugging)
+            for i in range(len(result_df)):
                 row_values = []
                 for col_idx in range(len(result_df.columns)):
                     col_name = result_df.columns[col_idx]
                     val = result_df.iloc[i, col_idx]
                     if pd.notna(val):
-                        val_str = str(val)[:30]  # Show more characters
+                        val_str = str(val)[:50]  # Show more characters for full debugging
                         row_values.append(f"'{val_str}'")
                     else:
                         row_values.append("''")
                 print(f"  Row {i}: {' | '.join(row_values)}")
 
-            if len(result_df) > max_rows:
-                print(f"  ... ({len(result_df) - max_rows} more rows not shown)")
+            print(f"\n✅ FINISHED: Printed all {len(result_df)} rows for debugging")
 
             print("\n📋 SUMMARY:")
 
