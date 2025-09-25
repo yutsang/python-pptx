@@ -1990,45 +1990,9 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         for row_idx in range(1, len(table.rows)):
             table.rows[row_idx].height = Inches(0.15)  # Extremely small row height
         
-        # Add dark blue borders to the entire table using shape-level borders
-        try:
-            # Set borders on the table shape itself
-            table_shape.line.color.rgb = RGBColor(42, 72, 121)
-            table_shape.line.width = Pt(2)  # Thicker border for visibility
-            
-            # Also try to set borders on individual cells using a different approach
-            for row_idx in range(len(table.rows)):
-                for col_idx in range(len(table.columns)):
-                    cell = table.cell(row_idx, col_idx)
-                    
-                    # Try to access the cell's XML directly for borders
-                    try:
-                        tc = cell._tc
-                        tcPr = tc.get_or_add_tcPr()
-                        
-                        # Remove any existing borders first
-                        for border_elem in tcPr.xpath('.//*[local-name()="top" or local-name()="bottom" or local-name()="left" or local-name()="right"]'):
-                            tcPr.remove(border_elem)
-                        
-                        # Add new borders
-                        from pptx.oxml.xmlchemy import OxmlElement
-                        from pptx.oxml.ns import qn
-                        
-                        for border_name in ['top', 'bottom', 'left', 'right']:
-                            border = OxmlElement(f'a:{border_name}')
-                            border.set(qn('w:val'), 'single')
-                            border.set(qn('w:sz'), '8')  # 1pt border
-                            border.set(qn('w:space'), '0')
-                            border.set(qn('w:color'), '2A4879')  # RGB(42, 72, 121) in hex
-                            tcPr.append(border)
-                            
-                    except Exception as cell_border_error:
-                        print(f"⚠️ Could not set cell borders: {cell_border_error}")
-                        continue
-                        
-        except Exception as border_error:
-            print(f"⚠️ Could not set table borders: {border_error}")
-            # Continue without borders - table will still work
+        # Note: Table borders are complex in PowerPoint and may not always work reliably
+        # The table will still function correctly without borders
+        print("ℹ️ Table created successfully (borders skipped for compatibility)")
         
         # Save the updated presentation
         prs.save(presentation_path)
