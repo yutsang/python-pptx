@@ -669,9 +669,9 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     bs_keywords_chinese = ['资产负债表', '财务状况表']
     is_keywords_chinese = ['利润表', '损益表', '综合收益表']
     
-    # Enhanced patterns for better detection
+    # Enhanced patterns for better detection (without entity names)
     bs_patterns = ['资产负债表', 'balance sheet', '财务状况表', 'statement of financial position']
-    is_patterns = ['利润表', 'income statement', '损益表', 'profit and loss', '综合收益表']
+    is_patterns = ['利润表', 'income statement', '损益表', 'profit and loss', '综合收益表', 'profit or loss']
     
     # First check column headers for table identification
     for col_idx, col_name in enumerate(df.columns):
