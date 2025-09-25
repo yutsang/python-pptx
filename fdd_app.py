@@ -1095,6 +1095,57 @@ def main():
             )
         
         with col2:
+            # Temporary test button for quick table testing
+            test_table_clicked = st.button(
+                "🧪 Test Table Only (No AI)",
+                type="secondary", 
+                use_container_width=True,
+                key="btn_test_table",
+                help="Generate PowerPoint with just the financial table for testing (no AI content)"
+            )
+        
+        # Add temporary test functionality
+        if test_table_clicked:
+            try:
+                # Generate PowerPoint with just the table (no AI content needed)
+                template_path = "fdd_utils/template.pptx"
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                test_output_filename = f"TEST_Table_{timestamp}.pptx"
+                test_output_path = f"fdd_utils/output/{test_output_filename}"
+                
+                # Ensure output directory exists
+                os.makedirs("fdd_utils/output", exist_ok=True)
+                
+                # Copy template for testing
+                import shutil
+                shutil.copy2(template_path, test_output_path)
+                
+                # Embed table data for testing
+                if financial_statement_tab:
+                    embed_bshn_data_simple(test_output_path, uploaded_file, financial_statement_tab, selected_entity, language=detected_language)
+                    
+                    # Provide download
+                    with open(test_output_path, 'rb') as f:
+                        file_data = f.read()
+                    
+                    st.download_button(
+                        label="📥 Download Test PowerPoint", 
+                        data=file_data,
+                        file_name=test_output_filename,
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        key="btn_download_test_pptx",
+                        help="Download PowerPoint with test table data",
+                        use_container_width=True
+                    )
+                    st.success(f"✅ Test PowerPoint generated with table from '{financial_statement_tab}' sheet")
+                else:
+                    st.error("❌ Please select an Excel tab first")
+                    
+            except Exception as e:
+                st.error(f"❌ Test generation failed: {e}")
+        
+        # Original download section
+        with st.container():
             # Check if AI processing has completed
             ai_completed = st.session_state.get('agent_states', {}).get('agent1_completed', False) or st.session_state.get('agent_states', {}).get('agent3_completed', False)
             
@@ -1116,25 +1167,25 @@ def main():
                     file_data = f.read()
                 
                 st.download_button(
-                    label="📥 Download PowerPoint",
+                    label="📥 Download Full Report",
                     data=file_data,
                     file_name=latest_file,
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    key="btn_download_pptx",
-                    help="Download the previously generated PowerPoint file",
+                    key="btn_download_full_pptx",
+                    help="Download the full PowerPoint report with AI content",
                     use_container_width=True
                 )
             else:
                 st.button(
-                    "📥 Download PowerPoint",
+                    "📥 Download Full Report",
                     type="secondary",
                     use_container_width=True,
-                    key="btn_download_pptx",
-                    help="Download the previously generated PowerPoint file",
+                    key="btn_download_full_pptx",
+                    help="Download the full PowerPoint report with AI content",
                     disabled=True
                 )
                 if not ai_completed:
-                    st.info("💡 Complete AI processing first to enable download")
+                    st.info("💡 Complete AI processing first to enable full report download")
                 elif not pptx_file_exists:
                     st.info("💡 Generate a report first to enable download")
 
