@@ -669,9 +669,9 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     bs_keywords_chinese = ['资产负债表', '财务状况表']
     is_keywords_chinese = ['利润表', '损益表', '综合收益表']
     
-    # Enhanced patterns for better detection (without entity names)
-    bs_patterns = ['资产负债表', 'balance sheet', '财务状况表', 'statement of financial position']
-    is_patterns = ['利润表', 'income statement', '损益表', 'profit and loss', '综合收益表', 'profit or loss']
+    # Exact patterns for table detection (complete phrases only)
+    bs_patterns = ['示意性调整后资产负债表', 'indicative adjusted balance sheet']
+    is_patterns = ['示意性调整后利润表', 'indicative adjusted income statement']
     
     # First check column headers for table identification
     for col_idx, col_name in enumerate(df.columns):
@@ -795,9 +795,9 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                     cell_val = row_data.iloc[col_check]
                     if pd.notna(cell_val):
                         cell_text = str(cell_val).lower()
-                        # Look for SPECIFIC income statement table headers (not just 示意性调整后)
-                        if ('利润表' in cell_text or 'income statement' in cell_text or
-                            '示意性调整后利润表' in cell_text):
+                        # Look for EXACT income statement phrases
+                        if ('示意性调整后利润表' in cell_text or 
+                            'indicative adjusted income statement' in cell_text):
                             data_end_row = check_row
                             print(f"📍 IS table header at row {check_row}, stopping BS")
                             break
@@ -824,10 +824,12 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             for check_row in range(data_start_row + 1, len(df)):
                 row_data = df.iloc[check_row]
                 
-                # Check if this row contains SPECIFIC table headers (BS/IS, not generic 示意性调整后)
+                # Check if this row contains EXACT table headers 
                 row_text = ' '.join(str(val).lower() for val in row_data if pd.notna(val))
-                if ('利润表' in row_text or 'income statement' in row_text or 
-                    '资产负债表' in row_text or 'balance sheet' in row_text):
+                if ('示意性调整后利润表' in row_text or 
+                    'indicative adjusted income statement' in row_text or
+                    '示意性调整后资产负债表' in row_text or
+                    'indicative adjusted balance sheet' in row_text):
                     data_end_row = check_row
                     print(f"📍 Table header at row {check_row}, ending current table")
                     break
