@@ -899,8 +899,6 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         
         # Step 2: Find ALL "Indicative adjusted" or "示意性调整后" columns
         # Multiple columns with 示意性调整后 indicate which data columns should be included
-        print(f"🔍 Searching for 示意性调整后 columns in first 5 rows...")
-
         for row_idx in range(min(5, len(table_df))):  # Check first 5 rows
             for col_idx, col in enumerate(table_df.columns):
                 if col_idx == desc_col_idx:
@@ -913,9 +911,8 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                         # Found an "Indicative adjusted" header - ALL columns with this indicator should be included
                         if col_idx not in indicative_cols:
                             indicative_cols.append(col_idx)
-                            print(f"🎯 Found 示意性调整后 at col {col_idx}")
 
-        print(f"📊 Found {len(indicative_cols)} 示意性调整后 columns")
+        print(f"📊 COLUMN DETECTION: {len(indicative_cols)} data columns found")
         
         # Step 3: Build final column selection
         selected_cols = [table_df.columns[desc_col_idx]]  # Always include description
@@ -925,13 +922,12 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             for col_idx in indicative_cols:
                 if col_idx != desc_col_idx:  # Don't duplicate description column
                     selected_cols.append(table_df.columns[col_idx])
-            print(f"✅ Found {len(indicative_cols)} 示意性调整后 columns")
-            print(f"   Columns: {[table_df.columns[i] for i in indicative_cols]}")
+            print(f"✅ DATA COLUMNS: {len(selected_cols)} columns selected for analysis")
         else:
             # Fallback: use description + last 2-3 columns (most recent dates)
             remaining_cols = [col for i, col in enumerate(table_df.columns) if i != desc_col_idx]
             selected_cols.extend(remaining_cols[-3:])  # Last 3 columns
-            print(f"⚠️ No 示意性调整后 found, using last 3 columns")
+            print(f"⚠️ FALLBACK: Using {len(selected_cols)} columns (no 示意性调整后 indicators found)")
         
         # Remove duplicates while preserving order
         seen = set()
@@ -2040,24 +2036,36 @@ def test_haining_wanpu_workflow():
             print(f"   Shape: {result_df.shape}")
             print(f"   Columns: {list(result_df.columns)}")
 
-            # Print FULL table for debugging (show all rows for complete analysis)
-            print(f"🔍 DEBUGGING: Printing ALL {len(result_df)} rows of filtered data:")
-            print(f"   Total columns: {len(result_df.columns)}")
+            # Print SUMMARY for debugging (less verbose, more informative)
+            print(f"📊 SUMMARY: {len(result_df)} rows × {len(result_df.columns)} columns")
+            print(f"   📈 Data types: {dict(result_df.dtypes.value_counts())}")
+            print(f"   🔢 Numeric columns: {sum(result_df.dtypes.apply(lambda x: x in ['int64', 'float64']))}")
+            print(f"   📝 Text columns: {sum(result_df.dtypes.apply(lambda x: x == 'object'))}")
 
-            # Show ALL rows (user needs full data for debugging)
-            for i in range(len(result_df)):
+            # Show sample rows (first, middle, last) instead of all rows
+            sample_indices = []
+            if len(result_df) >= 1:
+                sample_indices.append(0)  # First row
+            if len(result_df) >= 3:
+                sample_indices.append(len(result_df) // 2)  # Middle row
+            if len(result_df) >= 2:
+                sample_indices.append(len(result_df) - 1)  # Last row
+
+            print(f"\n📋 SAMPLE ROWS ({len(sample_indices)} of {len(result_df)}):")
+            for i in sample_indices:
                 row_values = []
-                for col_idx in range(len(result_df.columns)):
-                    col_name = result_df.columns[col_idx]
+                for col_idx in range(min(8, len(result_df.columns))):  # Limit to first 8 columns
                     val = result_df.iloc[i, col_idx]
                     if pd.notna(val):
-                        val_str = str(val)[:50]  # Show more characters for full debugging
+                        val_str = str(val)[:30]  # Shorter for summary
                         row_values.append(f"'{val_str}'")
                     else:
                         row_values.append("''")
                 print(f"  Row {i}: {' | '.join(row_values)}")
+                if len(result_df.columns) > 8:
+                    print(f"     ... ({len(result_df.columns) - 8} more columns)")
 
-            print(f"\n✅ FINISHED: Printed all {len(result_df)} rows for debugging")
+            print(f"\n✅ DATA EXTRACTION COMPLETE: {len(result_df)} rows ready for analysis")
 
             print("\n📋 SUMMARY:")
 

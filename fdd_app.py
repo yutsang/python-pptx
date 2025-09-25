@@ -1011,6 +1011,27 @@ def main():
         else:
             sections_by_key = st.session_state.get('ai_data', {}).get('sections_by_key', {})
 
+        # Filter sections by statement type to avoid showing BS content when IS is selected
+        if statement_type in ["BS", "IS"]:
+            # Define BS and IS keys
+            bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
+                      "AP", "Taxes payable", "OP", "Capital", "Reserve"]
+            is_keys = ["OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
+                      "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"]
+
+            # Filter sections_by_key based on statement type
+            filtered_sections_by_key = {}
+            if statement_type == "BS":
+                for key in bs_keys:
+                    if key in sections_by_key:
+                        filtered_sections_by_key[key] = sections_by_key[key]
+            elif statement_type == "IS":
+                for key in is_keys:
+                    if key in sections_by_key:
+                        filtered_sections_by_key[key] = sections_by_key[key]
+
+            sections_by_key = filtered_sections_by_key
+
         # Display financial statements
         
         if statement_type == "BS":
@@ -1094,55 +1115,6 @@ def main():
                 help=f"Generate AI content and download PowerPoint in {detected_language}"
             )
         
-        with col2:
-            # Temporary test button for quick table testing
-            test_table_clicked = st.button(
-                "🧪 Test Table Only (No AI)",
-                type="secondary", 
-                use_container_width=True,
-                key="btn_test_table",
-                help="Generate PowerPoint with just the financial table for testing (no AI content)"
-            )
-        
-        # Add temporary test functionality
-        if test_table_clicked:
-            try:
-                # Generate PowerPoint with just the table (no AI content needed)
-                template_path = "fdd_utils/template.pptx"
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                test_output_filename = f"TEST_Table_{timestamp}.pptx"
-                test_output_path = f"fdd_utils/output/{test_output_filename}"
-                
-                # Ensure output directory exists
-                os.makedirs("fdd_utils/output", exist_ok=True)
-                
-                # Copy template for testing
-                import shutil
-                shutil.copy2(template_path, test_output_path)
-                
-                # Embed table data for testing
-                if financial_statement_tab:
-                    embed_bshn_data_simple(test_output_path, uploaded_file, financial_statement_tab, selected_entity, language=detected_language)
-                    
-                    # Provide download
-                    with open(test_output_path, 'rb') as f:
-                        file_data = f.read()
-                    
-                    st.download_button(
-                        label="📥 Download Test PowerPoint", 
-                        data=file_data,
-                        file_name=test_output_filename,
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        key="btn_download_test_pptx",
-                        help="Download PowerPoint with test table data",
-                        use_container_width=True
-                    )
-                    st.success(f"✅ Test PowerPoint generated with table from '{financial_statement_tab}' sheet")
-                else:
-                    st.error("❌ Please select an Excel tab first")
-                    
-            except Exception as e:
-                st.error(f"❌ Test generation failed: {e}")
         
         # Original download section
         with st.container():
@@ -1315,9 +1287,14 @@ def main():
                     progress_bar.progress(0.5)
                     
                     def progress_callback_trans(p, msg):
-                        # Parse the detailed message from the translator
+                        # Store progress info in session state for display
+                        if 'debug_progress' not in st.session_state:
+                            st.session_state['debug_progress'] = []
+                        st.session_state['debug_progress'].append(f"p={p}, msg='{msg}'")
+
+                        # Parse the detailed message from the AI processing
                         current_key = "Translating"  # Default fallback
-                        
+
                         if msg and isinstance(msg, str):
                             # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
                             if 'Processing' in msg and '•' in msg:
@@ -1337,9 +1314,31 @@ def main():
                             # Format: Check if it's just a key name without "Processing"
                             elif msg.strip() in filtered_keys_for_ai:
                                 current_key = msg.strip()
-                        
+
+                        # Calculate current key index from progress
                         key_index = int(p * total_keys) if p > 0 else 0
-                        status_text.text(f"🌐 翻译为中文... ({key_index}/{total_keys} keys) - {current_key}")
+
+                        # Calculate proper ETA based on actual processing time
+                        if p > 0 and key_index > 0:
+                            elapsed_time = time.time() - st.session_state['processing_start_time']
+                            avg_time_per_key = elapsed_time / key_index
+                            remaining_keys = total_keys - key_index
+                            eta_seconds = int(remaining_keys * avg_time_per_key)
+
+                            if eta_seconds > 0:
+                                eta_minutes = eta_seconds // 60
+                                eta_seconds = eta_seconds % 60
+                                eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
+                            else:
+                                eta_text = "⏱️ Almost done!"
+                        else:
+                            eta_text = ""
+
+                        # Enhanced status display with ETA on same line
+                        status_display = f"🌐 翻译为中文... ({key_index}/{total_keys} keys) - {current_key}"
+                        if eta_text:
+                            status_display += f" {eta_text}"
+                        status_text.text(status_display)
                         progress_bar.progress(0.5 + p * 0.3)
                     
                     final_results = run_simple_chinese_translation(proofread_results, temp_ai_data, progress_callback=progress_callback_trans)
@@ -1442,9 +1441,14 @@ def main():
                     progress_bar.progress(0.6)
                     
                     def progress_callback_proof_eng(p, msg):
-                        # Parse the detailed message from the proofreader
+                        # Store progress info in session state for display
+                        if 'debug_progress' not in st.session_state:
+                            st.session_state['debug_progress'] = []
+                        st.session_state['debug_progress'].append(f"p={p}, msg='{msg}'")
+
+                        # Parse the detailed message from the AI processing
                         current_key = "Proofreading"  # Default fallback
-                        
+
                         if msg and isinstance(msg, str):
                             # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
                             if 'Processing' in msg and '•' in msg:
@@ -1464,9 +1468,31 @@ def main():
                             # Format: Check if it's just a key name without "Processing"
                             elif msg.strip() in filtered_keys_for_ai:
                                 current_key = msg.strip()
-                        
+
+                        # Calculate current key index from progress
                         key_index = int(p * total_keys) if p > 0 else 0
-                        status_text.text(f"🧐 Proofreading English content... ({key_index}/{total_keys} keys) - {current_key}")
+
+                        # Calculate proper ETA based on actual processing time
+                        if p > 0 and key_index > 0:
+                            elapsed_time = time.time() - st.session_state['processing_start_time']
+                            avg_time_per_key = elapsed_time / key_index
+                            remaining_keys = total_keys - key_index
+                            eta_seconds = int(remaining_keys * avg_time_per_key)
+
+                            if eta_seconds > 0:
+                                eta_minutes = eta_seconds // 60
+                                eta_seconds = eta_seconds % 60
+                                eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
+                            else:
+                                eta_text = "⏱️ Almost done!"
+                        else:
+                            eta_text = ""
+
+                        # Enhanced status display with ETA on same line
+                        status_display = f"🧐 校对英文内容... ({key_index}/{total_keys} keys) - {current_key}"
+                        if eta_text:
+                            status_display += f" {eta_text}"
+                        status_text.text(status_display)
                         progress_bar.progress(0.6 + p * 0.1)
                     
                     proofread_results = run_simple_proofreader(english_results, temp_ai_data, progress_callback=progress_callback_proof_eng)
@@ -1495,7 +1521,29 @@ def main():
                 # Generate content files
                 status_text.text("📝 Generating content files...")
                 progress_bar.progress(0.8)
-                generate_content_from_session_storage(selected_entity)
+
+                # Handle "All" case - generate both BS and IS content
+                if statement_type == "ALL":
+                    # Generate BS content
+                    st.session_state['current_statement_type'] = 'BS'
+                    generate_content_from_session_storage(selected_entity)
+                    os.rename("fdd_utils/bs_content.md", "fdd_utils/bs_content_temp.md")
+
+                    # Generate IS content
+                    st.session_state['current_statement_type'] = 'IS'
+                    generate_content_from_session_storage(selected_entity)
+                    os.rename("fdd_utils/is_content.md", "fdd_utils/is_content_temp.md")
+
+                    # Restore originals
+                    if os.path.exists("fdd_utils/bs_content_temp.md"):
+                        os.rename("fdd_utils/bs_content_temp.md", "fdd_utils/bs_content.md")
+                    if os.path.exists("fdd_utils/is_content_temp.md"):
+                        os.rename("fdd_utils/is_content_temp.md", "fdd_utils/is_content.md")
+
+                    # Restore current statement type
+                    st.session_state['current_statement_type'] = 'ALL'
+                else:
+                    generate_content_from_session_storage(selected_entity)
                 
                 # Export PowerPoint
                 status_text.text("📊 Exporting PowerPoint...")
