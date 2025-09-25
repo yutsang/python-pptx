@@ -833,7 +833,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         
         # Extract the table data
         table_df = df.iloc[data_start_row:data_end_row].copy()
-        print(f"📊 {table_type}: rows {data_start_row}-{data_end_row-1} → {table_df.shape}")
+        print(f"📊 {table_type}: extracting rows {data_start_row} to {data_end_row-1} → {table_df.shape}")
         
         # Remove completely empty rows and columns
         table_df = table_df.dropna(how='all').dropna(axis=1, how='all')
@@ -1200,14 +1200,14 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         # Select the appropriate data based on statement type
         if current_statement_type == 'BS' and bs_data:
             df_to_process = bs_data['data']
-            print(f"   🎯 Using BALANCE SHEET data for processing")
+            print(f"🎯 USING BS DATA ONLY: {df_to_process.shape}")
         elif current_statement_type == 'IS' and is_data:
             df_to_process = is_data['data'] 
-            print(f"   🎯 Using INCOME STATEMENT data for processing")
+            print(f"🎯 USING IS DATA ONLY: {df_to_process.shape}")
         else:
             # Fallback to original data if separation didn't work or no preference
             df_to_process = df_filtered
-            print(f"   ⚠️  Using original combined data for processing")
+            print(f"⚠️ NO SEPARATION - using original: {df_to_process.shape}")
         
         # Apply column filtering to the selected table
         df_to_process = filter_to_indicative_adjusted_columns(df_to_process)
