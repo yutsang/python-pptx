@@ -754,7 +754,10 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             is_header_row = income_statement_sections[0]['header_row']
             if is_header_row > header_row:
                 end_boundary = is_header_row
-                print(f"📍 BS ends at IS row {is_header_row}")
+                print(f"\n{'='*60}")
+                print(f"📍 BOUNDARY DETECTION: IS header found at row {is_header_row}")
+                print(f"📍 BOUNDARY SETTING: BS will end at row {is_header_row-1}")
+                print(f"{'='*60}")
         
         # If header is in column header (header_row = -1), start from row 0
         if header_row == -1:
@@ -791,7 +794,11 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                         if ('示意性调整后利润表' in cell_text or 
                             'indicative adjusted income statement' in cell_text):
                             data_end_row = check_row
-                            print(f"📍 IS table header at row {check_row}, stopping BS")
+                            print(f"\n{'='*50}")
+                            print(f"📍 FOUND: 示意性调整后利润表 at row {check_row}")
+                            print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
+                            print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
+                            print(f"{'='*50}")
                             break
                 if data_end_row != end_boundary:  # If we found IS, break outer loop too
                     break
@@ -819,11 +826,18 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                 # Check if this row contains EXACT table headers 
                 row_text = ' '.join(str(val).lower() for val in row_data if pd.notna(val))
                 if ('示意性调整后利润表' in row_text or 
-                    'indicative adjusted income statement' in row_text or
-                    '示意性调整后资产负债表' in row_text or
-                    'indicative adjusted balance sheet' in row_text):
+                    'indicative adjusted income statement' in row_text):
                     data_end_row = check_row
-                    print(f"📍 Table header at row {check_row}, ending current table")
+                    print(f"\n{'='*50}")
+                    print(f"📍 FOUND: 示意性调整后利润表 at row {check_row}")
+                    print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
+                    print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
+                    print(f"{'='*50}")
+                    break
+                elif ('示意性调整后资产负债表' in row_text or
+                      'indicative adjusted balance sheet' in row_text):
+                    data_end_row = check_row
+                    print(f"📍 Another BS header at row {check_row}, ending current table")
                     break
                 
                 # Check for empty rows
