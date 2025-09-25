@@ -232,7 +232,6 @@ def determine_entity_mode_and_filter(df, entity_name, entity_keywords, manual_mo
 
     # If manual mode is 'single', skip entity filtering and return original table
     if manual_mode == 'single':
-        print(f"   🎯 SINGLE ENTITY MODE: Using original table (no filtering applied)")
         return df, False
 
     # Step 1: FIRST - Scan entire sheet for multiple entities to determine mode
@@ -561,7 +560,7 @@ def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywor
 
     # Step 3b: For multiple entity mode, apply simplified entity filtering
     if manual_mode == 'multiple':
-        print(f"   🎯 MULTIPLE ENTITY MODE: Applying simplified entity filtering")
+        # Multiple entity filtering
         # Processing sections
 
         # Filter table sections to only include those that contain the target entity
@@ -617,7 +616,7 @@ def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywor
             table_sections = filtered_sections
             is_multiple_entity = len(filtered_sections) > 1
         else:
-            print(f"   ⚠️ No table sections found containing target entity")
+            # No matching sections
             # If no sections contain the target entity, return original table
             return [df], False
     else:
@@ -629,7 +628,7 @@ def determine_entity_mode_and_filter_all_sections(df, entity_name, entity_keywor
     if matching_sections:
         pass  # Using filtered sections
     else:
-        print(f"   ⚠️ No matching sections found")
+        # No sections found
         return [df], is_multiple_entity
 
     # Step 5: Extract ALL matching table sections
@@ -724,14 +723,12 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                     )
                     
                     if is_indicative_header:
-                        print(f"   📋 Found indicative header at Row {row_idx}, Col {col_idx}: '{cell_value}'")
-                        
                         # Determine if it's balance sheet or income statement using enhanced patterns
                         is_balance_sheet = any(pattern in cell_str for pattern in bs_patterns)
                         is_income_statement = any(pattern in cell_str for pattern in is_patterns)
                         
                         if is_balance_sheet:
-                            print(f"✅ BS in data")
+                            print(f"✅ BS header at row {row_idx}")
                             balance_sheet_sections.append({
                                 'header_row': row_idx,
                                 'header_col': col_idx,
@@ -739,24 +736,33 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                                 'type': 'balance_sheet'
                             })
                         elif is_income_statement:
-                            print(f"✅ IS in data")
+                            print(f"✅ IS header at row {row_idx}")
                             income_statement_sections.append({
                                 'header_row': row_idx,
                                 'header_col': col_idx,
                                 'header_text': str(cell_value),
                                 'type': 'income_statement'
                             })
+                        # Don't break here - continue looking for more headers
     
     # Extract table data for each identified section
     def extract_table_data(sections, table_type):
         """Extract table data for given sections"""
         if not sections:
-            print(f"   ❌ No {table_type} sections found")
             return None
             
         # Use the first section found (most common case)
         section = sections[0]
         header_row = section['header_row']
+        
+        # If this is balance sheet extraction, check if there's an income statement section
+        # and use that as the boundary
+        end_boundary = len(df)
+        if table_type == 'Balance Sheet' and income_statement_sections:
+            is_header_row = income_statement_sections[0]['header_row']
+            if is_header_row > header_row:
+                end_boundary = is_header_row
+                print(f"📍 BS boundary set at IS header row {is_header_row}")
         
         # If header is in column header (header_row = -1), start from row 0
         if header_row == -1:
@@ -772,8 +778,8 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                     data_start_row = check_row
                     break
         
-        # Find the data end row (look for next table header or end of data)
-        data_end_row = len(df)
+        # Find the data end row (look for next table header or use boundary)
+        data_end_row = end_boundary
         
         # For column header cases, we need to extract the entire table
         if header_row == -1:
@@ -784,12 +790,19 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             for check_row in range(data_start_row + 1, len(df)):
                 row_data = df.iloc[check_row]
                 
-                # Check for income statement indicators
-                row_text = ' '.join(str(val).lower() for val in row_data if pd.notna(val))
-                if ('利润表' in row_text or 'income statement' in row_text or 
-                    '示意性调整后利润表' in row_text):
-                    data_end_row = check_row
-                    print(f"📍 Income statement detected at row {check_row}")
+                # Check for income statement indicators - stop balance sheet extraction
+                for col_check in range(len(row_data)):
+                    cell_val = row_data.iloc[col_check]
+                    if pd.notna(cell_val):
+                        cell_text = str(cell_val).lower()
+                        # Look for income statement keywords
+                        if ('利润表' in cell_text or 'income statement' in cell_text or
+                            '示意性调整后利润表' in cell_text or 
+                            ('示意性' in cell_text and '利润' in cell_text)):
+                            data_end_row = check_row
+                            print(f"📍 IS detected, stopping BS at row {check_row}")
+                            break
+                if data_end_row != len(df):  # If we found IS, break outer loop too
                     break
                 
                 # Check for empty row separators
@@ -940,7 +953,7 @@ def filter_to_indicative_adjusted_columns(df):
                 desc_col_idx = col_idx
                 break
     
-    # Find "Indicative adjusted" columns
+    # Find ALL "Indicative adjusted" columns
     indicative_cols = []
     for row_idx in range(min(5, len(df))):  # Check first 5 rows
         for col_idx, col in enumerate(df.columns):
@@ -951,12 +964,11 @@ def filter_to_indicative_adjusted_columns(df):
             if pd.notna(cell_value):
                 cell_str = str(cell_value).lower()
                 if ('indicative' in cell_str and 'adjusted' in cell_str) or '示意性调整后' in cell_str:
-                    # Include ONLY this column (the one with 示意性调整后)
-                    indicative_cols.append(col_idx)
-                    print(f"🎯 Found 示意性调整后 at col {col_idx}")
-                    break
-        if indicative_cols:  # Found indicative columns, stop searching
-            break
+                    # Include this column if not already added
+                    if col_idx not in indicative_cols:
+                        indicative_cols.append(col_idx)
+                        print(f"🎯 示意性调整后 col {col_idx}")
+        # Continue searching all rows to find ALL indicative columns
     
     # Build final column selection
     if indicative_cols:
