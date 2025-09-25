@@ -841,10 +841,8 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                     print(f"📍 Another BS header at row {check_row}, ending current table")
                     break
                 
-                # Check for empty rows
-                if row_data.notna().sum() < 2:  # Less than 2 non-empty cells indicates end
-                    data_end_row = check_row
-                    break
+                # Don't stop on empty rows - continue until we find the actual section boundary
+                # (Empty rows within a section are normal and should be filtered out later)
         
         # Extract the table data
         table_df = df.iloc[data_start_row:data_end_row].copy()
