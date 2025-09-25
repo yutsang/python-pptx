@@ -440,7 +440,7 @@ def process_excel_with_timeout(uploaded_file, mapping, selected_entity, entity_s
 
 def run_ai_processing(filtered_keys, ai_data, language='english', progress_callback=None):
     """Run AI processing for content generation"""
-    print(f"🔍 DEBUG: run_ai_processing called with language='{language}'")
+    # AI processing started
     try:
         # Create temporary file for processing
         temp_file_path = None
@@ -1212,7 +1212,7 @@ def main():
                         status_text.text(status_display)
                         progress_bar.progress(0.1 + p * 0.2)
                     
-                    print(f"🔍 DEBUG: About to run AI processing with language='{detected_language}'")
+                        # Starting AI processing
                     english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language=detected_language, progress_callback=progress_callback_eng)
                     
                     if not english_results:
@@ -1373,7 +1373,7 @@ def main():
                         status_text.text(status_display)
                         progress_bar.progress(p)
                     
-                    print(f"🔍 DEBUG: About to run AI processing with language='{detected_language}'")
+                        # Starting AI processing
                     english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language=detected_language, progress_callback=progress_callback_eng_simple)
                     
                     if not english_results:
@@ -1685,7 +1685,11 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         
         # Read Excel data and apply column filtering
         df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
-        print(f"🎯 PPT: Processing {sheet_name} for Balance Sheet mode")
+        print(f"\n{'='*80}")
+        print(f"🎯 POWERPOINT TABLE GENERATION - BALANCE SHEET MODE")
+        print(f"{'='*80}")
+        print(f"📊 Processing sheet: {sheet_name}")
+        print(f"📊 Original data shape: {df.shape}")
         
         # Apply BS/IS separation first
         from fdd_utils.excel_processing import separate_balance_sheet_and_income_statement_tables, filter_to_indicative_adjusted_columns
@@ -1694,9 +1698,12 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         # Use only Balance Sheet data (since this function is for BS mode)
         if bs_data:
             df = bs_data['data']
-            print(f"✅ PPT: Using ONLY Balance Sheet data {df.shape}")
+            print(f"✅ USING BALANCE SHEET DATA ONLY")
+            print(f"   📊 BS data shape: {df.shape}")
+            print(f"   📋 BS row range: rows {bs_data.get('data_range', (0, len(df)-1))[0]} to {bs_data.get('data_range', (0, len(df)-1))[1]} in original databook")
+            print(f"   📋 Selected columns: {list(df.columns)}")
         else:
-            print(f"⚠️ PPT: No BS data found, using filtered original")
+            print(f"⚠️ NO BS DATA FOUND - using filtered original")
             df = filter_to_indicative_adjusted_columns(df)
         
         # Filter out zero rows (all values under Indicative adjusted columns are 0, not NaN)
@@ -1740,7 +1747,16 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
             
             if any(mask):
                 df = df[mask]
-        print(f"🎯 PPT: {df.shape}")
+        print(f"📊 FINAL PPT TABLE DATA: {df.shape}")
+        print(f"   📋 Rows after zero filtering: {len(df)}")
+        print(f"   📋 Columns: {list(df.columns)}")
+        if len(df) > 0:
+            print(f"   📋 Sample rows:")
+            for i in range(min(3, len(df))):
+                desc = df.iloc[i, 0] if len(df.columns) > 0 else 'N/A'
+                val = df.iloc[i, 1] if len(df.columns) > 1 else 'N/A'
+                print(f"      Row {i}: \"{desc}\" | {val}")
+        print(f"{'='*80}")
         
         # Get the first slide (BS1)
         first_slide = prs.slides[0]
