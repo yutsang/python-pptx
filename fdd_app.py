@@ -1222,8 +1222,11 @@ def main():
                     
                     # Track current key index for proper progress display
                     current_key_index = 0
+                    current_key = "Processing"
 
                     def progress_callback_eng(p, msg):
+                        nonlocal current_key_index, current_key
+
                         # Store progress info in session state for display
                         if 'debug_progress' not in st.session_state:
                             st.session_state['debug_progress'] = []
@@ -1310,9 +1313,11 @@ def main():
                     progress_bar.progress(0.3)
                     
                     def progress_callback_proof(p, msg):
+                        nonlocal current_key_index, current_key
+
                         # Parse the detailed message from the proofreader
                         current_key = "Proofreading"  # Default fallback
-                        
+
                         if msg and isinstance(msg, str):
                             # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
                             if 'Processing' in msg and '•' in msg:
@@ -1332,7 +1337,7 @@ def main():
                             # Format: Check if it's just a key name without "Processing"
                             elif msg.strip() in filtered_keys_for_ai:
                                 current_key = msg.strip()
-                        
+
                         key_index = int(p * total_keys) if p > 0 else 0
                         status_text.text(f"🧐 校对英文内容... ({key_index}/{total_keys} keys) - {current_key}")
                         progress_bar.progress(0.3 + p * 0.1)
@@ -1344,6 +1349,8 @@ def main():
                     progress_bar.progress(0.5)
                     
                     def progress_callback_trans(p, msg):
+                        nonlocal current_key_index, current_key
+
                         # Store progress info in session state for display
                         if 'debug_progress' not in st.session_state:
                             st.session_state['debug_progress'] = []
@@ -1446,9 +1453,11 @@ def main():
                         st.session_state['processing_start_time'] = time.time()
                     
                     def progress_callback_eng_simple(p, msg):
+                        nonlocal current_key_index, current_key
+
                         # Parse the detailed message from the AI processing
                         current_key = "Processing"  # Default fallback
-                        
+
                         if msg and isinstance(msg, str):
                             # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
                             if 'Processing' in msg and '•' in msg:
@@ -1468,9 +1477,9 @@ def main():
                             # Format: Check if it's just a key name without "Processing"
                             elif msg.strip() in filtered_keys_for_ai:
                                 current_key = msg.strip()
-                        
+
                         key_index = int(p * total_keys) if p > 0 else 0
-                        
+
                         # Calculate proper ETA based on actual processing time
                         if p > 0 and key_index > 0:
                             elapsed_time = time.time() - st.session_state['processing_start_time']
@@ -1512,6 +1521,8 @@ def main():
                     progress_bar.progress(0.6)
                     
                     def progress_callback_proof_eng(p, msg):
+                        nonlocal current_key_index, current_key
+
                         # Store progress info in session state for display
                         if 'debug_progress' not in st.session_state:
                             st.session_state['debug_progress'] = []
