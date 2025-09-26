@@ -885,7 +885,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
 
                     # Consider it a description column if:
                     # - Has NO tick symbols AND has significant text content (including Chinese/English)
-                    if has_tick_symbols == 0 and text_count >= len(sample_values) * 0.4:
+                    if has_tick_symbols == 0 and text_count >= len(sample_values) * 0.2:  # Reduced from 0.4 to 0.2
                         desc_col_idx = col_idx
                         print(f"🎯 Found description column: text content at col {col_idx}")
                         break

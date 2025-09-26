@@ -756,8 +756,8 @@ def main():
                 del st.session_state['ai_data']
             if 'uploaded_file_data' in st.session_state:
                 del st.session_state['uploaded_file_data']
-            # Clear any cached entity names
-            keys_to_clear = [k for k in st.session_state.keys() if 'entity' in k.lower() and k != 'selected_entity']
+            # Clear any cached entity names and related data
+            keys_to_clear = [k for k in st.session_state.keys() if any(term in k.lower() for term in ['entity', 'entities', 'databook'])]
             for key in keys_to_clear:
                 del st.session_state[key]
 
@@ -769,9 +769,13 @@ def main():
 
         # Entity input with dropdown
         from fdd_utils.data_utils import extract_entity_names_from_databook
-        
-        # Get entity names from databook
-        entity_names = extract_entity_names_from_databook()
+
+        # Get entity names from the uploaded file
+        uploaded_file_path = None
+        if uploaded_file and hasattr(uploaded_file, 'name'):
+            uploaded_file_path = uploaded_file.name
+
+        entity_names = extract_entity_names_from_databook(uploaded_file_path or 'databook.xlsx')
         
         # Multi-entity mode: Use dropdown with option to type custom entity
         if entity_names:
@@ -892,22 +896,13 @@ def main():
                 help="Choose which Excel sheet contains the Income Statement data"
             )
         else:  # statement_type == "ALL"
-            col1, col2 = st.columns(2)
-            with col1:
-                bs_financial_tab = st.selectbox(
-                    "Balance Sheet data tab:",
-                    options=available_sheets,
-                    index=0 if available_sheets else 0,
-                    help="Choose Excel sheet for Balance Sheet data"
-                )
-            with col2:
-                is_financial_tab = st.selectbox(
-                    "Income Statement data tab:",
-                    options=available_sheets,
-                    index=0 if available_sheets else 0,
-                    help="Choose Excel sheet for Income Statement data"
-                )
-            financial_statement_tab = bs_financial_tab  # Use BS tab as primary for BSHN
+            # For "All" mode, use single dropdown since scraping logic handles both BS and IS
+            financial_statement_tab = st.selectbox(
+                "Select Excel tab for Financial Data:",
+                options=available_sheets,
+                index=0 if available_sheets else 0,
+                help="Choose Excel sheet containing both Balance Sheet and Income Statement data"
+            )
             
         # AI Provider Selection - Load from config
         config, _, _, _ = load_config_files()
@@ -1128,8 +1123,13 @@ def main():
         st.session_state['download_button_column'] = col2
 
         
-        # Check if AI processing has completed
-        ai_completed = st.session_state.get('agent_states', {}).get('agent1_completed', False) or st.session_state.get('agent_states', {}).get('agent3_completed', False)
+        # Check if AI processing has completed (use same logic as result display)
+        agent_states = st.session_state.get('agent_states', {})
+        ai_completed = any([
+            agent_states.get('agent1_completed', False),
+            agent_states.get('agent2_completed', False),
+            agent_states.get('agent3_completed', False)
+        ])
 
         # Check if PowerPoint file exists for download
         output_dir = "fdd_utils/output"
