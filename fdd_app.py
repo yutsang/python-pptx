@@ -1135,33 +1135,23 @@ def main():
         output_dir = "fdd_utils/output"
         pptx_file_exists = False
         latest_file = None
-            
-            if os.path.exists(output_dir):
-                pptx_files = [f for f in os.listdir(output_dir) if f.endswith('.pptx')]
-                if pptx_files:
-                    pptx_file_exists = True
-                    latest_file = max(pptx_files, key=lambda x: os.path.getctime(os.path.join(output_dir, x)))
-            
-            # Show download button that directly downloads the file
-            if pptx_file_exists and ai_completed:
-                file_path = os.path.join(output_dir, latest_file)
-                with open(file_path, 'rb') as f:
-                    file_data = f.read()
 
-                # Use the stored column reference for proper alignment
-                download_col = st.session_state.get('download_button_column')
-                if download_col:
-                    with download_col:
-                        st.download_button(
-                            label="📥 Download Full Report",
-                            data=file_data,
-                            file_name=latest_file,
-                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                            key="btn_download_full_pptx",
-                            help="Download the full PowerPoint report with AI content",
-                            use_container_width=True
-                        )
-                else:
+        if os.path.exists(output_dir):
+            pptx_files = [f for f in os.listdir(output_dir) if f.endswith('.pptx')]
+            if pptx_files:
+                pptx_file_exists = True
+                latest_file = max(pptx_files, key=lambda x: os.path.getctime(os.path.join(output_dir, x)))
+
+        # Show download button that directly downloads the file
+        if pptx_file_exists and ai_completed:
+            file_path = os.path.join(output_dir, latest_file)
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
+
+            # Use the stored column reference for proper alignment
+            download_col = st.session_state.get('download_button_column')
+            if download_col:
+                with download_col:
                     st.download_button(
                         label="📥 Download Full Report",
                         data=file_data,
@@ -1172,22 +1162,19 @@ def main():
                         use_container_width=True
                     )
             else:
-                download_col = st.session_state.get('download_button_column')
-                if download_col:
-                    with download_col:
-                        st.button(
-                            "📥 Download Full Report",
-                            type="secondary",
-                            use_container_width=True,
-                            key="btn_download_full_pptx",
-                            help="Download the full PowerPoint report with AI content",
-                            disabled=True
-                        )
-                        if not ai_completed:
-                            st.info("💡 Complete AI processing first to enable full report download")
-                        elif not pptx_file_exists:
-                            st.info("💡 Generate a report first to enable download")
-                else:
+                st.download_button(
+                    label="📥 Download Full Report",
+                    data=file_data,
+                    file_name=latest_file,
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    key="btn_download_full_pptx",
+                    help="Download the full PowerPoint report with AI content",
+                    use_container_width=True
+                )
+        else:
+            download_col = st.session_state.get('download_button_column')
+            if download_col:
+                with download_col:
                     st.button(
                         "📥 Download Full Report",
                         type="secondary",
@@ -1200,6 +1187,19 @@ def main():
                         st.info("💡 Complete AI processing first to enable full report download")
                     elif not pptx_file_exists:
                         st.info("💡 Generate a report first to enable download")
+            else:
+                st.button(
+                    "📥 Download Full Report",
+                    type="secondary",
+                    use_container_width=True,
+                    key="btn_download_full_pptx",
+                    help="Download the full PowerPoint report with AI content",
+                    disabled=True
+                )
+                if not ai_completed:
+                    st.info("💡 Complete AI processing first to enable full report download")
+                elif not pptx_file_exists:
+                    st.info("💡 Generate a report first to enable download")
 
         # Handle combined AI processing and PowerPoint export
         if generate_report_clicked:
