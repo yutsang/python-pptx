@@ -1066,8 +1066,7 @@ def main():
                         st.stop()
 
                 processing_time = time.time() - start_time
-                print(f"✅ Excel processing completed in {processing_time:.2f}s")
-                print(f"📊 Found {len(sections_by_key)} financial keys with data")
+                print(f"✅ Excel processed in {processing_time:.2f}s")
                 
 
                 # Auto-detect language from data
@@ -1098,32 +1097,20 @@ def main():
             # Filter the original sections_by_key based on statement type
             filtered_sections_by_key = {}
             if statement_type == "BS":
-                print(f"🔍 Filtering for BS mode from {len(original_sections_by_key)} keys...")
                 for key in original_sections_by_key:
-                    # Include if key matches any BS keyword
                     if any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords):
                         filtered_sections_by_key[key] = original_sections_by_key[key]
-                print(f"✅ BS mode: {len(filtered_sections_by_key)} keys selected")
+                print(f"🔍 BS: {len(original_sections_by_key)}→{len(filtered_sections_by_key)} keys")
             elif statement_type == "IS":
-                print(f"🔍 Filtering for IS mode from {len(original_sections_by_key)} keys...")
                 for key in original_sections_by_key:
-                    # Include if key matches any IS keyword OR if key doesn't match BS keywords
                     if (any(is_kw.lower() in key.lower() for is_kw in is_keywords) or
                         not any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords)):
                         filtered_sections_by_key[key] = original_sections_by_key[key]
-                print(f"✅ IS mode: {len(filtered_sections_by_key)} keys selected")
+                print(f"🔍 IS: {len(original_sections_by_key)}→{len(filtered_sections_by_key)} keys")
 
-            # Update sections_by_key with filtered data
             sections_by_key = filtered_sections_by_key
-
-            # Debug: Show what keys were filtered
-            if len(filtered_sections_by_key) == 0:
-                st.warning(f"⚠️ No keys matched the filter for {statement_type} mode. Check the original data.")
-                print(f"⚠️ Original keys: {list(original_sections_by_key.keys())}")
-            else:
-                print(f"📊 {statement_type} mode keys: {list(filtered_sections_by_key.keys())}")
         else:
-            print(f"🔍 Using all {len(sections_by_key)} keys for {statement_type} mode (no filtering)")
+            print(f"🔍 ALL: {len(sections_by_key)} keys")
 
         # Display financial statements
         
@@ -1147,13 +1134,6 @@ def main():
         # Prepare AI data
         keys_with_data = [key for key, sections in sections_by_key.items() if sections]
 
-        # Debug: Show key counts at each stage
-        original_sections_by_key = st.session_state.get('ai_data', {}).get('sections_by_key', {})
-        print(f"🔍 Key count summary for {statement_type} mode:")
-        print(f"   Original unfiltered keys: {len(original_sections_by_key)}")
-        print(f"   After statement filtering: {len(sections_by_key)}")
-        print(f"   Keys with data: {len(keys_with_data)}")
-
         # Filter keys by statement type
         bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
                    "AP", "Taxes payable", "OP", "Capital", "Reserve"]
@@ -1162,15 +1142,13 @@ def main():
 
         if statement_type == "BS":
             filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
-            print(f"   After AI key filtering: {len(filtered_keys_for_ai)}")
-            print(f"   AI keys: {filtered_keys_for_ai}")
+            print(f"🔍 BS: {len(keys_with_data)}→{len(filtered_keys_for_ai)} keys")
         elif statement_type == "IS":
             filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
-            print(f"   After AI key filtering: {len(filtered_keys_for_ai)}")
-            print(f"   AI keys: {filtered_keys_for_ai}")
+            print(f"🔍 IS: {len(keys_with_data)}→{len(filtered_keys_for_ai)} keys")
         else:  # ALL
             filtered_keys_for_ai = keys_with_data
-            print(f"   After AI key filtering (ALL): {len(filtered_keys_for_ai)}")
+            print(f"🔍 ALL: {len(filtered_keys_for_ai)} keys")
 
         st.session_state['filtered_keys_for_ai'] = filtered_keys_for_ai
         
@@ -1729,30 +1707,26 @@ def main():
 
                 # Handle "All" case - generate both BS and IS content
                 if statement_type == "ALL":
-                    # Debug: Check what data is available
-                    print(f"🔍 Starting 'All' mode processing...")
-                    print(f"   Available keys in ai_content_store: {list(st.session_state.get('ai_content_store', {}).keys())}")
+                    print(f"🔄 ALL mode: Processing content generation...")
 
                     # Backup existing files BEFORE generating new ones
                     if os.path.exists("fdd_utils/bs_content.md"):
                         try:
                             os.rename("fdd_utils/bs_content.md", "fdd_utils/bs_content_backup.md")
                         except:
-                            pass  # Ignore if backup fails
+                            pass
                     if os.path.exists("fdd_utils/is_content.md"):
                         try:
                             os.rename("fdd_utils/is_content.md", "fdd_utils/is_content_backup.md")
                         except:
-                            pass  # Ignore if backup fails
+                            pass
 
                     try:
                         # Generate BS content
-                        print(f"🔄 Generating BS content...")
                         st.session_state['current_statement_type'] = 'BS'
                         generate_content_from_session_storage(selected_entity)
 
                         # Generate IS content
-                        print(f"🔄 Generating IS content...")
                         st.session_state['current_statement_type'] = 'IS'
                         generate_content_from_session_storage(selected_entity)
 
@@ -1768,7 +1742,7 @@ def main():
                             except:
                                 pass
 
-                        print(f"✅ Content generation completed for 'All' mode")
+                        print(f"✅ ALL mode content generation completed")
 
                     except Exception as e:
                         # Restore from backup if generation failed
@@ -1783,7 +1757,7 @@ def main():
                             except:
                                 pass
                         st.error(f"❌ Content generation failed: {str(e)}")
-                        raise e  # Re-raise the exception
+                        raise e
 
                     # Restore current statement type
                     st.session_state['current_statement_type'] = 'ALL'
@@ -1795,7 +1769,7 @@ def main():
                     st.session_state['agent_states']['agent2_success'] = True
                     st.session_state['agent_states']['agent3_completed'] = True
                     st.session_state['agent_states']['agent3_success'] = True
-                    print(f"✅ All agents marked as completed for 'All' mode")
+                    print(f"✅ ALL mode agents completed")
                 else:
                     # For individual BS/IS modes, mark agents as completed
                     if statement_type == "BS":
@@ -1806,8 +1780,11 @@ def main():
                         st.session_state['agent_states']['agent2_success'] = True
                         st.session_state['agent_states']['agent3_completed'] = True
                         st.session_state['agent_states']['agent3_success'] = True
-                        print(f"✅ All agents marked as completed for BS mode")
+                        print(f"✅ BS mode agents completed")
                     elif statement_type == "IS":
+                        print(f"🔄 Processing IS mode content generation...")
+                        # Set current statement type for IS mode
+                        st.session_state['current_statement_type'] = 'IS'
                         # Mark all agents as completed for IS mode
                         st.session_state['agent_states']['agent1_completed'] = True
                         st.session_state['agent_states']['agent1_success'] = True
@@ -1816,6 +1793,9 @@ def main():
                         st.session_state['agent_states']['agent3_completed'] = True
                         st.session_state['agent_states']['agent3_success'] = True
                         print(f"✅ All agents marked as completed for IS mode")
+                        # Generate content for IS mode
+                        generate_content_from_session_storage(selected_entity)
+                        print(f"✅ IS mode content generation completed")
                     else:
                         generate_content_from_session_storage(selected_entity)
 
@@ -2387,60 +2367,41 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
             bs_path = "fdd_utils/bs_content.md"
             is_path = "fdd_utils/is_content.md"
 
-            # Debug: Check if content files exist and have content
-            print(f"🔍 Checking content files for 'All' mode...")
-            print(f"   BS content file exists: {os.path.exists(bs_path)}")
-            print(f"   IS content file exists: {os.path.exists(is_path)}")
-
+            # Check if content files exist and have content
             bs_content = ""
             is_content = ""
 
             if os.path.exists(bs_path):
                 with open(bs_path, 'r', encoding='utf-8') as f:
                     bs_content = f.read()
-                print(f"   BS content length: {len(bs_content)} characters")
-                print(f"   BS content preview: {bs_content[:100] if bs_content else 'EMPTY'}")
 
             if os.path.exists(is_path):
                 with open(is_path, 'r', encoding='utf-8') as f:
                     is_content = f.read()
-                print(f"   IS content length: {len(is_content)} characters")
-                print(f"   IS content preview: {is_content[:100] if is_content else 'EMPTY'}")
 
             if not os.path.exists(bs_path) or not os.path.exists(is_path):
                 st.error("❌ Content files not found. Please run AI processing first.")
-                print(f"❌ Missing files - BS: {bs_path}, IS: {is_path}")
                 return
 
             if not bs_content or not is_content:
                 st.error("❌ Content files are empty. Please run AI processing first.")
-                print(f"❌ Empty files - BS: {len(bs_content)}, IS: {len(is_content)}")
                 return
-
-            print(f"✅ Both content files exist and have content - proceeding with export")
 
             with tempfile.TemporaryDirectory() as temp_dir:
                 bs_temp = os.path.join(temp_dir, "bs_temp.pptx")
                 is_temp = os.path.join(temp_dir, "is_temp.pptx")
 
                 try:
-                    print(f"🔄 Generating BS presentation: {bs_temp}")
                     # Generate BS and IS presentations using template
                     export_pptx(template_path, bs_path, bs_temp, project_name, language=language, row_limit=row_limit)
-                    print(f"✅ BS presentation generated successfully")
-
-                    print(f"🔄 Generating IS presentation: {is_temp}")
                     export_pptx(template_path, is_path, is_temp, project_name, language=language, row_limit=row_limit)
-                    print(f"✅ IS presentation generated successfully")
 
-                    print(f"🔄 Merging presentations to: {output_path}")
                     # Merge presentations
                     merge_presentations(bs_temp, is_temp, output_path)
-                    print(f"✅ Presentations merged successfully")
+                    print(f"✅ ALL mode export completed")
 
                 except Exception as merge_error:
                     st.error(f"❌ PowerPoint generation failed: {str(merge_error)}")
-                    print(f"❌ Merge error: {str(merge_error)}")
                     raise merge_error
 
             if language == 'chinese':
