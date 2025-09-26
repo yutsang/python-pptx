@@ -74,8 +74,17 @@ def clean_content_quotes(content):
 def load_json_content():
     """Load content from JSON file with caching for better performance"""
     try:
+        # Get current statement type to determine which file to load
+        current_statement_type = st.session_state.get('current_statement_type', 'BS')
+
         # Try JSON first (better performance)
-        json_file = "fdd_utils/bs_content.json"
+        if current_statement_type == "IS":
+            json_file = "fdd_utils/is_content.json"
+            md_fallback_files = ["fdd_utils/is_content.md", "fdd_utils/is_content_ai_generated.md"]
+        else:
+            json_file = "fdd_utils/bs_content.json"
+            md_fallback_files = ["fdd_utils/bs_content.md", "fdd_utils/bs_content_ai_generated.md"]
+
         if os.path.exists(json_file):
             with open(json_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -84,8 +93,7 @@ def load_json_content():
 
     # Fallback to parsing markdown if JSON not available
     try:
-        content_files = ["fdd_utils/bs_content.md", "fdd_utils/bs_content_ai_generated.md"]
-        for file_path in content_files:
+        for file_path in md_fallback_files:
             if os.path.exists(file_path):
                 return parse_markdown_to_json(file_path)
     except Exception as e:
@@ -228,8 +236,14 @@ def generate_content_from_session_storage(entity_name):
                     'source_agent': content_data.get('source', 'unknown')
                 }
 
-        # Save JSON file
-        json_filename = f"fdd_utils/bs_content.json"
+        # Save JSON file based on statement type
+        if current_statement_type == "IS":
+            json_filename = f"fdd_utils/is_content.json"
+            md_filename = f"fdd_utils/is_content.md"
+        else:
+            json_filename = f"fdd_utils/bs_content.json"
+            md_filename = f"fdd_utils/bs_content.md"
+
         with open(json_filename, 'w', encoding='utf-8') as f:
             json.dump(json_content, f, indent=2, ensure_ascii=False)
 
@@ -254,7 +268,6 @@ def generate_content_from_session_storage(entity_name):
                     markdown_content += f"{item_data['content']}\n\n"
 
         # Save markdown file
-        md_filename = f"fdd_utils/bs_content.md"
         with open(md_filename, 'w', encoding='utf-8') as f:
             f.write(markdown_content)
 
@@ -334,8 +347,13 @@ def update_bs_content_with_agent_corrections(corrections_dict, entity_name, agen
                 content['financial_items'][key]['last_agent'] = agent_name
                 updated_count += 1
 
-        # Save updated content
-        json_filename = f"fdd_utils/bs_content.json"
+        # Save updated content based on statement type
+        current_statement_type = st.session_state.get('current_statement_type', 'BS')
+        if current_statement_type == "IS":
+            json_filename = f"fdd_utils/is_content.json"
+        else:
+            json_filename = f"fdd_utils/bs_content.json"
+
         with open(json_filename, 'w', encoding='utf-8') as f:
             json.dump(content, f, indent=2, ensure_ascii=False)
 
