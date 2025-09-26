@@ -1269,6 +1269,7 @@ class PowerPointGenerator:
         self.current_shape = shape  # For dynamic line calculation
         prev_account_title = None
         prev_continued = False
+        prev_layer1_continued = None
         paragraph_count = 0  # Track paragraph index in the shape
         
         # Apply row limit (row_limit represents max rows per shape)
@@ -1280,6 +1281,30 @@ class PowerPointGenerator:
             is_first_part = not (item.layer1_continued or item.layer2_continued)
             # Layer 1 Header
             display_header = self._get_display_header_for_item(item)
+
+            # Add secondary header for continued content on new slides
+            if item.layer1_continued and display_header == self.prev_layer1 and display_header != self.prev_layer1_continued:
+                # This is a continuation on a new slide - add secondary header
+                p = tf.add_paragraph()
+                self._apply_paragraph_formatting(p, is_layer2_3=False)
+                try: p.space_before = get_space_before_for_text(f"{display_header} (续)", force_chinese_mode=(self.language == 'chinese'))
+                except: pass
+                try: p.space_after = get_space_after_for_text(f"{display_header} (续)", force_chinese_mode=(self.language == 'chinese'))
+                except: pass
+                try: p.line_spacing = get_line_spacing_for_text(f"{display_header} (续)", force_chinese_mode=(self.language == 'chinese'))
+                except: pass
+                run = p.add_run()
+                run.text = f"{display_header} (续)"
+                run.font.size = get_font_size_for_text(run.text, Pt(9), force_chinese_mode=(self.language == 'chinese'))
+                run.font.bold = True
+                run.font.name = get_font_name_for_text(run.text, 'Arial')
+                try:
+                    run.font.color.rgb = self.DARK_BLUE
+                except:
+                    run.font.color.rgb = RGBColor(0, 51, 160)  # Fallback dark blue
+                paragraph_count += 1
+                self.prev_layer1_continued = display_header
+
             if (display_header != self.prev_layer1) or (self.prev_layer1 is None):
                 p = tf.add_paragraph()
                 self._apply_paragraph_formatting(p, is_layer2_3=False)
@@ -1517,51 +1542,30 @@ class PowerPointGenerator:
             raise
 
     def _apply_paragraph_formatting(self, paragraph, is_layer2_3=False):
-        # Apply Chinese-specific formatting when in Chinese mode
-        is_chinese_mode = hasattr(self, 'language') and self.language == 'chinese'
+        # Apply commentary-specific formatting as requested by user
+        # Requirements: 0.21" indent before text, 0.19" special hanging, 0pt before/after spacing, single line spacing
 
         try:
-            if is_chinese_mode:
-                # Chinese formatting: optimized for better line breaking
-                try: paragraph.left_indent = Inches(0.15)  # 0.15" left indent
-                except: pass
-                try: paragraph.first_line_indent = Inches(-0.15)  # 0.15" hanging indent
-                except: pass
-                try: paragraph.space_before = Pt(0)  # No space before
-                except: pass
-                try: paragraph.space_after = Pt(6)  # 6pt space after
-                except: pass
-                try: paragraph.line_spacing = 1.15  # Better line spacing for Chinese text breaking
-                except: pass
-                print("📄 CHINESE PARAGRAPH: 0.15\" indent, 0.15\" hanging, 6pt after, 1.15 line spacing")
-            elif is_layer2_3:
-                try: paragraph.left_indent = Inches(0.25)  # Increased left margin
-                except: pass
-                try: paragraph.first_line_indent = Inches(-0.19)
-                except: pass
-                try: paragraph.space_before = Pt(0)
-                except: pass
-                try: paragraph.space_after = Pt(0)
-                except: pass
-                # Better line spacing for layer 2/3 content
-                if is_chinese_mode:
-                    try: paragraph.line_spacing = 1.1  # Tighter spacing for Chinese bullets
-                    except: pass
-                else:
-                    try: paragraph.line_spacing = 1.0  # Standard spacing for English bullets
-                    except: pass
-            else:
-                try: paragraph.left_indent = Inches(0.35)  # Increased left margin
-                except: pass
-                try: paragraph.first_line_indent = Inches(-0.3)
-                except: pass
-                try: paragraph.space_before = Pt(0)
-                except: pass
-                try: paragraph.space_after = Pt(0)
-                except: pass
-
-            try: paragraph.line_spacing = 1.0
+            # Apply consistent formatting for all commentary paragraphs
+            try: paragraph.left_indent = Inches(0.21)  # 0.21" indent before text
             except: pass
+            try: paragraph.first_line_indent = Inches(-0.19)  # 0.19" special hanging
+            except: pass
+            try: paragraph.space_before = Pt(0)  # 0pt spacing before
+            except: pass
+            try: paragraph.space_after = Pt(0)  # 0pt spacing after
+            except: pass
+            try: paragraph.line_spacing = 1.0  # Single line spacing
+            except: pass
+
+            # Different formatting for headers vs content
+            if not is_layer2_3:
+                # Headers (layer 1) - keep current formatting but apply user requirements
+                print(f"📄 HEADER PARAGRAPH: 0.21\" indent, 0.19\" hanging, 0pt before/after, single line spacing")
+            else:
+                # Content (layer 2/3) - apply user requirements
+                print(f"📄 CONTENT PARAGRAPH: 0.21\" indent, 0.19\" hanging, 0pt before/after, single line spacing")
+
             try: paragraph.alignment = PP_ALIGN.LEFT
             except: self._handle_legacy_alignment(paragraph)
         except Exception as e:

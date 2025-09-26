@@ -749,15 +749,20 @@ def main():
         previous_file_name = st.session_state.get('previous_uploaded_file_name', '')
         
         if current_file_name != previous_file_name and previous_file_name != '':
-            # File has changed, clear AI content
+            # File has changed, clear AI content and entity cache
             if 'ai_content_store' in st.session_state:
                 del st.session_state['ai_content_store']
             if 'ai_data' in st.session_state:
                 del st.session_state['ai_data']
             if 'uploaded_file_data' in st.session_state:
                 del st.session_state['uploaded_file_data']
-            
-            st.warning("🔄 **New databook uploaded!** AI content has been cleared. Please re-run the AI processing to generate new content.")
+            # Clear any cached entity names
+            keys_to_clear = [k for k in st.session_state.keys() if 'entity' in k.lower() and k != 'selected_entity']
+            for key in keys_to_clear:
+                del st.session_state[key]
+
+            # Don't show reminder message - just silently reset
+            print(f"🔄 New databook uploaded: {current_file_name}")
             st.session_state['previous_uploaded_file_name'] = current_file_name
         elif previous_file_name == '':
             st.session_state['previous_uploaded_file_name'] = current_file_name
@@ -1105,7 +1110,7 @@ def main():
         # Simplified AI Processing Buttons
         
         col1, col2 = st.columns(2)
-        
+
         with col1:
             generate_report_clicked = st.button(
                 f"🚀 Generate & Download Report ({language_display})",
@@ -1114,17 +1119,22 @@ def main():
                 key="btn_generate_report",
                 help=f"Generate AI content and download PowerPoint in {detected_language}"
             )
+
+        with col2:
+            # Download button will be populated here after generation
+            pass
+
+        # Store the column reference for later use
+        st.session_state['download_button_column'] = col2
+
         
-        
-        # Original download section
-        with st.container():
-            # Check if AI processing has completed
-            ai_completed = st.session_state.get('agent_states', {}).get('agent1_completed', False) or st.session_state.get('agent_states', {}).get('agent3_completed', False)
-            
-            # Check if PowerPoint file exists for download
-            output_dir = "fdd_utils/output"
-            pptx_file_exists = False
-            latest_file = None
+        # Check if AI processing has completed
+        ai_completed = st.session_state.get('agent_states', {}).get('agent1_completed', False) or st.session_state.get('agent_states', {}).get('agent3_completed', False)
+
+        # Check if PowerPoint file exists for download
+        output_dir = "fdd_utils/output"
+        pptx_file_exists = False
+        latest_file = None
             
             if os.path.exists(output_dir):
                 pptx_files = [f for f in os.listdir(output_dir) if f.endswith('.pptx')]
@@ -1137,29 +1147,59 @@ def main():
                 file_path = os.path.join(output_dir, latest_file)
                 with open(file_path, 'rb') as f:
                     file_data = f.read()
-                
-                st.download_button(
-                    label="📥 Download Full Report",
-                    data=file_data,
-                    file_name=latest_file,
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    key="btn_download_full_pptx",
-                    help="Download the full PowerPoint report with AI content",
-                    use_container_width=True
-                )
+
+                # Use the stored column reference for proper alignment
+                download_col = st.session_state.get('download_button_column')
+                if download_col:
+                    with download_col:
+                        st.download_button(
+                            label="📥 Download Full Report",
+                            data=file_data,
+                            file_name=latest_file,
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            key="btn_download_full_pptx",
+                            help="Download the full PowerPoint report with AI content",
+                            use_container_width=True
+                        )
+                else:
+                    st.download_button(
+                        label="📥 Download Full Report",
+                        data=file_data,
+                        file_name=latest_file,
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        key="btn_download_full_pptx",
+                        help="Download the full PowerPoint report with AI content",
+                        use_container_width=True
+                    )
             else:
-                st.button(
-                    "📥 Download Full Report",
-                    type="secondary",
-                    use_container_width=True,
-                    key="btn_download_full_pptx",
-                    help="Download the full PowerPoint report with AI content",
-                    disabled=True
-                )
-                if not ai_completed:
-                    st.info("💡 Complete AI processing first to enable full report download")
-                elif not pptx_file_exists:
-                    st.info("💡 Generate a report first to enable download")
+                download_col = st.session_state.get('download_button_column')
+                if download_col:
+                    with download_col:
+                        st.button(
+                            "📥 Download Full Report",
+                            type="secondary",
+                            use_container_width=True,
+                            key="btn_download_full_pptx",
+                            help="Download the full PowerPoint report with AI content",
+                            disabled=True
+                        )
+                        if not ai_completed:
+                            st.info("💡 Complete AI processing first to enable full report download")
+                        elif not pptx_file_exists:
+                            st.info("💡 Generate a report first to enable download")
+                else:
+                    st.button(
+                        "📥 Download Full Report",
+                        type="secondary",
+                        use_container_width=True,
+                        key="btn_download_full_pptx",
+                        help="Download the full PowerPoint report with AI content",
+                        disabled=True
+                    )
+                    if not ai_completed:
+                        st.info("💡 Complete AI processing first to enable full report download")
+                    elif not pptx_file_exists:
+                        st.info("💡 Generate a report first to enable download")
 
         # Handle combined AI processing and PowerPoint export
         if generate_report_clicked:
@@ -1180,20 +1220,32 @@ def main():
                     if 'processing_start_time' not in st.session_state:
                         st.session_state['processing_start_time'] = time.time()
                     
+                    # Track current key index for proper progress display
+                    current_key_index = 0
+
                     def progress_callback_eng(p, msg):
                         # Store progress info in session state for display
                         if 'debug_progress' not in st.session_state:
                             st.session_state['debug_progress'] = []
                         st.session_state['debug_progress'].append(f"p={p}, msg='{msg}'")
-                        
+
                         # Parse the detailed message from the AI processing
                         current_key = "Processing"  # Default fallback
-                        
+
                         if msg and isinstance(msg, str):
                             # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
                             if 'Processing' in msg and '•' in msg:
                                 parts = msg.split('•')
-                                if len(parts) >= 1:
+                                if len(parts) >= 3 and 'Key' in parts[2]:
+                                    # Extract key index from format like "Key 1/9"
+                                    try:
+                                        key_info = parts[2].strip()
+                                        if '/' in key_info:
+                                            current_key_index = int(key_info.split('/')[0].replace('Key ', ''))
+                                            current_key = parts[0].replace('🔄 Processing', '').strip()
+                                    except:
+                                        pass
+                                elif len(parts) >= 1:
                                     key_part = parts[0].replace('🔄 Processing', '').strip()
                                     if key_part:
                                         current_key = key_part
@@ -1208,28 +1260,33 @@ def main():
                             # Format: Check if it's just a key name without "Processing"
                             elif msg.strip() in filtered_keys_for_ai:
                                 current_key = msg.strip()
-                        
-                        # Calculate current key index from progress
-                        key_index = int(p * total_keys) if p > 0 else 0
-                        
+
+                        # Calculate progress based on current key index
+                        if current_key_index == 0:
+                            # Fallback: estimate from progress value
+                            current_key_index = max(1, int(p * total_keys))
+
                         # Calculate proper ETA based on actual processing time
-                        if p > 0 and key_index > 0:
+                        if p > 0 and current_key_index > 0:
                             elapsed_time = time.time() - st.session_state['processing_start_time']
-                            avg_time_per_key = elapsed_time / key_index
-                            remaining_keys = total_keys - key_index
-                            eta_seconds = int(remaining_keys * avg_time_per_key)
-                            
-                            if eta_seconds > 0:
-                                eta_minutes = eta_seconds // 60
-                                eta_seconds = eta_seconds % 60
-                                eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
+                            avg_time_per_key = elapsed_time / current_key_index
+                            remaining_keys = max(0, total_keys - current_key_index)
+                            if remaining_keys > 0:
+                                eta_seconds = int(remaining_keys * avg_time_per_key)
+
+                                if eta_seconds > 0:
+                                    eta_minutes = eta_seconds // 60
+                                    eta_seconds = eta_seconds % 60
+                                    eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
+                                else:
+                                    eta_text = "⏱️ Almost done!"
                             else:
                                 eta_text = "⏱️ Almost done!"
                         else:
                             eta_text = ""
-                        
+
                         # Enhanced status display with ETA on same line
-                        status_display = f"📊 生成英文内容... ({key_index}/{total_keys} keys) - {current_key}"
+                        status_display = f"📊 生成英文内容... ({current_key_index}/{total_keys} keys) - {current_key}"
                         if eta_text:
                             status_display += f" {eta_text}"
                         status_text.text(status_display)
@@ -1299,7 +1356,16 @@ def main():
                             # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
                             if 'Processing' in msg and '•' in msg:
                                 parts = msg.split('•')
-                                if len(parts) >= 1:
+                                if len(parts) >= 3 and 'Key' in parts[2]:
+                                    # Extract key index from format like "Key 1/9"
+                                    try:
+                                        key_info = parts[2].strip()
+                                        if '/' in key_info:
+                                            current_key_index = int(key_info.split('/')[0].replace('Key ', ''))
+                                            current_key = parts[0].replace('🔄 Processing', '').strip()
+                                    except:
+                                        pass
+                                elif len(parts) >= 1:
                                     key_part = parts[0].replace('🔄 Processing', '').strip()
                                     if key_part:
                                         current_key = key_part
@@ -1315,27 +1381,32 @@ def main():
                             elif msg.strip() in filtered_keys_for_ai:
                                 current_key = msg.strip()
 
-                        # Calculate current key index from progress
-                        key_index = int(p * total_keys) if p > 0 else 0
+                        # Calculate progress based on current key index
+                        if current_key_index == 0:
+                            # Fallback: estimate from progress value
+                            current_key_index = max(1, int(p * total_keys))
 
                         # Calculate proper ETA based on actual processing time
-                        if p > 0 and key_index > 0:
+                        if p > 0 and current_key_index > 0:
                             elapsed_time = time.time() - st.session_state['processing_start_time']
-                            avg_time_per_key = elapsed_time / key_index
-                            remaining_keys = total_keys - key_index
-                            eta_seconds = int(remaining_keys * avg_time_per_key)
+                            avg_time_per_key = elapsed_time / current_key_index
+                            remaining_keys = max(0, total_keys - current_key_index)
+                            if remaining_keys > 0:
+                                eta_seconds = int(remaining_keys * avg_time_per_key)
 
-                            if eta_seconds > 0:
-                                eta_minutes = eta_seconds // 60
-                                eta_seconds = eta_seconds % 60
-                                eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
+                                if eta_seconds > 0:
+                                    eta_minutes = eta_seconds // 60
+                                    eta_seconds = eta_seconds % 60
+                                    eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
+                                else:
+                                    eta_text = "⏱️ Almost done!"
                             else:
                                 eta_text = "⏱️ Almost done!"
                         else:
                             eta_text = ""
 
                         # Enhanced status display with ETA on same line
-                        status_display = f"🌐 翻译为中文... ({key_index}/{total_keys} keys) - {current_key}"
+                        status_display = f"🌐 翻译为中文... ({current_key_index}/{total_keys} keys) - {current_key}"
                         if eta_text:
                             status_display += f" {eta_text}"
                         status_text.text(status_display)
@@ -1453,7 +1524,16 @@ def main():
                             # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
                             if 'Processing' in msg and '•' in msg:
                                 parts = msg.split('•')
-                                if len(parts) >= 1:
+                                if len(parts) >= 3 and 'Key' in parts[2]:
+                                    # Extract key index from format like "Key 1/9"
+                                    try:
+                                        key_info = parts[2].strip()
+                                        if '/' in key_info:
+                                            current_key_index = int(key_info.split('/')[0].replace('Key ', ''))
+                                            current_key = parts[0].replace('🔄 Processing', '').strip()
+                                    except:
+                                        pass
+                                elif len(parts) >= 1:
                                     key_part = parts[0].replace('🔄 Processing', '').strip()
                                     if key_part:
                                         current_key = key_part
@@ -1469,27 +1549,32 @@ def main():
                             elif msg.strip() in filtered_keys_for_ai:
                                 current_key = msg.strip()
 
-                        # Calculate current key index from progress
-                        key_index = int(p * total_keys) if p > 0 else 0
+                        # Calculate progress based on current key index
+                        if current_key_index == 0:
+                            # Fallback: estimate from progress value
+                            current_key_index = max(1, int(p * total_keys))
 
                         # Calculate proper ETA based on actual processing time
-                        if p > 0 and key_index > 0:
+                        if p > 0 and current_key_index > 0:
                             elapsed_time = time.time() - st.session_state['processing_start_time']
-                            avg_time_per_key = elapsed_time / key_index
-                            remaining_keys = total_keys - key_index
-                            eta_seconds = int(remaining_keys * avg_time_per_key)
+                            avg_time_per_key = elapsed_time / current_key_index
+                            remaining_keys = max(0, total_keys - current_key_index)
+                            if remaining_keys > 0:
+                                eta_seconds = int(remaining_keys * avg_time_per_key)
 
-                            if eta_seconds > 0:
-                                eta_minutes = eta_seconds // 60
-                                eta_seconds = eta_seconds % 60
-                                eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
+                                if eta_seconds > 0:
+                                    eta_minutes = eta_seconds // 60
+                                    eta_seconds = eta_seconds % 60
+                                    eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
+                                else:
+                                    eta_text = "⏱️ Almost done!"
                             else:
                                 eta_text = "⏱️ Almost done!"
                         else:
                             eta_text = ""
 
                         # Enhanced status display with ETA on same line
-                        status_display = f"🧐 校对英文内容... ({key_index}/{total_keys} keys) - {current_key}"
+                        status_display = f"🧐 校对英文内容... ({current_key_index}/{total_keys} keys) - {current_key}"
                         if eta_text:
                             status_display += f" {eta_text}"
                         status_text.text(status_display)
@@ -2076,14 +2161,31 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
 
         # Create output filename (sanitize project name)
         import re
+        import uuid
         sanitized_project_name = re.sub(r'[^\w\-_]', '_', project_name).strip('_')
         language_suffix = "_CN" if language == 'chinese' else "_EN"
+        unique_id = str(uuid.uuid4())[:8]  # Add unique identifier to prevent caching
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"{sanitized_project_name}_{statement_type.upper()}_{timestamp}{language_suffix}.pptx"
+        output_filename = f"{sanitized_project_name}_{statement_type.upper()}_{timestamp}_{unique_id}{language_suffix}.pptx"
         output_path = f"fdd_utils/output/{output_filename}"
 
         # Ensure output directory exists
         os.makedirs("fdd_utils/output", exist_ok=True)
+
+        # Clean up old files (keep only last 5 files to prevent clutter)
+        try:
+            existing_files = [f for f in os.listdir("fdd_utils/output") if f.endswith('.pptx') and f.startswith(sanitized_project_name)]
+            if len(existing_files) > 5:
+                existing_files.sort(key=lambda x: os.path.getctime(os.path.join("fdd_utils/output", x)))
+                files_to_remove = existing_files[:-5]  # Keep only the 5 most recent
+                for old_file in files_to_remove:
+                    try:
+                        os.remove(os.path.join("fdd_utils/output", old_file))
+                        print(f"🧹 Cleaned up old file: {old_file}")
+                    except:
+                        pass  # Ignore if file can't be removed
+        except:
+            pass  # Ignore cleanup errors
 
         # Get content file
         if statement_type == "IS":
