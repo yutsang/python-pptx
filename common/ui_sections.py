@@ -291,8 +291,8 @@ def render_combined_sections(
     format_date_to_dd_mmm_yyyy,
 ):
     """Render combined Balance Sheet and Income Statement sections UI."""
-    
-    st.markdown("#### View Data")
+
+    st.markdown("#### Financial Data:")
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]

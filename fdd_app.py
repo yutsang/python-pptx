@@ -708,8 +708,49 @@ def run_simple_proofreader(english_results, ai_data, progress_callback=None):
 
 
 
+def cleanup_old_files():
+    """Clean up any leftover temporary files from previous runs"""
+    try:
+        temp_files = [
+            "fdd_utils/bs_content_temp.md", "fdd_utils/is_content_temp.md",
+            "fdd_utils/bs_content_backup.md", "fdd_utils/is_content_backup.md"
+        ]
+
+        for temp_file in temp_files:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    print(f"🧹 Cleaned up leftover temp file: {temp_file}")
+                except:
+                    pass
+
+        # Clean up very old output files (keep only last 10)
+        try:
+            output_dir = "fdd_utils/output"
+            if os.path.exists(output_dir):
+                import glob
+                pptx_files = glob.glob(f"{output_dir}/*.pptx")
+                if len(pptx_files) > 10:
+                    # Sort by creation time (oldest first)
+                    pptx_files.sort(key=os.path.getctime)
+                    # Remove oldest files
+                    files_to_remove = pptx_files[:-10]
+                    for old_file in files_to_remove:
+                        try:
+                            os.remove(old_file)
+                            print(f"🧹 Cleaned up old output file: {old_file}")
+                        except:
+                            pass
+        except:
+            pass
+    except:
+        pass
+
 def main():
     """Main application function"""
+    # Clean up old files on startup
+    cleanup_old_files()
+
     # Configure Streamlit
     configure_streamlit_page()
     st.title("🏢 Real Estate DD Report Writer")
@@ -761,8 +802,40 @@ def main():
             for key in keys_to_clear:
                 del st.session_state[key]
 
+            # Clean up old content files when switching databooks
+            old_content_files = [
+                "fdd_utils/bs_content.md", "fdd_utils/is_content.md",
+                "fdd_utils/bs_content_backup.md", "fdd_utils/is_content_backup.md",
+                "fdd_utils/bs_content_temp.md", "fdd_utils/is_content_temp.md",
+                "fdd_utils/output/"  # Clean up old output files too
+            ]
+
+            for file_path in old_content_files:
+                if file_path.endswith('/'):
+                    # Clean up old files in output directory
+                    try:
+                        import glob
+                        pattern = file_path + "*.pptx"
+                        old_files = glob.glob(pattern)
+                        for old_file in old_files:
+                            try:
+                                os.remove(old_file)
+                                print(f"🧹 Cleaned up old output file: {old_file}")
+                            except:
+                                pass
+                    except:
+                        pass
+                else:
+                    # Clean up specific content files
+                    try:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                            print(f"🧹 Cleaned up old content file: {file_path}")
+                    except:
+                        pass
+
             # Don't show reminder message - just silently reset
-            print(f"🔄 New databook uploaded: {current_file_name}")
+            print(f"🔄 New databook uploaded: {current_file_name} - cleaned up old files")
             st.session_state['previous_uploaded_file_name'] = current_file_name
         elif previous_file_name == '':
             st.session_state['previous_uploaded_file_name'] = current_file_name
@@ -1012,22 +1085,25 @@ def main():
             sections_by_key = st.session_state.get('ai_data', {}).get('sections_by_key', {})
 
         # Filter sections by statement type to avoid showing BS content when IS is selected
-        if statement_type in ["BS", "IS"]:
-            # Define BS and IS keys
-            bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
-                      "AP", "Taxes payable", "OP", "Capital", "Reserve"]
-            is_keys = ["OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
-                      "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"]
+        # But skip filtering for "ALL" mode to show all data
+        if statement_type in ["BS", "IS"] and statement_type != "ALL":
+            # Define BS and IS keys (allow partial matches for Chinese databooks)
+            bs_keywords = ["Cash", "AR", "Prepayments", "OR", "CA", "NCA", "IP", "NCA",
+                          "AP", "payable", "OP", "Capital", "Reserve"]
+            is_keywords = ["OI", "OC", "Tax", "GA", "Fin", "Loss", "Income", "operating", "LT DTA"]
 
             # Filter sections_by_key based on statement type
             filtered_sections_by_key = {}
             if statement_type == "BS":
-                for key in bs_keys:
-                    if key in sections_by_key:
+                for key in sections_by_key:
+                    # Include if key matches any BS keyword
+                    if any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords):
                         filtered_sections_by_key[key] = sections_by_key[key]
             elif statement_type == "IS":
-                for key in is_keys:
-                    if key in sections_by_key:
+                for key in sections_by_key:
+                    # Include if key matches any IS keyword OR if key doesn't match BS keywords
+                    if (any(is_kw.lower() in key.lower() for is_kw in is_keywords) or
+                        not any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords)):
                         filtered_sections_by_key[key] = sections_by_key[key]
 
             sections_by_key = filtered_sections_by_key
@@ -1451,7 +1527,11 @@ def main():
                     # Initialize timing for proper ETA calculation
                     if 'processing_start_time' not in st.session_state:
                         st.session_state['processing_start_time'] = time.time()
-                    
+
+                    # Track current key index for proper progress display
+                    current_key_index = 0
+                    current_key = "Processing"
+
                     def progress_callback_eng_simple(p, msg):
                         nonlocal current_key_index, current_key
 
@@ -1620,21 +1700,52 @@ def main():
 
                 # Handle "All" case - generate both BS and IS content
                 if statement_type == "ALL":
-                    # Generate BS content
-                    st.session_state['current_statement_type'] = 'BS'
-                    generate_content_from_session_storage(selected_entity)
-                    os.rename("fdd_utils/bs_content.md", "fdd_utils/bs_content_temp.md")
+                    # Backup existing files BEFORE generating new ones
+                    if os.path.exists("fdd_utils/bs_content.md"):
+                        try:
+                            os.rename("fdd_utils/bs_content.md", "fdd_utils/bs_content_backup.md")
+                        except:
+                            pass  # Ignore if backup fails
+                    if os.path.exists("fdd_utils/is_content.md"):
+                        try:
+                            os.rename("fdd_utils/is_content.md", "fdd_utils/is_content_backup.md")
+                        except:
+                            pass  # Ignore if backup fails
 
-                    # Generate IS content
-                    st.session_state['current_statement_type'] = 'IS'
-                    generate_content_from_session_storage(selected_entity)
-                    os.rename("fdd_utils/is_content.md", "fdd_utils/is_content_temp.md")
+                    try:
+                        # Generate BS content
+                        st.session_state['current_statement_type'] = 'BS'
+                        generate_content_from_session_storage(selected_entity)
 
-                    # Restore originals
-                    if os.path.exists("fdd_utils/bs_content_temp.md"):
-                        os.rename("fdd_utils/bs_content_temp.md", "fdd_utils/bs_content.md")
-                    if os.path.exists("fdd_utils/is_content_temp.md"):
-                        os.rename("fdd_utils/is_content_temp.md", "fdd_utils/is_content.md")
+                        # Generate IS content
+                        st.session_state['current_statement_type'] = 'IS'
+                        generate_content_from_session_storage(selected_entity)
+
+                        # Clean up backup files (no longer needed)
+                        if os.path.exists("fdd_utils/bs_content_backup.md"):
+                            try:
+                                os.remove("fdd_utils/bs_content_backup.md")
+                            except:
+                                pass
+                        if os.path.exists("fdd_utils/is_content_backup.md"):
+                            try:
+                                os.remove("fdd_utils/is_content_backup.md")
+                            except:
+                                pass
+
+                    except Exception as e:
+                        # Restore from backup if generation failed
+                        if os.path.exists("fdd_utils/bs_content_backup.md"):
+                            try:
+                                os.rename("fdd_utils/bs_content_backup.md", "fdd_utils/bs_content.md")
+                            except:
+                                pass
+                        if os.path.exists("fdd_utils/is_content_backup.md"):
+                            try:
+                                os.rename("fdd_utils/is_content_backup.md", "fdd_utils/is_content.md")
+                            except:
+                                pass
+                        raise e  # Re-raise the exception
 
                     # Restore current statement type
                     st.session_state['current_statement_type'] = 'ALL'

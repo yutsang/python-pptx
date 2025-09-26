@@ -885,9 +885,11 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
 
                     # Consider it a description column if:
                     # - Has NO tick symbols AND has significant text content (including Chinese/English)
-                    if has_tick_symbols == 0 and text_count >= len(sample_values) * 0.2:  # Reduced from 0.4 to 0.2
+                    # - Requirement: At least 20% of first 10 rows must contain text (len > 2 chars)
+                    # - This avoids tick symbol columns but allows sparse text columns
+                    if has_tick_symbols == 0 and text_count >= len(sample_values) * 0.2:
                         desc_col_idx = col_idx
-                        print(f"🎯 Found description column: text content at col {col_idx}")
+                        print(f"🎯 Found description column: text content at col {col_idx} ({text_count}/{len(sample_values)} rows have text)")
                         break
 
         # Final fallback: use first column if no good description column found
@@ -2031,41 +2033,28 @@ def test_haining_wanpu_workflow():
         print(f"📊 Filtered DataFrame: {result_df.shape}")
 
         if len(result_df) > 0:
-            print("✅ SUCCESS: Table filtering worked!")
-            print(f"📋 FULL TABLE OUTPUT FOR TESTING:")
-            print(f"   Shape: {result_df.shape}")
-            print(f"   Columns: {list(result_df.columns)}")
+            # Very concise output - just essential info
+            desc_col = result_df.columns[0] if len(result_df.columns) > 0 else "N/A"
+            data_cols = len(result_df.columns) - 1
+            print(f"✅ SUCCESS: Found {len(result_df)} rows × {len(result_df.columns)} cols")
+            print(f"   📊 Description column: '{desc_col}' | Data columns: {data_cols}")
 
-            # Print SUMMARY for debugging (less verbose, more informative)
-            print(f"📊 SUMMARY: {len(result_df)} rows × {len(result_df.columns)} columns")
-            print(f"   📈 Data types: {dict(result_df.dtypes.value_counts())}")
-            print(f"   🔢 Numeric columns: {sum(result_df.dtypes.apply(lambda x: x in ['int64', 'float64']))}")
-            print(f"   📝 Text columns: {sum(result_df.dtypes.apply(lambda x: x == 'object'))}")
-
-            # Show sample rows (first, middle, last) instead of all rows
-            sample_indices = []
-            if len(result_df) >= 1:
-                sample_indices.append(0)  # First row
-            if len(result_df) >= 3:
-                sample_indices.append(len(result_df) // 2)  # Middle row
-            if len(result_df) >= 2:
-                sample_indices.append(len(result_df) - 1)  # Last row
-
-            print(f"\n📋 SAMPLE ROWS ({len(sample_indices)} of {len(result_df)}):")
-            for i in sample_indices:
-                row_values = []
-                for col_idx in range(min(8, len(result_df.columns))):  # Limit to first 8 columns
-                    val = result_df.iloc[i, col_idx]
+            # Show only first row as sample (max 5 columns)
+            if len(result_df) > 0:
+                sample_row = result_df.iloc[0]
+                sample_values = []
+                for col_idx in range(min(5, len(result_df.columns))):
+                    val = sample_row.iloc[col_idx]
                     if pd.notna(val):
-                        val_str = str(val)[:30]  # Shorter for summary
-                        row_values.append(f"'{val_str}'")
+                        val_str = str(val)[:25]
+                        sample_values.append(f"'{val_str}'")
                     else:
-                        row_values.append("''")
-                print(f"  Row {i}: {' | '.join(row_values)}")
-                if len(result_df.columns) > 8:
-                    print(f"     ... ({len(result_df.columns) - 8} more columns)")
+                        sample_values.append("''")
+                print(f"   📋 Sample: {' | '.join(sample_values)}")
+                if len(result_df.columns) > 5:
+                    print(f"   📋 ... ({len(result_df.columns) - 5} more columns)")
 
-            print(f"\n✅ DATA EXTRACTION COMPLETE: {len(result_df)} rows ready for analysis")
+            print(f"✅ TABLE READY: {len(result_df)} financial records extracted")
 
             print("\n📋 SUMMARY:")
 
