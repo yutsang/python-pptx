@@ -292,7 +292,7 @@ def render_combined_sections(
 ):
     """Render combined Balance Sheet and Income Statement sections UI."""
 
-    st.markdown("#### Financial Data:")
+    st.markdown("#### 📊")
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
@@ -396,7 +396,7 @@ def render_combined_sections(
                 
                 # Display the data table
                 if data_rows is not None and len(data_rows) > 0:
-                    st.markdown("**📊 Financial Data:**")
+                    st.markdown("**📊**")
                     st.dataframe(data_rows, use_container_width=True)
                 else:
                     st.info("No structured data available for this key.")

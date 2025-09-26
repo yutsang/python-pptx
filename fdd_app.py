@@ -2392,6 +2392,9 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
             print(f"   BS content file exists: {os.path.exists(bs_path)}")
             print(f"   IS content file exists: {os.path.exists(is_path)}")
 
+            bs_content = ""
+            is_content = ""
+
             if os.path.exists(bs_path):
                 with open(bs_path, 'r', encoding='utf-8') as f:
                     bs_content = f.read()
@@ -2414,16 +2417,31 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
                 print(f"❌ Empty files - BS: {len(bs_content)}, IS: {len(is_content)}")
                 return
 
+            print(f"✅ Both content files exist and have content - proceeding with export")
+
             with tempfile.TemporaryDirectory() as temp_dir:
                 bs_temp = os.path.join(temp_dir, "bs_temp.pptx")
                 is_temp = os.path.join(temp_dir, "is_temp.pptx")
-                
-                # Generate BS and IS presentations using template
-                export_pptx(template_path, bs_path, bs_temp, project_name, language=language, row_limit=row_limit)
-                export_pptx(template_path, is_path, is_temp, project_name, language=language, row_limit=row_limit)
-                
-                # Merge presentations
-                merge_presentations(bs_temp, is_temp, output_path)
+
+                try:
+                    print(f"🔄 Generating BS presentation: {bs_temp}")
+                    # Generate BS and IS presentations using template
+                    export_pptx(template_path, bs_path, bs_temp, project_name, language=language, row_limit=row_limit)
+                    print(f"✅ BS presentation generated successfully")
+
+                    print(f"🔄 Generating IS presentation: {is_temp}")
+                    export_pptx(template_path, is_path, is_temp, project_name, language=language, row_limit=row_limit)
+                    print(f"✅ IS presentation generated successfully")
+
+                    print(f"🔄 Merging presentations to: {output_path}")
+                    # Merge presentations
+                    merge_presentations(bs_temp, is_temp, output_path)
+                    print(f"✅ Presentations merged successfully")
+
+                except Exception as merge_error:
+                    st.error(f"❌ PowerPoint generation failed: {str(merge_error)}")
+                    print(f"❌ Merge error: {str(merge_error)}")
+                    raise merge_error
 
             if language == 'chinese':
                 st.success("✅ 中文组合演示文稿生成成功!")

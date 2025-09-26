@@ -1647,12 +1647,10 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
                             # Determine if this is a total row
                             is_total = 'total' in desc_cell.lower()
 
-                            # print(f"   📊 ADDING ITEM: {desc_cell} = {final_value} (is_total: {is_total})")
+                            # print(f"   📊 ADDING ITEM: {desc_cell} = {final_value}")
                             data_rows.append({
                                 'description': desc_cell,
-                                'value': final_value,
-                                'original_value': value_cell,
-                                'is_total': is_total
+                                'value': final_value
                             })
                         else:
                             # Skip non-numeric, non-date values
