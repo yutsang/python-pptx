@@ -1101,12 +1101,24 @@ def main():
                     if any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords):
                         filtered_sections_by_key[key] = original_sections_by_key[key]
                 print(f"🔍 BS: {len(original_sections_by_key)}→{len(filtered_sections_by_key)} keys")
+                print(f"🔍 BS keys found: {list(filtered_sections_by_key.keys())}")
             elif statement_type == "IS":
+                print(f"🔍 IS DEBUG: Original keys: {list(original_sections_by_key.keys())}")
+                print(f"🔍 IS DEBUG: IS keywords: {is_keywords}")
+                print(f"🔍 IS DEBUG: BS keywords: {bs_keywords}")
+
                 for key in original_sections_by_key:
-                    if (any(is_kw.lower() in key.lower() for is_kw in is_keywords) or
-                        not any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords)):
+                    is_match = any(is_kw.lower() in key.lower() for is_kw in is_keywords)
+                    bs_match = any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords)
+                    include_key = is_match or not bs_match
+
+                    print(f"🔍 IS DEBUG: Key '{key}' - IS match: {is_match}, BS match: {bs_match}, include: {include_key}")
+
+                    if include_key:
                         filtered_sections_by_key[key] = original_sections_by_key[key]
+
                 print(f"🔍 IS: {len(original_sections_by_key)}→{len(filtered_sections_by_key)} keys")
+                print(f"🔍 IS keys found: {list(filtered_sections_by_key.keys())}")
 
             sections_by_key = filtered_sections_by_key
         else:
@@ -1134,6 +1146,8 @@ def main():
         # Prepare AI data
         keys_with_data = [key for key, sections in sections_by_key.items() if sections]
 
+        print(f"🔍 DEBUG: All keys with data: {keys_with_data}")
+
         # Filter keys by statement type
         bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
                    "AP", "Taxes payable", "OP", "Capital", "Reserve"]
@@ -1143,9 +1157,12 @@ def main():
         if statement_type == "BS":
             filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
             print(f"🔍 BS: {len(keys_with_data)}→{len(filtered_keys_for_ai)} keys")
+            print(f"🔍 BS: Available BS keys: {filtered_keys_for_ai}")
         elif statement_type == "IS":
             filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
             print(f"🔍 IS: {len(keys_with_data)}→{len(filtered_keys_for_ai)} keys")
+            print(f"🔍 IS: Available IS keys: {filtered_keys_for_ai}")
+            print(f"🔍 IS: Expected IS keys: {is_keys}")
         else:  # ALL
             filtered_keys_for_ai = keys_with_data
             print(f"🔍 ALL: {len(filtered_keys_for_ai)} keys")
@@ -2359,6 +2376,13 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
         # Get content file
         if statement_type == "IS":
             markdown_path = "fdd_utils/is_content.md"
+            print(f"🔍 IS MODE: Looking for content file: {markdown_path}")
+            if os.path.exists(markdown_path):
+                with open(markdown_path, 'r', encoding='utf-8') as f:
+                    is_content = f.read()
+                print(f"🔍 IS MODE: Content file exists, length: {len(is_content)}")
+            else:
+                print(f"🔍 IS MODE: Content file does not exist: {markdown_path}")
         elif statement_type == "BS":
             markdown_path = "fdd_utils/bs_content.md"
         else:  # ALL
@@ -2374,10 +2398,16 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
             if os.path.exists(bs_path):
                 with open(bs_path, 'r', encoding='utf-8') as f:
                     bs_content = f.read()
+                print(f"🔍 ALL MODE: BS content file exists, length: {len(bs_content)}")
+            else:
+                print(f"🔍 ALL MODE: BS content file does not exist: {bs_path}")
 
             if os.path.exists(is_path):
                 with open(is_path, 'r', encoding='utf-8') as f:
                     is_content = f.read()
+                print(f"🔍 ALL MODE: IS content file exists, length: {len(is_content)}")
+            else:
+                print(f"🔍 ALL MODE: IS content file does not exist: {is_path}")
 
             if not os.path.exists(bs_path) or not os.path.exists(is_path):
                 st.error("❌ Content files not found. Please run AI processing first.")

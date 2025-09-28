@@ -657,20 +657,13 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     
     # Define keywords for table identification
     bs_keywords_english = ['balance sheet', 'statement of financial position']
-    is_keywords_english = ['income statement', 'profit and loss', 'statement of comprehensive income', 'profit & loss', 'p&l']
+    is_keywords_english = ['income statement', 'profit and loss', 'statement of comprehensive income']
     bs_keywords_chinese = ['资产负债表', '财务状况表']
-    is_keywords_chinese = ['利润表', '损益表', '综合收益表', '利潤表']
+    is_keywords_chinese = ['利润表', '损益表', '综合收益表']
 
     # Exact patterns for table detection (complete phrases only)
     bs_patterns = ['示意性调整后资产负债表', 'indicative adjusted balance sheet']
     is_patterns = ['示意性调整后利润表', 'indicative adjusted income statement']
-
-    # Additional common income statement headers (more flexible patterns)
-    common_is_headers = [
-        'profit and loss', 'income statement', 'statement of profit or loss',
-        'statement of comprehensive income', 'comprehensive income statement',
-        '利润表', '损益表', '综合收益表', '利潤表', '综合损益表'
-    ]
     
     # First check column headers for table identification
     for col_idx, col_name in enumerate(df.columns):
@@ -685,10 +678,10 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             )
             
             if is_indicative_header:
-                # Determine if it's balance sheet or income statement using enhanced patterns
+                # Determine if it's balance sheet or income statement using exact patterns only
                 is_balance_sheet = any(pattern in col_str for pattern in bs_patterns)
                 is_income_statement = any(pattern in col_str for pattern in is_patterns)
-                
+
                 if is_balance_sheet:
                     print(f"✅ BS found")
                     balance_sheet_sections.append({
@@ -709,16 +702,19 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     # Then search through ENTIRE dataframe for table headers (not just first 20 rows)
     if not balance_sheet_sections and not income_statement_sections:
         print(f"🔍 SCANNING ENTIRE SHEET for BS/IS headers...")
+        print(f"🔍 Looking for BS patterns: {bs_patterns}")
+        print(f"🔍 Looking for IS patterns: {is_patterns}")
+
         for row_idx in range(len(df)):  # Check ALL rows, not just first 20
             for col_idx in range(len(df.columns)):
                 cell_value = df.iloc[row_idx, col_idx]
                 if pd.notna(cell_value):
                     cell_str = str(cell_value).lower()
-                    
+
                     # Check for EXACT phrases only
                     is_balance_sheet = any(pattern in cell_str for pattern in bs_patterns)
                     is_income_statement = any(pattern in cell_str for pattern in is_patterns)
-                    
+
                     if is_balance_sheet:
                         print(f"✅ BS header found at row {row_idx}")
                         balance_sheet_sections.append({
@@ -729,6 +725,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                         })
                     elif is_income_statement:
                         print(f"✅ IS header found at row {row_idx}")
+                        print(f"🔍 IS CELL CONTENT: '{cell_value}'")
                         income_statement_sections.append({
                             'header_row': row_idx,
                             'header_col': col_idx,
@@ -795,24 +792,13 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                         if check_row % 20 == 0:  # Every 20th row
                             print(f"   Row {check_row}: checking \"{cell_text[:30]}...\"")
                         
-                        # Look for EXACT income statement phrases (primary patterns)
+                        # Look for EXACT income statement phrases only
                         if ('示意性调整后利润表' in cell_text_lower or
                             'indicative adjusted income statement' in cell_text_lower):
                             data_end_row = check_row
                             found_is_header = True
                             print(f"\n{'='*50}")
                             print(f"📍 FOUND: 示意性调整后利润表 at row {check_row}")
-                            print(f"📍 CELL CONTENT: \"{cell_text}\"")
-                            print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
-                            print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
-                            print(f"{'='*50}")
-                            break
-                        # Look for common income statement headers (secondary patterns)
-                        elif any(header in cell_text_lower for header in common_is_headers):
-                            data_end_row = check_row
-                            found_is_header = True
-                            print(f"\n{'='*50}")
-                            print(f"📍 FOUND: Common IS header at row {check_row}")
                             print(f"📍 CELL CONTENT: \"{cell_text}\"")
                             print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
                             print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
@@ -849,15 +835,6 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                     data_end_row = check_row
                     print(f"\n{'='*50}")
                     print(f"📍 FOUND: 示意性调整后利润表 at row {check_row}")
-                    print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
-                    print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
-                    print(f"{'='*50}")
-                    break
-                # Also check for common income statement headers
-                elif any(header in row_text for header in common_is_headers):
-                    data_end_row = check_row
-                    print(f"\n{'='*50}")
-                    print(f"📍 FOUND: Common IS header at row {check_row}")
                     print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
                     print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
                     print(f"{'='*50}")

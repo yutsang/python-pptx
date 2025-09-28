@@ -186,6 +186,29 @@ def generate_content_from_session_storage(entity_name):
         print(f"🔍 DEBUG CONTENT GENERATION: content_store size: {len(content_store)}")
         print(f"🔍 DEBUG CONTENT GENERATION: current_statement_type: {current_statement_type}")
 
+        # Filter content based on statement type for better debugging
+        if current_statement_type == "IS":
+            is_keys = ['OI', 'OC', 'Tax and Surcharges', 'GA', 'Fin Exp', 'Cr Loss', 'Other Income', 'Non-operating Income', 'Non-operating Exp', 'Income tax', 'LT DTA']
+            is_content = {k: v for k, v in content_store.items() if k in is_keys}
+            print(f"🔍 DEBUG CONTENT GENERATION: IS keys available: {list(is_content.keys())}")
+            print(f"🔍 DEBUG CONTENT GENERATION: Expected IS keys: {is_keys}")
+
+            # Check if any IS content has actual content
+            for key, content_data in is_content.items():
+                if isinstance(content_data, dict):
+                    final_content = (content_data.get('current_content') or
+                                   content_data.get('agent3_content') or
+                                   content_data.get('agent1_content') or
+                                   content_data.get('corrected_content') or
+                                   content_data.get('content') or
+                                   'No content available')
+                    print(f"🔍 DEBUG CONTENT GENERATION: IS key '{key}' has content length: {len(final_content)}")
+        elif current_statement_type == "BS":
+            bs_keys = ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA', 'Other NCA', 'IP', 'NCA', 'AP', 'Taxes payable', 'OP', 'Capital', 'Reserve']
+            bs_content = {k: v for k, v in content_store.items() if k in bs_keys}
+            print(f"🔍 DEBUG CONTENT GENERATION: BS keys available: {list(bs_content.keys())}")
+            print(f"🔍 DEBUG CONTENT GENERATION: Expected BS keys: {bs_keys}")
+
         if not content_store:
             st.error("❌ No AI-generated content available. Please run AI processing first.")
             print("🔍 DEBUG CONTENT GENERATION: No content_store found in session state")
