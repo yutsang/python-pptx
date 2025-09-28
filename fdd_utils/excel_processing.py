@@ -771,6 +771,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         
         # Find the data end row (look for next table header or use boundary)
         data_end_row = end_boundary
+        print(f"📊 {table_type}: initial data_end_row = {data_end_row} (boundary = {end_boundary})")
         
         # For column header cases, we need to extract the entire table
         if header_row == -1:
@@ -802,6 +803,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                             print(f"📍 CELL CONTENT: \"{cell_text}\"")
                             print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
                             print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
+                            print(f"📊 {table_type}: Setting data_end_row to {data_end_row} (IS header found)")
                             print(f"{'='*50}")
                             break
                 
@@ -837,6 +839,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                     print(f"📍 FOUND: 示意性调整后利润表 at row {check_row}")
                     print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
                     print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
+                    print(f"📊 {table_type}: Setting data_end_row to {data_end_row} (IS header found in row)")
                     print(f"{'='*50}")
                     break
                 elif ('示意性调整后资产负债表' in row_text or
@@ -851,6 +854,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         # Extract the table data
         table_df = df.iloc[data_start_row:data_end_row].copy()
         print(f"📊 {table_type}: extracting rows {data_start_row} to {data_end_row-1} → {table_df.shape}")
+        print(f"📊 {table_type}: final data_end_row = {data_end_row}, table_df shape = {table_df.shape}")
         
         # Remove completely empty rows and columns
         table_df = table_df.dropna(how='all').dropna(axis=1, how='all')
@@ -954,17 +958,25 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     
     balance_sheet_data = extract_table_data(balance_sheet_sections, 'Balance Sheet')
     income_statement_data = extract_table_data(income_statement_sections, 'Income Statement')
-    
+
+    # Debug logging for IS data
+    if income_statement_data:
+        print(f"📊 IS DATA EXTRACTED: {income_statement_data['data'].shape}")
+        print(f"📊 IS header info: {income_statement_data.get('header_info', 'None')}")
+        print(f"📊 IS data range: {income_statement_data.get('data_range', 'None')}")
+    else:
+        print(f"📊 IS DATA EXTRACTION FAILED - no data returned")
+
     metadata = {
         'bs_sections_found': len(balance_sheet_sections),
         'is_sections_found': len(income_statement_sections),
         'separation_successful': balance_sheet_data is not None or income_statement_data is not None
     }
-    
+
     # Compact results
     if balance_sheet_data or income_statement_data:
         print(f"📊 Extracted: BS={len(balance_sheet_sections)}, IS={len(income_statement_sections)}")
-    
+
     return balance_sheet_data, income_statement_data, metadata
 
 
@@ -973,7 +985,10 @@ def filter_to_indicative_adjusted_columns(df):
     Filter dataframe to only show description column + Indicative adjusted columns.
     This is used when no BS/IS separation occurs but we still want to filter columns.
     """
-        # Reduced output
+    print(f"🔍 FILTER COLUMNS: Input df shape: {df.shape}")
+    print(f"🔍 FILTER COLUMNS: Input df columns: {list(df.columns)}")
+
+    # Reduced output
     
     # Find description column - must contain actual text (not tick symbols)
     desc_col_idx = 0
@@ -1033,8 +1048,10 @@ def filter_to_indicative_adjusted_columns(df):
         
         filtered_df = df[final_cols]
         print(f"✅ Filtered: {df.shape} → {filtered_df.shape}")
+        print(f"✅ Filtered columns: {list(filtered_df.columns)}")
         return filtered_df
     else:
+        print(f"⚠️ No 示意性调整后 columns found, returning original df: {df.shape}")
         return df
 
 
@@ -1252,13 +1269,19 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         if current_statement_type == 'BS' and bs_data:
             df_to_process = bs_data['data']
             print(f"🎯 USING BS DATA ONLY: {df_to_process.shape}")
+            print(f"🎯 BS data range: {bs_data.get('data_range', 'None')}")
         elif current_statement_type == 'IS' and is_data:
-            df_to_process = is_data['data'] 
+            df_to_process = is_data['data']
             print(f"🎯 USING IS DATA ONLY: {df_to_process.shape}")
+            print(f"🎯 IS data range: {is_data.get('data_range', 'None')}")
+            print(f"🎯 IS header info: {is_data.get('header_info', 'None')}")
         else:
             # Fallback to original data if separation didn't work or no preference
             df_to_process = df_filtered
             print(f"⚠️ NO SEPARATION - using original: {df_to_process.shape}")
+            print(f"⚠️ current_statement_type: {current_statement_type}")
+            print(f"⚠️ bs_data exists: {bs_data is not None}")
+            print(f"⚠️ is_data exists: {is_data is not None}")
         
         # Apply column filtering to the selected table
         df_to_process = filter_to_indicative_adjusted_columns(df_to_process)
