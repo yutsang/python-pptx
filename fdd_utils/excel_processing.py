@@ -657,13 +657,20 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     
     # Define keywords for table identification
     bs_keywords_english = ['balance sheet', 'statement of financial position']
-    is_keywords_english = ['income statement', 'profit and loss', 'statement of comprehensive income']
+    is_keywords_english = ['income statement', 'profit and loss', 'statement of comprehensive income', 'profit & loss', 'p&l']
     bs_keywords_chinese = ['资产负债表', '财务状况表']
-    is_keywords_chinese = ['利润表', '损益表', '综合收益表']
-    
+    is_keywords_chinese = ['利润表', '损益表', '综合收益表', '利潤表']
+
     # Exact patterns for table detection (complete phrases only)
     bs_patterns = ['示意性调整后资产负债表', 'indicative adjusted balance sheet']
     is_patterns = ['示意性调整后利润表', 'indicative adjusted income statement']
+
+    # Additional common income statement headers (more flexible patterns)
+    common_is_headers = [
+        'profit and loss', 'income statement', 'statement of profit or loss',
+        'statement of comprehensive income', 'comprehensive income statement',
+        '利润表', '损益表', '综合收益表', '利潤表', '综合损益表'
+    ]
     
     # First check column headers for table identification
     for col_idx, col_name in enumerate(df.columns):
@@ -788,13 +795,24 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                         if check_row % 20 == 0:  # Every 20th row
                             print(f"   Row {check_row}: checking \"{cell_text[:30]}...\"")
                         
-                        # Look for EXACT income statement phrases
-                        if ('示意性调整后利润表' in cell_text_lower or 
+                        # Look for EXACT income statement phrases (primary patterns)
+                        if ('示意性调整后利润表' in cell_text_lower or
                             'indicative adjusted income statement' in cell_text_lower):
                             data_end_row = check_row
                             found_is_header = True
                             print(f"\n{'='*50}")
                             print(f"📍 FOUND: 示意性调整后利润表 at row {check_row}")
+                            print(f"📍 CELL CONTENT: \"{cell_text}\"")
+                            print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
+                            print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
+                            print(f"{'='*50}")
+                            break
+                        # Look for common income statement headers (secondary patterns)
+                        elif any(header in cell_text_lower for header in common_is_headers):
+                            data_end_row = check_row
+                            found_is_header = True
+                            print(f"\n{'='*50}")
+                            print(f"📍 FOUND: Common IS header at row {check_row}")
                             print(f"📍 CELL CONTENT: \"{cell_text}\"")
                             print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
                             print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
@@ -824,13 +842,22 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             for check_row in range(data_start_row + 1, len(df)):
                 row_data = df.iloc[check_row]
                 
-                # Check if this row contains EXACT table headers 
+                # Check if this row contains EXACT table headers
                 row_text = ' '.join(str(val).lower() for val in row_data if pd.notna(val))
-                if ('示意性调整后利润表' in row_text or 
+                if ('示意性调整后利润表' in row_text or
                     'indicative adjusted income statement' in row_text):
                     data_end_row = check_row
                     print(f"\n{'='*50}")
                     print(f"📍 FOUND: 示意性调整后利润表 at row {check_row}")
+                    print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
+                    print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
+                    print(f"{'='*50}")
+                    break
+                # Also check for common income statement headers
+                elif any(header in row_text for header in common_is_headers):
+                    data_end_row = check_row
+                    print(f"\n{'='*50}")
+                    print(f"📍 FOUND: Common IS header at row {check_row}")
                     print(f"📍 SPLITTING: Balance Sheet ends at row {check_row-1}")
                     print(f"📍 SPLITTING: Income Statement starts at row {check_row}")
                     print(f"{'='*50}")

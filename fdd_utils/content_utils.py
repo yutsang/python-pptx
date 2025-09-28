@@ -228,8 +228,12 @@ def generate_content_from_session_storage(entity_name):
                 print(f"🔍 DEBUG CONTENT GENERATION: Key '{key}' - final_content length: {len(final_content) if final_content else 0}")
                 print(f"🔍 DEBUG CONTENT GENERATION: Key '{key}' - content_data keys: {list(content_data.keys())}")
 
+                # Apply item limiting to enforce "top 2 only" rule
+                limited_content = limit_commentary_items(final_content)
+
                 json_content['financial_items'][key] = {
-                    'content': final_content,
+                    'content': limited_content,
+                    'original_content': final_content,  # Keep original for reference
                     'display_name': name_mapping.get(key, key),
                     'category': get_category_from_key(key, category_mapping),
                     'last_updated': content_data.get('timestamp', datetime.now().isoformat()),
@@ -265,7 +269,9 @@ def generate_content_from_session_storage(entity_name):
                 for key in keys_in_category:
                     item_data = json_content['financial_items'][key]
                     markdown_content += f"### {item_data['display_name']} ({key})\n\n"
-                    markdown_content += f"{item_data['content']}\n\n"
+                    # Apply item limiting to enforce "top 2 only" rule
+                    limited_content = limit_commentary_items(item_data['content'])
+                    markdown_content += f"{limited_content}\n\n"
 
         # Save markdown file
         with open(md_filename, 'w', encoding='utf-8') as f:
@@ -384,3 +390,53 @@ def read_bs_content_by_key(entity_name=None):
     except Exception as e:
         print(f"Error reading BS content by key: {e}")
         return {}
+
+
+def limit_commentary_items(content: str, max_items: int = 2) -> str:
+    """
+    Limit the number of items in commentary lists to max_items (default: 2)
+    This enforces the "top 2 only" rule from the AI prompts.
+    """
+    if not content:
+        return content
+
+    lines = content.split('\n')
+    result_lines = []
+
+    for line in lines:
+        # Skip empty lines
+        if not line.strip():
+            result_lines.append(line)
+            continue
+
+        # Check if this line contains a list of items (patterns like "item1, item2, item3" or "item1 and item2")
+        # Look for patterns with commas or "and" that suggest multiple items
+        list_patterns = [
+            r'([^,]+),\s*([^,]+),\s*([^,]+)',  # item1, item2, item3
+            r'([^,]+),\s*([^,]+),\s*and\s+([^,]+)',  # item1, item2, and item3
+            r'([^,]+)\s+and\s+([^,]+)\s+and\s+([^,]+)',  # item1 and item2 and item3
+        ]
+
+        limited_line = line
+        for pattern in list_patterns:
+            matches = re.finditer(pattern, line, re.IGNORECASE)
+            for match in matches:
+                # Extract all groups (items)
+                items = [group.strip() for group in match.groups()]
+
+                # If we have more than max_items, keep only the first max_items
+                if len(items) > max_items:
+                    if 'and' in line.lower():
+                        # For "and" patterns, replace with "and" between first two items
+                        limited_items = items[:max_items]
+                        if len(items) > max_items:
+                            limited_line = limited_line.replace(match.group(0), f"{limited_items[0]} and {limited_items[1]}")
+                    else:
+                        # For comma patterns, replace with comma between first two items
+                        limited_items = items[:max_items]
+                        if len(items) > max_items:
+                            limited_line = limited_line.replace(match.group(0), f"{limited_items[0]}, {limited_items[1]}")
+
+        result_lines.append(limited_line)
+
+    return '\n'.join(result_lines)
