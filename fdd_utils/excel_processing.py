@@ -980,6 +980,119 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     return balance_sheet_data, income_statement_data, metadata
 
 
+def extract_income_statement_table_directly(df, entity_keywords):
+    """
+    Extract Income Statement table directly using the same logic as Balance Sheet extraction.
+    This is a fallback when the separation logic doesn't work properly for IS mode.
+    """
+    print(f"🔄 DIRECT IS EXTRACTION: Starting extraction for {df.shape}")
+
+    # Look for IS headers in the dataframe
+    is_sections = []
+
+    # Check column headers first
+    for col_idx, col_name in enumerate(df.columns):
+        if pd.notna(col_name):
+            col_str = str(col_name).lower()
+            if ('示意性调整后利润表' in col_str or
+                'indicative adjusted income statement' in col_str):
+                print(f"✅ IS header found in column: {col_name}")
+                is_sections.append({
+                    'header_row': -1,  # Column header
+                    'header_col': col_idx,
+                    'header_text': str(col_name),
+                    'type': 'income_statement'
+                })
+
+    # If not found in column headers, search through the dataframe
+    if not is_sections:
+        print(f"🔍 SCANNING DATAFRAME for IS headers...")
+        for row_idx in range(len(df)):
+            for col_idx in range(len(df.columns)):
+                cell_value = df.iloc[row_idx, col_idx]
+                if pd.notna(cell_value):
+                    cell_str = str(cell_value).lower()
+                    if ('示意性调整后利润表' in cell_str or
+                        'indicative adjusted income statement' in cell_str):
+                        print(f"✅ IS header found at row {row_idx}, col {col_idx}: {cell_value}")
+                        is_sections.append({
+                            'header_row': row_idx,
+                            'header_col': col_idx,
+                            'header_text': str(cell_value),
+                            'type': 'income_statement'
+                        })
+
+    if not is_sections:
+        print(f"❌ DIRECT IS EXTRACTION: No IS headers found")
+        return None
+
+    # Use the first IS section found
+    section = is_sections[0]
+    header_row = section['header_row']
+
+    # If header is in column header (header_row = -1), start from row 0
+    if header_row == -1:
+        data_start_row = 0
+        print(f"📊 DIRECT IS: Column header case, starting from row 0")
+    else:
+        # Find the data start row (usually 1-2 rows after header)
+        data_start_row = header_row + 1
+        print(f"📊 DIRECT IS: Header at row {header_row}, starting from row {data_start_row}")
+
+        # Look for the actual data start by finding non-empty rows
+        for check_row in range(header_row + 1, min(header_row + 5, len(df))):
+            row_data = df.iloc[check_row]
+            if row_data.notna().sum() > len(df.columns) * 0.3:  # At least 30% non-empty cells
+                data_start_row = check_row
+                print(f"📊 DIRECT IS: Found data start at row {check_row}")
+                break
+
+    # For IS, we want to extract from the IS header to the end of the table
+    # Unlike BS which has boundaries with IS, IS usually goes to the end
+    data_end_row = len(df)
+
+    # Look for table end indicators
+    print(f"🔍 DIRECT IS: Scanning for table end from row {data_start_row + 1} to {len(df)-1}")
+
+    for check_row in range(data_start_row + 1, len(df)):
+        row_data = df.iloc[check_row]
+
+        # Check for empty row separators (if we find a completely empty row)
+        non_empty_count = row_data.notna().sum()
+        if non_empty_count == 0:  # Completely empty row
+            # Look ahead to see if next section starts
+            next_section_start = None
+            for look_ahead in range(check_row + 1, min(check_row + 5, len(df))):
+                next_row = df.iloc[look_ahead]
+                if next_row.notna().sum() > len(df.columns) * 0.3:
+                    next_section_start = look_ahead
+                    break
+
+            if next_section_start:
+                data_end_row = check_row
+                print(f"📊 DIRECT IS: Found table boundary at row {check_row}")
+                break
+
+    # Extract the table data
+    table_df = df.iloc[data_start_row:data_end_row].copy()
+    print(f"📊 DIRECT IS: Extracted table from rows {data_start_row} to {data_end_row-1} → {table_df.shape}")
+
+    # Remove completely empty rows and columns
+    table_df = table_df.dropna(how='all').dropna(axis=1, how='all')
+
+    if table_df.empty:
+        print(f"❌ DIRECT IS EXTRACTION: Table is empty after cleaning")
+        return None
+
+    print(f"✅ DIRECT IS EXTRACTION: Final table shape: {table_df.shape}")
+
+    return {
+        'data': table_df,
+        'header_info': section,
+        'data_range': (data_start_row, data_end_row-1)
+    }
+
+
 def filter_to_indicative_adjusted_columns(df):
     """
     Filter dataframe to only show description column + Indicative adjusted columns.
@@ -1275,6 +1388,22 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             print(f"🎯 USING IS DATA ONLY: {df_to_process.shape}")
             print(f"🎯 IS data range: {is_data.get('data_range', 'None')}")
             print(f"🎯 IS header info: {is_data.get('header_info', 'None')}")
+        elif current_statement_type == 'IS':
+            # Special handling for IS mode - try to extract IS table directly
+            print(f"🔄 IS MODE: Attempting direct IS table extraction...")
+            is_table_data = extract_income_statement_table_directly(df_filtered, entity_keywords)
+            if is_table_data:
+                df_to_process = is_table_data['data']
+                print(f"✅ DIRECT IS EXTRACTION: {df_to_process.shape}")
+                print(f"✅ IS data range: {is_table_data.get('data_range', 'None')}")
+                print(f"✅ IS columns: {list(df_to_process.columns)}")
+                print(f"✅ IS first few rows:")
+                for i in range(min(5, len(df_to_process))):
+                    print(f"   Row {i}: {list(df_to_process.iloc[i])}")
+            else:
+                # Fallback to original data
+                df_to_process = df_filtered
+                print(f"⚠️ DIRECT IS EXTRACTION FAILED - using original: {df_to_process.shape}")
         else:
             # Fallback to original data if separation didn't work or no preference
             df_to_process = df_filtered
