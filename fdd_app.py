@@ -177,10 +177,6 @@ def detect_entity_mode_automatically(uploaded_file, selected_entity, entity_keyw
         selected_entity_found = False
         sheets_checked = 0
         
-        print(f"🔍 AUTO-DETECT: Looking for entities in Excel file...")
-        print(f"🔍 AUTO-DETECT: Selected entity: '{selected_entity}'")
-        print(f"🔍 AUTO-DETECT: Entity keywords: {entity_keywords}")
-        
         # Check first few sheets for entity patterns
         for sheet_name in xl.sheet_names[:8]:  # Check first 8 sheets
             try:
@@ -214,15 +210,15 @@ def detect_entity_mode_automatically(uploaded_file, selected_entity, entity_keyw
                             selected_entity_found = True
                 
                 if sheet_entities:
-                    print(f"🔍 AUTO-DETECT: Sheet '{sheet_name}' contains entities: {sheet_entities}")
-                        
+                    #print(f"🔍 AUTO-DETECT: Sheet '{sheet_name}' contains entities: {sheet_entities}")
+                    pass    
             except Exception as e:
                 print(f"Error checking sheet {sheet_name}: {e}")
                 continue
         
         # Decision logic
         unique_entities = len(entities_found)
-        print(f"🔍 AUTO-DETECT: Total unique entities found: {unique_entities}")
+        #print(f"🔍 AUTO-DETECT: Total unique entities found: {unique_entities}")
         print(f"🔍 AUTO-DETECT: Entities found: {entities_found}")
         print(f"🔍 AUTO-DETECT: Selected entity found: {selected_entity_found}")
         
@@ -1155,7 +1151,7 @@ def main():
         # Prepare AI data
         keys_with_data = [key for key, sections in sections_by_key.items() if sections]
 
-        print(f"🔍 DEBUG: All keys with data: {keys_with_data}")
+        print(f"📊 SUMMARY: {len(keys_with_data)} financial keys have data: {keys_with_data[:5]}{'...' if len(keys_with_data) > 5 else ''}")
 
         # Filter keys by statement type
         bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
@@ -1165,16 +1161,19 @@ def main():
 
         if statement_type == "BS":
             filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
-            print(f"🔍 BS: {len(keys_with_data)}→{len(filtered_keys_for_ai)} keys")
-            print(f"🔍 BS: Available BS keys: {filtered_keys_for_ai}")
+            print(f"📊 {statement_type} MODE: Processing {len(filtered_keys_for_ai)} keys {filtered_keys_for_ai[:3]}{'...' if len(filtered_keys_for_ai) > 3 else ''}")
+            if not filtered_keys_for_ai:
+                filtered_keys_for_ai = keys_with_data
+                print(f"⚠️ {statement_type} MODE: No specific keys found, using all {len(filtered_keys_for_ai)} available keys")
         elif statement_type == "IS":
             filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
-            print(f"🔍 IS: {len(keys_with_data)}→{len(filtered_keys_for_ai)} keys")
-            print(f"🔍 IS: Available IS keys: {filtered_keys_for_ai}")
-            print(f"🔍 IS: Expected IS keys: {is_keys}")
+            print(f"📊 {statement_type} MODE: Processing {len(filtered_keys_for_ai)} keys {filtered_keys_for_ai[:3]}{'...' if len(filtered_keys_for_ai) > 3 else ''}")
+            if not filtered_keys_for_ai:
+                filtered_keys_for_ai = keys_with_data
+                print(f"⚠️ {statement_type} MODE: No specific keys found, using all {len(filtered_keys_for_ai)} available keys")
         else:  # ALL
             filtered_keys_for_ai = keys_with_data
-            print(f"🔍 ALL: {len(filtered_keys_for_ai)} keys")
+            print(f"📊 {statement_type} MODE: Processing {len(filtered_keys_for_ai)} keys for combined report")
 
         st.session_state['filtered_keys_for_ai'] = filtered_keys_for_ai
         
@@ -1247,22 +1246,18 @@ def main():
 
         if os.path.exists(output_dir):
             pptx_files = [f for f in os.listdir(output_dir) if f.endswith('.pptx')]
-            print(f"🔍 DEBUG DOWNLOAD: Found {len(pptx_files)} .pptx files in {output_dir}")
-            print(f"🔍 DEBUG DOWNLOAD: Files: {pptx_files}")
             if pptx_files:
                 pptx_file_exists = True
                 latest_file = max(pptx_files, key=lambda x: os.path.getctime(os.path.join(output_dir, x)))
-                print(f"🔍 DEBUG DOWNLOAD: Latest file: {latest_file}")
+                print(f"📥 DOWNLOAD: Found {len(pptx_files)} PowerPoint files, latest: {latest_file}")
         else:
-            print(f"🔍 DEBUG DOWNLOAD: Output directory does not exist: {output_dir}")
+            print(f"📥 DOWNLOAD: Output directory does not exist: {output_dir}")
 
         # Show download button that directly downloads the file
         if pptx_file_exists and ai_completed:
             file_path = os.path.join(output_dir, latest_file)
-            print(f"🔍 DEBUG DOWNLOAD: Attempting to open file: {file_path}")
             with open(file_path, 'rb') as f:
                 file_data = f.read()
-            print(f"🔍 DEBUG DOWNLOAD: File opened successfully, size: {len(file_data)} bytes")
 
             # Use the stored column reference for proper alignment
             download_col = st.session_state.get('download_button_column')
@@ -1287,13 +1282,11 @@ def main():
                     help="Download the full PowerPoint report with AI content",
                     use_container_width=True
                 )
-            print(f"🔍 DEBUG DOWNLOAD: Download button created for {latest_file}")
         else:
-            print(f"🔍 DEBUG DOWNLOAD: Download conditions not met - pptx_file_exists: {pptx_file_exists}, ai_completed: {ai_completed}")
             if not ai_completed:
-                print(f"🔍 DEBUG DOWNLOAD: AI not completed - agent states: {agent_states}")
-            if not pptx_file_exists:
-                print(f"🔍 DEBUG DOWNLOAD: No PowerPoint files found in {output_dir}")
+                print(f"📥 DOWNLOAD: Waiting for AI processing to complete")
+            elif not pptx_file_exists:
+                print(f"📥 DOWNLOAD: No PowerPoint file found yet")
             download_col = st.session_state.get('download_button_column')
             if download_col:
                 with download_col:
@@ -1419,13 +1412,16 @@ def main():
                     
                         # Starting AI processing
                     english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language=detected_language, progress_callback=progress_callback_eng)
-                    
+
                     if not english_results:
+                        print(f"❌ AI PROCESSING FAILED: No results generated for {len(filtered_keys_for_ai)} keys")
                         if detected_language == 'chinese':
                             st.error("❌ 中文内容生成失败")
                         else:
                             st.error("❌ 英文内容生成失败，无法进行中文翻译")
                         return
+                    else:
+                        print(f"✅ AI PROCESSING: Generated content for {len(english_results)} keys")
                     
                     # Proofread content
                     if detected_language == 'chinese':
@@ -1739,10 +1735,14 @@ def main():
                         st.session_state['agent_states']['agent1_results'] = proofread_results
                         st.session_state['agent_states']['agent1_completed'] = True
                         st.session_state['agent_states']['agent1_success'] = True
+
+                        print(f"💾 STORED: {len(proofread_results)} AI results in session state")
                 
                 # Generate content files
                 status_text.text("📝 Generating content files...")
                 progress_bar.progress(0.8)
+
+                print(f"📝 CONTENT GEN: Processing {statement_type} mode with {len(st.session_state.get('ai_content_store', {}))} stored results")
 
                 # Handle "All" case - generate both BS and IS content
                 if statement_type == "ALL":
@@ -2452,6 +2452,13 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
                 print(f"🔍 IS MODE: Content file does not exist: {markdown_path}")
         elif statement_type == "BS":
             markdown_path = "fdd_utils/bs_content.md"
+            print(f"🔍 BS MODE: Looking for content file: {markdown_path}")
+            if not os.path.exists(markdown_path):
+                print(f"❌ BS MODE: Content file does not exist: {markdown_path}")
+                st.error(f"❌ Content file not found: {markdown_path}")
+                return
+            else:
+                print(f"✅ BS MODE: Content file exists")
         else:  # ALL
             st.info("🔄 Generating combined presentation...")
             # For combined, create both BS and IS then merge
