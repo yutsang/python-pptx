@@ -1036,6 +1036,15 @@ def main():
 
         # Load configuration
         config, mapping, pattern, prompts = load_config_files()
+
+        # Test IS extraction logic if we're in IS mode
+        if statement_type == "IS":
+            from fdd_utils.excel_processing import test_is_extraction
+            test_result = test_is_extraction()
+            if test_result:
+                st.success("✅ IS extraction test passed!")
+            else:
+                st.error("❌ IS extraction test failed!")
         
         # Process Excel data
         entity_changed = st.session_state.get('last_processed_entity') != selected_entity
@@ -1238,15 +1247,22 @@ def main():
 
         if os.path.exists(output_dir):
             pptx_files = [f for f in os.listdir(output_dir) if f.endswith('.pptx')]
+            print(f"🔍 DEBUG DOWNLOAD: Found {len(pptx_files)} .pptx files in {output_dir}")
+            print(f"🔍 DEBUG DOWNLOAD: Files: {pptx_files}")
             if pptx_files:
                 pptx_file_exists = True
                 latest_file = max(pptx_files, key=lambda x: os.path.getctime(os.path.join(output_dir, x)))
+                print(f"🔍 DEBUG DOWNLOAD: Latest file: {latest_file}")
+        else:
+            print(f"🔍 DEBUG DOWNLOAD: Output directory does not exist: {output_dir}")
 
         # Show download button that directly downloads the file
         if pptx_file_exists and ai_completed:
             file_path = os.path.join(output_dir, latest_file)
+            print(f"🔍 DEBUG DOWNLOAD: Attempting to open file: {file_path}")
             with open(file_path, 'rb') as f:
                 file_data = f.read()
+            print(f"🔍 DEBUG DOWNLOAD: File opened successfully, size: {len(file_data)} bytes")
 
             # Use the stored column reference for proper alignment
             download_col = st.session_state.get('download_button_column')
@@ -1271,7 +1287,13 @@ def main():
                     help="Download the full PowerPoint report with AI content",
                     use_container_width=True
                 )
+            print(f"🔍 DEBUG DOWNLOAD: Download button created for {latest_file}")
         else:
+            print(f"🔍 DEBUG DOWNLOAD: Download conditions not met - pptx_file_exists: {pptx_file_exists}, ai_completed: {ai_completed}")
+            if not ai_completed:
+                print(f"🔍 DEBUG DOWNLOAD: AI not completed - agent states: {agent_states}")
+            if not pptx_file_exists:
+                print(f"🔍 DEBUG DOWNLOAD: No PowerPoint files found in {output_dir}")
             download_col = st.session_state.get('download_button_column')
             if download_col:
                 with download_col:
@@ -1761,6 +1783,23 @@ def main():
 
                         print(f"✅ ALL mode content generation completed")
 
+                        # Verify content files were created for ALL mode
+                        bs_content_file = "fdd_utils/bs_content.md"
+                        is_content_file = "fdd_utils/is_content.md"
+                        if os.path.exists(bs_content_file):
+                            with open(bs_content_file, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            print(f"✅ ALL mode BS content file: {bs_content_file}, size: {len(content)}")
+                        else:
+                            print(f"❌ ALL mode BS content file not found: {bs_content_file}")
+
+                        if os.path.exists(is_content_file):
+                            with open(is_content_file, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            print(f"✅ ALL mode IS content file: {is_content_file}, size: {len(content)}")
+                        else:
+                            print(f"❌ ALL mode IS content file not found: {is_content_file}")
+
                     except Exception as e:
                         # Restore from backup if generation failed
                         if os.path.exists("fdd_utils/bs_content_backup.md"):
@@ -1798,6 +1837,14 @@ def main():
                         st.session_state['agent_states']['agent3_completed'] = True
                         st.session_state['agent_states']['agent3_success'] = True
                         print(f"✅ BS mode agents completed")
+                        # Verify BS content files were created
+                        bs_content_file = "fdd_utils/bs_content.md"
+                        if os.path.exists(bs_content_file):
+                            with open(bs_content_file, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            print(f"✅ BS content file created: {bs_content_file}, size: {len(content)}")
+                        else:
+                            print(f"❌ BS content file not found: {bs_content_file}")
                     elif statement_type == "IS":
                         print(f"🔄 Processing IS mode content generation...")
                         # Set current statement type for IS mode
@@ -1813,6 +1860,15 @@ def main():
                         # Generate content for IS mode
                         generate_content_from_session_storage(selected_entity)
                         print(f"✅ IS mode content generation completed")
+
+                        # Verify IS content files were created
+                        is_content_file = "fdd_utils/is_content.md"
+                        if os.path.exists(is_content_file):
+                            with open(is_content_file, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            print(f"✅ IS content file created: {is_content_file}, size: {len(content)}")
+                        else:
+                            print(f"❌ IS content file not found: {is_content_file}")
                     else:
                         generate_content_from_session_storage(selected_entity)
 
@@ -1822,19 +1878,30 @@ def main():
                 
                 try:
                     # Export PowerPoint and automatically show download
-                    export_enhanced_pptx(selected_entity, statement_type, language=detected_language, 
+                    output_path = export_enhanced_pptx(selected_entity, statement_type, language=detected_language,
                                        financial_statement_tab=financial_statement_tab, include_bshn=include_bshn, row_limit=row_limit)
-                    progress_bar.progress(1.0)
-                    status_text.text(f"✅ Report generation and export completed ({language_display})")
-                    
-                    # Show success message with download info
-                    st.success(f"🎉 Report generated successfully! The download button should appear above.")
-                    
+
+                    # Verify the file was created
+                    if os.path.exists(output_path):
+                        print(f"✅ PowerPoint file created successfully: {output_path}")
+                        progress_bar.progress(1.0)
+                        status_text.text(f"✅ Report generation and export completed ({language_display})")
+
+                        # Show success message with download info
+                        st.success(f"🎉 Report generated successfully! The download button should appear above.")
+                    else:
+                        print(f"❌ PowerPoint file was not created: {output_path}")
+                        progress_bar.progress(1.0)
+                        status_text.text(f"⚠️ Report generation completed but PowerPoint export failed")
+                        st.error(f"❌ PowerPoint file was not created at: {output_path}")
+
                 except Exception as export_error:
                     progress_bar.progress(1.0)
                     status_text.text(f"⚠️ Report generated but export failed: {str(export_error)}")
                     st.error(f"❌ PowerPoint export failed: {str(export_error)}")
                     st.info("💡 Content has been generated successfully. You can try the export again.")
+                    print(f"❌ PowerPoint export error: {export_error}")
+
                 time.sleep(1)
                 st.rerun()
                 
@@ -2496,8 +2563,12 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
         success_msg = f"✅ 中文 PowerPoint 生成完成: {output_filename}" if language == 'chinese' else f"✅ English PowerPoint generated successfully: {output_filename}"
         st.success(success_msg)
 
+        # Return the output path for the main app to verify
+        return output_path
+
     except Exception as e:
         st.error(f"❌ Export failed: {e}")
+        return None
 
 
 

@@ -980,6 +980,34 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     return balance_sheet_data, income_statement_data, metadata
 
 
+def test_is_extraction():
+    """Simple test function to verify IS extraction logic"""
+    print("🧪 TESTING IS EXTRACTION LOGIC")
+    print("=" * 50)
+
+    # Test with a simple dataframe
+    test_data = [
+        ['Description', '示意性调整后利润表', 'Amount'],
+        ['Revenue', '100', '100'],
+        ['Cost', '50', '50'],
+        ['Profit', '50', '50']
+    ]
+
+    df = pd.DataFrame(test_data)
+    print(f"📊 Test DataFrame shape: {df.shape}")
+    print(f"📊 Test DataFrame:\n{df}")
+
+    # Test IS extraction
+    result = extract_income_statement_table_directly(df, ['Test'])
+    if result:
+        print(f"✅ IS extraction successful: {result['data'].shape}")
+        print(f"✅ IS data:\n{result['data']}")
+    else:
+        print("❌ IS extraction failed")
+
+    return result is not None
+
+
 def extract_income_statement_table_directly(df, entity_keywords):
     """
     Extract Income Statement table directly using the same logic as Balance Sheet extraction.
