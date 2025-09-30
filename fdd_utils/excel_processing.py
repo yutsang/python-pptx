@@ -650,11 +650,11 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     Returns:
         tuple: (balance_sheet_df, income_statement_df, metadata)
     """
-    print(f"🔍 BS/IS: {df.shape}")
-    
+    print(f"🔍 Processing {df.shape[0]} rows × {df.shape[1]} columns")
+
     balance_sheet_sections = []
     income_statement_sections = []
-    
+
     # Define keywords for table identification
     bs_keywords_english = ['balance sheet', 'statement of financial position']
     is_keywords_english = ['income statement', 'profit and loss', 'statement of comprehensive income']
@@ -701,9 +701,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     
     # Then search through ENTIRE dataframe for table headers (not just first 20 rows)
     if not balance_sheet_sections and not income_statement_sections:
-        print(f"🔍 SCANNING ENTIRE SHEET for BS/IS headers...")
-        print(f"🔍 Looking for BS patterns: {bs_patterns}")
-        print(f"🔍 Looking for IS patterns: {is_patterns}")
+        print(f"🔍 Scanning sheet for financial statement headers...")
 
         for row_idx in range(len(df)):  # Check ALL rows, not just first 20
             for col_idx in range(len(df.columns)):
@@ -716,7 +714,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                     is_income_statement = any(pattern in cell_str for pattern in is_patterns)
 
                     if is_balance_sheet:
-                        print(f"✅ BS header found at row {row_idx}")
+                        print(f"✅ Found Balance Sheet header at row {row_idx}")
                         balance_sheet_sections.append({
                             'header_row': row_idx,
                             'header_col': col_idx,
@@ -724,8 +722,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                             'type': 'balance_sheet'
                         })
                     elif is_income_statement:
-                        print(f"✅ IS header found at row {row_idx}")
-                        print(f"🔍 IS CELL CONTENT: '{cell_value}'")
+                        print(f"✅ Found Income Statement header at row {row_idx}")
                         income_statement_sections.append({
                             'header_row': row_idx,
                             'header_col': col_idx,
@@ -750,10 +747,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             is_header_row = income_statement_sections[0]['header_row']
             if is_header_row > header_row:
                 end_boundary = is_header_row
-                print(f"\n{'='*60}")
-                print(f"📍 BOUNDARY DETECTION: IS header found at row {is_header_row}")
-                print(f"📍 BOUNDARY SETTING: BS will end at row {is_header_row-1}")
-                print(f"{'='*60}")
+                print(f"📍 BS-IS boundary: BS ends at row {is_header_row-1}, IS starts at {is_header_row}")
         
         # If header is in column header (header_row = -1), start from row 0
         if header_row == -1:
@@ -791,7 +785,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                             'indicative adjusted income statement' in cell_text_lower):
                             data_end_row = check_row
                             found_is_header = True
-                            print(f"📍 {table_type}: Found IS header at row {check_row}, ending table")
+                            print(f"📍 {table_type}: Found IS header at row {check_row}")
                             break
 
                 if found_is_header:
@@ -821,12 +815,12 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                 if ('示意性调整后利润表' in row_text or
                     'indicative adjusted income statement' in row_text):
                     data_end_row = check_row
-                    print(f"📍 {table_type}: Found IS header at row {check_row}, ending table")
+                    print(f"📍 {table_type}: Found IS header at row {check_row}")
                     break
                 elif ('示意性调整后资产负债表' in row_text or
                       'indicative adjusted balance sheet' in row_text):
                     data_end_row = check_row
-                    print(f"📍 Another BS header at row {check_row}, ending current table")
+                    print(f"📍 Another BS header at row {check_row}")
                     break
                 
                 # Don't stop on empty rows - continue until we find the actual section boundary
@@ -834,7 +828,7 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         
         # Extract the table data
         table_df = df.iloc[data_start_row:data_end_row].copy()
-        print(f"📊 {table_type}: Extracted {table_df.shape} from rows {data_start_row}-{data_end_row-1}")
+        print(f"📊 {table_type}: {table_df.shape[0]}×{table_df.shape[1]} data extracted")
         
         # Remove completely empty rows and columns
         table_df = table_df.dropna(how='all').dropna(axis=1, how='all')
@@ -939,11 +933,10 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
     balance_sheet_data = extract_table_data(balance_sheet_sections, 'Balance Sheet')
     income_statement_data = extract_table_data(income_statement_sections, 'Income Statement')
 
-    # Debug logging for IS data
-    if income_statement_data:
-        print(f"📊 IS DATA: Extracted {income_statement_data['data'].shape}")
-    else:
-        print(f"📊 IS DATA: Extraction failed - no data returned")
+    # Summary of extraction results
+    bs_rows = balance_sheet_data['data'].shape[0] if balance_sheet_data else 0
+    is_rows = income_statement_data['data'].shape[0] if income_statement_data else 0
+    print(f"📊 Extraction complete: BS={bs_rows} rows, IS={is_rows} rows")
 
     metadata = {
         'bs_sections_found': len(balance_sheet_sections),

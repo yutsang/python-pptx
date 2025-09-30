@@ -1109,13 +1109,10 @@ def main():
                     bs_match = any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords)
                     include_key = is_match or not bs_match
 
-                    print(f"🔍 IS DEBUG: Key '{key}' - IS match: {is_match}, BS match: {bs_match}, include: {include_key}")
-
                     if include_key:
                         filtered_sections_by_key[key] = original_sections_by_key[key]
 
-                print(f"🔍 IS: {len(original_sections_by_key)}→{len(filtered_sections_by_key)} keys")
-                print(f"🔍 IS keys found: {list(filtered_sections_by_key.keys())}")
+                print(f"🔍 IS: {len(filtered_sections_by_key)} keys selected")
 
             sections_by_key = filtered_sections_by_key
         else:
@@ -1143,9 +1140,7 @@ def main():
         # Prepare AI data
         keys_with_data = [key for key, sections in sections_by_key.items() if sections]
 
-        print(f"📊 SUMMARY: {len(keys_with_data)} financial keys have data: {keys_with_data[:5]}{'...' if len(keys_with_data) > 5 else ''}")
-        print(f"📊 DEBUG: All sections_by_key keys: {list(sections_by_key.keys())}")
-        print(f"📊 DEBUG: Sections with data: {[(k, len(v)) for k, v in sections_by_key.items() if v]}")
+        print(f"📊 Processing {len(keys_with_data)} financial keys")
 
         # Filter keys by statement type
         bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
@@ -1158,16 +1153,16 @@ def main():
 
         if statement_type == "BS":
             filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
-            print(f"📊 {statement_type} MODE: Processing {len(filtered_keys_for_ai)} keys {filtered_keys_for_ai[:3]}{'...' if len(filtered_keys_for_ai) > 3 else ''}")
+            print(f"📊 {statement_type} MODE: {len(filtered_keys_for_ai)} keys")
             if not filtered_keys_for_ai:
                 filtered_keys_for_ai = keys_with_data
-                print(f"⚠️ {statement_type} MODE: No specific keys found, using all {len(filtered_keys_for_ai)} available keys")
+                print(f"⚠️ {statement_type} MODE: Using all {len(filtered_keys_for_ai)} available keys")
         elif statement_type == "IS":
             filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
-            print(f"📊 {statement_type} MODE: Processing {len(filtered_keys_for_ai)} keys {filtered_keys_for_ai[:3]}{'...' if len(filtered_keys_for_ai) > 3 else ''}")
+            print(f"📊 {statement_type} MODE: {len(filtered_keys_for_ai)} keys")
             if not filtered_keys_for_ai:
                 filtered_keys_for_ai = keys_with_data
-                print(f"⚠️ {statement_type} MODE: No specific keys found, using all {len(filtered_keys_for_ai)} available keys")
+                print(f"⚠️ {statement_type} MODE: Using all {len(filtered_keys_for_ai)} available keys")
         else:  # ALL
             filtered_keys_for_ai = keys_with_data
             print(f"📊 {statement_type} MODE: Processing {len(filtered_keys_for_ai)} keys for combined report")
@@ -2128,16 +2123,31 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         # Apply BS/IS separation first
         from fdd_utils.excel_processing import separate_balance_sheet_and_income_statement_tables, filter_to_indicative_adjusted_columns
         bs_data, is_data, separation_metadata = separate_balance_sheet_and_income_statement_tables(df, [project_name])
-        
-        # Use only Balance Sheet data (since this function is for BS mode)
-        if bs_data:
+
+        # Use appropriate data based on statement type
+        if statement_type == "IS" and is_data:
+            df = is_data['data']
+            print(f"✅ Using Income Statement data: {df.shape[0]}×{df.shape[1]}")
+        elif statement_type == "BS" and bs_data:
             df = bs_data['data']
-            print(f"✅ USING BALANCE SHEET DATA ONLY")
-            print(f"   📊 BS data shape: {df.shape}")
-            print(f"   📋 BS row range: rows {bs_data.get('data_range', (0, len(df)-1))[0]} to {bs_data.get('data_range', (0, len(df)-1))[1]} in original databook")
-            print(f"   📋 Selected columns: {list(df.columns)}")
+            print(f"✅ Using Balance Sheet data: {df.shape[0]}×{df.shape[1]}")
+        elif statement_type == "ALL" and (bs_data or is_data):
+            # For combined mode, use whichever is available or combine if both exist
+            if bs_data and is_data:
+                # Combine both tables with a separator
+                bs_df = bs_data['data']
+                is_df = is_data['data']
+                separator_df = pd.DataFrame([['--- INCOME STATEMENT ---'] + [''] * (len(bs_df.columns) - 1)], columns=bs_df.columns)
+                df = pd.concat([bs_df, separator_df, is_df], ignore_index=True)
+                print(f"✅ Combined BS+IS data: {df.shape[0]}×{df.shape[1]}")
+            elif bs_data:
+                df = bs_data['data']
+                print(f"✅ Using Balance Sheet data (no IS found): {df.shape[0]}×{df.shape[1]}")
+            else:
+                df = is_data['data']
+                print(f"✅ Using Income Statement data (no BS found): {df.shape[0]}×{df.shape[1]}")
         else:
-            print(f"⚠️ NO BS DATA FOUND - using filtered original")
+            print(f"⚠️ No separated data found for {statement_type}, using filtered original")
             df = filter_to_indicative_adjusted_columns(df)
         
         # Filter out zero rows (all values are exactly 0, not NaN)
@@ -2146,7 +2156,7 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
             desc_col = df.columns[0]
             value_cols = df.columns[1:]
             
-            print(f"🔍 ZERO ROW FILTERING: {original_row_count} rows")
+            print(f"🔍 Filtering zero rows: {original_row_count} → ", end="")
             
             mask = []
             kept_count = 0
@@ -2182,16 +2192,8 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
             if any(mask):
                 df = df[mask]
             
-            print(f"   Kept: {kept_count}, Filtered: {filtered_count}")
-        print(f"📊 FINAL PPT TABLE DATA: {df.shape}")
-        print(f"   📋 Rows after zero filtering: {len(df)}")
-        print(f"   📋 Columns: {list(df.columns)}")
-        if len(df) > 0:
-            print(f"   📋 Sample rows:")
-            for i in range(min(3, len(df))):
-                desc = df.iloc[i, 0] if len(df.columns) > 0 else 'N/A'
-                val = df.iloc[i, 1] if len(df.columns) > 1 else 'N/A'
-                print(f"      Row {i}: \"{desc}\" | {val}")
+            print(f"{len(df)} rows kept")
+        print(f"📊 Final table: {df.shape[0]}×{df.shape[1]} for PPT embedding")
         print(f"{'='*80}")
         
         # Get the first slide (BS1)

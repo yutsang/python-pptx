@@ -2205,21 +2205,67 @@ def update_project_titles(presentation_path, project_name, output_path=None, lan
     return output_path
 
 # --- High-level function for app.py ---
-def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, project_name, output_path=None):
+def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, project_name, output_path=None, statement_type='BS', **kwargs):
     """
     Update existing financialData shape in PowerPoint with Excel data
+
+    Args:
+        statement_type: 'BS' for Balance Sheet, 'IS' for Income Statement, 'ALL' for combined
     """
     try:
         from pptx import Presentation
         from pptx.util import Inches
         import pandas as pd
         import os
-        
+
         # Load the presentation
         prs = Presentation(presentation_path)
-        
+
         # Read Excel data
         df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
+
+        # Apply BS/IS separation based on statement type
+        from fdd_utils.excel_processing import separate_balance_sheet_and_income_statement_tables, filter_to_indicative_adjusted_columns
+
+        bs_data, is_data, separation_metadata = separate_balance_sheet_and_income_statement_tables(df, [project_name])
+
+        # Use appropriate data based on statement type
+        if statement_type == 'IS' and is_data:
+            df = is_data['data']
+            print(f"✅ EMBED: Using INCOME STATEMENT data for Excel embedding")
+            print(f"   📊 IS data shape: {df.shape}")
+        elif statement_type == 'BS' and bs_data:
+            df = bs_data['data']
+            print(f"✅ EMBED: Using BALANCE SHEET data for Excel embedding")
+            print(f"   📊 BS data shape: {df.shape}")
+        elif statement_type == 'ALL':
+            # For combined mode, try to use both but prioritize based on what's available
+            if bs_data and is_data:
+                # Combine both tables
+                bs_df = bs_data['data']
+                is_df = is_data['data']
+                # Add a separator row and combine
+                separator_df = pd.DataFrame([['--- INCOME STATEMENT ---'] + [''] * (len(bs_df.columns) - 1)], columns=bs_df.columns)
+                df = pd.concat([bs_df, separator_df, is_df], ignore_index=True)
+                print(f"✅ EMBED: Using COMBINED BS+IS data for Excel embedding")
+                print(f"   📊 Combined data shape: {df.shape}")
+            elif bs_data:
+                df = bs_data['data']
+                print(f"✅ EMBED: Using BALANCE SHEET data (no IS data found) for Excel embedding")
+            elif is_data:
+                df = is_data['data']
+                print(f"✅ EMBED: Using INCOME STATEMENT data (no BS data found) for Excel embedding")
+            else:
+                print(f"⚠️ EMBED: No separated data found, using filtered original")
+                df = filter_to_indicative_adjusted_columns(df)
+        else:
+            # Fallback for other cases
+            if bs_data:
+                df = bs_data['data']
+                print(f"✅ EMBED: Using BALANCE SHEET data (fallback)")
+            else:
+                print(f"⚠️ EMBED: No BS data found, using filtered original")
+                df = filter_to_indicative_adjusted_columns(df)
         
         # Find the financialData shape in all slides
         financial_data_shape = None
@@ -2451,7 +2497,7 @@ def export_pptx(template_path, markdown_path, output_path, project_name=None, ex
         sheet_name = get_tab_name(project_name)
         if sheet_name:
             try:
-                embed_excel_data_in_pptx(output_path, excel_file_path, sheet_name, project_name)
+                embed_excel_data_in_pptx(output_path, excel_file_path, sheet_name, project_name, statement_type=statement_type)
             except Exception as e:
                 logging.warning(f"⚠️ Could not embed Excel data: {str(e)}")
 
