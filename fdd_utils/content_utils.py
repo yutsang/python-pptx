@@ -190,8 +190,10 @@ def generate_content_from_session_storage(entity_name):
             return
 
         # Filter content based on statement type
+        is_keys = ['OI', 'OC', 'Tax and Surcharges', 'GA', 'Fin Exp', 'Cr Loss', 'Other Income', 'Non-operating Income', 'Non-operating Exp', 'Income tax', 'LT DTA']
+        bs_keys = ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA', 'Other NCA', 'IP', 'NCA', 'AP', 'Taxes payable', 'OP', 'Capital', 'Reserve']
+
         if current_statement_type == "IS":
-            is_keys = ['OI', 'OC', 'Tax and Surcharges', 'GA', 'Fin Exp', 'Cr Loss', 'Other Income', 'Non-operating Income', 'Non-operating Exp', 'Income tax', 'LT DTA']
             relevant_content = {k: v for k, v in content_store.items() if k in is_keys}
             print(f"📝 CONTENT GEN: Found {len(relevant_content)} IS keys: {list(relevant_content.keys())}")
 
@@ -207,29 +209,22 @@ def generate_content_from_session_storage(entity_name):
                         print(f"📝 CONTENT GEN: Found case-insensitive match: '{expected_key}' -> '{actual_key}'")
 
         elif current_statement_type == "BS":
-            bs_keys = ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA', 'Other NCA', 'IP', 'NCA', 'AP', 'Taxes payable', 'OP', 'Capital', 'Reserve']
             relevant_content = {k: v for k, v in content_store.items() if k in bs_keys}
             print(f"📝 CONTENT GEN: Found {len(relevant_content)} BS keys: {list(relevant_content.keys())}")
         else:
             relevant_content = content_store
             print(f"📝 CONTENT GEN: Processing all {len(relevant_content)} keys")
 
-        print(f"🔍 DEBUG CONTENT GENERATION: content_store type: {type(content_store)}")
-        print(f"🔍 DEBUG CONTENT GENERATION: content_store length: {len(content_store)}")
+        # Check if we have any relevant content to process
+        if not relevant_content:
+            print(f"❌ CONTENT GEN: No relevant content found for {current_statement_type} mode")
+            print(f"❌ CONTENT GEN: Available content_store keys: {list(content_store.keys())}")
+            expected_keys = is_keys if current_statement_type == 'IS' else bs_keys
+            print(f"❌ CONTENT GEN: Expected keys for {current_statement_type}: {expected_keys}")
+            st.error(f"❌ No content available for {current_statement_type} statement type")
+            return
 
-        # Debug: Print first few items in content_store
-        if content_store:
-            sample_keys = list(content_store.keys())[:3]
-            for key in sample_keys:
-                content_item = content_store[key]
-                print(f"🔍 DEBUG CONTENT GENERATION: Sample key '{key}' content: {type(content_item)}")
-                if isinstance(content_item, dict):
-                    print(f"🔍 DEBUG CONTENT GENERATION:   Keys: {list(content_item.keys())}")
-                    if 'current_content' in content_item:
-                        content_preview = content_item['current_content'][:100] + "..." if len(content_item['current_content']) > 100 else content_item['current_content']
-                        print(f"🔍 DEBUG CONTENT GENERATION:   current_content preview: {content_preview}")
-                    else:
-                        print(f"🔍 DEBUG CONTENT GENERATION:   No current_content found")
+        print(f"📝 CONTENT GEN: Processing {len(relevant_content)} relevant keys for {current_statement_type} mode")
 
         # Get detected language from session state
         detected_language = st.session_state.get('ai_data', {}).get('detected_language', 'chinese')
@@ -291,6 +286,9 @@ def generate_content_from_session_storage(entity_name):
         # Generate markdown file for human readability (without metadata headers for PowerPoint)
         markdown_content = ""
 
+        print(f"📝 CONTENT GEN: Generating markdown for {len(relevant_content)} relevant keys")
+        print(f"📝 CONTENT GEN: Category mapping keys: {list(category_mapping.keys())}")
+
         # Group by categories
         categorized_content = {}
         for category_name, keys_in_category in category_mapping.items():
@@ -299,20 +297,38 @@ def generate_content_from_session_storage(entity_name):
                 if key in json_content['financial_items']:
                     categorized_content[category_name].append(key)
 
+        print(f"📝 CONTENT GEN: Categorized content: {[(k, len(v)) for k, v in categorized_content.items()]}")
+
         # Generate markdown by category
         for category_name, keys_in_category in categorized_content.items():
             if keys_in_category:
                 markdown_content += f"## {category_name}\n\n"
+                print(f"📝 CONTENT GEN: Processing category '{category_name}' with {len(keys_in_category)} keys")
                 for key in keys_in_category:
                     item_data = json_content['financial_items'][key]
+                    content_text = item_data.get('content', 'No content available')
+                    print(f"📝 CONTENT GEN: Adding key '{key}' with content length: {len(content_text)}")
+
                     markdown_content += f"### {item_data['display_name']} ({key})\n\n"
                     # Apply item limiting to enforce "top 2 only" rule
-                    limited_content = limit_commentary_items(item_data['content'])
+                    limited_content = limit_commentary_items(content_text)
                     markdown_content += f"{limited_content}\n\n"
 
+        print(f"📝 CONTENT GEN: Generated markdown content length: {len(markdown_content)}")
+
         # Save markdown file
-        with open(md_filename, 'w', encoding='utf-8') as f:
-            f.write(markdown_content)
+        try:
+            with open(md_filename, 'w', encoding='utf-8') as f:
+                f.write(markdown_content)
+            print(f"✅ CONTENT GEN: Successfully saved markdown file: {md_filename}")
+        except Exception as e:
+            print(f"❌ CONTENT GEN: Failed to save markdown file {md_filename}: {e}")
+            st.error(f"❌ Failed to save content file: {e}")
+            return
+
+        print(f"✅ CONTENT GEN: Content files generated successfully!")
+        print(f"✅ CONTENT GEN: JSON: {json_filename}")
+        print(f"✅ CONTENT GEN: Markdown: {md_filename}")
 
         st.success(f"✅ Content files generated successfully!\n- JSON: {json_filename}\n- Markdown: {md_filename}")
 

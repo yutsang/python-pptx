@@ -1033,14 +1033,6 @@ def main():
         # Load configuration
         config, mapping, pattern, prompts = load_config_files()
 
-        # Test IS extraction logic if we're in IS mode
-        if statement_type == "IS":
-            from fdd_utils.excel_processing import test_is_extraction
-            test_result = test_is_extraction()
-            if test_result:
-                st.success("✅ IS extraction test passed!")
-            else:
-                st.error("❌ IS extraction test failed!")
         
         # Process Excel data
         entity_changed = st.session_state.get('last_processed_entity') != selected_entity
@@ -2448,22 +2440,45 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
         # Get content file
         if statement_type == "IS":
             markdown_path = "fdd_utils/is_content.md"
-            print(f"🔍 IS MODE: Looking for content file: {markdown_path}")
+            print(f"🔍 EXPORT: Looking for IS content file: {markdown_path}")
+            print(f"🔍 EXPORT: Current working directory: {os.getcwd()}")
+            print(f"🔍 EXPORT: File exists check: {os.path.exists(markdown_path)}")
+
             if os.path.exists(markdown_path):
                 with open(markdown_path, 'r', encoding='utf-8') as f:
                     is_content = f.read()
-                print(f"🔍 IS MODE: Content file exists, length: {len(is_content)}")
+                print(f"✅ EXPORT: IS content file exists, length: {len(is_content)}")
+                if len(is_content) == 0:
+                    print(f"❌ EXPORT: IS content file is empty!")
+                    st.error("❌ IS content file is empty")
+                    return
             else:
-                print(f"🔍 IS MODE: Content file does not exist: {markdown_path}")
+                print(f"❌ EXPORT: IS content file does not exist: {markdown_path}")
+                # List files in fdd_utils directory to see what's there
+                try:
+                    files = os.listdir("fdd_utils")
+                    print(f"🔍 EXPORT: Files in fdd_utils: {files}")
+                except:
+                    print("❌ EXPORT: Cannot list fdd_utils directory")
+                st.error(f"❌ IS content file not found: {markdown_path}")
+                return
         elif statement_type == "BS":
             markdown_path = "fdd_utils/bs_content.md"
-            print(f"🔍 BS MODE: Looking for content file: {markdown_path}")
+            print(f"🔍 EXPORT: Looking for BS content file: {markdown_path}")
+            print(f"🔍 EXPORT: File exists check: {os.path.exists(markdown_path)}")
+
             if not os.path.exists(markdown_path):
-                print(f"❌ BS MODE: Content file does not exist: {markdown_path}")
-                st.error(f"❌ Content file not found: {markdown_path}")
+                print(f"❌ EXPORT: BS content file does not exist: {markdown_path}")
+                # List files in fdd_utils directory to see what's there
+                try:
+                    files = os.listdir("fdd_utils")
+                    print(f"🔍 EXPORT: Files in fdd_utils: {files}")
+                except:
+                    print("❌ EXPORT: Cannot list fdd_utils directory")
+                st.error(f"❌ BS content file not found: {markdown_path}")
                 return
             else:
-                print(f"✅ BS MODE: Content file exists")
+                print(f"✅ EXPORT: BS content file exists")
         else:  # ALL
             st.info("🔄 Generating combined presentation...")
             # For combined, create both BS and IS then merge
@@ -2543,8 +2558,37 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
             
             # Use the template with the original export_pptx function (without automatic Excel embedding)
             try:
+                print(f"🔍 EXPORT: Calling export_pptx with:")
+                print(f"  template_path: {template_path}")
+                print(f"  markdown_path: {markdown_path}")
+                print(f"  output_path: {output_path}")
+                print(f"  project_name: {project_name}")
+                print(f"  statement_type: {statement_type}")
+
+                # Check if markdown content is valid before calling export
+                if statement_type == "IS":
+                    print(f"🔍 EXPORT: IS markdown content preview: {is_content[:200]}...")
+                elif statement_type == "BS":
+                    with open(markdown_path, 'r', encoding='utf-8') as f:
+                        bs_content = f.read()
+                    print(f"🔍 EXPORT: BS markdown content preview: {bs_content[:200]}...")
+
                 export_pptx(template_path, markdown_path, output_path, project_name, excel_file_path=None, language=language, statement_type=statement_type, row_limit=row_limit)
+
+                # Verify the file was created
+                if os.path.exists(output_path):
+                    print(f"✅ EXPORT: PowerPoint file created successfully: {output_path}")
+                    file_size = os.path.getsize(output_path)
+                    print(f"✅ EXPORT: PowerPoint file size: {file_size} bytes")
+                else:
+                    print(f"❌ EXPORT: PowerPoint file was not created: {output_path}")
+                    st.error(f"❌ PowerPoint file was not created at: {output_path}")
+                    return
+
             except Exception as export_error:
+                print(f"❌ EXPORT: PowerPoint generation failed: {str(export_error)}")
+                import traceback
+                print(f"❌ EXPORT: Full traceback: {traceback.format_exc()}")
                 st.error(f"❌ PowerPoint generation failed: {str(export_error)}")
                 st.info(f"💡 Check if content file exists: {markdown_path}")
                 st.info(f"💡 Check if template exists: {template_path}")
