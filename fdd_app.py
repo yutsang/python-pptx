@@ -1152,12 +1152,17 @@ def main():
         keys_with_data = [key for key, sections in sections_by_key.items() if sections]
 
         print(f"📊 SUMMARY: {len(keys_with_data)} financial keys have data: {keys_with_data[:5]}{'...' if len(keys_with_data) > 5 else ''}")
+        print(f"📊 DEBUG: All sections_by_key keys: {list(sections_by_key.keys())}")
+        print(f"📊 DEBUG: Sections with data: {[(k, len(v)) for k, v in sections_by_key.items() if v]}")
 
         # Filter keys by statement type
         bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
                    "AP", "Taxes payable", "OP", "Capital", "Reserve"]
         is_keys = ["OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
                    "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"]
+
+        print(f"📊 DEBUG: Expected BS keys: {bs_keys}")
+        print(f"📊 DEBUG: Expected IS keys: {is_keys}")
 
         if statement_type == "BS":
             filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]

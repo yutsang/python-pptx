@@ -177,11 +177,13 @@ def get_content_from_json(key):
 def generate_content_from_session_storage(entity_name):
     """Generate content files (JSON + Markdown) from session state storage (PERFORMANCE OPTIMIZED)"""
     try:
+        # Get current statement type from session state first
+        current_statement_type = st.session_state.get('current_statement_type', 'BS')
+
         print(f"📝 CONTENT GEN: Processing {entity_name} for {current_statement_type} statement")
 
         # Get content from session state storage (fastest method)
         content_store = st.session_state.get('ai_content_store', {})
-        current_statement_type = st.session_state.get('current_statement_type', 'BS')
 
         if not content_store:
             print(f"❌ CONTENT GEN: No AI content found in session state")
@@ -192,6 +194,18 @@ def generate_content_from_session_storage(entity_name):
             is_keys = ['OI', 'OC', 'Tax and Surcharges', 'GA', 'Fin Exp', 'Cr Loss', 'Other Income', 'Non-operating Income', 'Non-operating Exp', 'Income tax', 'LT DTA']
             relevant_content = {k: v for k, v in content_store.items() if k in is_keys}
             print(f"📝 CONTENT GEN: Found {len(relevant_content)} IS keys: {list(relevant_content.keys())}")
+
+            # Debug: Show all available keys in content_store for IS mode
+            all_keys = list(content_store.keys())
+            print(f"📝 CONTENT GEN: All available keys in content_store: {all_keys}")
+            print(f"📝 CONTENT GEN: Expected IS keys: {is_keys}")
+
+            # Check if the expected IS keys are in the content_store but maybe with different casing
+            for expected_key in is_keys:
+                for actual_key in all_keys:
+                    if expected_key.lower() == actual_key.lower():
+                        print(f"📝 CONTENT GEN: Found case-insensitive match: '{expected_key}' -> '{actual_key}'")
+
         elif current_statement_type == "BS":
             bs_keys = ['Cash', 'AR', 'Prepayments', 'OR', 'Other CA', 'Other NCA', 'IP', 'NCA', 'AP', 'Taxes payable', 'OP', 'Capital', 'Reserve']
             relevant_content = {k: v for k, v in content_store.items() if k in bs_keys}
@@ -199,12 +213,6 @@ def generate_content_from_session_storage(entity_name):
         else:
             relevant_content = content_store
             print(f"📝 CONTENT GEN: Processing all {len(relevant_content)} keys")
-
-        if not content_store:
-            st.error("❌ No AI-generated content available. Please run AI processing first.")
-            print("🔍 DEBUG CONTENT GENERATION: No content_store found in session state")
-            print(f"🔍 DEBUG CONTENT GENERATION: Session state keys: {list(st.session_state.keys())}")
-            return
 
         print(f"🔍 DEBUG CONTENT GENERATION: content_store type: {type(content_store)}")
         print(f"🔍 DEBUG CONTENT GENERATION: content_store length: {len(content_store)}")
@@ -223,9 +231,6 @@ def generate_content_from_session_storage(entity_name):
                     else:
                         print(f"🔍 DEBUG CONTENT GENERATION:   No current_content found")
 
-        # Get current statement type from session state
-        current_statement_type = st.session_state.get('current_statement_type', 'BS')
-        
         # Get detected language from session state
         detected_language = st.session_state.get('ai_data', {}).get('detected_language', 'chinese')
 
