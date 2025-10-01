@@ -2681,12 +2681,28 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
         sections_by_key = {key: [] for key in financial_keys}
 
         # Process sheets within context manager
+        processed_sheets = set()  # Track processed sheets to avoid duplicates
         with pd.ExcelFile(excel_source) as xl:
+            print(f"\n{'='*80}")
+            print(f"📊 STARTING EXCEL PROCESSING")
+            print(f"{'='*80}")
+
             for sheet_name in xl.sheet_names:
                 # Skip sheets not in mapping to avoid using undefined df
                 if sheet_name not in reverse_mapping:
                     continue
+
+                # Skip already processed sheets to avoid duplicates
+                if sheet_name in processed_sheets:
+                    print(f"⏭️  Skipping already processed sheet: {sheet_name}")
+                    continue
+
+                processed_sheets.add(sheet_name)
                 df = xl.parse(sheet_name)
+
+                print(f"\n{'='*60}")
+                print(f"📋 PROCESSING SHEET: {sheet_name}")
+                print(f"{'='*60}")
 
                 # Use entity_keywords passed from main app, or generate fallback
                 if entity_keywords is None:
@@ -2732,15 +2748,8 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
 
                         # Get all text from the dataframe for searching
                         all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
-                        print(f"      📋 ALL TEXT FROM DATAFRAME: {all_text}")
-
-                        print(f"----------------------------------------------------------------------------------------------------")
-                        print(f"📋 PROCESSING TAB: {sheet_name}")
-                        print(f"----------------------------------------------------------------------------------------------------")
-                        print(f"   🔍 Entity mode: {entity_mode}")
-                        print(f"   🔍 Entity name: {entity_name}")
-                        print(f"   🔍 Entity keywords: {entity_keywords}")
-                        print(f"   📊 DataFrame shape: {data_frame.shape}")
+                        # Skip duplicate processing message - already shown above
+                        print(f"   🔍 Processing dataframe section: {data_frame.shape[0]}×{data_frame.shape[1]}")
                         print(f"   🔍 Looking for '人民币千元' in content...")
 
                         # Check for RMB patterns
@@ -3058,14 +3067,8 @@ def get_worksheet_sections_by_keys(uploaded_file, tab_name_mapping, entity_name,
                         # Get all text from the dataframe for searching
                         all_text = ' '.join(data_frame.astype(str).values.flatten()).lower()
 
-                        print(f"----------------------------------------------------------------------------------------------------")
-                        print(f"📋 PROCESSING TAB: {sheet_name}")
-                        print(f"----------------------------------------------------------------------------------------------------")
-                        print(f"   🔍 Entity mode: {entity_mode}")
-                        print(f"   🔍 Entity name: {entity_name}")
-                        print(f"   🔍 Entity keywords: {entity_keywords}")
-                        print(f"   📊 DataFrame shape: {data_frame.shape}")
-                        print(f"   🔍 Looking for '人民币千元' in content...")
+                        # Skip duplicate processing message - already shown above
+                        print(f"   🔍 Processing dataframe section: {data_frame.shape[0]}×{data_frame.shape[1]}")
 
                         # Check for RMB patterns
                         rmb_found = False

@@ -491,9 +491,17 @@ class PowerPointGenerator:
             # Don't limit by existing slides since we'll create new ones as needed
 
         # Final distribution summary
-        print("\n🎯 FINAL DISTRIBUTION:")
+        print(f"\n🎯 SLIDE DISTRIBUTION: {len(set(slide_idx for slide_idx, _, _ in distribution))} slides")
+        slide_counts = {}
         for slide_idx, section, items in distribution:
-            print(f"  📄 Slide {slide_idx}, Section {section}: {len(items)} items")
+            key = f"Slide {slide_idx}"
+            if key not in slide_counts:
+                slide_counts[key] = {}
+            slide_counts[key][section] = len(items)
+
+        for slide, sections in slide_counts.items():
+            section_summary = ", ".join([f"{sec}: {count}" for sec, count in sections.items()])
+            print(f"  {slide} - {section_summary}")
 
         return distribution
 

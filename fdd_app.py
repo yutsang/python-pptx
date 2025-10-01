@@ -1136,6 +1136,9 @@ def main():
         # AI Processing Section
         st.markdown("---")
         st.markdown("## 🤖 AI Report Generation")
+        print(f"\n{'='*80}")
+        print(f"🤖 AI PROCESSING SECTION")
+        print(f"{'='*80}")
         
         # Prepare AI data
         keys_with_data = [key for key, sections in sections_by_key.items() if sections]
@@ -1310,6 +1313,9 @@ def main():
 
         # Handle combined AI processing and PowerPoint export
         if generate_report_clicked:
+            print(f"\n{'='*80}")
+            print(f"📊 POWERPOINT EXPORT SECTION")
+            print(f"{'='*80}")
             progress_bar = st.progress(0)
             status_text = st.empty()
             
