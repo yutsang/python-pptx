@@ -2105,7 +2105,7 @@ def main():
 
 
 
-def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, project_name, language='english'):
+def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, project_name, language='english', statement_type='BS'):
     """Add BSHN data table to the first slide (BS1)"""
     try:
         from pptx import Presentation
@@ -2121,7 +2121,7 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         # Read Excel data and apply column filtering
         df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
         print(f"\n{'='*80}")
-        print(f"🎯 POWERPOINT TABLE GENERATION - BALANCE SHEET MODE")
+        print(f"🎯 POWERPOINT TABLE GENERATION - {statement_type} MODE")
         print(f"{'='*80}")
         print(f"📊 Processing sheet: {sheet_name}")
         print(f"📊 Original data shape: {df.shape}")
@@ -2603,10 +2603,10 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
                 raise
             
             # Add BSHN data if requested
-            if include_bshn and statement_type == "BS" and excel_file_path and financial_statement_tab:
+            if include_bshn and statement_type in ["BS", "IS"] and excel_file_path and financial_statement_tab:
                 try:
-                    embed_bshn_data_simple(output_path, excel_file_path, financial_statement_tab, project_name, language)
-                    st.success(f"✅ BSHN data from '{financial_statement_tab}' sheet added to BS1")
+                    embed_bshn_data_simple(output_path, excel_file_path, financial_statement_tab, project_name, language, statement_type)
+                    st.success(f"✅ BSHN data from '{financial_statement_tab}' sheet added to slide")
                 except Exception as e:
                     st.warning(f"⚠️ Could not add BSHN data: {str(e)}")
                     st.info("💡 The presentation was created but BSHN data could not be embedded")

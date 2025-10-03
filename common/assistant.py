@@ -199,93 +199,8 @@ def parse_table_to_structured_format(df, entity_name, table_name):
         import os
         from datetime import datetime
 
-        # 🚨 SERVER DEBUG: Comprehensive Application Flow Logging
-        print(f"\n🚨 SERVER DEBUG: === APPLICATION START ===")
-        print(f"🚨 SERVER DEBUG: Function: parse_table_to_structured_format")
-        print(f"🚨 SERVER DEBUG: Table: '{table_name}' | Entity: '{entity_name}'")
-        print(f"🚨 SERVER DEBUG: DataFrame shape: {df.shape}")
-        print(f"🚨 SERVER DEBUG: DataFrame columns: {list(df.columns)}")
-        print(f"🚨 SERVER DEBUG: Python version: {os.sys.version}")
-        print(f"🚨 SERVER DEBUG: Current working directory: {os.getcwd()}")
-        print(f"🚨 SERVER DEBUG: Available modules: pandas={__import__('pandas', fromlist=['']).__version__ if 'pandas' in str(__import__('sys').modules) else 'Not loaded'}")
-
-        # DEBUG: Log what we're reading from the Excel
-        print(f"\n{'='*80}")
-        print(f"📊 TABLE PROCESSING: '{table_name}' for entity '{entity_name}'")
-        print(f"📊 DataFrame shape: {df.shape}")
-        print(f"📊 DataFrame columns: {list(df.columns)}")
-        print(f"📊 TABLE CONTENTS:")
-        print(f"{'='*80}")
-
-        # Show all rows of the table
-        print(f"\n{'='*100}")
-        print(f"📊 DETAILED EXCEL CONTENT ANALYSIS FOR TABLE: '{table_name}'")
-        print(f"{'='*100}")
-
-        print(f"🔍 FULL RAW DATAFRAME ({len(df)} rows x {len(df.columns)} columns):")
-        print(f"   DataFrame shape: {df.shape}")
-        print(f"   Column names: {list(df.columns)}")
-        print(f"   Column types: {[str(df[col].dtype) for col in df.columns]}")
-
-        print(f"\n🔍 COMPLETE CELL-BY-CELL CONTENT:")
-        for i in range(len(df)):
-            print(f"\n--- ROW {i} ---")
-            for j, col in enumerate(df.columns):
-                cell_value = df.iloc[i, j]
-                cell_type = type(cell_value).__name__
-                cell_str = str(cell_value) if cell_value is not None else "None"
-
-                # Check for RMB-related patterns in this cell
-                rmb_found = False
-                rmb_patterns = ["人民币", "人民幣", "千元", "CNY", "RMB", "万元", "万", "'000", '"000', "000", "thousands", "THOUSANDS", "Thousands"]
-                found_patterns = []
-                for pattern in rmb_patterns:
-                    if cell_str and pattern in cell_str:
-                        found_patterns.append(pattern)
-                        rmb_found = True
-
-                if rmb_found:
-                    print(f"   Col {j} ({col}): [{cell_type}] '{cell_str}' 💰 RMB-PATTERNS: {found_patterns}")
-                else:
-                    print(f"   Col {j} ({col}): [{cell_type}] '{cell_str}'")
-
-        print(f"\n🔍 ROW-BY-ROW SUMMARY (for RMB detection):")
-        for i in range(len(df)):
-            row_data = df.iloc[i].values
-            row_str = " | ".join([str(cell) if cell is not None else "None" for cell in row_data])
-
-            # Count RMB patterns in this row
-            rmb_count = 0
-            pattern_counts = {}
-            for cell in row_data:
-                cell_str = str(cell) if cell is not None else ""
-                for pattern in rmb_patterns:
-                    if pattern in cell_str:
-                        rmb_count += 1
-                        pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
-
-            if rmb_count > 0:
-                print(f"Row {i:2d}: {row_str} 💰 ({rmb_count} RMB patterns: {pattern_counts})")
-            else:
-                print(f"Row {i:2d}: {row_str}")
-
-        # Also show raw Excel values for RMB detection verification
-        print(f"\n🔍 RAW EXCEL VALUES FOR RMB DETECTION:")
-        for i, row in enumerate(df.values.tolist()):
-            row_str = " | ".join([str(cell) if cell is not None else "None" for cell in row])
-            print(f"Row {i:2d}: {row_str}")
-            # Highlight any cells containing RMB keywords
-            for j, cell in enumerate(row):
-                if cell and isinstance(cell, str):
-                    rmb_patterns = ["人民币", "人民幣", "千元", "CNY", "RMB", "万元", "万", "'000", '"000', "000", "thousands", "THOUSANDS", "Thousands"]
-                    if any(pattern in cell for pattern in rmb_patterns):
-                        print(f"         💰 RMB-RELATED CELL [{i},{j}]: '{cell}'")
-
-        print(f"{'='*100}")
-        print(f"🔍 Starting detailed processing of table '{table_name}'...")
-        print(f"{'='*100}")
-        for i, row in enumerate(df.head(5).values.tolist()):
-            print(f"   Row {i}: {row}")
+        # Simplified logging
+        print(f"📊 Processing table: '{table_name}' ({df.shape[0]}×{df.shape[1]})")
 
         # Initialize structured data
         structured_data = {
@@ -301,93 +216,11 @@ def parse_table_to_structured_format(df, entity_name, table_name):
         # Convert DataFrame to list of rows for easier processing
         rows = df.values.tolist()
         if not rows:
-            print(f"⚠️ DEBUG: No rows found in table '{table_name}'")
             return None
 
-        for i, row in enumerate(rows[:3]):  # Show first 3 rows
-            print(f"   Row {i}: {row}")
-
-        # 🚨 SERVER DEBUG: Comprehensive RMB Detection Logging
-        print(f"\n🚨 SERVER DEBUG: === RMB DETECTION SCAN STARTING ===")
-        print(f"🚨 SERVER DEBUG: Table: '{table_name}' | Entity: '{entity_name}'")
-        print(f"🚨 SERVER DEBUG: DataFrame shape: {df.shape} | Searching {len(rows)} rows x {len(rows[0]) if rows else 0} columns")
-        print(f"🚨 SERVER DEBUG: Looking for patterns: 人民币千元, 人民幣千元, CNY'000, 000")
-        print(f"🚨 SERVER DEBUG: Current working directory: {os.getcwd()}")
-
         rmb_thousands_found = False
-        rmb_locations = []
-        all_rmb_related_cells = []
-
-        print(f"🚨 SERVER DEBUG: Initialized detection - thousands_found: {rmb_thousands_found}")
-        print(f"🚨 SERVER DEBUG: Starting cell-by-cell scan...")
-
-        for row_idx, row in enumerate(rows):
-            print(f"🚨 SERVER DEBUG: Scanning row {row_idx}/{len(rows)-1}")
-            for col_idx, cell in enumerate(row):
-                cell_str = str(cell).strip()
-                # Check for RMB thousand matches (more flexible - handles extra characters)
-                if "人民币千元" in cell_str:
-                    print(f"🎯 FOUND EXACT: '人民币千元' in row {row_idx}, col {col_idx}: '{cell_str}'")
-                    rmb_thousands_found = True
-                    rmb_locations.append(f"人民币千元@[{row_idx},{col_idx}]")
-                elif "人民幣千元" in cell_str:
-                    print(f"🎯 FOUND EXACT: '人民幣千元' in row {row_idx}, col {col_idx}: '{cell_str}'")
-                    rmb_thousands_found = True
-                    rmb_locations.append(f"人民幣千元@[{row_idx},{col_idx}]")
-                # More flexible detection - RMB thousand patterns with extra characters
-                elif "人民币" in cell_str and "千元" in cell_str:
-                    print(f"🎯 FOUND FLEXIBLE: '人民币...千元' pattern in row {row_idx}, col {col_idx}: '{cell_str}'")
-                    rmb_thousands_found = True
-                    rmb_locations.append(f"人民币千元(pattern)@[{row_idx},{col_idx}]")
-                elif "人民幣" in cell_str and "千元" in cell_str:
-                    print(f"🎯 FOUND FLEXIBLE: '人民幣...千元' pattern in row {row_idx}, col {col_idx}: '{cell_str}'")
-                    rmb_thousands_found = True
-                    rmb_locations.append(f"人民幣千元(pattern)@[{row_idx},{col_idx}]")
-
-                # Also track any RMB-related content for debugging - expanded detection
-                rmb_keywords = [
-                    "人民币", "人民幣", "千元", "CNY", "RMB",
-                    "万元", "万", "十万元", "百万元", "千万元",
-                    "'000", '"000', "000",
-                    "thousands", "THOUSANDS", "Thousands"
-                ]
-
-                # Check for exact RMB thousand patterns (now more flexible)
-                exact_thousand_patterns = [
-                    "人民币千元", "人民幣千元", "CNY'000", 'CNY"000',
-                    "人民币千", "人民幣千", "CNY千",
-                    "千人民币", "千人民幣", "千CNY",
-                    # Add patterns that might have extra characters
-                    "人民币", "人民幣", "千元"
-                ]
-
-                if any(keyword in cell_str for keyword in rmb_keywords):
-                    all_rmb_related_cells.append(f"[{row_idx},{col_idx}]: '{cell_str}'")
-                    print(f"💰 RMB-RELATED: '{cell_str}' in row {row_idx}, col {col_idx}")
-
-                # Check for exact thousand patterns
-                for pattern in exact_thousand_patterns:
-                    if pattern in cell_str:
-                        print(f"🎯 EXACT THOUSAND PATTERN: '{pattern}' found in '{cell_str}' at [{row_idx},{col_idx}]")
-
-        if not rmb_thousands_found:
-            print(f"⚠️ DEBUG: No RMB thousand patterns found in table '{table_name}'")
-            print(f"   💰 RMB SCAN: Searched {len(rows)} rows, {len(rows[0]) if rows else 0} columns per row")
-            print(f"   💰 LOOKED FOR: 人民币千元, 人民幣千元, CNY'000, and flexible patterns")
-            if all_rmb_related_cells:
-                print(f"   💰 OTHER RMB CONTENT FOUND: {len(all_rmb_related_cells)} RMB-related cells:")
-                for cell_info in all_rmb_related_cells[:10]:  # Show first 10
-                    print(f"      {cell_info}")
-                if len(all_rmb_related_cells) > 10:
-                    print(f"      ... and {len(all_rmb_related_cells) - 10} more RMB-related cells")
-        else:
-            print(f"✅ DEBUG: Found RMB thousands notation in table '{table_name}' at locations: {', '.join(rmb_locations)}")
-            print(f"   💰 RMB SCAN: Successfully detected {len(rmb_locations)} RMB thousand instances")
-            if all_rmb_related_cells:
-                print(f"   💰 ADDITIONAL RMB CONTENT: {len(all_rmb_related_cells)} total RMB-related cells")
         
         # Find the two most important columns (description and amount)
-        # Usually the first two columns, but let's be smart about it
         desc_col = 0
         amount_col = 1
         
@@ -397,22 +230,17 @@ def parse_table_to_structured_format(df, entity_name, table_name):
             for row in rows:
                 if col_idx < len(row):
                     cell_value = str(row[col_idx]).strip()
-                    # Check if it's a number (including with commas, decimals, etc.)
                     if re.match(r'^[\d,]+\.?\d*$', cell_value.replace(',', '')):
                         numeric_count += 1
 
-            if numeric_count > len(rows) * 0.3:  # At least 30% of rows have numbers
+            if numeric_count > len(rows) * 0.3:
                 amount_col = col_idx
                 desc_col = 1 if col_idx == 0 else 0
-                print(f"📋 COLUMN MAPPING: Description='{df.columns[desc_col]}', Amount='{df.columns[amount_col]}'")
                 break
         
         # Process rows to extract information
-        print(f"🚀 STARTING ROW PROCESSING: {len(rows)} rows to process")
         for row_idx, row in enumerate(rows):
-            print(f"🔄 ROW {row_idx}: Starting processing, row length: {len(row)}")
             if len(row) < 2:
-                print(f"⏭️ ROW {row_idx}: Skipping due to insufficient columns")
                 continue
 
             desc_cell = str(row[desc_col]).strip() if desc_col < len(row) else ""
@@ -465,9 +293,7 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                             try:
                                 # Try to parse the date
                                 date_str = match.group()
-                                print(f"DEBUG: Found date pattern '{pattern}' in cell '{cell_str}', extracted '{date_str}'")
-                            except Exception as e:
-                                print(f"DEBUG: Date parsing failed for pattern '{pattern}' with '{date_str}': {e}")
+                            except Exception:
                                 continue
 
                                 if '年' in date_str and '月' in date_str:
@@ -549,33 +375,24 @@ def parse_table_to_structured_format(df, entity_name, table_name):
 
                                 structured_data['date'] = parsed_date.strftime('%Y-%m-%d %H:%M:%S')
                                 break
-                            except Exception as e:
-                                print(f"Warning: Could not parse date '{date_str}': {e}")
+                            except Exception:
                                 continue
             
             # Extract currency and multiplier (English and Chinese)
             currency_detected = False
-            currency_source = ""
 
             if ('CNY' in desc_cell.upper() or 'CNY' in amount_cell.upper()):
                 structured_data['currency'] = 'CNY'
                 currency_detected = True
-                currency_source = "CNY"
             elif ('人民币' in desc_cell or '人民币' in amount_cell):
                 structured_data['currency'] = 'CNY'
                 currency_detected = True
-                currency_source = "人民币 (traditional)"
             elif ('人民幣' in desc_cell or '人民幣' in amount_cell):
                 structured_data['currency'] = 'CNY'
                 currency_detected = True
-                currency_source = "人民幣 (simplified)"
             elif ('RMB' in desc_cell.upper() or 'RMB' in amount_cell.upper()):
                 structured_data['currency'] = 'CNY'
                 currency_detected = True
-                currency_source = "RMB"
-
-            if currency_detected:
-                print(f"DEBUG: Currency detected as CNY ({currency_source}) - desc='{desc_cell}', amount='{amount_cell}'")
 
             # Enhanced check for thousands notation (English and Chinese)
             thousands_detected = (
@@ -617,67 +434,27 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 for cell in row
             )
 
-            # Debug: Show detection of thousand patterns in this row
-            detected_patterns = []
-            for cell in row:
-                cell_str = str(cell)
-                for pattern in thousand_patterns:
-                    if pattern in cell_str:
-                        detected_patterns.append(f"'{pattern}' in '{cell_str}'")
-
-            if detected_patterns:
-                print(f"🔍 THOUSAND PATTERNS DETECTED in row {row_idx}: {', '.join(detected_patterns)}")
-                print(f"   Row content: {[str(cell) for cell in row]}")
-
-            # Debug logging for multiplier detection
-            if thousands_detected or currency_detected:
-                print(f"DEBUG: Multiplier detection - desc='{desc_cell}', amount='{amount_cell}', thousands_detected={thousands_detected}, currency_detected={currency_detected}")
-
             # Set multiplier based on detection
             if thousands_detected:
-                old_multiplier = structured_data['multiplier']
                 structured_data['multiplier'] = 1000
-                print(f"💰 MULTIPLIER SET: Thousand pattern detected - setting multiplier to 1000x")
-                print(f"💰 MULTIPLIER SET: Changed from {old_multiplier}x to {structured_data['multiplier']}x")
-                print(f"   Detected patterns in row: {detected_patterns if 'detected_patterns' in locals() else 'N/A'}")
             elif currency_detected and ("000" in desc_cell or "000" in amount_cell):
-                # Fallback: if we have currency and "000", still apply multiplier
                 structured_data['multiplier'] = 1000
-                print(f"DEBUG: Set multiplier to 1000 (currency+000) for cell: desc='{desc_cell}', amount='{amount_cell}'")
             elif "million" in desc_cell.lower() or "million" in amount_cell.lower():
                 structured_data['multiplier'] = 1000000
-                print(f"DEBUG: Set multiplier to 1000000 for cell: desc='{desc_cell}', amount='{amount_cell}'")
             elif "000" in desc_cell or "000" in amount_cell:
-                # Check if it's a standalone "000" indicating thousands
                 if re.match(r'^0*000$', desc_cell.replace("'", "")) or re.match(r'^0*000$', amount_cell.replace("'", "")):
-                        structured_data['multiplier'] = 1000
-                        print(f"DEBUG: Set multiplier to 1000 (standalone 000) for cell: desc='{desc_cell}', amount='{amount_cell}'")
+                    structured_data['multiplier'] = 1000
 
-            # Final confirmation logging
-            if structured_data['multiplier'] == 1000 and thousands_detected:
-                print(f"✅ CONFIRMED: Multiplier set to 1000x - thousands notation detected")
-                if detected_patterns:
-                    print(f"   Detected patterns: {detected_patterns}")
-            elif structured_data['multiplier'] == 1000000:
-                print(f"✅ CONFIRMED: Multiplier set to 1000000x - million notation detected")
-
-            # Extract items (skip header rows and totals) - INSIDE THE ROW PROCESSING LOOP
-            # Be more careful about filtering - don't filter out valid Chinese descriptions
+            # Extract items (skip header rows and totals)
             skip_row = False
 
             # Skip obvious headers and totals
             if desc_cell.lower() in ['total', 'nan', '']:
                 skip_row = True
-                print(f"⏭️ SKIP ROW {row_idx}: desc is header/total ('{desc_cell}')")
             elif re.match(r'^[A-Z\s]{3,}$', desc_cell) and not any('\u4e00' <= c <= '\u9fff' for c in desc_cell):
-                # Skip all-caps English headers, but allow Chinese text
                 skip_row = True
-                print(f"⏭️ SKIP ROW {row_idx}: desc is all-caps English header ('{desc_cell}')")
             elif not amount_cell or amount_cell == 'nan':
                 skip_row = True
-                print(f"⏭️ SKIP ROW {row_idx}: amount is empty or nan ('{amount_cell}')")
-            else:
-                print(f"✅ PROCESS ROW {row_idx}: desc='{desc_cell}', amount='{amount_cell}'")
 
             if not skip_row:
                 
@@ -694,7 +471,6 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                     chinese_multiplier_match = match1
                     base_amount = float(match1.group(1))
                     amount = base_amount * 1000
-                    print(f"DEBUG: Found Chinese multiplier pattern 1 '{match1.group(0)}' -> {base_amount} * 1000 = {amount}")
 
                 # Pattern 2: "千100" or "千 100"
                 match2 = re.search(r'千\s*(\d+(?:\.\d+)?)', amount_cell_clean)
@@ -702,12 +478,10 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                     chinese_multiplier_match = match2
                     base_amount = float(match2.group(1))
                     amount = base_amount * 1000
-                    print(f"DEBUG: Found Chinese multiplier pattern 2 '{match2.group(0)}' -> {base_amount} * 1000 = {amount}")
 
                 # Pattern 3: Just "千" in the cell (standalone)
                 if not chinese_multiplier_match and amount_cell_clean == "千":
                     amount = 1000
-                    print(f"DEBUG: Found standalone '千' -> 1000")
 
                 if amount is None:
                     # Regular numeric extraction
@@ -728,10 +502,6 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                         'amount': int(amount) if amount.is_integer() else amount
                     }
                     structured_data['items'].append(item_data)
-                    print(f"📝 ADDED ITEM: {desc_cell} = {amount} (multiplier: {structured_data['multiplier']}x)")
-                    print(f"   Final amount after multiplier: {amount * structured_data['multiplier']}")
-                else:
-                    print(f"❌ NO AMOUNT: Could not parse amount from '{amount_cell}' for desc '{desc_cell}'")
             
             # Extract total
             if desc_cell.lower() == 'total' and amount_cell and amount_cell != 'nan':
@@ -775,14 +545,6 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                 if total_amount is not None:
                     structured_data['total'] = int(total_amount) if total_amount.is_integer() else total_amount
 
-        # Final summary of multiplier detection (OUTSIDE the row processing loop)
-        if structured_data['multiplier'] > 1:
-            print(f"🎯 FINAL MULTIPLIER: Table '{table_name}' multiplier set to {structured_data['multiplier']}x")
-            if structured_data['multiplier'] == 1000:
-                print(f"   💰 RMB THOUSANDS: Multiplier set to 1000x due to detected thousand patterns")
-        else:
-            print(f"⚠️ FINAL MULTIPLIER: Table '{table_name}' multiplier remains at {structured_data['multiplier']}x (no thousands/million notation detected)")
-            print(f"   💰 RMB CHECK: Check if RMB thousand patterns were detected in the table")
 
         # Extract entity name from table content if not found
         if structured_data['entity'] == entity_name:
@@ -796,45 +558,11 @@ def parse_table_to_structured_format(df, entity_name, table_name):
                         structured_data['entity'] = entity_match.group()
                         break
 
-        # DEBUG: Final summary of what was detected
-        print(f"\n📊 FINAL RESULTS for table '{table_name}':")
-        print(f"   - Currency: {structured_data['currency']}")
-        print(f"   - Multiplier: {structured_data['multiplier']}x")
-        print(f"   - Date: {structured_data['date']}")
-        print(f"   - Items found: {len(structured_data['items'])}")
-        if structured_data['items']:
-            print(f"   - Items details:")
-            for item in structured_data['items']:
-                print(f"     * {item['description']}: {item['amount']}")
-        print(f"   - Total: {structured_data['total']}")
-        print(f"{'='*80}")
-
         # Summary of processing
         if structured_data['items']:
-            print(f"✅ TABLE '{table_name}' PROCESSED SUCCESSFULLY")
-            print(f"   → {len(structured_data['items'])} financial items extracted")
-            print(f"   → Multiplier applied: {structured_data['multiplier']}x")
-            print(f"   → Currency detected: {structured_data['currency']}")
+            print(f"✅ {table_name}: {len(structured_data['items'])} items extracted (multiplier: {structured_data['multiplier']}x)")
         else:
-            print(f"❌ TABLE '{table_name}' SKIPPED - No valid items found")
-
-        print(f"{'='*80}\n")
-
-        # 🚨 SERVER DEBUG: Final Results Logging
-        print(f"🚨 SERVER DEBUG: === FINAL RESULTS ===")
-        print(f"🚨 SERVER DEBUG: Table: '{table_name}' | Entity: '{entity_name}'")
-        print(f"🚨 SERVER DEBUG: Multiplier: {structured_data['multiplier']}x")
-        print(f"🚨 SERVER DEBUG: Currency: {structured_data['currency']}")
-        print(f"🚨 SERVER DEBUG: Items found: {len(structured_data['items'])}")
-        print(f"🚨 SERVER DEBUG: Date: {structured_data['date']}")
-        print(f"🚨 SERVER DEBUG: Returning data: {'YES' if structured_data['items'] else 'NO (empty items)'}")
-
-        if structured_data['items']:
-            print(f"🚨 SERVER DEBUG: Sample items:")
-            for i, item in enumerate(structured_data['items'][:3]):  # Show first 3 items
-                print(f"   {i+1}. {item['description']}: {item['amount']}")
-
-        print(f"🚨 SERVER DEBUG: === APPLICATION END ===\n")
+            print(f"⚠️ {table_name}: No items found")
 
         return structured_data if structured_data['items'] else None
         
@@ -974,27 +702,15 @@ def extract_tables_robust(worksheet, entity_keywords):
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):
     """Process and filter Excel file"""
     try:
-        # 🚨 SERVER DEBUG: Main Application Entry Point
-        print(f"\n🚨 SERVER DEBUG: === MAIN APPLICATION START ===")
-        print(f"🚨 SERVER DEBUG: Function: process_and_filter_excel")
-        print(f"🚨 SERVER DEBUG: Filename: '{filename}'")
-        print(f"🚨 SERVER DEBUG: Entity: '{entity_name}'")
-        print(f"🚨 SERVER DEBUG: Entity suffixes: {entity_suffixes}")
-        print(f"🚨 SERVER DEBUG: Tab mapping type: {type(tab_name_mapping)}")
-        print(f"🚨 SERVER DEBUG: Tab mapping keys: {list(tab_name_mapping.keys()) if isinstance(tab_name_mapping, dict) else 'Not a dict'}")
-        print(f"🚨 SERVER DEBUG: Tab mapping sample: {list(tab_name_mapping.items())[:2] if isinstance(tab_name_mapping, dict) else 'Not a dict'}")
-        print(f"🚨 SERVER DEBUG: Current working directory: {os.getcwd()}")
-
+        print(f"📊 Processing Excel: {filename}")
+        
         main_dir = Path(__file__).parent.parent
         file_path = main_dir / filename
-        print(f"🚨 SERVER DEBUG: Looking for file at: {file_path}")
-        print(f"🚨 SERVER DEBUG: File exists: {file_path.exists()}")
 
         wb = None
         markdown_content = ""
         entity_keywords = [entity_name] + list(entity_suffixes)
         entity_keywords = [kw.strip().lower() for kw in entity_keywords if kw.strip()]
-        print(f"🚨 SERVER DEBUG: Generated entity keywords: {entity_keywords}")
 
         try:
             wb = openpyxl.load_workbook(file_path, data_only=True)
@@ -1004,8 +720,6 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
             for key, sheet_names in tab_name_mapping.items():
                 for sheet_name in sheet_names:
                     reverse_mapping[sheet_name] = key
-            
-            print(f"🚨 SERVER DEBUG: Reverse mapping created: {reverse_mapping}")
             
             for ws in wb.worksheets:
                 if ws.title not in reverse_mapping:
@@ -1073,24 +787,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
                                 print(f"   Filtered DataFrame columns: {list(filtered_df.columns)}")
 
                                 # Parse the table into structured format
-                                print(f"🚨 SERVER DEBUG: === ABOUT TO CALL TABLE PARSER ===")
-                                print(f"🚨 SERVER DEBUG: Table name: '{table_name}' | Entity: '{entity_name}'")
-                                print(f"🚨 SERVER DEBUG: Filtered DataFrame: {filtered_df.shape} rows x {filtered_df.shape[1]} columns")
-                                print(f"🚨 SERVER DEBUG: First few rows of filtered data:")
-                                for i in range(min(3, len(filtered_df))):
-                                    row_data = filtered_df.iloc[i].fillna('').values
-                                    print(f"   Row {i}: {row_data}")
-
-                                print(f"🔄 CALLING parse_table_to_structured_format for table: {table_name}")
                                 structured_table = parse_table_to_structured_format(filtered_df, entity_name, table_name)
-
-                                print(f"🚨 SERVER DEBUG: === TABLE PARSER RETURNED ===")
-                                print(f"🚨 SERVER DEBUG: Result: {'SUCCESS' if structured_table else 'FAILED/NONE'}")
-                                if structured_table:
-                                    print(f"🚨 SERVER DEBUG: Parsed table has {len(structured_table.get('items', []))} items")
-                                    print(f"🚨 SERVER DEBUG: Multiplier: {structured_table.get('multiplier', 'N/A')}x")
-                                else:
-                                    print(f"🚨 SERVER DEBUG: No structured table returned - likely no valid items found")
                             else:
                                 print(f"❌ NO FILTERED ROWS for table {table_name}")
                                 structured_table = None
@@ -1147,14 +844,7 @@ def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suf
             except Exception:
                 pass
 
-        # 🚨 SERVER DEBUG: Final Application Results
-        print(f"\n🚨 SERVER DEBUG: === MAIN APPLICATION END ===")
-        print(f"🚨 SERVER DEBUG: Processing complete for file: '{filename}'")
-        print(f"🚨 SERVER DEBUG: Entity: '{entity_name}'")
-        print(f"🚨 SERVER DEBUG: Final markdown content length: {len(markdown_content)} characters")
-        print(f"🚨 SERVER DEBUG: Returning result: {'SUCCESS' if markdown_content else 'EMPTY'}")
-        print(f"🚨 SERVER DEBUG: === APPLICATION FINISHED ===\n")
-
+        print(f"✅ Excel processing complete")
         return markdown_content
         
     except Exception as e:
