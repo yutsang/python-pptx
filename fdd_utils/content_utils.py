@@ -180,10 +180,15 @@ def generate_content_from_session_storage(entity_name):
         # Get current statement type from session state first
         current_statement_type = st.session_state.get('current_statement_type', 'BS')
 
-        print(f"📝 CONTENT GEN: Processing {entity_name} for {current_statement_type} statement")
-
+        print(f"\n{'='*60}")
+        print(f"📝 CONTENT GENERATION START")
+        print(f"{'='*60}")
+        print(f"   Entity: {entity_name}")
+        print(f"   Statement Type: {current_statement_type}")
+        
         # Get content from session state storage (fastest method)
         content_store = st.session_state.get('ai_content_store', {})
+        print(f"   Content store keys: {list(content_store.keys())[:5]}..." if content_store else "   Content store: EMPTY")
 
         if not content_store:
             print(f"❌ CONTENT GEN: No AI content found in session state")
@@ -290,9 +295,22 @@ def generate_content_from_session_storage(entity_name):
         else:
             json_filename = f"fdd_utils/bs_content.json"
             md_filename = f"fdd_utils/bs_content.md"
+        
+        print(f"   Target files: {json_filename}, {md_filename}")
+        
+        # CRITICAL FIX: Delete old files first to ensure fresh content
+        for old_file in [json_filename, md_filename]:
+            if os.path.exists(old_file):
+                try:
+                    os.remove(old_file)
+                    print(f"   🗑️ Deleted old file: {old_file}")
+                except Exception as e:
+                    print(f"   ⚠️ Could not delete {old_file}: {e}")
 
         with open(json_filename, 'w', encoding='utf-8') as f:
             json.dump(json_content, f, indent=2, ensure_ascii=False)
+        
+        print(f"   ✅ Saved JSON: {json_filename}")
 
         # Generate markdown file for human readability (without metadata headers for PowerPoint)
         markdown_content = ""
@@ -329,11 +347,33 @@ def generate_content_from_session_storage(entity_name):
 
         # Save markdown file
         try:
+            print(f"📝 CONTENT GEN: Saving markdown to {md_filename}")
+            print(f"📝 CONTENT GEN: Content preview (first 200 chars): {markdown_content[:200]}")
+            
             with open(md_filename, 'w', encoding='utf-8') as f:
                 f.write(markdown_content)
-            print(f"✅ CONTENT GEN: Successfully saved markdown file: {md_filename}")
+            
+            # Verify file was written
+            if os.path.exists(md_filename):
+                file_size = os.path.getsize(md_filename)
+                print(f"✅ CONTENT GEN: Successfully saved markdown file: {md_filename} ({file_size} bytes)")
+                
+                # Verify content was written correctly
+                with open(md_filename, 'r', encoding='utf-8') as f:
+                    saved_content = f.read()
+                if len(saved_content) != len(markdown_content):
+                    print(f"⚠️ CONTENT GEN: File size mismatch! Expected {len(markdown_content)}, got {len(saved_content)}")
+                else:
+                    print(f"✅ CONTENT GEN: Content verification passed")
+            else:
+                print(f"❌ CONTENT GEN: File not found after save: {md_filename}")
+                st.error(f"❌ Failed to create content file: {md_filename}")
+                return
+                
         except Exception as e:
             print(f"❌ CONTENT GEN: Failed to save markdown file {md_filename}: {e}")
+            import traceback
+            print(f"   Traceback: {traceback.format_exc()}")
             st.error(f"❌ Failed to save content file: {e}")
             return
 
