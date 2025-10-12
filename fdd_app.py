@@ -455,6 +455,26 @@ def run_ai_processing(filtered_keys, ai_data, language='english', progress_callb
         # Get entity information
         entity_name = ai_data.get('entity_name', '')
         entity_keywords = ai_data.get('entity_keywords', [])
+        
+        # CRITICAL FIX: Filter zero-value rows from sections before passing to AI
+        sections_by_key = ai_data.get('sections_by_key', {})
+        print(f"🔍 AI Processing: Filtering zero-value rows from {len(sections_by_key)} keys")
+        
+        try:
+            from fdd_utils.data_filtering import filter_sections_by_key_for_ai
+            filtered_sections = filter_sections_by_key_for_ai(sections_by_key, debug=True)
+            print(f"✅ Zero-value filtering complete: {len(sections_by_key)} -> {len(filtered_sections)} keys")
+        except Exception as filter_error:
+            print(f"⚠️ Zero-value filtering failed: {filter_error}, using original data")
+            filtered_sections = sections_by_key
+
+        # Log processing start
+        if 'ai_logger' in st.session_state:
+            st.session_state.ai_logger.log_processing_start(
+                statement_type=st.session_state.get('current_statement_type', 'Unknown'),
+                keys=filtered_keys,
+                entity=entity_name
+            )
 
         # Process keys using the assistant
         results = process_keys(
@@ -467,17 +487,28 @@ def run_ai_processing(filtered_keys, ai_data, language='english', progress_callb
             config_file='fdd_utils/config.json',
             prompts_file='fdd_utils/prompts.json',
             use_ai=True,
-            processed_table_data=ai_data.get('sections_by_key', {}),
+            processed_table_data=filtered_sections,  # Use filtered data
             use_local_ai=st.session_state.get('use_local_ai', False),
             use_openai=st.session_state.get('use_openai', False),
             language=language,
             progress_callback=progress_callback
         )
+        
+        # Log processing complete
+        if 'ai_logger' in st.session_state:
+            st.session_state.ai_logger.log_processing_complete(
+                statement_type=st.session_state.get('current_statement_type', 'Unknown'),
+                success=True,
+                total_time=0,  # Will be calculated from logs
+                keys_processed=len(results)
+            )
 
         return results or {}
         
     except Exception as e:
         st.error(f"❌ AI processing failed: {e}")
+        if 'ai_logger' in st.session_state:
+            st.session_state.ai_logger.log_error("system", "ai_processing", str(e))
         return {}
 
 

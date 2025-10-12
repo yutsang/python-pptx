@@ -22,6 +22,15 @@ except ImportError:
     OpenAI = None
     AI_AVAILABLE = False
 
+# Import token counting utilities (uses character-based estimation by default)
+try:
+    from fdd_utils.token_utils import TokenCounter
+    TOKEN_COUNTING_AVAILABLE = True
+except ImportError:
+    TOKEN_COUNTING_AVAILABLE = False
+    TokenCounter = None
+    print("⚠️ Token counting not available - check fdd_utils/token_utils.py")
+
 # --- Config and AI Service Helpers ---
 def load_config(file_path):
     """Load configuration from a JSON file."""
@@ -142,8 +151,10 @@ def get_chat_model(config_details=None, use_local=False, use_openai=False):
     else:
         return config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
 
-def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model, entity_name="default", use_local_ai=False):
+def generate_response(user_query, system_prompt, oai_client, context_content, openai_chat_model, entity_name="default", use_local_ai=False, logger=None, key="unknown", agent="unknown"):
     """Generate a response from the AI model given a user query and system prompt."""
+    
+    start_time = time.time()
     
     # Include context data in the user query instead of as a separate assistant message
     enhanced_user_query = f"Context data:\n{context_content}\n\nUser query:\n{user_query}"
@@ -159,6 +170,28 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
         {"role": "user", "content": enhanced_user_query}
     ]
     
+    # Count input tokens
+    input_tokens = 0
+    if TOKEN_COUNTING_AVAILABLE:
+        try:
+            counter = TokenCounter(openai_chat_model or "gpt-4")
+            input_tokens = counter.count_messages_tokens(conversation)
+            
+            # Check token limit and warn if approaching
+            is_ok, token_count, message = counter.check_token_limit(enhanced_user_query, limit=20000)
+            if not is_ok:
+                print(f"⚠️ TOKEN WARNING for key '{key}': {message}")
+            else:
+                print(f"✅ Token check passed for key '{key}': {token_count} tokens")
+        except Exception as e:
+            print(f"⚠️ Token counting failed: {e}")
+    
+    # Log AI input
+    if logger:
+        try:
+            logger.log_ai_input(agent, key, system_prompt, enhanced_user_query, input_tokens)
+        except Exception as e:
+            print(f"⚠️ Logging failed: {e}")
     
     try:
         # For local AI with thinking support (DeepSeek 671B), enable reasoning
@@ -177,7 +210,10 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
         safe_params = {k: v for k, v in extra_params.items() if k != 'reasoning'}
         response = oai_client.chat.completions.create(model=model_name, messages=conversation, **safe_params)
     except Exception as e:
-        print(f"❌ API call failed with model '{openai_chat_model}': {e}")
+        error_msg = f"❌ API call failed with model '{openai_chat_model}': {e}"
+        print(error_msg)
+        if logger:
+            logger.log_error(agent, key, str(e))
         raise
     
     response_content = response.choices[0].message.content
@@ -185,6 +221,28 @@ def generate_response(user_query, system_prompt, oai_client, context_content, op
     # If model returns thinking tags anyway, strip them and keep final answer only
     if "<thinking>" in response_content and "</thinking>" in response_content:
         response_content = response_content.split("</thinking>")[-1].strip()
+    
+    # Count output tokens and log
+    output_tokens = 0
+    processing_time = time.time() - start_time
+    
+    if TOKEN_COUNTING_AVAILABLE:
+        try:
+            output_tokens = counter.count_tokens(response_content)
+            cost, _ = counter.estimate_cost(input_tokens, output_tokens)
+            print(f"📊 Token usage for key '{key}': Input={input_tokens}, Output={output_tokens}, Cost=${cost:.4f}, Time={processing_time:.2f}s")
+            
+            if logger:
+                logger.log_token_usage(key, agent, input_tokens, output_tokens, cost)
+        except Exception as e:
+            print(f"⚠️ Token logging failed: {e}")
+    
+    # Log AI output
+    if logger:
+        try:
+            logger.log_ai_output(agent, key, response_content, output_tokens, processing_time)
+        except Exception as e:
+            print(f"⚠️ Output logging failed: {e}")
     
     return response_content
 

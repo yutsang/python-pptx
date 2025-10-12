@@ -2517,20 +2517,43 @@ def merge_presentations(bs_presentation_path, is_presentation_path, output_path)
     """
     Merge Balance Sheet and Income Statement presentations into a single presentation.
     
+    This function combines BS and IS presentations by:
+    1. Loading BS presentation as the base
+    2. Copying all slides from IS presentation
+    3. Appending IS slides after BS slides
+    4. Preserving formatting, text, tables, and other elements
+    
     Args:
         bs_presentation_path: Path to the Balance Sheet presentation
         is_presentation_path: Path to the Income Statement presentation  
         output_path: Path for the merged output presentation
+        
+    Returns:
+        str: Path to the merged presentation
     """
     try:
         from pptx import Presentation
+        from pptx.util import Inches, Pt
+        from pptx.dml.color import RGBColor
         import logging
         
-        logging.info(f"🔄 Starting presentation merge...")
+        print(f"🔄 Starting presentation merge...")
+        print(f"   BS: {bs_presentation_path}")
+        print(f"   IS: {is_presentation_path}")
+        print(f"   Output: {output_path}")
+        
+        # Verify input files exist
+        if not os.path.exists(bs_presentation_path):
+            raise FileNotFoundError(f"BS presentation not found: {bs_presentation_path}")
+        if not os.path.exists(is_presentation_path):
+            raise FileNotFoundError(f"IS presentation not found: {is_presentation_path}")
         
         # Load the Balance Sheet presentation as the base
         bs_prs = Presentation(bs_presentation_path)
         is_prs = Presentation(is_presentation_path)
+        
+        print(f"📊 BS presentation: {len(bs_prs.slides)} slides")
+        print(f"📈 IS presentation: {len(is_prs.slides)} slides")
         
         logging.info(f"📊 BS presentation has {len(bs_prs.slides)} slides")
         logging.info(f"📈 IS presentation has {len(is_prs.slides)} slides")
@@ -2610,8 +2633,20 @@ def merge_presentations(bs_presentation_path, is_presentation_path, output_path)
         # Save the merged presentation
         bs_prs.save(output_path)
         
+        total_slides = len(bs_prs.slides)
+        print(f"✅ Successfully merged presentations!")
+        print(f"   Total slides: {total_slides}")
+        print(f"   Output: {output_path}")
+        
         logging.info(f"✅ Successfully merged presentations to: {output_path}")
-        logging.info(f"📊 Final presentation has {len(bs_prs.slides)} slides")
+        logging.info(f"📊 Final presentation has {total_slides} slides")
+        
+        # Verify output file was created
+        if not os.path.exists(output_path):
+            raise FileNotFoundError(f"Merged presentation was not created: {output_path}")
+        
+        file_size = os.path.getsize(output_path)
+        print(f"   File size: {file_size:,} bytes")
         
     except Exception as e:
         logging.error(f"❌ Failed to merge presentations: {str(e)}")

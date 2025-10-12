@@ -4,11 +4,11 @@ import datetime
 
 
 class AIAgentLogger:
-    """Records each button click and associated AI I/O in a single JSON file under logging/."""
+    """Records each button click and associated AI I/O in a single JSON file under fdd_utils/logs/."""
     def __init__(self):
         from pathlib import Path
-        self.log_dir = Path("logging")
-        self.log_dir.mkdir(exist_ok=True)
+        self.log_dir = Path("fdd_utils/logs")
+        self.log_dir.mkdir(parents=True, exist_ok=True)
         self.session_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.session_file = self.log_dir / f"session_{self.session_id}.json"
         self._data = {"session": {"id": self.session_id, "started": datetime.datetime.now().isoformat()}, "events": []}
@@ -19,18 +19,66 @@ class AIAgentLogger:
             self._data["events"].append(event)
             with open(self.session_file, 'w', encoding='utf-8') as f:
                 json.dump(self._data, f, indent=2, ensure_ascii=False)
+            print(f"📝 Logged event: {event.get('type', 'unknown')} - {event.get('name', '')} to {self.session_file}")
         except Exception as e:
-            print(f"Logging error: {e}")
+            print(f"❌ Logging error: {e}")
 
-    # Simple wrappers
+    # Enhanced wrappers with token counting
     def log_click(self, name: str, payload: dict):
         self.append({"type": "click", "name": name, "payload": payload})
-    def log_ai_input(self, agent: str, key: str, system: str, user: str):
-        self.append({"type": "ai_input", "agent": agent, "key": key, "system": system, "user": user})
-    def log_ai_output(self, agent: str, key: str, output):
-        self.append({"type": "ai_output", "agent": agent, "key": key, "output": output})
+    
+    def log_ai_input(self, agent: str, key: str, system: str, user: str, tokens: int = 0):
+        self.append({
+            "type": "ai_input", 
+            "agent": agent, 
+            "key": key, 
+            "system_prompt": system[:500] + "..." if len(system) > 500 else system,  # Truncate for readability
+            "user_prompt": user[:500] + "..." if len(user) > 500 else user,  # Truncate for readability
+            "input_tokens": tokens
+        })
+    
+    def log_ai_output(self, agent: str, key: str, output, tokens: int = 0, processing_time: float = 0):
+        output_str = str(output)[:500] + "..." if len(str(output)) > 500 else str(output)
+        self.append({
+            "type": "ai_output", 
+            "agent": agent, 
+            "key": key, 
+            "output": output_str,
+            "output_tokens": tokens,
+            "processing_time_seconds": processing_time
+        })
+    
     def log_error(self, agent: str, key: str, error: str):
         self.append({"type": "error", "agent": agent, "key": key, "error": error})
+    
+    def log_processing_start(self, statement_type: str, keys: list, entity: str):
+        self.append({
+            "type": "processing_start",
+            "statement_type": statement_type,
+            "keys_count": len(keys),
+            "keys": keys,
+            "entity": entity
+        })
+    
+    def log_processing_complete(self, statement_type: str, success: bool, total_time: float, keys_processed: int):
+        self.append({
+            "type": "processing_complete",
+            "statement_type": statement_type,
+            "success": success,
+            "total_time_seconds": total_time,
+            "keys_processed": keys_processed
+        })
+    
+    def log_token_usage(self, key: str, agent: str, input_tokens: int, output_tokens: int, cost: float = 0):
+        self.append({
+            "type": "token_usage",
+            "key": key,
+            "agent": agent,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "estimated_cost_usd": cost
+        })
 
 
 def derive_entity_parts(full_name: str):
