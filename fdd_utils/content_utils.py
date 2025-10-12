@@ -262,6 +262,17 @@ def generate_content_from_session_storage(entity_name):
 
                 # Apply item limiting to enforce "top 2 only" rule
                 limited_content = limit_commentary_items(final_content)
+                
+                # CRITICAL FIX: Remove any remaining placeholders
+                try:
+                    from fdd_utils.cleanup_utils import clean_financial_commentary
+                    limited_content = clean_financial_commentary(limited_content)
+                except ImportError:
+                    # Fallback if cleanup_utils not available
+                    import re
+                    limited_content = re.sub(r'\{[^}]+\}', '', limited_content)
+                    limited_content = re.sub(r'\[[^\]]+\]', '', limited_content)
+                    limited_content = re.sub(r'\bxxx\b', '', limited_content, flags=re.IGNORECASE)
 
                 json_content['financial_items'][key] = {
                     'content': limited_content,

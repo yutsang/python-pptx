@@ -22,6 +22,14 @@ urllib3.disable_warnings()
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 warnings.simplefilter(action='ignore', category=UserWarning)
 
+# Debug control - Set to True only for debugging
+VERBOSE_DEBUG = os.environ.get('VERBOSE_DEBUG', 'false').lower() == 'true'
+
+def debug_print(*args, **kwargs):
+    """Print only if VERBOSE_DEBUG is enabled"""
+    if VERBOSE_DEBUG:
+        print(*args, **kwargs)
+
 # Import all required modules
 from fdd_utils.mappings import KEY_TO_SECTION_MAPPING, KEY_TERMS_BY_KEY
 from fdd_utils.category_config import DISPLAY_NAME_MAPPING_DEFAULT, DISPLAY_NAME_MAPPING_NB_NJ

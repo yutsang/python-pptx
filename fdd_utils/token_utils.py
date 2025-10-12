@@ -42,21 +42,22 @@ class TokenCounter:
         
         if TIKTOKEN_AVAILABLE:
             try:
+                # Try model-specific encoding first
                 self.encoding = tiktoken.encoding_for_model(model_name)
                 self.use_accurate_counting = True
-                print(f"✅ Using accurate token counting (tiktoken)")
+                # Silent success - no need to print
             except KeyError:
-                # Fallback to cl100k_base encoding
+                # Fallback to cl100k_base encoding (silent)
                 try:
                     self.encoding = tiktoken.get_encoding("cl100k_base")
                     self.use_accurate_counting = True
-                    print(f"⚠️ Model {model_name} not found, using cl100k_base encoding")
+                    # Silent fallback - works fine
                 except:
                     self.encoding = None
-                    print(f"⚠️ Using character-based token estimation (install tiktoken for accuracy)")
+                    # Silent fallback to character-based
         else:
             self.encoding = None
-            print(f"ℹ️ Using character-based token estimation (install 'pip install tiktoken' for accuracy)")
+            # Silent - only print once at app startup if needed
     
     def count_tokens(self, text: str) -> int:
         """
