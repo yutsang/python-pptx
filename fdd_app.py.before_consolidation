@@ -1389,12 +1389,15 @@ def main():
                 current_key_index = 0
                 current_key = "Processing"
                 
-                # ========================================
-                # STEP 1: AI PROCESSING (Agent 1)
-                # ========================================
+                # Step 1: AI Processing
                 status_msg = "🤖 生成内容..." if is_chinese else "🤖 Generating content..."
                 status_text.text(f"{status_msg} (0/{total_keys} keys)")
                 progress_bar.progress(0.1)
+                    
+                    # First generate English content, then proofread, then translate
+                    total_keys = len(filtered_keys_for_ai)
+                    status_text.text(f"📊 生成英文内容... (0/{total_keys} keys)")
+                    progress_bar.progress(0.2)
                     
                     # Initialize timing for proper ETA calculation
                     if 'processing_start_time' not in st.session_state:

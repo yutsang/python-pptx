@@ -1417,17 +1417,19 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         prompts_config = json.load(f)
 
     # Use the passed language parameter (defaults to 'english')
+    # Normalize language parameter to match prompts.json structure
+    language_key = 'chinese' if language.lower() in ['chinese', '中文', 'chi'] else 'english'
     
-    system_prompts = prompts_config.get('system_prompts', {}).get(language, {})
+    system_prompts = prompts_config.get('system_prompts', {}).get(language_key, {})
 
     system_prompt = system_prompts.get('Agent 1')
     if not system_prompt:
-        # Fallback to direct access if nested structure fails
-        system_prompt = prompts_config.get('system_prompts', {}).get('Agent 1')
+        # Fallback to English prompts if language-specific not found
+        system_prompt = prompts_config.get('system_prompts', {}).get('english', {}).get('Agent 1')
     
     if not system_prompt:
-        print(f"❌ ERROR: No system prompt found for language '{language}' or fallback")
-        raise RuntimeError(f"No system prompt found for language '{language}'")
+        print(f"❌ ERROR: No system prompt found for language '{language_key}' or fallback")
+        raise RuntimeError(f"No system prompt found for language '{language_key}'")
     
     
     # No need to initialize financial figures - we're using cached data
@@ -2245,8 +2247,8 @@ class ProofreadingAgent:
             import json
             import re
 
-            # Debug: Proofreading start (remove after testing)
-            # print(f"🔍 DEBUG: Proofreading {key} with language: {self.language}")
+            # Debug: Proofreading start
+            print(f"🔍 PROOFREAD: Key='{key}', Language='{self.language}'", end=" ")
 
             # Update progress bar if provided
             if progress_bar:
@@ -2269,13 +2271,14 @@ class ProofreadingAgent:
                     prompts_config = json.load(f)
 
                 # Convert language to the format used in prompts.json
-                language_key = 'chinese' if self.language == '中文' else 'english'
+                # Handle both 'chinese' (English) and '中文' (Chinese) formats
+                language_key = 'chinese' if self.language.lower() in ['chinese', '中文', 'chi'] else 'english'
 
                 # Get the appropriate prompt for the language
                 system_prompt = prompts_config.get('system_prompts', {}).get(language_key, {}).get('AI Proofreader', '')
 
-                # Debug: Log which prompt was loaded (remove after testing)
-                # print(f"🔍 DEBUG: Loaded system prompt for language '{language_key}': {system_prompt[:100]}...")
+                # Debug: Log which prompt was loaded
+                print(f"Prompt={language_key[:3]}", end=" ")
 
                 # Fallback if language-specific prompt not found
                 if not system_prompt:
@@ -2284,7 +2287,7 @@ class ProofreadingAgent:
 
             except (FileNotFoundError, json.JSONDecodeError):
                 # Fallback to language-appropriate default prompt
-                if self.language == '中文':
+                if self.language.lower() in ['chinese', '中文', 'chi']:
                     system_prompt = (
                         "您是财务尽职调查叙述的人工智能校对员。审查Agent 1内容是否符合：模式要求、数据格式化（K/M 1位小数；处理'000）、按表格的实体/细节正确性（不是报告实体）、语法/专业语气（移除外引号）、语言规范化（确保使用简体中文；使用VAT、CIT、WHT、附加税）。规则：不要发明数据；保持简洁；如果列表太长，保留前2项；确保所有内容都是简体中文。返回JSON格式：is_compliant (bool), issues (array), corrected_content (string), figure_checks (array), entity_checks (array), grammar_notes (array), pattern_used (string)。corrected_content必须是最终清理后的简体中文文本。"
                     )
@@ -2309,7 +2312,10 @@ class ProofreadingAgent:
             truncated_tables = tables_markdown_str[:max_tables_length] + ("..." if len(tables_markdown_str) > max_tables_length else "")
 
             # Build user query with truncated content (language-aware)
-            if language_key == 'chinese':
+            # Handle both language formats
+            is_chinese = language_key == 'chinese' or self.language.lower() in ['chinese', '中文', 'chi']
+            
+            if is_chinese:
                 user_query = f"""
                 AI PROOFREADING TASK (中文内容)
 
@@ -2374,8 +2380,34 @@ class ProofreadingAgent:
             else:
                 model = config_details.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
 
-            response = generate_response(user_query, system_prompt, oai_client, tables_markdown_str, model, entity, self.use_local_ai)
+            # Get logger
+            logger = None
+            try:
+                import streamlit as st
+                logger = st.session_state.get('ai_logger') if hasattr(st, 'session_state') else None
+            except:
+                pass
+            
+            response = generate_response(
+                user_query, 
+                system_prompt, 
+                oai_client, 
+                tables_markdown_str, 
+                model, 
+                entity, 
+                self.use_local_ai,
+                logger=logger,
+                key=key,
+                agent="proofreader"
+            )
             response = response.strip()
+            
+            # Check if response is Chinese when it should be
+            if is_chinese:
+                chinese_chars = sum(1 for c in response if '\u4e00' <= c <= '\u9fff')
+                total_chars = len(response)
+                chinese_ratio = chinese_chars / total_chars if total_chars > 0 else 0
+                print(f"Output={chinese_ratio*100:.0f}%中文", end=" ")
             if response.startswith('```json'):
                 response = response.replace('```json', '').replace('```', '').strip()
             elif response.startswith('```'):
@@ -2384,8 +2416,13 @@ class ProofreadingAgent:
             try:
                 result = json.loads(response)
                 
-                # Debug: Log the raw result to understand what the AI is returning
-                print(f"🔍 DEBUG PROOFREADER RAW RESULT: {result}")
+                # Check corrected_content language
+                corrected = result.get('corrected_content', '')
+                if is_chinese and corrected:
+                    cn_chars = sum(1 for c in str(corrected) if '\u4e00' <= c <= '\u9fff')
+                    total = len(str(corrected))
+                    cn_ratio = cn_chars / total if total > 0 else 0
+                    print(f"Final={cn_ratio*100:.0f}%中文 ✓" if cn_ratio > 0.5 else f"Final={cn_ratio*100:.0f}%中文 ❌")
                 
                 # Fill defaults and ensure proper types
                 result.setdefault('is_compliant', True)
