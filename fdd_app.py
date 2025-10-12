@@ -470,10 +470,29 @@ def run_ai_processing(filtered_keys, ai_data, language='english', progress_callb
         
         try:
             from fdd_utils.data_filtering import filter_sections_by_key_for_ai
-            filtered_sections = filter_sections_by_key_for_ai(sections_by_key, debug=True)
+            
+            # Try to detect target column (Indicative adjusted or similar)
+            # Look for common target column names
+            target_col = None
+            for key, sections in list(sections_by_key.items())[:1]:  # Check first key
+                if sections:
+                    section_text = str(sections[0])
+                    # Look for "Indicative adjusted" or Chinese equivalent
+                    if '示意性调整后' in section_text or 'Indicative adjusted' in section_text:
+                        # Try to extract column name
+                        if '示意性调整后' in section_text:
+                            target_col = '示意性调整后'
+                        else:
+                            target_col = 'Indicative adjusted'
+                        print(f"   🎯 Detected target column: '{target_col}'")
+                        break
+            
+            filtered_sections = filter_sections_by_key_for_ai(sections_by_key, debug=True, target_column=target_col)
             print(f"✅ Zero-value filtering complete: {len(sections_by_key)} -> {len(filtered_sections)} keys")
         except Exception as filter_error:
             print(f"⚠️ Zero-value filtering failed: {filter_error}, using original data")
+            import traceback
+            print(f"   Traceback: {traceback.format_exc()}")
             filtered_sections = sections_by_key
 
         # Log processing start

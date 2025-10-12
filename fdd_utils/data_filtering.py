@@ -8,16 +8,17 @@ import re
 from typing import Dict, List
 
 
-def filter_zero_value_rows(df: pd.DataFrame) -> pd.DataFrame:
+def filter_zero_value_rows(df: pd.DataFrame, target_column: str = None) -> pd.DataFrame:
     """
-    Filter out rows where ALL value columns are exactly zero (not NaN)
-    This ensures AI commentary doesn't include accounts with no activity
+    Filter out rows where the TARGET column is exactly zero (not NaN)
+    Only checks the latest/target column (e.g., "Indicative adjusted"), not historical columns
     
     Args:
         df: DataFrame with financial data
+        target_column: Specific column to check for zeros (if None, uses rightmost numeric column)
         
     Returns:
-        Filtered DataFrame with zero-value rows removed
+        Filtered DataFrame with zero-value rows removed from target column only
     """
     if df.empty:
         return df
@@ -26,7 +27,6 @@ def filter_zero_value_rows(df: pd.DataFrame) -> pd.DataFrame:
     filtered_df = df.copy()
     
     # Identify value columns (numeric columns that are not the first column)
-    # Typically: column 0 is description, columns 1+ are date/value columns
     value_cols = []
     for col_idx, col in enumerate(filtered_df.columns):
         if col_idx > 0:  # Skip first column (description)
@@ -44,11 +44,18 @@ def filter_zero_value_rows(df: pd.DataFrame) -> pd.DataFrame:
         print(f"⚠️ No value columns found for filtering")
         return filtered_df
     
-    print(f"🔍 Filtering zero-value rows. Value columns: {value_cols}")
+    # Determine target column to check
+    if target_column and target_column in value_cols:
+        check_col = target_column
+        print(f"🔍 Filtering zero-value rows. Target column: '{check_col}'")
+    else:
+        # Use rightmost/latest column (typically the most recent "Indicative adjusted")
+        check_col = value_cols[-1]
+        print(f"🔍 Filtering zero-value rows. Using rightmost column: '{check_col}' (from {len(value_cols)} value columns)")
+        print(f"   Note: Only checking '{check_col}', ignoring historical columns: {value_cols[:-1]}")
     
-    # Convert value columns to numeric
-    for col in value_cols:
-        filtered_df[col] = pd.to_numeric(filtered_df[col], errors='coerce')
+    # Convert target column to numeric
+    filtered_df[check_col] = pd.to_numeric(filtered_df[check_col], errors='coerce')
     
     # Create mask to identify rows to keep
     mask = []
@@ -61,34 +68,25 @@ def filter_zero_value_rows(df: pd.DataFrame) -> pd.DataFrame:
         desc_value = str(row[desc_col]).strip()
         has_description = desc_value not in ['', 'nan', 'None', 'NaN']
         
-        # Check if ALL value columns are exactly zero (not NaN)
-        all_values_zero = True
-        has_any_data = False
-        
-        for col in value_cols:
-            val = pd.to_numeric(row[col], errors='coerce')
-            if pd.notna(val):
-                has_any_data = True
-                if val != 0:
-                    all_values_zero = False
-                    break
+        # CRITICAL FIX: Only check TARGET column for zero, not all columns
+        target_val = pd.to_numeric(row[check_col], errors='coerce')
         
         # Keep row if:
-        # 1. Has description AND has non-zero values
-        # 2. Has description AND has no data (NaN) - might be header
-        # 3. Remove only if has description AND ALL values are exactly 0
+        # 1. Has description AND target column is non-zero
+        # 2. Has description AND target column is NaN (might be header/subtotal)
+        # 3. Remove only if has description AND target column is exactly 0
         if has_description:
-            if not has_any_data or not all_values_zero:
+            if pd.isna(target_val) or target_val != 0:
                 mask.append(True)
                 kept_count += 1
             else:
                 mask.append(False)
                 removed_count += 1
-                print(f"   🗑️ Removing zero-value row: {desc_value}")
+                print(f"   🗑️ Removing zero in '{check_col}': {desc_value} (value={target_val})")
         else:
             mask.append(False)  # Remove rows without description
     
-    print(f"✅ Filtering complete: Kept {kept_count} rows, Removed {removed_count} rows")
+    print(f"✅ Filtering complete: Kept {kept_count} rows, Removed {removed_count} rows (checked column: '{check_col}')")
     
     if mask:
         filtered_df = filtered_df[mask].reset_index(drop=True)
@@ -96,7 +94,7 @@ def filter_zero_value_rows(df: pd.DataFrame) -> pd.DataFrame:
     return filtered_df
 
 
-def filter_sections_by_key_for_ai(sections_by_key: Dict[str, List], debug: bool = False) -> Dict[str, List]:
+def filter_sections_by_key_for_ai(sections_by_key: Dict[str, List], debug: bool = False, target_column: str = None) -> Dict[str, List]:
     """
     Filter sections_by_key data structure to remove zero-value content before AI processing
     
@@ -147,8 +145,8 @@ def filter_sections_by_key_for_ai(sections_by_key: Dict[str, List], debug: bool 
                         # Create DataFrame
                         df = pd.DataFrame(data_rows[1:], columns=data_rows[0])
                         
-                        # Apply zero-value filtering
-                        filtered_df = filter_zero_value_rows(df)
+                        # Apply zero-value filtering (only checks target column)
+                        filtered_df = filter_zero_value_rows(df, target_column=target_column)
                         
                         if not filtered_df.empty:
                             # Convert back to table format
