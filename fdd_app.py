@@ -1944,7 +1944,7 @@ def main():
                             print(f"❌ BS content file not found: {bs_content_file}")
                     elif statement_type == "IS":
                         print(f"🔄 Processing IS mode content generation...")
-                        # Set current statement type for IS mode
+                        # Set current statement type for IS mode  
                         st.session_state['current_statement_type'] = 'IS'
                         # Mark all agents as completed for IS mode
                         st.session_state['agent_states']['agent1_completed'] = True
@@ -1954,9 +1954,11 @@ def main():
                         st.session_state['agent_states']['agent3_completed'] = True
                         st.session_state['agent_states']['agent3_success'] = True
                         print(f"✅ All agents marked as completed for IS mode")
-                        # Generate content for IS mode
+                        
+                        # CRITICAL FIX: Generate content for IS mode
+                        print(f"🔄 Calling generate_content_from_session_storage for IS mode...")
                         generate_content_from_session_storage(selected_entity)
-                        print(f"✅ IS mode content generation completed")
+                        print(f"✅ IS mode content generation call completed")
 
                         # Verify IS content files were created
                         is_content_file = "fdd_utils/is_content.md"
@@ -1966,6 +1968,7 @@ def main():
                             print(f"✅ IS content file created: {is_content_file}, size: {len(content)}")
                         else:
                             print(f"❌ IS content file not found: {is_content_file}")
+                            print(f"❌ This should not happen - check console for errors in content generation")
                     else:
                         # For other modes, generate content
                         st.session_state['current_statement_type'] = statement_type
@@ -2208,7 +2211,7 @@ def main():
 
 
 def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, project_name, language='english', statement_type='BS'):
-    """Add BSHN data table to the first slide (BS1)"""
+    """Add financial data table to the first slide (BS1 or IS1)"""
     try:
         from pptx import Presentation
         from pptx.util import Inches, Pt
@@ -2217,28 +2220,45 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         import pandas as pd
         import os
         
+        print(f"\n{'='*80}")
+        print(f"📊 TABLE EMBED START - {statement_type} MODE")
+        print(f"{'='*80}")
+        print(f"   Excel file: {excel_file_path}")
+        print(f"   Sheet name: {sheet_name}")
+        print(f"   File exists: {os.path.exists(excel_file_path) if excel_file_path else False}")
+        print(f"   Statement type: {statement_type}")
+        
         # Load the presentation
         prs = Presentation(presentation_path)
+        print(f"   PPTX loaded: {len(prs.slides)} slides")
         
         # Read Excel data and apply column filtering
         df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
-        print(f"\n{'='*80}")
-        print(f"🎯 POWERPOINT TABLE GENERATION - {statement_type} MODE")
-        print(f"{'='*80}")
-        print(f"📊 Processing sheet: {sheet_name}")
-        print(f"📊 Original data shape: {df.shape}")
+        print(f"   Excel data loaded: {df.shape[0]}×{df.shape[1]}")
         
         # Apply BS/IS separation first
         from fdd_utils.excel_processing import separate_balance_sheet_and_income_statement_tables, filter_to_indicative_adjusted_columns
         bs_data, is_data, separation_metadata = separate_balance_sheet_and_income_statement_tables(df, [project_name])
+        
+        print(f"   BS data: {bs_data['data'].shape if bs_data else 'None'}")
+        print(f"   IS data: {is_data['data'].shape if is_data else 'None'}")
 
         # Use appropriate data based on statement type
         if statement_type == "IS" and is_data:
             df = is_data['data']
             print(f"✅ Using Income Statement data: {df.shape[0]}×{df.shape[1]}")
+        elif statement_type == "IS" and not is_data:
+            print(f"❌ IS mode selected but no IS data found in separation!")
+            print(f"   This might mean your Excel tab doesn't have IS accounts")
+            st.error("❌ No Income Statement data found in selected Excel tab")
+            return
         elif statement_type == "BS" and bs_data:
             df = bs_data['data']
             print(f"✅ Using Balance Sheet data: {df.shape[0]}×{df.shape[1]}")
+        elif statement_type == "BS" and not bs_data:
+            print(f"❌ BS mode selected but no BS data found in separation!")
+            st.error("❌ No Balance Sheet data found in selected Excel tab")
+            return
         elif statement_type == "ALL" and (bs_data or is_data):
             # For combined mode, use whichever is available or combine if both exist
             if bs_data and is_data:
@@ -2304,8 +2324,18 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         print(f"📊 Final table: {df.shape[0]}×{df.shape[1]} for PPT embedding")
         print(f"{'='*80}")
         
-        # Get the first slide (BS1)
-        first_slide = prs.slides[0]
+        # Get the appropriate slide based on statement type
+        # BS uses first slide (BS1), IS uses second slide (IS1) if it exists
+        if statement_type == "IS":
+            if len(prs.slides) > 1:
+                target_slide = prs.slides[1]  # IS1 (second slide)
+                print(f"   Using slide 1 (IS1) for Income Statement table")
+            else:
+                target_slide = prs.slides[0]  # Fallback to first slide
+                print(f"   ⚠️ Only 1 slide in template, using slide 0 for IS table")
+        else:
+            target_slide = prs.slides[0]  # BS1 (first slide)
+            print(f"   Using slide 0 (BS1) for Balance Sheet table")
         
         # Create table with proper header structure
         rows = len(df) + 1  # +1 for header only (no separate currency row)
@@ -2319,8 +2349,10 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         table_x = 0.36 / 2.54  # 0.14 inches from left
         table_y = 5.01 / 2.54  # 1.97 inches from top
         
-        # Add table to the first slide with specific dimensions and position
-        table_shape = first_slide.shapes.add_table(rows, cols, Inches(table_x), Inches(table_y), Inches(table_width), Inches(table_height))
+        # Add table to the target slide with specific dimensions and position
+        print(f"   Creating table: {rows} rows × {cols} cols")
+        table_shape = target_slide.shapes.add_table(rows, cols, Inches(table_x), Inches(table_y), Inches(table_width), Inches(table_height))
+        print(f"   ✅ Table shape created on slide")
         
         # Force the table to maintain exact dimensions
         table_shape.width = Inches(table_width)
@@ -2345,12 +2377,22 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         # Extract first word from project name for header
         entity_first_word = project_name.split()[0] if project_name else "Entity"
         
-        # Fill header row (row 0) - language-aware title
+        # Fill header row (row 0) - language-aware title based on statement type
         cell = table.cell(0, 0)
-        if language.lower() == 'chinese':
-            cell.text = f"經示意性調整後資產負債表 - {entity_first_word}"
+        if statement_type == "IS":
+            # Income Statement title
+            if language.lower() == 'chinese':
+                cell.text = f"經示意性調整後利潤表 - {entity_first_word}"
+            else:
+                cell.text = f"Indicative adjusted income statement - Project {entity_first_word}"
         else:
-            cell.text = f"Indicative adjusted balance sheet - Project {entity_first_word}"
+            # Balance Sheet title
+            if language.lower() == 'chinese':
+                cell.text = f"經示意性調整後資產負債表 - {entity_first_word}"
+            else:
+                cell.text = f"Indicative adjusted balance sheet - Project {entity_first_word}"
+        
+        print(f"   Table title: {cell.text}")
         # Format header with highlighting
         cell.text_frame.paragraphs[0].font.bold = True
         cell.text_frame.paragraphs[0].font.size = Pt(9)  # Font size 9
@@ -2489,10 +2531,19 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         
         # Save the updated presentation
         prs.save(presentation_path)
-        print(f"✅ BSHN data successfully embedded from sheet '{sheet_name}' in first slide (BS1)")
+        
+        slide_name = "IS1 (Slide 1)" if statement_type == "IS" else "BS1 (Slide 0)"
+        print(f"✅ {statement_type} table successfully embedded from sheet '{sheet_name}' in {slide_name}")
+        print(f"{'='*80}\n")
         
     except Exception as e:
-        print(f"❌ Error embedding BSHN data: {e}")
+        print(f"\n{'='*80}")
+        print(f"❌ TABLE EMBED FAILED - {statement_type} MODE")
+        print(f"{'='*80}")
+        print(f"   Error: {e}")
+        import traceback
+        print(f"   Traceback: {traceback.format_exc()}")
+        print(f"{'='*80}\n")
         raise
 
 

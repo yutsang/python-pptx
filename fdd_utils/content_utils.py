@@ -222,11 +222,20 @@ def generate_content_from_session_storage(entity_name):
 
         # Check if we have any relevant content to process
         if not relevant_content:
-            print(f"❌ CONTENT GEN: No relevant content found for {current_statement_type} mode")
-            print(f"❌ CONTENT GEN: Available content_store keys: {list(content_store.keys())}")
+            print(f"\n{'='*60}")
+            print(f"❌ CONTENT GENERATION FAILED")
+            print(f"{'='*60}")
+            print(f"   Problem: No relevant content found for {current_statement_type} mode")
+            print(f"   Available keys in content_store: {list(content_store.keys())}")
             expected_keys = is_keys if current_statement_type == 'IS' else bs_keys
-            print(f"❌ CONTENT GEN: Expected keys for {current_statement_type}: {expected_keys}")
-            st.error(f"❌ No content available for {current_statement_type} statement type")
+            print(f"   Expected {current_statement_type} keys: {expected_keys}")
+            print(f"\n   DIAGNOSIS:")
+            if current_statement_type == 'IS':
+                print(f"   - Did you process IS keys in AI?")
+                print(f"   - Check if your databook has IS accounts (OI, OC, GA, etc.)")
+                print(f"   - Keys in content_store appear to be BS keys only")
+            print(f"{'='*60}\n")
+            st.error(f"❌ No content available for {current_statement_type} statement type. Check console for details.")
             return
 
         print(f"📝 CONTENT GEN: Processing {len(relevant_content)} relevant keys for {current_statement_type} mode")
