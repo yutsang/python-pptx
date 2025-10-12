@@ -1395,139 +1395,144 @@ def main():
                 status_msg = "🤖 生成内容..." if is_chinese else "🤖 Generating content..."
                 status_text.text(f"{status_msg} (0/{total_keys} keys)")
                 progress_bar.progress(0.1)
-                    
-                    # Initialize timing for proper ETA calculation
-                    if 'processing_start_time' not in st.session_state:
-                        st.session_state['processing_start_time'] = time.time()
-                    
-                    # Track current key index for proper progress display
-                    current_key_index = 0
-                    current_key = "Processing"
+                
+                # Initialize timing for proper ETA calculation
+                if 'processing_start_time' not in st.session_state:
+                    st.session_state['processing_start_time'] = time.time()
+                
+                # Track current key index for proper progress display
+                current_key_index = 0
+                current_key = "Processing"
 
-                    def progress_callback_eng(p, msg):
-                        nonlocal current_key_index, current_key
+                def progress_callback_eng(p, msg):
+                    nonlocal current_key_index, current_key
 
-                        # Store progress info in session state for display
-                        if 'debug_progress' not in st.session_state:
-                            st.session_state['debug_progress'] = []
-                        st.session_state['debug_progress'].append(f"p={p}, msg='{msg}'")
+                    # Store progress info in session state for display
+                    if 'debug_progress' not in st.session_state:
+                        st.session_state['debug_progress'] = []
+                    st.session_state['debug_progress'].append(f"p={p}, msg='{msg}'")
 
-                        # Parse the detailed message from the AI processing
-                        current_key = "Processing"  # Default fallback
+                    # Parse the detailed message from the AI processing
+                    current_key = "Processing"  # Default fallback
 
-                        if msg and isinstance(msg, str):
-                            # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
-                            if 'Processing' in msg and '•' in msg:
-                                parts = msg.split('•')
-                                if len(parts) >= 3 and 'Key' in parts[2]:
-                                    # Extract key index from format like "Key 1/9"
-                                    try:
-                                        key_info = parts[2].strip()
-                                        if '/' in key_info:
-                                            current_key_index = int(key_info.split('/')[0].replace('Key ', ''))
-                                            current_key = parts[0].replace('🔄 Processing', '').strip()
-                                    except:
-                                        pass
-                                elif len(parts) >= 1:
-                                    key_part = parts[0].replace('🔄 Processing', '').strip()
-                                    if key_part:
-                                        current_key = key_part
-                            # Format: "🔄 Processing Cash" (without bullet points)
-                            elif 'Processing' in msg:
-                                key_part = msg.replace('🔄 Processing', '').strip()
+                    if msg and isinstance(msg, str):
+                        # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
+                        if 'Processing' in msg and '•' in msg:
+                            parts = msg.split('•')
+                            if len(parts) >= 3 and 'Key' in parts[2]:
+                                # Extract key index from format like "Key 1/9"
+                                try:
+                                    key_info = parts[2].strip()
+                                    if '/' in key_info:
+                                        current_key_index = int(key_info.split('/')[0].replace('Key ', ''))
+                                        current_key = parts[0].replace('🔄 Processing', '').strip()
+                                except:
+                                    pass
+                            elif len(parts) >= 1:
+                                key_part = parts[0].replace('🔄 Processing', '').strip()
                                 if key_part:
                                     current_key = key_part
-                            # Format: Direct key name
-                            elif len(msg.strip()) < 50 and not '•' in msg and not 'Processing' in msg:
-                                current_key = msg.strip()
-                            # Format: Check if it's just a key name without "Processing"
-                            elif msg.strip() in filtered_keys_for_ai:
-                                current_key = msg.strip()
+                        # Format: "🔄 Processing Cash" (without bullet points)
+                        elif 'Processing' in msg:
+                            key_part = msg.replace('🔄 Processing', '').strip()
+                            if key_part:
+                                current_key = key_part
+                        # Format: Direct key name
+                        elif len(msg.strip()) < 50 and not '•' in msg and not 'Processing' in msg:
+                            current_key = msg.strip()
+                        # Format: Check if it's just a key name without "Processing"
+                        elif msg.strip() in filtered_keys_for_ai:
+                            current_key = msg.strip()
 
-                        # Calculate progress based on current key index
-                        if current_key_index == 0:
-                            # Fallback: estimate from progress value
-                            current_key_index = max(1, int(p * total_keys))
+                    # Calculate progress based on current key index
+                    if current_key_index == 0:
+                        # Fallback: estimate from progress value
+                        current_key_index = max(1, int(p * total_keys))
 
-                        # Calculate proper ETA based on actual processing time
-                        if p > 0 and current_key_index > 0:
-                            elapsed_time = time.time() - st.session_state['processing_start_time']
-                            avg_time_per_key = elapsed_time / current_key_index
-                            remaining_keys = max(0, total_keys - current_key_index)
-                            if remaining_keys > 0:
-                                eta_seconds = int(remaining_keys * avg_time_per_key)
+                    # Calculate proper ETA based on actual processing time
+                    if p > 0 and current_key_index > 0:
+                        elapsed_time = time.time() - st.session_state['processing_start_time']
+                        avg_time_per_key = elapsed_time / current_key_index
+                        remaining_keys = max(0, total_keys - current_key_index)
+                        if remaining_keys > 0:
+                            eta_seconds = int(remaining_keys * avg_time_per_key)
 
-                                if eta_seconds > 0:
-                                    eta_minutes = eta_seconds // 60
-                                    eta_seconds = eta_seconds % 60
-                                    eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
-                                else:
-                                    eta_text = "⏱️ Almost done!"
+                            if eta_seconds > 0:
+                                eta_minutes = eta_seconds // 60
+                                eta_seconds = eta_seconds % 60
+                                eta_text = f"⏱️ ETA: {eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"⏱️ ETA: {eta_seconds}s"
                             else:
                                 eta_text = "⏱️ Almost done!"
                         else:
-                            eta_text = ""
-
-                        # Enhanced status display with ETA on same line
-                        status_display = f"📊 生成英文内容... ({current_key_index}/{total_keys} keys) - {current_key}"
-                        if eta_text:
-                            status_display += f" {eta_text}"
-                        status_text.text(status_display)
-                        progress_bar.progress(0.1 + p * 0.2)
-                    
-                        # Starting AI processing
-                    english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language=detected_language, progress_callback=progress_callback_eng)
-
-                    if not english_results:
-                        print(f"❌ AI PROCESSING FAILED: No results generated for {len(filtered_keys_for_ai)} keys")
-                        if detected_language == 'chinese':
-                            st.error("❌ 中文内容生成失败")
-                        else:
-                            st.error("❌ 英文内容生成失败，无法进行中文翻译")
-                        return
+                            eta_text = "⏱️ Almost done!"
                     else:
-                        print(f"✅ AI PROCESSING: Generated content for {len(english_results)} keys")
-                    
-                    # Proofread content
+                        eta_text = ""
+
+                    # Enhanced status display with ETA on same line
+                    status_display = f"📊 生成英文内容... ({current_key_index}/{total_keys} keys) - {current_key}"
+                    if eta_text:
+                        status_display += f" {eta_text}"
+                    status_text.text(status_display)
+                    progress_bar.progress(0.1 + p * 0.2)
+                
+                # Starting AI processing
+                english_results = run_ai_processing(filtered_keys_for_ai, temp_ai_data, language=detected_language, progress_callback=progress_callback_eng)
+
+                if not english_results:
+                    print(f"❌ AI PROCESSING FAILED: No results generated for {len(filtered_keys_for_ai)} keys")
                     if detected_language == 'chinese':
-                        status_text.text(f"🧐 校对中文内容... (0/{total_keys} keys)")
+                        st.error("❌ 中文内容生成失败")
                     else:
-                        status_text.text(f"🧐 校对英文内容... (0/{total_keys} keys)")
-                    progress_bar.progress(0.3)
-                    
-                    def progress_callback_proof(p, msg):
-                        nonlocal current_key_index, current_key
+                        st.error("❌ 英文内容生成失败，无法进行中文翻译")
+                    return
+                else:
+                    print(f"✅ AI PROCESSING: Generated content for {len(english_results)} keys")
+                
+                # ========================================
+                # STEP 2: PROOFREADING
+                # ========================================
+                if detected_language == 'chinese':
+                    status_text.text(f"🧐 校对中文内容... (0/{total_keys} keys)")
+                else:
+                    status_text.text(f"🧐 校对英文内容... (0/{total_keys} keys)")
+                progress_bar.progress(0.3)
+                
+                def progress_callback_proof(p, msg):
+                    nonlocal current_key_index, current_key
 
-                        # Parse the detailed message from the proofreader
-                        current_key = "Proofreading"  # Default fallback
+                    # Parse the detailed message from the proofreader
+                    current_key = "Proofreading"  # Default fallback
 
-                        if msg and isinstance(msg, str):
-                            # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
-                            if 'Processing' in msg and '•' in msg:
-                                parts = msg.split('•')
-                                if len(parts) >= 1:
-                                    key_part = parts[0].replace('🔄 Processing', '').strip()
-                                    if key_part:
-                                        current_key = key_part
-                            # Format: "🔄 Processing Cash" (without bullet points)
-                            elif 'Processing' in msg:
-                                key_part = msg.replace('🔄 Processing', '').strip()
+                    if msg and isinstance(msg, str):
+                        # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
+                        if 'Processing' in msg and '•' in msg:
+                            parts = msg.split('•')
+                            if len(parts) >= 1:
+                                key_part = parts[0].replace('🔄 Processing', '').strip()
                                 if key_part:
                                     current_key = key_part
-                            # Format: Direct key name
-                            elif len(msg.strip()) < 50 and not '•' in msg and not 'Processing' in msg:
-                                current_key = msg.strip()
-                            # Format: Check if it's just a key name without "Processing"
-                            elif msg.strip() in filtered_keys_for_ai:
-                                current_key = msg.strip()
+                        # Format: "🔄 Processing Cash" (without bullet points)
+                        elif 'Processing' in msg:
+                            key_part = msg.replace('🔄 Processing', '').strip()
+                            if key_part:
+                                current_key = key_part
+                        # Format: Direct key name
+                        elif len(msg.strip()) < 50 and not '•' in msg and not 'Processing' in msg:
+                            current_key = msg.strip()
+                        # Format: Check if it's just a key name without "Processing"
+                        elif msg.strip() in filtered_keys_for_ai:
+                            current_key = msg.strip()
 
-                        key_index = int(p * total_keys) if p > 0 else 0
-                        status_text.text(f"🧐 校对英文内容... ({key_index}/{total_keys} keys) - {current_key}")
-                        progress_bar.progress(0.3 + p * 0.1)
-                    
-                    proofread_results = run_simple_proofreader(english_results, temp_ai_data, progress_callback=progress_callback_proof, language=detected_language)
-                    
-                    # Then translate to Chinese
+                    key_index = int(p * total_keys) if p > 0 else 0
+                    status_text.text(f"🧐 校对英文内容... ({key_index}/{total_keys} keys) - {current_key}")
+                    progress_bar.progress(0.3 + p * 0.1)
+                
+                proofread_results = run_simple_proofreader(english_results, temp_ai_data, progress_callback=progress_callback_proof, language=detected_language)
+                
+                # ========================================
+                # STEP 3: TRANSLATION (Chinese only)
+                # ========================================
+                if detected_language == 'chinese':
                     status_text.text(f"🌐 翻译为中文... (0/{total_keys} keys)")
                     progress_bar.progress(0.5)
                     
