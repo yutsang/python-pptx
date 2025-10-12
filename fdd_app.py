@@ -1899,6 +1899,9 @@ def main():
                 else:
                     # For individual BS/IS modes, mark agents as completed
                     if statement_type == "BS":
+                        print(f"🔄 Processing BS mode content generation...")
+                        # Set current statement type for BS mode
+                        st.session_state['current_statement_type'] = 'BS'
                         # Mark all agents as completed for BS mode
                         st.session_state['agent_states']['agent1_completed'] = True
                         st.session_state['agent_states']['agent1_success'] = True
@@ -1906,7 +1909,12 @@ def main():
                         st.session_state['agent_states']['agent2_success'] = True
                         st.session_state['agent_states']['agent3_completed'] = True
                         st.session_state['agent_states']['agent3_success'] = True
-                        print(f"✅ BS mode agents completed")
+                        print(f"✅ All agents marked as completed for BS mode")
+                        
+                        # CRITICAL FIX: Generate content for BS mode
+                        generate_content_from_session_storage(selected_entity)
+                        print(f"✅ BS mode content generation completed")
+                        
                         # Verify BS content files were created
                         bs_content_file = "fdd_utils/bs_content.md"
                         if os.path.exists(bs_content_file):
@@ -1940,7 +1948,10 @@ def main():
                         else:
                             print(f"❌ IS content file not found: {is_content_file}")
                     else:
+                        # For other modes, generate content
+                        st.session_state['current_statement_type'] = statement_type
                         generate_content_from_session_storage(selected_entity)
+                        print(f"✅ Content generation completed for {statement_type} mode")
 
                 # Export PowerPoint
                 status_text.text("📊 Exporting PowerPoint...")
