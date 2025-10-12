@@ -1657,6 +1657,39 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         if progress_callback:
             progress_callback((key_index + 0.7) / len(keys), f"📤 Sending {key} to {ai_model}...")
 
+        # CRITICAL: Check token count and use simplified prompt if too long
+        if TOKEN_COUNTING_AVAILABLE:
+            try:
+                counter = TokenCounter(openai_model)
+                prompt_text = f"{system_prompt}\n\n{user_query}\n\n{excel_tables}"
+                token_count = counter.count_tokens(prompt_text)
+                
+                # If exceeds 18000 tokens, use simplified prompt (leave 2000 buffer)
+                if token_count > 18000:
+                    print(f"\n⚠️ TOKEN LIMIT: Key '{key}' has {token_count} tokens (limit ~20000)")
+                    print(f"   Using simplified prompt without pattern matching...")
+                    
+                    # Simplified user query - just explain the account
+                    user_query = f"""
+                    TASK: Write a professional financial commentary for this account in ~100 words.
+                    
+                    ACCOUNT: {key}
+                    FINANCIAL DATA: {excel_tables[:2000]}... (truncated due to length)
+                    
+                    REQUIREMENTS:
+                    - Explain what this account represents
+                    - Mention key figures and trends
+                    - Keep it concise and professional
+                    - ~100 words maximum
+                    - No pattern matching needed
+                    - Focus on the most important information only
+                    
+                    OUTPUT: Direct commentary text only, no JSON or markdown.
+                    """
+                    print(f"   ✅ Using simplified prompt (~{counter.count_tokens(user_query + system_prompt)} tokens)")
+            except Exception as e:
+                print(f"   ⚠️ Token check failed: {e}, proceeding with original prompt")
+
         # Get logger from session state if available
         logger = None
         try:

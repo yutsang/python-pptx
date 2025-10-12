@@ -2700,9 +2700,14 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
                 st.info("💡 Please run AI processing first.")
                 return
 
-            # Get Excel file path for BSHN integration
+            # Get Excel file path for table integration
             excel_file_path = None
-            if include_bshn and statement_type == "BS" and financial_statement_tab:
+            print(f"\n🔍 EXPORT: Checking table embedding requirements:")
+            print(f"   include_bshn: {include_bshn}")
+            print(f"   statement_type: {statement_type}")
+            print(f"   financial_statement_tab: {financial_statement_tab}")
+            
+            if include_bshn and statement_type in ["BS", "IS"] and financial_statement_tab:
                 # Get the uploaded file path
                 uploaded_file = st.session_state.get('uploaded_file')
                 if uploaded_file:
@@ -2715,7 +2720,18 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
                         temp_file.write(uploaded_file.getvalue())
                         temp_file.close()
                         excel_file_path = temp_file.name
+                    
+                    # Show info message based on statement type
+                    if statement_type == "IS":
+                        st.info(f"📊 Income Statement table will be included in IS1 from Excel tab: {financial_statement_tab}")
+                        print(f"   ✅ Excel file prepared for IS table embedding: {excel_file_path}")
+                    else:
                         st.info(f"📊 BSHN sheet will be included in BS1 from Excel tab: {financial_statement_tab}")
+                        print(f"   ✅ Excel file prepared for BS table embedding: {excel_file_path}")
+                else:
+                    print(f"   ⚠️ No uploaded file found in session state")
+            else:
+                print(f"   ⚠️ Table embedding skipped: include_bshn={include_bshn}, statement_type={statement_type}, tab={financial_statement_tab}")
             
             # Use the template with the original export_pptx function (without automatic Excel embedding)
             try:
@@ -2755,14 +2771,30 @@ def export_enhanced_pptx(selected_entity, statement_type, language='english', fi
                 st.info(f"💡 Check if template exists: {template_path}")
                 raise
             
-            # Add BSHN data if requested
+            # Add financial table data if requested
+            print(f"\n🔍 EXPORT: Table embedding check:")
+            print(f"   include_bshn: {include_bshn}")
+            print(f"   statement_type: {statement_type}")
+            print(f"   excel_file_path exists: {excel_file_path is not None}")
+            print(f"   financial_statement_tab: {financial_statement_tab}")
+            
             if include_bshn and statement_type in ["BS", "IS"] and excel_file_path and financial_statement_tab:
+                print(f"\n✅ EXPORT: All conditions met, calling embed function for {statement_type} mode...")
                 try:
                     embed_bshn_data_simple(output_path, excel_file_path, financial_statement_tab, project_name, language, statement_type)
-                    st.success(f"✅ BSHN data from '{financial_statement_tab}' sheet added to slide")
+                    
+                    if statement_type == "IS":
+                        st.success(f"✅ Income Statement table from '{financial_statement_tab}' sheet added to IS1 (Slide 1)")
+                    else:
+                        st.success(f"✅ Balance Sheet table from '{financial_statement_tab}' sheet added to BS1 (Slide 0)")
                 except Exception as e:
-                    st.warning(f"⚠️ Could not add BSHN data: {str(e)}")
-                    st.info("💡 The presentation was created but BSHN data could not be embedded")
+                    print(f"❌ EXPORT: Table embedding failed: {str(e)}")
+                    import traceback
+                    print(f"   Traceback: {traceback.format_exc()}")
+                    st.warning(f"⚠️ Could not add financial table: {str(e)}")
+                    st.info(f"💡 The presentation was created but table could not be embedded. Check console for details.")
+            else:
+                print(f"   ⚠️ Table embedding skipped - one or more conditions not met")
 
         # Show download button
         if os.path.exists(output_path):
