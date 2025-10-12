@@ -356,6 +356,10 @@ class PowerPointGenerator:
         return None
 
     def parse_markdown(self, md_content: str) -> List[FinancialItem]:
+        """Parse markdown content into financial items"""
+        print(f"\n🔍 PARSING MARKDOWN:")
+        print(f"   Content length: {len(md_content)}")
+        
         items = []
         current_type = ""
         current_title = ""
@@ -2129,8 +2133,26 @@ class ReportGenerator:
         
     def generate(self):
         # Read the markdown content
+        print(f"\n{'='*60}")
+        print(f"📄 PPTX GENERATION DEBUG")
+        print(f"{'='*60}")
+        print(f"   Markdown file: {self.markdown_file}")
+        print(f"   File exists: {os.path.exists(self.markdown_file)}")
+        print(f"   Language: {self.language}")
+        print(f"   Project: {self.project_name}")
+        
         with open(self.markdown_file, 'r', encoding='utf-8') as f:
             md_content = f.read()
+        
+        # Check content language
+        chinese_chars = sum(1 for c in md_content if '\u4e00' <= c <= '\u9fff')
+        total_chars = len(md_content)
+        chinese_ratio = chinese_chars / total_chars if total_chars > 0 else 0
+        
+        print(f"   Content length: {len(md_content)} chars")
+        print(f"   Chinese chars: {chinese_chars} ({chinese_ratio*100:.1f}%)")
+        print(f"   First 200 chars: {md_content[:200]}")
+        print(f"{'='*60}\n")
         
         # Create PowerPoint generator with language support
         generator = PowerPointGenerator(self.template_path, self.language, row_limit=self.row_limit)

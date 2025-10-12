@@ -1655,7 +1655,26 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
         if progress_callback:
             progress_callback((key_index + 0.7) / len(keys), f"📤 Sending {key} to {ai_model}...")
 
-        response_txt = generate_response(user_query, system_prompt, oai_client, excel_tables, openai_model, entity_name, use_local_ai)
+        # Get logger from session state if available
+        logger = None
+        try:
+            import streamlit as st
+            logger = st.session_state.get('ai_logger') if hasattr(st, 'session_state') else None
+        except:
+            pass
+        
+        response_txt = generate_response(
+            user_query, 
+            system_prompt, 
+            oai_client, 
+            excel_tables, 
+            openai_model, 
+            entity_name, 
+            use_local_ai,
+            logger=logger,
+            key=key,  # CRITICAL FIX: Pass the actual key name
+            agent="agent1"  # Specify which agent is running
+        )
 
         # Update progress: Response processing phase
         if not use_streamlit_progress and pbar is not None:
@@ -1961,7 +1980,26 @@ class DataValidationAgent:
             RETURN: Only the corrected content text, no explanations or JSON.
             """
             
-            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['DEEPSEEK_CHAT_MODEL'], entity, False)
+            # Get logger if available
+            logger = None
+            try:
+                import streamlit as st
+                logger = st.session_state.get('ai_logger') if hasattr(st, 'session_state') else None
+            except:
+                pass
+            
+            corrected_content = generate_response(
+                user_query, 
+                system_prompt, 
+                oai_client, 
+                "", 
+                config_details['DEEPSEEK_CHAT_MODEL'], 
+                entity, 
+                False,
+                logger=logger,
+                key=key,  # Pass the key
+                agent="agent2"  # Data validation agent
+            )
             return corrected_content.strip()
             
         except Exception as e:
@@ -2167,7 +2205,26 @@ class PatternValidationAgent:
             RETURN: Only the corrected content text, no explanations or JSON.
             """
             
-            corrected_content = generate_response(user_query, system_prompt, oai_client, "", config_details['DEEPSEEK_CHAT_MODEL'], entity, False)
+            # Get logger if available
+            logger = None
+            try:
+                import streamlit as st
+                logger = st.session_state.get('ai_logger') if hasattr(st, 'session_state') else None
+            except:
+                pass
+            
+            corrected_content = generate_response(
+                user_query, 
+                system_prompt, 
+                oai_client, 
+                "", 
+                config_details['DEEPSEEK_CHAT_MODEL'], 
+                entity, 
+                False,
+                logger=logger,
+                key=key,  # Pass the key
+                agent="agent3"  # Pattern validation agent
+            )
             return corrected_content.strip()
             
         except Exception as e:
