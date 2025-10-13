@@ -179,10 +179,27 @@ def format_date_to_dd_mmm_yyyy(date_str):
     return date_str
 
 
-def extract_entity_names_from_databook(databook_path='databook.xlsx'):
-    """Extract entity names from databook Excel headers using pattern ' - EntityName'."""
+def extract_entity_names_from_databook(databook_path='databook.xlsx', exclude_patterns=None):
+    """Extract entity names from databook Excel headers using pattern ' - EntityName'.
+    
+    Args:
+        databook_path: Path to Excel file
+        exclude_patterns: List of patterns to exclude (e.g., ['年', '2024', 'Indicative'])
+    """
     import pandas as pd
     import os
+    import re
+    
+    # Default exclusion patterns
+    if exclude_patterns is None:
+        exclude_patterns = [
+            r'\d{4}年',          # Pattern like "2024年"
+            r'\d{4}-\d{2}-\d{2}', # Dates like "2024-12-31"
+            r'Indicative',       # Indicative adjusted columns
+            r'示意性',           # Chinese "Indicative"
+            r'^$',               # Empty strings
+            r'^\s*$',            # Whitespace only
+        ]
     
     entity_names = set()
     
@@ -213,8 +230,16 @@ def extract_entity_names_from_databook(databook_path='databook.xlsx'):
                                 parts = val_str.split(' - ')
                                 if len(parts) >= 2:
                                     entity_name = parts[-1].strip()
+                                    
+                                    # Filter out unwanted patterns
+                                    should_exclude = False
+                                    for pattern in exclude_patterns:
+                                        if re.search(pattern, entity_name):
+                                            should_exclude = True  # CRITICAL: Exclude if pattern matches
+                                            break
+                                    
                                     # Filter reasonable entity names
-                                    if len(entity_name) > 2 and len(entity_name) < 50:
+                                    if not should_exclude and len(entity_name) > 2 and len(entity_name) < 50:
                                         entity_names.add(entity_name)
             except Exception as e:
                 print(f"Error processing sheet {sheet_name}: {e}")
