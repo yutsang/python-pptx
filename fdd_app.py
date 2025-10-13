@@ -655,10 +655,14 @@ def run_simple_proofreader(english_results, ai_data, progress_callback=None, lan
         )
         
         proofread_results = {}
+        total_keys = len(english_results)
+        current_index = 0
         
         for key, result in english_results.items():
+            current_index += 1
             if progress_callback:
-                progress_callback(0.1, f"Proofreading {key}")
+                progress = current_index / total_keys if total_keys > 0 else 0
+                progress_callback(progress, f"Proofreading {key}")
             
             content = result.get('content', str(result)) if isinstance(result, dict) else str(result)
             
@@ -1549,29 +1553,24 @@ def main():
                     nonlocal current_key_index, current_key
 
                     # Parse the detailed message from the proofreader
-                    current_key = "Proofreading"  # Default fallback
-
+                    current_key = msg if msg else "Proofreading"
+                    
+                    # Extract key name from message if it contains "Proofreading"
                     if msg and isinstance(msg, str):
-                        # Format: "🔄 Processing Cash • OpenAI • Key 1/9"
-                        if 'Processing' in msg and '•' in msg:
-                            parts = msg.split('•')
-                            if len(parts) >= 1:
-                                key_part = parts[0].replace('🔄 Processing', '').strip()
-                                if key_part:
-                                    current_key = key_part
-                        # Format: "🔄 Processing Cash" (without bullet points)
-                        elif 'Processing' in msg:
-                            key_part = msg.replace('🔄 Processing', '').strip()
+                        if 'Proofreading' in msg:
+                            # Format: "Proofreading Cash" -> extract "Cash"
+                            key_part = msg.replace('Proofreading', '').strip()
                             if key_part:
                                 current_key = key_part
-                        # Format: Direct key name
-                        elif len(msg.strip()) < 50 and not '•' in msg and not 'Processing' in msg:
-                            current_key = msg.strip()
-                        # Format: Check if it's just a key name without "Processing"
-                        elif msg.strip() in filtered_keys_for_ai:
-                            current_key = msg.strip()
+                        elif 'Processing' in msg:
+                            key_part = msg.replace('🔄 Processing', '').replace('Processing', '').strip()
+                            if '•' in key_part:
+                                key_part = key_part.split('•')[0].strip()
+                            if key_part:
+                                current_key = key_part
 
-                    key_index = int(p * total_keys) if p > 0 else 0
+                    # Calculate actual progress (p is 0 to 1 from the proofreader loop)
+                    key_index = max(1, int(p * total_keys)) if p > 0 else 1
                     status_text.text(f"🧐 校对英文内容... ({key_index}/{total_keys} keys) - {current_key}")
                     progress_bar.progress(0.3 + p * 0.1)
                 

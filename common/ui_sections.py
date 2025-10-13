@@ -2,6 +2,47 @@ import pandas as pd
 import streamlit as st
 
 
+def clean_header_rows(df):
+    """
+    Clean up dataframe by removing header rows that contain unit indicators 
+    (like 人民幣千元) combined with year values (like 2021000).
+    """
+    if df.empty:
+        return df
+    
+    # Check first few rows for problematic patterns
+    rows_to_drop = []
+    
+    for row_idx in range(min(3, len(df))):  # Check first 3 rows
+        row = df.iloc[row_idx]
+        row_str = ' '.join(str(val) for val in row if pd.notna(val))
+        
+        # Check if row contains unit indicators
+        unit_indicators = ['人民幣千元', '人民币千元', "CNY'000", 'thousands']
+        has_unit_indicator = any(indicator in row_str for indicator in unit_indicators)
+        
+        if has_unit_indicator:
+            # Check if row also contains year-like values (e.g., 2021000, 2020000)
+            for val in row:
+                if pd.notna(val):
+                    val_str = str(val)
+                    # Check if it's a numeric value that looks like year + 000 (e.g., 2021000)
+                    if val_str.replace(',', '').replace('.', '').isdigit():
+                        val_num = float(val_str.replace(',', ''))
+                        # If it's between 2000000 and 2100000, it's likely year + 000
+                        if 2000000 <= val_num <= 2100000:
+                            rows_to_drop.append(row_idx)
+                            print(f"   🧹 Removing header row {row_idx} with unit indicator and year value: {val_str}")
+                            break
+    
+    # Drop the identified rows
+    if rows_to_drop:
+        df = df.drop(df.index[rows_to_drop]).reset_index(drop=True)
+        print(f"   ✅ Cleaned {len(rows_to_drop)} header rows")
+    
+    return df
+
+
 def render_balance_sheet_sections(
     sections_by_key: dict,
     get_key_display_name,
@@ -16,8 +57,6 @@ def render_balance_sheet_sections(
     - selected_entity: entity string for context
     - format_date_to_dd_mmm_yyyy: callable to format dates
     """
-
-    st.markdown("#### View Data")
     
     # Debug data flow
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
@@ -69,53 +108,7 @@ def render_balance_sheet_sections(
                 
 
 
-                # Metadata summary row
-                col1, col2, col3, col4, col5, col6 = st.columns(6)
-                with col1:
-                    st.markdown(f"**Table:** {metadata['table_name']}")
-                with col2:
-                    date_value = metadata.get('date')
-                    if date_value:
-                        try:
-                            formatted_date = format_date_to_dd_mmm_yyyy(date_value)
-                            st.markdown(f"**Date:** {formatted_date}")
-                        except Exception as e:
-                            st.markdown(f"**Date:** Error formatting: {e}")
-                    else:
-                        st.markdown("**Date:** Unknown")
-                with col3:
-                    currency = metadata.get('currency', 'CNY')
-                    multiplier = metadata.get('multiplier', 1)
-                    if multiplier > 1:
-                        if multiplier == 1000:
-                            st.markdown(f"**Currency:** {currency}'000")
-                        elif multiplier == 1000000:
-                            st.markdown(f"**Currency:** {currency}'000,000")
-                        else:
-                            st.markdown(f"**Currency:** {currency} (×{multiplier})")
-                    else:
-                        st.markdown(f"**Currency:** {currency}")
-                with col4:
-                    # Show data column info instead of multiplier
-                    selected_column = metadata.get('selected_column')
-                    if selected_column:
-                        # Extract column number from "Unnamed: 23" format
-                        if isinstance(selected_column, str) and selected_column.startswith('Unnamed: '):
-                            try:
-                                col_number = selected_column.split(': ')[1]
-                                st.markdown(f"**Data Column:** {col_number}")
-                            except (ValueError, IndexError):
-                                st.markdown(f"**Data Column:** {selected_column}")
-                        else:
-                            st.markdown(f"**Data Column:** {selected_column}")
-                    else:
-                        st.markdown("**Data Column:** N/A")
-                with col5:
-                    # Empty column (removed Indicative adjusted display)
-                    st.markdown("")
-                with col6:
-                    # Entity information removed as requested
-                    st.markdown("")
+                # Metadata info columns removed to maximize table display width
 
                 if data_rows:
                     structured_data = []
@@ -160,18 +153,19 @@ def render_balance_sheet_sections(
 
                         styled_df = display_df.style.apply(highlight_totals, axis=1)
                         
-                        # Configure dataframe display to prevent wrapping
+                        # Configure dataframe display to prevent wrapping and hide index
                         st.dataframe(
                             styled_df, 
                             use_container_width=True,
+                            hide_index=True,
                             column_config={
                                 "Description": st.column_config.TextColumn(
                                     "Description",
-                                    width="medium"
+                                    width="large"
                                 ),
                                 "Value": st.column_config.TextColumn(
                                     "Value", 
-                                    width="small"
+                                    width="medium"
                                 )
                             }
                         )
@@ -186,6 +180,10 @@ def render_balance_sheet_sections(
 
             # Fallback: render raw DataFrame with cleaning
             raw_df = first_section['data'].copy()
+            
+            # Clean header rows first
+            raw_df = clean_header_rows(raw_df)
+            
             # Drop all-NaN/None columns
             for col in list(raw_df.columns):
                 if raw_df[col].isna().all() or (raw_df[col].astype(str) == 'None').all():
@@ -269,7 +267,8 @@ def render_balance_sheet_sections(
                     st.dataframe(
                         filtered_df, 
                         use_container_width=True,
-                        column_config={col: st.column_config.TextColumn(col, width="medium") for col in filtered_df.columns}
+                        hide_index=True,
+                        column_config={col: st.column_config.TextColumn(col, width="large") for col in filtered_df.columns}
                     )
                 else:
                     st.info("No rows with non-zero values found")
@@ -397,7 +396,7 @@ def render_combined_sections(
                 # Display the data table
                 if data_rows is not None and len(data_rows) > 0:
                     st.markdown("**📊**")
-                    st.dataframe(data_rows, use_container_width=True)
+                    st.dataframe(data_rows, use_container_width=True, hide_index=True)
                 else:
                     st.info("No structured data available for this key.")
             else:
@@ -419,8 +418,6 @@ def render_income_statement_sections(
     - selected_entity: entity string for context
     - format_date_to_dd_mmm_yyyy: callable to format dates
     """
-
-    st.markdown("#### View Data")
     
     # High-level debug only
     keys_with_data = [key for key, sections in sections_by_key.items() if sections]
@@ -474,53 +471,7 @@ def render_income_statement_sections(
                 
 
 
-                # Metadata summary row
-                col1, col2, col3, col4, col5, col6 = st.columns(6)
-                with col1:
-                    st.markdown(f"**Table:** {metadata['table_name']}")
-                with col2:
-                    date_value = metadata.get('date')
-                    if date_value:
-                        try:
-                            formatted_date = format_date_to_dd_mmm_yyyy(date_value)
-                            st.markdown(f"**Date:** {formatted_date}")
-                        except Exception as e:
-                            st.markdown(f"**Date:** Error formatting: {e}")
-                    else:
-                        st.markdown("**Date:** Unknown")
-                with col3:
-                    currency = metadata.get('currency', 'CNY')
-                    multiplier = metadata.get('multiplier', 1)
-                    if multiplier > 1:
-                        if multiplier == 1000:
-                            st.markdown(f"**Currency:** {currency}'000")
-                        elif multiplier == 1000000:
-                            st.markdown(f"**Currency:** {currency}'000,000")
-                        else:
-                            st.markdown(f"**Currency:** {currency} (×{multiplier})")
-                    else:
-                        st.markdown(f"**Currency:** {currency}")
-                with col4:
-                    # Show data column info instead of multiplier
-                    selected_column = metadata.get('selected_column')
-                    if selected_column:
-                        # Extract column number from "Unnamed: 23" format
-                        if isinstance(selected_column, str) and selected_column.startswith('Unnamed: '):
-                            try:
-                                col_number = selected_column.split(': ')[1]
-                                st.markdown(f"**Data Column:** {col_number}")
-                            except (ValueError, IndexError):
-                                st.markdown(f"**Data Column:** {selected_column}")
-                        else:
-                            st.markdown(f"**Data Column:** {selected_column}")
-                    else:
-                        st.markdown("**Data Column:** N/A")
-                with col5:
-                    # Empty column (removed Indicative adjusted display)
-                    st.markdown("")
-                with col6:
-                    # Entity information removed as requested
-                    st.markdown("")
+                # Metadata info columns removed to maximize table display width
 
                 if data_rows:
                     structured_data = []
@@ -570,18 +521,19 @@ def render_income_statement_sections(
 
                         styled_df = display_df.style.apply(highlight_income_items, axis=1)
                         
-                        # Configure dataframe display to prevent wrapping
+                        # Configure dataframe display to prevent wrapping and hide index
                         st.dataframe(
                             styled_df, 
                             use_container_width=True,
+                            hide_index=True,
                             column_config={
                                 "Description": st.column_config.TextColumn(
                                     "Description",
-                                    width="medium"
+                                    width="large"
                                 ),
                                 "Value": st.column_config.TextColumn(
                                     "Value", 
-                                    width="small"
+                                    width="medium"
                                 )
                             }
                         )
@@ -596,6 +548,10 @@ def render_income_statement_sections(
 
             # Fallback: render raw DataFrame with cleaning
             raw_df = first_section['data'].copy()
+            
+            # Clean header rows first
+            raw_df = clean_header_rows(raw_df)
+            
             # Drop all-NaN/None columns
             for col in list(raw_df.columns):
                 if raw_df[col].isna().all() or (raw_df[col].astype(str) == 'None').all():
@@ -626,7 +582,7 @@ def render_income_statement_sections(
                     return [''] * len(row)
                 
                 styled_df = raw_df.style.apply(highlight_income_statement, axis=1)
-                st.dataframe(styled_df, use_container_width=True)
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
             else:
                 st.error("No valid columns found after cleaning")
                 st.write("**Original DataFrame:**")
