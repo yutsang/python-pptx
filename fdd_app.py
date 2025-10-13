@@ -8,12 +8,21 @@ import pandas as pd
 import json
 import warnings
 import os
+import sys
 import datetime
 import time
 from pathlib import Path
 import threading
 import tempfile
 import uuid
+
+# CRITICAL FIX: Add parent directory to path for server deployment
+# This allows imports to work whether app is in root or pages/ subfolder
+current_file_path = Path(__file__).resolve()
+parent_dir = current_file_path.parent.parent if current_file_path.parent.name == 'pages' else current_file_path.parent
+if str(parent_dir) not in sys.path:
+    sys.path.insert(0, str(parent_dir))
+    print(f"📂 Added to path: {parent_dir}")
 
 # Suppress warnings and bytecode generation
 os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
@@ -980,8 +989,21 @@ def main():
         }
         statement_type = statement_type_mapping[statement_type_display]
         
-        # Store statement type in session state for excel processing
+        # CRITICAL FIX: Clear cached data when statement type changes
+        previous_statement_type = st.session_state.get('last_statement_type', None)
+        if previous_statement_type and previous_statement_type != statement_type:
+            print(f"\n🔄 Statement type changed: {previous_statement_type} → {statement_type}")
+            print(f"   Clearing cached section data to prevent contamination...")
+            # Clear the filtered sections cache to force re-filtering
+            if 'ai_data' in st.session_state and 'sections_by_key' in st.session_state['ai_data']:
+                # Keep the original data but clear any processed/filtered versions
+                if 'filtered_sections_by_key' in st.session_state:
+                    del st.session_state['filtered_sections_by_key']
+                print(f"   ✅ Cleared filtered section cache")
+        
+        # Store statement type in session state
         st.session_state['current_statement_type'] = statement_type
+        st.session_state['last_statement_type'] = statement_type
         
         # Financial Data Selection (moved here from PowerPoint section)
         st.markdown("**Financial Data Source:**")
@@ -2278,7 +2300,7 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
             print(f"⚠️ No separated data found for {statement_type}, using filtered original")
             df = filter_to_indicative_adjusted_columns(df)
         
-        # Filter out zero rows (all values are exactly 0, not NaN)
+        # CRITICAL FIX: Filter out zero rows (all values in the row are 0 or NaN)
         original_row_count = len(df)
         if len(df.columns) > 1:
             desc_col = df.columns[0]
@@ -2294,25 +2316,29 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
                 desc_value = str(row[desc_col]).strip()
                 has_description = desc_value not in ['', 'nan', 'None', 'NaN']
                 
-                # Check if ALL value columns are exactly zero (not NaN)
-                all_values_zero = True
-                has_any_data = False
+                # Check if ALL value columns are zero or NaN
+                all_values_zero_or_nan = True
                 for col in value_cols:
                     val = pd.to_numeric(row[col], errors='coerce')
-                    if pd.notna(val):
-                        has_any_data = True
-                        if val != 0:
-                            all_values_zero = False
-                            break
+                    # If value exists and is NOT zero, keep the row
+                    if pd.notna(val) and val != 0:
+                        all_values_zero_or_nan = False
+                        break
                 
-                # Keep row if has description AND (has non-zero values OR is header with NaN)
+                # Keep row if:
+                # 1. Has description AND at least one non-zero value
+                # 2. OR is a header row (no numeric values at all)
                 if has_description:
-                    if not has_any_data or not all_values_zero:
+                    # Check if this is a header row (no numeric values)
+                    is_header = all(pd.isna(pd.to_numeric(row[col], errors='coerce')) for col in value_cols)
+                    
+                    if is_header or not all_values_zero_or_nan:
                         mask.append(True)
                         kept_count += 1
                     else:
                         mask.append(False)
                         filtered_count += 1
+                        print(f"\n   ⚠️ Filtered row (all zeros): {desc_value}")
                 else:
                     mask.append(False)
                     filtered_count += 1
@@ -2320,22 +2346,25 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
             if any(mask):
                 df = df[mask]
             
-            print(f"{len(df)} rows kept")
+            print(f"{len(df)} rows kept, {filtered_count} filtered")
         print(f"📊 Final table: {df.shape[0]}×{df.shape[1]} for PPT embedding")
         print(f"{'='*80}")
         
-        # Get the appropriate slide based on statement type
-        # BS uses first slide (BS1), IS uses second slide (IS1) if it exists
+        # CRITICAL FIX: Get the appropriate slide based on statement type
+        # For IS mode running standalone, use first slide (slide 0)
+        # For IS mode in ALL mode, use second slide (slide 1) after BS
         if statement_type == "IS":
-            if len(prs.slides) > 1:
-                target_slide = prs.slides[1]  # IS1 (second slide)
-                print(f"   Using slide 1 (IS1) for Income Statement table")
+            # Check if this is ALL mode or IS-only mode by checking current_statement_type
+            current_mode = st.session_state.get('current_statement_type', statement_type)
+            if current_mode == "ALL" and len(prs.slides) > 1:
+                target_slide = prs.slides[1]  # IS1 (second slide in ALL mode)
+                print(f"   ALL MODE: Using slide 1 (IS1) for Income Statement table")
             else:
-                target_slide = prs.slides[0]  # Fallback to first slide
-                print(f"   ⚠️ Only 1 slide in template, using slide 0 for IS table")
+                target_slide = prs.slides[0]  # IS1 (first slide in IS-only mode)
+                print(f"   IS MODE: Using slide 0 (IS1) for Income Statement table")
         else:
             target_slide = prs.slides[0]  # BS1 (first slide)
-            print(f"   Using slide 0 (BS1) for Balance Sheet table")
+            print(f"   BS MODE: Using slide 0 (BS1) for Balance Sheet table")
         
         # Create table with proper header structure
         rows = len(df) + 1  # +1 for header only (no separate currency row)
@@ -2411,16 +2440,17 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         # Set row height for header row - 0.64cm
         table.rows[0].height = Inches(0.64 / 2.54)  # 0.25 inches (0.64cm)
         
-        # Adjust column widths - make first column 35-40% of the table width
+        # CRITICAL FIX: Adjust column widths - make first column narrower (25-30%)
         if cols >= 4:
-            # First column 37.5% of the table width (middle of 35-40% range)
-            first_col_width = table_width * 0.375  # 37.5% of the table width
-            remaining_width = table_width * 0.625
+            # First column 28% of the table width (narrower for better space distribution)
+            first_col_width = table_width * 0.28  # 28% of the table width
+            remaining_width = table_width * 0.72
             other_col_width = remaining_width / (cols - 1)  # Distribute remaining width
             
-            table.columns[0].width = Inches(first_col_width)  # First column 37.5% width
+            table.columns[0].width = Inches(first_col_width)  # First column 28% width
             for i in range(1, cols):
-                table.columns[i].width = Inches(other_col_width)  # Other columns share remaining 62.5%
+                table.columns[i].width = Inches(other_col_width)  # Other columns share remaining 72%
+            print(f"   Column widths: First={first_col_width:.2f}in ({28}%), Others={other_col_width:.2f}in each")
         else:
             # If less than 4 columns, distribute evenly
             for i in range(cols):
@@ -2472,27 +2502,27 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
                             else:
                                 cell_text = date_part  # Keep original if can't parse
                         else:
-                            # Regular value formatting
+                            # CRITICAL FIX: Regular value formatting with 1 decimal place
                             if pd.isna(value):
                                 cell_text = ""
                             elif isinstance(value, (int, float)):
-                                cell_text = f"{value:,.0f}"
+                                cell_text = f"{value:,.1f}"  # Changed to 1 decimal place
                             else:
                                 cell_text = str(value)
                     except:
-                        # Regular value formatting
+                        # CRITICAL FIX: Regular value formatting with 1 decimal place
                         if pd.isna(value):
                             cell_text = ""
                         elif isinstance(value, (int, float)):
-                            cell_text = f"{value:,.0f}"
+                            cell_text = f"{value:,.1f}"  # Changed to 1 decimal place
                         else:
                             cell_text = str(value)
                 else:
-                    # Regular value formatting for first column
+                    # Regular value formatting for first column (description column - no decimals needed)
                     if pd.isna(value):
                         cell_text = ""
                     elif isinstance(value, (int, float)):
-                        cell_text = f"{value:,.0f}"
+                        cell_text = f"{value:,.1f}"  # Keep consistent with 1 decimal
                     else:
                         cell_text = str(value)
                 
