@@ -1284,12 +1284,11 @@ class PowerPointGenerator:
         prev_layer1_continued = None
         paragraph_count = 0  # Track paragraph index in the shape
         
-        # Apply row limit (row_limit represents max rows per shape)
-        limited_items = items[:self.row_limit] if len(items) > self.row_limit else items
-        if len(items) > self.row_limit:
-            print(f"⚠️ WARNING: Limiting commentary to {self.row_limit} rows per shape (was {len(items)} rows)")
+        # Don't apply arbitrary row limit here - content distribution already handles pagination
+        # The _plan_content_distribution method properly splits content across slides based on actual line counts
+        # Applying an additional limit here causes content to be cut off incorrectly
         
-        for idx, item in enumerate(limited_items):
+        for idx, item in enumerate(items):
             is_first_part = not (item.layer1_continued or item.layer2_continued)
             # Layer 1 Header
             display_header = self._get_display_header_for_item(item)
@@ -1906,7 +1905,10 @@ class PowerPointGenerator:
             'Revenue': '收入',
             'Cost of Sales': '销售成本',
             'Operating Expenses': '营业费用',
-            'Net Income': '净利润'
+            'Net Income': '净利润',
+            'Expenses': '费用',
+            'Taxes': '税项',
+            'Other': '其他'
         }
         return translation_map.get(header, header)
     
@@ -1960,54 +1962,66 @@ class PowerPointGenerator:
             return " (continued)"
 
     def _generate_chinese_page_summary(self, page_content: str, page_number: int) -> str:
-        """Generate a concise Chinese summary for a page"""
+        """Generate a detailed Chinese summary for a page"""
         try:
             # Extract key points from the page content
             sentences = page_content.split('。')
             key_points = []
 
-            for sentence in sentences[:3]:  # Take first 3 sentences
+            # Take first 6-8 sentences for more comprehensive coverage
+            for sentence in sentences[:8]:
                 if sentence.strip():
-                    # Keep it concise - first 60 characters for more informative content
-                    summary_point = sentence.strip()[:60]
+                    # Keep full sentences up to 150 characters for more detailed content
+                    summary_point = sentence.strip()
+                    if len(summary_point) > 150:
+                        summary_point = summary_point[:150] + '...'
                     if summary_point:
                         key_points.append(summary_point)
 
             if key_points:
-                # Remove page number and make more informative
-                summary = f"{'。'.join(key_points)}。"
+                # Create more informative summary with proper structure
+                summary = '。'.join(key_points)
+                # Ensure it ends with a period
+                if not summary.endswith('。'):
+                    summary += '。'
                 return summary
             else:
-                return "财务分析摘要：本页包含重要的财务指标和业务分析内容。"
+                return "本页财务分析摘要：涵盖重要的财务指标、业务趋势分析和关键发现，为利益相关者提供全面的财务状况评估。"
 
         except Exception as e:
             print(f"Error generating Chinese page summary: {e}")
-            return f"第{page_number}页财务分析摘要。"
+            return f"本页财务分析摘要：涵盖重要的财务指标、业务趋势分析和关键发现，为利益相关者提供全面的财务状况评估。"
 
     def _generate_english_page_summary(self, page_content: str, page_number: int) -> str:
-        """Generate a concise English summary for a page"""
+        """Generate a detailed English summary for a page"""
         try:
             # Extract key points from the page content
             sentences = page_content.split('.')
             key_points = []
 
-            for sentence in sentences[:2]:  # Take first 2 sentences
+            # Take first 5-7 sentences for more comprehensive coverage
+            for sentence in sentences[:7]:
                 if sentence.strip():
-                    # Keep it concise - first 60 characters
-                    summary_point = sentence.strip()[:60]
+                    # Keep full sentences up to 150 characters for more detailed content
+                    summary_point = sentence.strip()
+                    if len(summary_point) > 150:
+                        summary_point = summary_point[:150] + '...'
                     if summary_point:
                         key_points.append(summary_point)
 
             if key_points:
-                # Remove page number and make more informative
-                summary = f"{'. '.join(key_points)}."
+                # Create more informative summary with proper structure
+                summary = '. '.join(key_points)
+                # Ensure it ends with a period
+                if not summary.endswith('.'):
+                    summary += '.'
                 return summary
             else:
-                return "Financial Analysis Summary: This page contains important financial metrics and business analysis."
+                return "This page provides a comprehensive financial analysis covering key financial metrics, business trends, and critical findings to support stakeholder decision-making and investment evaluation."
 
         except Exception as e:
             print(f"Error generating English page summary: {e}")
-            return f"Page {page_number} financial analysis summary."
+            return f"This page provides a comprehensive financial analysis covering key financial metrics, business trends, and critical findings to support stakeholder decision-making and investment evaluation."
 
     def _distribute_summary_across_slides(self, summary_content: str, total_slides: int) -> List[str]:
         """Distribute summary content across multiple slides with different content on each"""
@@ -2264,6 +2278,37 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
             df = is_data['data']
             print(f"✅ EMBED: Using INCOME STATEMENT data for Excel embedding")
             print(f"   📊 IS data shape: {df.shape}")
+            
+            # Preprocess table data for income statement
+            # 1. Remove rows containing "示意性调整后"
+            if not df.empty:
+                # Check both index and first column for "示意性调整后"
+                mask = df.apply(lambda row: not any(
+                    '示意性调整后' in str(val) or '示意性調整後' in str(val) or 'indicative adjusted' in str(val).lower()
+                    for val in row
+                ), axis=1)
+                df = df[mask]
+                print(f"   ✅ Removed rows containing '示意性调整后': {len(df)} rows remaining")
+            
+            # 2. Round numerical columns to 1 decimal place and add thousand separators
+            import numpy as np
+            for col in df.columns:
+                if df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
+                    # Round to 1 decimal place and convert to string with thousand separators
+                    df[col] = df[col].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else x)
+                elif df[col].dtype == 'object':
+                    # Try to convert string numbers to formatted numbers
+                    def format_number(val):
+                        if pd.isna(val) or val == '':
+                            return val
+                        try:
+                            # Try to parse as number
+                            num = float(str(val).replace(',', ''))
+                            return f"{num:,.1f}"
+                        except (ValueError, TypeError):
+                            return val
+                    df[col] = df[col].apply(format_number)
+            print(f"   ✅ Applied number formatting: 1 decimal place with thousand separators")
         elif statement_type == 'BS' and bs_data:
             df = bs_data['data']
             print(f"✅ EMBED: Using BALANCE SHEET data for Excel embedding")

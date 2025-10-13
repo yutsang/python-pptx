@@ -271,10 +271,32 @@ def generate_content_from_session_storage(entity_name):
         with open(json_file_path, 'w', encoding='utf-8') as file:
             json.dump(json_content, file, indent=2, ensure_ascii=False)
 
+        # Define category name translations for Chinese mode
+        category_translations = {
+            'Current Assets': '流动资产',
+            'Non-current Assets': '非流动资产',
+            'Liabilities': '负债',
+            'Equity': '股东权益',
+            'Revenue': '收入',
+            'Expenses': '费用',
+            'Taxes': '税项',
+            'Other': '其他'
+        }
+        
+        # Determine if we're in Chinese mode
+        # Check if first key's display name contains Chinese characters
+        is_chinese_mode = False
+        if name_mapping:
+            first_display_name = list(name_mapping.values())[0]
+            if any('\u4e00' <= char <= '\u9fff' for char in first_display_name):
+                is_chinese_mode = True
+        
         # Also generate markdown for PowerPoint compatibility
         markdown_lines = []
         for category, items in category_mapping.items():
-            markdown_lines.append(f"## {category}\n")
+            # Translate category name if in Chinese mode
+            category_display = category_translations.get(category, category) if is_chinese_mode else category
+            markdown_lines.append(f"## {category_display}\n")
             for item in items:
                 full_name = name_mapping[item]
                 key_info = json_content['keys'].get(item)
@@ -341,7 +363,9 @@ def generate_content_from_session_storage(entity_name):
                 # Generate BS markdown
                 bs_markdown_lines = []
                 for category, items in bs_category_mapping.items():
-                    bs_markdown_lines.append(f"## {category}\n")
+                    # Translate category name if in Chinese mode
+                    category_display = category_translations.get(category, category) if is_chinese_mode else category
+                    bs_markdown_lines.append(f"## {category_display}\n")
                     for item in items:
                         if item in bs_content_store:
                             full_name = name_mapping[item]
