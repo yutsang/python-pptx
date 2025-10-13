@@ -1027,6 +1027,11 @@ def main():
                 # Read Excel file to get sheet names
                 excel_file = pd.ExcelFile(file_path)
                 available_sheets = excel_file.sheet_names
+                
+                # CRITICAL FIX: Prioritize sheets with "Financial" or "Financials" in name
+                financial_sheets = [s for s in available_sheets if 'financial' in s.lower()]
+                other_sheets = [s for s in available_sheets if 'financial' not in s.lower()]
+                available_sheets = financial_sheets + other_sheets  # Financial sheets first
             except Exception as e:
                 print(f"Error reading Excel sheets: {e}")
                 available_sheets = ["BS", "IS", "BSHN", "Cash", "AR", "AP"]
@@ -1509,8 +1514,10 @@ def main():
                     else:
                         eta_text = ""
 
-                    # Enhanced status display with ETA on same line
-                    status_display = f"📊 生成英文内容... ({current_key_index}/{total_keys} keys) - {current_key}"
+                    # CRITICAL FIX: Enhanced status display with proper key count
+                    # Use actual current_key_index from parsing, not estimated
+                    display_key_index = max(1, current_key_index) if current_key_index > 0 else max(1, int(p * total_keys))
+                    status_display = f"📊 生成英文内容... ({display_key_index}/{total_keys} keys) - {current_key}"
                     if eta_text:
                         status_display += f" {eta_text}"
                     status_text.text(status_display)
@@ -2325,20 +2332,27 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
                         all_values_zero_or_nan = False
                         break
                 
-                # Keep row if:
-                # 1. Has description AND at least one non-zero value
-                # 2. OR is a header row (no numeric values at all)
+                # CRITICAL FIX: Keep row only if it has BOTH description AND non-zero values
+                # OR if it's a header row (section header with no numeric values)
                 if has_description:
-                    # Check if this is a header row (no numeric values)
-                    is_header = all(pd.isna(pd.to_numeric(row[col], errors='coerce')) for col in value_cols)
+                    # Check if this is a header row (all values are NaN/text, not numeric)
+                    numeric_count = 0
+                    for col in value_cols:
+                        val = pd.to_numeric(row[col], errors='coerce')
+                        if pd.notna(val):
+                            numeric_count += 1
                     
+                    is_header = numeric_count == 0  # No numeric values = header
+                    
+                    # Keep if: header OR has at least one non-zero value
                     if is_header or not all_values_zero_or_nan:
                         mask.append(True)
                         kept_count += 1
                     else:
                         mask.append(False)
                         filtered_count += 1
-                        print(f"\n   ⚠️ Filtered row (all zeros): {desc_value}")
+                        if VERBOSE_DEBUG:
+                            print(f"\n   ⚠️ Filtered row (all zeros): {desc_value}")
                 else:
                     mask.append(False)
                     filtered_count += 1
@@ -2350,21 +2364,22 @@ def embed_bshn_data_simple(presentation_path, excel_file_path, sheet_name, proje
         print(f"📊 Final table: {df.shape[0]}×{df.shape[1]} for PPT embedding")
         print(f"{'='*80}")
         
-        # CRITICAL FIX: Get the appropriate slide based on statement type
-        # For IS mode running standalone, use first slide (slide 0)
-        # For IS mode in ALL mode, use second slide (slide 1) after BS
+        # CRITICAL FIX: Always use slide 0 for both BS and IS when running standalone
+        # Only use slide 1 for IS when in ALL mode (combined BS+IS presentation)
         if statement_type == "IS":
-            # Check if this is ALL mode or IS-only mode by checking current_statement_type
-            current_mode = st.session_state.get('current_statement_type', statement_type)
-            if current_mode == "ALL" and len(prs.slides) > 1:
-                target_slide = prs.slides[1]  # IS1 (second slide in ALL mode)
-                print(f"   ALL MODE: Using slide 1 (IS1) for Income Statement table")
+            # For IS mode, ALWAYS use slide 0 (first page)
+            target_slide = prs.slides[0]  # IS1 (first slide - page 1)
+            print(f"   IS MODE: Using slide 0 (Page 1) for Income Statement table")
+        elif statement_type == "BS":
+            target_slide = prs.slides[0]  # BS1 (first slide - page 1)
+            print(f"   BS MODE: Using slide 0 (Page 1) for Balance Sheet table")
+        else:  # ALL mode
+            if len(prs.slides) > 1:
+                target_slide = prs.slides[1]  # Second slide for IS in combined mode
+                print(f"   ALL MODE: Using slide 1 (Page 2) for Income Statement table")
             else:
-                target_slide = prs.slides[0]  # IS1 (first slide in IS-only mode)
-                print(f"   IS MODE: Using slide 0 (IS1) for Income Statement table")
-        else:
-            target_slide = prs.slides[0]  # BS1 (first slide)
-            print(f"   BS MODE: Using slide 0 (BS1) for Balance Sheet table")
+                target_slide = prs.slides[0]
+                print(f"   ALL MODE: Using slide 0 (Page 1) as fallback")
         
         # Create table with proper header structure
         rows = len(df) + 1  # +1 for header only (no separate currency row)

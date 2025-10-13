@@ -196,6 +196,10 @@ def extract_entity_names_from_databook(databook_path='databook.xlsx', exclude_pa
             r'\d{4}年',          # Pattern like "2024年"
             r'\d{4}-\d{2}-\d{2}', # Dates like "2024-12-31"
             r'Indicative',       # Indicative adjusted columns
+            r'adjusted',         # "adjusted" keyword
+            r'Adjusted',         # "Adjusted" keyword
+            r'mgt',              # Management abbreviation
+            r'MGT',              # Management abbreviation (uppercase)
             r'示意性',           # Chinese "Indicative"
             r'^$',               # Empty strings
             r'^\s*$',            # Whitespace only
