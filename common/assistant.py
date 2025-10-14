@@ -1899,8 +1899,6 @@ class DataValidationAgent:
                     6. Remove unnecessary quotation marks around sections
                     7. Ensure no data inconsistencies or conversion errors
                     8. Verify figures are properly adjusted for '000 notation if applicable
-                    9. If AI1 lists too many line items, reduce to ONLY top 2 most important + total
-                    10. Remove ALL line items with 0 values
                     """
             except (FileNotFoundError, json.JSONDecodeError):
                 # Fallback to hardcoded prompt
@@ -1914,8 +1912,6 @@ class DataValidationAgent:
                 3. Verify proper K/M conversion with 1 decimal place (e.g., 2.3M, 1.5K, 123.0)
                 4. Check entity names match data source (not reporting entity)
                 5. Identify ONLY top 2 most critical data accuracy issues
-                6. If AI1 lists too many line items, reduce to ONLY top 2 most important + total
-                7. Remove ALL line items with 0 values
                 6. Remove unnecessary quotation marks around sections
                 7. Ensure no data inconsistencies or conversion errors
                 8. Verify figures are properly adjusted for '000 notation if applicable
@@ -2126,8 +2122,7 @@ class PatternValidationAgent:
                 1. Compare AI1 content against available pattern templates
                 2. Check proper pattern structure and professional formatting
                 3. Verify all placeholders are filled with actual data
-                4. If AI1 lists too many items, limit to ONLY top 2 most important line items + total
-                5. Remove ALL line items with 0 values - they waste space
+                4. If AI1 lists too many items, limit to top 2 most important
                 5. Remove quotation marks quoting full sections
                 6. Check for anything that shouldn't be there (template artifacts)
                 7. Ensure content follows pattern structure consistently

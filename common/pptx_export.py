@@ -2295,15 +2295,33 @@ def embed_excel_data_in_pptx(presentation_path, excel_file_path, sheet_name, pro
             for col in df.columns:
                 if df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
                     # Round to 1 decimal place and convert to string with thousand separators
-                    df[col] = df[col].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else x)
+                    # Skip if values look like years (2020-2030 range)
+                    def format_with_check(x):
+                        if pd.notna(x):
+                            # Don't format if it's a year value (between 2000 and 2100)
+                            if 2000 <= x <= 2100:
+                                return x
+                            return f"{x:,.1f}"
+                        return x
+                    df[col] = df[col].apply(format_with_check)
                 elif df[col].dtype == 'object':
                     # Try to convert string numbers to formatted numbers
                     def format_number(val):
                         if pd.isna(val) or val == '':
                             return val
                         try:
+                            # Skip if it looks like a date or year (e.g., "2024", "2021-01-01", "2024年1-5月")
+                            val_str = str(val)
+                            if any(char in val_str for char in ['年', '月', '日', '-', '/', '至']):
+                                return val
+                            # Skip if already contains Chinese characters
+                            if any('\u4e00' <= char <= '\u9fff' for char in val_str):
+                                return val
                             # Try to parse as number
                             num = float(str(val).replace(',', ''))
+                            # Don't format if it's a year value (between 2000 and 2100)
+                            if 2000 <= num <= 2100:
+                                return val
                             return f"{num:,.1f}"
                         except (ValueError, TypeError):
                             return val

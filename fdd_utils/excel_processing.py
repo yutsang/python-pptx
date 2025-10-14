@@ -939,12 +939,63 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
             table_df = table_df[mask]
             print(f"   ✅ Removed {rows_before - len(table_df)} rows with '示意性调整后'")
             
+            # 1.5. Limit table to rows up to and including "净利润" row
+            net_profit_keywords = ['净利润', '淨利潤', 'net profit', 'net income']
+            net_profit_row_idx = None
+            for idx, row in table_df.iterrows():
+                row_str = ' '.join(str(val).lower() for val in row if pd.notna(val))
+                if any(keyword in row_str for keyword in net_profit_keywords):
+                    net_profit_row_idx = idx
+                    print(f"   📍 Found '净利润' at row index {idx}")
+                    break
+            
+            if net_profit_row_idx is not None:
+                # Keep only rows up to and including 净利润
+                table_df = table_df.loc[:net_profit_row_idx]
+                print(f"   ✅ Limited table to {len(table_df)} rows (up to 净利润)")
+            
+            # Log processed table to markdown file for verification
+            try:
+                import os
+                from datetime import datetime
+                
+                # Create output directory if it doesn't exist
+                log_dir = 'fdd_utils/output/table_logs'
+                os.makedirs(log_dir, exist_ok=True)
+                
+                # Create daily log file (one file per day)
+                daily_log = f"{log_dir}/daily_log_{datetime.now().strftime('%Y%m%d')}.md"
+                
+                # Generate markdown table
+                md_content = f"\n---\n\n# Income Statement Table - {table_type}\n\n"
+                md_content += f"**Processed at**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                md_content += f"**Rows**: {len(table_df)}\n"
+                md_content += f"**Columns**: {len(table_df.columns)}\n\n"
+                md_content += "## Table Data\n\n"
+                md_content += table_df.to_markdown(index=False) + "\n\n"
+                
+                # Append to daily log file
+                with open(daily_log, 'a', encoding='utf-8') as f:
+                    f.write(md_content)
+                
+                print(f"   📝 Logged processed table to: {daily_log}")
+            except Exception as e:
+                print(f"   ⚠️ Table logging failed: {e}")
+            
             # 2. Round numerical columns to 1 decimal place and add thousand separators
             import numpy as np
             for col in table_df.columns:
                 if table_df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
                     # Round to 1 decimal and format with thousand separators
-                    table_df[col] = table_df[col].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else x)
+                    # Skip if values look like years (2020-2030 range)
+                    def format_with_check(x):
+                        if pd.notna(x):
+                            # Don't format if it's a year value (between 2000 and 2100)
+                            if 2000 <= x <= 2100:
+                                return x
+                            return f"{x:,.1f}"
+                        return x
+                    table_df[col] = table_df[col].apply(format_with_check)
                 elif table_df[col].dtype == 'object':
                     # Try to convert string numbers to formatted numbers
                     def format_number(val):
@@ -954,8 +1005,15 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
                             # Skip if already contains Chinese characters or is descriptive text
                             if any('\u4e00' <= char <= '\u9fff' for char in str(val)):
                                 return val
+                            # Skip if it looks like a date or year (e.g., "2024", "2021-01-01", "2024年1-5月")
+                            val_str = str(val)
+                            if any(char in val_str for char in ['年', '月', '日', '-', '/']):
+                                return val
                             # Try to parse as number
                             num = float(str(val).replace(',', '').replace(' ', ''))
+                            # Don't format if it's a year value (between 2000 and 2100)
+                            if 2000 <= num <= 2100:
+                                return val
                             return f"{num:,.1f}"
                         except (ValueError, TypeError):
                             return val
@@ -1125,12 +1183,63 @@ def extract_income_statement_table_directly(df, entity_keywords):
     table_df = table_df[mask]
     print(f"   ✅ Removed {rows_before - len(table_df)} rows with '示意性调整后'")
     
+    # 1.5. Limit table to rows up to and including "净利润" row
+    net_profit_keywords = ['净利润', '淨利潤', 'net profit', 'net income']
+    net_profit_row_idx = None
+    for idx, row in table_df.iterrows():
+        row_str = ' '.join(str(val).lower() for val in row if pd.notna(val))
+        if any(keyword in row_str for keyword in net_profit_keywords):
+            net_profit_row_idx = idx
+            print(f"   📍 Found '净利润' at row index {idx}")
+            break
+    
+    if net_profit_row_idx is not None:
+        # Keep only rows up to and including 净利润
+        table_df = table_df.loc[:net_profit_row_idx]
+        print(f"   ✅ Limited table to {len(table_df)} rows (up to 净利润)")
+    
+    # Log processed table to markdown file for verification
+    try:
+        import os
+        from datetime import datetime
+        
+        # Create output directory if it doesn't exist
+        log_dir = 'fdd_utils/output/table_logs'
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # Create daily log file (one file per day)
+        daily_log = f"{log_dir}/daily_log_{datetime.now().strftime('%Y%m%d')}.md"
+        
+        # Generate markdown table
+        md_content = f"\n---\n\n# Income Statement Table - Direct Extraction\n\n"
+        md_content += f"**Processed at**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        md_content += f"**Rows**: {len(table_df)}\n"
+        md_content += f"**Columns**: {len(table_df.columns)}\n\n"
+        md_content += "## Table Data\n\n"
+        md_content += table_df.to_markdown(index=False) + "\n\n"
+        
+        # Append to daily log file
+        with open(daily_log, 'a', encoding='utf-8') as f:
+            f.write(md_content)
+        
+        print(f"   📝 Logged processed table to: {daily_log}")
+    except Exception as e:
+        print(f"   ⚠️ Table logging failed: {e}")
+    
     # 2. Round numerical columns to 1 decimal place and add thousand separators
     import numpy as np
     for col in table_df.columns:
         if table_df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
             # Round to 1 decimal and format with thousand separators
-            table_df[col] = table_df[col].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else x)
+            # Skip if values look like years (2020-2030 range)
+            def format_with_check(x):
+                if pd.notna(x):
+                    # Don't format if it's a year value (between 2000 and 2100)
+                    if 2000 <= x <= 2100:
+                        return x
+                    return f"{x:,.1f}"
+                return x
+            table_df[col] = table_df[col].apply(format_with_check)
         elif table_df[col].dtype == 'object':
             # Try to convert string numbers to formatted numbers
             def format_number(val):
@@ -1140,8 +1249,15 @@ def extract_income_statement_table_directly(df, entity_keywords):
                     # Skip if already contains Chinese characters or is descriptive text
                     if any('\u4e00' <= char <= '\u9fff' for char in str(val)):
                         return val
+                    # Skip if it looks like a date or year (e.g., "2024", "2021-01-01", "2024年1-5月")
+                    val_str = str(val)
+                    if any(char in val_str for char in ['年', '月', '日', '-', '/']):
+                        return val
                     # Try to parse as number
                     num = float(str(val).replace(',', '').replace(' ', ''))
+                    # Don't format if it's a year value (between 2000 and 2100)
+                    if 2000 <= num <= 2100:
+                        return val
                     return f"{num:,.1f}"
                 except (ValueError, TypeError):
                     return val
@@ -1378,8 +1494,22 @@ def find_indicative_adjusted_column_and_dates(df, entity_keywords):
         print(f"   🎯 LATEST DATE FOUND: {latest_date.strftime('%Y-%m-%d')} in column '{latest_col}' (Excel row: {latest_row_number})")
         return latest_date.strftime('%Y-%m-%d'), latest_col, latest_row_number
     else:
-        print(f"   ❌ No valid dates found in the date row")
-        return None, None, None
+        # If no valid date found, use the RIGHTMOST column in the merged range (most recent)
+        # This handles cases like "2024年1-5月" which can't be parsed as standard dates
+        print(f"   ⚠️ No parseable dates found - using RIGHTMOST column as fallback")
+        rightmost_col = df.columns[merge_end]
+        # Extract row number from column name
+        if isinstance(rightmost_col, str) and rightmost_col.startswith('Unnamed: '):
+            try:
+                rightmost_row_number = int(rightmost_col.split(': ')[1])
+            except (ValueError, IndexError):
+                rightmost_row_number = None
+        elif isinstance(rightmost_col, int):
+            rightmost_row_number = rightmost_col
+        else:
+            rightmost_row_number = None
+        print(f"   🎯 FALLBACK: Using rightmost column '{rightmost_col}' (Excel row: {rightmost_row_number})")
+        return None, rightmost_col, rightmost_row_number
 
 def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=None, actual_entity=None, debug=False, manual_mode='single'):
     """
@@ -1920,634 +2050,6 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         print(f"Error parsing accounting table: {e}")
         return None
 
-
-def test_entity_mode_flow():
-    """Test function to verify entity mode parameter flow."""
-    import pandas as pd
-
-    print("🧪 TESTING ENTITY MODE PARAMETER FLOW")
-    print("=" * 50)
-
-    # Test with REAL databook.xlsx data
-    print("\n📋 TEST: Testing with REAL databook.xlsx data")
-
-    try:
-        import os
-        databook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'databook.xlsx')
-        if os.path.exists(databook_path):
-            xl = pd.ExcelFile(databook_path)
-
-            # Test with Cash sheet - should find "Ningbo"
-            if 'Cash' in xl.sheet_names:
-                df_cash = xl.parse('Cash')
-                print(f"📊 Cash sheet: {df_cash.shape}")
-
-                # Test entity detection with "Ningbo Wanchen" keywords
-                entity_keywords = ['Ningbo', 'Ningbo Wanchen', 'Haining', 'Haining Wanpu']
-                print(f"🔍 Testing entity keywords: {entity_keywords}")
-
-                result, is_multi = determine_entity_mode_and_filter(df_cash, 'Ningbo Wanchen', entity_keywords, 'multiple')
-                print(f"🎯 Result: {'MULTIPLE' if is_multi else 'SINGLE'}")
-
-            # Test with BSHN sheet - should find "Haining"
-            if 'BSHN' in xl.sheet_names:
-                df_bshn = xl.parse('BSHN')
-                print(f"\n📊 BSHN sheet: {df_bshn.shape}")
-
-                result, is_multi = determine_entity_mode_and_filter(df_bshn, 'Haining Wanpu', entity_keywords, 'multiple')
-                print(f"🎯 Result: {'MULTIPLE' if is_multi else 'SINGLE'}")
-        else:
-            print("❌ databook.xlsx not found, running basic tests...")
-
-            # Fallback to basic test
-            test_data = [
-                ['Test Company Data', '', '', '', ''],
-                ['示意性调整后', '', '', '', ''],
-                ['', '2023-12-31', '2023-11-30', '2023-10-31', '2023-09-30'],
-                ['Revenue', '100', '200', '300', '400'],
-                ['Cost', '50', '60', '70', '80']
-            ]
-
-            df = pd.DataFrame(test_data)
-            print(f"📊 Fallback Test DataFrame: {len(df)} rows, {len(df.columns)} columns")
-
-            # Test with manual mode = 'single'
-            result_single, is_multi_single = determine_entity_mode_and_filter(df, 'Test Company', ['Test Company'], 'single')
-            print(f"🎯 Result: {'MULTIPLE' if is_multi_single else 'SINGLE'} (expected: SINGLE)")
-
-    except Exception as e:
-        print(f"❌ Error in entity mode flow test: {e}")
-        import traceback
-        traceback.print_exc()
-
-    print("\n" + "=" * 50)
-    print("✅ ENTITY MODE FLOW TEST COMPLETED")
-
-def test_new_table_logic():
-    """Test function for the new table logic implementation."""
-    import pandas as pd
-    from datetime import datetime
-
-    print("🧪 TESTING NEW TABLE LOGIC IMPLEMENTATION WITH DEBUGGING")
-    print("=" * 60)
-
-    # Test Case 1: Single Entity Table
-    print("\n📋 TEST CASE 1: Single Entity Table")
-    print("-" * 40)
-
-    single_entity_data = {
-        'Description': ['示意性调整后', 'Revenue', 'Cost', 'Profit'],
-        'Unnamed: 20': ['', '2023-12-31', 'Amount', 'Amount'],
-        'Unnamed: 21': ['', '2023-11-30', 'Amount', 'Amount'],
-        'Unnamed: 22': ['', '2023-10-31', 'Amount', 'Amount'],
-        'Unnamed: 23': ['', '2023-09-30', 'Amount', 'Amount']
-    }
-
-    df_single = pd.DataFrame(single_entity_data)
-    print(f"📊 Single Entity DataFrame: {len(df_single)} rows, {len(df_single.columns)} columns")
-
-    entity_keywords = ['Entity A']
-    df_filtered, is_multiple_entity = determine_entity_mode_and_filter(df_single, 'Entity A', entity_keywords, 'single')
-    print(f"🎯 Entity Mode: {'MULTIPLE' if is_multiple_entity else 'SINGLE'} (Manual: Single)")
-
-    # Test Case 2: Multiple Entity Mode with Mismatched Entity Names
-    print("\n📋 TEST CASE 2: Multiple Entity Mode with Mismatched Names")
-    print("-" * 50)
-
-    # Create a worksheet with different entity names than what user enters
-    mismatch_data = [
-        ['XYZ Corporation Financial Data', '', '', '', ''],  # Different entity name
-        ['示意性调整后', '', '', '', ''],
-        ['', '2023-12-31', '2023-11-30', '2023-10-31', '2023-09-30'],
-        ['Revenue', 'Amount', 'Amount', 'Amount', 'Amount'],
-        ['Cost', 'Amount', 'Amount', 'Amount', 'Amount'],
-        ['Profit', 'Amount', 'Amount', 'Amount', 'Amount'],
-        [None, None, None, None, None],  # Empty row
-        ['ABC Company Financial Data', '', '', '', ''],  # Another different entity
-        ['示意性调整后', '', '', '', ''],
-        ['', '2024-01-31', '2024-02-29', '2024-03-31', '2024-04-30'],
-        ['Revenue', 'Amount', 'Amount', 'Amount', 'Amount'],
-        ['Cost', 'Amount', 'Amount', 'Amount', 'Amount'],
-        ['Profit', 'Amount', 'Amount', 'Amount', 'Amount']
-    ]
-
-    df_mismatch = pd.DataFrame(mismatch_data)
-    print(f"📊 Mismatch DataFrame: {len(df_mismatch)} rows, {len(df_mismatch.columns)} columns")
-
-    # User enters "My Company" but Excel has "XYZ Corporation" and "ABC Company"
-    user_entity = "My Company"
-    user_keywords = ['My', 'My Company']
-
-    print(f"🔍 User enters: '{user_entity}'")
-    print(f"🔍 Generated keywords: {user_keywords}")
-    print(f"🔍 Excel contains: 'XYZ Corporation', 'ABC Company'")
-
-    df_filtered_mismatch, is_multiple_mismatch = determine_entity_mode_and_filter(
-        df_mismatch, user_entity, user_keywords, 'multiple'
-    )
-    print(f"🎯 Result: {'MULTIPLE' if is_multiple_mismatch else 'SINGLE'} (Should fallback to single due to mismatch)")
-
-    # Test Case 3: Multiple Entity Tables (Working Case)
-    print("\n📋 TEST CASE 3: Multiple Entity Tables (Working Case)")
-    print("-" * 50)
-
-    # Create a worksheet with multiple entity tables separated by truly empty rows
-    multi_entity_data = [
-        ['Entity A Financial Data', '', '', '', ''],  # Entity A table header
-        ['示意性调整后', '', '', '', ''],  # Indicative adjusted header
-        ['', '2023-12-31', '2023-11-30', '2023-10-31', '2023-09-30'],  # Date row
-        ['Revenue', 'Amount', 'Amount', 'Amount', 'Amount'],  # Data rows
-        ['Cost', 'Amount', 'Amount', 'Amount', 'Amount'],
-        ['Profit', 'Amount', 'Amount', 'Amount', 'Amount'],
-        [None, None, None, None, None],  # Truly empty row separator
-        [None, None, None, None, None],  # Another empty row
-        ['Entity B Financial Data', '', '', '', ''],  # Entity B table header
-        ['示意性调整后', '', '', '', ''],  # Indicative adjusted header
-        ['', '2024-01-31', '2024-02-29', '2024-03-31', '2024-04-30'],  # Date row
-        ['Revenue', 'Amount', 'Amount', 'Amount', 'Amount'],  # Data rows
-        ['Cost', 'Amount', 'Amount', 'Amount', 'Amount'],
-        ['Profit', 'Amount', 'Amount', 'Amount', 'Amount'],
-        [None, None, None, None, None],  # Truly empty row separator
-        [None, None, None, None, None],  # Another empty row
-        ['Entity C Financial Data', '', '', '', ''],  # Entity C table header
-        ['示意性调整后', '', '', '', ''],  # Indicative adjusted header
-        ['', '2024-02-28', '2024-03-31', '2024-04-30', '2024-05-31'],  # Date row
-        ['Revenue', 'Amount', 'Amount', 'Amount', 'Amount'],  # Data rows
-        ['Cost', 'Amount', 'Amount', 'Amount', 'Amount'],
-        ['Profit', 'Amount', 'Amount', 'Amount', 'Amount']
-    ]
-
-    df_multi = pd.DataFrame(multi_entity_data)
-    print(f"📊 Multiple Entity DataFrame: {len(df_multi)} rows, {len(df_multi.columns)} columns")
-
-    # Test Multiple Entity Mode with Manual Selection
-    entity_keywords_multi = ['Entity A', 'Entity B', 'Entity C']
-    df_filtered_multi, is_multiple_entity_multi = determine_entity_mode_and_filter(df_multi, 'Entity B', entity_keywords_multi, 'multiple')
-    print(f"🎯 Entity Mode: {'MULTIPLE' if is_multiple_entity_multi else 'SINGLE'} (Manual: Multiple)")
-
-    # Test Fallback: Multiple mode selected but only single entity found
-    print("\n📋 TEST CASE 3: Multiple Mode with Single Entity (Fallback Test)")
-    print("-" * 50)
-
-    # Test with single entity data but multiple mode selected - should fallback to single
-    df_fallback, is_multiple_fallback = determine_entity_mode_and_filter(df_single, 'Entity A', ['Entity A'], 'multiple')
-    print(f"🎯 Fallback Mode: {'MULTIPLE' if is_multiple_fallback else 'SINGLE'} (Manual: Multiple, but single entity detected)")
-    print(f"📊 Filtered DataFrame: {len(df_filtered_multi)} rows, {len(df_filtered_multi.columns)} columns")
-
-    # Test Indicative adjusted column detection on filtered table
-    if len(df_filtered_multi) > 0:
-        extracted_date, selected_column, row_number = find_indicative_adjusted_column_and_dates(df_filtered_multi, entity_keywords_multi)
-        print(f"📅 Date Extraction: {extracted_date}")
-        print(f"📋 Selected Column: {selected_column}")
-        print(f"📍 Excel Row Number: {row_number}")
-
-        # Test table name generation
-        display_entity = 'Entity B'
-        if is_multiple_entity_multi and selected_column and row_number:
-            table_name = f"BS - {display_entity} (Row {row_number})"
-        elif selected_column and row_number:
-            table_name = f"BS - {display_entity} (Row {row_number})"
-        else:
-            table_name = f"BS - {display_entity}"
-
-        print(f"📋 Generated Table Name: {table_name}")
-
-    print("\n" + "=" * 60)
-    print("✅ MANUAL ENTITY MODE SELECTION TEST COMPLETED")
-
-
-def examine_databook():
-    """Examine the databook.xlsx to understand entity structure."""
-    import pandas as pd
-    import sys
-    import os
-
-    print("🔍 EXAMINING DATABOOK.XLSX")
-    print("=" * 50)
-
-    try:
-        # Check if databook.xlsx exists
-        databook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'databook.xlsx')
-        if not os.path.exists(databook_path):
-            print("❌ databook.xlsx not found!")
-            return
-
-        xl = pd.ExcelFile(databook_path)
-        print(f"📊 Found {len(xl.sheet_names)} sheets:")
-        for sheet in xl.sheet_names:
-            print(f"  - {sheet}")
-
-        print(f"\n📋 Examining first few sheets:")
-
-        for sheet_name in xl.sheet_names[:5]:  # First 5 sheets
-            print(f"\n=== {sheet_name} ===")
-            df = xl.parse(sheet_name)
-
-            print(f"Shape: {df.shape} (rows x columns)")
-            print("Column names:", list(df.columns[:10]))  # First 10 columns
-
-            print("\nFirst 5 rows content:")
-            for row_idx in range(min(5, len(df))):
-                row_values = []
-                for col_idx in range(min(8, len(df.columns))):  # First 8 columns
-                    col_name = df.columns[col_idx]
-                    val = df.iloc[row_idx, col_idx]
-                    if pd.notna(val):
-                        val_str = str(val)[:30]
-                        row_values.append(f"'{val_str}'")
-                    else:
-                        row_values.append("''")
-                print(f"  Row {row_idx}: {' | '.join(row_values)}")
-
-            # Look for potential entity names
-            print("\n🔍 Potential entity names found:")
-            all_text = ' '.join(df.astype(str).values.flatten()).lower()
-
-            # Look for common entity patterns
-            potential_entities = set()
-            words = all_text.split()
-
-            for word in words:
-                word = word.strip('.,;:!?()[]{}"\'')
-                # Look for capitalized words that might be entity names
-                if (len(word) > 2 and word[0].isupper() and
-                    not word.endswith(('the', 'and', 'for', 'with', 'from', 'into', 'onto', 'data', 'table', 'sheet', 'file',
-                                     'total', 'amount', 'value', 'date', 'cash', 'flow', 'income', 'expense', 'asset', 'liability',
-                                     'equity', 'revenue', 'cost', 'profit', 'loss', 'balance', 'sheet', 'statement'))):
-                    if len(word) < 30:  # Reasonable entity name length
-                        potential_entities.add(word)
-
-            if potential_entities:
-                print(f"  Found {len(potential_entities)} potential entities:")
-                for entity in sorted(list(potential_entities))[:10]:  # Show first 10
-                    print(f"    - {entity}")
-            else:
-                print("  No clear entity names found")
-            print("-" * 30)
-
-    except Exception as e:
-        print(f"❌ Error examining databook: {e}")
-        import traceback
-        traceback.print_exc()
-
-def test_haining_wanpu_workflow():
-    """Test the complete workflow with 'Haining Wanpu' entity input."""
-    import pandas as pd
-    import os
-
-    print("🧪 TESTING COMPLETE WORKFLOW: 'Haining Wanpu' → Multiple Entity Mode")
-    print("=" * 70)
-
-    # Step 1: Simulate user input "Haining Wanpu"
-    user_entity_input = "Haining Wanpu"
-    print(f"👤 USER INPUT: '{user_entity_input}'")
-
-    # Step 2: Generate entity keywords (same logic as in fdd_app.py)
-    base_entity = user_entity_input.split()[0] if user_entity_input.split() else None
-    words = user_entity_input.split()
-    entity_keywords = []
-
-    # Always include the base entity
-    entity_keywords.append(base_entity)
-
-    # Generate all possible combinations
-    if len(words) >= 2:
-        # Add two-word combinations
-        for i in range(1, len(words)):
-            entity_keywords.append(f"{base_entity} {words[i]}")
-
-        # Add three-word combinations if available
-        if len(words) >= 3:
-            for i in range(1, len(words)-1):
-                for j in range(i+1, len(words)):
-                    entity_keywords.append(f"{base_entity} {words[i]} {words[j]}")
-
-    # Use full entity name for processing
-    selected_entity = user_entity_input
-    entity_keywords.append(selected_entity)  # Add the full name too
-
-    print(f"🔧 GENERATED KEYWORDS: {entity_keywords}")
-
-    # Step 3: Load databook.xlsx and test entity detection
-    databook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'databook.xlsx')
-    if not os.path.exists(databook_path):
-        print("❌ databook.xlsx not found!")
-        return
-
-    xl = pd.ExcelFile(databook_path)
-    print(f"📊 EXCEL FILE: Found {len(xl.sheet_names)} sheets")
-
-    # Step 4: Test entity detection on each sheet
-    entity_mode = 'multiple'  # User selected Multiple Entity mode
-    print(f"📋 ENTITY MODE: {entity_mode}")
-
-    for sheet_name in xl.sheet_names:
-        print(f"\n{'='*50}")
-        print(f"📄 TESTING SHEET: {sheet_name}")
-        print(f"{'='*50}")
-
-        df = xl.parse(sheet_name)
-        print(f"📊 Sheet shape: {df.shape}")
-
-        # Test entity detection with manual mode
-        print(f"🔍 Testing entity detection for '{selected_entity}'...")
-        result_df, is_multiple = determine_entity_mode_and_filter(df, selected_entity, entity_keywords, entity_mode)
-
-        print(f"🎯 Detection Result: {'MULTIPLE' if is_multiple else 'SINGLE'}")
-        print(f"📊 Filtered DataFrame: {result_df.shape}")
-
-        if len(result_df) > 0:
-            # Very concise output - just essential info
-            desc_col = result_df.columns[0] if len(result_df.columns) > 0 else "N/A"
-            data_cols = len(result_df.columns) - 1
-            print(f"✅ SUCCESS: Found {len(result_df)} rows × {len(result_df.columns)} cols")
-            print(f"   📊 Description column: '{desc_col}' | Data columns: {data_cols}")
-
-            # Show only first row as sample (max 5 columns)
-            if len(result_df) > 0:
-                sample_row = result_df.iloc[0]
-                sample_values = []
-                for col_idx in range(min(5, len(result_df.columns))):
-                    val = sample_row.iloc[col_idx]
-                    if pd.notna(val):
-                        val_str = str(val)[:25]
-                        sample_values.append(f"'{val_str}'")
-                    else:
-                        sample_values.append("''")
-                print(f"   📋 Sample: {' | '.join(sample_values)}")
-                if len(result_df.columns) > 5:
-                    print(f"   📋 ... ({len(result_df.columns) - 5} more columns)")
-
-            print(f"✅ TABLE READY: {len(result_df)} financial records extracted")
-
-            print("\n📋 SUMMARY:")
-
-            # Test date column detection
-            print(f"\n📅 Testing date column detection...")
-            latest_date_col = detect_latest_date_column(result_df, sheet_name, entity_keywords)
-            if latest_date_col:
-                print(f"✅ Latest date column found: '{latest_date_col}'")
-            else:
-                print("⚠️ No date column detected")
-
-            # Test table parsing
-            print(f"\n🔧 Testing table parsing...")
-            if latest_date_col:
-                parsed_table = parse_accounting_table(result_df, sheet_name, selected_entity, sheet_name,
-                                                    latest_date_col, None, False, entity_mode)
-                if parsed_table:
-                    print("✅ Table parsing successful!")
-                    if 'table_name' in parsed_table.get('metadata', {}):
-                        print(f"📋 Generated table name: {parsed_table['metadata']['table_name']}")
-                    if 'excel_row_number' in parsed_table.get('metadata', {}):
-                        print(f"📍 Excel row number: {parsed_table['metadata']['excel_row_number']}")
-                else:
-                    print("❌ Table parsing failed")
-        else:
-            print("❌ FAILED: No data after filtering")
-
-    print(f"\n{'='*70}")
-    print("✅ WORKFLOW TEST COMPLETED")
-
-def test_streamlit_flow():
-    """Test the exact Streamlit app flow with Haining Wanpu"""
-    import pandas as pd
-    import os
-
-    print("🧪 TESTING EXACT STREAMLIT APP FLOW")
-    print("=" * 60)
-
-    # Simulate the exact entity input and processing from the Streamlit app
-    user_entity_input = "Haining Wanpu"
-    print(f"👤 USER INPUT: '{user_entity_input}'")
-
-    # Step 1: Generate entity keywords (exact same logic as in fdd_app.py)
-    base_entity = user_entity_input.split()[0] if user_entity_input.split() else None
-    words = user_entity_input.split()
-    entity_keywords = []
-
-    # Always include the base entity
-    entity_keywords.append(base_entity)
-
-    # Generate all possible combinations
-    if len(words) >= 2:
-        # Add two-word combinations
-        for i in range(1, len(words)):
-            entity_keywords.append(f"{base_entity} {words[i]}")
-
-        # Add three-word combinations if available
-        if len(words) >= 3:
-            for i in range(1, len(words)-1):
-                for j in range(i+1, len(words)):
-                    entity_keywords.append(f"{base_entity} {words[i]} {words[j]}")
-
-    # Use full entity name for processing
-    selected_entity = user_entity_input
-    entity_keywords.append(selected_entity)  # Add the full name too
-
-    entity_mode = 'multiple'  # User selected Multiple Entity mode
-    entity_suffixes = []  # Empty for this test
-
-    print(f"🎯 APP DEBUG - Entity Setup Complete:")
-    print(f"   👤 selected_entity: '{selected_entity}'")
-    print(f"   🔑 entity_keywords: {entity_keywords}")
-    print(f"   📋 entity_mode: {entity_mode}")
-    print(f"   📄 entity_suffixes: {entity_suffixes}")
-
-    # Step 2: Load and process the Excel file (simulating the exact call)
-    databook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'databook.xlsx')
-    if not os.path.exists(databook_path):
-        print("❌ databook.xlsx not found!")
-        return
-
-    xl = pd.ExcelFile(databook_path)
-    print(f"📊 EXCEL FILE: Found {len(xl.sheet_names)} sheets")
-
-    # Step 3: Test the FULL get_worksheet_sections_by_keys function
-    print(f"\n{'='*60}")
-    print("🎯 TESTING FULL get_worksheet_sections_by_keys FUNCTION")
-    print(f"{'='*60}")
-
-    # Load the mapping.json file
-    import json
-    import os
-    mapping_path = os.path.join(os.path.dirname(__file__), 'mapping.json')
-    with open(mapping_path, 'r') as f:
-        tab_name_mapping = json.load(f)
-
-    print(f"📋 Loaded tab_name_mapping with {len(tab_name_mapping)} keys")
-
-    # Test the actual function that would be called in Streamlit
-    result_sections = get_worksheet_sections_by_keys(
-        uploaded_file="databook.xlsx",  # This will trigger the local file loading
-        tab_name_mapping=tab_name_mapping,
-        entity_name=selected_entity,
-        entity_suffixes=entity_suffixes,
-        entity_keywords=entity_keywords,
-        entity_mode=entity_mode,
-        debug=True
-    )
-
-    print(f"\n📊 RESULT: get_worksheet_sections_by_keys returned sections for {len(result_sections)} keys")
-
-    # Check what we got for the Cash key
-    if 'Cash' in result_sections and result_sections['Cash']:
-        cash_sections = result_sections['Cash']
-        print(f"✅ Cash key found with {len(cash_sections)} sections")
-
-        if cash_sections:
-            first_section = cash_sections[0]
-            print(f"📋 First section data shape: {first_section.get('data', pd.DataFrame()).shape}")
-            print(f"📋 First section entity_match: {first_section.get('entity_match', 'N/A')}")
-            print(f"📋 First section is_selected_entity: {first_section.get('is_selected_entity', 'N/A')}")
-
-            # Check if the data is filtered
-            original_df = xl.parse('Cash')
-            section_df = first_section.get('data', pd.DataFrame())
-
-            if len(section_df) != len(original_df):
-                print(f"✅ SUCCESS: Data was filtered! Original: {len(original_df)} rows, Filtered: {len(section_df)} rows")
-                print("📋 First 3 rows of filtered data:")
-                for i in range(min(3, len(section_df))):
-                    row_vals = []
-                    for j in range(min(5, len(section_df.columns))):
-                        val = section_df.iloc[i, j]
-                        if pd.notna(val):
-                            row_vals.append(f"'{str(val)[:25]}'")
-                        else:
-                            row_vals.append("''")
-                    print(f"  Row {i}: {' | '.join(row_vals)}")
-            else:
-                print("❌ ISSUE: Data was NOT filtered - got the same number of rows!")
-    else:
-        print("❌ Cash key not found or has no sections")
-
-    print(f"\n{'='*60}")
-    print("✅ FULL STREAMLIT FLOW TEST COMPLETED")
-
-def test_haining_investigation():
-    """Comprehensive investigation of Haining Wanpu entity filtering"""
-    import pandas as pd
-    import json
-    import os
-
-    print("=" * 80)
-    print("🔍 COMPREHENSIVE INVESTIGATION: Haining Wanpu Entity Filtering")
-    print("=" * 80)
-
-    # Step 1: Load the actual databook.xlsx
-    databook_path = "databook.xlsx"
-    if not os.path.exists(databook_path):
-        print("❌ databook.xlsx not found!")
-        return
-
-    xl = pd.ExcelFile(databook_path)
-    print(f"📊 Loaded databook.xlsx with sheets: {xl.sheet_names}")
-
-    # Step 2: Test entity keyword generation
-    entity_name = "Haining Wanpu"
-    print(f"\n👤 Testing entity: '{entity_name}'")
-
-    # Generate entity keywords exactly like the app does
-    base_entity = entity_name.split()[0] if entity_name.split() else None
-    words = entity_name.split()
-    entity_keywords = [base_entity] if base_entity else []
-
-    # Add two-word combinations
-    if len(words) >= 2:
-        for i in range(1, len(words)):
-            entity_keywords.append(f"{base_entity} {words[i]}")
-        # Add three-word combinations if available
-        if len(words) >= 3:
-            for i in range(1, len(words)-1):
-                for j in range(i+1, len(words)):
-                    entity_keywords.append(f"{base_entity} {words[i]} {words[j]}")
-
-    entity_keywords.append(entity_name)  # Add full name
-    entity_keywords = list(set(entity_keywords))  # Remove duplicates
-
-    print(f"🔑 Generated entity keywords: {entity_keywords}")
-
-    # Step 3: Load mapping.json
-    mapping_path = os.path.join("fdd_utils", "mapping.json")
-    with open(mapping_path, 'r') as f:
-        tab_name_mapping = json.load(f)
-
-    # Step 4: Test key sheets that should contain Haining data
-    test_sheets = ['Cash', 'AR', 'Investment properties', 'Tax payable', 'OP', 'AP', 'Share capital']
-    entity_mode = 'multiple'
-
-    print(f"\n🎯 Entity mode: {entity_mode}")
-    print(f"📋 Testing sheets: {test_sheets}")
-
-    for sheet_name in test_sheets:
-        if sheet_name in xl.sheet_names:
-            print(f"\n{'='*60}")
-            print(f"📄 TESTING SHEET: {sheet_name}")
-            print(f"{'='*60}")
-
-            df = xl.parse(sheet_name)
-            print(f"📊 Original shape: {df.shape}")
-
-            # Test the entity filtering
-            result_df, is_multiple = determine_entity_mode_and_filter(df, entity_name, entity_keywords, entity_mode)
-
-            print(f"🎯 Entity filtering result: {'MULTIPLE' if is_multiple else 'SINGLE'} entities detected")
-            print(f"📊 Filtered shape: {result_df.shape}")
-
-            if len(result_df) > 0:
-                print("✅ SUCCESS: Entity filtering returned data")
-                # Show first few rows to verify content
-                print("📋 First 3 rows of filtered data:")
-                for i in range(min(3, len(result_df))):
-                    row_content = []
-                    for j in range(min(5, len(result_df.columns))):
-                        col_name = result_df.columns[j]
-                        val = result_df.iloc[i, j]
-                        if pd.notna(val):
-                            val_str = str(val)[:25]
-                            row_content.append(f"'{val_str}'")
-                        else:
-                            row_content.append("''")
-                    print(f"  Row {i}: {' | '.join(row_content)}")
-
-                # Check if this sheet should match any financial key
-                matched_keys = []
-                if sheet_name in tab_name_mapping:
-                    matched_keys = [sheet_name]  # Direct match
-                else:
-                    for key, patterns in tab_name_mapping.items():
-                        if sheet_name in patterns:
-                            matched_keys.append(key)
-
-                print(f"🔗 Matched financial keys: {matched_keys}")
-
-                # Test the full parse_accounting_table flow
-                if matched_keys:
-                    for best_key in matched_keys:
-                        print(f"\n🔧 Testing parse_accounting_table for key '{best_key}'...")
-                        parsed_table = parse_accounting_table(result_df, best_key, entity_name, sheet_name,
-                                                            None, None, False, entity_mode)
-
-                        if parsed_table:
-                            print("✅ parse_accounting_table succeeded")
-                            if 'filtered_data' in parsed_table:
-                                filtered_data = parsed_table['filtered_data']
-                                print(f"📦 Filtered data available: {filtered_data.shape}")
-                                print("🎉 ENTITY FILTERING WORKING CORRECTLY!")
-                            else:
-                                print("⚠️ No filtered_data in parsed_table")
-                        else:
-                            print("❌ parse_accounting_table failed")
-            else:
-                print("❌ FAILURE: Entity filtering returned no data")
-
-    print(f"\n{'='*80}")
-    print("🔍 INVESTIGATION COMPLETE")
-    print(f"{'='*80}")
-
-if __name__ == "__main__":
-    test_haining_investigation()
 
 
 def process_and_filter_excel(filename, tab_name_mapping, entity_name, entity_suffixes):

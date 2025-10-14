@@ -67,11 +67,34 @@ def preprocess_income_statement_table(df):
     if rows_before != len(df):
         print(f"   ✅ Removed {rows_before - len(df)} rows with '示意性调整后'")
     
+    # 1.5. Limit table to rows up to and including "净利润" row
+    net_profit_keywords = ['净利润', '淨利潤', 'net profit', 'net income']
+    net_profit_row_idx = None
+    for idx, row in df.iterrows():
+        row_str = ' '.join(str(val).lower() for val in row if pd.notna(val))
+        if any(keyword in row_str for keyword in net_profit_keywords):
+            net_profit_row_idx = idx
+            print(f"   📍 Found '净利润' at row index {idx}")
+            break
+    
+    if net_profit_row_idx is not None:
+        # Keep only rows up to and including 净利润
+        df = df.loc[:net_profit_row_idx]
+        print(f"   ✅ Limited table to {len(df)} rows (up to 净利润)")
+    
     # 2. Round numerical columns to 1 decimal place and add thousand separators
     for col in df.columns:
         if df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
             # Round to 1 decimal and format with thousand separators
-            df[col] = df[col].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else x)
+            # Skip if values look like years (2020-2030 range)
+            def format_with_check(x):
+                if pd.notna(x):
+                    # Don't format if it's a year value (between 2000 and 2100)
+                    if 2000 <= x <= 2100:
+                        return x
+                    return f"{x:,.1f}"
+                return x
+            df[col] = df[col].apply(format_with_check)
         elif df[col].dtype == 'object':
             # Try to convert string numbers to formatted numbers
             def format_number(val):
@@ -81,8 +104,15 @@ def preprocess_income_statement_table(df):
                     # Skip if already contains Chinese characters or is descriptive text
                     if any('\u4e00' <= char <= '\u9fff' for char in str(val)):
                         return val
+                    # Skip if it looks like a date or year (e.g., "2024", "2021-01-01", "2024年1-5月")
+                    val_str = str(val)
+                    if any(char in val_str for char in ['年', '月', '日', '-', '/', '至']):
+                        return val
                     # Try to parse as number
                     num = float(str(val).replace(',', '').replace(' ', ''))
+                    # Don't format if it's a year value (between 2000 and 2100)
+                    if 2000 <= num <= 2100:
+                        return val
                     return f"{num:,.1f}"
                 except (ValueError, TypeError):
                     return val
