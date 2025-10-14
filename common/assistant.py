@@ -1669,23 +1669,47 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
                     print(f"\n⚠️ TOKEN LIMIT: Key '{key}' has {token_count} tokens (limit ~20000)")
                     print(f"   Using simplified prompt without pattern matching...")
                     
-                    # Simplified user query - just explain the account
-                    user_query = f"""
-                    TASK: Write a professional financial commentary for this account in ~100 words.
+                    # Check language for simplified prompt
+                    is_chinese = language.lower() in ['chinese', '中文', 'chi']
                     
-                    ACCOUNT: {key}
-                    FINANCIAL DATA: {excel_tables[:2000]}... (truncated due to length)
-                    
-                    REQUIREMENTS:
-                    - Explain what this account represents
-                    - Mention key figures and trends
-                    - Keep it concise and professional
-                    - ~100 words maximum
-                    - No pattern matching needed
-                    - Focus on the most important information only
-                    
-                    OUTPUT: Direct commentary text only, no JSON or markdown.
-                    """
+                    if is_chinese:
+                        # Chinese simplified prompt
+                        user_query = f"""
+                        任务：为此账户撰写简洁的财务解说（约60-80字）。
+                        
+                        账户：{key}
+                        财务数据：{excel_tables[:2000]}... (因长度截断)
+                        
+                        要求：
+                        - 只显示最重要的前2个明细账户（或分组账户）加总计
+                        - 忽略所有0值账户
+                        - 说明此账户代表什么
+                        - 提及关键数字和趋势
+                        - 保持简洁专业（60-80字）
+                        - 不需要模式匹配
+                        - 只关注最重要的信息
+                        
+                        输出：直接输出解说文本，不要JSON或markdown格式。
+                        """
+                    else:
+                        # English simplified prompt
+                        user_query = f"""
+                        TASK: Write a concise financial commentary for this account (60-80 words).
+                        
+                        ACCOUNT: {key}
+                        FINANCIAL DATA: {excel_tables[:2000]}... (truncated due to length)
+                        
+                        REQUIREMENTS:
+                        - Show ONLY top 2 most important line items (or grouped accounts) plus total
+                        - Ignore all accounts with 0 values
+                        - Explain what this account represents
+                        - Mention key figures and trends
+                        - Keep it concise and professional (60-80 words)
+                        - No pattern matching needed
+                        - Focus on most important information only
+                        
+                        OUTPUT: Direct commentary text only, no JSON or markdown.
+                        """
                     print(f"   ✅ Using simplified prompt (~{counter.count_tokens(user_query + system_prompt)} tokens)")
             except Exception as e:
                 print(f"   ⚠️ Token check failed: {e}, proceeding with original prompt")
@@ -1875,6 +1899,8 @@ class DataValidationAgent:
                     6. Remove unnecessary quotation marks around sections
                     7. Ensure no data inconsistencies or conversion errors
                     8. Verify figures are properly adjusted for '000 notation if applicable
+                    9. If AI1 lists too many line items, reduce to ONLY top 2 most important + total
+                    10. Remove ALL line items with 0 values
                     """
             except (FileNotFoundError, json.JSONDecodeError):
                 # Fallback to hardcoded prompt
@@ -1888,6 +1914,8 @@ class DataValidationAgent:
                 3. Verify proper K/M conversion with 1 decimal place (e.g., 2.3M, 1.5K, 123.0)
                 4. Check entity names match data source (not reporting entity)
                 5. Identify ONLY top 2 most critical data accuracy issues
+                6. If AI1 lists too many line items, reduce to ONLY top 2 most important + total
+                7. Remove ALL line items with 0 values
                 6. Remove unnecessary quotation marks around sections
                 7. Ensure no data inconsistencies or conversion errors
                 8. Verify figures are properly adjusted for '000 notation if applicable
@@ -2080,11 +2108,13 @@ class PatternValidationAgent:
                     1. Compare AI1 content against available pattern templates
                     2. Check proper pattern structure and professional formatting
                     3. Verify all placeholders are filled with actual data
-                    4. If AI1 lists too many items, limit to top 2 most important
-                    5. Remove quotation marks quoting full sections
-                    6. Check for anything that shouldn't be there (template artifacts)
-                    7. Ensure content follows pattern structure consistently
-                    8. Verify proper K/M conversion with 1 decimal place formatting
+                    4. If AI1 lists too many items, limit to ONLY top 2 most important line items + total
+                    5. Remove ALL line items with 0 values - they waste space
+                    6. Remove quotation marks quoting full sections
+                    7. Check for anything that shouldn't be there (template artifacts)
+                    8. Ensure content follows pattern structure consistently
+                    9. Verify proper K/M conversion with 1 decimal place formatting
+                    10. Keep commentary concise (60-80 words for Chinese, 60-80 words for English)
                     """
             except (FileNotFoundError, json.JSONDecodeError):
                 # Fallback to hardcoded prompt
@@ -2096,7 +2126,8 @@ class PatternValidationAgent:
                 1. Compare AI1 content against available pattern templates
                 2. Check proper pattern structure and professional formatting
                 3. Verify all placeholders are filled with actual data
-                4. If AI1 lists too many items, limit to top 2 most important
+                4. If AI1 lists too many items, limit to ONLY top 2 most important line items + total
+                5. Remove ALL line items with 0 values - they waste space
                 5. Remove quotation marks quoting full sections
                 6. Check for anything that shouldn't be there (template artifacts)
                 7. Ensure content follows pattern structure consistently

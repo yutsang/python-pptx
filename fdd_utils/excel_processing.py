@@ -924,6 +924,44 @@ def separate_balance_sheet_and_income_statement_tables(df, entity_keywords):
         if len(final_cols) > 1:  # Only filter if we have more than description column
             table_df = table_df[final_cols]
         
+        # Preprocess data for Income Statement tables
+        if table_type == 'Income Statement' and not table_df.empty:
+            print(f"   🔧 Preprocessing Income Statement data...")
+            
+            # 1. Remove rows containing "示意性调整后" or "Indicative adjusted"
+            mask = table_df.apply(lambda row: not any(
+                '示意性调整后' in str(val) or '示意性調整後' in str(val) or 
+                '经示意性调整后' in str(val) or '經示意性調整後' in str(val) or
+                'indicative adjusted' in str(val).lower()
+                for val in row
+            ), axis=1)
+            rows_before = len(table_df)
+            table_df = table_df[mask]
+            print(f"   ✅ Removed {rows_before - len(table_df)} rows with '示意性调整后'")
+            
+            # 2. Round numerical columns to 1 decimal place and add thousand separators
+            import numpy as np
+            for col in table_df.columns:
+                if table_df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
+                    # Round to 1 decimal and format with thousand separators
+                    table_df[col] = table_df[col].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else x)
+                elif table_df[col].dtype == 'object':
+                    # Try to convert string numbers to formatted numbers
+                    def format_number(val):
+                        if pd.isna(val) or val == '':
+                            return val
+                        try:
+                            # Skip if already contains Chinese characters or is descriptive text
+                            if any('\u4e00' <= char <= '\u9fff' for char in str(val)):
+                                return val
+                            # Try to parse as number
+                            num = float(str(val).replace(',', '').replace(' ', ''))
+                            return f"{num:,.1f}"
+                        except (ValueError, TypeError):
+                            return val
+                    table_df[col] = table_df[col].apply(format_number)
+            print(f"   ✅ Applied number formatting: 1 decimal place with thousand separators")
+        
         return {
             'data': table_df,
             'header_info': section,
@@ -1072,6 +1110,43 @@ def extract_income_statement_table_directly(df, entity_keywords):
         return None
 
     print(f"✅ DIRECT IS EXTRACTION: Final table shape: {table_df.shape}")
+    
+    # Preprocess Income Statement data
+    print(f"   🔧 Preprocessing Income Statement data...")
+    
+    # 1. Remove rows containing "示意性调整后" or "Indicative adjusted"
+    mask = table_df.apply(lambda row: not any(
+        '示意性调整后' in str(val) or '示意性調整後' in str(val) or 
+        '经示意性调整后' in str(val) or '經示意性調整後' in str(val) or
+        'indicative adjusted' in str(val).lower()
+        for val in row
+    ), axis=1)
+    rows_before = len(table_df)
+    table_df = table_df[mask]
+    print(f"   ✅ Removed {rows_before - len(table_df)} rows with '示意性调整后'")
+    
+    # 2. Round numerical columns to 1 decimal place and add thousand separators
+    import numpy as np
+    for col in table_df.columns:
+        if table_df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
+            # Round to 1 decimal and format with thousand separators
+            table_df[col] = table_df[col].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else x)
+        elif table_df[col].dtype == 'object':
+            # Try to convert string numbers to formatted numbers
+            def format_number(val):
+                if pd.isna(val) or val == '':
+                    return val
+                try:
+                    # Skip if already contains Chinese characters or is descriptive text
+                    if any('\u4e00' <= char <= '\u9fff' for char in str(val)):
+                        return val
+                    # Try to parse as number
+                    num = float(str(val).replace(',', '').replace(' ', ''))
+                    return f"{num:,.1f}"
+                except (ValueError, TypeError):
+                    return val
+            table_df[col] = table_df[col].apply(format_number)
+    print(f"   ✅ Applied number formatting: 1 decimal place with thousand separators")
 
     return {
         'data': table_df,

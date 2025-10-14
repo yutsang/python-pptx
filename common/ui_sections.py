@@ -43,6 +43,55 @@ def clean_header_rows(df):
     return df
 
 
+def preprocess_income_statement_table(df):
+    """
+    Preprocess income statement table:
+    - Remove rows with '示意性调整后'
+    - Round numbers to 1 decimal place
+    - Add thousand separators
+    """
+    if df.empty:
+        return df
+    
+    print(f"   🔧 Preprocessing Income Statement table...")
+    
+    # 1. Remove rows containing "示意性调整后" or "Indicative adjusted"
+    mask = df.apply(lambda row: not any(
+        '示意性调整后' in str(val) or '示意性調整後' in str(val) or 
+        '经示意性调整后' in str(val) or '經示意性調整後' in str(val) or
+        'indicative adjusted' in str(val).lower()
+        for val in row
+    ), axis=1)
+    rows_before = len(df)
+    df = df[mask]
+    if rows_before != len(df):
+        print(f"   ✅ Removed {rows_before - len(df)} rows with '示意性调整后'")
+    
+    # 2. Round numerical columns to 1 decimal place and add thousand separators
+    for col in df.columns:
+        if df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
+            # Round to 1 decimal and format with thousand separators
+            df[col] = df[col].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else x)
+        elif df[col].dtype == 'object':
+            # Try to convert string numbers to formatted numbers
+            def format_number(val):
+                if pd.isna(val) or val == '':
+                    return val
+                try:
+                    # Skip if already contains Chinese characters or is descriptive text
+                    if any('\u4e00' <= char <= '\u9fff' for char in str(val)):
+                        return val
+                    # Try to parse as number
+                    num = float(str(val).replace(',', '').replace(' ', ''))
+                    return f"{num:,.1f}"
+                except (ValueError, TypeError):
+                    return val
+            df[col] = df[col].apply(format_number)
+    print(f"   ✅ Applied number formatting: 1 decimal place with thousand separators")
+    
+    return df
+
+
 def render_balance_sheet_sections(
     sections_by_key: dict,
     get_key_display_name,
@@ -551,6 +600,9 @@ def render_income_statement_sections(
             
             # Clean header rows first
             raw_df = clean_header_rows(raw_df)
+            
+            # Apply income statement preprocessing
+            raw_df = preprocess_income_statement_table(raw_df)
             
             # Drop all-NaN/None columns
             for col in list(raw_df.columns):
