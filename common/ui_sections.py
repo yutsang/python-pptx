@@ -185,9 +185,34 @@ def render_balance_sheet_sections(
                 metadata = parsed_data['metadata']
                 data_rows = parsed_data['data']
                 
-
-
-                # Metadata info columns removed to maximize table display width
+                # Metadata summary row (info bar)
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.markdown(f"**Table:** {metadata.get('table_name', 'N/A')}")
+                with col2:
+                    date_value = metadata.get('date')
+                    if date_value:
+                        try:
+                            formatted_date = format_date_to_dd_mmm_yyyy(date_value)
+                            st.markdown(f"**Date:** {formatted_date}")
+                        except Exception as e:
+                            st.markdown(f"**Date:** {str(date_value)}")
+                    else:
+                        st.markdown("**Date:** N/A")
+                with col3:
+                    currency = metadata.get('currency', 'CNY')
+                    multiplier = metadata.get('multiplier', 1)
+                    if multiplier > 1:
+                        if multiplier == 1000:
+                            st.markdown(f"**Currency:** {currency}'000")
+                        elif multiplier == 1000000:
+                            st.markdown(f"**Currency:** {currency}'000,000")
+                        else:
+                            st.markdown(f"**Currency:** {currency} (×{multiplier})")
+                    else:
+                        st.markdown(f"**Currency:** {currency}")
+                with col4:
+                    st.markdown(f"**Type:** Balance Sheet")
 
                 if data_rows:
                     structured_data = []
@@ -420,10 +445,10 @@ def render_combined_sections(
                 metadata = parsed_data['metadata']
                 data_rows = parsed_data['data']
                 
-                # Metadata summary row
-                col1, col2, col3, col4, col5, col6 = st.columns(6)
+                # Metadata summary row (info bar) - matching BS/IS format
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.markdown(f"**Table:** {metadata['table_name']}")
+                    st.markdown(f"**Table:** {metadata.get('table_name', 'N/A')}")
                 with col2:
                     date_value = metadata.get('date')
                     if date_value:
@@ -431,9 +456,9 @@ def render_combined_sections(
                             formatted_date = format_date_to_dd_mmm_yyyy(date_value)
                             st.markdown(f"**Date:** {formatted_date}")
                         except Exception as e:
-                            st.markdown(f"**Date:** Error formatting: {e}")
+                            st.markdown(f"**Date:** {str(date_value)}")
                     else:
-                        st.markdown("**Date:** Unknown")
+                        st.markdown("**Date:** N/A")
                 with col3:
                     currency = metadata.get('currency', 'CNY')
                     multiplier = metadata.get('multiplier', 1)
@@ -447,37 +472,73 @@ def render_combined_sections(
                     else:
                         st.markdown(f"**Currency:** {currency}")
                 with col4:
-                    # Show data column info instead of multiplier
-                    selected_column = metadata.get('selected_column')
-                    if selected_column:
-                        # Extract column number from "Unnamed: 23" format
-                        if isinstance(selected_column, str) and selected_column.startswith('Unnamed: '):
-                            try:
-                                col_number = selected_column.split(': ')[1]
-                                st.markdown(f"**Data Column:** {col_number}")
-                            except (ValueError, IndexError):
-                                st.markdown(f"**Data Column:** {selected_column}")
-                        else:
-                            st.markdown(f"**Data Column:** {selected_column}")
-                    else:
-                        st.markdown("**Data Column:** N/A")
-                with col5:
-                    # Show currency and multiplier info instead of "Value Column"
-                    currency_info = metadata.get('currency', 'CNY')
-                    multiplier_info = metadata.get('multiplier', 1)
-                    if multiplier_info > 1:
-                        st.markdown(f"**Processed:** {currency_info} × {multiplier_info}")
-                    else:
-                        st.markdown(f"**Processed:** {currency_info}")
-                with col6:
-                    st.markdown(f"**Statement Type:** Combined")
+                    st.markdown(f"**Type:** Combined (BS+IS)")
                 
-                # Display the data table
-                if data_rows is not None and len(data_rows) > 0:
-                    st.markdown("**📊**")
-                    st.dataframe(data_rows, use_container_width=True, hide_index=True)
+                # Display the data table in Description/Value format (matching BS/IS mode)
+                if data_rows:
+                    structured_data = []
+                    for row in data_rows:
+                        # Handle different data structures safely
+                        if isinstance(row, dict):
+                            description = row.get('description') or row.get('Description') or row.get('desc') or row.get('item') or str(list(row.keys())[0] if row.keys() else 'Unknown')
+                        else:
+                            description = str(row)
+                        if isinstance(row, dict):
+                            value = row.get('value') or row.get('Value') or row.get('amount') or str(list(row.values())[1] if len(row.values()) > 1 else list(row.values())[0] if row.values() else 'N/A')
+                        else:
+                            value = 'N/A'
+                        actual_value = value
+                        
+                        # Skip rows with zero values
+                        try:
+                            if isinstance(actual_value, (int, float)) and actual_value == 0:
+                                continue
+                            elif isinstance(actual_value, str) and actual_value.strip() in ['0', '0.0', '0.00', '-']:
+                                continue
+                        except:
+                            pass  # If conversion fails, keep the row
+                        
+                        # Convert datetime objects to strings to avoid Arrow serialization errors
+                        if hasattr(actual_value, 'strftime'):  # datetime object
+                            formatted_value = actual_value.strftime('%Y-%m-%d')
+                        elif isinstance(actual_value, (int, float)):
+                            formatted_value = f"{actual_value:,.0f}"  # No decimals for cleaner display
+                        else:
+                            formatted_value = str(actual_value)
+                        structured_data.append({'Description': description, 'Value': formatted_value})
+
+                    if structured_data:  # Only display if we have data after filtering zeros
+                        df_structured = pd.DataFrame(structured_data)
+                        display_df = df_structured[["Description", "Value"]].copy()
+
+                        def highlight_items(row):
+                            desc_lower = row['Description'].lower()
+                            if any(term in desc_lower for term in ['total', 'subtotal']):
+                                return ['background-color: rgba(173, 216, 230, 0.3)'] * len(row)
+                            return [''] * len(row)
+
+                        styled_df = display_df.style.apply(highlight_items, axis=1)
+                        
+                        # Configure dataframe display to prevent wrapping and hide index
+                        st.dataframe(
+                            styled_df, 
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "Description": st.column_config.TextColumn(
+                                    "Description",
+                                    width="large"
+                                ),
+                                "Value": st.column_config.TextColumn(
+                                    "Value", 
+                                    width="medium"
+                                )
+                            }
+                        )
+                    else:
+                        st.info("No data rows with non-zero values found")
                 else:
-                    st.info("No structured data available for this key.")
+                    st.info("No structured data rows found")
             else:
                 # Fallback to raw data display
                 st.markdown("**📋 Raw Data:**")
@@ -548,9 +609,34 @@ def render_income_statement_sections(
                 metadata = parsed_data['metadata']
                 data_rows = parsed_data['data']
                 
-
-
-                # Metadata info columns removed to maximize table display width
+                # Metadata summary row (info bar)
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.markdown(f"**Table:** {metadata.get('table_name', 'N/A')}")
+                with col2:
+                    date_value = metadata.get('date')
+                    if date_value:
+                        try:
+                            formatted_date = format_date_to_dd_mmm_yyyy(date_value)
+                            st.markdown(f"**Date:** {formatted_date}")
+                        except Exception as e:
+                            st.markdown(f"**Date:** {str(date_value)}")
+                    else:
+                        st.markdown("**Date:** N/A")
+                with col3:
+                    currency = metadata.get('currency', 'CNY')
+                    multiplier = metadata.get('multiplier', 1)
+                    if multiplier > 1:
+                        if multiplier == 1000:
+                            st.markdown(f"**Currency:** {currency}'000")
+                        elif multiplier == 1000000:
+                            st.markdown(f"**Currency:** {currency}'000,000")
+                        else:
+                            st.markdown(f"**Currency:** {currency} (×{multiplier})")
+                    else:
+                        st.markdown(f"**Currency:** {currency}")
+                with col4:
+                    st.markdown(f"**Type:** Income Statement")
 
                 if data_rows:
                     structured_data = []

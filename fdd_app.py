@@ -1176,41 +1176,46 @@ def main():
 
         # Filter sections by statement type to avoid showing BS content when IS is selected
         # But skip filtering for "ALL" mode to show all data
-        if statement_type in ["BS", "IS"] and statement_type != "ALL":
-            # Get the original unfiltered data from session state
-            original_sections_by_key = st.session_state.get('ai_data', {}).get('sections_by_key', {})
-
+        # ALWAYS get the original unfiltered data from session state first
+        original_sections_by_key = st.session_state.get('ai_data', {}).get('sections_by_key', {})
+        
+        if statement_type == "BS":
             # Define BS and IS keys (allow partial matches for Chinese databooks)
             bs_keywords = ["Cash", "AR", "Prepayments", "OR", "CA", "NCA", "IP", "NCA",
-                          "AP", "payable", "OP", "Capital", "Reserve"]
-            is_keywords = ["OI", "OC", "Tax", "GA", "Fin", "Loss", "Income", "operating", "LT DTA"]
-
+                          "AP", "payable", "OP", "Capital", "Reserve", "Receivable"]
+            
             # Filter the original sections_by_key based on statement type
             filtered_sections_by_key = {}
-            if statement_type == "BS":
-                for key in original_sections_by_key:
-                    if any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords):
-                        filtered_sections_by_key[key] = original_sections_by_key[key]
-                print(f"🔍 BS: {len(original_sections_by_key)}→{len(filtered_sections_by_key)} keys")
-                print(f"🔍 BS keys found: {list(filtered_sections_by_key.keys())}")
-            elif statement_type == "IS":
-                print(f"🔍 IS DEBUG: Original keys: {list(original_sections_by_key.keys())}")
-                print(f"🔍 IS DEBUG: IS keywords: {is_keywords}")
-                print(f"🔍 IS DEBUG: BS keywords: {bs_keywords}")
-
-                for key in original_sections_by_key:
-                    is_match = any(is_kw.lower() in key.lower() for is_kw in is_keywords)
-                    bs_match = any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords)
-                    include_key = is_match or not bs_match
-
-                    if include_key:
-                        filtered_sections_by_key[key] = original_sections_by_key[key]
-
-                print(f"🔍 IS: {len(filtered_sections_by_key)} keys selected")
-
+            for key in original_sections_by_key:
+                if any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords):
+                    filtered_sections_by_key[key] = original_sections_by_key[key]
+            print(f"🔍 BS: {len(original_sections_by_key)}→{len(filtered_sections_by_key)} keys")
+            print(f"🔍 BS keys found: {list(filtered_sections_by_key.keys())}")
             sections_by_key = filtered_sections_by_key
-        else:
-            print(f"🔍 ALL: {len(sections_by_key)} keys")
+        elif statement_type == "IS":
+            is_keywords = ["OI", "OC", "Tax", "GA", "Fin", "Loss", "Income", "operating", "LT DTA", "Revenue", "Cost", "Expense"]
+            bs_keywords = ["Cash", "AR", "Prepayments", "OR", "CA", "NCA", "IP", "NCA",
+                          "AP", "payable", "OP", "Capital", "Reserve"]
+            
+            print(f"🔍 IS DEBUG: Original keys: {list(original_sections_by_key.keys())}")
+            print(f"🔍 IS DEBUG: IS keywords: {is_keywords}")
+            print(f"🔍 IS DEBUG: BS keywords: {bs_keywords}")
+
+            filtered_sections_by_key = {}
+            for key in original_sections_by_key:
+                is_match = any(is_kw.lower() in key.lower() for is_kw in is_keywords)
+                bs_match = any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords)
+                include_key = is_match or not bs_match
+
+                if include_key:
+                    filtered_sections_by_key[key] = original_sections_by_key[key]
+
+            print(f"🔍 IS: {len(filtered_sections_by_key)} keys selected")
+            sections_by_key = filtered_sections_by_key
+        else:  # ALL mode
+            # For ALL mode, use the ORIGINAL unfiltered data, not any previously filtered version
+            sections_by_key = original_sections_by_key
+            print(f"🔍 ALL: Using all {len(sections_by_key)} unfiltered keys")
 
         # Display financial statements
         
@@ -1240,26 +1245,31 @@ def main():
         print(f"📊 Processing {len(keys_with_data)} financial keys")
 
         # Filter keys by statement type
-        bs_keys = ["Cash", "AR", "Prepayments", "OR", "Other CA", "Other NCA", "IP", "NCA",
-                   "AP", "Taxes payable", "OP", "Capital", "Reserve"]
-        is_keys = ["OI", "OC", "Tax and Surcharges", "GA", "Fin Exp", "Cr Loss", "Other Income",
-                   "Non-operating Income", "Non-operating Exp", "Income tax", "LT DTA"]
+        # Use partial matching keywords for flexibility with English/Chinese databooks
+        bs_keywords = ["Cash", "AR", "Prepayments", "OR", "CA", "NCA", "IP", 
+                      "AP", "payable", "OP", "Capital", "Reserve", "Receivable", "Payable"]
+        is_keywords = ["OI", "OC", "Tax", "GA", "Fin", "Loss", "Income", "operating", 
+                      "LT DTA", "Revenue", "Cost", "Expense", "Profit"]
 
-        print(f"📊 DEBUG: Expected BS keys: {bs_keys}")
-        print(f"📊 DEBUG: Expected IS keys: {is_keys}")
+        print(f"📊 DEBUG: BS keywords: {bs_keywords}")
+        print(f"📊 DEBUG: IS keywords: {is_keywords}")
 
         if statement_type == "BS":
-            filtered_keys_for_ai = [key for key in keys_with_data if key in bs_keys]
-            print(f"📊 {statement_type} MODE: {len(filtered_keys_for_ai)} keys")
+            # Use partial matching for flexibility with different databook formats
+            filtered_keys_for_ai = [key for key in keys_with_data 
+                                   if any(bs_kw.lower() in key.lower() for bs_kw in bs_keywords)]
+            print(f"📊 {statement_type} MODE: {len(filtered_keys_for_ai)} keys matched")
             if not filtered_keys_for_ai:
                 filtered_keys_for_ai = keys_with_data
-                print(f"⚠️ {statement_type} MODE: Using all {len(filtered_keys_for_ai)} available keys")
+                print(f"⚠️ {statement_type} MODE: No keyword matches, using all {len(filtered_keys_for_ai)} available keys")
         elif statement_type == "IS":
-            filtered_keys_for_ai = [key for key in keys_with_data if key in is_keys]
-            print(f"📊 {statement_type} MODE: {len(filtered_keys_for_ai)} keys")
+            # Use partial matching for flexibility with different databook formats
+            filtered_keys_for_ai = [key for key in keys_with_data 
+                                   if any(is_kw.lower() in key.lower() for is_kw in is_keywords)]
+            print(f"📊 {statement_type} MODE: {len(filtered_keys_for_ai)} keys matched")
             if not filtered_keys_for_ai:
                 filtered_keys_for_ai = keys_with_data
-                print(f"⚠️ {statement_type} MODE: Using all {len(filtered_keys_for_ai)} available keys")
+                print(f"⚠️ {statement_type} MODE: No keyword matches, using all {len(filtered_keys_for_ai)} available keys")
         else:  # ALL
             filtered_keys_for_ai = keys_with_data
             print(f"📊 {statement_type} MODE: Processing {len(filtered_keys_for_ai)} keys for combined report")
@@ -1328,87 +1338,107 @@ def main():
             agent_states.get('agent3_completed', False)
         ])
 
-        # Check if PowerPoint file exists for download
-        output_dir = "fdd_utils/output"
-        pptx_file_exists = False
-        latest_file = None
-
-        if os.path.exists(output_dir):
-            pptx_files = [f for f in os.listdir(output_dir) if f.endswith('.pptx')]
-            if pptx_files:
-                pptx_file_exists = True
-                latest_file = max(pptx_files, key=lambda x: os.path.getctime(os.path.join(output_dir, x)))
-                print(f"📥 DOWNLOAD: Found {len(pptx_files)} PowerPoint files, latest: {latest_file}")
-        else:
-            print(f"📥 DOWNLOAD: Output directory does not exist: {output_dir}")
-
-        # Show download button that directly downloads the file
-        if pptx_file_exists and ai_completed:
-            file_path = os.path.join(output_dir, latest_file)
-            with open(file_path, 'rb') as f:
-                file_data = f.read()
-
-            # Use the stored column reference for proper alignment
-            download_col = st.session_state.get('download_button_column')
-            if download_col:
-                with download_col:
-                    st.download_button(
-                        label="📥 Download Full Report",
-                        data=file_data,
-                        file_name=latest_file,
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        key="btn_download_full_pptx",
-                        help="Download the full PowerPoint report with AI content",
-                        use_container_width=True
+        # Show PPTX generation button (generate on demand)
+        download_col = st.session_state.get('download_button_column')
+        generate_pptx_clicked = False
+        
+        if download_col:
+            with download_col:
+                if ai_completed:
+                    generate_pptx_clicked = st.button(
+                        "📥 Generate & Download PPTX",
+                        type="primary",
+                        use_container_width=True,
+                        key="btn_generate_pptx",
+                        help="Generate and download the PowerPoint report with AI content"
                     )
-            else:
-                st.download_button(
-                    label="📥 Download Full Report",
-                    data=file_data,
-                    file_name=latest_file,
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    key="btn_download_full_pptx",
-                    help="Download the full PowerPoint report with AI content",
-                    use_container_width=True
-                )
-        else:
-            if not ai_completed:
-                print(f"📥 DOWNLOAD: Waiting for AI processing to complete")
-            elif not pptx_file_exists:
-                print(f"📥 DOWNLOAD: No PowerPoint file found yet")
-            download_col = st.session_state.get('download_button_column')
-            if download_col:
-                with download_col:
+                else:
                     st.button(
-                        "📥 Download Full Report",
+                        "📥 Generate & Download PPTX",
                         type="secondary",
                         use_container_width=True,
-                        key="btn_download_full_pptx",
-                        help="Download the full PowerPoint report with AI content",
+                        key="btn_generate_pptx",
+                        help="Complete AI processing first",
                         disabled=True
                     )
-                    if not ai_completed:
-                        st.info("💡 Complete AI processing first to enable full report download")
-                    elif not pptx_file_exists:
-                        st.info("💡 Generate a report first to enable download")
+                    st.info("💡 Complete AI processing first to enable PPTX generation")
+        else:
+            if ai_completed:
+                generate_pptx_clicked = st.button(
+                    "📥 Generate & Download PPTX",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_generate_pptx",
+                    help="Generate and download the PowerPoint report with AI content"
+                )
             else:
                 st.button(
-                    "📥 Download Full Report",
+                    "📥 Generate & Download PPTX",
                     type="secondary",
                     use_container_width=True,
-                    key="btn_download_full_pptx",
-                    help="Download the full PowerPoint report with AI content",
+                    key="btn_generate_pptx",
+                    help="Complete AI processing first",
                     disabled=True
                 )
-                if not ai_completed:
-                    st.info("💡 Complete AI processing first to enable full report download")
-                elif not pptx_file_exists:
-                    st.info("💡 Generate a report first to enable download")
+                st.info("💡 Complete AI processing first to enable PPTX generation")
 
-        # Handle combined AI processing and PowerPoint export
+        # Handle PPTX generation when download button is clicked
+        if generate_pptx_clicked:
+            print(f"\n{'='*80}")
+            print(f"📊 PPTX GENERATION START")
+            print(f"{'='*80}")
+            
+            with st.spinner("📊 Generating PowerPoint presentation..."):
+                try:
+                    # Get necessary data from session state
+                    detected_language = st.session_state.get('ai_data', {}).get('detected_language', 'chinese')
+                    language_display = "中文" if detected_language == 'chinese' else "English"
+                    
+                    # Export PowerPoint
+                    output_path = export_enhanced_pptx(
+                        selected_entity, 
+                        statement_type, 
+                        language=detected_language,
+                        financial_statement_tab=financial_statement_tab, 
+                        include_bshn=include_bshn, 
+                        row_limit=row_limit
+                    )
+
+                    # Verify the file was created
+                    if os.path.exists(output_path):
+                        print(f"✅ PowerPoint file created successfully: {output_path}")
+                        
+                        # Read file and provide download
+                        with open(output_path, 'rb') as f:
+                            pptx_data = f.read()
+                        
+                        # Extract filename from path
+                        pptx_filename = os.path.basename(output_path)
+                        
+                        # Show download button
+                        st.success(f"✅ PowerPoint generated successfully ({language_display})!")
+                        st.download_button(
+                            label="📥 Download PowerPoint",
+                            data=pptx_data,
+                            file_name=pptx_filename,
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            key="btn_download_generated_pptx",
+                            use_container_width=True
+                        )
+                    else:
+                        print(f"❌ PowerPoint file was not created: {output_path}")
+                        st.error(f"❌ PowerPoint file was not created")
+
+                except Exception as export_error:
+                    st.error(f"❌ PowerPoint generation failed: {str(export_error)}")
+                    print(f"❌ PowerPoint export error: {export_error}")
+                    import traceback
+                    print(traceback.format_exc())
+
+        # Handle combined AI processing
         if generate_report_clicked:
             print(f"\n{'='*80}")
-            print(f"📊 POWERPOINT EXPORT SECTION")
+            print(f"🤖 AI CONTENT GENERATION SECTION")
             print(f"{'='*80}")
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -1442,8 +1472,8 @@ def main():
                 # ========================================
                 # STEP 1: AI PROCESSING (Agent 1)
                 # ========================================
-                status_msg = "🤖 生成内容..." if is_chinese else "🤖 Generating content..."
-                status_text.text(f"{status_msg} (0/{total_keys} keys)")
+                status_msg = "🤖 AI Content Generation" if not is_chinese else "🤖 AI内容生成"
+                status_text.text(f"{status_msg} - Initializing...")
                 progress_bar.progress(0.1)
                 
                 # Initialize timing for proper ETA calculation
@@ -1518,10 +1548,9 @@ def main():
                     else:
                         eta_text = ""
 
-                    # CRITICAL FIX: Enhanced status display with proper key count
-                    # Use actual current_key_index from parsing, not estimated
+                    # Enhanced status display with proper key count
                     display_key_index = max(1, current_key_index) if current_key_index > 0 else max(1, int(p * total_keys))
-                    status_display = f"📊 生成英文内容... ({display_key_index}/{total_keys} keys) - {current_key}"
+                    status_display = f"🤖 AI Content Generation - Processing {current_key} ({display_key_index}/{total_keys})"
                     if eta_text:
                         status_display += f" {eta_text}"
                     status_text.text(status_display)
@@ -1543,10 +1572,8 @@ def main():
                 # ========================================
                 # STEP 2: PROOFREADING
                 # ========================================
-                if detected_language == 'chinese':
-                    status_text.text(f"🧐 校对中文内容... (0/{total_keys} keys)")
-                else:
-                    status_text.text(f"🧐 校对英文内容... (0/{total_keys} keys)")
+                status_msg = "🧐 Quality Review" if not is_chinese else "🧐 质量审核"
+                status_text.text(f"{status_msg} - Initializing...")
                 progress_bar.progress(0.3)
                 
                 def progress_callback_proof(p, msg):
@@ -1571,7 +1598,7 @@ def main():
 
                     # Calculate actual progress (p is 0 to 1 from the proofreader loop)
                     key_index = max(1, int(p * total_keys)) if p > 0 else 1
-                    status_text.text(f"🧐 校对英文内容... ({key_index}/{total_keys} keys) - {current_key}")
+                    status_text.text(f"🧐 Quality Review - Checking {current_key} ({key_index}/{total_keys})")
                     progress_bar.progress(0.3 + p * 0.1)
                 
                 proofread_results = run_simple_proofreader(english_results, temp_ai_data, progress_callback=progress_callback_proof, language=detected_language)
@@ -1580,7 +1607,7 @@ def main():
                 # STEP 3: TRANSLATION (Chinese only)
                 # ========================================
                 if detected_language == 'chinese':
-                    status_text.text(f"🌐 翻译为中文... (0/{total_keys} keys)")
+                    status_text.text(f"🌐 Chinese Translation - Initializing...")
                     progress_bar.progress(0.5)
                     
                     def progress_callback_trans(p, msg):
@@ -1648,7 +1675,7 @@ def main():
                             eta_text = ""
 
                         # Enhanced status display with ETA on same line
-                        status_display = f"🌐 翻译为中文... ({current_key_index}/{total_keys} keys) - {current_key}"
+                        status_display = f"🌐 Chinese Translation - Translating {current_key} ({current_key_index}/{total_keys})"
                         if eta_text:
                             status_display += f" {eta_text}"
                         status_text.text(status_display)
@@ -1680,7 +1707,7 @@ def main():
                     
                 else:
                     total_keys = len(filtered_keys_for_ai)
-                    status_text.text(f"🤖 Generating English content... (0/{total_keys} keys)")
+                    status_text.text(f"🤖 AI Content Generation - Initializing...")
                     progress_bar.progress(0.3)
                     
                     # Initialize timing for proper ETA calculation
@@ -1736,7 +1763,7 @@ def main():
                             eta_text = ""
                         
                         # Enhanced status display with ETA on same line
-                        status_display = f"🤖 Generating English content... ({key_index}/{total_keys} keys) - {current_key}"
+                        status_display = f"🤖 AI Content Generation - Processing {current_key} ({key_index}/{total_keys})"
                         if eta_text:
                             status_display += f" {eta_text}"
                         status_text.text(status_display)
@@ -1753,10 +1780,8 @@ def main():
                         return
                     
                     # Proofread content
-                    if detected_language == 'chinese':
-                        status_text.text(f"🧐 校对中文内容... (0/{total_keys} keys)")
-                    else:
-                        status_text.text(f"🧐 Proofreading English content... (0/{total_keys} keys)")
+                    status_msg = "🧐 Quality Review" if not is_chinese else "🧐 质量审核"
+                    status_text.text(f"{status_msg} - Initializing...")
                     progress_bar.progress(0.6)
                     
                     def progress_callback_proof_eng(p, msg):
@@ -1824,7 +1849,7 @@ def main():
                             eta_text = ""
 
                         # Enhanced status display with ETA on same line
-                        status_display = f"🧐 校对英文内容... ({current_key_index}/{total_keys} keys) - {current_key}"
+                        status_display = f"🧐 Quality Review - Checking {current_key} ({current_key_index}/{total_keys})"
                         if eta_text:
                             status_display += f" {eta_text}"
                         status_text.text(status_display)
@@ -1856,7 +1881,7 @@ def main():
                         print(f"💾 STORED: {len(proofread_results)} AI results in session state")
                 
                 # Generate content files
-                status_text.text("📝 Generating content files...")
+                status_text.text("📝 Content Export - Generating files...")
                 progress_bar.progress(0.8)
 
                 print(f"📝 CONTENT GEN: Processing {statement_type} mode with {len(st.session_state.get('ai_content_store', {}))} stored results")
@@ -2003,36 +2028,12 @@ def main():
                         generate_content_from_session_storage(selected_entity)
                         print(f"✅ Content generation completed for {statement_type} mode")
 
-                # Export PowerPoint
-                status_text.text("📊 Exporting PowerPoint...")
-                progress_bar.progress(0.9)
+                # AI processing complete (no PPTX generation here anymore)
+                progress_bar.progress(1.0)
+                language_label = "English" if not is_chinese else "中文"
+                status_text.text(f"✅ Completed - {language_label} content ready")
+                st.success(f"🎉 AI content generated successfully! Click 'Generate & Download PPTX' to create your presentation.")
                 
-                try:
-                    # Export PowerPoint and automatically show download
-                    output_path = export_enhanced_pptx(selected_entity, statement_type, language=detected_language,
-                                       financial_statement_tab=financial_statement_tab, include_bshn=include_bshn, row_limit=row_limit)
-
-                    # Verify the file was created
-                    if os.path.exists(output_path):
-                        print(f"✅ PowerPoint file created successfully: {output_path}")
-                        progress_bar.progress(1.0)
-                        status_text.text(f"✅ Report generation and export completed ({language_display})")
-
-                        # Show success message with download info
-                        st.success(f"🎉 Report generated successfully! The download button should appear above.")
-                    else:
-                        print(f"❌ PowerPoint file was not created: {output_path}")
-                        progress_bar.progress(1.0)
-                        status_text.text(f"⚠️ Report generation completed but PowerPoint export failed")
-                        st.error(f"❌ PowerPoint file was not created at: {output_path}")
-
-                except Exception as export_error:
-                    progress_bar.progress(1.0)
-                    status_text.text(f"⚠️ Report generated but export failed: {str(export_error)}")
-                    st.error(f"❌ PowerPoint export failed: {str(export_error)}")
-                    st.info("💡 Content has been generated successfully. You can try the export again.")
-                    print(f"❌ PowerPoint export error: {export_error}")
-
                 time.sleep(1)
                 st.rerun()
                 
