@@ -1673,42 +1673,40 @@ def process_keys(keys, entity_name, entity_helpers, input_file, mapping_file, pa
                     is_chinese = language.lower() in ['chinese', '中文', 'chi']
                     
                     if is_chinese:
-                        # Chinese simplified prompt
+                        # Chinese simplified prompt - more concise
                         user_query = f"""
-                        任务：为此账户撰写简洁的财务解说（约60-80字）。
-                        
+                        任务：为此账户撰写极简洁的财务解说（严格限制在60-80字以内）。
+
                         账户：{key}
-                        财务数据：{excel_tables[:2000]}... (因长度截断)
-                        
-                        要求：
-                        - 只显示最重要的前2个明细账户（或分组账户）加总计
-                        - 忽略所有0值账户
-                        - 说明此账户代表什么
-                        - 提及关键数字和趋势
-                        - 保持简洁专业（60-80字）
-                        - 不需要模式匹配
-                        - 只关注最重要的信息
-                        
-                        输出：直接输出解说文本，不要JSON或markdown格式。
+                        财务数据：{excel_tables[:1500]}... (已截断)
+
+                        严格要求：
+                        - 只列出最重要的前2个非零项目及其金额
+                        - 忽略所有零值和不重要项目
+                        - 简要说明账户性质和关键金额
+                        - 严格控制在60-80字以内，不得超出
+                        - 禁止详细分析或冗长叙述
+                        - 只允许叙述性文字，不得包含表格或列表
+
+                        输出：直接输出简洁的叙述性解说文本，严格遵守字数限制。
                         """
                     else:
-                        # English simplified prompt
+                        # English simplified prompt - more concise
                         user_query = f"""
-                        TASK: Write a concise financial commentary for this account (60-80 words).
-                        
+                        TASK: Write an ultra-concise financial commentary for this account (strictly 60-80 words).
+
                         ACCOUNT: {key}
-                        FINANCIAL DATA: {excel_tables[:2000]}... (truncated due to length)
-                        
-                        REQUIREMENTS:
-                        - Show ONLY top 2 most important line items (or grouped accounts) plus total
-                        - Ignore all accounts with 0 values
-                        - Explain what this account represents
-                        - Mention key figures and trends
-                        - Keep it concise and professional (60-80 words)
-                        - No pattern matching needed
-                        - Focus on most important information only
-                        
-                        OUTPUT: Direct commentary text only, no JSON or markdown.
+                        FINANCIAL DATA: {excel_tables[:1500]}... (truncated for brevity)
+
+                        STRICT REQUIREMENTS:
+                        - List ONLY top 2 non-zero items with amounts
+                        - Ignore all zero values and minor items
+                        - Briefly explain account nature and key amounts
+                        - Strictly limit to 60-80 words, no exceptions
+                        - No detailed analysis or verbose descriptions
+                        - Narrative text only, no tables or lists
+
+                        OUTPUT: Direct concise narrative text only, strictly follow word limit.
                         """
                     print(f"   ✅ Using simplified prompt (~{counter.count_tokens(user_query + system_prompt)} tokens)")
             except Exception as e:

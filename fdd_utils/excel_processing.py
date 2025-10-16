@@ -83,6 +83,10 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
     columns = df.columns.tolist()
     latest_date = None
     latest_column = None
+
+    # Strategy: Find rightmost column that has data (not empty)
+    # If "Indicative adjusted" is found, look for data columns to the right of it
+    # Otherwise, look for rightmost column with actual data values
     
     # print(f"🔍 {sheet_name}: Searching for 'Indicative adjusted' (English/Chinese) column...")
 
@@ -200,6 +204,52 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
         from datetime import datetime
         timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
         col_idx = columns.index(latest_column) if latest_column in columns else -1
+
+        # If no date was found but we have indicative positions, find rightmost column with data
+        if latest_column is None and indicative_positions:
+            print(f"   🔍 No date found in indicative ranges, looking for rightmost data column...")
+
+            # Strategy: Find the rightmost column that has actual data (not headers/empty)
+            rightmost_data_col = None
+            rightmost_col_idx = -1
+
+            # Check columns from right to left, starting from the rightmost
+            for col_idx_check in range(len(columns) - 1, -1, -1):
+                col_name = columns[col_idx_check]
+
+                # Skip obvious header columns
+                if any(skip in str(col_name).lower() for skip in ['total', '合计', 'sum', 'summary']):
+                    continue
+
+                # Check if this column has actual data (numbers, not just headers)
+                has_data = False
+                for row_idx in range(min(50, len(df))):  # Check first 50 rows
+                    val = df.iloc[row_idx, col_idx_check]
+                    if pd.notna(val) and str(val).strip():
+                        # Check if it's a number or meaningful text (not header)
+                        val_str = str(val).strip()
+                        if (val_str.replace(',', '').replace('.', '').replace('-', '').isdigit() and
+                            len(val_str) > 2):  # At least 3 digits for meaningful numbers
+                            has_data = True
+                            break
+                        elif not any(header_word in val_str.lower() for header_word in
+                                   ['total', '合计', 'sum', 'subtotal', '小计', 'header', 'title']):
+                            # Check if it's Chinese date format like "2024年1-5月"
+                            if re.match(r'\d{4}年\d{1,2}月|\d{4}年\d{1,2}-\d{1,2}月', val_str):
+                                has_data = True
+                                break
+
+                if has_data:
+                    rightmost_data_col = col_name
+                    rightmost_col_idx = col_idx_check
+                    print(f"   📊 Found data in column {col_idx_check}: {col_name}")
+                    break
+
+            if rightmost_data_col:
+                latest_column = rightmost_data_col
+                col_idx = rightmost_col_idx
+                print(f"   🎯 Selected rightmost data column: {latest_column}")
+
         # Extract column number from column name (e.g., "Unnamed: 20" -> 20)
         if latest_column and latest_column.startswith('Unnamed: '):
             try:
@@ -209,13 +259,17 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
                 col_letter = 'unknown'
         else:
             col_letter = col_num_to_letter(col_idx) if col_idx >= 0 else 'unknown'
-        print(f"   🎯 [{timestamp}] FINAL SELECTION: Column '{latest_column}' ({col_letter}) with date {latest_date.strftime('%Y-%m-%d')}")
-        print(f"   ✅ Column {col_letter} (list index {col_idx}) selected as latest date column")
+
+        if latest_date:
+            print(f"   🎯 [{timestamp}] FINAL SELECTION: Column '{latest_column}' ({col_letter}) with date {latest_date.strftime('%Y-%m-%d')}")
+        else:
+            print(f"   🎯 [{timestamp}] FINAL SELECTION: Column '{latest_column}' ({col_letter}) - rightmost data column")
+        print(f"   ✅ Column {col_letter} (list index {col_idx}) selected as target column")
     else:
         from datetime import datetime
         timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-        print(f"   ❌ [{timestamp}] No date column detected")
-    
+        print(f"   ❌ [{timestamp}] No column detected")
+
     return latest_column
 
 

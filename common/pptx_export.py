@@ -1652,21 +1652,9 @@ class PowerPointGenerator:
         tf = shape.text_frame
         tf.clear()
 
-        # Create first row as 18pt placeholder
-        p1 = tf.add_paragraph()
-        placeholder_run = p1.add_run()
-        placeholder_run.text = " "  # Single space placeholder
-        placeholder_run.font.size = Pt(18)  # 18pt placeholder
-        placeholder_run.font.name = 'Arial'
-        placeholder_run.font.bold = True
-        try:
-            placeholder_run.font.color.rgb = RGBColor(0, 51, 102)
-        except:
-            placeholder_run.font.color.rgb = RGBColor(0, 51, 102)
-
-        # Create second paragraph for actual content
-        p2 = tf.add_paragraph()
-        run = p2.add_run()
+        # Create single paragraph for content (removed 18pt placeholder row)
+        p = tf.add_paragraph()
+        run = p.add_run()
 
         # Set the full summary content - let PowerPoint handle wrapping naturally
         run.text = summary_content
@@ -1674,10 +1662,10 @@ class PowerPointGenerator:
         # Apply proper font settings for coSummary
         # Use appropriate font size and ensure proper font name
         if summary_content and any('\u4e00' <= char <= '\u9fff' for char in summary_content):
-            run.font.size = Pt(8)  # 8pt font for Chinese content
+            run.font.size = Pt(10)  # 10pt font for Chinese content (increased for better readability)
             run.font.name = 'Microsoft YaHei'  # Use YaHei for Chinese text
         else:
-            run.font.size = Pt(8)  # 8pt font for English
+            run.font.size = Pt(10)  # 10pt font for English (increased for better readability)
             run.font.name = 'Arial'  # Use Arial for English text
 
         try:
