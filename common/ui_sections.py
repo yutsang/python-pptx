@@ -23,13 +23,23 @@ def clean_header_rows(df):
         
         if has_unit_indicator:
             # Check if row also contains year-like values (e.g., 2021000, 2020000)
+            # BUT NOT large numbers like 2,021,000 which are actual financial figures
             for val in row:
                 if pd.notna(val):
                     val_str = str(val)
+                    # Skip if it has commas and is a large number (definitely financial data)
+                    if ',' in val_str:
+                        try:
+                            val_num = float(val_str.replace(',', ''))
+                            if val_num > 100000:  # Large numbers are financial data, not years
+                                continue
+                        except:
+                            pass
                     # Check if it's a numeric value that looks like year + 000 (e.g., 2021000)
                     if val_str.replace(',', '').replace('.', '').isdigit():
                         val_num = float(val_str.replace(',', ''))
-                        # If it's between 2000000 and 2100000, it's likely year + 000
+                        # If it's between 2000000 and 2100000 AND doesn't have commas, it's likely year + 000
+                        # Exclude values with commas (like 2,021,000) which are actual amounts
                         if 2000000 <= val_num <= 2100000:
                             rows_to_drop.append(row_idx)
                             print(f"   🧹 Removing header row {row_idx} with unit indicator and year value: {val_str}")
@@ -215,15 +225,14 @@ def render_balance_sheet_sections(
                     st.markdown(f"**Type:** Balance Sheet")
 
                 if data_rows:
+                    # Check if we have multiple description columns
+                    num_desc_cols = data_rows[0].get('num_desc_columns', 1) if data_rows and isinstance(data_rows[0], dict) else 1
+                    
                     structured_data = []
                     for row in data_rows:
                         # Handle different data structures safely
                         if isinstance(row, dict):
-                            description = row.get('description') or row.get('Description') or row.get('desc') or row.get('item') or str(list(row.keys())[0] if row.keys() else 'Unknown')
-                        else:
-                            description = str(row)
-                        if isinstance(row, dict):
-                            value = row.get('value') or row.get('Value') or row.get('amount') or str(list(row.values())[1] if len(row.values()) > 1 else list(row.values())[0] if row.values() else 'N/A')
+                            value = row.get('value') or row.get('Value') or row.get('amount') or 'N/A'
                         else:
                             value = 'N/A'
                         actual_value = value
@@ -244,20 +253,63 @@ def render_balance_sheet_sections(
                             formatted_value = f"{actual_value:,.0f}"  # No decimals for cleaner display
                         else:
                             formatted_value = str(actual_value)
-                        structured_data.append({'Description': description, 'Value': formatted_value})
-
-                    if structured_data:  # Only display if we have data after filtering zeros
-                        df_structured = pd.DataFrame(structured_data)
-                        display_df = df_structured[["Description", "Value"]].copy()
-
-                        def highlight_totals(row):
-                            if row['Description'].lower() in ['total', 'subtotal']:
-                                return ['background-color: rgba(173, 216, 230, 0.3)'] * len(row)
-                            return [''] * len(row)
-
-                        styled_df = display_df.style.apply(highlight_totals, axis=1)
                         
-                        # Configure dataframe display to prevent wrapping and hide index
+                        # Create row with separate description columns if available
+                        if num_desc_cols > 1 and isinstance(row, dict):
+                            row_data = {
+                                'Category': row.get('description_0', ''),
+                                'Subcategory': row.get('description_1', ''),
+                                'Value': formatted_value
+                            }
+                        else:
+                            if isinstance(row, dict):
+                                description = row.get('description') or row.get('Description') or row.get('desc') or row.get('item') or 'Unknown'
+                            else:
+                                description = str(row)
+                            row_data = {'Description': description, 'Value': formatted_value}
+                        
+                        structured_data.append(row_data)
+
+                    if not structured_data:
+                        # If no data found, show a "Total: 0" row instead of info message
+                        if num_desc_cols > 1:
+                            structured_data = [{'Category': 'Total | 总计', 'Subcategory': '', 'Value': '0'}]
+                        else:
+                            structured_data = [{'Description': 'Total | 总计', 'Value': '0'}]
+                    
+                    df_structured = pd.DataFrame(structured_data)
+
+                    def highlight_totals(row):
+                        # Check first column for total keywords
+                        first_col_val = str(row.iloc[0]).lower()
+                        if any(keyword in first_col_val for keyword in ['total', 'subtotal', '总计', '合计', '小计']):
+                            return ['background-color: rgba(173, 216, 230, 0.3)'] * len(row)
+                        return [''] * len(row)
+
+                    styled_df = df_structured.style.apply(highlight_totals, axis=1)
+                    
+                    # Configure dataframe display based on number of columns
+                    if num_desc_cols > 1:
+                        st.dataframe(
+                            styled_df, 
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "Category": st.column_config.TextColumn(
+                                    "Category",
+                                    width="medium"
+                                ),
+                                "Subcategory": st.column_config.TextColumn(
+                                    "Subcategory",
+                                    width="medium"
+                                ),
+                                "Value": st.column_config.TextColumn(
+                                    "Value", 
+                                    width="medium"
+                                )
+                            }
+                        )
+                    else:
                         st.dataframe(
                             styled_df, 
                             use_container_width=True,
@@ -273,8 +325,6 @@ def render_balance_sheet_sections(
                                 )
                             }
                         )
-                    else:
-                        st.info("No data rows with non-zero values found")
                 else:
                     st.info("No structured data rows found")
 

@@ -39,6 +39,32 @@ def detect_latest_date_column(df, sheet_name="Sheet", entity_keywords=None):
         
         date_str = str(date_str).strip()
         
+        # AVOID CONFUSING NUMBERS WITH DATES
+        # Skip values that look like large numbers with commas (e.g., "2,021,000")
+        # These should NOT be interpreted as dates
+        if ',' in date_str and date_str.replace(',', '').replace('.', '').isdigit():
+            num_val = float(date_str.replace(',', ''))
+            if num_val > 10000:  # Large numbers are definitely not dates
+                return None
+        
+        # Handle Chinese date range format: 2024年1-5月 (use the END month)
+        chinese_range_match = re.match(r'^(\d{4})年(\d{1,2})-(\d{1,2})月$', date_str)
+        if chinese_range_match:
+            year = int(chinese_range_match.group(1))
+            end_month = int(chinese_range_match.group(3))  # Use end month
+            # Use last day of the end month
+            if end_month == 12:
+                return datetime(year, 12, 31)
+            elif end_month in [1, 3, 5, 7, 8, 10]:
+                return datetime(year, end_month, 31)
+            elif end_month in [4, 6, 9, 11]:
+                return datetime(year, end_month, 30)
+            elif end_month == 2:
+                if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+                    return datetime(year, 2, 29)
+                else:
+                    return datetime(year, 2, 28)
+        
         # Handle xMxx format (e.g., 9M22, 12M23) - END OF MONTH
         xmxx_match = re.match(r'^(\d+)M(\d{2})$', date_str)
         if xmxx_match:
@@ -1409,6 +1435,32 @@ def find_indicative_adjusted_column_and_dates(df, entity_keywords):
             return None
 
         date_str = str(date_str).strip()
+        
+        # AVOID CONFUSING NUMBERS WITH DATES
+        # Skip values that look like large numbers with commas (e.g., "2,021,000")
+        # These should NOT be interpreted as dates
+        if ',' in date_str and date_str.replace(',', '').replace('.', '').isdigit():
+            num_val = float(date_str.replace(',', ''))
+            if num_val > 10000:  # Large numbers are definitely not dates
+                return None
+
+        # Handle Chinese date range format: 2024年1-5月 (use the END month)
+        chinese_range_match = re.match(r'^(\d{4})年(\d{1,2})-(\d{1,2})月$', date_str)
+        if chinese_range_match:
+            year = int(chinese_range_match.group(1))
+            end_month = int(chinese_range_match.group(3))  # Use end month
+            # Use last day of the end month
+            if end_month == 12:
+                return datetime(year, 12, 31)
+            elif end_month in [1, 3, 5, 7, 8, 10]:
+                return datetime(year, end_month, 31)
+            elif end_month in [4, 6, 9, 11]:
+                return datetime(year, end_month, 30)
+            elif end_month == 2:
+                if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+                    return datetime(year, 2, 29)
+                else:
+                    return datetime(year, 2, 28)
 
         # Handle xMxx format (e.g., 9M22, 12M23) - END OF MONTH
         xmxx_match = re.match(r'^(\d+)M(\d{2})$', date_str)
@@ -1544,8 +1596,42 @@ def find_indicative_adjusted_column_and_dates(df, entity_keywords):
                 else:
                     latest_row_number = None
 
+    # ALWAYS USE RIGHTMOST COLUMN from 示意性调整后 section
+    # This ensures we use the most recent data column
     if latest_date:
-        print(f"   🎯 LATEST DATE FOUND: {latest_date.strftime('%Y-%m-%d')} in column '{latest_col}' (Excel row: {latest_row_number})")
+        # But prioritize the RIGHTMOST column even if it's not the latest date parsed
+        # This handles cases where dates are in formats we can't parse
+        rightmost_col_idx = merge_end
+        rightmost_col = df.columns[rightmost_col_idx]
+        
+        # Extract row number from column name
+        if isinstance(rightmost_col, str) and rightmost_col.startswith('Unnamed: '):
+            try:
+                rightmost_row_number = int(rightmost_col.split(': ')[1])
+            except (ValueError, IndexError):
+                rightmost_row_number = None
+        elif isinstance(rightmost_col, int):
+            rightmost_row_number = rightmost_col
+        else:
+            rightmost_row_number = None
+        
+        print(f"   🎯 USING RIGHTMOST COLUMN: '{rightmost_col}' (col {rightmost_col_idx}, Excel row: {rightmost_row_number})")
+        print(f"   📅 Date in that column: {df.iloc[date_row, rightmost_col_idx]}")
+        
+        # Try to extract date from the rightmost column
+        rightmost_val = df.iloc[date_row, rightmost_col_idx]
+        if isinstance(rightmost_val, (pd.Timestamp, datetime)):
+            date_val = rightmost_val if isinstance(rightmost_val, datetime) else rightmost_val.to_pydatetime()
+            return date_val.strftime('%Y-%m-%d'), rightmost_col, rightmost_row_number
+        elif pd.notna(rightmost_val):
+            parsed_date = parse_date(str(rightmost_val))
+            if parsed_date:
+                return parsed_date.strftime('%Y-%m-%d'), rightmost_col, rightmost_row_number
+            else:
+                # If can't parse, return the string value as-is
+                return str(rightmost_val), rightmost_col, rightmost_row_number
+        
+        # Fallback to the latest parsed date
         return latest_date.strftime('%Y-%m-%d'), latest_col, latest_row_number
     else:
         # If no valid date found, use the RIGHTMOST column in the merged range (most recent)
@@ -1834,9 +1920,83 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         if value_col_idx is None:
             return None
         
+        # SMART DESCRIPTION COLUMN DETECTION - Support MULTIPLE description columns
+        # The column with "人民币千元" is actually the FIRST DESCRIPTION COLUMN (not a unit column!)
+        # Structure is: [Desc1] → [Desc2] → [Date Headers] → [Value Columns]
+        desc_col_indices = []
+        first_desc_col_idx = None
+        
+        # Find the FIRST description column (contains "人民币千元" as header)
+        for i in range(min(5, len(df_str))):
+            for j in range(len(df_str.columns)):
+                cell_value = str(df_str.iloc[i, j]).lower()
+                if any(indicator in cell_value for indicator in ['人民币千元', '人民幣千元', "cny'000"]):
+                    first_desc_col_idx = j
+                    print(f"   📍 Found FIRST description column at {j}: '{df_str.iloc[i, j]}'")
+                    break
+            if first_desc_col_idx is not None:
+                break
+        
+        # Check if the next column (after first desc) contains dates or is another description
+        def is_date_value(val):
+            """Check if a value looks like a date"""
+            if pd.isna(val) or val == '' or str(val).lower() == 'nan':
+                return False
+            val_str = str(val).strip()
+            # Check for date patterns
+            date_patterns = [
+                r'\d{4}年\d{1,2}月\d{1,2}日',  # Chinese: 2021年12月31日
+                r'\d{4}年\d{1,2}月',            # Chinese: 2024年5月
+                r'\d{4}年\d{1,2}-\d{1,2}月',    # Chinese: 2024年1-5月
+                r'\d{4}/\d{1,2}/\d{1,2}',       # English: 2021/12/31
+                r'\d{1,2}/\d{1,2}/\d{4}',       # English: 31/12/2021
+                r'\d{4}-\d{1,2}-\d{1,2}',       # ISO: 2021-12-31
+            ]
+            for pattern in date_patterns:
+                if re.search(pattern, val_str):
+                    return True
+            return False
+        
+        if first_desc_col_idx is not None:
+            # Always include the first description column
+            desc_col_indices.append(first_desc_col_idx)
+            
+            # Check the next column (adjacent to first desc column)
+            next_col_idx = first_desc_col_idx + 1
+            if next_col_idx < len(df_str.columns):
+                # Check if this column contains dates (skip if so) or is another description column
+                has_dates = False
+                for i in range(min(5, len(df_str))):
+                    if is_date_value(df_str.iloc[i, next_col_idx]):
+                        has_dates = True
+                        print(f"   📅 Found date in column {next_col_idx}: '{df_str.iloc[i, next_col_idx]}' - skipping")
+                        break
+                
+                if not has_dates:
+                    # This is likely a second description column (e.g., bank names, customer names)
+                    desc_col_indices.append(next_col_idx)
+                    print(f"   ✅ Using TWO description columns: {desc_col_indices[0]} (main category) and {desc_col_indices[1]} (sub-category)")
+                else:
+                    print(f"   ✅ Using ONE description column: {desc_col_indices[0]} (main category)")
+        
+        # Fallback to column 0 and 1 if not detected
+        if not desc_col_indices:
+            desc_col_indices = [0, 1]
+            print(f"   ⚠️  Using fallback description columns: {desc_col_indices}")
+        
+        # Validate description column indices
+        desc_col_indices = [idx for idx in desc_col_indices if idx < len(df_str.columns)]
+        if not desc_col_indices:
+            desc_col_indices = [0]
+            print(f"   ⚠️  Description columns out of bounds, adjusted to: {desc_col_indices}")
+        
+        print(f"   📊 Final description column indices: {desc_col_indices}")
+        
+        # For backward compatibility, keep desc_col_idx as the first description column
+        desc_col_idx = desc_col_indices[0]
+        
         # Find data start row (first row with actual numeric data)
         data_start_row = None
-        desc_col_idx = 1  # Use column 1 for descriptions (not column 0)
         for i in range(len(df_str)):
             cell_value = str(df_str.iloc[i, value_col_idx])
             # Look for cells that contain numbers (more flexible)
@@ -1971,6 +2131,9 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
         
         # Extract data rows - FILTER FOR SELECTED ENTITY ONLY
         data_rows = []
+        
+        # Initialize forward-fill tracking for first description column (accounting convention)
+        last_first_desc = None
 
         # For single entity mode, we need to identify which rows belong to the selected entity
         if manual_mode == 'single' and actual_entity:
@@ -2020,14 +2183,51 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
             if 'data_end_row' in locals() and i > data_end_row:
                 break
 
-            # Get description from column 1 (index 1) which contains the actual descriptions
-            # Based on the Excel structure, descriptions are in column 1, not column 0
-            desc_col_idx = 1
-            desc_cell = str(df_str.iloc[i, desc_col_idx]).strip()
+            # Get description from ALL detected description columns
+            # IMPORTANT: Implement forward-fill for first description column (accounting convention)
+            # When first column is blank, it means "same as above" to avoid redundancy
+            # KEEP AS SEPARATE COLUMNS - DON'T MERGE!
+            desc_values = {}  # Use dict to store separate description values
+            
+            for idx, desc_idx in enumerate(desc_col_indices):
+                if desc_idx < len(df_str.columns):
+                    cell_val = str(df_str.iloc[i, desc_idx]).strip()
+                    
+                    # Forward-fill logic for FIRST description column only
+                    if idx == 0:  # First description column
+                        if cell_val and cell_val.lower() not in ['nan', '', 'none']:
+                            # Check if this is a total/subtotal row - reset forward-fill
+                            if any(keyword in cell_val.lower() for keyword in ['total', 'subtotal', '小计', '合计', '总计']):
+                                last_first_desc = None  # Reset forward-fill at section boundaries
+                                desc_values[f'description_{idx}'] = cell_val
+                            else:
+                                # Valid value - update last known value and use it
+                                last_first_desc = cell_val
+                                desc_values[f'description_{idx}'] = cell_val
+                        else:
+                            # Empty value - use last known value (forward-fill)
+                            if last_first_desc:
+                                desc_values[f'description_{idx}'] = last_first_desc
+                            else:
+                                desc_values[f'description_{idx}'] = ''
+                    else:
+                        # For other description columns, just use the value as-is
+                        if cell_val and cell_val.lower() not in ['nan', '', 'none']:
+                            desc_values[f'description_{idx}'] = cell_val
+                        else:
+                            desc_values[f'description_{idx}'] = ''
+            
+            # Create description string for backward compatibility (merged version)
+            desc_parts = [v for v in desc_values.values() if v]
+            if desc_parts:
+                desc_cell = ' | '.join(desc_parts)
+            else:
+                desc_cell = ''
+            
             value_cell = str(df_str.iloc[i, value_col_idx]).strip()
 
             # Debug: Print what we're extracting
-            # print(f"   🔍 DEBUG: Extracting from row {i}: desc_col={desc_col_idx}='{desc_cell}', value_col={value_col_idx}='{value_cell}'")
+            # print(f"   🔍 DEBUG: Extracting from row {i}: desc_cols={desc_col_indices}='{desc_cell}', value_col={value_col_idx}='{value_cell}'")
 
             # Skip empty rows
             if desc_cell.lower() in ['nan', ''] and value_cell.lower() in ['nan', '']:
@@ -2058,10 +2258,20 @@ def parse_accounting_table(df, key, entity_name, sheet_name, latest_date_col=Non
                             is_total = 'total' in desc_cell.lower()
 
                             # print(f"   📊 ADDING ITEM: {desc_cell} = {final_value}")
-                            data_rows.append({
-                                'description': desc_cell,
-                                'value': final_value
-                            })
+                            row_data = {
+                                'description': desc_cell,  # Merged description for backward compatibility
+                                'value': final_value,
+                                'is_total': is_total
+                            }
+                            
+                            # Add SEPARATE description columns for multi-column display
+                            for desc_key, desc_val in desc_values.items():
+                                row_data[desc_key] = desc_val
+                            
+                            # Store number of description columns for rendering
+                            row_data['num_desc_columns'] = len(desc_col_indices)
+                            
+                            data_rows.append(row_data)
                         else:
                             # Skip non-numeric, non-date values
                             continue
@@ -3020,31 +3230,63 @@ def create_improved_table_markdown(parsed_table):
         
         markdown_lines.append("")  # Empty line
         
-        # Create table
-        markdown_lines.append("| Description | Value |")
-        markdown_lines.append("|-------------|-------|")
+        # Create table with MULTIPLE description columns if available
+        # Check if we have multiple description columns
+        num_desc_cols = data_rows[0].get('num_desc_columns', 1) if data_rows else 1
         
-        for row in data_rows:
-            desc = row['description']
-            value = row['value']
-            is_total = row.get('is_total', False)
+        if num_desc_cols > 1:
+            # Multiple description columns - create 3-column table
+            markdown_lines.append("| Category | Subcategory | Value |")
+            markdown_lines.append("|----------|-------------|-------|")
             
-            # Format value with commas (1 decimal place for financial figures)
-            if isinstance(value, (int, float)):
-                formatted_value = f"{value:,.1f}"
-            elif isinstance(value, str) and (re.search(r'\d{4}年\d{1,2}月\d{1,2}日', value) or \
-                                          re.search(r'\d{4}/\d{1,2}/\d{1,2}', value) or \
-                                          re.search(r'\d{1,2}/\d{1,2}/\d{4}', value)):
-                # This is a date, preserve original format
-                formatted_value = value
-            else:
-                formatted_value = str(value)
+            for row in data_rows:
+                desc0 = row.get('description_0', '')
+                desc1 = row.get('description_1', '')
+                value = row['value']
+                is_total = row.get('is_total', False)
+                
+                # Format value with commas (1 decimal place for financial figures)
+                if isinstance(value, (int, float)):
+                    formatted_value = f"{value:,.1f}"
+                elif isinstance(value, str) and (re.search(r'\d{4}年\d{1,2}月\d{1,2}日', value) or \
+                                              re.search(r'\d{4}/\d{1,2}/\d{1,2}', value) or \
+                                              re.search(r'\d{1,2}/\d{1,2}/\d{4}', value)):
+                    # This is a date, preserve original format
+                    formatted_value = value
+                else:
+                    formatted_value = str(value)
+                
+                # Bold total rows
+                if is_total:
+                    markdown_lines.append(f"| **{desc0}** | **{desc1}** | **{formatted_value}** |")
+                else:
+                    markdown_lines.append(f"| {desc0} | {desc1} | {formatted_value} |")
+        else:
+            # Single description column - create 2-column table
+            markdown_lines.append("| Description | Value |")
+            markdown_lines.append("|-------------|-------|")
             
-            # Bold total rows
-            if is_total:
-                markdown_lines.append(f"| **{desc}** | **{formatted_value}** |")
-            else:
-                markdown_lines.append(f"| {desc} | {formatted_value} |")
+            for row in data_rows:
+                desc = row['description']
+                value = row['value']
+                is_total = row.get('is_total', False)
+                
+                # Format value with commas (1 decimal place for financial figures)
+                if isinstance(value, (int, float)):
+                    formatted_value = f"{value:,.1f}"
+                elif isinstance(value, str) and (re.search(r'\d{4}年\d{1,2}月\d{1,2}日', value) or \
+                                              re.search(r'\d{4}/\d{1,2}/\d{1,2}', value) or \
+                                              re.search(r'\d{1,2}/\d{1,2}/\d{4}', value)):
+                    # This is a date, preserve original format
+                    formatted_value = value
+                else:
+                    formatted_value = str(value)
+                
+                # Bold total rows
+                if is_total:
+                    markdown_lines.append(f"| **{desc}** | **{formatted_value}** |")
+                else:
+                    markdown_lines.append(f"| {desc} | {formatted_value} |")
         
         return "\n".join(markdown_lines)
         

@@ -24,11 +24,11 @@ class ButtonLogger:
         for handler in self.main_logger.handlers[:]:
             self.main_logger.removeHandler(handler)
 
-        # Create console handler
+        # Create console handler - simplified for cleaner output
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
+        console_handler.setLevel(logging.WARNING)  # Only show warnings and errors
         console_formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            '%(levelname)s: %(message)s'
         )
         console_handler.setFormatter(console_formatter)
         self.main_logger.addHandler(console_handler)
@@ -56,11 +56,11 @@ class ButtonLogger:
         )
         file_handler.setFormatter(formatter)
 
-        # Create console handler for this button
+        # Create console handler for this button - simplified
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
+        console_handler.setLevel(logging.WARNING)  # Only show warnings and errors  
         console_formatter = logging.Formatter(
-            f'[{button_name}] %(asctime)s - %(levelname)s - %(message)s'
+            f'[{button_name}] %(levelname)s: %(message)s'
         )
         console_handler.setFormatter(console_formatter)
 

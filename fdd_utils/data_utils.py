@@ -135,9 +135,15 @@ def get_key_display_name(key, use_excel_tab_name=False, content=None):
         }
         return excel_tab_mapping.get(key, key)
 
-    # Apply proper case formatting for display names
+    # Apply proper case formatting for display names - first word capital only
     display_name = display_mapping.get(key, key)
-    return display_name.title()
+    # Only capitalize first letter, rest lowercase (except acronyms)
+    if display_name.isupper() and len(display_name) <= 4:
+        # Keep short acronyms uppercase (like "AR", "AP", "NCA")
+        return display_name
+    else:
+        # First word capital only (e.g., "Other non-current assets")
+        return display_name[0].upper() + display_name[1:].lower() if display_name else display_name
 
 
 def format_date_to_dd_mmm_yyyy(date_str):
