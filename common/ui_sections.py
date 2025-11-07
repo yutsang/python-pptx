@@ -232,27 +232,38 @@ def render_balance_sheet_sections(
                     for row in data_rows:
                         # Handle different data structures safely
                         if isinstance(row, dict):
-                            value = row.get('value') or row.get('Value') or row.get('amount') or 'N/A'
+                            value = row.get('value') or row.get('Value') or row.get('amount')
                         else:
-                            value = 'N/A'
+                            value = None
                         actual_value = value
                         
-                        # Skip rows with zero values
-                        try:
-                            if isinstance(actual_value, (int, float)) and actual_value == 0:
-                                continue
-                            elif isinstance(actual_value, str) and actual_value.strip() in ['0', '0.0', '0.00', '-']:
-                                continue
-                        except:
-                            pass  # If conversion fails, keep the row
+                        # SKIP ROWS WITH ZERO OR NULL VALUES IMMEDIATELY - DON'T SHOW THEM AT ALL
+                        if actual_value is None:
+                            continue
                         
-                        # Convert datetime objects to strings to avoid Arrow serialization errors
-                        if hasattr(actual_value, 'strftime'):  # datetime object
-                            formatted_value = actual_value.strftime('%Y-%m-%d')
-                        elif isinstance(actual_value, (int, float)):
-                            formatted_value = f"{actual_value:,.0f}"  # No decimals for cleaner display
-                        else:
-                            formatted_value = str(actual_value)
+                        # Try to convert to number for zero-checking
+                        try:
+                            # Convert to float for comparison
+                            if isinstance(actual_value, str):
+                                # Remove commas and convert
+                                val_num = float(str(actual_value).replace(',', '').strip())
+                            else:
+                                val_num = float(actual_value)
+                            
+                            # Skip if zero or very close to zero - DON'T DISPLAY AT ALL
+                            if abs(val_num) < 0.01:
+                                continue
+                                
+                            # Format the value for display (only if non-zero)
+                            formatted_value = f"{val_num:,.0f}"
+                        except (ValueError, TypeError):
+                            # If can't convert to number, it might be text/date
+                            # Convert datetime objects to strings
+                            if hasattr(actual_value, 'strftime'):
+                                formatted_value = actual_value.strftime('%Y-%m-%d')
+                            else:
+                                # For text values, keep as-is
+                                formatted_value = str(actual_value)
                         
                         # Create row with separate description columns if available
                         if num_desc_cols > 1 and isinstance(row, dict):
