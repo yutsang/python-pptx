@@ -1,19 +1,29 @@
 """
 AI Module for Testing
 Provides AI generation capabilities with support for multiple providers
+Uses the same client initialization as the main application
 """
 
 import json
 import os
 import sys
 from pathlib import Path
-from openai import OpenAI
 
 # Add parent directory to path for imports
 current_dir = Path(__file__).resolve().parent
 parent_dir = current_dir.parent
 if str(parent_dir) not in sys.path:
     sys.path.insert(0, str(parent_dir))
+
+# Import from main app's working modules
+try:
+    from common.assistant import get_openai_client, get_chat_model, load_config
+    MAIN_APP_AVAILABLE = True
+    print("✅ Imported AI functions from main app")
+except ImportError as e:
+    print(f"⚠️ Could not import from main app: {e}")
+    MAIN_APP_AVAILABLE = False
+    from openai import OpenAI
 
 
 class AIModule:
@@ -44,34 +54,83 @@ class AIModule:
             return {}
     
     def _initialize_clients(self):
-        """Initialize AI clients based on configuration"""
+        """Initialize AI clients using the SAME method as main app"""
         try:
-            # DeepSeek Client
-            if self.config.get('DEEPSEEK_API_KEY'):
-                self.clients['deepseek'] = OpenAI(
-                    api_key=self.config['DEEPSEEK_API_KEY'],
-                    base_url=self.config['DEEPSEEK_API_BASE']
-                )
-                print("✅ DeepSeek client initialized")
-            
-            # OpenAI Client
-            if self.config.get('OPENAI_API_KEY') and 'placeholder' not in self.config['OPENAI_API_KEY'].lower():
-                self.clients['openai'] = OpenAI(
-                    api_key=self.config['OPENAI_API_KEY'],
-                    base_url=self.config['OPENAI_API_BASE']
-                )
-                print("✅ OpenAI client initialized")
-            
-            # Local AI Client
-            if self.config.get('LOCAL_AI_ENABLED'):
-                self.clients['local'] = OpenAI(
-                    api_key=self.config.get('LOCAL_AI_API_KEY', 'not-needed'),
-                    base_url=self.config['LOCAL_AI_API_BASE']
-                )
-                print("✅ Local AI client initialized")
+            if MAIN_APP_AVAILABLE:
+                # Use the same initialization as main app for compatibility
+                print("   Using main app's AI initialization...")
+                
+                # Initialize clients for each provider
+                # DeepSeek
+                try:
+                    client = get_openai_client(self.config, use_local=False, use_openai=False)
+                    model = get_chat_model(self.config, use_local=False, use_openai=False)
+                    self.clients['deepseek'] = {'client': client, 'model': model}
+                    print("✅ DeepSeek client initialized (using main app method)")
+                except Exception as e:
+                    print(f"⚠️ DeepSeek not available: {e}")
+                
+                # OpenAI
+                if self.config.get('OPENAI_API_KEY') and 'placeholder' not in self.config['OPENAI_API_KEY'].lower():
+                    try:
+                        client = get_openai_client(self.config, use_local=False, use_openai=True)
+                        model = get_chat_model(self.config, use_local=False, use_openai=True)
+                        self.clients['openai'] = {'client': client, 'model': model}
+                        print("✅ OpenAI client initialized (using main app method)")
+                    except Exception as e:
+                        print(f"⚠️ OpenAI not available: {e}")
+                
+                # Local AI
+                if self.config.get('LOCAL_AI_ENABLED'):
+                    try:
+                        client = get_openai_client(self.config, use_local=True, use_openai=False)
+                        model = get_chat_model(self.config, use_local=True, use_openai=False)
+                        self.clients['local'] = {'client': client, 'model': model}
+                        print("✅ Local AI client initialized (using main app method)")
+                    except Exception as e:
+                        print(f"⚠️ Local AI not available: {e}")
+            else:
+                # Fallback to direct OpenAI client initialization
+                print("   Using fallback OpenAI client initialization...")
+                from openai import OpenAI
+                
+                # DeepSeek Client
+                if self.config.get('DEEPSEEK_API_KEY'):
+                    self.clients['deepseek'] = {
+                        'client': OpenAI(
+                            api_key=self.config['DEEPSEEK_API_KEY'],
+                            base_url=self.config['DEEPSEEK_API_BASE']
+                        ),
+                        'model': self.config.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
+                    }
+                    print("✅ DeepSeek client initialized")
+                
+                # OpenAI Client
+                if self.config.get('OPENAI_API_KEY') and 'placeholder' not in self.config['OPENAI_API_KEY'].lower():
+                    self.clients['openai'] = {
+                        'client': OpenAI(
+                            api_key=self.config['OPENAI_API_KEY'],
+                            base_url=self.config['OPENAI_API_BASE']
+                        ),
+                        'model': self.config.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini')
+                    }
+                    print("✅ OpenAI client initialized")
+                
+                # Local AI Client
+                if self.config.get('LOCAL_AI_ENABLED'):
+                    self.clients['local'] = {
+                        'client': OpenAI(
+                            api_key=self.config.get('LOCAL_AI_API_KEY', 'not-needed'),
+                            base_url=self.config['LOCAL_AI_API_BASE']
+                        ),
+                        'model': self.config.get('LOCAL_AI_CHAT_MODEL', 'local-qwen2')
+                    }
+                    print("✅ Local AI client initialized")
                 
         except Exception as e:
             print(f"❌ Error initializing clients: {e}")
+            import traceback
+            traceback.print_exc()
     
     def generate_content(
         self, 
@@ -96,18 +155,28 @@ class AIModule:
             dict with 'content', 'tokens', and 'model' keys
         """
         try:
-            # Get client
+            # Get client and model
             if provider not in self.clients:
                 return {
-                    'error': f"Provider '{provider}' not available",
+                    'error': f"Provider '{provider}' not available. Available: {list(self.clients.keys())}",
                     'content': None
                 }
             
-            client = self.clients[provider]
+            client_info = self.clients[provider]
+            
+            # Handle both dict and direct client formats
+            if isinstance(client_info, dict):
+                client = client_info['client']
+                default_model = client_info['model']
+            else:
+                client = client_info
+                default_model = None
             
             # Determine model
             if model is None:
-                if provider == 'deepseek':
+                if default_model:
+                    model = default_model
+                elif provider == 'deepseek':
                     model = self.config.get('DEEPSEEK_CHAT_MODEL', 'deepseek-chat')
                 elif provider == 'openai':
                     model = self.config.get('OPENAI_CHAT_MODEL', 'gpt-4o-mini')
@@ -146,6 +215,8 @@ class AIModule:
             
         except Exception as e:
             print(f"❌ Error generating content: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 'error': str(e),
                 'content': None
