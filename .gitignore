@@ -7,7 +7,7 @@ final_report*
 # input
 .pdf 
 *.xlsx
-*.ipynb
+!*.ipynb
 FDD.Draft Report.For AI solution purpose Only.pptx
 
 # old backups
