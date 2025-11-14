@@ -1,0 +1,368 @@
+Cash:
+  type: BS
+  category: Current assets
+  aliases: ["Cash", "Cash and Cash Equivalents", "Cash and cash equivalents", "貨幣資金", "货币资金"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1:  |
+      balance as at 30 September 2022 represented CNY[Amount] of cash at bank.\n\nManagement indicated that cash at
+      bank was under supervision by the bank but had no related use restrictions imposed.\n We read/obtained/check
+      all bank statements and found no exceptions/discrepancies.
+    Pattern 2: |
+      balance as at 30 September 2022 represented CNY[Amount] bank deposit.\n\nThe cash was under supervision with no
+      restricted use.\nWe have obtained the bank statements as at 30 September 2022 and found no discrepancies.
+   
+AR:
+  type: BS
+  category: Current assets
+  aliases: ["AR", "Accounts Receivables", "Accounts Receivable", "Accounts receivable", "Accounts receivables", "應收賬款", "应收账款"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      balance as at 30 September 2022 represented receivabbles of rental and property management income duie from
+      [Which Entity?]. The Target recognised revenue using straight-line method; we reclassified the levelling impact
+      of revenue recognition in the rent-free period to other non-current assets at the end of September 2022.\n
+      Management did not accrue bad debt provision for accounts receivales from [Entity], we indicatively accrued
+      provision at the rate of 1% according to the Target\u2019s policy.
+ 
+Prepayments:
+  type: BS
+  category: Current assets
+  aliases: ["Prepayment", "Prepayments", "預收款項", "预收款项", "预付款项"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      balance as at 30 September 2022 represented {upfront utility expense payments|CNY{amount} of upfront construction
+      cost and CNY{amount} of utility expense payments} for the next {2-3|one to three} months of {CNY{amount}|prepaid
+      utility expenses including water, electricity and internet}.
+ 
+OR:
+  type: BS
+  category: Current assets
+  aliases: ["OR", "Other Receivables", "Other receivables", "Other Receivable", "Other receivables", "其他应收款", "其他應收款"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      balance as at 30 September 2022 {amount} of utilities paid on behalf of {Which Entity?}\nAs indicated by management,
+      the Target accrued {percentage} bad debt provision for utilities receivables aged within 1 year.
+ 
+Inventory:
+  type: BS
+  category: Current assets
+  aliases: ["Inventory", "Inventories", "存货", "库存", "存貨"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: N/A
+ 
+IP:
+  type: BS
+  category: Non-current assets
+  aliases: ["IP", "Investment Property", "Investment properties", "Investment property", "Investment Properties",
+    "投资物业", "投资性房地产", "投資性房地產"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      balance as at 30 September 2022 mainly represented the net book value of the Targeted properties of CNY{amount}.
+      The original value did not change over the period, the book value changed represented the depreciation of properties.\n
+      Project {Project_Name} was {type} that {Which Entity} previously acquired from {previous_owner}. The land was located
+      in {location} ({size} sqm), the construction of Project {Project_Name} was completed in {completion_date} and was
+      {leasing_status} over the period. The land and warehouses were depreciated using straight-line method of 50 years
+      and 20 years of useful life, with the residual value rate of 0% and 4%, respectively.\n\nAs at this report date, Project
+      {Project_Name} did not conduct final accounts. Though management said that most of the primary contracts had been verified
+      and accounted, the original costs may still not be finalised. Potential under-estimated construction payables and CAPEX
+      commitment may still exist, you should confirm with management if there are any future CAPEX plans and factor the capital
+      commitments (if any) into your valuation model.\n\nTotal properties of Project {Project_Name} were mortgaged as loan
+      collateral in favour of {bank_name}.
+    Pattern 2: |
+      balance as at 30 September 2022 comprised the net book value of {assets} (CNY{value}). The original costs of {property_type}
+      did not change over the Period.\n\nProject {Project_Name} was located in {location}. Both land parcels were in {usage} and
+      acquired directly from {source}. Phase I land was acquited in {year} at a consideration of CNY{amount} with LUR expired in
+      {expiration}. Phase II land was acquired in {year} at a consideration of CNY{amount} with LUR expired in {expiration}.\n
+      The land lots of Project {Project_Name} were amortised using straight-line method with 50 years of useful life and zero
+      residual value. {property_type} were depreciated using straight-line method with 20 years of useful life and 4% residual
+      value. As at this report date, Project {Project_Name} was completed but no final accounts had been conducted. Though management
+      said that most of the primary contracts had been verified and accounted, the original costs may still not be finalised.
+      Potential under-estimated construction payables and CAPEX commitments may still exist. Management said there was no CAPEX plan
+      at current stage.
+ 
+IA:
+  type: BS
+  category: Non-current assets
+  aliases: ["IA", "Intangible Assets", "Intangible asset", "Intangible assets", "无形资产", "無形資產"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: N/A
+ 
+NCA:
+  type: BS
+  category: Non-current assets
+  aliases: ["NCA", "Non-current Assets", "Non-current asset", "Non-current assets", "Non Current Assets", "Non Current Asset",
+    "Fixed Assets", "Fixed Asset", "Fixed assets", "Fixed asset", "FA", "固定資產", "固定资产"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      balance as at {date} represented the residual value of {assets} including {items}. THese were depreciated using
+      {depreciation_method} with {useful_life_range} and {residual_value}.
+    Pattern 2: balance as at {date} mainly represented {asset type} with a useful life of {useful_life}.
+ 
+NCL:
+  type: BS
+  category: Non-current liabilities
+  aliases: ["NCA", "Non-current Liabilities", "Non-current liability", "Non-current liabilities", "Non Current Liabilities",
+            "Non Current Liability", "长期借款", "長期借款"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: N/A
+ 
+Other NCA:
+  type: BS
+  category: Non-current assets
+  aliases: ["Other NCA", "Other Non-current Assets", "Other Non-current asset", "Other Non-current assets", "Other Non Current Assets",
+            "Other Non Current Asset", "Other Fixed Assets", "Other Fixed Asset", "Other Fixed assets", "Other Fixed asset",
+            "其他非流动资产", 其他非流動資產"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      represented the {receivables|levelling impact} arising from {levelling impact of revenue recognition|revenue recognition}
+      in the rent-free period.
+       
+Other CA:
+  type: BS
+  category: Current assets
+  aliases: ["Other CA", "Other Current Assets", "Other Current asset", "Other Current assets", "Other current Assets",
+            "Other Current Asset", "Other current assets", "Other current asset", "其他流动资产", "其他流動資產"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: balance as at {date} represented the deductible VAT input derived from {source} of CNY{amount}.
+    Pattern 2: balance as at {date} mainly represented CNY{amount} of deductible input VAT derived from {source}.
+ 
+AP:
+  type: BS
+  category: Current liabilities
+  aliases: ["AP", "Accounts Payables", "Accounts Payable", "Accounts payable", "Accounts payables",
+            "应付账款", "應付帳款"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      represented the {receivables|levelling impact} arising from
+      {levelling impact of revenue recognition|revenue recognition} in the rent-free period.
+ 
+Advances:
+  type: BS
+  category: Current liabilities
+  aliases: ["Advances", "Advances from Customers", "Advances from customers", "Advances from customer",
+            "Advances from Customer", "预收款项", "預收款項"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: N/A
+ 
+Tax payable:
+  type: BS
+  category: Current liabilities
+  aliases: ["Taxes payable", "Tax Payable", "Tax payable", "Taxes Payable", "Taxes payables", "應交稅費", "应交税费"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      balance as at 30 September 2022 represented {type1} payable of {amount1} and {type2} payable of {amount2}.
+ 
+OP:
+  type: BS
+  category: Current liabilities
+  aliases: ["OP", "Other Payables", "Other payables", "Other Payable", "Other payables", "其他应付款", "其他應付款"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      balance as at {date} represented:\n\n{amount1} of {type1}, including {datails1}\n{amount2} of {type2}.
+ 
+Capital:
+  type: BS
+  category: Equity
+  aliases: ["Capital", "Share Capital", "Share capital", "Shareholder's Equity", "Shareholders' Equity",
+            "Shareholders Equity", "Shareholder Equity", "股东权益", "實收資本", "实收资本"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: share capital of {amount1} was paid up as at {date}.
+ 
+Reserve:
+  type: BS
+  category: Equity
+  aliases: ["Reserve", "Reserves", "盈余公积", "盈餘公積"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: balance as at {date} represented the surplus reserve {type} from {source}.
+ 
+Capital reserve:
+  type: BS
+  category: Equity
+  aliases: ["Capital reserve", "Capital Reserves", "Capital Reserve", "资本公积", "資本公積"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: N/A
+ 
+R/E:
+  type: BS
+  category: Equity
+  aliases: ["Retained earnings", "未分配利润"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: N/A
+ 
+OI:
+  type: IS
+  category: Revenue
+  aliases: ["OI", "Other Income", "Other income", "Other Income and Gains", "Other income and gains",
+            "Sales", "Sale", "其他收入", "其他收益", "營業收入", "营业收入"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      total income for the period ended {date} was CNY{amount}, primarily comprising {details}. The income
+      was mainly derived from {source}.
+    Pattern 2: other income for the period totaled CNY{amount}, representing {details} from {source}.
+ 
+OC:
+  type: IS
+  category: Expenses
+  aliases: ["OC", "Other Costs", "Other costs", "Other Cost", "Other cost", "Cost", "其他成本",
+            "其他費用", "營業成本", "营业成本"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      total costs for the period ended {date} amounted to CNY{amount}, primarily consisting of {details}.
+      The costs were mainly attributable to {source}.
+    Pattern 2: other costs for the period totaled CNY{amount}, representing {details}.
+ 
+Tax and Surcharges:
+  type: IS
+  category: Expenses
+  aliases: ["Tax and Surcharges", "Tax and surcharges", "Taxes and Surcharges", "Taxes and surcharges",
+            "Tax and surcharge", "Taxes and surcharge", "税金及附加", "稅金及附加"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      tax and surcharges for the period ended {date} amounted to CNY{amount}, including VAT of CNY{vat_amount},
+      urban maintenance and construction tax of CNY{umct_amount}, and education surcharge of CNY{edu_amount}.
+    Pattern 2: the entity paid total taxes and surcharges of CNY{amount} during the period, comprising {details}.
+ 
+GA:
+  type: IS
+  category: Expenses
+  aliases: ["GA", "G&A expenses", "管理费用", "管理費用"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      general and administrative expenses for the period ended {date} totaled CNY{amount}, primarily consisting
+      of {details}.
+    Pattern 2: G&A expenses amounted to CNY{amount} during the period, representing {details}.
+ 
+Fin Exp:
+  type: IS
+  category: Expenses
+  aliases: ["Fin Exp", "Finance Expenses", "Finance expenses", "Financial Expenses", "Financial expenses",
+            "Financial Expense", "Financial expense", "财务费用", "財務費用"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      finance expenses for the period ended {date} amounted to CNY{amount}, primarily comprising {details}.
+    Pattern 2: financial expenses totaled CNY{amount} during the period, representing {details}.
+ 
+Selling cost:
+  type: IS
+  category: Expenses
+  aliases: ["Selling cost", "Selling costs", "销售费用"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: N/A
+ 
+Cr Loss:
+  type: IS
+  category: Expenses
+  aliases: ["Cr Loss", "Credit Losses", "Credit losses", "Credit loss", "Credit Loss", "信用损失",
+            "信用損失"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: credit losses for the period ended {date} amounted to CNY{amount}, representing {details}.
+    Pattern 2: provisions for credit losses totaled CNY{amount} during the period, primarily for {details}.
+ 
+Other Income:
+  type: IS
+  category: Revenue
+  aliases: ["Other Income", "Other income", "Other Income and Gains", "Other income and gains", "其他收益",
+            "其他收益"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: other income for the period ended {date} totaled CNY{amount}, primarily comprising {details}.
+    Pattern 2: additional income sources amounted to CNY{amount} during the period, representing {details}.
+ 
+Non-operating Income:
+  type: IS
+  category: Revenue
+  aliases: ["Non-operating Income", "Non-operating income", "Non Operating Income", "Non Operating income",
+            "Non-operating income ", "营业外收入", "營業外收入"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: non-operating income for the period ended {date} amounted to CNY{amount}, primarily comprising {details}.
+    Pattern 2: other non-operating income sources totaled CNY{amount} during the period, representing {details}.
+ 
+Non-operating Exp:
+  type: IS
+  category: Expenses
+  aliases: ["Non-operating Exp", "Non-operating Expenses", "Non-operating expenses", "Non Operating Expenses",
+            "Non Operating expenses", "营业外支出", "營業外支出"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: non-operating expenses for the period ended {date} amounted to CNY{amount}, primarily comprising {details}.
+    Pattern 2: other non-operating expenses totaled CNY{amount} during the period, representing {details}.
+ 
+Income tax:
+  type: IS
+  category: Expenses
+  aliases: ["Income tax", "Income Tax", "Income Taxes", "Income taxes", "Income tax expense", "Income tax expenses",
+            "所得税费用", "所得稅費用"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      income tax expense for the period ended {date} amounted to CNY{amount}, representing the estimated tax
+      liability based on {tax_rate}% effective tax rate.
+    Pattern 2: the entity recorded income tax expense of CNY{amount} during the period, based on {details}.
+ 
+LT DTA:
+  type: IS
+  category: Others
+  aliases: ["LT DTA", "Long-term Deferred Tax Assets", "Long-term deferred tax assets", "Long-term Deferred Tax Asset",
+            "Long-term deferred tax asset", "递延所得税资产", "遞延所得稅資產"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      long-term deferred tax assets as at {date} amounted to CNY{amount}, primarily representing {details}.
+    Pattern 2: deferred tax assets totaled CNY{amount} as at {date}, comprising {details}.

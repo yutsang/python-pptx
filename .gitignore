@@ -24,6 +24,7 @@ archive/
 # Add any other input/output file types as needed
 /utils/config.json
 fdd_utils/config.json
+fdd_utils/config.yml
 3/8/2025
 
 # Python cache and build files
