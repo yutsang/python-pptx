@@ -17,6 +17,62 @@ from datetime import datetime
 from fdd_utils.ai_helper import AIHelper
 
 
+def clean_agent_output(content: str) -> str:
+    """
+    Clean agent output by removing common meta-commentary patterns.
+    
+    Args:
+        content: Raw content from agent
+        
+    Returns:
+        Cleaned content without meta-commentary
+    """
+    # Remove common meta-commentary prefixes (case-insensitive)
+    prefixes_to_remove = [
+        r'^(?i)verified\s+output:\s*',
+        r'^(?i)corrected\s+output:\s*',
+        r'^(?i)refined\s+output:\s*',
+        r'^(?i)formatted\s+output:\s*',
+        r'^(?i)final\s+output:\s*',
+        r'^(?i)after\s+verification[,:]?\s*',
+        r'^(?i)after\s+refining[,:]?\s*',
+        r'^(?i)final\s+formatted\s+content:\s*',
+        r'^(?i)the\s+corrected\s+output\s+is:\s*',
+        r'^(?i)here\s+is\s+the\s+(corrected|refined|verified)\s+output:\s*',
+        # Chinese patterns
+        r'^(?i)已验证输出：\s*',
+        r'^(?i)已更正输出：\s*',
+        r'^(?i)精炼后的输出：\s*',
+        r'^(?i)格式化后的输出：\s*',
+        r'^(?i)经过验证[，,]\s*',
+        r'^(?i)经过精炼后[，,]\s*',
+    ]
+    
+    cleaned = content.strip()
+    
+    # Try to remove prefixes
+    for pattern in prefixes_to_remove:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+    
+    # Remove surrounding quotes if they wrap the entire content
+    if (cleaned.startswith('"') and cleaned.endswith('"')) or \
+       (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1]
+    
+    # Remove meta-commentary at the end (sentences that mention verification/corrections)
+    end_patterns = [
+        r'\s*(?i)I\s+(?:verified|corrected|refined|checked).*$',
+        r'\s*(?i)(?:Corrections?|Verifications?)\s+made:.*$',
+        r'\s*(?i)我(?:验证|更正|精炼|检查)了.*$',
+        r'\s*(?i)所做更正：.*$',
+    ]
+    
+    for pattern in end_patterns:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+    
+    return cleaned.strip()
+
+
 class UnifiedLogger:
     """Unified logger for entire AI processing run."""
     
@@ -228,6 +284,9 @@ def process_single_item_agent_1(
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
+        # Clean agent output to remove meta-commentary
+        content = clean_agent_output(content)
+        
         logger.log_agent_complete('agent_1', mapping_key, response, system_prompt, user_prompt)
         
         return mapping_key, content
@@ -262,6 +321,9 @@ def process_single_item_agent_2(
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
+        # Clean agent output to remove meta-commentary
+        content = clean_agent_output(content)
+        
         logger.log_agent_complete('agent_2', mapping_key, response, system_prompt, user_prompt)
         
         return mapping_key, content
@@ -295,6 +357,9 @@ def process_single_item_agent_3(
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
+        # Clean agent output to remove meta-commentary
+        content = clean_agent_output(content)
+        
         logger.log_agent_complete('agent_3', mapping_key, response, system_prompt, user_prompt)
         
         return mapping_key, content
@@ -323,6 +388,9 @@ def process_single_item_agent_4(
         # Get response (reuse AIHelper)
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
+        
+        # Clean agent output to remove meta-commentary
+        content = clean_agent_output(content)
         
         logger.log_agent_complete('agent_4', mapping_key, response, system_prompt, user_prompt)
         
