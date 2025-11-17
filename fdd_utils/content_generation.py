@@ -28,29 +28,30 @@ def clean_agent_output(content: str) -> str:
         Cleaned content without meta-commentary
     """
     # Remove common meta-commentary prefixes (case-insensitive)
+    # Note: Don't use (?i) inline flags with flags=re.IGNORECASE parameter
     prefixes_to_remove = [
-        r'^(?i)verified\s+output:\s*',
-        r'^(?i)corrected\s+output:\s*',
-        r'^(?i)refined\s+output:\s*',
-        r'^(?i)formatted\s+output:\s*',
-        r'^(?i)final\s+output:\s*',
-        r'^(?i)after\s+verification[,:]?\s*',
-        r'^(?i)after\s+refining[,:]?\s*',
-        r'^(?i)final\s+formatted\s+content:\s*',
-        r'^(?i)the\s+corrected\s+output\s+is:\s*',
-        r'^(?i)here\s+is\s+the\s+(corrected|refined|verified)\s+output:\s*',
+        r'^verified\s+output:\s*',
+        r'^corrected\s+output:\s*',
+        r'^refined\s+output:\s*',
+        r'^formatted\s+output:\s*',
+        r'^final\s+output:\s*',
+        r'^after\s+verification[,:]?\s*',
+        r'^after\s+refining[,:]?\s*',
+        r'^final\s+formatted\s+content:\s*',
+        r'^the\s+corrected\s+output\s+is:\s*',
+        r'^here\s+is\s+the\s+(corrected|refined|verified)\s+output:\s*',
         # Chinese patterns
-        r'^(?i)已验证输出：\s*',
-        r'^(?i)已更正输出：\s*',
-        r'^(?i)精炼后的输出：\s*',
-        r'^(?i)格式化后的输出：\s*',
-        r'^(?i)经过验证[，,]\s*',
-        r'^(?i)经过精炼后[，,]\s*',
+        r'^已验证输出：\s*',
+        r'^已更正输出：\s*',
+        r'^精炼后的输出：\s*',
+        r'^格式化后的输出：\s*',
+        r'^经过验证[，,]\s*',
+        r'^经过精炼后[，,]\s*',
     ]
     
     cleaned = content.strip()
     
-    # Try to remove prefixes
+    # Try to remove prefixes (case-insensitive)
     for pattern in prefixes_to_remove:
         cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
     
@@ -61,10 +62,10 @@ def clean_agent_output(content: str) -> str:
     
     # Remove meta-commentary at the end (sentences that mention verification/corrections)
     end_patterns = [
-        r'\s*(?i)I\s+(?:verified|corrected|refined|checked).*$',
-        r'\s*(?i)(?:Corrections?|Verifications?)\s+made:.*$',
-        r'\s*(?i)我(?:验证|更正|精炼|检查)了.*$',
-        r'\s*(?i)所做更正：.*$',
+        r'\s*I\s+(?:verified|corrected|refined|checked).*$',
+        r'\s*(?:Corrections?|Verifications?)\s+made:.*$',
+        r'\s*我(?:验证|更正|精炼|检查)了.*$',
+        r'\s*所做更正：.*$',
     ]
     
     for pattern in end_patterns:
@@ -408,7 +409,7 @@ def ai_pipeline_sequential_by_agent(
     language: str = 'Eng',
     use_heuristic: bool = False,
     use_multithreading: bool = True,
-    max_workers: int = 4
+    max_workers: Optional[int] = None
 ) -> Dict[str, Dict[str, str]]:
     """
     Sequential-by-agent pipeline: Process ALL items through Agent 1, 
@@ -421,15 +422,20 @@ def ai_pipeline_sequential_by_agent(
         language: Language for prompts ('Eng' or 'Chi')
         use_heuristic: Whether to use heuristic mode
         use_multithreading: Whether to use multi-threading
-        max_workers: Maximum number of parallel threads
+        max_workers: Maximum number of parallel threads (None = use all CPU cores)
     
     Returns:
         Dictionary with structure: {mapping_key: {agent_1: content, agent_2: content, ...}}
     """
+    # Auto-detect number of workers if not specified
+    if max_workers is None:
+        import multiprocessing
+        max_workers = multiprocessing.cpu_count()
+    
     # Initialize unified logger
     logger = UnifiedLogger()
     logger.logger.info(f"Starting sequential-by-agent AI pipeline with {len(mapping_keys)} items")
-    logger.logger.info(f"Model: {model_type}, Language: {language}, Multithreading: {use_multithreading}")
+    logger.logger.info(f"Model: {model_type}, Language: {language}, Multithreading: {use_multithreading}, Workers: {max_workers}")
     
     # Create ONE reusable AIHelper instance
     ai_helper = AIHelper(
@@ -603,7 +609,7 @@ def run_ai_pipeline(
     language: str = 'Eng',
     use_heuristic: bool = False,
     use_multithreading: bool = True,
-    max_workers: int = 4
+    max_workers: Optional[int] = None
 ) -> Dict[str, Dict[str, str]]:
     """
     Simple AI pipeline: Run all items through 4 agents sequentially.
@@ -616,7 +622,7 @@ def run_ai_pipeline(
         language: Language for prompts ('Eng' or 'Chi')
         use_heuristic: Use rule-based processing instead of AI
         use_multithreading: Use multi-threading within each agent
-        max_workers: Number of parallel workers
+        max_workers: Number of parallel workers (None = use all CPU cores)
     
     Returns:
         Dict with structure: {
