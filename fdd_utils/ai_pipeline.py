@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Any
 from fdd_utils.process_databook import extract_data_from_excel
 from fdd_utils.content_generation import (
     ai_pipeline_full,
+    ai_pipeline_sequential_by_agent,
     ai_pipeline_agent_only
 )
 
@@ -95,7 +96,8 @@ class AIPipelineOrchestrator:
         language: Optional[str] = None,
         use_heuristic: Optional[bool] = None,
         use_multithreading: Optional[bool] = None,
-        max_workers: Optional[int] = None
+        max_workers: Optional[int] = None,
+        sequential_by_agent: bool = True
     ) -> Dict[str, str]:
         """
         Run the full AI pipeline (all 4 agents in sequence).
@@ -106,6 +108,8 @@ class AIPipelineOrchestrator:
             use_heuristic: Use heuristic mode (overrides config)
             use_multithreading: Use multi-threading (overrides config)
             max_workers: Max parallel workers (overrides config)
+            sequential_by_agent: If True, run all items through agent 1, then all through agent 2, etc.
+                                If False, run each item through all 4 agents before next item.
         
         Returns:
             Dictionary of final results by mapping key
@@ -127,28 +131,33 @@ class AIPipelineOrchestrator:
         print(f"Language: {lang}")
         print(f"Heuristic Mode: {heuristic}")
         print(f"Multi-threading: {multithread} (workers: {workers})")
+        print(f"Sequential by agent: {sequential_by_agent}")
         print(f"Items to process: {len(self.mapping_keys)}")
         print("="*60 + "\n")
         
-        results = ai_pipeline_full(
-            mapping_keys=self.mapping_keys,
-            dfs=self.dfs,
-            model_type=model,
-            language=lang,
-            use_heuristic=heuristic,
-            use_multithreading=multithread,
-            max_workers=workers
-        )
+        # Choose pipeline function based on sequential_by_agent flag
+        if sequential_by_agent:
+            results = ai_pipeline_sequential_by_agent(
+                mapping_keys=self.mapping_keys,
+                dfs=self.dfs,
+                model_type=model,
+                language=lang,
+                use_heuristic=heuristic,
+                use_multithreading=multithread,
+                max_workers=workers
+            )
+        else:
+            results = ai_pipeline_full(
+                mapping_keys=self.mapping_keys,
+                dfs=self.dfs,
+                model_type=model,
+                language=lang,
+                use_heuristic=heuristic,
+                use_multithreading=multithread,
+                max_workers=workers
+            )
         
         self.results = results
-        
-        print("\n" + "="*60)
-        print("PIPELINE COMPLETED")
-        print("="*60)
-        print(f"Processed: {len(results)} items")
-        print(f"Successful: {sum(1 for v in results.values() if v is not None)}")
-        print(f"Failed: {sum(1 for v in results.values() if v is None)}")
-        print("="*60 + "\n")
         
         return results
     

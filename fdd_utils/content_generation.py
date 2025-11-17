@@ -64,7 +64,8 @@ class UnifiedLogger:
         """Log when an agent starts processing."""
         self.logger.info(f"[{agent_name}] Processing: {mapping_key}")
     
-    def log_agent_complete(self, agent_name: str, mapping_key: str, result: Dict[str, Any]):
+    def log_agent_complete(self, agent_name: str, mapping_key: str, result: Dict[str, Any], 
+                          system_prompt: str = '', user_prompt: str = ''):
         """Log when an agent completes processing."""
         duration = result.get('duration', 0)
         tokens = result.get('tokens_used', 0)
@@ -82,7 +83,9 @@ class UnifiedLogger:
             'tokens_used': tokens,
             'mode': result.get('mode', 'ai'),
             'timestamp': datetime.now().isoformat(),
-            'content': result.get('content', '')[:500]  # First 500 chars
+            'system_prompt': system_prompt[:500] if system_prompt else '',  # First 500 chars
+            'user_prompt': user_prompt[:1000] if user_prompt else '',  # First 1000 chars
+            'output': result.get('content', '')  # Full output
         }
     
     def log_error(self, agent_name: str, mapping_key: str, error: Exception):
@@ -230,7 +233,7 @@ def process_single_item_agent_1(
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
-        logger.log_agent_complete('agent_1', mapping_key, response)
+        logger.log_agent_complete('agent_1', mapping_key, response, system_prompt, user_prompt)
         
         return mapping_key, content
         
@@ -274,7 +277,7 @@ def process_single_item_agent_2(
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
-        logger.log_agent_complete('agent_2', mapping_key, response)
+        logger.log_agent_complete('agent_2', mapping_key, response, system_prompt, user_prompt)
         
         return mapping_key, content
         
@@ -317,7 +320,7 @@ def process_single_item_agent_3(
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
-        logger.log_agent_complete('agent_3', mapping_key, response)
+        logger.log_agent_complete('agent_3', mapping_key, response, system_prompt, user_prompt)
         
         return mapping_key, content
         
@@ -341,8 +344,7 @@ def process_single_item_agent_4(
         # Load and format prompts
         system_prompt, user_prompt = load_prompts_and_format(
             'agent_4', language, mapping_key, None,
-            content=agent_3_output,
-            language=language
+            content=agent_3_output
         )
         
         # Initialize AI Helper
@@ -357,13 +359,193 @@ def process_single_item_agent_4(
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
-        logger.log_agent_complete('agent_4', mapping_key, response)
+        logger.log_agent_complete('agent_4', mapping_key, response, system_prompt, user_prompt)
         
         return mapping_key, content
         
     except Exception as e:
         logger.log_error('agent_4', mapping_key, e)
         return mapping_key, agent_3_output  # Return previous output if error
+
+
+def ai_pipeline_sequential_by_agent(
+    mapping_keys: List[str],
+    dfs: Dict[str, pd.DataFrame],
+    model_type: str = 'deepseek',
+    language: str = 'Eng',
+    use_heuristic: bool = False,
+    use_multithreading: bool = True,
+    max_workers: int = 4
+) -> Dict[str, str]:
+    """
+    Sequential-by-agent pipeline: Process ALL items through Agent 1, 
+    then ALL items through Agent 2, etc. Multi-threading within each agent.
+    
+    Args:
+        mapping_keys: List of mapping keys to process
+        dfs: Dictionary of DataFrames by mapping key
+        model_type: AI model type to use
+        language: Language for prompts ('Eng' or 'Chi')
+        use_heuristic: Whether to use heuristic mode
+        use_multithreading: Whether to use multi-threading
+        max_workers: Maximum number of parallel threads
+    
+    Returns:
+        Dictionary of final results by mapping key
+    """
+    # Initialize unified logger
+    logger = UnifiedLogger()
+    logger.logger.info(f"Starting sequential-by-agent AI pipeline with {len(mapping_keys)} items")
+    logger.logger.info(f"Model: {model_type}, Language: {language}, Multithreading: {use_multithreading}")
+    
+    # Storage for results at each stage
+    results_agent_1 = {}
+    results_agent_2 = {}
+    results_agent_3 = {}
+    results_agent_4 = {}
+    
+    # Agent 1: Process ALL items
+    print("\n" + "="*60)
+    print("AGENT 1: Content Generation")
+    print("="*60)
+    
+    if use_multithreading and len(mapping_keys) > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for key in mapping_keys:
+                if key in dfs:
+                    future = executor.submit(
+                        process_single_item_agent_1,
+                        key, dfs[key], model_type, language, use_heuristic, logger
+                    )
+                    futures[future] = key
+            
+            with tqdm(total=len(futures), desc="Agent 1", unit='item') as pbar:
+                for future in as_completed(futures):
+                    mapping_key, content = future.result()
+                    results_agent_1[mapping_key] = content
+                    pbar.update(1)
+    else:
+        with tqdm(total=len(mapping_keys), desc="Agent 1", unit='item') as pbar:
+            for key in mapping_keys:
+                if key in dfs:
+                    _, content = process_single_item_agent_1(
+                        key, dfs[key], model_type, language, use_heuristic, logger
+                    )
+                    results_agent_1[key] = content
+                pbar.update(1)
+    
+    # Agent 2: Process ALL items with Agent 1 outputs
+    print("\n" + "="*60)
+    print("AGENT 2: Value Checking")
+    print("="*60)
+    
+    if use_multithreading and len(mapping_keys) > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for key in mapping_keys:
+                if key in results_agent_1 and results_agent_1[key]:
+                    future = executor.submit(
+                        process_single_item_agent_2,
+                        key, results_agent_1[key], dfs.get(key), 
+                        model_type, language, use_heuristic, logger
+                    )
+                    futures[future] = key
+            
+            with tqdm(total=len(futures), desc="Agent 2", unit='item') as pbar:
+                for future in as_completed(futures):
+                    mapping_key, content = future.result()
+                    results_agent_2[mapping_key] = content
+                    pbar.update(1)
+    else:
+        with tqdm(total=len(mapping_keys), desc="Agent 2", unit='item') as pbar:
+            for key in mapping_keys:
+                if key in results_agent_1 and results_agent_1[key]:
+                    _, content = process_single_item_agent_2(
+                        key, results_agent_1[key], dfs.get(key),
+                        model_type, language, use_heuristic, logger
+                    )
+                    results_agent_2[key] = content
+                pbar.update(1)
+    
+    # Agent 3: Process ALL items with Agent 2 outputs
+    print("\n" + "="*60)
+    print("AGENT 3: Content Refinement")
+    print("="*60)
+    
+    if use_multithreading and len(mapping_keys) > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for key in mapping_keys:
+                if key in results_agent_2 and results_agent_2[key]:
+                    future = executor.submit(
+                        process_single_item_agent_3,
+                        key, results_agent_2[key], dfs.get(key),
+                        model_type, language, use_heuristic, logger
+                    )
+                    futures[future] = key
+            
+            with tqdm(total=len(futures), desc="Agent 3", unit='item') as pbar:
+                for future in as_completed(futures):
+                    mapping_key, content = future.result()
+                    results_agent_3[mapping_key] = content
+                    pbar.update(1)
+    else:
+        with tqdm(total=len(mapping_keys), desc="Agent 3", unit='item') as pbar:
+            for key in mapping_keys:
+                if key in results_agent_2 and results_agent_2[key]:
+                    _, content = process_single_item_agent_3(
+                        key, results_agent_2[key], dfs.get(key),
+                        model_type, language, use_heuristic, logger
+                    )
+                    results_agent_3[key] = content
+                pbar.update(1)
+    
+    # Agent 4: Process ALL items with Agent 3 outputs
+    print("\n" + "="*60)
+    print("AGENT 4: Format Checking")
+    print("="*60)
+    
+    if use_multithreading and len(mapping_keys) > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for key in mapping_keys:
+                if key in results_agent_3 and results_agent_3[key]:
+                    future = executor.submit(
+                        process_single_item_agent_4,
+                        key, results_agent_3[key],
+                        model_type, language, use_heuristic, logger
+                    )
+                    futures[future] = key
+            
+            with tqdm(total=len(futures), desc="Agent 4", unit='item') as pbar:
+                for future in as_completed(futures):
+                    mapping_key, content = future.result()
+                    results_agent_4[mapping_key] = content
+                    pbar.update(1)
+    else:
+        with tqdm(total=len(mapping_keys), desc="Agent 4", unit='item') as pbar:
+            for key in mapping_keys:
+                if key in results_agent_3 and results_agent_3[key]:
+                    _, content = process_single_item_agent_4(
+                        key, results_agent_3[key],
+                        model_type, language, use_heuristic, logger
+                    )
+                    results_agent_4[key] = content
+                pbar.update(1)
+    
+    # Finalize logging
+    logger.finalize()
+    
+    print("\n" + "="*60)
+    print("PIPELINE COMPLETED")
+    print("="*60)
+    print(f"Processed: {len(results_agent_4)} items")
+    print(f"Successful: {sum(1 for v in results_agent_4.values() if v is not None)}")
+    print(f"Failed: {sum(1 for v in results_agent_4.values() if v is None)}")
+    print("="*60 + "\n")
+    
+    return results_agent_4
 
 
 def ai_pipeline_full(
