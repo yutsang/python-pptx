@@ -207,9 +207,7 @@ def load_prompts_and_format(
 def process_single_item_agent_1(
     mapping_key: str,
     df: pd.DataFrame,
-    model_type: str,
-    language: str,
-    use_heuristic: bool,
+    ai_helper: AIHelper,
     logger: UnifiedLogger
 ) -> Tuple[str, str]:
     """Process single item through Agent 1 (Content Generator)."""
@@ -218,18 +216,10 @@ def process_single_item_agent_1(
         
         # Load and format prompts
         system_prompt, user_prompt = load_prompts_and_format(
-            'agent_1', language, mapping_key, df
+            'agent_1', ai_helper.language, mapping_key, df
         )
         
-        # Initialize AI Helper
-        ai_helper = AIHelper(
-            model_type=model_type,
-            agent_name='agent_1',
-            language=language,
-            use_heuristic=use_heuristic
-        )
-        
-        # Get response
+        # Get response (reuse AIHelper)
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
@@ -246,9 +236,7 @@ def process_single_item_agent_2(
     mapping_key: str,
     agent_1_output: str,
     df: pd.DataFrame,
-    model_type: str,
-    language: str,
-    use_heuristic: bool,
+    ai_helper: AIHelper,
     logger: UnifiedLogger
 ) -> Tuple[str, str]:
     """Process single item through Agent 2 (Value Checker)."""
@@ -260,20 +248,12 @@ def process_single_item_agent_2(
         
         # Load and format prompts
         system_prompt, user_prompt = load_prompts_and_format(
-            'agent_2', language, mapping_key, df,
+            'agent_2', ai_helper.language, mapping_key, df,
             account=account_type,
             output=agent_1_output
         )
         
-        # Initialize AI Helper
-        ai_helper = AIHelper(
-            model_type=model_type,
-            agent_name='agent_2',
-            language=language,
-            use_heuristic=use_heuristic
-        )
-        
-        # Get response
+        # Get response (reuse AIHelper)
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
@@ -290,9 +270,7 @@ def process_single_item_agent_3(
     mapping_key: str,
     agent_2_output: str,
     df: pd.DataFrame,
-    model_type: str,
-    language: str,
-    use_heuristic: bool,
+    ai_helper: AIHelper,
     logger: UnifiedLogger
 ) -> Tuple[str, str]:
     """Process single item through Agent 3 (Content Refiner)."""
@@ -303,20 +281,12 @@ def process_single_item_agent_3(
         
         # Load and format prompts
         system_prompt, user_prompt = load_prompts_and_format(
-            'agent_3', language, mapping_key, df,
+            'agent_3', ai_helper.language, mapping_key, df,
             previous_content=agent_2_output,
             original_length=original_length
         )
         
-        # Initialize AI Helper
-        ai_helper = AIHelper(
-            model_type=model_type,
-            agent_name='agent_3',
-            language=language,
-            use_heuristic=use_heuristic
-        )
-        
-        # Get response
+        # Get response (reuse AIHelper)
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
@@ -332,9 +302,7 @@ def process_single_item_agent_3(
 def process_single_item_agent_4(
     mapping_key: str,
     agent_3_output: str,
-    model_type: str,
-    language: str,
-    use_heuristic: bool,
+    ai_helper: AIHelper,
     logger: UnifiedLogger
 ) -> Tuple[str, str]:
     """Process single item through Agent 4 (Format Checker)."""
@@ -343,19 +311,11 @@ def process_single_item_agent_4(
         
         # Load and format prompts
         system_prompt, user_prompt = load_prompts_and_format(
-            'agent_4', language, mapping_key, None,
+            'agent_4', ai_helper.language, mapping_key, None,
             content=agent_3_output
         )
         
-        # Initialize AI Helper
-        ai_helper = AIHelper(
-            model_type=model_type,
-            agent_name='agent_4',
-            language=language,
-            use_heuristic=use_heuristic
-        )
-        
-        # Get response
+        # Get response (reuse AIHelper)
         response = ai_helper.get_response(user_prompt, system_prompt)
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
@@ -376,7 +336,7 @@ def ai_pipeline_sequential_by_agent(
     use_heuristic: bool = False,
     use_multithreading: bool = True,
     max_workers: int = 4
-) -> Dict[str, str]:
+) -> Dict[str, Dict[str, str]]:
     """
     Sequential-by-agent pipeline: Process ALL items through Agent 1, 
     then ALL items through Agent 2, etc. Multi-threading within each agent.
@@ -391,18 +351,23 @@ def ai_pipeline_sequential_by_agent(
         max_workers: Maximum number of parallel threads
     
     Returns:
-        Dictionary of final results by mapping key
+        Dictionary with structure: {mapping_key: {agent_1: content, agent_2: content, ...}}
     """
     # Initialize unified logger
     logger = UnifiedLogger()
     logger.logger.info(f"Starting sequential-by-agent AI pipeline with {len(mapping_keys)} items")
     logger.logger.info(f"Model: {model_type}, Language: {language}, Multithreading: {use_multithreading}")
     
-    # Storage for results at each stage
-    results_agent_1 = {}
-    results_agent_2 = {}
-    results_agent_3 = {}
-    results_agent_4 = {}
+    # Create ONE reusable AIHelper instance
+    ai_helper = AIHelper(
+        model_type=model_type,
+        agent_name='content_pipeline',  # Generic name since we're reusing it
+        language=language,
+        use_heuristic=use_heuristic
+    )
+    
+    # Storage for ALL results from all agents
+    final_results = {key: {} for key in mapping_keys if key in dfs}
     
     # Agent 1: Process ALL items
     print("\n" + "="*60)
@@ -416,23 +381,25 @@ def ai_pipeline_sequential_by_agent(
                 if key in dfs:
                     future = executor.submit(
                         process_single_item_agent_1,
-                        key, dfs[key], model_type, language, use_heuristic, logger
+                        key, dfs[key], ai_helper, logger
                     )
                     futures[future] = key
             
             with tqdm(total=len(futures), desc="Agent 1", unit='item') as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
-                    results_agent_1[mapping_key] = content
+                    if mapping_key in final_results:
+                        final_results[mapping_key]['agent_1_content'] = content
                     pbar.update(1)
     else:
         with tqdm(total=len(mapping_keys), desc="Agent 1", unit='item') as pbar:
             for key in mapping_keys:
                 if key in dfs:
                     _, content = process_single_item_agent_1(
-                        key, dfs[key], model_type, language, use_heuristic, logger
+                        key, dfs[key], ai_helper, logger
                     )
-                    results_agent_1[key] = content
+                    if key in final_results:
+                        final_results[key]['agent_1_content'] = content
                 pbar.update(1)
     
     # Agent 2: Process ALL items with Agent 1 outputs
@@ -444,28 +411,30 @@ def ai_pipeline_sequential_by_agent(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for key in mapping_keys:
-                if key in results_agent_1 and results_agent_1[key]:
+                if key in final_results and 'agent_1_content' in final_results[key]:
                     future = executor.submit(
                         process_single_item_agent_2,
-                        key, results_agent_1[key], dfs.get(key), 
-                        model_type, language, use_heuristic, logger
+                        key, final_results[key]['agent_1_content'], dfs.get(key), 
+                        ai_helper, logger
                     )
                     futures[future] = key
             
             with tqdm(total=len(futures), desc="Agent 2", unit='item') as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
-                    results_agent_2[mapping_key] = content
+                    if mapping_key in final_results:
+                        final_results[mapping_key]['agent_2_content'] = content
                     pbar.update(1)
     else:
         with tqdm(total=len(mapping_keys), desc="Agent 2", unit='item') as pbar:
             for key in mapping_keys:
-                if key in results_agent_1 and results_agent_1[key]:
+                if key in final_results and 'agent_1_content' in final_results[key]:
                     _, content = process_single_item_agent_2(
-                        key, results_agent_1[key], dfs.get(key),
-                        model_type, language, use_heuristic, logger
+                        key, final_results[key]['agent_1_content'], dfs.get(key),
+                        ai_helper, logger
                     )
-                    results_agent_2[key] = content
+                    if key in final_results:
+                        final_results[key]['agent_2_content'] = content
                 pbar.update(1)
     
     # Agent 3: Process ALL items with Agent 2 outputs
@@ -477,28 +446,30 @@ def ai_pipeline_sequential_by_agent(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for key in mapping_keys:
-                if key in results_agent_2 and results_agent_2[key]:
+                if key in final_results and 'agent_2_content' in final_results[key]:
                     future = executor.submit(
                         process_single_item_agent_3,
-                        key, results_agent_2[key], dfs.get(key),
-                        model_type, language, use_heuristic, logger
+                        key, final_results[key]['agent_2_content'], dfs.get(key),
+                        ai_helper, logger
                     )
                     futures[future] = key
             
             with tqdm(total=len(futures), desc="Agent 3", unit='item') as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
-                    results_agent_3[mapping_key] = content
+                    if mapping_key in final_results:
+                        final_results[mapping_key]['agent_3_content'] = content
                     pbar.update(1)
     else:
         with tqdm(total=len(mapping_keys), desc="Agent 3", unit='item') as pbar:
             for key in mapping_keys:
-                if key in results_agent_2 and results_agent_2[key]:
+                if key in final_results and 'agent_2_content' in final_results[key]:
                     _, content = process_single_item_agent_3(
-                        key, results_agent_2[key], dfs.get(key),
-                        model_type, language, use_heuristic, logger
+                        key, final_results[key]['agent_2_content'], dfs.get(key),
+                        ai_helper, logger
                     )
-                    results_agent_3[key] = content
+                    if key in final_results:
+                        final_results[key]['agent_3_content'] = content
                 pbar.update(1)
     
     # Agent 4: Process ALL items with Agent 3 outputs
@@ -510,28 +481,32 @@ def ai_pipeline_sequential_by_agent(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for key in mapping_keys:
-                if key in results_agent_3 and results_agent_3[key]:
+                if key in final_results and 'agent_3_content' in final_results[key]:
                     future = executor.submit(
                         process_single_item_agent_4,
-                        key, results_agent_3[key],
-                        model_type, language, use_heuristic, logger
+                        key, final_results[key]['agent_3_content'],
+                        ai_helper, logger
                     )
                     futures[future] = key
             
             with tqdm(total=len(futures), desc="Agent 4", unit='item') as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
-                    results_agent_4[mapping_key] = content
+                    if mapping_key in final_results:
+                        final_results[mapping_key]['agent_4_content'] = content
+                        final_results[mapping_key]['final_content'] = content  # Also store as final
                     pbar.update(1)
     else:
         with tqdm(total=len(mapping_keys), desc="Agent 4", unit='item') as pbar:
             for key in mapping_keys:
-                if key in results_agent_3 and results_agent_3[key]:
+                if key in final_results and 'agent_3_content' in final_results[key]:
                     _, content = process_single_item_agent_4(
-                        key, results_agent_3[key],
-                        model_type, language, use_heuristic, logger
+                        key, final_results[key]['agent_3_content'],
+                        ai_helper, logger
                     )
-                    results_agent_4[key] = content
+                    if key in final_results:
+                        final_results[key]['agent_4_content'] = content
+                        final_results[key]['final_content'] = content  # Also store as final
                 pbar.update(1)
     
     # Finalize logging
@@ -540,12 +515,12 @@ def ai_pipeline_sequential_by_agent(
     print("\n" + "="*60)
     print("PIPELINE COMPLETED")
     print("="*60)
-    print(f"Processed: {len(results_agent_4)} items")
-    print(f"Successful: {sum(1 for v in results_agent_4.values() if v is not None)}")
-    print(f"Failed: {sum(1 for v in results_agent_4.values() if v is None)}")
+    print(f"Processed: {len(final_results)} items")
+    print(f"Successful: {sum(1 for v in final_results.values() if 'final_content' in v)}")
+    print(f"Failed: {sum(1 for v in final_results.values() if 'final_content' not in v)}")
     print("="*60 + "\n")
     
-    return results_agent_4
+    return final_results
 
 
 def ai_pipeline_full(

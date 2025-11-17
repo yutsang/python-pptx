@@ -310,9 +310,24 @@ class AIPipelineOrchestrator:
         """Get the current results."""
         return self.results
     
-    def get_result_for_key(self, mapping_key: str) -> Optional[str]:
-        """Get result for a specific mapping key."""
-        return self.results.get(mapping_key)
+    def get_result_for_key(self, mapping_key: str, agent: str = 'final_content'):
+        """
+        Get result for a specific mapping key.
+        
+        Args:
+            mapping_key: The key to get result for
+            agent: Which agent's output to get ('final_content', 'agent_1_content', etc.)
+        
+        Returns:
+            Content string or dict of all agent outputs
+        """
+        result = self.results.get(mapping_key)
+        
+        if isinstance(result, dict):
+            if agent:
+                return result.get(agent)
+            return result  # Return full dict if no specific agent requested
+        return result  # Return as-is for simple string results
     
     def print_results_summary(self):
         """Print a summary of results."""
@@ -324,14 +339,31 @@ class AIPipelineOrchestrator:
         print("RESULTS SUMMARY")
         print("="*60)
         
-        for key, content in self.results.items():
-            if content:
-                preview = content[:100] + "..." if len(content) > 100 else content
+        for key, value in self.results.items():
+            # Handle new nested structure {key: {agent_1_content: ..., final_content: ...}}
+            if isinstance(value, dict):
                 print(f"\n{key}:")
-                print(f"  Length: {len(content)} chars")
-                print(f"  Preview: {preview}")
+                if 'final_content' in value:
+                    final = value['final_content']
+                    preview = final[:100] + "..." if len(final) > 100 else final
+                    print(f"  Final Content ({len(final)} chars): {preview}")
+                    
+                    # Show which agents completed
+                    agents_completed = [k for k in value.keys() if k.startswith('agent_')]
+                    print(f"  Agents completed: {len(agents_completed)}/4")
+                else:
+                    print(f"  Status: [INCOMPLETE]")
+            # Handle old simple structure {key: content_string}
+            elif isinstance(value, str):
+                if value:
+                    preview = value[:100] + "..." if len(value) > 100 else value
+                    print(f"\n{key}:")
+                    print(f"  Length: {len(value)} chars")
+                    print(f"  Preview: {preview}")
+                else:
+                    print(f"\n{key}: [FAILED]")
             else:
-                print(f"\n{key}: [FAILED]")
+                print(f"\n{key}: [NO DATA]")
         
         print("\n" + "="*60 + "\n")
 
