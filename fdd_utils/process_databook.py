@@ -16,6 +16,14 @@ def filter_worksheets_by_mode(worksheets, mode, mapping):
     result = []
     for ws in worksheets:
         for key, value in mapping.items():
+            # Skip non-account entries (e.g., _default_agent_1)
+            if key.startswith('_') or not isinstance(value, dict):
+                continue
+            
+            # Skip if required keys are missing
+            if 'type' not in value or 'aliases' not in value:
+                continue
+            
             # Ensure correct matching against mode
             if mode == "All":
                 if ws in value['aliases']:
