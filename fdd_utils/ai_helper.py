@@ -37,7 +37,16 @@ class AIHelper:
         
         # Load configuration
         self.config_path = config_path or os.path.join(os.path.dirname(__file__), 'config.yml')
-        self.config_details = self.load_config().get(self.model_type, {})
+        self.full_config = self.load_config()
+        self.config_details = self.full_config.get(self.model_type, {})
+        
+        # Load agent-specific settings from config
+        agent_config = self.full_config.get('agents', {}).get(agent_name, {})
+        self.temperature = agent_config.get('temperature', 0.7)
+        self.max_tokens = agent_config.get('max_tokens', 2000)
+        self.top_p = agent_config.get('top_p', None)
+        self.frequency_penalty = agent_config.get('frequency_penalty', None)
+        self.presence_penalty = agent_config.get('presence_penalty', None)
         
         # Initialize client only if not using heuristic mode
         if not self.use_heuristic:
@@ -52,6 +61,7 @@ class AIHelper:
         
         # Setup logging
         self.logger = logging.getLogger(f'AIHelper.{agent_name}')
+        self.logger.debug(f"Initialized {agent_name} with temperature={self.temperature}, max_tokens={self.max_tokens}")
 
     def load_config(self) -> Dict:
         """Load configuration from YAML file."""
@@ -147,8 +157,11 @@ class AIHelper:
         self, 
         user_prompt: str, 
         system_prompt: Optional[str] = None,
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Get response from AI model or heuristic.
@@ -156,13 +169,23 @@ class AIHelper:
         Args:
             user_prompt: User prompt text
             system_prompt: System prompt (optional, will load from config if not provided)
-            temperature: Temperature for response generation
-            max_tokens: Maximum tokens in response
+            temperature: Temperature for response generation (optional, uses config default)
+            max_tokens: Maximum tokens in response (optional, uses config default)
+            top_p: Nucleus sampling parameter (optional, uses config default)
+            frequency_penalty: Frequency penalty (optional, uses config default)
+            presence_penalty: Presence penalty (optional, uses config default)
             
         Returns:
             Dictionary with response data including content, tokens, and duration
         """
         start_time = time.time()
+        
+        # Use config defaults if not provided
+        temperature = temperature if temperature is not None else self.temperature
+        max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+        top_p = top_p if top_p is not None else self.top_p
+        frequency_penalty = frequency_penalty if frequency_penalty is not None else self.frequency_penalty
+        presence_penalty = presence_penalty if presence_penalty is not None else self.presence_penalty
         
         # Use heuristic mode if enabled
         if self.use_heuristic:
@@ -171,7 +194,9 @@ class AIHelper:
                 'content': response_content,
                 'mode': 'heuristic',
                 'duration': time.time() - start_time,
-                'tokens_used': len(response_content.split())
+                'tokens_used': len(response_content.split()),
+                'temperature': temperature,
+                'max_tokens': max_tokens
             }
         
         # Load system prompt if not provided
@@ -195,8 +220,15 @@ class AIHelper:
                 'temperature': temperature
             }
             
+            # Add optional parameters if provided
             if max_tokens:
                 params['max_tokens'] = max_tokens
+            if top_p is not None:
+                params['top_p'] = top_p
+            if frequency_penalty is not None:
+                params['frequency_penalty'] = frequency_penalty
+            if presence_penalty is not None:
+                params['presence_penalty'] = presence_penalty
             
             if self.model_type == 'openai':
                 response = response_method(**params)
@@ -234,7 +266,10 @@ class AIHelper:
                 'duration': duration,
                 'tokens_used': tokens_used,
                 'agent_name': self.agent_name,
-                'language': self.language
+                'language': self.language,
+                'temperature': temperature,
+                'max_tokens': max_tokens,
+                'top_p': top_p
             }
             
         except Exception as e:

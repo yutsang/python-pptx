@@ -1,10 +1,6 @@
 # Financial Data Processing with AI
 
-Automated financial content generation from Excel databooks using AI agents and designed patterns.
-
-## What It Does
-
-Extracts financial data from Excel → Processes through 4 AI agents → Generates content for reports
+Automated financial content generation from Excel databooks using multi-agent AI pipeline.
 
 ## Quick Start
 
@@ -14,94 +10,207 @@ pip install -r fdd_utils/requirements.txt
 ```
 
 ### 2. Configure
-Edit `fdd_utils/config.yml` with your AI settings:
+Edit `fdd_utils/config.yml`:
 ```yaml
 local:
   api_base: "http://localhost:1234"
   api_key: "local"
+  chat_model: "your-model"
 ```
 
 ### 3. Run
-Open `fdd_app.ipynb` and run the cells:
+Open `fdd_app.ipynb`:
 
 ```python
-# 1. Extract data
 from fdd_utils.process_databook import extract_data_from_excel
+from fdd_utils.content_generation import run_ai_pipeline, extract_final_contents
 
+# Extract data
 dfs, workbook_list, _, language = extract_data_from_excel(
-    'inputs/your_databook.xlsx', 
-    'Company Name', 
-    'BS'
+    'inputs/databook.xlsx', 'Company Name', 'BS'
 )
 
-# 2. Run AI pipeline
-from fdd_utils.content_generation import run_ai_pipeline, save_results
-
+# Run AI pipeline (4 agents)
 results = run_ai_pipeline(workbook_list, dfs, 'local', language)
-save_results(results)
 
-# 3. Get final contents
-from fdd_utils.content_generation import extract_final_contents
-
+# Get final contents
 final_contents = extract_final_contents(results)
-# Ready to feed into your templates!
 ```
+
+**Output**: `fdd_utils/logs/run_TIMESTAMP/results.yml`
+
+---
 
 ## The 4 AI Agents
 
-1. **Agent 1**: Generates content from patterns + data
-2. **Agent 2**: Verifies values and checks ≥25% rule
-3. **Agent 3**: Refines content (max 3 points, ≥25% only)
-4. **Agent 4**: Format checking (currency, quotes, numbering)
+1. **Agent 1** - Content Generator: Creates draft from patterns
+2. **Agent 2** - Value Checker: Verifies accuracy & totals
+3. **Agent 3** - Content Refiner: Polishes (max 3 points, ≥25%)
+4. **Agent 4** - Quality Controller: Final validation
 
-## Output Structure
+---
 
+## Key Features
+
+✅ **Chinese units** - 万元/亿元 (not K/million)  
+✅ **Sub-account filtering** - Removes "应付利息_借款利息"  
+✅ **Total focus** - Uses totals not line items  
+✅ **Scientific notation** - Converts 4.27e7 properly  
+✅ **Unified logging** - All outputs in one subfolder  
+✅ **Multi-threading** - Fast parallel processing  
+✅ **Bilingual** - English & Chinese support  
+
+---
+
+## Important Notes
+
+### Agent 4 = Final (This is Normal)
+Agent 4 validates content quality. If Agent 3 output is already good, Agent 4 outputs it unchanged. This is **correct behavior** - it means the content passed validation.
+
+### Chinese Number Formats
+- 50,000 → 人民币5.0万元
+- 5,000,000 → 人民币500.0万元  
+- 500,000,000 → 人民币5.0亿元
+- Negative R/E → "未弥补亏损" (not "未分配利润-XXX")
+
+### Sub-Account Filtering
+- ✅ Enabled by default
+- ❌ Filters: "应付利息_借款利息", indented items, "其中:"
+- ✅ Keeps: Main categories only
+
+---
+
+## Utilities
+
+### Extract Balance Sheet & Income Statement
 ```python
-results = {
-    'Cash': {
-        'agent_1': 'Draft content...',
-        'agent_2': 'Checked content...',
-        'agent_3': 'Refined content...',
-        'agent_4': 'Final content...',
-        'final': 'Final content...'
-    }
-}
+from fdd_utils.financial_extraction import extract_balance_sheet_and_income_statement
+
+results = extract_balance_sheet_and_income_statement(
+    "inputs/databook.xlsx",
+    "示意性调整后资产负债表",
+    "示意性调整后利润表"
+)
 ```
 
-## Documentation
+### Number Formatting
+```python
+from fdd_utils.number_formatting import format_number_chinese
 
-- **Full Guide:** `fdd_utils/HOW_TO_RUN.md`
-- **Configuration:** `fdd_utils/config.yml`
-- **Prompts:** `fdd_utils/prompts.yml` (Eng/Chi)
-- **Patterns:** `fdd_utils/mappings.yml`
+format_number_chinese(5000000, 'Chi')  # 人民币500.0万元
+```
+
+---
+
+## Configuration
+
+### AI Parameters (config.yml)
+All AI parameters are controlled in `fdd_utils/config.yml`:
+
+```yaml
+agents:
+  agent_1:  # Content Generator
+    temperature: 0.7       # Higher = more creative
+    max_tokens: 2000
+    top_p: 0.9
+  
+  agent_2:  # Value Checker
+    temperature: 0.3       # Lower = more precise
+    max_tokens: 2000
+  
+  agent_3:  # Content Refiner
+    temperature: 0.5       # Balanced
+    max_tokens: 2000
+    frequency_penalty: 0.2 # Reduce repetition
+  
+  agent_4:  # Quality Controller
+    temperature: 0.2       # Very precise
+    max_tokens: 2000
+```
+
+**Parameters explained:**
+- `temperature` (0.0-2.0): Creativity level
+- `max_tokens`: Maximum response length
+- `top_p` (0.0-1.0): Nucleus sampling
+- `frequency_penalty` (-2.0-2.0): Reduce repetition
+- `presence_penalty` (-2.0-2.0): Topic diversity
+
+### Python Usage
+
+```python
+# Extract with filtering (default)
+dfs, keys, _, lang = extract_data_from_excel(
+    path, entity, mode, filter_details=True
+)
+
+# Pipeline with multi-threading
+results = run_ai_pipeline(
+    keys, dfs, 
+    model_type='local',      # 'openai', 'local', 'deepseek'
+    language='Chi',          # 'Chi' or 'Eng'
+    use_multithreading=True,
+    max_workers=None         # Use all CPU cores
+)
+```
+
+---
 
 ## Files
 
 ```
-├── fdd_app.ipynb              # Main notebook - START HERE
+├── fdd_app.ipynb              # START HERE
 ├── fdd_utils/
-│   ├── ai_helper.py           # AI helper class
-│   ├── content_generation.py  # Main pipeline
-│   ├── process_databook.py    # Excel extraction
-│   ├── config.yml             # Settings
-│   ├── prompts.yml            # AI prompts
-│   ├── mappings.yml           # Account patterns
-│   └── HOW_TO_RUN.md          # Detailed guide
-└── inputs/                    # Put your Excel files here
+│   ├── ai_helper.py          # AI helper
+│   ├── content_generation.py # 4-agent pipeline
+│   ├── process_databook.py   # Excel extraction
+│   ├── financial_extraction.py # Standalone BS/IS
+│   ├── number_formatting.py  # Formatting utils
+│   ├── config.yml            # AI settings
+│   ├── prompts.yml           # Agent prompts
+│   └── logs/run_TIMESTAMP/   # Output folder
+└── inputs/                   # Your Excel files
 ```
-
-## Key Features
-
-✅ Multi-agent AI pipeline (4 agents)  
-✅ Multi-threading for speed  
-✅ English & Chinese support  
-✅ Unified logging (one file per run)  
-✅ Pattern-based content generation  
-✅ Automatic value verification  
-✅ Listing rules (max 3 points, ≥25%)  
-✅ Format validation  
 
 ---
 
-**Ready to use!** Open `fdd_app.ipynb` and start processing. 🚀
+## Tuning AI Parameters
+
+Edit `fdd_utils/config.yml` to adjust each agent's behavior:
+
+```yaml
+agents:
+  agent_1:
+    temperature: 0.7  # 0.7 = creative, 0.3 = precise
+```
+
+**Current settings:**
+- **Agent 1** (Generator): 0.7 - More creative for content generation
+- **Agent 2** (Checker): 0.3 - Precise for accuracy verification  
+- **Agent 3** (Refiner): 0.5 - Balanced for refinement
+- **Agent 4** (Controller): 0.2 - Very precise for validation
+
+Lower temperature = more consistent/precise. Higher = more creative/varied.
+
+---
+
+## Troubleshooting
+
+**Q: Sub-accounts still appearing?**  
+A: Check `filter_details=True` in `extract_data_from_excel()`
+
+**Q: Scientific notation in reports?**  
+A: System handles this automatically via prompts
+
+**Q: Wrong units in Chinese?**  
+A: Check `prompts.yml` - should use 万元/亿元
+
+**Q: Agent 4 = Final always same?**  
+A: Normal! Agent 4 only changes if needed
+
+**Q: Want different AI behavior?**  
+A: Adjust temperature in `config.yml` for each agent
+
+---
+
+**Ready to use!** Open `fdd_app.ipynb` 🚀
 
