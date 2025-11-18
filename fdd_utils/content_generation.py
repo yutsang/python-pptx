@@ -298,20 +298,36 @@ def load_prompts_and_format(
     
     # Add financial figure if df provided
     if df is not None and not df.empty:
-        # Format DataFrame to avoid scientific notation and show integers properly
+        # Check if there's a pre-formatted column (e.g., "2024-12-31_formatted")
+        # If yes, use that column for display to AI instead of the raw numeric values
         df_formatted = df.copy()
-        for col in df_formatted.columns:
-            if pd.api.types.is_numeric_dtype(df_formatted[col]):
-                # Format numbers as integers (no decimals) to avoid AI confusion
-                # The values are already rounded in process_databook.py
-                def format_number(x):
-                    if pd.notna(x) and x != float('inf') and x != float('-inf'):
-                        return f"{int(x):,}"
-                    return x
-                
-                df_formatted[col] = df_formatted[col].apply(format_number)
         
-        financial_figure_md = df_formatted.to_markdown(index=False).strip()
+        # Look for formatted columns (columns ending with "_formatted")
+        formatted_cols = [col for col in df_formatted.columns if col.endswith('_formatted')]
+        
+        if formatted_cols:
+            # Use formatted columns - replace the numeric columns with formatted versions
+            # Keep the description column and formatted value column only
+            display_cols = [df_formatted.columns[0]]  # First column is always description
+            display_cols.extend(formatted_cols)
+            df_display = df_formatted[display_cols]
+            
+            # Rename formatted columns to remove "_formatted" suffix for cleaner display
+            rename_map = {col: col.replace('_formatted', '') for col in formatted_cols}
+            df_display = df_display.rename(columns=rename_map)
+        else:
+            # Fallback: Format DataFrame to avoid scientific notation (old behavior)
+            df_display = df_formatted.copy()
+            for col in df_display.columns:
+                if pd.api.types.is_numeric_dtype(df_display[col]):
+                    def format_number(x):
+                        if pd.notna(x) and x != float('inf') and x != float('-inf'):
+                            return f"{int(x):,}"
+                        return x
+                    
+                    df_display[col] = df_display[col].apply(format_number)
+        
+        financial_figure_md = df_display.to_markdown(index=False).strip()
         format_params['financial_figure'] = financial_figure_md
         format_params['financial_data'] = financial_figure_md
     

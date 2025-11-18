@@ -19,10 +19,10 @@
       CORE PRINCIPLES:
       1. VERIFY the accuracy and significance of figures from previous agent output.
       2. CORRECT any inaccurate numbers or formatting issues.
-      3. ENSURE all numeric data is rounded to one decimal place for precision.
+      3. **IMPORTANT - VALUES ARE PRE-FORMATTED**: All numeric values in the original data are already formatted with units (K, million) and 1 decimal place. DO NOT convert them again. Only verify they match the source data.
       4. VERIFY currency format:
-         - Use 'K' for values between 10,000 and 99,999 (e.g., CNY 78.2K).
-         - Use 'million' for values 100,000 or more (e.g., CNY 12.3 million).
+         - Values should already be formatted as 'XX.XK' for thousands or 'XX.X million' (e.g., 78.2K, 12.3 million).
+         - Simply verify the formatted values match the source data - DO NOT recalculate or reconvert.
       5. VERIFY dates are formatted as 'dd mmmm yyyy' (e.g., 30 September 2022).
       6. VERIFY listing items: only list items >= 25% of total.
       
@@ -43,7 +43,7 @@
       
       VERIFICATION CHECKLIST:
       1. Are all figures accurate compared to original data?
-      2. Are all amounts formatted correctly (CNY XX.XK or CNY XX.X million)?
+      2. Are all amounts already pre-formatted (XX.XK or XX.X million)? DO NOT convert them again - just verify they match the source.
       3. Are dates in 'dd mmmm yyyy' format?
       4. Are only significant items (>= 25%) listed individually?
       5. Is the content clear and concise?
@@ -67,11 +67,11 @@
       核心原则:
       1. 验证先前代理输出中数字的准确性和重要性, 确保使用总计金额而非明细项目。
       2. 纠正任何不准确的数字或格式问题。
-      3. 确保所有数字数据四舍五入到一位小数以提高精度。
-      4. **重要**: 数字转换规则 - 原始数据已经是完整数值, 不要错误地将英文单位"K"直接转换为"万元":
-         - 如果数值在10,000至999,999之间 → 除以10,000, 使用"万元" (例如: 78,200 → 人民币7.8万元)
-         - 如果数值在1,000,000或更大 → 除以10,000显示万元, 或除以100,000,000显示亿元 (例如: 12,300,000 → 人民币1,230.0万元 或 人民币1.23亿元)
-         - 千万不要直接把"78.2K"转换成"人民币78.2万元", 这是错误的!
+      3. **重要 - 数值已预先格式化**: 原始数据中的所有数值已经格式化为带单位(万、亿)和1位小数。请勿再次转换。只需验证它们与源数据匹配。
+      4. **数字验证规则** - 数值应该已经格式化:
+         - 数值应已格式化为"XX.X万"或"XX.X亿" (例如: 7.8万, 1.2亿)
+         - 只需验证格式化的值与源数据匹配 - 请勿重新计算或重新转换
+         - 千万不要再次进行数字转换!
       5. 验证日期格式为"yyyy年mm月dd日" (例如, 2022年9月30日)。
       6. 验证列表项目: 仅列出>=总额25%的项目。
       7. 过滤详细子账户名称: 不要包含如"应付利息_借款利息"等详细账户名称。
@@ -94,7 +94,7 @@
       
       验证清单:
       1. 与原始数据相比, 所有数字是否准确? 是否使用了总计金额?
-      2. 所有金额是否格式正确 (人民币XX.X万元或人民币XX.X亿元)?
+      2. 所有金额是否格式正确 (XX.X万或XX.X亿)?
       3. 日期是否为"yyyy年mm月dd日"格式?
       4. 是否仅单独列出重要项目 (>= 25%)?
       5. 内容是否清晰简洁?
@@ -102,7 +102,7 @@
       
       特别注意:
       - 如果遇到负数 (如未分配利润为负), 使用更好的表达方式, 如"未弥补亏损"而不是直接加负号。
-      - **数字处理**: 原始数据中的数值已经是完整金额 (如78200表示78200元), 转换时请正确计算, 不要误将英文单位直接替换!
+      - **数字已格式化**: 原始数据中的数值已经格式化为"万"或"亿"单位, 请勿再次转换! 只需验证格式化值与源数据匹配。
       - **清理英文**: 删除所有英文技术占位符如"leasing_status_status"、"_type"、"_status"等。
       
       关键: 仅输出更正后的财务文本。

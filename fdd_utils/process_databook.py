@@ -357,6 +357,46 @@ def filter_detail_accounts(df: pd.DataFrame) -> pd.DataFrame:
     return df_filtered
 
 
+def format_value_by_language(value, language):
+    """
+    Format numeric values into appropriate units based on language.
+    
+    Args:
+        value: Numeric value to format
+        language: 'Chi' for Chinese (万/亿) or 'Eng' for English (K/million)
+    
+    Returns:
+        Formatted string with 1 decimal place
+    """
+    if pd.isna(value) or value == 0:
+        return "0"
+    
+    # Handle negative numbers
+    is_negative = value < 0
+    abs_value = abs(value)
+    
+    if language == 'Chi':
+        # Chinese formatting: 万元 (10,000) or 亿元 (100,000,000)
+        if abs_value >= 100000000:  # >= 1亿
+            formatted = f"{abs_value / 100000000:.1f}亿"
+        elif abs_value >= 10000:  # >= 1万
+            formatted = f"{abs_value / 10000:.1f}万"
+        else:
+            formatted = f"{abs_value:.0f}"
+        
+        return f"-{formatted}" if is_negative else formatted
+    
+    else:  # English formatting
+        if abs_value >= 1000000:  # >= 1 million
+            formatted = f"{abs_value / 1000000:.1f} million"
+        elif abs_value >= 10000:  # >= 10K
+            formatted = f"{abs_value / 1000:.1f}K"
+        else:
+            formatted = f"{abs_value:,.0f}"
+        
+        return f"-{formatted}" if is_negative else formatted
+
+
 def extract_data_from_excel(databook_path, entity_name, mode="All", filter_details=True):
     """
     Extract data from Excel file and determine language.
@@ -386,6 +426,21 @@ def extract_data_from_excel(databook_path, entity_name, mode="All", filter_detai
     english_count = 0
     chinese_count = 0
 
+    # Determine report language first (needed for formatting)
+    for sheet in filtered_sheets:
+        if 'Indicative adjusted' in raw_dfs[sheet].to_string():
+            english_count += 1
+        elif '示意性调整后' in raw_dfs[sheet].to_string():
+            chinese_count += 1
+    
+    # Determine report language
+    if english_count + chinese_count == 0:
+        report_language = None
+    elif english_count >= chinese_count:
+        report_language = 'Eng'
+    else:
+        report_language = 'Chi'
+
     for sheet in filtered_sheets:
         result_type, extracted_df, value_col_num = process_excel_data(raw_dfs, sheet, entity_name)
        
@@ -393,6 +448,13 @@ def extract_data_from_excel(databook_path, entity_name, mode="All", filter_detai
             # Filter out detail sub-accounts if requested
             if filter_details:
                 extracted_df = filter_detail_accounts(extracted_df)
+            
+            # Format values based on language
+            if report_language:
+                value_col_name = extracted_df.columns[1]  # Second column is the value column
+                extracted_df[value_col_name + '_formatted'] = extracted_df[value_col_name].apply(
+                    lambda x: format_value_by_language(x, report_language)
+                )
             
             final_dfs[sheet] = extracted_df
             final_workbook_list.append(sheet)
@@ -404,27 +466,10 @@ def extract_data_from_excel(databook_path, entity_name, mode="All", filter_detai
             else:
                 single_count += 1
 
-            # Check report language
-            if 'Indicative adjusted' in raw_dfs[sheet].to_string():
-                english_count += 1
-            elif '示意性调整后' in raw_dfs[sheet].to_string():
-                chinese_count += 1
-
     # Avoid division by zero and determine the overall result type
     if len(final_workbook_list) == 0:
         overall_result_type = 'None'
     else:
         overall_result_type = 'multiple' if multiple_count > single_count else 'single'
-
-    # Determine report language with better logic
-    if len(final_workbook_list) == 0:
-        report_language = None
-    elif english_count / len(final_workbook_list) >= 0.8:
-        report_language = 'Eng'
-    elif chinese_count / len(final_workbook_list) >= 0.8:
-        report_language = 'Chi'
-    else:
-        # Default to English if unclear
-        report_language = 'Eng'
 
     return final_dfs, final_workbook_list, overall_result_type, report_language
