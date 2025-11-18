@@ -243,10 +243,13 @@ def process_excel_data(dfs, sheet_name, entity_name):
             if contains_cny or contains_chinese_cny:
                 #print('Triggered')
                 result_df[value_column_name] *= 1000
- 
-            #print("After multiplying:")
+
+            # Round all decimal values to integers to avoid decimal issues with AI
+            result_df[value_column_name] = result_df[value_column_name].round(0).astype(int)
+
+            #print("After multiplying and rounding:")
             #print(result_df[value_column_name])
- 
+
             return result_df.reset_index(drop=True), value_column_index
         else:
             return None, None
@@ -272,16 +275,57 @@ def determine_result_type(sheet_data):
     # Determine if the sheet is single or multiple based on occurrences
     return 'multiple' if occurrences > 1 else 'single'
  
+def clean_english_placeholders(text: str) -> str:
+    """
+    Clean English technical placeholders from Chinese descriptions.
+    Handles patterns like: leasing_status_status, account_type, etc.
+    
+    Args:
+        text: Text that may contain English placeholders
+        
+    Returns:
+        Cleaned text with placeholders removed or translated
+    """
+    if not isinstance(text, str):
+        return text
+    
+    # Common English placeholder patterns
+    placeholder_patterns = {
+        r'_status': '',
+        r'_type': '',
+        r'_name': '',
+        r'_code': '',
+        r'_id': '',
+        r'leasing_status_status': '租赁状态',
+        r'leasing_': '租赁',
+        r'status_': '',
+        r'_\w+_\w+': '',  # Remove patterns like _xxx_yyy
+    }
+    
+    cleaned_text = text
+    for pattern, replacement in placeholder_patterns.items():
+        cleaned_text = re.sub(pattern, replacement, cleaned_text, flags=re.IGNORECASE)
+    
+    # Remove any remaining underscore patterns (technical field names)
+    # But preserve Chinese text
+    if re.search(r'[a-zA-Z_]{3,}', cleaned_text):
+        # If it's purely English with underscores, try to clean it
+        cleaned_text = re.sub(r'[a-zA-Z]+_[a-zA-Z_]+', '', cleaned_text)
+    
+    return cleaned_text.strip()
+
+
 def filter_detail_accounts(df: pd.DataFrame) -> pd.DataFrame:
     """
     Filter out detail sub-account rows, keeping only main account totals.
     Removes rows with patterns like "应付利息_借款利息" or containing "  " (indentation).
+    Also cleans English placeholders from descriptions.
     
     Args:
         df: DataFrame with account descriptions
         
     Returns:
-        Filtered DataFrame
+        Filtered DataFrame with cleaned descriptions
     """
     if df is None or df.empty:
         return df
@@ -300,6 +344,12 @@ def filter_detail_accounts(df: pd.DataFrame) -> pd.DataFrame:
     
     for pattern in filter_patterns:
         df_filtered = df_filtered[~df_filtered[desc_col].astype(str).str.contains(pattern, regex=True, na=False)]
+    
+    # Clean English placeholders from descriptions
+    df_filtered[desc_col] = df_filtered[desc_col].apply(clean_english_placeholders)
+    
+    # Remove rows that became empty after cleaning
+    df_filtered = df_filtered[df_filtered[desc_col].astype(str).str.strip() != '']
     
     return df_filtered
 

@@ -226,6 +226,9 @@ def extract_financial_table(
     if "CNY'000" in date_row_str or "人民币千元" in date_row_str:
         result_df['Value'] = result_df['Value'] * 1000
     
+    # Round all decimal values to integers to avoid decimal issues with AI
+    result_df['Value'] = result_df['Value'].round(0).astype(int)
+    
     return result_df
 
 

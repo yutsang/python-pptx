@@ -298,13 +298,14 @@ def load_prompts_and_format(
     
     # Add financial figure if df provided
     if df is not None and not df.empty:
-        # Format DataFrame to avoid scientific notation
+        # Format DataFrame to avoid scientific notation and show integers properly
         df_formatted = df.copy()
         for col in df_formatted.columns:
             if pd.api.types.is_numeric_dtype(df_formatted[col]):
-                # Format numbers to avoid scientific notation
+                # Format numbers as integers (no decimals) to avoid AI confusion
+                # The values are already rounded in process_databook.py
                 df_formatted[col] = df_formatted[col].apply(
-                    lambda x: f"{x:,.2f}" if pd.notna(x) else x
+                    lambda x: f"{int(x):,}" if pd.notna(x) else x
                 )
         
         financial_figure_md = df_formatted.to_markdown(index=False).strip()

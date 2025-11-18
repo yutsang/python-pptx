@@ -1,6 +1,12 @@
 # AI Agent Prompts - Multi-language Support
-# 1_Generator prompts are now in mappings.yml (account-specific)
-# Agents here: 2_Auditor, 3_Refiner, 4_Validator
+# 
+# Agent Structure:
+# 1_Generator: Content Generator (prompts in mappings.yml, account-specific)
+# 2_Auditor: Value Checker & Auditor (validates numbers and formats)
+# 3_Refiner: Content Refiner (optimizes length and listing)
+# 4_Validator: Final Validator (ensures quality and removes English placeholders)
+#
+# This file contains prompts for agents 2-4.
 
 2_Auditor:
   name: "Auditor"
@@ -62,12 +68,14 @@
       1. 验证先前代理输出中数字的准确性和重要性, 确保使用总计金额而非明细项目。
       2. 纠正任何不准确的数字或格式问题。
       3. 确保所有数字数据四舍五入到一位小数以提高精度。
-      4. 验证货币格式:
-         - 对1万至99.9万之间的值使用"万元" (例如, 人民币78.2万元)。
-         - 对100万或更多的值使用"百万元"或"亿元" (例如, 人民币1.23亿元)。
+      4. **重要**: 数字转换规则 - 原始数据已经是完整数值, 不要错误地将英文单位"K"直接转换为"万元":
+         - 如果数值在10,000至999,999之间 → 除以10,000, 使用"万元" (例如: 78,200 → 人民币7.8万元)
+         - 如果数值在1,000,000或更大 → 除以10,000显示万元, 或除以100,000,000显示亿元 (例如: 12,300,000 → 人民币1,230.0万元 或 人民币1.23亿元)
+         - 千万不要直接把"78.2K"转换成"人民币78.2万元", 这是错误的!
       5. 验证日期格式为"yyyy年mm月dd日" (例如, 2022年9月30日)。
       6. 验证列表项目: 仅列出>=总额25%的项目。
       7. 过滤详细子账户名称: 不要包含如"应付利息_借款利息"等详细账户名称。
+      8. **清除英文占位符**: 删除所有英文技术字段如"leasing_status_status"、"account_type"等, 或将其翻译为适当的中文术语。
       
       关键输出要求:
       仅输出更正后的财务内容文本本身。
@@ -94,6 +102,8 @@
       
       特别注意:
       - 如果遇到负数 (如未分配利润为负), 使用更好的表达方式, 如"未弥补亏损"而不是直接加负号。
+      - **数字处理**: 原始数据中的数值已经是完整金额 (如78200表示78200元), 转换时请正确计算, 不要误将英文单位直接替换!
+      - **清理英文**: 删除所有英文技术占位符如"leasing_status_status"、"_type"、"_status"等。
       
       关键: 仅输出更正后的财务文本。
       不要包含验证摘要、解释或元评论。
@@ -174,6 +184,7 @@
       5. 确保准确保留所有日期、金额和实体名称。
       6. 保持专业语气和清晰度。
       7. 确保使用总计金额而非明细项目金额。
+      8. **清除英文内容**: 删除所有英文技术字段名称和占位符。
       
       列表规则:
       - 最多允许3个列表点。
@@ -299,7 +310,11 @@
       4. 验证货币格式符合语言标准。
       5. 确保内容流畅自然, 易于阅读。
       6. 如果内容已经完美, 可以原样输出。
-      7. 重要: 将所有英文占位符翻译为中文 (如: Which Entity → 哪个实体, Date → 日期等)。
+      7. **关键**: 删除或翻译所有英文内容:
+         - 英文占位符: Which Entity → 哪个实体, Date → 日期
+         - 技术字段名: leasing_status_status → 租赁状态, account_type → 账户类型
+         - 任何英文单词或下划线组合 → 删除或翻译为恰当的中文
+         - 确保最终输出100%中文, 无任何英文或技术符号
       
       关键检查:
       
@@ -343,7 +358,10 @@
       2. 语言是否专业清晰?
       3. 是否有冗余或复杂需要简化?
       4. 整体可读性是否良好?
-      5. 是否有英文占位符需要翻译? (如: Which Entity, Date, location等)
+      5. **最重要**: 是否有任何英文内容需要删除或翻译?
+         - 英文占位符: Which Entity, Date, location, status等
+         - 技术字段: leasing_status_status, account_type, _status, _type等
+         - 确保输出100%纯中文, 删除所有英文单词、下划线组合和技术符号
       
       如果已经完美且全部中文, 原样输出。
       如果需要改进或有英文占位符, 输出改进后的版本。
