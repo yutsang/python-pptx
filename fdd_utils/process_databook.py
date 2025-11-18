@@ -264,7 +264,39 @@ def determine_result_type(sheet_data):
     # Determine if the sheet is single or multiple based on occurrences
     return 'multiple' if occurrences > 1 else 'single'
  
-def extract_data_from_excel(databook_path, entity_name, mode="All"):
+def filter_detail_accounts(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filter out detail sub-account rows, keeping only main account totals.
+    Removes rows with patterns like "应付利息_借款利息" or containing "  " (indentation).
+    
+    Args:
+        df: DataFrame with account descriptions
+        
+    Returns:
+        Filtered DataFrame
+    """
+    if df is None or df.empty:
+        return df
+    
+    df_filtered = df.copy()
+    
+    # Get the first column name (description column)
+    desc_col = df_filtered.columns[0]
+    
+    # Filter patterns that indicate detail sub-accounts
+    filter_patterns = [
+        r'_',  # Sub-account separator
+        r'^\s{2,}',  # Multiple spaces at start (indentation)
+        r'其中[：:]',  # "Including:" markers in Chinese
+    ]
+    
+    for pattern in filter_patterns:
+        df_filtered = df_filtered[~df_filtered[desc_col].astype(str).str.contains(pattern, regex=True, na=False)]
+    
+    return df_filtered
+
+
+def extract_data_from_excel(databook_path, entity_name, mode="All", filter_details=True):
     """
     Extract data from Excel file and determine language.
     
@@ -272,6 +304,7 @@ def extract_data_from_excel(databook_path, entity_name, mode="All"):
         databook_path: Path to Excel file
         entity_name: Name of entity to extract
         mode: Filter mode ('All', 'Assets', 'Liabilities', 'Equity', 'Income', 'Expenses')
+        filter_details: Whether to filter out detail sub-accounts (default: True)
     
     Returns:
         Tuple of (final_dfs, final_workbook_list, overall_result_type, report_language)
@@ -296,6 +329,10 @@ def extract_data_from_excel(databook_path, entity_name, mode="All"):
         result_type, extracted_df, value_col_num = process_excel_data(raw_dfs, sheet, entity_name)
        
         if extracted_df is not None and not extracted_df.dropna().empty and value_col_num is not None:
+            # Filter out detail sub-accounts if requested
+            if filter_details:
+                extracted_df = filter_detail_accounts(extracted_df)
+            
             final_dfs[sheet] = extracted_df
             final_workbook_list.append(sheet)
 

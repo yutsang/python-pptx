@@ -77,14 +77,23 @@ def clean_agent_output(content: str) -> str:
 class UnifiedLogger:
     """Unified logger for entire AI processing run."""
     
-    def __init__(self, log_dir: str = 'fdd_utils/logs'):
+    def __init__(self, log_dir: str = 'fdd_utils/logs', output_dir: str = 'fdd_utils/output'):
         self.log_dir = log_dir
+        self.output_dir = output_dir
         os.makedirs(log_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
         
         # Create timestamp for this run
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = os.path.join(log_dir, f'ai_processing_{self.run_id}.log')
-        self.log_data_file = os.path.join(log_dir, f'ai_data_{self.run_id}.yml')
+        
+        # Create subfolder for this run
+        self.run_folder = os.path.join(log_dir, f'run_{self.run_id}')
+        os.makedirs(self.run_folder, exist_ok=True)
+        
+        # Store log and data files in the same subfolder
+        self.log_file = os.path.join(self.run_folder, 'processing.log')
+        self.log_data_file = os.path.join(self.run_folder, 'data.yml')
+        self.results_file = os.path.join(self.run_folder, 'results.yml')
         
         # Setup file and console logging
         self.logger = logging.getLogger(f'ContentGeneration_{self.run_id}')
@@ -162,7 +171,7 @@ class UnifiedLogger:
             'timestamp': datetime.now().isoformat()
         }
     
-    def finalize(self):
+    def finalize(self, results: Dict[str, Dict[str, str]] = None):
         """Finalize logging and save data."""
         self.run_data['end_time'] = datetime.now().isoformat()
         
@@ -192,9 +201,15 @@ class UnifiedLogger:
         with open(self.log_data_file, 'w', encoding='utf-8') as f:
             yaml.dump(self.run_data, f, default_flow_style=False, allow_unicode=True)
         
+        # Save results to the same subfolder if provided
+        if results:
+            with open(self.results_file, 'w', encoding='utf-8') as f:
+                yaml.dump(results, f, default_flow_style=False, allow_unicode=True)
+        
         self.logger.info(f"=== Completed AI processing run: {self.run_id} ===")
         self.logger.info(f"Summary: {total_items} items, {total_duration:.2f}s, {total_tokens} tokens")
-        self.logger.info(f"Log files: {self.log_file}, {self.log_data_file}")
+        self.logger.info(f"Run folder: {self.run_folder}")
+        self.logger.info(f"Files saved: {self.log_file}, {self.log_data_file}, {self.results_file}")
 
 
 def map_value_to_component(value: str, component: Optional[str] = None, 
@@ -588,8 +603,8 @@ def ai_pipeline_sequential_by_agent(
                         final_results[key]['final'] = content  # Also store as final
                 pbar.update(1)
     
-    # Finalize logging
-    logger.finalize()
+    # Finalize logging and save results
+    logger.finalize(final_results)
     
     print("\n" + "="*60)
     print("PIPELINE COMPLETED")
@@ -597,6 +612,7 @@ def ai_pipeline_sequential_by_agent(
     print(f"Processed: {len(final_results)} items")
     print(f"Successful: {sum(1 for v in final_results.values() if 'final' in v)}")
     print(f"Failed: {sum(1 for v in final_results.values() if 'final' not in v)}")
+    print(f"Results saved to: {logger.run_folder}")
     print("="*60 + "\n")
     
     return final_results
