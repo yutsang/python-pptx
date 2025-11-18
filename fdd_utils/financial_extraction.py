@@ -227,6 +227,9 @@ def extract_financial_table(
         result_df['Value'] = result_df['Value'] * 1000
     
     # Round all decimal values to integers to avoid decimal issues with AI
+    # First, handle NaN and infinite values by filtering them out
+    result_df = result_df[result_df['Value'].notna()]  # Remove NaN rows
+    result_df = result_df[~result_df['Value'].isin([float('inf'), float('-inf')])]  # Remove inf
     result_df['Value'] = result_df['Value'].round(0).astype(int)
     
     return result_df

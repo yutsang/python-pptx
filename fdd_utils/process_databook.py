@@ -245,6 +245,9 @@ def process_excel_data(dfs, sheet_name, entity_name):
                 result_df[value_column_name] *= 1000
 
             # Round all decimal values to integers to avoid decimal issues with AI
+            # First, handle NaN and infinite values by filtering them out or replacing with 0
+            result_df = result_df[result_df[value_column_name].notna()]  # Remove NaN rows
+            result_df = result_df[~result_df[value_column_name].isin([float('inf'), float('-inf')])]  # Remove inf
             result_df[value_column_name] = result_df[value_column_name].round(0).astype(int)
 
             #print("After multiplying and rounding:")

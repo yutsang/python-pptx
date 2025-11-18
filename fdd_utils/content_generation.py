@@ -305,7 +305,7 @@ def load_prompts_and_format(
                 # Format numbers as integers (no decimals) to avoid AI confusion
                 # The values are already rounded in process_databook.py
                 df_formatted[col] = df_formatted[col].apply(
-                    lambda x: f"{int(x):,}" if pd.notna(x) else x
+                    lambda x: f"{int(x):,}" if pd.notna(x) and not pd.isinf(x) else x
                 )
         
         financial_figure_md = df_formatted.to_markdown(index=False).strip()
