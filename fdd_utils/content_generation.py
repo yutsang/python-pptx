@@ -304,9 +304,12 @@ def load_prompts_and_format(
             if pd.api.types.is_numeric_dtype(df_formatted[col]):
                 # Format numbers as integers (no decimals) to avoid AI confusion
                 # The values are already rounded in process_databook.py
-                df_formatted[col] = df_formatted[col].apply(
-                    lambda x: f"{int(x):,}" if pd.notna(x) and not pd.isinf(x) else x
-                )
+                def format_number(x):
+                    if pd.notna(x) and x != float('inf') and x != float('-inf'):
+                        return f"{int(x):,}"
+                    return x
+                
+                df_formatted[col] = df_formatted[col].apply(format_number)
         
         financial_figure_md = df_formatted.to_markdown(index=False).strip()
         format_params['financial_figure'] = financial_figure_md
