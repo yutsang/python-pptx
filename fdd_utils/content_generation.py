@@ -232,32 +232,58 @@ def load_prompts_and_format(
     mapping_key: str, 
     df: pd.DataFrame,
     prompts_file: str = 'fdd_utils/prompts.yml',
+    mappings_file: str = 'fdd_utils/mappings.yml',
     **kwargs
 ) -> Tuple[str, str]:
     """
     Load and format prompts for specified agent and language.
+    
+    For agent_1: Loads from mappings.yml (account-specific prompts)
+    For agent_2-4: Loads from prompts.yml (generic prompts)
     
     Args:
         agent_name: Name of the agent (agent_1, agent_2, etc.)
         language: Language code ('Eng' or 'Chi')
         mapping_key: Mapping key for data
         df: DataFrame with financial data
-        prompts_file: Path to prompts file
+        prompts_file: Path to prompts file (for agent_2-4)
+        mappings_file: Path to mappings file (for agent_1)
         **kwargs: Additional parameters for prompt formatting
     
     Returns:
         Tuple of (system_prompt, formatted_user_prompt)
     """
-    with open(prompts_file, 'r', encoding='utf-8') as file:
-        prompts_data = yaml.safe_load(file)
+    # Agent 1: Read from mappings.yml (account-specific)
+    if agent_name == 'agent_1':
+        with open(mappings_file, 'r', encoding='utf-8') as file:
+            mappings_data = yaml.safe_load(file)
+        
+        account_data = mappings_data.get(mapping_key, {})
+        agent_prompts = account_data.get('agent_1_prompts', {}).get(language, {})
+        system_prompt = agent_prompts.get('system_prompt', '')
+        user_prompt_template = agent_prompts.get('user_prompt', '')
+        
+        # Fallback to generic agent_1 prompts if account-specific not found
+        if not system_prompt or not user_prompt_template:
+            generic_prompts = mappings_data.get('_default_agent_1', {}).get(language, {})
+            if not system_prompt:
+                system_prompt = generic_prompts.get('system_prompt', '')
+            if not user_prompt_template:
+                user_prompt_template = generic_prompts.get('user_prompt', '')
     
-    agent_data = prompts_data.get(agent_name, {}).get(language, {})
-    system_prompt = agent_data.get('system_prompt', '')
-    user_prompt_template = agent_data.get('user_prompt', '')
+    # Agent 2-4: Read from prompts.yml (generic)
+    else:
+        with open(prompts_file, 'r', encoding='utf-8') as file:
+            prompts_data = yaml.safe_load(file)
+        
+        agent_data = prompts_data.get(agent_name, {}).get(language, {})
+        system_prompt = agent_data.get('system_prompt', '')
+        user_prompt_template = agent_data.get('user_prompt', '')
     
     # Prepare formatting parameters
     format_params = {
         'key': mapping_key,
+        'language': language,  # Add language parameter for agent_4
         **kwargs
     }
     
@@ -275,7 +301,11 @@ def load_prompts_and_format(
     try:
         user_prompt = user_prompt_template.format(**format_params)
     except KeyError as e:
-        # If key is missing, return template as-is
+        # If key is missing, log warning and return template as-is
+        import logging
+        logger = logging.getLogger('load_prompts_and_format')
+        logger.warning(f"Missing key in prompt template for {agent_name}: {e}")
+        logger.warning(f"Available keys: {list(format_params.keys())}")
         user_prompt = user_prompt_template
     
     return system_prompt, user_prompt

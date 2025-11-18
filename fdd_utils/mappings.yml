@@ -1,17 +1,61 @@
+# Generic Agent 1 prompts (fallback for accounts without specific prompts)
+_default_agent_1:
+  Eng:
+    system_prompt: |
+      Role: Generator
+      Generate financial content from patterns and data.
+      Use only provided data. Format currency: CNY [Amount]K or CNY [Amount] million.
+      List only items >=25% of total. Date format: [Date in dd mmmm yyyy].
+    user_prompt: |
+      Select one pattern and complete with actual data.
+      Patterns: {patterns}
+      Data: {financial_figure}
+      Output final text only (no pattern names).
+  Chi:
+    system_prompt: |
+      角色: 生成器
+      从模式和数据生成财务内容。
+      仅使用提供的数据。货币格式: 人民币[金额]万元或人民币[金额]亿元。
+      仅列出>=总额25%的项目。日期格式: [yyyy年mm月dd日]。
+    user_prompt: |
+      选择一个模式并用实际数据完成。
+      模式: {patterns}
+      数据: {financial_figure}
+      仅输出最终文本 (无模式名称)。
+
 Cash:
   type: BS
   category: Current assets
   aliases: ["Cash", "Cash and Cash Equivalents", "Cash and cash equivalents", "貨幣資金", "货币资金"]
-  system_prompts:
-  user_prompts:
+  agent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Content Generator
+        Generate financial content from patterns and data.
+        Use only provided data, translate to English, format currency correctly.
+      user_prompt: |
+        Select and complete one pattern with actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 内容生成器
+        从模式和数据生成财务内容。
+        仅使用提供的数据, 翻译为中文, 正确格式化货币。
+      user_prompt: |
+        选择并用实际数据完成一个模式。
+        模式: {patterns}
+        数据: {financial_figure}
+        仅输出最终文本, 不包含模式名称。
   patterns:
     Pattern 1:  |
-      balance as at 30 September 2022 represented CNY[Amount] of cash at bank.\n\nManagement indicated that cash at
+      balance as at [Date] represented CNY[Amount] of cash at bank.\n\nManagement indicated that cash at
       bank was under supervision by the bank but had no related use restrictions imposed.\n We read/obtained/check
       all bank statements and found no exceptions/discrepancies.
     Pattern 2: |
-      balance as at 30 September 2022 represented CNY[Amount] bank deposit.\n\nThe cash was under supervision with no
-      restricted use.\nWe have obtained the bank statements as at 30 September 2022 and found no discrepancies.
+      balance as at [Date] represented CNY[Amount] bank deposit.\n\nThe cash was under supervision with no
+      restricted use.\nWe have obtained the bank statements as at [Date] and found no discrepancies.
    
 AR:
   type: BS
@@ -21,11 +65,11 @@ AR:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at 30 September 2022 represented receivabbles of rental and property management income duie from
+      balance as at [Date] represented receivabbles of rental and property management income duie from
       [Which Entity?]. The Target recognised revenue using straight-line method; we reclassified the levelling impact
-      of revenue recognition in the rent-free period to other non-current assets at the end of September 2022.\n
+      of revenue recognition in the rent-free period to other non-current assets at the end of [Date].\n
       Management did not accrue bad debt provision for accounts receivales from [Entity], we indicatively accrued
-      provision at the rate of 1% according to the Target\u2019s policy.
+      provision at the rate of [%] according to the Target\u2019s policy.
  
 Prepayments:
   type: BS
@@ -35,8 +79,8 @@ Prepayments:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at 30 September 2022 represented {upfront utility expense payments|CNY{amount} of upfront construction
-      cost and CNY{amount} of utility expense payments} for the next {2-3|one to three} months of {CNY{amount}|prepaid
+      balance as at [Date] represented {upfront utility expense payments|CNY[Amount] of upfront construction
+      cost and CNY[Amount] of utility expense payments} for the next [Period] months of {CNY[Amount]|prepaid
       utility expenses including water, electricity and internet}.
  
 OR:
@@ -47,8 +91,8 @@ OR:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at 30 September 2022 {amount} of utilities paid on behalf of {Which Entity?}\nAs indicated by management,
-      the Target accrued {percentage} bad debt provision for utilities receivables aged within 1 year.
+      balance as at [Date] {amount} of utilities paid on behalf of {Which Entity?}\nAs indicated by management,
+      the Target accrued [%] bad debt provision for utilities receivables aged within [Period].
  
 Inventory:
   type: BS
@@ -68,25 +112,25 @@ IP:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at 30 September 2022 mainly represented the net book value of the Targeted properties of CNY{amount}.
+      balance as at [Date] mainly represented the net book value of the Targeted properties of CNY[Amount].
       The original value did not change over the period, the book value changed represented the depreciation of properties.\n
-      Project {Project_Name} was {type} that {Which Entity} previously acquired from {previous_owner}. The land was located
-      in {location} ({size} sqm), the construction of Project {Project_Name} was completed in {completion_date} and was
-      {leasing_status} over the period. The land and warehouses were depreciated using straight-line method of 50 years
-      and 20 years of useful life, with the residual value rate of 0% and 4%, respectively.\n\nAs at this report date, Project
-      {Project_Name} did not conduct final accounts. Though management said that most of the primary contracts had been verified
+      Project [Project_Name] was [type] that [Which Entity] previously acquired from [previous_owner]. The land was located
+      in [location] ([size] sqm), the construction of Project [Project_Name] was completed in [Date] and was
+      [leasing_status] over the period. The land and warehouses were depreciated using straight-line method of [Years]
+      and [Years] of useful life, with the residual value rate of [%] and [%], respectively.\n\nAs at this report date, Project
+      [Project_Name] did not conduct final accounts. Though management said that most of the primary contracts had been verified
       and accounted, the original costs may still not be finalised. Potential under-estimated construction payables and CAPEX
       commitment may still exist, you should confirm with management if there are any future CAPEX plans and factor the capital
-      commitments (if any) into your valuation model.\n\nTotal properties of Project {Project_Name} were mortgaged as loan
-      collateral in favour of {bank_name}.
+      commitments (if any) into your valuation model.\n\nTotal properties of Project [Project_Name] were mortgaged as loan
+      collateral in favour of [bank_name].
     Pattern 2: |
-      balance as at 30 September 2022 comprised the net book value of {assets} (CNY{value}). The original costs of {property_type}
-      did not change over the Period.\n\nProject {Project_Name} was located in {location}. Both land parcels were in {usage} and
-      acquired directly from {source}. Phase I land was acquited in {year} at a consideration of CNY{amount} with LUR expired in
-      {expiration}. Phase II land was acquired in {year} at a consideration of CNY{amount} with LUR expired in {expiration}.\n
-      The land lots of Project {Project_Name} were amortised using straight-line method with 50 years of useful life and zero
-      residual value. {property_type} were depreciated using straight-line method with 20 years of useful life and 4% residual
-      value. As at this report date, Project {Project_Name} was completed but no final accounts had been conducted. Though management
+      balance as at [Date] comprised the net book value of {assets} (CNY[Amount]). The original costs of {property_type}
+      did not change over the Period.\n\nProject [Project_Name] was located in [location]. Both land parcels were in [usage] and
+      acquired directly from [source]. Phase I land was acquired in [Year] at a consideration of CNY[Amount] with LUR expired in
+      [Date]. Phase II land was acquired in [Year] at a consideration of CNY[Amount] with LUR expired in [Date].\n
+      The land lots of Project [Project_Name] were amortised using straight-line method with [Years] of useful life and [%]
+      residual value. [property_type] were depreciated using straight-line method with [Years] of useful life and [%] residual
+      value. As at this report date, Project [Project_Name] was completed but no final accounts had been conducted. Though management
       said that most of the primary contracts had been verified and accounted, the original costs may still not be finalised.
       Potential under-estimated construction payables and CAPEX commitments may still exist. Management said there was no CAPEX plan
       at current stage.
@@ -177,7 +221,7 @@ Tax payable:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at 30 September 2022 represented {type1} payable of {amount1} and {type2} payable of {amount2}.
+      balance as at [Date] represented {type1} payable of {amount1} and {type2} payable of {amount2}.
  
 OP:
   type: BS
