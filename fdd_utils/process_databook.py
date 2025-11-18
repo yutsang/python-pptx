@@ -357,16 +357,17 @@ def filter_detail_accounts(df: pd.DataFrame) -> pd.DataFrame:
     return df_filtered
 
 
-def format_value_by_language(value, language):
+def format_value_by_language(value, language, account_name=None):
     """
     Format numeric values into appropriate units based on language.
     
     Args:
         value: Numeric value to format
         language: 'Chi' for Chinese (万/亿) or 'Eng' for English (K/million)
+        account_name: Optional account name for special handling (e.g., retained earnings)
     
     Returns:
-        Formatted string with 1 decimal place
+        Formatted string with 1 or 2 decimal places (亿/million = 2 d.p., 万/K = 1 d.p.)
     """
     if pd.isna(value) or value == 0:
         return "0"
@@ -378,9 +379,9 @@ def format_value_by_language(value, language):
     if language == 'Chi':
         # Chinese formatting: 万元 (10,000) or 亿元 (100,000,000)
         if abs_value >= 100000000:  # >= 1亿
-            formatted = f"{abs_value / 100000000:.1f}亿"
+            formatted = f"{abs_value / 100000000:.2f}亿"  # 2 decimal places for 亿
         elif abs_value >= 10000:  # >= 1万
-            formatted = f"{abs_value / 10000:.1f}万"
+            formatted = f"{abs_value / 10000:.1f}万"  # 1 decimal place for 万
         else:
             formatted = f"{abs_value:.0f}"
         
@@ -388,13 +389,78 @@ def format_value_by_language(value, language):
     
     else:  # English formatting
         if abs_value >= 1000000:  # >= 1 million
-            formatted = f"{abs_value / 1000000:.1f} million"
+            formatted = f"{abs_value / 1000000:.2f} million"  # 2 decimal places for million
         elif abs_value >= 10000:  # >= 10K
-            formatted = f"{abs_value / 1000:.1f}K"
+            formatted = f"{abs_value / 1000:.1f}K"  # 1 decimal place for K
         else:
             formatted = f"{abs_value:,.0f}"
         
         return f"-{formatted}" if is_negative else formatted
+
+
+def handle_retained_earnings(df, language):
+    """
+    Special handling for retained earnings (未分配利润/Retained Earnings).
+    If the value is negative, change the description to 亏损 (Loss) or Accumulated Losses.
+    
+    Args:
+        df: DataFrame with financial data
+        language: 'Chi' or 'Eng'
+    
+    Returns:
+        Modified DataFrame with updated descriptions for negative retained earnings
+    """
+    if df is None or df.empty:
+        return df
+    
+    df_modified = df.copy()
+    desc_col = df_modified.columns[0]  # First column is description
+    
+    # Identify retained earnings rows
+    retained_earnings_keywords_chi = ['未分配利润', '留存收益', '盈余公积']
+    retained_earnings_keywords_eng = ['Retained Earnings', 'Retained earnings', 'retained earnings',
+                                      'Accumulated Profit', 'Surplus Reserve']
+    
+    for idx, row in df_modified.iterrows():
+        description = str(row[desc_col])
+        
+        # Check if this is a retained earnings account
+        is_retained_earnings = False
+        if language == 'Chi':
+            is_retained_earnings = any(keyword in description for keyword in retained_earnings_keywords_chi)
+        else:
+            is_retained_earnings = any(keyword in description for keyword in retained_earnings_keywords_eng)
+        
+        if is_retained_earnings:
+            # Check if the value is negative (should be in second column)
+            value_col = df_modified.columns[1]
+            value = row[value_col]
+            
+            if pd.notna(value) and value < 0:
+                # Change description to indicate loss
+                if language == 'Chi':
+                    if '未分配利润' in description:
+                        df_modified.at[idx, desc_col] = description.replace('未分配利润', '未弥补亏损')
+                    elif '留存收益' in description:
+                        df_modified.at[idx, desc_col] = description.replace('留存收益', '累计亏损')
+                    elif '盈余公积' in description and value < 0:
+                        df_modified.at[idx, desc_col] = description.replace('盈余公积', '亏损')
+                else:  # English
+                    if 'Retained Earnings' in description:
+                        df_modified.at[idx, desc_col] = description.replace('Retained Earnings', 'Accumulated Losses')
+                    elif 'retained earnings' in description:
+                        df_modified.at[idx, desc_col] = description.replace('retained earnings', 'accumulated losses')
+                    elif 'Accumulated Profit' in description:
+                        df_modified.at[idx, desc_col] = description.replace('Accumulated Profit', 'Accumulated Losses')
+                
+                # Make the value positive in the formatted column (since we changed the description)
+                formatted_col = value_col + '_formatted'
+                if formatted_col in df_modified.columns:
+                    # Reformat as positive value
+                    positive_value = abs(value)
+                    df_modified.at[idx, formatted_col] = format_value_by_language(positive_value, language)
+    
+    return df_modified
 
 
 def extract_data_from_excel(databook_path, entity_name, mode="All", filter_details=True):
@@ -455,6 +521,9 @@ def extract_data_from_excel(databook_path, entity_name, mode="All", filter_detai
                 extracted_df[value_col_name + '_formatted'] = extracted_df[value_col_name].apply(
                     lambda x: format_value_by_language(x, report_language)
                 )
+                
+                # Special handling for retained earnings (negative values)
+                extracted_df = handle_retained_earnings(extracted_df, report_language)
             
             final_dfs[sheet] = extracted_df
             final_workbook_list.append(sheet)

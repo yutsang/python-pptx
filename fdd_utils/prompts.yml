@@ -21,7 +21,8 @@
       2. CORRECT any inaccurate numbers or formatting issues.
       3. **IMPORTANT - VALUES ARE PRE-FORMATTED**: All numeric values in the original data are already formatted with units (K, million) and 1 decimal place. DO NOT convert them again. Only verify they match the source data.
       4. VERIFY currency format:
-         - Values should already be formatted as 'XX.XK' for thousands or 'XX.X million' (e.g., 78.2K, 12.3 million).
+         - K format: XX.XK (1 decimal place, e.g., 78.2K, 123.5K)
+         - Million format: XX.XX million (2 decimal places, e.g., 1.23 million, 12.35 million)
          - Simply verify the formatted values match the source data - DO NOT recalculate or reconvert.
       5. VERIFY dates are formatted as 'dd mmmm yyyy' (e.g., 30 September 2022).
       6. VERIFY listing items: only list items >= 25% of total.
@@ -43,7 +44,7 @@
       
       VERIFICATION CHECKLIST:
       1. Are all figures accurate compared to original data?
-      2. Are all amounts already pre-formatted (XX.XK or XX.X million)? DO NOT convert them again - just verify they match the source.
+      2. Are all amounts already pre-formatted (XX.XK with 1 d.p. or XX.XX million with 2 d.p.)? DO NOT convert them again - just verify they match the source.
       3. Are dates in 'dd mmmm yyyy' format?
       4. Are only significant items (>= 25%) listed individually?
       5. Is the content clear and concise?
@@ -69,7 +70,8 @@
       2. 纠正任何不准确的数字或格式问题。
       3. **重要 - 数值已预先格式化**: 原始数据中的所有数值已经格式化为带单位(万、亿)和1位小数。请勿再次转换。只需验证它们与源数据匹配。
       4. **数字验证规则** - 数值应该已经格式化:
-         - 数值应已格式化为"XX.X万"或"XX.X亿" (例如: 7.8万, 1.2亿)
+         - 万元格式: XX.X万 (1位小数, 例如: 7.8万, 123.5万)
+         - 亿元格式: X.XX亿 (2位小数, 例如: 1.23亿, 12.35亿)
          - 只需验证格式化的值与源数据匹配 - 请勿重新计算或重新转换
          - 千万不要再次进行数字转换!
       5. 验证日期格式为"yyyy年mm月dd日" (例如, 2022年9月30日)。
@@ -94,7 +96,7 @@
       
       验证清单:
       1. 与原始数据相比, 所有数字是否准确? 是否使用了总计金额?
-      2. 所有金额是否格式正确 (XX.X万或XX.X亿)?
+      2. 所有金额是否格式正确 (XX.X万 1位小数, X.XX亿 2位小数)?
       3. 日期是否为"yyyy年mm月dd日"格式?
       4. 是否仅单独列出重要项目 (>= 25%)?
       5. 内容是否清晰简洁?
@@ -127,9 +129,10 @@
       1. LIMIT listing points to a maximum of 3 items.
       2. FILTER items: only list those with value >= 25% of total.
       3. SIMPLIFY: if only one significant value exists, show total only without listing.
-      4. MAINTAIN similar length to original content (±10%).
+      4. MAINTAIN similar length to original content - DO NOT shorten excessively. Preserve important details and context.
       5. ENSURE all dates, amounts, and entity names are preserved exactly.
       6. MAINTAIN professional tone and clarity.
+      7. PRESERVE explanatory content and context - only reduce if truly redundant.
       
       LISTING RULES:
       - Maximum 3 listing points allowed.
@@ -137,6 +140,9 @@
       - Items < 25% should be aggregated as 'Other expenses' or similar.
       - If only ONE value exists, display as total without listing.
       - Maintain chronological or descending order by value.
+      
+      IMPORTANT: The goal is to REFINE, not to SHORTEN. Keep all important context and explanations.
+      Only remove content that is truly redundant or unnecessary.
       
       CRITICAL OUTPUT REQUIREMENT:
       Output ONLY the refined financial content text itself.
@@ -157,8 +163,9 @@
       1. Are there more than 3 listing points? → Reduce to max 3
       2. Are all listed items >= 25% of total? → Remove smaller items
       3. If only 1 significant item, is it shown as total? → Simplify
-      4. Is content length similar to original (±10%)? → Adjust
+      4. Is content length maintained? → DO NOT shorten excessively, preserve context
       5. Are dates, amounts, entities preserved? → Verify
+      6. Are explanations and important details kept? → Verify
       
       CRITICAL: Output ONLY the refined financial text.
       Do NOT include refinement explanations or meta-commentary.
@@ -180,11 +187,12 @@
       1. 将列表点限制为最多3个项目。
       2. 过滤项目: 仅列出值>=总额25%的项目。
       3. 简化: 如果只有一个重要值存在, 则仅显示总计而不列出。
-      4. 保持与原始内容相似的长度 (±10%)。
+      4. 保持与原始内容相似的长度 - 不要过度缩短。保留重要的细节和背景信息。
       5. 确保准确保留所有日期、金额和实体名称。
       6. 保持专业语气和清晰度。
       7. 确保使用总计金额而非明细项目金额。
       8. **清除英文内容**: 删除所有英文技术字段名称和占位符。
+      9. 保留解释性内容和背景 - 只有在真正冗余时才删减。
       
       列表规则:
       - 最多允许3个列表点。
@@ -193,6 +201,9 @@
       - 如果只有一个值存在, 则显示为总计而不列出。
       - 保持按时间顺序或按值降序排列。
       - 不要包含详细子账户名称, 只使用主要类别。
+      
+      重要: 目标是精炼, 而不是缩短。保留所有重要的背景和解释。
+      只删除真正冗余或不必要的内容。
       
       关键输出要求:
       仅输出精炼后的财务内容文本本身。
@@ -213,9 +224,10 @@
       1. 是否有超过3个列表点? → 减少到最多3个
       2. 所有列出的项目是否>=总额的25%? → 删除较小的项目
       3. 如果只有1个重要项目, 是否显示为总计? → 简化
-      4. 内容长度是否与原始内容相似 (±10%)? → 调整
+      4. 内容长度是否保持? → 不要过度缩短, 保留背景信息
       5. 是否保留了日期、金额、实体? → 验证
       6. 是否使用了总计金额而非明细? → 确认
+      7. 是否保留了解释和重要细节? → 验证
       
       关键: 仅输出精炼后的财务文本。
       不要包含精炼解释或元评论。
