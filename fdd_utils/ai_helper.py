@@ -41,7 +41,14 @@ class AIHelper:
         self.config_details = self.full_config.get(self.model_type, {})
         
         # Load agent-specific settings from config
-        agent_config = self.full_config.get('agents', {}).get(agent_name, {})
+        # Support both old (agent_1) and new (1_Generator) names
+        agents_config = self.full_config.get('agents', {})
+        agent_config = agents_config.get(agent_name, {})
+        
+        # If agent_config is a string (backward compatibility mapping), resolve it
+        if isinstance(agent_config, str):
+            agent_config = agents_config.get(agent_config, {})
+        
         self.temperature = agent_config.get('temperature', 0.7)
         self.max_tokens = agent_config.get('max_tokens', 2000)
         self.top_p = agent_config.get('top_p', None)

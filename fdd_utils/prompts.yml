@@ -1,8 +1,8 @@
 # AI Agent Prompts - Multi-language Support
-# Agent 1 prompts are now in mappings.yml (account-specific)
-# Agents here: agent_2 (Auditor), agent_3 (Refiner), agent_4 (Validator)
+# 1_Generator prompts are now in mappings.yml (account-specific)
+# Agents here: 2_Auditor, 3_Refiner, 4_Validator
 
-agent_2:
+2_Auditor:
   name: "Auditor"
   Eng:
     system_prompt: |
@@ -105,7 +105,7 @@ agent_2:
       错误输出示例:
       "经过验证, 更正后的输出为: 银行现金包括..."
 
-agent_3:
+3_Refiner:
   name: "Refiner"
   Eng:
     system_prompt: |
@@ -216,7 +216,7 @@ agent_3:
       错误输出示例:
       "经过精炼后, 内容为: 银行现金包括..."
 
-agent_4:
+4_Validator:
   name: "Validator"
   Eng:
     system_prompt: |
@@ -299,6 +299,7 @@ agent_4:
       4. 验证货币格式符合语言标准。
       5. 确保内容流畅自然, 易于阅读。
       6. 如果内容已经完美, 可以原样输出。
+      7. 重要: 将所有英文占位符翻译为中文 (如: Which Entity → 哪个实体, Date → 日期等)。
       
       关键检查:
       
@@ -342,9 +343,10 @@ agent_4:
       2. 语言是否专业清晰?
       3. 是否有冗余或复杂需要简化?
       4. 整体可读性是否良好?
+      5. 是否有英文占位符需要翻译? (如: Which Entity, Date, location等)
       
-      如果已经完美, 原样输出。
-      如果需要改进, 输出改进后的版本。
+      如果已经完美且全部中文, 原样输出。
+      如果需要改进或有英文占位符, 输出改进后的版本。
       
       仅输出最终内容 (无解释)。
       

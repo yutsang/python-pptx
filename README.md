@@ -28,10 +28,10 @@ final_contents = extract_final_contents(results)
 
 | Agent | Name | Temperature | Role |
 |-------|------|-------------|------|
-| agent_1 | **Generator** | 0.7 | Creates content |
-| agent_2 | **Auditor** | 0.3 | Verifies accuracy |
-| agent_3 | **Refiner** | 0.5 | Polishes content |
-| agent_4 | **Validator** | 0.2 | Final check |
+| 1_Generator | **Generator** | 0.7 | Creates content |
+| 2_Auditor | **Auditor** | 0.3 | Verifies accuracy |
+| 3_Refiner | **Refiner** | 0.5 | Polishes content |
+| 4_Validator | **Validator** | 0.2 | Final check |
 
 ---
 
@@ -72,17 +72,17 @@ Edit `fdd_utils/config.yml`:
 
 ```yaml
 agents:
-  agent_1:
+  1_Generator:
     temperature: 0.7       # Higher = creative
     max_tokens: 2000
     frequency_penalty: 0.0
 ```
 
 **Current settings:**
-- Agent 1: temp=0.7 (creative)
-- Agent 2: temp=0.3 (precise)
-- Agent 3: temp=0.5 (balanced)  
-- Agent 4: temp=0.2 (very precise)
+- 1_Generator: temp=0.7 (creative)
+- 2_Auditor: temp=0.3 (precise)
+- 3_Refiner: temp=0.5 (balanced)  
+- 4_Validator: temp=0.2 (very precise)
 
 ### API Setup
 ```yaml
@@ -96,14 +96,14 @@ local:
 
 ## Agent Prompts
 
-**Agent 1 (Generator)**: `fdd_utils/mappings.yml` - Account-specific prompts  
-**Agent 2-4 (Auditor/Refiner/Validator)**: `fdd_utils/prompts.yml` - Generic prompts
+**1_Generator**: `fdd_utils/mappings.yml` - Account-specific prompts  
+**2_Auditor/3_Refiner/4_Validator**: `fdd_utils/prompts.yml` - Generic prompts
 
-**Agent names** (1-2 words for clarity):
-- agent_1 = **Generator**
-- agent_2 = **Auditor**
-- agent_3 = **Refiner**
-- agent_4 = **Validator**
+**Agent names**:
+- 1_Generator (temp=0.7)
+- 2_Auditor (temp=0.3)
+- 3_Refiner (temp=0.5)
+- 4_Validator (temp=0.2)
 
 ---
 

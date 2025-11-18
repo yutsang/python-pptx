@@ -39,15 +39,21 @@ def format_number_chinese(value: Union[float, int], language: str = 'Chi') -> st
     abs_value = abs(value)
     
     if language == 'Chi':
-        # Chinese formatting
+        # Chinese formatting with proper 万元/亿元 conversion
+        # Rule: If value would be >10000万元, show in 亿元 instead
+        
         if abs_value < 10000:  # Less than 1万
             result = f"{abs_value:,.0f}元"
-        elif abs_value < 100000000:  # Less than 1亿 (10,000 to 99,999,999)
+        else:
+            # Calculate in 万元 first
             wan_value = abs_value / 10000
-            result = f"{wan_value:.1f}万元"
-        else:  # 1亿 or more
-            yi_value = abs_value / 100000000
-            result = f"{yi_value:.1f}亿元"
+            
+            # If >=10000万元, convert to 亿元 (1亿 = 10000万)
+            if wan_value >= 10000:
+                yi_value = wan_value / 10000  # Convert 万 to 亿
+                result = f"{yi_value:.1f}亿元"
+            else:
+                result = f"{wan_value:.1f}万元"
         
         # Add "人民币" prefix and handle negative
         if is_negative:

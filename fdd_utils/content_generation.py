@@ -238,11 +238,11 @@ def load_prompts_and_format(
     """
     Load and format prompts for specified agent and language.
     
-    For agent_1: Loads from mappings.yml (account-specific prompts)
-    For agent_2-4: Loads from prompts.yml (generic prompts)
+    For 1_Generator/agent_1: Loads from mappings.yml (account-specific prompts)
+    For 2_Auditor/3_Refiner/4_Validator: Loads from prompts.yml (generic prompts)
     
     Args:
-        agent_name: Name of the agent (agent_1, agent_2, etc.)
+        agent_name: Name of the agent (agent_1 or 1_Generator, agent_2 or 2_Auditor, etc.)
         language: Language code ('Eng' or 'Chi')
         mapping_key: Mapping key for data
         df: DataFrame with financial data
@@ -253,8 +253,8 @@ def load_prompts_and_format(
     Returns:
         Tuple of (system_prompt, formatted_user_prompt)
     """
-    # Agent 1: Read from mappings.yml (account-specific)
-    if agent_name == 'agent_1':
+    # Agent 1/1_Generator: Read from mappings.yml (account-specific)
+    if agent_name in ['agent_1', '1_Generator']:
         with open(mappings_file, 'r', encoding='utf-8') as file:
             mappings_data = yaml.safe_load(file)
         
@@ -276,7 +276,16 @@ def load_prompts_and_format(
         with open(prompts_file, 'r', encoding='utf-8') as file:
             prompts_data = yaml.safe_load(file)
         
-        agent_data = prompts_data.get(agent_name, {}).get(language, {})
+        # Map old names to new names for backward compatibility
+        agent_key = agent_name
+        if agent_name == 'agent_2':
+            agent_key = '2_Auditor'
+        elif agent_name == 'agent_3':
+            agent_key = '3_Refiner'
+        elif agent_name == 'agent_4':
+            agent_key = '4_Validator'
+        
+        agent_data = prompts_data.get(agent_key, {}).get(language, {})
         system_prompt = agent_data.get('system_prompt', '')
         user_prompt_template = agent_data.get('user_prompt', '')
     
@@ -289,12 +298,21 @@ def load_prompts_and_format(
     
     # Add financial figure if df provided
     if df is not None and not df.empty:
-        financial_figure_md = df.to_markdown(index=False).strip()
+        # Format DataFrame to avoid scientific notation
+        df_formatted = df.copy()
+        for col in df_formatted.columns:
+            if pd.api.types.is_numeric_dtype(df_formatted[col]):
+                # Format numbers to avoid scientific notation
+                df_formatted[col] = df_formatted[col].apply(
+                    lambda x: f"{x:,.2f}" if pd.notna(x) else x
+                )
+        
+        financial_figure_md = df_formatted.to_markdown(index=False).strip()
         format_params['financial_figure'] = financial_figure_md
         format_params['financial_data'] = financial_figure_md
     
-    # Add patterns for agent_1
-    if agent_name == 'agent_1':
+    # Add patterns for agent_1/1_Generator
+    if agent_name in ['agent_1', '1_Generator']:
         patterns = map_value_to_component(mapping_key, component='patterns')
         format_params['patterns'] = patterns
     
