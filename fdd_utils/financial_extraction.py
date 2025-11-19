@@ -224,39 +224,61 @@ def extract_financial_table(
         for row_num in range(min(5, len(df))):
             print(f"[DEBUG] Row {row_num}: {df.iloc[row_num].values[:20]}")  # Show first 20 cols
     
-    # Find ALL columns that have non-NaN values in the header/date rows
-    # These are the columns we want to extract
+    # FILTER COLUMNS: Keep ONLY columns with "示意性调整后" or "Indicative adjusted" marker
+    # The marker is typically in Row 2 (row after dates)
     adjusted_columns = []
     
     if debug:
-        print(f"\n[DEBUG] Finding columns with data after description column {desc_col_idx}...")
+        print(f"\n[DEBUG] ========== FILTERING FOR '示意性调整后' COLUMNS ==========")
+        print(f"[DEBUG] Checking for '示意性调整后' or 'Indicative adjusted' markers...")
     
-    # Check rows after description column for non-NaN values
-    for col_idx in range(desc_col_idx + 1, len(df.columns)):
-        # Check if this column has any data in the first few rows after header
-        has_data = False
-        for row_idx in range(header_row_idx, min(header_row_idx + 5, len(df))):
-            val = df.iloc[row_idx, col_idx]
-            if pd.notna(val) and str(val).strip() != '' and str(val).lower() != 'nan':
-                has_data = True
-                break
+    # Check row 2 (typically has category markers like 管理层数, 审定数, 示意性调整后)
+    marker_row_idx = header_row_idx + 2
+    if marker_row_idx < len(df):
+        marker_row = df.iloc[marker_row_idx]
         
-        if has_data:
-            adjusted_columns.append(col_idx)
-            if debug and len(adjusted_columns) <= 15:
-                # Show what's in this column for first few rows
-                print(f"[DEBUG]   Column {col_idx} has data:")
-                for r in range(header_row_idx, min(header_row_idx + 4, len(df))):
-                    val = df.iloc[r, col_idx]
-                    if pd.notna(val) and str(val).strip() != '':
-                        print(f"[DEBUG]     Row {r}: '{val}'")
+        if debug:
+            print(f"[DEBUG] Checking Row {marker_row_idx} for markers (first 20 columns):")
+            for i in range(min(20, len(marker_row))):
+                val = marker_row.iloc[i]
+                if pd.notna(val) and str(val).strip() != '':
+                    print(f"[DEBUG]   Column {i}: '{val}'")
+        
+        for col_idx in range(desc_col_idx + 1, len(marker_row)):
+            marker_val = str(marker_row.iloc[col_idx]).lower()
+            
+            # Check if this column has "示意性调整后" or "Indicative adjusted"
+            if '示意性调整后' in marker_val or 'indicative adjusted' in marker_val:
+                adjusted_columns.append(col_idx)
+                if debug:
+                    print(f"[DEBUG]   ✅ Column {col_idx}: '{marker_row.iloc[col_idx]}' - MATCHED!")
+    
+    # If no markers found in row 2, fall back to all columns with data
+    if not adjusted_columns:
+        if debug:
+            print(f"[DEBUG] ⚠️  No '示意性调整后' markers found in row {marker_row_idx}")
+            print(f"[DEBUG] Falling back to: all columns with data...")
+        
+        for col_idx in range(desc_col_idx + 1, len(df.columns)):
+            has_data = False
+            for row_idx in range(header_row_idx, min(header_row_idx + 5, len(df))):
+                val = df.iloc[row_idx, col_idx]
+                if pd.notna(val) and str(val).strip() != '' and str(val).lower() != 'nan':
+                    has_data = True
+                    break
+            
+            if has_data:
+                adjusted_columns.append(col_idx)
+    
+    if not adjusted_columns:
+        if debug:
+            print(f"[DEBUG] ❌ No columns found!")
+        return None
     
     if debug:
-        print(f"\n[DEBUG] ========== DETECTED COLUMNS ==========")
-        print(f"[DEBUG] Total columns with data: {len(adjusted_columns)}")
+        print(f"\n[DEBUG] ========== FINAL SELECTED COLUMNS ==========")
+        print(f"[DEBUG] Total columns selected: {len(adjusted_columns)}")
         print(f"[DEBUG] Column indices: {adjusted_columns}")
-        if len(adjusted_columns) > 15:
-            print(f"[DEBUG] Showing first 15 columns only above")
         print(f"=" * 80)
     
     # Get date row (row after header)
