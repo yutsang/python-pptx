@@ -136,3 +136,60 @@ if income_statement is not None:
 Balance Sheet columns: ['Description', '2024-12-31', '2023-12-31', '2022-12-31']
 ```
 
+---
+
+## Data Reconciliation
+
+Verify data accuracy by comparing two extraction methods:
+
+```python
+from fdd_utils.financial_extraction import extract_balance_sheet_and_income_statement
+from fdd_utils.process_databook import extract_data_from_excel
+from fdd_utils.reconciliation import reconcile_financial_statements, print_reconciliation_report
+
+# Extract from both sources
+# Source 1: BS/IS from single sheet
+bs_is_results = extract_balance_sheet_and_income_statement(
+    workbook_path="databook.xlsx",
+    sheet_name="Financials"
+)
+
+# Source 2: Account-by-account extraction
+dfs, keys, _, lang = extract_data_from_excel(
+    databook_path="databook.xlsx",
+    entity_name="",
+    mode="All"
+)
+
+# Reconcile the two sources
+bs_recon, is_recon = reconcile_financial_statements(
+    bs_is_results=bs_is_results,
+    dfs=dfs,
+    tolerance=1.0,  # Allow ±1 difference for rounding
+    debug=True
+)
+
+# Print report (show only mismatches)
+print_reconciliation_report(bs_recon, is_recon, show_only_issues=True)
+
+# Save to Excel
+with pd.ExcelWriter('reconciliation.xlsx') as writer:
+    bs_recon.to_excel(writer, sheet_name='BS Reconciliation', index=False)
+    is_recon.to_excel(writer, sheet_name='IS Reconciliation', index=False)
+```
+
+**Reconciliation Output**:
+```
+Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Match        Difference
+货币资金          2024-12-31   4,119,178     Cash         4,119,178    ✅ Match     0
+应收账款          2024-12-31   13,034,797    AR           13,034,797   ✅ Match     0
+投资性房地产      2024-12-31   168,526,613   IP           168,520,000  ❌ Diff: 6,613   6613
+```
+
+**Features**:
+- Automatically matches accounts using `mappings.yml` aliases
+- Compares values across all date columns
+- Shows ✅ Match, ❌ Mismatch, or ⚠️ Not Found
+- Calculates absolute differences
+- Can export to Excel for review
+
