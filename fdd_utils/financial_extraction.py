@@ -201,23 +201,44 @@ def extract_financial_table(
     if debug:
         print(f"[DEBUG] ✅ Header row found at index: {header_row_idx}")
     
-    # Find description column (has "CNY'000" or "人民币千元")
+    # Find description column (has "CNY'000" or "人民币千元" anywhere in the column)
+    # Use same logic as process_databook.py - search through entire column
     desc_col_idx = None
-    header_row = df.iloc[header_row_idx]
-    for col_idx, value in enumerate(header_row):
-        value_str = str(value)
-        if "CNY'000" in value_str or "人民币千元" in value_str:
-            desc_col_idx = col_idx
-            break
+    
+    if debug:
+        print(f"[DEBUG] Searching for description column with 'CNY'000' or '人民币千元'...")
+    
+    for col_idx in range(len(df.columns)):
+        try:
+            # Check if ANY cell in this column contains the keywords
+            col_str = df.iloc[:, col_idx].astype(str)
+            if col_str.str.contains(r"CNY'000|人民币千元", case=False, na=False, regex=True).any():
+                desc_col_idx = col_idx
+                if debug:
+                    print(f"[DEBUG] ✅ Description column found at index: {col_idx}")
+                    # Show which rows contain the keyword
+                    matching_rows = col_str[col_str.str.contains(r"CNY'000|人民币千元", case=False, na=False, regex=True)]
+                    print(f"[DEBUG]   Found in {len(matching_rows)} rows:")
+                    for idx, val in list(matching_rows.items())[:3]:
+                        print(f"[DEBUG]     Row {idx}: '{val}'")
+                break
+        except Exception as e:
+            if debug:
+                print(f"[DEBUG]   Column {col_idx}: Error checking - {e}")
+            continue
     
     if desc_col_idx is None:
         if debug:
             print(f"[DEBUG] ❌ No description column found with 'CNY'000' or '人民币千元'")
+            print(f"[DEBUG] Checked {len(df.columns)} columns")
+            print(f"[DEBUG] First few columns content:")
+            for col_idx in range(min(5, len(df.columns))):
+                print(f"[DEBUG]   Column {col_idx}: {df.iloc[:3, col_idx].values}")
         return None
     
     if debug:
-        print(f"[DEBUG] ✅ Description column at index: {desc_col_idx}")
         print(f"[DEBUG] Full header row contents:")
+        header_row = df.iloc[header_row_idx]
         for i, val in enumerate(header_row):
             if i <= desc_col_idx + 10:  # Show first few columns
                 print(f"[DEBUG]   Column {i}: '{val}'")
