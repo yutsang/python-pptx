@@ -182,6 +182,12 @@ def extract_financial_table(
             print(f"[DEBUG] ❌ No 'Indicative adjusted' or '示意性调整后' header found!")
         return None
     
+    # Safety check: ensure header_row_idx is within dataframe bounds
+    if header_row_idx >= len(df):
+        if debug:
+            print(f"[DEBUG] ❌ Header row index {header_row_idx} is out of bounds (df has {len(df)} rows)")
+        return None
+    
     if debug:
         print(f"[DEBUG] ✅ Header row found at index: {header_row_idx}")
     
@@ -221,6 +227,11 @@ def extract_financial_table(
     
     # Get date row (row after header)
     date_row_idx = header_row_idx + 1
+    if date_row_idx >= len(df):
+        if debug:
+            print(f"[DEBUG] ❌ Date row index {date_row_idx} is out of bounds")
+        return None
+    
     date_row = df.iloc[date_row_idx]
     
     # Parse dates for each adjusted column
@@ -430,7 +441,7 @@ def extract_balance_sheet_and_income_statement(
         if bs_start_row is not None:
             # Determine end row (either IS start or end of sheet)
             bs_end_row = is_start_row if is_start_row else len(df)
-            df_bs = df.iloc[bs_start_row:bs_end_row].copy()
+            df_bs = df.iloc[bs_start_row:bs_end_row].copy().reset_index(drop=True)
             
             results['balance_sheet'] = extract_financial_table(
                 df_bs, "Balance Sheet", None, debug
@@ -439,7 +450,7 @@ def extract_balance_sheet_and_income_statement(
         # Extract Income Statement
         if is_start_row is not None:
             # IS goes to end of sheet
-            df_is = df.iloc[is_start_row:].copy()
+            df_is = df.iloc[is_start_row:].copy().reset_index(drop=True)
             
             results['income_statement'] = extract_financial_table(
                 df_is, "Income Statement", None, debug
