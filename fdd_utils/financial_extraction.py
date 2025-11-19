@@ -219,77 +219,37 @@ def extract_financial_table(
             print(f"[DEBUG] ❌ No description column found")
         return None
     
-    # STEP 1: FILTER COLUMNS - Find columns with "示意性调整后" or "Indicative adjusted"
-    # Check both header row and the row after it (sometimes split across rows)
     if debug:
-        print(f"\n[DEBUG] ========== STEP 1: FILTER COLUMNS ==========")
-        print(f"[DEBUG] Looking for columns with '示意性调整后' or 'Indicative adjusted'")
-    
-    header_row = df.iloc[header_row_idx]
-    filtered_col_indices = [desc_col_idx]  # Always include description column
-    
-    # Check header row (row 0)
-    if debug:
-        print(f"[DEBUG] Checking row {header_row_idx}:")
-    
-    for col_idx in range(len(header_row)):
-        if col_idx == desc_col_idx:
-            continue  # Skip description column (already added)
-        
-        header_val = str(header_row.iloc[col_idx]).lower()
-        
-        # Check if this column header contains the keywords
-        if '示意性调整后' in header_val or 'indicative adjusted' in header_val:
-            if col_idx not in filtered_col_indices:
-                filtered_col_indices.append(col_idx)
-                if debug:
-                    print(f"[DEBUG]   ✅ Column {col_idx}: '{header_row.iloc[col_idx]}' - MATCHED")
-    
-    # Also check next row (row 1) for "示意性调整后" markers
-    if header_row_idx + 1 < len(df):
-        next_row = df.iloc[header_row_idx + 1]
-        if debug:
-            print(f"[DEBUG] Checking row {header_row_idx + 1}:")
-        
-        for col_idx in range(len(next_row)):
-            if col_idx == desc_col_idx:
-                continue
-            
-            next_val = str(next_row.iloc[col_idx]).lower()
-            
-            if '示意性调整后' in next_val or 'indicative adjusted' in next_val:
-                if col_idx not in filtered_col_indices:
-                    filtered_col_indices.append(col_idx)
-                    if debug:
-                        print(f"[DEBUG]   ✅ Column {col_idx}: '{next_row.iloc[col_idx]}' - MATCHED")
-    
-    if len(filtered_col_indices) <= 1:  # Only description column
-        if debug:
-            print(f"[DEBUG] ❌ No columns with '示意性调整后' or 'Indicative adjusted' found!")
-            print(f"[DEBUG] Showing all column headers (first 20):")
-            for i in range(min(20, len(header_row))):
-                val0 = header_row.iloc[i]
-                val1 = df.iloc[header_row_idx + 1, i] if header_row_idx + 1 < len(df) else 'N/A'
-                print(f"[DEBUG]   Column {i}: Row{header_row_idx}='{val0}' | Row{header_row_idx+1}='{val1}'")
-        return None
-    
-    if debug:
-        print(f"[DEBUG] ✅ Filtered to {len(filtered_col_indices)} columns: {filtered_col_indices}")
-        print(f"[DEBUG]   Description column: {desc_col_idx}")
-        print(f"[DEBUG]   Data columns: {filtered_col_indices[1:]}")
-    
-    # Now only work with filtered columns
-    adjusted_columns = [col for col in filtered_col_indices if col != desc_col_idx]
-    
-    if debug:
-        print(f"\n[DEBUG] ========== STEP 2: ANALYZE FILTERED COLUMNS ==========")
-        print(f"[DEBUG] Showing data structure for filtered columns only:")
+        print(f"[DEBUG] Showing first 5 rows of ALL columns (to understand structure):")
         for row_num in range(min(5, len(df))):
-            print(f"[DEBUG] Row {row_num}:")
-            for col_idx in filtered_col_indices:
-                val = df.iloc[row_num, col_idx]
-                if pd.notna(val) and str(val).strip() != '':
-                    print(f"[DEBUG]   Column {col_idx}: '{val}'")
+            print(f"[DEBUG] Row {row_num}: {df.iloc[row_num].values[:20]}")  # Show first 20 cols
+    
+    # Find ALL columns that have non-NaN values in the header/date rows
+    # These are the columns we want to extract
+    adjusted_columns = []
+    
+    if debug:
+        print(f"\n[DEBUG] Finding columns with data after description column {desc_col_idx}...")
+    
+    # Check rows after description column for non-NaN values
+    for col_idx in range(desc_col_idx + 1, len(df.columns)):
+        # Check if this column has any data in the first few rows after header
+        has_data = False
+        for row_idx in range(header_row_idx, min(header_row_idx + 5, len(df))):
+            val = df.iloc[row_idx, col_idx]
+            if pd.notna(val) and str(val).strip() != '' and str(val).lower() != 'nan':
+                has_data = True
+                break
+        
+        if has_data:
+            adjusted_columns.append(col_idx)
+            if debug and len(adjusted_columns) <= 15:
+                # Show what's in this column for first few rows
+                print(f"[DEBUG]   Column {col_idx}:")
+                for r in range(header_row_idx, min(header_row_idx + 4, len(df))):
+                    val = df.iloc[r, col_idx]
+                    if pd.notna(val) and str(val).strip() != '':
+                        print(f"[DEBUG]     Row {r}: '{val}'")
     
     # Get date row (row after header)
     date_row_idx = header_row_idx + 1
@@ -397,15 +357,16 @@ def extract_financial_table(
         # Skip if description is null or empty
         if pd.isna(description) or str(description).strip() == '':
             skipped_empty_desc += 1
+            if debug and skipped_empty_desc <= 3:
+                print(f"[DEBUG]   Row {row_idx}: SKIPPED (empty description)")
             continue
         
         # Build row dict with description and all date values
         row_dict = {'Description': str(description).strip()}
         
-        # Debug: show full row data for first few rows
-        if debug and len(result_rows) < 3:
-            print(f"\n[DEBUG]   Processing row {row_idx}: '{str(description).strip()}'")
-            print(f"[DEBUG]   Full row data (first 15 cols): {row.values[:15]}")
+        # Show EVERY row in debug mode (not just first few)
+        if debug:
+            print(f"\n[DEBUG]   === Row {row_idx}: '{str(description).strip()[:60]}' ===")
         
         has_any_nonzero_value = False
         conversion_errors = 0
@@ -414,9 +375,9 @@ def extract_financial_table(
             value = row.iloc[col_idx]
             col_name = parsed_date.strftime('%Y-%m-%d')
             
-            # Debug value extraction for first few rows
-            if debug and len(result_rows) < 3:
-                print(f"[DEBUG]     Column {col_idx} ({col_name}): raw value = '{value}' (type: {type(value).__name__})")
+            # Debug EVERY value extraction
+            if debug:
+                print(f"[DEBUG]     Col {col_idx} ({col_name}): '{value}' (type: {type(value).__name__})", end='')
             
             # Try to convert to float
             try:
@@ -430,23 +391,18 @@ def extract_financial_table(
                 if numeric_value != 0:
                     has_any_nonzero_value = True
                 
-                if debug and len(result_rows) < 3:
-                    print(f"[DEBUG]       → Converted to: {int(numeric_value)}")
+                if debug:
+                    print(f" → {int(numeric_value)}")
                     
             except (ValueError, TypeError) as e:
                 conversion_errors += 1
                 row_dict[col_name] = 0
                 
-                if debug and len(result_rows) < 3:
-                    print(f"[DEBUG]       → ❌ Conversion failed: {e}")
+                if debug:
+                    print(f" → ❌ ERROR: {e}")
         
         # Add row (even if all zeros, we'll filter later)
         result_rows.append(row_dict)
-        
-        # Debug first few rows
-        if debug and len(result_rows) <= 5:
-            values_str = ", ".join([f"{col}: {row_dict[col]}" for col in row_dict if col != 'Description'])
-            print(f"[DEBUG]   Row {row_idx}: '{row_dict['Description'][:50]}' → {values_str}")
     
     if debug:
         print(f"\n[DEBUG] Extraction complete:")
