@@ -73,8 +73,8 @@ def should_skip_mapping(account_name: str) -> bool:
 def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mappings: dict, debug: bool = False) -> Tuple[Optional[str], Optional[pd.DataFrame], Optional[str]]:
     """
     Find an account in dfs by:
-    1. Finding which mapping KEY the source account belongs to (via aliases in mappings.yml)
-    2. Checking if that KEY exists in dfs.keys()
+    1. Finding which mapping KEY the source account belongs to (via aliases)
+    2. Checking if ANY alias of that KEY matches ANY dfs key
     3. If yes, they match!
     
     Args:
@@ -84,7 +84,7 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
         debug: Enable debug output
         
     Returns:
-        Tuple of (mapping_key, dataframe, category) or (None, None, None) if not found
+        Tuple of (mapping_key, dfs_key, category) where dfs_key is the actual key in dfs
     """
     if debug:
         print(f"    [MATCH] Source account: '{account_name}'")
@@ -101,11 +101,12 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
         account_clean = account_clean.replace(suffix, '').strip()
     
     if debug:
-        print(f"    [MATCH]   Step 1: Find mapping key for '{account_name}'")
+        print(f"    [MATCH]   Cleaned: '{account_clean}'")
+        print(f"    [MATCH]   DFS keys: {list(dfs.keys())}")
     
-    # Search through mappings to find which KEY this account belongs to
-    for key, config in mappings.items():
-        if key.startswith('_'):  # Skip special keys
+    # STEP 1: Find which mapping KEY this source account belongs to
+    for mapping_key, config in mappings.items():
+        if mapping_key.startswith('_'):  # Skip special keys
             continue
         
         if not isinstance(config, dict):
@@ -114,28 +115,31 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
         aliases = config.get('aliases', [])
         category = config.get('category', None)
         
-        # Check if account_name is in this key's aliases
+        # Check if source account name is in this mapping's aliases
         if account_name in aliases or account_clean in aliases:
             if debug:
-                print(f"    [MATCH]     Found in mappings: key='{key}', category='{category}'")
-                print(f"    [MATCH]   Step 2: Check if key '{key}' exists in dfs...")
-                print(f"    [MATCH]     DFS keys: {list(dfs.keys())}")
+                print(f"    [MATCH]   Step 1: Found in mappings.yml")
+                print(f"    [MATCH]     Mapping key: '{mapping_key}'")
+                print(f"    [MATCH]     Category: '{category}'")
+                print(f"    [MATCH]     Aliases: {aliases}")
             
-            # Now check if this KEY exists in dfs
-            if key in dfs:
-                if debug:
-                    print(f"    [MATCH]     ✅ Key '{key}' found in dfs!")
-                return key, dfs[key], category
-            else:
-                if debug:
-                    print(f"    [MATCH]     ❌ Key '{key}' NOT in dfs keys")
-                    print(f"    [MATCH]     (Account matched in mappings but not extracted in dfs)")
-                return None, None, category
+            # STEP 2: Check if ANY alias of this mapping matches ANY dfs key
+            for dfs_key in dfs.keys():
+                if dfs_key in aliases:
+                    if debug:
+                        print(f"    [MATCH]   Step 2: ✅ DFS key '{dfs_key}' matches alias!")
+                    return mapping_key, dfs[dfs_key], category
+            
+            # No alias matched any dfs key
+            if debug:
+                print(f"    [MATCH]   Step 2: ❌ No alias matches any dfs key")
+                print(f"    [MATCH]     Aliases: {aliases}")
+                print(f"    [MATCH]     DFS keys: {list(dfs.keys())}")
+            return None, None, category
     
     # Not found in any mapping aliases
     if debug:
-        print(f"    [MATCH]   ❌ Account '{account_name}' not found in any mappings.yml aliases")
-        print(f"    [MATCH]   DFS keys available: {list(dfs.keys())}")
+        print(f"    [MATCH]   ❌ '{account_name}' not in any mappings.yml aliases")
     
     return None, None, None
 
@@ -249,11 +253,11 @@ def reconcile_financial_statements(
                 if dfs_key == 'SKIP':
                     bs_recon_rows.append({
                         'Source_Account': account_name,
-                        'Date': latest_date,
-                        'Source_Value': source_value,
-                        'DFS_Account': 'Not Mapped',
+                        'Date': '-',
+                        'Source_Value': '-',
+                        'DFS_Account': '-',
                         'DFS_Value': '-',
-                        'Match': 'ℹ️ Not Mapped',
+                        'Match': '-',
                         'Difference': '-'
                     })
                     continue
@@ -313,11 +317,11 @@ def reconcile_financial_statements(
                 if dfs_key == 'SKIP':
                     is_recon_rows.append({
                         'Source_Account': account_name,
-                        'Date': latest_date,
-                        'Source_Value': source_value_raw,
-                        'DFS_Account': 'Not Mapped',
+                        'Date': '-',
+                        'Source_Value': '-',
+                        'DFS_Account': '-',
                         'DFS_Value': '-',
-                        'Match': 'ℹ️ Not Mapped',
+                        'Match': '-',
                         'Difference': '-'
                     })
                     continue

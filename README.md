@@ -208,11 +208,11 @@ Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Match    
 **Example Output**:
 ```
 Source_Account      Date         Source_Value  DFS_Account  DFS_Value    Match
-货币资金            2024-05-31   4,119,178     Cash         4,119,178    ✅ Match
-流动资产合计        2024-05-31   9,246,577     Not Mapped   -            ℹ️ Not Mapped
-应收账款            2024-05-31   0             Not Found    0            ✅ Match (both zero)
-管理费用            2024-05-31   1,234,567     GA           1,234,567    ✅ Match
-净利润/（亏损）     2024-05-31   -85,061,858   Not Mapped   -            ℹ️ Not Mapped
+货币资金            2024-05-31   4,119,178     货币资金     4,119,178    ✅ Match
+应收账款            2024-05-31   13,034,797    应收账款     13,034,797   ✅ Match
+流动资产合计        -            -             -            -            -
+管理费用            2024-05-31   1,234,567     管理费用     1,234,567    ✅ Match
+净利润/（亏损）     -            -             -            -            -
 ```
 
 **Example with Debug**:
