@@ -76,7 +76,7 @@ Values are **automatically formatted** in code before being sent to AI:
 
 ## Financial Data Extraction
 
-Extract Balance Sheet and Income Statement directly from specific worksheets:
+Extract Balance Sheet and Income Statement from a **single sheet** containing both statements:
 
 ```python
 from fdd_utils.financial_extraction import (
@@ -85,18 +85,20 @@ from fdd_utils.financial_extraction import (
     get_account_total
 )
 
-# Extract BS and IS from specific sheets
+# Extract BS and IS from single sheet
+# Both statements are in the same sheet, separated by headers:
+# - "示意性调整后资产负债表" or "Indicative adjusted balance sheet"
+# - "示意性调整后利润表" or "Indicative adjusted income statement"
 results = extract_balance_sheet_and_income_statement(
     workbook_path="databook.xlsx",
-    balance_sheet_name="示意性调整后资产负债表",      # Balance Sheet sheet name
-    income_statement_name="示意性调整后利润表",       # Income Statement sheet name
-    entity_keywords=["联洋"],                        # Optional: filter by entity
-    debug=True                                       # Enable debug prints (shows what's happening)
+    sheet_name="Financial Statements",  # Sheet containing both BS and IS
+    debug=True                           # Enable debug prints
 )
 
 # Access results
 balance_sheet = results['balance_sheet']      # DataFrame or None
 income_statement = results['income_statement']  # DataFrame or None
+project_name = results['project_name']        # Extracted from headers (e.g., "东莞xx")
 
 # Example: Filter to show only totals (remove sub-accounts)
 if balance_sheet is not None:
@@ -105,11 +107,30 @@ if balance_sheet is not None:
 
 # Example: Get specific account value
 if balance_sheet is not None:
+    # Get most recent date value (auto-selects first date column)
     cash_total = get_account_total(balance_sheet, "货币资金")
-    print(f"Cash: {cash_total:,.0f}")
+    print(f"Cash (latest): {cash_total:,.0f}")
+    
+    # Get specific date value
+    cash_2023 = get_account_total(balance_sheet, "货币资金", date_column='2023-12-31')
+    print(f"Cash (2023): {cash_2023:,.0f}")
 ```
 
-**Returns**: Dictionary with `'balance_sheet'` and `'income_statement'` keys, each containing a DataFrame with columns:
-- `Description`: Account name
-- `Value`: Numeric value (already multiplied by 1000 if CNY'000)
+**Features**:
+- Extracts both BS and IS from **single sheet**
+- Auto-detects statement boundaries via headers
+- Extracts project name (e.g., from "xxxx利润表 - 东莞xx")
+- Gets **ALL date columns** under "Indicative adjusted" (not just latest)
+- Auto-multiplies by 1000 if "CNY'000" or "人民币千元" detected
+- Converts dates: FY22→2022-12-31, 9M22→2022-09-30, 30-Sep-2022→2022-09-30
+
+**Returns**: Dictionary with keys:
+- `'balance_sheet'`: DataFrame with `Description` column + ALL date columns (e.g., `2022-12-31`, `2021-12-31`)
+- `'income_statement'`: DataFrame with `Description` column + ALL date columns
+- `'project_name'`: String (project/entity name extracted from headers)
+
+**Example Result**:
+```
+Balance Sheet columns: ['Description', '2024-12-31', '2023-12-31', '2022-12-31']
+```
 
