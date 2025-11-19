@@ -192,17 +192,10 @@ def extract_financial_table(
             print(f"[DEBUG] ❌ No 'Indicative adjusted' or '示意性调整后' header found!")
         return None
     
-    # Safety check: ensure header_row_idx is within dataframe bounds
-    if header_row_idx >= len(df):
-        if debug:
-            print(f"[DEBUG] ❌ Header row index {header_row_idx} is out of bounds (df has {len(df)} rows)")
-        return None
-    
     if debug:
         print(f"[DEBUG] ✅ Header row found at index: {header_row_idx}")
     
     # Find description column (has "CNY'000" or "人民币千元" anywhere in the column)
-    # Use same logic as process_databook.py - search through entire column
     desc_col_idx = None
     
     if debug:
@@ -210,90 +203,93 @@ def extract_financial_table(
     
     for col_idx in range(len(df.columns)):
         try:
-            # Check if ANY cell in this column contains the keywords
             col_str = df.iloc[:, col_idx].astype(str)
             if col_str.str.contains(r"CNY'000|人民币千元", case=False, na=False, regex=True).any():
                 desc_col_idx = col_idx
                 if debug:
                     print(f"[DEBUG] ✅ Description column found at index: {col_idx}")
-                    # Show which rows contain the keyword
-                    matching_rows = col_str[col_str.str.contains(r"CNY'000|人民币千元", case=False, na=False, regex=True)]
-                    print(f"[DEBUG]   Found in {len(matching_rows)} rows:")
-                    for idx, val in list(matching_rows.items())[:3]:
-                        print(f"[DEBUG]     Row {idx}: '{val}'")
                 break
         except Exception as e:
             if debug:
-                print(f"[DEBUG]   Column {col_idx}: Error checking - {e}")
+                print(f"[DEBUG]   Column {col_idx}: Error - {e}")
             continue
     
     if desc_col_idx is None:
         if debug:
-            print(f"[DEBUG] ❌ No description column found with 'CNY'000' or '人民币千元'")
-            print(f"[DEBUG] Checked {len(df.columns)} columns")
-            print(f"[DEBUG] First few columns content:")
-            for col_idx in range(min(5, len(df.columns))):
-                print(f"[DEBUG]   Column {col_idx}: {df.iloc[:3, col_idx].values}")
+            print(f"[DEBUG] ❌ No description column found")
         return None
     
+    # STEP 1: FILTER COLUMNS - Find columns with "示意性调整后" or "Indicative adjusted"
+    # Check both header row and the row after it (sometimes split across rows)
     if debug:
-        print(f"[DEBUG] Analyzing sheet structure...")
-        print(f"[DEBUG] Full first 4 rows, all columns:")
-        for row_num in range(min(4, len(df))):
-            print(f"[DEBUG] Row {row_num}:")
-            row_data = df.iloc[row_num]
-            for col_idx in range(min(15, len(row_data))):  # Show first 15 columns
-                val = row_data.iloc[col_idx]
-                if pd.notna(val) and str(val).strip() != '' and str(val).lower() != 'nan':
-                    print(f"[DEBUG]   Column {col_idx}: '{val}'")
+        print(f"\n[DEBUG] ========== STEP 1: FILTER COLUMNS ==========")
+        print(f"[DEBUG] Looking for columns with '示意性调整后' or 'Indicative adjusted'")
     
-    # The structure seems to be:
-    # Row 0: "示意性调整后资产负债表 - 东莞联洋" in desc column, rest might be empty
-    # Row 1: "人民币千元" in desc column, dates might be in other columns
-    # Row 2: Another "人民币千元" or dates
-    # Data starts after that
+    header_row = df.iloc[header_row_idx]
+    filtered_col_indices = [desc_col_idx]  # Always include description column
     
-    # Check if row 1 and row 2 have the actual column headers
-    # Look for rows with "人民币千元" or dates
-    actual_header_row = header_row_idx
-    for check_row in range(header_row_idx, min(header_row_idx + 3, len(df))):
-        row_check = df.iloc[check_row]
-        # Count non-nan values
-        non_nan_count = row_check.notna().sum()
-        if debug:
-            print(f"[DEBUG] Row {check_row} has {non_nan_count} non-NaN values")
-        if non_nan_count > 2:  # More than just 1-2 columns with data
-            actual_header_row = check_row
-            if debug:
-                print(f"[DEBUG] Using row {check_row} as actual header with data")
-            break
+    # Check header row (row 0)
+    if debug:
+        print(f"[DEBUG] Checking row {header_row_idx}:")
     
-    # Find ALL columns that have non-NaN values in the header/date rows
-    # These are the columns we want to extract
-    adjusted_columns = []
-    
-    # Check rows after description column for non-NaN values
-    for col_idx in range(desc_col_idx + 1, len(df.columns)):
-        # Check if this column has any data in the first few rows after header
-        has_data = False
-        for row_idx in range(header_row_idx, min(header_row_idx + 5, len(df))):
-            val = df.iloc[row_idx, col_idx]
-            if pd.notna(val) and str(val).strip() != '' and str(val).lower() != 'nan':
-                has_data = True
-                break
+    for col_idx in range(len(header_row)):
+        if col_idx == desc_col_idx:
+            continue  # Skip description column (already added)
         
-        if has_data:
-            adjusted_columns.append(col_idx)
-            if debug and len(adjusted_columns) <= 10:
-                print(f"[DEBUG] Column {col_idx} has data, adding to extraction")
+        header_val = str(header_row.iloc[col_idx]).lower()
+        
+        # Check if this column header contains the keywords
+        if '示意性调整后' in header_val or 'indicative adjusted' in header_val:
+            if col_idx not in filtered_col_indices:
+                filtered_col_indices.append(col_idx)
+                if debug:
+                    print(f"[DEBUG]   ✅ Column {col_idx}: '{header_row.iloc[col_idx]}' - MATCHED")
     
-    if not adjusted_columns:
+    # Also check next row (row 1) for "示意性调整后" markers
+    if header_row_idx + 1 < len(df):
+        next_row = df.iloc[header_row_idx + 1]
         if debug:
-            print(f"[DEBUG] ❌ No columns with data found after description column!")
+            print(f"[DEBUG] Checking row {header_row_idx + 1}:")
+        
+        for col_idx in range(len(next_row)):
+            if col_idx == desc_col_idx:
+                continue
+            
+            next_val = str(next_row.iloc[col_idx]).lower()
+            
+            if '示意性调整后' in next_val or 'indicative adjusted' in next_val:
+                if col_idx not in filtered_col_indices:
+                    filtered_col_indices.append(col_idx)
+                    if debug:
+                        print(f"[DEBUG]   ✅ Column {col_idx}: '{next_row.iloc[col_idx]}' - MATCHED")
+    
+    if len(filtered_col_indices) <= 1:  # Only description column
+        if debug:
+            print(f"[DEBUG] ❌ No columns with '示意性调整后' or 'Indicative adjusted' found!")
+            print(f"[DEBUG] Showing all column headers (first 20):")
+            for i in range(min(20, len(header_row))):
+                val0 = header_row.iloc[i]
+                val1 = df.iloc[header_row_idx + 1, i] if header_row_idx + 1 < len(df) else 'N/A'
+                print(f"[DEBUG]   Column {i}: Row{header_row_idx}='{val0}' | Row{header_row_idx+1}='{val1}'")
         return None
     
     if debug:
-        print(f"[DEBUG] ✅ Found {len(adjusted_columns)} columns with data: {adjusted_columns[:10]}...")
+        print(f"[DEBUG] ✅ Filtered to {len(filtered_col_indices)} columns: {filtered_col_indices}")
+        print(f"[DEBUG]   Description column: {desc_col_idx}")
+        print(f"[DEBUG]   Data columns: {filtered_col_indices[1:]}")
+    
+    # Now only work with filtered columns
+    adjusted_columns = [col for col in filtered_col_indices if col != desc_col_idx]
+    
+    if debug:
+        print(f"\n[DEBUG] ========== STEP 2: ANALYZE FILTERED COLUMNS ==========")
+        print(f"[DEBUG] Showing data structure for filtered columns only:")
+        for row_num in range(min(5, len(df))):
+            print(f"[DEBUG] Row {row_num}:")
+            for col_idx in filtered_col_indices:
+                val = df.iloc[row_num, col_idx]
+                if pd.notna(val) and str(val).strip() != '':
+                    print(f"[DEBUG]   Column {col_idx}: '{val}'")
     
     # Get date row (row after header)
     date_row_idx = header_row_idx + 1
