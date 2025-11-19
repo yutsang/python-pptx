@@ -237,38 +237,63 @@ def extract_financial_table(
         return None
     
     if debug:
-        print(f"[DEBUG] Full header row contents:")
-        header_row = df.iloc[header_row_idx]
-        for i, val in enumerate(header_row):
-            if i <= desc_col_idx + 10:  # Show first few columns
-                print(f"[DEBUG]   Column {i}: '{val}'")
+        print(f"[DEBUG] Analyzing sheet structure...")
+        print(f"[DEBUG] Full first 4 rows, all columns:")
+        for row_num in range(min(4, len(df))):
+            print(f"[DEBUG] Row {row_num}:")
+            row_data = df.iloc[row_num]
+            for col_idx in range(min(15, len(row_data))):  # Show first 15 columns
+                val = row_data.iloc[col_idx]
+                if pd.notna(val) and str(val).strip() != '' and str(val).lower() != 'nan':
+                    print(f"[DEBUG]   Column {col_idx}: '{val}'")
     
-    # Find ALL columns with "示意性调整后" or "Indicative adjusted"
-    header_row = df.iloc[header_row_idx]
-    adjusted_columns = []  # List of col_idx with adjusted header
+    # The structure seems to be:
+    # Row 0: "示意性调整后资产负债表 - 东莞联洋" in desc column, rest might be empty
+    # Row 1: "人民币千元" in desc column, dates might be in other columns
+    # Row 2: Another "人民币千元" or dates
+    # Data starts after that
     
-    if debug:
-        print(f"[DEBUG] Searching for columns with '示意性调整后' or 'Indicative adjusted'...")
-    
-    for col_idx in range(desc_col_idx + 1, len(header_row)):
-        header_value = str(header_row.iloc[col_idx]).lower()
-        
-        if debug and col_idx <= desc_col_idx + 10:
-            print(f"[DEBUG]   Column {col_idx}: '{header_row.iloc[col_idx]}' → checking...")
-        
-        if '示意性调整后' in header_value or 'indicative adjusted' in header_value:
-            adjusted_columns.append(col_idx)
+    # Check if row 1 and row 2 have the actual column headers
+    # Look for rows with "人民币千元" or dates
+    actual_header_row = header_row_idx
+    for check_row in range(header_row_idx, min(header_row_idx + 3, len(df))):
+        row_check = df.iloc[check_row]
+        # Count non-nan values
+        non_nan_count = row_check.notna().sum()
+        if debug:
+            print(f"[DEBUG] Row {check_row} has {non_nan_count} non-NaN values")
+        if non_nan_count > 2:  # More than just 1-2 columns with data
+            actual_header_row = check_row
             if debug:
-                print(f"[DEBUG]     ✅ Match! Added column {col_idx}")
+                print(f"[DEBUG] Using row {check_row} as actual header with data")
+            break
+    
+    # Find ALL columns that have non-NaN values in the header/date rows
+    # These are the columns we want to extract
+    adjusted_columns = []
+    
+    # Check rows after description column for non-NaN values
+    for col_idx in range(desc_col_idx + 1, len(df.columns)):
+        # Check if this column has any data in the first few rows after header
+        has_data = False
+        for row_idx in range(header_row_idx, min(header_row_idx + 5, len(df))):
+            val = df.iloc[row_idx, col_idx]
+            if pd.notna(val) and str(val).strip() != '' and str(val).lower() != 'nan':
+                has_data = True
+                break
+        
+        if has_data:
+            adjusted_columns.append(col_idx)
+            if debug and len(adjusted_columns) <= 10:
+                print(f"[DEBUG] Column {col_idx} has data, adding to extraction")
     
     if not adjusted_columns:
         if debug:
-            print(f"[DEBUG] ❌ No columns with '示意性调整后' or 'Indicative adjusted' found!")
-            print(f"[DEBUG] Checked columns {desc_col_idx + 1} to {len(header_row)}")
+            print(f"[DEBUG] ❌ No columns with data found after description column!")
         return None
     
     if debug:
-        print(f"[DEBUG] ✅ Found {len(adjusted_columns)} adjusted columns at indices: {adjusted_columns}")
+        print(f"[DEBUG] ✅ Found {len(adjusted_columns)} columns with data: {adjusted_columns[:10]}...")
     
     # Get date row (row after header)
     date_row_idx = header_row_idx + 1
