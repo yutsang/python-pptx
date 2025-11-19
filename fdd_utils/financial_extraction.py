@@ -700,6 +700,39 @@ def extract_balance_sheet_and_income_statement(
                 df_is, "Income Statement", None, debug
             )
         
+        # Post-processing: Remove date columns with all zeros in Income Statement
+        if results['income_statement'] is not None:
+            is_df = results['income_statement']
+            date_cols = [col for col in is_df.columns if col != 'Description']
+            
+            # Find columns with all zeros in IS
+            cols_to_remove = []
+            for col in date_cols:
+                if (is_df[col] == 0).all():
+                    cols_to_remove.append(col)
+            
+            if cols_to_remove:
+                if debug:
+                    print(f"\n[DEBUG] ========== REMOVING ZERO COLUMNS ==========")
+                    print(f"[DEBUG] Found {len(cols_to_remove)} date columns with ALL zeros in Income Statement:")
+                    print(f"[DEBUG]   {cols_to_remove}")
+                    print(f"[DEBUG] Removing these columns from BOTH Balance Sheet and Income Statement...")
+                
+                # Remove from Income Statement
+                results['income_statement'] = is_df.drop(columns=cols_to_remove)
+                
+                # Remove from Balance Sheet if it exists and has those columns
+                if results['balance_sheet'] is not None:
+                    bs_df = results['balance_sheet']
+                    cols_to_remove_from_bs = [col for col in cols_to_remove if col in bs_df.columns]
+                    if cols_to_remove_from_bs:
+                        results['balance_sheet'] = bs_df.drop(columns=cols_to_remove_from_bs)
+                        if debug:
+                            print(f"[DEBUG]   Removed {len(cols_to_remove_from_bs)} columns from Balance Sheet")
+                
+                if debug:
+                    print(f"[DEBUG] ✅ Columns removed successfully")
+        
         if debug:
             print("\n" + "=" * 80)
             print("EXTRACTION RESULTS:")
@@ -708,9 +741,11 @@ def extract_balance_sheet_and_income_statement(
             print(f"Balance Sheet: {'✅ Extracted' if results['balance_sheet'] is not None else '❌ None'}")
             print(f"Income Statement: {'✅ Extracted' if results['income_statement'] is not None else '❌ None'}")
             if results['balance_sheet'] is not None:
-                print(f"  - Balance Sheet rows: {len(results['balance_sheet'])}")
+                print(f"  - Balance Sheet: {len(results['balance_sheet'])} rows × {len(results['balance_sheet'].columns)} cols")
+                print(f"  - Columns: {list(results['balance_sheet'].columns)}")
             if results['income_statement'] is not None:
-                print(f"  - Income Statement rows: {len(results['income_statement'])}")
+                print(f"  - Income Statement: {len(results['income_statement'])} rows × {len(results['income_statement'].columns)} cols")
+                print(f"  - Columns: {list(results['income_statement'].columns)}")
         
     except Exception as e:
         print(f"❌ Error extracting financial data: {e}")
@@ -722,73 +757,6 @@ def extract_balance_sheet_and_income_statement(
     return results
 
 
-def filter_by_total_amount(df: pd.DataFrame, filter_keywords: Optional[List[str]] = None) -> pd.DataFrame:
-    """
-    Filter dataframe to show only total amounts, not detail line items.
-    
-    Args:
-        df: DataFrame with Description and Value columns
-        filter_keywords: Keywords that indicate detail items to filter out
-        
-    Returns:
-        Filtered DataFrame with only major categories
-    """
-    if df is None or df.empty:
-        return df
-    
-    if filter_keywords is None:
-        # Default keywords for sub-account filtering (Chinese and English)
-        filter_keywords = ['_', '其中:', '其中：', 'including:', 'including：', '  -', '   ']
-    
-    # Filter out rows that contain filtering keywords
-    filtered_df = df.copy()
-    for keyword in filter_keywords:
-        filtered_df = filtered_df[~filtered_df['Description'].str.contains(keyword, na=False)]
-    
-    return filtered_df
-
-
-def get_account_total(df: pd.DataFrame, account_name: str, date_column: str = None) -> Optional[float]:
-    """
-    Get the total value for a specific account name.
-    
-    Args:
-        df: DataFrame with Description and date columns
-        account_name: Name of the account to search for
-        date_column: Specific date column to get value from (e.g., '2024-12-31')
-                    If None, returns the most recent date column value
-        
-    Returns:
-        Total value for specified date or None if not found
-    """
-    if df is None or df.empty:
-        return None
-    
-    # Search for exact match first
-    matches = df[df['Description'] == account_name]
-    if matches.empty:
-        # Search for partial match
-        matches = df[df['Description'].str.contains(account_name, na=False)]
-    
-    if matches.empty:
-        return None
-    
-    # Get the row
-    row = matches.iloc[0]
-    
-    # If no specific date column specified, use the most recent (last date column)
-    if date_column is None:
-        date_cols = [col for col in df.columns if col != 'Description']
-        if not date_cols:
-            return None
-        # Most recent is typically the first date column
-        date_column = date_cols[0]
-    
-    # Return value for that date
-    if date_column in row.index:
-        return row[date_column]
-    
-    return None
 
 
 # Example usage and testing
@@ -837,29 +805,24 @@ if __name__ == "__main__":
     else:
         print("\n❌ Income Statement: Not found")
     
-    # Example: Filter by total amounts only
+    # Example: Access specific account data
     if results['balance_sheet'] is not None:
         print(f"\n{'='*80}")
-        print("Filter to show only totals (no sub-accounts)")
-        print(f"{'='*80}")
-        filtered_bs = filter_by_total_amount(results['balance_sheet'])
-        print(f"Filtered from {len(results['balance_sheet'])} to {len(filtered_bs)} rows")
-    
-    # Example: Get specific account total
-    if results['balance_sheet'] is not None:
-        print(f"\n{'='*80}")
-        print("Get specific account total")
+        print("Example: Access specific account")
         print(f"{'='*80}")
         
-        # Get most recent value
-        cash_total = get_account_total(results['balance_sheet'], "货币资金")
-        if cash_total:
-            print(f"货币资金 (Cash) - Latest: {cash_total:,.0f}")
+        # Find account with description containing keyword
+        cash_data = results['balance_sheet'][
+            results['balance_sheet']['Description'].str.contains('货币资金', na=False)
+        ]
         
-        # Get specific date value
-        date_cols = [col for col in results['balance_sheet'].columns if col != 'Description']
-        if len(date_cols) > 1:
-            cash_specific = get_account_total(results['balance_sheet'], "货币资金", date_column=date_cols[1])
-            if cash_specific:
-                print(f"货币资金 (Cash) - {date_cols[1]}: {cash_specific:,.0f}")
+        if not cash_data.empty:
+            print("货币资金 (Cash) data:")
+            print(cash_data.to_string())
+            
+            # Get values for each date
+            for col in cash_data.columns:
+                if col != 'Description':
+                    value = cash_data.iloc[0][col]
+                    print(f"  {col}: {value:,.0f}")
 

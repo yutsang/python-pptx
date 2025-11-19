@@ -79,11 +79,7 @@ Values are **automatically formatted** in code before being sent to AI:
 Extract Balance Sheet and Income Statement from a **single sheet** containing both statements:
 
 ```python
-from fdd_utils.financial_extraction import (
-    extract_balance_sheet_and_income_statement,
-    filter_by_total_amount,
-    get_account_total
-)
+from fdd_utils.financial_extraction import extract_balance_sheet_and_income_statement
 
 # Extract BS and IS from single sheet
 # Both statements are in the same sheet, separated by headers:
@@ -98,35 +94,37 @@ results = extract_balance_sheet_and_income_statement(
 # Access results
 balance_sheet = results['balance_sheet']      # DataFrame or None
 income_statement = results['income_statement']  # DataFrame or None
-project_name = results['project_name']        # Extracted from headers (e.g., "东莞xx")
+project_name = results['project_name']        # Extracted from headers (e.g., "东莞联洋")
 
-# Example: Filter to show only totals (remove sub-accounts)
+# Work with the data
 if balance_sheet is not None:
-    totals_only = filter_by_total_amount(balance_sheet)
-    print(totals_only)
-
-# Example: Get specific account value
-if balance_sheet is not None:
-    # Get most recent date value (auto-selects first date column)
-    cash_total = get_account_total(balance_sheet, "货币资金")
-    print(f"Cash (latest): {cash_total:,.0f}")
+    print(f"Balance Sheet: {len(balance_sheet)} rows")
+    print(f"Columns: {list(balance_sheet.columns)}")
+    print(balance_sheet.head())
     
-    # Get specific date value
-    cash_2023 = get_account_total(balance_sheet, "货币资金", date_column='2023-12-31')
-    print(f"Cash (2023): {cash_2023:,.0f}")
+    # Access specific account
+    cash_row = balance_sheet[balance_sheet['Description'].str.contains('货币资金', na=False)]
+    if not cash_row.empty:
+        print(f"\n货币资金 (Cash):")
+        print(cash_row)
+
+if income_statement is not None:
+    print(f"\nIncome Statement: {len(income_statement)} rows")
+    print(income_statement.head())
 ```
 
 **Features**:
 - Extracts both BS and IS from **single sheet**
 - Auto-detects statement boundaries via headers
-- Extracts project name (e.g., from "xxxx利润表 - 东莞xx")
-- Gets **ALL columns** with "示意性调整后" or "Indicative adjusted"
+- Extracts project name (e.g., from "xxxx利润表 - 东莞联洋")
+- Gets **ONLY columns** with "示意性调整后" or "Indicative adjusted" (filters out 管理层数, 审定数, etc.)
 - **Smart end detection**:
   - BS ends at "负债及所有者权益总计" or "Total liabilities and owners'equity"
   - IS ends at "净利润/（亏损）" or "Net profit/(loss)"
 - Auto-multiplies by 1000 if "CNY'000" or "人民币千元" detected
 - Converts dates: FY22→2022-12-31, 9M22→2022-09-30, 30-Sep-2022→2022-09-30
-- **Removes empty rows** where all values are 0
+- **Smart column cleanup**: Removes date columns that have all zeros in Income Statement from BOTH statements
+- **Removes empty rows**: Filters out rows where all values are 0
 
 **Returns**: Dictionary with keys:
 - `'balance_sheet'`: DataFrame with `Description` column + ALL date columns (e.g., `2022-12-31`, `2021-12-31`)
