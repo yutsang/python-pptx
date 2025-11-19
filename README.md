@@ -76,5 +76,39 @@ Values are **automatically formatted** in code before being sent to AI:
 
 ## Financial Data Extraction
 
-(Reserved for next part)
+Extract Balance Sheet and Income Statement directly from specific worksheets:
+
+```python
+from fdd_utils.financial_extraction import (
+    extract_balance_sheet_and_income_statement,
+    filter_by_total_amount,
+    get_account_total
+)
+
+# Extract BS and IS from specific sheets
+results = extract_balance_sheet_and_income_statement(
+    workbook_path="databook.xlsx",
+    balance_sheet_name="示意性调整后资产负债表",      # Balance Sheet sheet name
+    income_statement_name="示意性调整后利润表",       # Income Statement sheet name
+    entity_keywords=["联洋"]                         # Optional: filter by entity
+)
+
+# Access results
+balance_sheet = results['balance_sheet']      # DataFrame or None
+income_statement = results['income_statement']  # DataFrame or None
+
+# Example: Filter to show only totals (remove sub-accounts)
+if balance_sheet is not None:
+    totals_only = filter_by_total_amount(balance_sheet)
+    print(totals_only)
+
+# Example: Get specific account value
+if balance_sheet is not None:
+    cash_total = get_account_total(balance_sheet, "货币资金")
+    print(f"Cash: {cash_total:,.0f}")
+```
+
+**Returns**: Dictionary with `'balance_sheet'` and `'income_statement'` keys, each containing a DataFrame with columns:
+- `Description`: Account name
+- `Value`: Numeric value (already multiplied by 1000 if CNY'000)
 
