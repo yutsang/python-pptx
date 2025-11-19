@@ -401,14 +401,16 @@ def extract_financial_table(
                 conversion_errors += 1
                 row_dict[col_name] = 0
         
-        # Add row (even if all zeros, we'll filter later)
-        result_rows.append(row_dict)
-        
         # Debug only problematic rows or first few
-        if debug and (len(result_rows) <= 3 or conversion_errors > 0 or not has_any_nonzero_value):
+        if debug and (len(result_rows) < 3 or conversion_errors > 0 or not has_any_nonzero_value):
             values_str = ", ".join([f"{col}: {row_dict[col]}" for col in row_dict if col != 'Description'])
             status = "⚠️ ALL ZEROS" if not has_any_nonzero_value else ("⚠️ ERRORS" if conversion_errors > 0 else "✅")
             print(f"[DEBUG]   Row {row_idx} {status}: '{row_dict['Description'][:50]}' → {values_str}")
+            print(f"[DEBUG]     row_dict keys: {list(row_dict.keys())}")
+            print(f"[DEBUG]     row_dict values: {list(row_dict.values())}")
+        
+        # Add row (even if all zeros, we'll filter later)
+        result_rows.append(row_dict)
     
     if debug:
         print(f"\n[DEBUG] Extraction complete:")
@@ -432,26 +434,61 @@ def extract_financial_table(
         return None
     
     if debug:
-        print(f"[DEBUG] Extracted {len(result_rows)} rows before filtering")
+        print(f"\n[DEBUG] ========== CREATING DATAFRAME ==========")
+        print(f"[DEBUG] Creating DataFrame from {len(result_rows)} rows")
+        
+        # Show first 3 result_rows as dict
+        for i, row_dict in enumerate(result_rows[:3]):
+            print(f"[DEBUG] result_rows[{i}]:")
+            for k, v in row_dict.items():
+                print(f"[DEBUG]   {k}: {v} (type: {type(v).__name__})")
     
     result_df = pd.DataFrame(result_rows)
     
     if debug:
-        print(f"[DEBUG] Before removing zero rows:")
+        print(f"\n[DEBUG] DataFrame created successfully!")
         print(f"[DEBUG]   Shape: {result_df.shape}")
-        print(f"[DEBUG]   Sample (first 3 rows):")
+        print(f"[DEBUG]   Columns: {list(result_df.columns)}")
+        print(f"[DEBUG]   Dtypes: {result_df.dtypes.to_dict()}")
+        print(f"\n[DEBUG] DataFrame content (first 3 rows):")
         print(result_df.head(3).to_string())
+        
+        # Check for any issues with column values
+        for col in result_df.columns:
+            if col != 'Description':
+                print(f"[DEBUG]   Column '{col}' stats: min={result_df[col].min()}, max={result_df[col].max()}, mean={result_df[col].mean():.0f}")
     
     # Remove rows where ALL date column values are 0
     date_cols = [col for col in result_df.columns if col != 'Description']
+    
+    if debug:
+        print(f"\n[DEBUG] ========== FILTERING ZERO ROWS ==========")
+        print(f"[DEBUG] Date columns to check: {date_cols}")
+    
     if date_cols:
         # Keep rows where at least one date column is non-zero
         rows_before = len(result_df)
         mask = result_df[date_cols].ne(0).any(axis=1)
+        
+        if debug:
+            print(f"[DEBUG] Rows before filtering: {rows_before}")
+            print(f"[DEBUG] Mask (True = keep, False = remove):")
+            print(f"[DEBUG]   {mask.values[:20]}")  # Show first 20
+            
+            # Show which rows will be removed
+            removed_indices = result_df[~mask].index
+            if len(removed_indices) > 0:
+                print(f"[DEBUG] Rows to be removed ({len(removed_indices)} total):")
+                for idx in list(removed_indices)[:5]:
+                    desc = result_df.loc[idx, 'Description']
+                    vals = [result_df.loc[idx, col] for col in date_cols]
+                    print(f"[DEBUG]   Row {idx}: '{desc}' → {vals}")
+        
         result_df = result_df[mask]
         rows_after = len(result_df)
         
         if debug:
+            print(f"[DEBUG] Rows after filtering: {rows_after}")
             print(f"[DEBUG] Removed {rows_before - rows_after} rows with all zeros")
     
     if result_df.empty:
@@ -460,12 +497,31 @@ def extract_financial_table(
         return None
     
     if debug:
+        print(f"\n[DEBUG] ========== FINAL RESULT ==========")
         print(f"[DEBUG] ✅ Final DataFrame: {len(result_df)} rows × {len(result_df.columns)} columns")
         print(f"[DEBUG] Columns: {list(result_df.columns)}")
-        print(f"[DEBUG] Sample data (first 5 rows):")
+        
+        # Show value statistics for each date column
+        for col in result_df.columns:
+            if col != 'Description':
+                non_zero = (result_df[col] != 0).sum()
+                zero = (result_df[col] == 0).sum()
+                print(f"[DEBUG]   '{col}': {non_zero} non-zero, {zero} zeros (max: {result_df[col].max():,.0f})")
+        
+        print(f"\n[DEBUG] First 5 rows:")
         print(result_df.head(5).to_string())
-        print(f"[DEBUG] Sample data (last 5 rows):")
+        
+        print(f"\n[DEBUG] Last 5 rows:")
         print(result_df.tail(5).to_string())
+        
+        # Check if there are any rows with all values as 0
+        if len(date_cols) > 0:
+            all_zero_mask = (result_df[date_cols] == 0).all(axis=1)
+            all_zero_count = all_zero_mask.sum()
+            if all_zero_count > 0:
+                print(f"\n[DEBUG] ⚠️ WARNING: {all_zero_count} rows still have ALL zeros!")
+                print(f"[DEBUG] These rows:")
+                print(result_df[all_zero_mask].to_string())
     
     return result_df
 
