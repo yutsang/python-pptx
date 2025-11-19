@@ -16,7 +16,7 @@ def load_mappings(mappings_file: str = 'fdd_utils/mappings.yml') -> dict:
 
 def should_skip_mapping(account_name: str) -> bool:
     """
-    Check if account should skip mapping (totals and profit/loss lines).
+    Check if account should skip mapping (totals, subtotals, and profit/loss lines).
     
     Args:
         account_name: Account name from BS/IS
@@ -30,6 +30,7 @@ def should_skip_mapping(account_name: str) -> bool:
     chinese_skip = [
         '合计',  # xxx合计
         '总计',  # xxx总计
+        '小计',  # xxx小计
         '毛利',
         '营业利润',
         '利润总额',
@@ -39,6 +40,9 @@ def should_skip_mapping(account_name: str) -> bool:
     
     # English accounts to skip
     english_skip = [
+        'subtotal',
+        'sub-total',
+        'sub total',
         'gross profit',
         'gross loss',
         'operating profit',
@@ -49,12 +53,15 @@ def should_skip_mapping(account_name: str) -> bool:
         'net loss'
     ]
     
-    # Check if ends with 合计 or 总计
-    if account_name.endswith('合计') or account_name.endswith('总计'):
+    # Check if ends with 合计, 总计, or 小计
+    if account_name.endswith('合计') or account_name.endswith('总计') or account_name.endswith('小计'):
         return True
     
-    # Check if starts with Total
+    # Check if starts with Total or contains Subtotal
     if account_name.startswith('Total ') or account_name.startswith('total '):
+        return True
+    
+    if 'subtotal' in account_lower or 'sub-total' in account_lower or 'sub total' in account_lower:
         return True
     
     # Check Chinese keywords
@@ -148,7 +155,8 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
 def get_total_from_dfs(dfs_df: pd.DataFrame, date_col: str, debug: bool = False) -> Optional[float]:
     """
     Get total value from DFS dataframe.
-    ONLY looks for rows with keywords like 'Total', '合计', '总计'.
+    ONLY looks for rows with 'Total', '合计', '总计'.
+    Skips subtotal rows ('Subtotal', '小计').
     No fallback - returns None if no total row found.
     
     Args:
@@ -165,16 +173,28 @@ def get_total_from_dfs(dfs_df: pd.DataFrame, date_col: str, debug: bool = False)
     if date_col not in dfs_df.columns:
         return None
     
-    # Keywords for total rows (removed 小计)
-    total_keywords = ['合计', '总计', 'Total', 'total']
+    # Keywords for total rows (NOT subtotal)
+    total_keywords = ['合计', '总计', 'total']
+    
+    # Keywords to SKIP (subtotal rows)
+    skip_keywords = ['小计', 'subtotal', 'sub-total', 'sub total']
     
     # Try to find total row
     desc_col = dfs_df.columns[0]  # First column is description
     for idx, row in dfs_df.iterrows():
-        desc = str(row[desc_col]).lower()
-        if any(keyword.lower() in desc for keyword in total_keywords):
+        desc = str(row[desc_col])
+        desc_lower = desc.lower()
+        
+        # Skip if it's a subtotal row
+        if any(skip_kw in desc_lower for skip_kw in skip_keywords):
             if debug:
-                print(f"      Found total row: '{row[desc_col]}' → value: {row[date_col]:,.0f}")
+                print(f"      Skipping subtotal row: '{desc}'")
+            continue
+        
+        # Check if it's a total row
+        if any(keyword in desc_lower for keyword in total_keywords):
+            if debug:
+                print(f"      Found total row: '{desc}' → value: {row[date_col]:,.0f}")
             return row[date_col]
     
     # No total row found - return None (no fallback)

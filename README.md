@@ -192,10 +192,10 @@ Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Match
   - Exact alias match (e.g., "货币资金" in aliases → key "Cash")
   - Cleans suffixes ('：', '(', ')') before matching
   - **NO name-based matching** - only uses defined aliases
-- **Auto-skips total/profit lines** (marked as ℹ️ Not Mapped):
-  - Chinese: xxx合计, xxx总计, 毛利, 营业利润, 净利润
-  - English: Total xxx, Gross profit, Operating profit, Net profit
-- Finds **total row** in DFS (looks for '合计', '总计', 'Total' keywords ONLY - no fallback)
+- **Auto-skips total/subtotal/profit lines** (marked as "-"):
+  - Chinese: xxx合计, xxx总计, xxx小计, 毛利, 营业利润, 净利润
+  - English: Total xxx, Subtotal, Sub-total, Gross profit, Operating profit, Net profit
+- Finds **total row** in DFS (looks for '合计', '总计', 'Total' keywords ONLY - skips '小计'/subtotal rows)
 - **Smart matching logic**:
   - Source = 0 → Shows "-" (skipped)
   - Source ≠ 0 + Total row found → Compare values

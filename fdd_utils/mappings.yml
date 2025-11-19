@@ -28,7 +28,7 @@ _default_agent_1:
 Cash:
   type: BS
   category: Current assets
-  aliases: ["Cash", "Cash and Cash Equivalents", "Cash and cash equivalents", "貨幣資金", "货币资金"]
+  aliases: ["Cash", "Cash and Cash Equivalents", "Cash and cash equivalents", "貨幣資金", "货币资金", “Cash at bank”]
   agent_1_prompts:
     Eng:
       system_prompt: |
@@ -239,7 +239,7 @@ Capital:
   type: BS
   category: Equity
   aliases: ["Capital", "Share Capital", "Share capital", "Shareholder's Equity", "Shareholders' Equity",
-            "Shareholders Equity", "Shareholder Equity", "股东权益", "實收資本", "实收资本"]
+            "Shareholders Equity", "Shareholder Equity", "股东权益", "實收資本", "实收资本", “Paid-in capital”]
   system_prompts:
   user_prompts:
   patterns:
@@ -275,8 +275,7 @@ R/E:
 OI:
   type: IS
   category: Revenue
-  aliases: ["OI", "Other Income", "Other income", "Other Income and Gains", "Other income and gains",
-            "Sales", "Sale", "其他收入", "其他收益", "營業收入", "营业收入"]
+  aliases: ["OI", "Sales", "Sale", "Operating income”, “Operating Income”, "營業收入", "营业收入"]
   system_prompts:
   user_prompts:
   patterns:
@@ -288,8 +287,7 @@ OI:
 OC:
   type: IS
   category: Expenses
-  aliases: ["OC", "Other Costs", "Other costs", "Other Cost", "Other cost", "Cost", "其他成本",
-            "其他費用", "營業成本", "营业成本"]
+  aliases: ["OC", "Operating costs", "Operating Costs", ”Operating Cost”, "Operating cost", "營業成本", "营业成本"]
   system_prompts:
   user_prompts:
   patterns:
