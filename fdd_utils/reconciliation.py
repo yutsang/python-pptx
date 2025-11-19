@@ -128,7 +128,8 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
                 if dfs_key in aliases:
                     if debug:
                         print(f"    [MATCH]   Step 2: ✅ DFS key '{dfs_key}' matches alias!")
-                    return mapping_key, dfs[dfs_key], category
+                    # Return: (mapping_key, dataframe, category, actual_dfs_key)
+                    return dfs_key, dfs[dfs_key], category
             
             # No alias matched any dfs key
             if debug:
@@ -147,7 +148,8 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
 def get_total_from_dfs(dfs_df: pd.DataFrame, date_col: str, debug: bool = False) -> Optional[float]:
     """
     Get total value from DFS dataframe.
-    Looks for rows with keywords like 'Total', '合计', '总计' or uses the last row.
+    ONLY looks for rows with keywords like 'Total', '合计', '总计'.
+    No fallback - returns None if no total row found.
     
     Args:
         dfs_df: DataFrame from dfs
@@ -155,7 +157,7 @@ def get_total_from_dfs(dfs_df: pd.DataFrame, date_col: str, debug: bool = False)
         debug: Enable debug output
         
     Returns:
-        Total value or None
+        Total value or None if no total row found
     """
     if dfs_df is None or dfs_df.empty:
         return None
@@ -163,8 +165,8 @@ def get_total_from_dfs(dfs_df: pd.DataFrame, date_col: str, debug: bool = False)
     if date_col not in dfs_df.columns:
         return None
     
-    # Keywords for total rows
-    total_keywords = ['合计', '总计', 'Total', 'total', '小计']
+    # Keywords for total rows (removed 小计)
+    total_keywords = ['合计', '总计', 'Total', 'total']
     
     # Try to find total row
     desc_col = dfs_df.columns[0]  # First column is description
@@ -172,19 +174,15 @@ def get_total_from_dfs(dfs_df: pd.DataFrame, date_col: str, debug: bool = False)
         desc = str(row[desc_col]).lower()
         if any(keyword.lower() in desc for keyword in total_keywords):
             if debug:
-                print(f"      Found total row: '{row[desc_col]}'")
+                print(f"      Found total row: '{row[desc_col]}' → value: {row[date_col]:,.0f}")
             return row[date_col]
     
-    # If no total row found, use the last non-zero row
-    non_zero_rows = dfs_df[dfs_df[date_col] != 0]
-    if not non_zero_rows.empty:
-        last_value = non_zero_rows.iloc[-1][date_col]
-        if debug:
-            print(f"      Using last non-zero row value: {last_value}")
-        return last_value
+    # No total row found - return None (no fallback)
+    if debug:
+        print(f"      ❌ No total row found (no '合计', '总计', or 'Total' in descriptions)")
+        print(f"      Available descriptions: {dfs_df[desc_col].tolist()}")
     
-    # Fallback: use first row
-    return dfs_df[date_col].iloc[0]
+    return None
 
 
 def reconcile_financial_statements(
@@ -211,11 +209,10 @@ def reconcile_financial_statements(
         Each DataFrame has columns:
         - Source_Account: Account name from BS/IS
         - Date: Date column (latest only)
-        - Source_Value: Value from BS/IS
-        - DFS_Account: Matched account key from dfs
+        - Source_Value: Value from BS/IS (expenses converted to positive)
+        - DFS_Account: Actual dfs key name (e.g., '货币资金', not mapping key 'Cash')
         - DFS_Value: Total value from dfs
-        - Match: '✅ Match' or '❌ Diff: X' or '⚠️ Not Found'
-        - Difference: Absolute difference
+        - Match: '✅ Match', '❌ Diff: X', '⚠️ Not Found', or '-' (skipped)
     """
     if debug:
         print("=" * 80)
@@ -246,6 +243,18 @@ def reconcile_financial_statements(
                 account_name = row['Description']
                 source_value = row[latest_date]
                 
+                # If source value is 0, skip DFS mapping
+                if source_value == 0:
+                    bs_recon_rows.append({
+                        'Source_Account': account_name,
+                        'Date': latest_date,
+                        'Source_Value': source_value,
+                        'DFS_Account': '-',
+                        'DFS_Value': '-',
+                        'Match': '-'
+                    })
+                    continue
+                
                 # Find matching account in dfs (ONLY via mappings.yml)
                 dfs_key, dfs_df, category = find_account_in_dfs(account_name, dfs, mappings, debug=debug and idx < 10)
                 
@@ -266,13 +275,7 @@ def reconcile_financial_statements(
                 
                 # Check match
                 if dfs_value is None:
-                    # If source is 0 and dfs not found, consider it a match
-                    if source_value == 0:
-                        match_status = '✅ Match (both zero)'
-                        difference = 0
-                    else:
-                        match_status = '⚠️ Not Found'
-                        difference = None
+                    match_status = '⚠️ Not Found'
                 else:
                     difference = abs(source_value - dfs_value)
                     if difference <= tolerance:
@@ -284,7 +287,7 @@ def reconcile_financial_statements(
                     'Source_Account': account_name,
                     'Date': latest_date,
                     'Source_Value': source_value,
-                    'DFS_Account': dfs_key or 'Not Found',
+                    'DFS_Account': dfs_key or 'Not Found',  # dfs_key is now the actual dfs key
                     'DFS_Value': dfs_value if dfs_value is not None else 0,
                     'Match': match_status
                 })
@@ -308,6 +311,21 @@ def reconcile_financial_statements(
                 account_name = row['Description']
                 source_value_raw = row[latest_date]
                 
+                # For Income Statement: Convert expenses (negative values) to positive first
+                source_value = source_value_raw
+                
+                # If source value is 0, skip DFS mapping
+                if source_value == 0:
+                    is_recon_rows.append({
+                        'Source_Account': account_name,
+                        'Date': latest_date,
+                        'Source_Value': source_value,
+                        'DFS_Account': '-',
+                        'DFS_Value': '-',
+                        'Match': '-'
+                    })
+                    continue
+                
                 # Find matching account in dfs (ONLY via mappings.yml)
                 dfs_key, dfs_df, category = find_account_in_dfs(account_name, dfs, mappings, debug=debug and idx < 10)
                 
@@ -323,9 +341,7 @@ def reconcile_financial_statements(
                     })
                     continue
                 
-                # For Income Statement: Convert expenses (negative values) to positive
-                # Expenses category in mappings.yml should have negative values shown as positive
-                source_value = source_value_raw
+                # Convert expenses to positive if needed
                 if category and 'expense' in category.lower():
                     if source_value_raw < 0:
                         source_value = abs(source_value_raw)
@@ -337,13 +353,7 @@ def reconcile_financial_statements(
                 
                 # Check match
                 if dfs_value is None:
-                    # If source is 0 and dfs not found, consider it a match
-                    if source_value == 0:
-                        match_status = '✅ Match (both zero)'
-                        difference = 0
-                    else:
-                        match_status = '⚠️ Not Found'
-                        difference = None
+                    match_status = '⚠️ Not Found'
                 else:
                     difference = abs(source_value - dfs_value)
                     if difference <= tolerance:
@@ -355,7 +365,7 @@ def reconcile_financial_statements(
                     'Source_Account': account_name,
                     'Date': latest_date,
                     'Source_Value': source_value,  # Use converted value
-                    'DFS_Account': dfs_key or 'Not Found',
+                    'DFS_Account': dfs_key or 'Not Found',  # dfs_key is now the actual dfs key name
                     'DFS_Value': dfs_value if dfs_value is not None else 0,
                     'Match': match_status
                 })

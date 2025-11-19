@@ -195,11 +195,12 @@ Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Match
 - **Auto-skips total/profit lines** (marked as ℹ️ Not Mapped):
   - Chinese: xxx合计, xxx总计, 毛利, 营业利润, 净利润
   - English: Total xxx, Gross profit, Operating profit, Net profit
-- Finds **total row** in DFS (looks for '合计', '总计', 'Total' keywords, or uses last non-zero row)
+- Finds **total row** in DFS (looks for '合计', '总计', 'Total' keywords ONLY - no fallback)
 - **Smart matching logic**:
-  - Source = 0 + DFS not found → ✅ Match (both zero)
-  - Source ≠ 0 + DFS not found → ⚠️ Not Found
-  - Total/profit lines → ℹ️ Not Mapped (skipped)
+  - Source = 0 → Shows "-" (skipped)
+  - Source ≠ 0 + Total row found → Compare values
+  - Source ≠ 0 + Total row NOT found → ⚠️ Not Found
+  - Total/profit lines → Shows "-" (skipped)
 - **Income Statement expenses**: Negative values auto-converted to positive (category='Expenses' in mappings.yml)
 - Shows: ✅ Match, ❌ Diff: X, ✅ Match (both zero), ⚠️ Not Found, ℹ️ Not Mapped
 
@@ -209,7 +210,7 @@ Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Match
 ```
 Source_Account      Date         Source_Value  DFS_Account  DFS_Value    Match
 货币资金            2024-05-31   4,119,178     货币资金     4,119,178    ✅ Match
-应收账款            2024-05-31   13,034,797    应收账款     13,034,797   ✅ Match
+应收账款            2024-05-31   0             -            -            -
 流动资产合计        2024-05-31   9,246,577     -            -            -
 投资性房地产        2024-05-31   168,526,613   投资性房地产 168,520,000  ❌ Diff: 6,613
 管理费用            2024-05-31   1,234,567     管理费用     1,234,567    ✅ Match
