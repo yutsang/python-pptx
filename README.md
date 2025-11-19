@@ -90,7 +90,8 @@ results = extract_balance_sheet_and_income_statement(
     workbook_path="databook.xlsx",
     balance_sheet_name="示意性调整后资产负债表",      # Balance Sheet sheet name
     income_statement_name="示意性调整后利润表",       # Income Statement sheet name
-    entity_keywords=["联洋"]                         # Optional: filter by entity
+    entity_keywords=["联洋"],                        # Optional: filter by entity
+    debug=True                                       # Enable debug prints (shows what's happening)
 )
 
 # Access results

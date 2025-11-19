@@ -149,7 +149,8 @@ def find_date_columns(df: pd.DataFrame, header_row_idx: int) -> Tuple[List[int],
 def extract_financial_table(
     df: pd.DataFrame,
     table_name: str,
-    entity_keywords: Optional[List[str]] = None
+    entity_keywords: Optional[List[str]] = None,
+    debug: bool = False
 ) -> Optional[pd.DataFrame]:
     """
     Extract financial table (Balance Sheet or Income Statement) from a worksheet.
@@ -158,19 +159,38 @@ def extract_financial_table(
         df: DataFrame containing the financial data
         table_name: Name of the table (e.g., "Balance Sheet", "Income Statement")
         entity_keywords: Optional list of entity name components to search for
+        debug: If True, print debugging information
         
     Returns:
         Cleaned DataFrame with financial data or None if extraction fails
     """
+    if debug:
+        print(f"\n[DEBUG] Extracting {table_name}...")
+        print(f"[DEBUG] DataFrame shape: {df.shape}")
+    
     # Detect header row
     header_row_idx = detect_table_header_row(df)
     if header_row_idx is None:
+        if debug:
+            print(f"[DEBUG] ❌ No header row found!")
+            print(f"[DEBUG] Looking for: 'Indicative adjusted' or '示意性调整后' or 'CNY'000' or '人民币千元'")
         return None
+    
+    if debug:
+        print(f"[DEBUG] ✅ Header row found at index: {header_row_idx}")
     
     # Find date columns
     date_indices, parsed_dates, most_recent_col_idx = find_date_columns(df, header_row_idx)
     if most_recent_col_idx is None:
+        if debug:
+            print(f"[DEBUG] ❌ No valid date columns found!")
+            print(f"[DEBUG] Date row (index {header_row_idx + 1}): {df.iloc[header_row_idx + 1].values}")
         return None
+    
+    if debug:
+        print(f"[DEBUG] ✅ Found {len(date_indices)} date columns")
+        print(f"[DEBUG] Most recent date column index: {most_recent_col_idx}")
+        print(f"[DEBUG] Dates: {parsed_dates}")
     
     # Find description column (usually contains account names)
     desc_col_idx = None
@@ -182,7 +202,14 @@ def extract_financial_table(
             break
     
     if desc_col_idx is None:
+        if debug:
+            print(f"[DEBUG] ❌ No description column found!")
+            print(f"[DEBUG] Looking for column with 'CNY'000' or '人民币千元'")
+            print(f"[DEBUG] Header row values: {header_row.values}")
         return None
+    
+    if debug:
+        print(f"[DEBUG] ✅ Description column found at index: {desc_col_idx}")
     
     # Extract data starting from row after dates
     date_row_idx = header_row_idx + 1
@@ -216,7 +243,13 @@ def extract_financial_table(
             continue
     
     if not result_rows:
+        if debug:
+            print(f"[DEBUG] ❌ No valid data rows found!")
+            print(f"[DEBUG] Checked rows {data_start_row} to {len(df)}")
         return None
+    
+    if debug:
+        print(f"[DEBUG] ✅ Extracted {len(result_rows)} data rows")
     
     result_df = pd.DataFrame(result_rows)
     
@@ -224,6 +257,8 @@ def extract_financial_table(
     date_row = df.iloc[date_row_idx]
     date_row_str = ' '.join(date_row.astype(str).values)
     if "CNY'000" in date_row_str or "人民币千元" in date_row_str:
+        if debug:
+            print(f"[DEBUG] Multiplying values by 1000 (CNY'000 detected)")
         result_df['Value'] = result_df['Value'] * 1000
     
     # Round all decimal values to integers to avoid decimal issues with AI
@@ -232,6 +267,11 @@ def extract_financial_table(
     result_df = result_df[~result_df['Value'].isin([float('inf'), float('-inf')])]  # Remove inf
     result_df['Value'] = result_df['Value'].round(0).astype(int)
     
+    if debug:
+        print(f"[DEBUG] ✅ Final DataFrame: {len(result_df)} rows")
+        print(f"[DEBUG] Sample data:")
+        print(result_df.head(3))
+    
     return result_df
 
 
@@ -239,7 +279,8 @@ def extract_balance_sheet_and_income_statement(
     workbook_path: str,
     balance_sheet_name: str = "示意性调整后资产负债表",
     income_statement_name: str = "示意性调整后利润表",
-    entity_keywords: Optional[List[str]] = None
+    entity_keywords: Optional[List[str]] = None,
+    debug: bool = False
 ) -> Dict[str, pd.DataFrame]:
     """
     Extract Balance Sheet and Income Statement from specified Excel workbook.
@@ -249,6 +290,7 @@ def extract_balance_sheet_and_income_statement(
         balance_sheet_name: Worksheet name for balance sheet (default: Chinese name)
         income_statement_name: Worksheet name for income statement (default: Chinese name)
         entity_keywords: Optional list of entity name components to filter by
+        debug: If True, print debugging information
         
     Returns:
         Dictionary with keys 'balance_sheet' and 'income_statement', 
@@ -259,7 +301,8 @@ def extract_balance_sheet_and_income_statement(
         ...     "databook.xlsx",
         ...     balance_sheet_name="示意性调整后资产负债表",
         ...     income_statement_name="示意性调整后利润表",
-        ...     entity_keywords=["联洋"]
+        ...     entity_keywords=["联洋"],
+        ...     debug=True  # Enable debugging
         ... )
         >>> print(results['balance_sheet'])
         >>> print(results['income_statement'])
@@ -269,22 +312,60 @@ def extract_balance_sheet_and_income_statement(
         'income_statement': None
     }
     
+    if debug:
+        print("=" * 80)
+        print("FINANCIAL EXTRACTION - DEBUG MODE")
+        print("=" * 80)
+        print(f"Workbook: {workbook_path}")
+        print(f"Balance Sheet: {balance_sheet_name}")
+        print(f"Income Statement: {income_statement_name}")
+        print(f"Entity Keywords: {entity_keywords}")
+    
     try:
         # Load Excel file
         excel_file = pd.ExcelFile(workbook_path, engine='openpyxl')
         
+        if debug:
+            print(f"\n[DEBUG] ✅ File opened successfully")
+            print(f"[DEBUG] Available sheets: {excel_file.sheet_names}")
+        
         # Extract Balance Sheet
         if balance_sheet_name in excel_file.sheet_names:
+            if debug:
+                print(f"\n[DEBUG] Found Balance Sheet: '{balance_sheet_name}'")
             df_bs = pd.read_excel(workbook_path, sheet_name=balance_sheet_name, engine='openpyxl')
-            results['balance_sheet'] = extract_financial_table(df_bs, "Balance Sheet", entity_keywords)
+            results['balance_sheet'] = extract_financial_table(df_bs, "Balance Sheet", entity_keywords, debug)
+        else:
+            if debug:
+                print(f"\n[DEBUG] ❌ Balance Sheet '{balance_sheet_name}' not found in workbook")
         
         # Extract Income Statement
         if income_statement_name in excel_file.sheet_names:
+            if debug:
+                print(f"\n[DEBUG] Found Income Statement: '{income_statement_name}'")
             df_is = pd.read_excel(workbook_path, sheet_name=income_statement_name, engine='openpyxl')
-            results['income_statement'] = extract_financial_table(df_is, "Income Statement", entity_keywords)
+            results['income_statement'] = extract_financial_table(df_is, "Income Statement", entity_keywords, debug)
+        else:
+            if debug:
+                print(f"\n[DEBUG] ❌ Income Statement '{income_statement_name}' not found in workbook")
+        
+        if debug:
+            print("\n" + "=" * 80)
+            print("EXTRACTION RESULTS:")
+            print("=" * 80)
+            print(f"Balance Sheet: {'✅ Extracted' if results['balance_sheet'] is not None else '❌ None'}")
+            print(f"Income Statement: {'✅ Extracted' if results['income_statement'] is not None else '❌ None'}")
+            if results['balance_sheet'] is not None:
+                print(f"  - Balance Sheet rows: {len(results['balance_sheet'])}")
+            if results['income_statement'] is not None:
+                print(f"  - Income Statement rows: {len(results['income_statement'])}")
         
     except Exception as e:
-        print(f"Error extracting financial data: {e}")
+        print(f"❌ Error extracting financial data: {e}")
+        if debug:
+            import traceback
+            print("\n[DEBUG] Full traceback:")
+            traceback.print_exc()
     
     return results
 
@@ -356,7 +437,8 @@ if __name__ == "__main__":
         workbook_path,
         balance_sheet_name="示意性调整后资产负债表",
         income_statement_name="示意性调整后利润表",
-        entity_keywords=entity_keywords
+        entity_keywords=entity_keywords,
+        debug=True  # Enable debugging
     )
     
     if results['balance_sheet'] is not None:
