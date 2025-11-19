@@ -13,12 +13,14 @@ import warnings
 warnings.simplefilter(action='ignore', category=UserWarning)
 
 
-def parse_date(date_str):
+def parse_date(date_str, debug=False):
     """
     Parse date string in various formats including xMxx and Chinese formats.
+    Uses the same preprocessing logic as process_databook.py for consistency.
     
     Args:
         date_str: Date string in various formats
+        debug: If True, print debug info
         
     Returns:
         datetime object or None if parsing fails
@@ -26,64 +28,72 @@ def parse_date(date_str):
     if not date_str or pd.isna(date_str):
         return None
     
-    date_str = str(date_str).strip()
+    original_str = str(date_str).strip()
     
-    # AVOID CONFUSING NUMBERS WITH DATES
-    if ',' in date_str and date_str.replace(',', '').replace('.', '').isdigit():
-        num_val = float(date_str.replace(',', ''))
-        if num_val > 10000:
-            return None
+    if debug:
+        print(f"      [parse_date] Parsing: '{original_str}'")
     
-    # Handle Chinese date range format: 2024年1-5月 (use the END month)
-    chinese_range_match = re.match(r'^(\d{4})年(\d{1,2})-(\d{1,2})月$', date_str)
-    if chinese_range_match:
-        year = int(chinese_range_match.group(1))
-        end_month = int(chinese_range_match.group(3))
-        if end_month == 12:
-            return datetime(year, 12, 31)
-        elif end_month in [1, 3, 5, 7, 8, 10]:
-            return datetime(year, end_month, 31)
-        elif end_month in [4, 6, 9, 11]:
-            return datetime(year, end_month, 30)
-        elif end_month == 2:
-            if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
-                return datetime(year, 2, 29)
-            else:
-                return datetime(year, 2, 28)
+    # Preprocess date using same logic as process_databook.py
+    def preprocess_date(date_str):
+        if isinstance(date_str, str):
+            # English date formats
+            if date_str.startswith('FY'):
+                # Convert 'FY20' to '2020-12-31'
+                year = int('20' + date_str[2:])
+                return f'{year}-12-31'
+            elif 'M' in date_str and '月' not in date_str:  # xMxx format, not Chinese
+                # Handle '9M22' or similar formats
+                try:
+                    months, year_suffix = date_str.split('M')
+                    year = int('20' + year_suffix)
+                    end_month = int(months)
+                    if end_month <= 12:
+                        # Get last day of the month
+                        result = pd.to_datetime(f'{year}-{end_month}-01') + pd.tseries.offsets.MonthEnd(0)
+                        return result.strftime('%Y-%m-%d')
+                except ValueError:
+                    pass
+
+            # Chinese date formats
+            # Match full dates like '2021年12月31日'
+            match_full_date = re.match(r'(\d{4})年(\d{1,2})月(\d{1,2})日$', date_str)
+            if match_full_date:
+                year, month, day = match_full_date.groups()
+                return f'{year}-{month.zfill(2)}-{day.zfill(2)}'
+
+            # Match dates like '2024年1-5月'
+            match_period = re.match(r'(\d{4})年(\d{1,2})-(\d{1,2})月$', date_str)
+            if match_period:
+                year, start_month, end_month = match_period.groups()
+                last_day = pd.to_datetime(f'{year}-{end_month}-01') + pd.tseries.offsets.MonthEnd(0)
+                return last_day.strftime('%Y-%m-%d')
+
+            # Match year only dates like '2021年'
+            match_year_only = re.match(r'(\d{4})年$', date_str)
+            if match_year_only:
+                year = match_year_only.group(1)
+                return f'{year}-12-31'
+
+        return date_str
     
-    # Handle xMxx format (e.g., 9M22, 12M23)
-    xmxx_match = re.match(r'^(\d+)M(\d{2})$', date_str)
-    if xmxx_match:
-        month = int(xmxx_match.group(1))
-        year = 2000 + int(xmxx_match.group(2))
-        if month == 12:
-            return datetime(year, 12, 31)
-        elif month in [1, 3, 5, 7, 8, 10]:
-            return datetime(year, month, 31)
-        elif month in [4, 6, 9, 11]:
-            return datetime(year, month, 30)
-        elif month == 2:
-            if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
-                return datetime(year, 2, 29)
-            else:
-                return datetime(year, 2, 28)
+    # Preprocess the date
+    preprocessed = preprocess_date(original_str)
     
-    # Handle standard date formats
-    date_formats = [
-        '%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y',
-        '%Y-%m-%d', '%m/%d/%Y', '%m-%d-%Y',
-        '%d/%b/%Y', '%d-%b-%Y', '%b/%d/%Y', '%b-%d-%Y',
-        '%d/%B/%Y', '%d-%B-%Y', '%B/%d/%Y', '%B-%d-%Y',
-        '%Y年%m月%d日', '%Y年%m月', '%m月%d日', '%Y/%m/%d',
-        '%Y.%m.%d', '%Y年%m月%d日', '%Y年%m月%d号',
-        '%Y%m%d', '%d%m%Y', '%m%d%Y'
-    ]
+    if debug and preprocessed != original_str:
+        print(f"      [parse_date]   Preprocessed: '{preprocessed}'")
     
-    for fmt in date_formats:
-        try:
-            return datetime.strptime(date_str, fmt)
-        except (ValueError, TypeError):
-            continue
+    # Try to convert preprocessed date to datetime using pandas
+    try:
+        result = pd.to_datetime(preprocessed, errors='coerce')
+        if pd.notna(result):
+            if debug:
+                print(f"      [parse_date]   ✅ Success: {result.strftime('%Y-%m-%d')}")
+            return result.to_pydatetime()
+    except:
+        pass
+    
+    if debug:
+        print(f"      [parse_date]   ❌ Failed to parse")
     
     return None
 
@@ -207,19 +217,33 @@ def extract_financial_table(
     
     if debug:
         print(f"[DEBUG] ✅ Description column at index: {desc_col_idx}")
+        print(f"[DEBUG] Full header row contents:")
+        for i, val in enumerate(header_row):
+            if i <= desc_col_idx + 10:  # Show first few columns
+                print(f"[DEBUG]   Column {i}: '{val}'")
     
     # Find ALL columns with "示意性调整后" or "Indicative adjusted"
     header_row = df.iloc[header_row_idx]
     adjusted_columns = []  # List of col_idx with adjusted header
     
+    if debug:
+        print(f"[DEBUG] Searching for columns with '示意性调整后' or 'Indicative adjusted'...")
+    
     for col_idx in range(desc_col_idx + 1, len(header_row)):
         header_value = str(header_row.iloc[col_idx]).lower()
+        
+        if debug and col_idx <= desc_col_idx + 10:
+            print(f"[DEBUG]   Column {col_idx}: '{header_row.iloc[col_idx]}' → checking...")
+        
         if '示意性调整后' in header_value or 'indicative adjusted' in header_value:
             adjusted_columns.append(col_idx)
+            if debug:
+                print(f"[DEBUG]     ✅ Match! Added column {col_idx}")
     
     if not adjusted_columns:
         if debug:
             print(f"[DEBUG] ❌ No columns with '示意性调整后' or 'Indicative adjusted' found!")
+            print(f"[DEBUG] Checked columns {desc_col_idx + 1} to {len(header_row)}")
         return None
     
     if debug:
@@ -236,14 +260,27 @@ def extract_financial_table(
     
     # Parse dates for each adjusted column
     date_columns = []  # List of (col_idx, parsed_date, date_string)
+    
+    if debug:
+        print(f"[DEBUG] Parsing dates from adjusted columns...")
+    
     for col_idx in adjusted_columns:
         date_str = date_row.iloc[col_idx]
+        
+        if debug:
+            print(f"[DEBUG]   Checking column {col_idx}: '{date_str}'")
+        
         if pd.isna(date_str) or str(date_str).strip() == '':
+            if debug:
+                print(f"[DEBUG]     Skipped (empty)")
             continue
         
-        parsed_date = parse_date(date_str)
+        parsed_date = parse_date(date_str, debug=debug)
         if parsed_date:
             date_columns.append((col_idx, parsed_date, str(date_str)))
+        else:
+            if debug:
+                print(f"[DEBUG]     Failed to parse date")
     
     if not date_columns:
         if debug:
@@ -303,7 +340,13 @@ def extract_financial_table(
                 print(f"[DEBUG]   Row {row_idx}: '{desc}'")
     
     # Build result dataframe with Description + ALL adjusted columns
+    if debug:
+        print(f"\n[DEBUG] Extracting data from rows {data_start_row} to {data_end_row}...")
+        print(f"[DEBUG] Will extract from description column {desc_col_idx} and date columns: {[col for col, _, _ in date_columns]}")
+    
     result_rows = []
+    skipped_empty_desc = 0
+    
     for row_idx in range(data_start_row, data_end_row):
         row = df.iloc[row_idx]
         
@@ -311,12 +354,15 @@ def extract_financial_table(
         
         # Skip if description is null or empty
         if pd.isna(description) or str(description).strip() == '':
+            skipped_empty_desc += 1
             continue
         
         # Build row dict with description and all date values
         row_dict = {'Description': str(description).strip()}
         
         has_any_nonzero_value = False
+        conversion_errors = 0
+        
         for col_idx, parsed_date, date_str in date_columns:
             value = row.iloc[col_idx]
             
@@ -334,12 +380,24 @@ def extract_financial_table(
                 if numeric_value != 0:
                     has_any_nonzero_value = True
             except (ValueError, TypeError):
+                conversion_errors += 1
                 # Use formatted date as column name
                 col_name = parsed_date.strftime('%Y-%m-%d')
                 row_dict[col_name] = 0
         
         # Add row (even if all zeros, we'll filter later)
         result_rows.append(row_dict)
+        
+        # Debug first few rows
+        if debug and len(result_rows) <= 5:
+            values_str = ", ".join([f"{col}: {row_dict[col]}" for col in row_dict if col != 'Description'])
+            print(f"[DEBUG]   Row {row_idx}: '{row_dict['Description'][:50]}' → {values_str}")
+    
+    if debug:
+        print(f"[DEBUG] Extraction complete:")
+        print(f"[DEBUG]   - Total rows processed: {data_end_row - data_start_row}")
+        print(f"[DEBUG]   - Rows with empty descriptions: {skipped_empty_desc}")
+        print(f"[DEBUG]   - Rows extracted: {len(result_rows)}")
     
     if not result_rows:
         if debug:

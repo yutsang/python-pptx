@@ -87,12 +87,12 @@ from fdd_utils.financial_extraction import (
 
 # Extract BS and IS from single sheet
 # Both statements are in the same sheet, separated by headers:
-# - "示意性调整后资产负债表" or "Indicative adjusted balance sheet"
+# - "示意性调整后资产负债表" or "Indicative adjusted balance sheet"  
 # - "示意性调整后利润表" or "Indicative adjusted income statement"
 results = extract_balance_sheet_and_income_statement(
     workbook_path="databook.xlsx",
-    sheet_name="Financial Statements",  # Sheet containing both BS and IS
-    debug=True                           # Enable debug prints
+    sheet_name="Sheet1",     # Sheet name containing both BS and IS
+    debug=True               # Enable comprehensive debug prints
 )
 
 # Access results
