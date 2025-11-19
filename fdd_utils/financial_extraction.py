@@ -245,11 +245,19 @@ def extract_financial_table(
             adjusted_columns.append(col_idx)
             if debug and len(adjusted_columns) <= 15:
                 # Show what's in this column for first few rows
-                print(f"[DEBUG]   Column {col_idx}:")
+                print(f"[DEBUG]   Column {col_idx} has data:")
                 for r in range(header_row_idx, min(header_row_idx + 4, len(df))):
                     val = df.iloc[r, col_idx]
                     if pd.notna(val) and str(val).strip() != '':
                         print(f"[DEBUG]     Row {r}: '{val}'")
+    
+    if debug:
+        print(f"\n[DEBUG] ========== DETECTED COLUMNS ==========")
+        print(f"[DEBUG] Total columns with data: {len(adjusted_columns)}")
+        print(f"[DEBUG] Column indices: {adjusted_columns}")
+        if len(adjusted_columns) > 15:
+            print(f"[DEBUG] Showing first 15 columns only above")
+        print(f"=" * 80)
     
     # Get date row (row after header)
     date_row_idx = header_row_idx + 1
@@ -290,9 +298,17 @@ def extract_financial_table(
         return None
     
     if debug:
-        print(f"[DEBUG] ✅ Found {len(date_columns)} date columns:")
+        print(f"\n[DEBUG] ========== COLUMNS SELECTED FOR OUTPUT ==========")
+        print(f"[DEBUG] Description column: {desc_col_idx}")
+        print(f"[DEBUG] Date columns found: {len(date_columns)}")
         for col_idx, parsed_date, date_str in date_columns:
-            print(f"[DEBUG]    Column {col_idx}: {date_str} → {parsed_date.strftime('%Y-%m-%d')}")
+            print(f"[DEBUG]   ✅ Column {col_idx}: '{date_str}' → will be named '{parsed_date.strftime('%Y-%m-%d')}'")
+        
+        print(f"\n[DEBUG] Final output will have columns:")
+        output_cols = ['Description'] + [parsed_date.strftime('%Y-%m-%d') for _, parsed_date, _ in date_columns]
+        print(f"[DEBUG]   {output_cols}")
+        print(f"[DEBUG] Total: {len(output_cols)} columns ({len(output_cols)-1} date columns)")
+        print(f"=" * 80)
     
     # Check if CNY'000 multiplier needed
     date_row_str = ' '.join(date_row.astype(str).values)
@@ -357,16 +373,10 @@ def extract_financial_table(
         # Skip if description is null or empty
         if pd.isna(description) or str(description).strip() == '':
             skipped_empty_desc += 1
-            if debug and skipped_empty_desc <= 3:
-                print(f"[DEBUG]   Row {row_idx}: SKIPPED (empty description)")
             continue
         
         # Build row dict with description and all date values
         row_dict = {'Description': str(description).strip()}
-        
-        # Show EVERY row in debug mode (not just first few)
-        if debug:
-            print(f"\n[DEBUG]   === Row {row_idx}: '{str(description).strip()[:60]}' ===")
         
         has_any_nonzero_value = False
         conversion_errors = 0
@@ -374,10 +384,6 @@ def extract_financial_table(
         for col_idx, parsed_date, date_str in date_columns:
             value = row.iloc[col_idx]
             col_name = parsed_date.strftime('%Y-%m-%d')
-            
-            # Debug EVERY value extraction
-            if debug:
-                print(f"[DEBUG]     Col {col_idx} ({col_name}): '{value}' (type: {type(value).__name__})", end='')
             
             # Try to convert to float
             try:
@@ -390,19 +396,19 @@ def extract_financial_table(
                 
                 if numeric_value != 0:
                     has_any_nonzero_value = True
-                
-                if debug:
-                    print(f" → {int(numeric_value)}")
                     
             except (ValueError, TypeError) as e:
                 conversion_errors += 1
                 row_dict[col_name] = 0
-                
-                if debug:
-                    print(f" → ❌ ERROR: {e}")
         
         # Add row (even if all zeros, we'll filter later)
         result_rows.append(row_dict)
+        
+        # Debug only problematic rows or first few
+        if debug and (len(result_rows) <= 3 or conversion_errors > 0 or not has_any_nonzero_value):
+            values_str = ", ".join([f"{col}: {row_dict[col]}" for col in row_dict if col != 'Description'])
+            status = "⚠️ ALL ZEROS" if not has_any_nonzero_value else ("⚠️ ERRORS" if conversion_errors > 0 else "✅")
+            print(f"[DEBUG]   Row {row_idx} {status}: '{row_dict['Description'][:50]}' → {values_str}")
     
     if debug:
         print(f"\n[DEBUG] Extraction complete:")
