@@ -418,8 +418,12 @@ def print_reconciliation_report(bs_recon_df: pd.DataFrame, is_recon_df: pd.DataF
         if not df_to_show.empty:
             # Format for display
             df_display = df_to_show.copy()
-            df_display['Source_Value'] = df_display['Source_Value'].apply(lambda x: f"{x:,.0f}")
-            df_display['DFS_Value'] = df_display['DFS_Value'].apply(lambda x: f"{x:,.0f}")
+            df_display['Source_Value'] = df_display['Source_Value'].apply(
+                lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
+            )
+            df_display['DFS_Value'] = df_display['DFS_Value'].apply(
+                lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
+            )
             
             print(df_display.to_string(index=False))
         else:
@@ -437,8 +441,12 @@ def print_reconciliation_report(bs_recon_df: pd.DataFrame, is_recon_df: pd.DataF
         if not df_to_show.empty:
             # Format for display
             df_display = df_to_show.copy()
-            df_display['Source_Value'] = df_display['Source_Value'].apply(lambda x: f"{x:,.0f}")
-            df_display['DFS_Value'] = df_display['DFS_Value'].apply(lambda x: f"{x:,.0f}")
+            df_display['Source_Value'] = df_display['Source_Value'].apply(
+                lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
+            )
+            df_display['DFS_Value'] = df_display['DFS_Value'].apply(
+                lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
+            )
             
             print(df_display.to_string(index=False))
         else:
