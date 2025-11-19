@@ -76,7 +76,7 @@ AR:
 Prepayments:
   type: BS
   category: Current assets
-  aliases: ["Prepayment", "Prepayments", "預收款項", "预收款项", "预付款项"]
+  aliases: ["Prepayment", "Prepayments", "预付款项"]
   system_prompts:
   user_prompts:
   patterns:

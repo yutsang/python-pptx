@@ -253,12 +253,11 @@ def reconcile_financial_statements(
                 if dfs_key == 'SKIP':
                     bs_recon_rows.append({
                         'Source_Account': account_name,
-                        'Date': '-',
-                        'Source_Value': '-',
+                        'Date': latest_date,
+                        'Source_Value': source_value,
                         'DFS_Account': '-',
                         'DFS_Value': '-',
-                        'Match': '-',
-                        'Difference': '-'
+                        'Match': '-'
                     })
                     continue
                 
@@ -287,8 +286,7 @@ def reconcile_financial_statements(
                     'Source_Value': source_value,
                     'DFS_Account': dfs_key or 'Not Found',
                     'DFS_Value': dfs_value if dfs_value is not None else 0,
-                    'Match': match_status,
-                    'Difference': difference if difference is not None else 0
+                    'Match': match_status
                 })
     
     # Reconcile Income Statement
@@ -317,12 +315,11 @@ def reconcile_financial_statements(
                 if dfs_key == 'SKIP':
                     is_recon_rows.append({
                         'Source_Account': account_name,
-                        'Date': '-',
-                        'Source_Value': '-',
+                        'Date': latest_date,
+                        'Source_Value': source_value_raw,
                         'DFS_Account': '-',
                         'DFS_Value': '-',
-                        'Match': '-',
-                        'Difference': '-'
+                        'Match': '-'
                     })
                     continue
                 
@@ -360,8 +357,7 @@ def reconcile_financial_statements(
                     'Source_Value': source_value,  # Use converted value
                     'DFS_Account': dfs_key or 'Not Found',
                     'DFS_Value': dfs_value if dfs_value is not None else 0,
-                    'Match': match_status,
-                    'Difference': difference if difference is not None else 0
+                    'Match': match_status
                 })
     
     # Create DataFrames
