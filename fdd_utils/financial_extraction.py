@@ -406,11 +406,21 @@ def extract_financial_table(
         # Build row dict with description and all date values
         row_dict = {'Description': str(description).strip()}
         
+        # Debug: show full row data for first few rows
+        if debug and len(result_rows) < 3:
+            print(f"\n[DEBUG]   Processing row {row_idx}: '{str(description).strip()}'")
+            print(f"[DEBUG]   Full row data (first 15 cols): {row.values[:15]}")
+        
         has_any_nonzero_value = False
         conversion_errors = 0
         
         for col_idx, parsed_date, date_str in date_columns:
             value = row.iloc[col_idx]
+            col_name = parsed_date.strftime('%Y-%m-%d')
+            
+            # Debug value extraction for first few rows
+            if debug and len(result_rows) < 3:
+                print(f"[DEBUG]     Column {col_idx} ({col_name}): raw value = '{value}' (type: {type(value).__name__})")
             
             # Try to convert to float
             try:
@@ -419,17 +429,20 @@ def extract_financial_table(
                     numeric_value *= 1000
                 numeric_value = round(numeric_value, 0)
                 
-                # Use formatted date as column name
-                col_name = parsed_date.strftime('%Y-%m-%d')
                 row_dict[col_name] = int(numeric_value)
                 
                 if numeric_value != 0:
                     has_any_nonzero_value = True
-            except (ValueError, TypeError):
+                
+                if debug and len(result_rows) < 3:
+                    print(f"[DEBUG]       → Converted to: {int(numeric_value)}")
+                    
+            except (ValueError, TypeError) as e:
                 conversion_errors += 1
-                # Use formatted date as column name
-                col_name = parsed_date.strftime('%Y-%m-%d')
                 row_dict[col_name] = 0
+                
+                if debug and len(result_rows) < 3:
+                    print(f"[DEBUG]       → ❌ Conversion failed: {e}")
         
         # Add row (even if all zeros, we'll filter later)
         result_rows.append(row_dict)
@@ -440,10 +453,19 @@ def extract_financial_table(
             print(f"[DEBUG]   Row {row_idx}: '{row_dict['Description'][:50]}' → {values_str}")
     
     if debug:
-        print(f"[DEBUG] Extraction complete:")
+        print(f"\n[DEBUG] Extraction complete:")
         print(f"[DEBUG]   - Total rows processed: {data_end_row - data_start_row}")
         print(f"[DEBUG]   - Rows with empty descriptions: {skipped_empty_desc}")
         print(f"[DEBUG]   - Rows extracted: {len(result_rows)}")
+        
+        # Show which columns had most conversion errors
+        if result_rows:
+            temp_df = pd.DataFrame(result_rows)
+            for col in temp_df.columns:
+                if col != 'Description':
+                    zero_count = (temp_df[col] == 0).sum()
+                    nonzero_count = (temp_df[col] != 0).sum()
+                    print(f"[DEBUG]   Column '{col}': {nonzero_count} non-zero, {zero_count} zeros")
     
     if not result_rows:
         if debug:
