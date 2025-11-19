@@ -14,9 +14,66 @@ def load_mappings(mappings_file: str = 'fdd_utils/mappings.yml') -> dict:
         return yaml.safe_load(f)
 
 
-def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mappings: dict, debug: bool = False) -> Tuple[Optional[str], Optional[pd.DataFrame]]:
+def should_skip_mapping(account_name: str) -> bool:
     """
-    Find an account in dfs using mappings aliases with improved matching.
+    Check if account should skip mapping (totals and profit/loss lines).
+    
+    Args:
+        account_name: Account name from BS/IS
+        
+    Returns:
+        True if should skip mapping, False otherwise
+    """
+    account_lower = account_name.lower()
+    
+    # Chinese accounts to skip
+    chinese_skip = [
+        '合计',  # xxx合计
+        '总计',  # xxx总计
+        '毛利',
+        '营业利润',
+        '利润总额',
+        '净利润',
+        '亏损'
+    ]
+    
+    # English accounts to skip
+    english_skip = [
+        'gross profit',
+        'gross loss',
+        'operating profit',
+        'operating loss',
+        'profit before taxation',
+        'loss before taxation',
+        'net profit',
+        'net loss'
+    ]
+    
+    # Check if ends with 合计 or 总计
+    if account_name.endswith('合计') or account_name.endswith('总计'):
+        return True
+    
+    # Check if starts with Total
+    if account_name.startswith('Total ') or account_name.startswith('total '):
+        return True
+    
+    # Check Chinese keywords
+    for keyword in chinese_skip:
+        if keyword in account_name:
+            return True
+    
+    # Check English keywords
+    for keyword in english_skip:
+        if keyword in account_lower:
+            return True
+    
+    return False
+
+
+def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mappings: dict, debug: bool = False) -> Tuple[Optional[str], Optional[pd.DataFrame], Optional[str]]:
+    """
+    Find an account in dfs using ONLY mappings.yml aliases (no name-based matching).
+    Skips mapping for total/profit lines.
     
     Args:
         account_name: Account name from BS/IS
@@ -25,23 +82,24 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
         debug: Enable debug output
         
     Returns:
-        Tuple of (mapping_key, dataframe) or (None, None) if not found
+        Tuple of (mapping_key, dataframe, category) or (None, None, None) if not found
+        category: 'Expenses', 'Income', 'Assets', etc. from mappings.yml
     """
     if debug:
         print(f"    [MATCH] Searching for: '{account_name}'")
     
-    # Try exact match in dfs keys first
-    if account_name in dfs:
+    # Check if this account should skip mapping
+    if should_skip_mapping(account_name):
         if debug:
-            print(f"    [MATCH]   ✅ Exact match in dfs keys")
-        return account_name, dfs[account_name]
+            print(f"    [MATCH]   ⏭️  Skipped (total/profit line)")
+        return 'SKIP', None, None
     
     # Remove common suffixes/prefixes for better matching
     account_clean = account_name.strip()
-    for suffix in ['：', ':', '合计', '总计', 'Total', 'total']:
+    for suffix in ['：', ':', '（', '）', '(', ')']:
         account_clean = account_clean.replace(suffix, '').strip()
     
-    # Try to find via mappings
+    # ONLY use mappings.yml aliases - no name-based matching
     for key, config in mappings.items():
         if key.startswith('_'):  # Skip special keys
             continue
@@ -50,36 +108,38 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
             continue
         
         aliases = config.get('aliases', [])
+        category = config.get('category', None)
         
         # Check if account_name exactly matches any alias
-        if account_name in aliases or account_clean in aliases:
+        if account_name in aliases:
             if key in dfs:
                 if debug:
-                    print(f"    [MATCH]   ✅ Found via alias match: key='{key}'")
-                return key, dfs[key]
+                    print(f"    [MATCH]   ✅ Exact alias match: alias='{account_name}', key='{key}', category='{category}'")
+                return key, dfs[key], category
         
-        # Check if any alias contains or is contained in account_name
+        # Check cleaned account name
+        if account_clean in aliases:
+            if key in dfs:
+                if debug:
+                    print(f"    [MATCH]   ✅ Cleaned alias match: alias='{account_clean}', key='{key}', category='{category}'")
+                return key, dfs[key], category
+        
+        # Check each alias for exact match
         for alias in aliases:
             alias_clean = alias.strip()
-            # Exact substring match
-            if alias_clean.lower() in account_clean.lower() or account_clean.lower() in alias_clean.lower():
+            # Exact match only
+            if alias == account_name or alias == account_clean:
                 if key in dfs:
                     if debug:
-                        print(f"    [MATCH]   ✅ Found via partial match: alias='{alias}', key='{key}'")
-                    return key, dfs[key]
-    
-    # Last resort: try direct partial matching in dfs keys
-    for dfs_key in dfs.keys():
-        if account_clean.lower() in dfs_key.lower() or dfs_key.lower() in account_clean.lower():
-            if debug:
-                print(f"    [MATCH]   ✅ Found via direct key match: '{dfs_key}'")
-            return dfs_key, dfs[dfs_key]
+                        print(f"    [MATCH]   ✅ Exact alias match: alias='{alias}', key='{key}', category='{category}'")
+                    return key, dfs[key], category
     
     if debug:
-        print(f"    [MATCH]   ❌ Not found")
+        print(f"    [MATCH]   ❌ Not found in mappings.yml aliases")
+        print(f"    [MATCH]   Tried: '{account_name}' and cleaned: '{account_clean}'")
         print(f"    [MATCH]   Available dfs keys: {list(dfs.keys())[:10]}...")
     
-    return None, None
+    return None, None, None
 
 
 def get_total_from_dfs(dfs_df: pd.DataFrame, date_col: str, debug: bool = False) -> Optional[float]:
@@ -184,16 +244,34 @@ def reconcile_financial_statements(
                 account_name = row['Description']
                 source_value = row[latest_date]
                 
-                # Find matching account in dfs
-                dfs_key, dfs_df = find_account_in_dfs(account_name, dfs, mappings, debug=debug and idx < 10)
+                # Find matching account in dfs (ONLY via mappings.yml)
+                dfs_key, dfs_df, category = find_account_in_dfs(account_name, dfs, mappings, debug=debug and idx < 10)
+                
+                # Handle skipped accounts (totals/profit lines)
+                if dfs_key == 'SKIP':
+                    bs_recon_rows.append({
+                        'Source_Account': account_name,
+                        'Date': latest_date,
+                        'Source_Value': source_value,
+                        'DFS_Account': 'Not Mapped',
+                        'DFS_Value': '-',
+                        'Match': 'ℹ️ Not Mapped',
+                        'Difference': '-'
+                    })
+                    continue
                 
                 # Get total value from dfs
                 dfs_value = get_total_from_dfs(dfs_df, latest_date, debug and idx < 10) if dfs_df is not None else None
                 
                 # Check match
                 if dfs_value is None:
-                    match_status = '⚠️ Not Found'
-                    difference = None
+                    # If source is 0 and dfs not found, consider it a match
+                    if source_value == 0:
+                        match_status = '✅ Match (both zero)'
+                        difference = 0
+                    else:
+                        match_status = '⚠️ Not Found'
+                        difference = None
                 else:
                     difference = abs(source_value - dfs_value)
                     if difference <= tolerance:
@@ -228,18 +306,45 @@ def reconcile_financial_statements(
         if latest_date:
             for idx, row in is_df.iterrows():
                 account_name = row['Description']
-                source_value = row[latest_date]
+                source_value_raw = row[latest_date]
                 
-                # Find matching account in dfs
-                dfs_key, dfs_df = find_account_in_dfs(account_name, dfs, mappings, debug=debug and idx < 10)
+                # Find matching account in dfs (ONLY via mappings.yml)
+                dfs_key, dfs_df, category = find_account_in_dfs(account_name, dfs, mappings, debug=debug and idx < 10)
+                
+                # Handle skipped accounts (totals/profit lines)
+                if dfs_key == 'SKIP':
+                    is_recon_rows.append({
+                        'Source_Account': account_name,
+                        'Date': latest_date,
+                        'Source_Value': source_value_raw,
+                        'DFS_Account': 'Not Mapped',
+                        'DFS_Value': '-',
+                        'Match': 'ℹ️ Not Mapped',
+                        'Difference': '-'
+                    })
+                    continue
+                
+                # For Income Statement: Convert expenses (negative values) to positive
+                # Expenses category in mappings.yml should have negative values shown as positive
+                source_value = source_value_raw
+                if category and 'expense' in category.lower():
+                    if source_value_raw < 0:
+                        source_value = abs(source_value_raw)
+                        if debug and idx < 5:
+                            print(f"    [CONVERT] Expense account: {source_value_raw} → {source_value} (negative to positive)")
                 
                 # Get total value from dfs
                 dfs_value = get_total_from_dfs(dfs_df, latest_date, debug and idx < 10) if dfs_df is not None else None
                 
                 # Check match
                 if dfs_value is None:
-                    match_status = '⚠️ Not Found'
-                    difference = None
+                    # If source is 0 and dfs not found, consider it a match
+                    if source_value == 0:
+                        match_status = '✅ Match (both zero)'
+                        difference = 0
+                    else:
+                        match_status = '⚠️ Not Found'
+                        difference = None
                 else:
                     difference = abs(source_value - dfs_value)
                     if difference <= tolerance:
@@ -250,7 +355,7 @@ def reconcile_financial_statements(
                 is_recon_rows.append({
                     'Source_Account': account_name,
                     'Date': latest_date,
-                    'Source_Value': source_value,
+                    'Source_Value': source_value,  # Use converted value
                     'DFS_Account': dfs_key or 'Not Found',
                     'DFS_Value': dfs_value if dfs_value is not None else 0,
                     'Match': match_status,

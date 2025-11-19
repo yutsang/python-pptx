@@ -188,26 +188,44 @@ Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Match    
 
 **Features**:
 - Uses **LATEST date column only** from BS/IS (last date column - most recent)
-- **Improved account matching**:
-  - Exact match in dfs keys
-  - Match via `mappings.yml` aliases
-  - Removes common suffixes ('合计', '总计', ':') for better matching
-  - Partial match as fallback
+- **Strict account matching using ONLY mappings.yml aliases**:
+  - Exact alias match (e.g., "货币资金" in aliases → key "Cash")
+  - Cleans suffixes ('：', '(', ')') before matching
+  - **NO name-based matching** - only uses defined aliases
+- **Auto-skips total/profit lines** (marked as ℹ️ Not Mapped):
+  - Chinese: xxx合计, xxx总计, 毛利, 营业利润, 净利润
+  - English: Total xxx, Gross profit, Operating profit, Net profit
 - Finds **total row** in DFS (looks for '合计', '总计', 'Total' keywords, or uses last non-zero row)
-- Shows ✅ Match, ❌ Diff: X, or ⚠️ Not Found
-- Calculates absolute differences
-- Can export to Excel for review
+- **Smart matching logic**:
+  - Source = 0 + DFS not found → ✅ Match (both zero)
+  - Source ≠ 0 + DFS not found → ⚠️ Not Found
+  - Total/profit lines → ℹ️ Not Mapped (skipped)
+- **Income Statement expenses**: Negative values auto-converted to positive (category='Expenses' in mappings.yml)
+- Shows: ✅ Match, ❌ Diff: X, ✅ Match (both zero), ⚠️ Not Found, ℹ️ Not Mapped
 
-**How Total is Found in DFS**:
-1. Searches for rows with keywords: '合计', '总计', 'Total', 'total'
-2. If not found, uses last non-zero row value
-3. Fallback: uses first row
+**Important**: Account matching ONLY works if the account name is in `mappings.yml` aliases. Add missing accounts to mappings.yml if needed.
+
+**Example Output**:
+```
+Source_Account      Date         Source_Value  DFS_Account  DFS_Value    Match
+货币资金            2024-05-31   4,119,178     Cash         4,119,178    ✅ Match
+流动资产合计        2024-05-31   9,246,577     Not Mapped   -            ℹ️ Not Mapped
+应收账款            2024-05-31   0             Not Found    0            ✅ Match (both zero)
+管理费用            2024-05-31   1,234,567     GA           1,234,567    ✅ Match
+净利润/（亏损）     2024-05-31   -85,061,858   Not Mapped   -            ℹ️ Not Mapped
+```
 
 **Example with Debug**:
 ```
-[RECON] Using latest date (last column): 2024-05-31  ← Most recent date
+    [MATCH] Searching for: '流动资产合计'
+    [MATCH]   ⏭️  Skipped (total/profit line) → ℹ️ Not Mapped
+
     [MATCH] Searching for: '货币资金'
-    [MATCH]   ✅ Found via alias match: key='Cash'
-      Found total row: '货币资金合计'  ← Gets total row, not first
+    [MATCH]   ✅ Exact alias match: alias='货币资金', key='Cash'
+      Found total row: '货币资金合计'
+
+    [MATCH] Searching for: '管理费用'
+    [MATCH]   ✅ Found: key='GA', category='Expenses'
+    [CONVERT] Expense: -1234567 → 1234567 (negative to positive)
 ```
 
