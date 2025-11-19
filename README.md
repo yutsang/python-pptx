@@ -161,12 +161,12 @@ dfs, keys, _, lang = extract_data_from_excel(
     mode="All"
 )
 
-# Reconcile the two sources
+# Reconcile the two sources (uses LATEST date column only)
 bs_recon, is_recon = reconcile_financial_statements(
     bs_is_results=bs_is_results,
     dfs=dfs,
     tolerance=1.0,  # Allow ±1 difference for rounding
-    debug=True
+    debug=True  # Shows which accounts are matched and total row detection
 )
 
 # Print report (show only mismatches)
@@ -187,9 +187,15 @@ Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Match    
 ```
 
 **Features**:
+- Uses **LATEST date column only** from BS/IS (first date column)
 - Automatically matches accounts using `mappings.yml` aliases
-- Compares values across all date columns
+- Finds **total row** in DFS (looks for '合计', '总计', 'Total' keywords, or uses last non-zero row)
 - Shows ✅ Match, ❌ Mismatch, or ⚠️ Not Found
 - Calculates absolute differences
 - Can export to Excel for review
+
+**How Total is Found in DFS**:
+1. Searches for rows with keywords: '合计', '总计', 'Total', 'total'
+2. If not found, uses last non-zero row value
+3. Fallback: uses first row
 

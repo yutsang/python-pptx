@@ -55,6 +55,49 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
     return None, None
 
 
+def get_total_from_dfs(dfs_df: pd.DataFrame, date_col: str, debug: bool = False) -> Optional[float]:
+    """
+    Get total value from DFS dataframe.
+    Looks for rows with keywords like 'Total', '合计', '总计' or uses the last row.
+    
+    Args:
+        dfs_df: DataFrame from dfs
+        date_col: Date column to get value from
+        debug: Enable debug output
+        
+    Returns:
+        Total value or None
+    """
+    if dfs_df is None or dfs_df.empty:
+        return None
+    
+    if date_col not in dfs_df.columns:
+        return None
+    
+    # Keywords for total rows
+    total_keywords = ['合计', '总计', 'Total', 'total', '小计']
+    
+    # Try to find total row
+    desc_col = dfs_df.columns[0]  # First column is description
+    for idx, row in dfs_df.iterrows():
+        desc = str(row[desc_col]).lower()
+        if any(keyword.lower() in desc for keyword in total_keywords):
+            if debug:
+                print(f"      Found total row: '{row[desc_col]}'")
+            return row[date_col]
+    
+    # If no total row found, use the last non-zero row
+    non_zero_rows = dfs_df[dfs_df[date_col] != 0]
+    if not non_zero_rows.empty:
+        last_value = non_zero_rows.iloc[-1][date_col]
+        if debug:
+            print(f"      Using last non-zero row value: {last_value}")
+        return last_value
+    
+    # Fallback: use first row
+    return dfs_df[date_col].iloc[0]
+
+
 def reconcile_financial_statements(
     bs_is_results: Dict,
     dfs: Dict[str, pd.DataFrame],
@@ -64,6 +107,7 @@ def reconcile_financial_statements(
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Reconcile Balance Sheet and Income Statement between two data sources.
+    Only uses the LATEST date column from BS/IS for comparison.
     
     Args:
         bs_is_results: Results from extract_balance_sheet_and_income_statement
@@ -77,11 +121,11 @@ def reconcile_financial_statements(
         Tuple of (bs_reconciliation_df, is_reconciliation_df)
         Each DataFrame has columns:
         - Source_Account: Account name from BS/IS
-        - Date: Date column
+        - Date: Date column (latest only)
         - Source_Value: Value from BS/IS
         - DFS_Account: Matched account key from dfs
-        - DFS_Value: Value from dfs
-        - Match: '✅ Match' or '❌ Mismatch' or '⚠️ Not Found'
+        - DFS_Value: Total value from dfs
+        - Match: '✅ Match' or '❌ Diff: X' or '⚠️ Not Found'
         - Difference: Absolute difference
     """
     if debug:
@@ -99,30 +143,28 @@ def reconcile_financial_statements(
         bs_df = bs_is_results['balance_sheet']
         date_cols = [col for col in bs_df.columns if col != 'Description']
         
+        # Use only the LATEST date column (first one)
+        latest_date = date_cols[0] if date_cols else None
+        
         if debug:
             print(f"\n[RECON] Reconciling Balance Sheet...")
             print(f"[RECON]   Accounts to check: {len(bs_df)}")
-            print(f"[RECON]   Date columns: {date_cols}")
+            print(f"[RECON]   Available dates: {date_cols}")
+            print(f"[RECON]   Using latest date: {latest_date}")
         
-        for idx, row in bs_df.iterrows():
-            account_name = row['Description']
-            
-            # Find matching account in dfs
-            dfs_key, dfs_df = find_account_in_dfs(account_name, dfs, mappings)
-            
-            if debug and idx < 5:
-                print(f"[RECON]   '{account_name}' → dfs key: '{dfs_key}'")
-            
-            for date_col in date_cols:
-                source_value = row[date_col]
+        if latest_date:
+            for idx, row in bs_df.iterrows():
+                account_name = row['Description']
+                source_value = row[latest_date]
                 
-                # Get corresponding value from dfs
-                dfs_value = None
-                if dfs_df is not None and not dfs_df.empty:
-                    # dfs has columns like: [Description, '2024-12-31', '2024-12-31_formatted']
-                    if date_col in dfs_df.columns:
-                        # Get the total (usually first row or sum)
-                        dfs_value = dfs_df[date_col].iloc[0] if len(dfs_df) > 0 else None
+                # Find matching account in dfs
+                dfs_key, dfs_df = find_account_in_dfs(account_name, dfs, mappings)
+                
+                if debug and idx < 5:
+                    print(f"[RECON]   '{account_name}' → dfs key: '{dfs_key}'")
+                
+                # Get total value from dfs
+                dfs_value = get_total_from_dfs(dfs_df, latest_date, debug and idx < 5) if dfs_df is not None else None
                 
                 # Check match
                 if dfs_value is None:
@@ -137,7 +179,7 @@ def reconcile_financial_statements(
                 
                 bs_recon_rows.append({
                     'Source_Account': account_name,
-                    'Date': date_col,
+                    'Date': latest_date,
                     'Source_Value': source_value,
                     'DFS_Account': dfs_key or 'Not Found',
                     'DFS_Value': dfs_value if dfs_value is not None else 0,
@@ -150,28 +192,28 @@ def reconcile_financial_statements(
         is_df = bs_is_results['income_statement']
         date_cols = [col for col in is_df.columns if col != 'Description']
         
+        # Use only the LATEST date column (first one)
+        latest_date = date_cols[0] if date_cols else None
+        
         if debug:
             print(f"\n[RECON] Reconciling Income Statement...")
             print(f"[RECON]   Accounts to check: {len(is_df)}")
-            print(f"[RECON]   Date columns: {date_cols}")
+            print(f"[RECON]   Available dates: {date_cols}")
+            print(f"[RECON]   Using latest date: {latest_date}")
         
-        for idx, row in is_df.iterrows():
-            account_name = row['Description']
-            
-            # Find matching account in dfs
-            dfs_key, dfs_df = find_account_in_dfs(account_name, dfs, mappings)
-            
-            if debug and idx < 5:
-                print(f"[RECON]   '{account_name}' → dfs key: '{dfs_key}'")
-            
-            for date_col in date_cols:
-                source_value = row[date_col]
+        if latest_date:
+            for idx, row in is_df.iterrows():
+                account_name = row['Description']
+                source_value = row[latest_date]
                 
-                # Get corresponding value from dfs
-                dfs_value = None
-                if dfs_df is not None and not dfs_df.empty:
-                    if date_col in dfs_df.columns:
-                        dfs_value = dfs_df[date_col].iloc[0] if len(dfs_df) > 0 else None
+                # Find matching account in dfs
+                dfs_key, dfs_df = find_account_in_dfs(account_name, dfs, mappings)
+                
+                if debug and idx < 5:
+                    print(f"[RECON]   '{account_name}' → dfs key: '{dfs_key}'")
+                
+                # Get total value from dfs
+                dfs_value = get_total_from_dfs(dfs_df, latest_date, debug and idx < 5) if dfs_df is not None else None
                 
                 # Check match
                 if dfs_value is None:
@@ -186,7 +228,7 @@ def reconcile_financial_statements(
                 
                 is_recon_rows.append({
                     'Source_Account': account_name,
-                    'Date': date_col,
+                    'Date': latest_date,
                     'Source_Value': source_value,
                     'DFS_Account': dfs_key or 'Not Found',
                     'DFS_Value': dfs_value if dfs_value is not None else 0,
