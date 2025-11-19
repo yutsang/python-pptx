@@ -72,8 +72,10 @@ def should_skip_mapping(account_name: str) -> bool:
 
 def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mappings: dict, debug: bool = False) -> Tuple[Optional[str], Optional[pd.DataFrame], Optional[str]]:
     """
-    Find an account in dfs using ONLY mappings.yml aliases (no name-based matching).
-    Skips mapping for total/profit lines.
+    Find an account in dfs by:
+    1. Finding which mapping KEY the source account belongs to (via aliases in mappings.yml)
+    2. Checking if that KEY exists in dfs.keys()
+    3. If yes, they match!
     
     Args:
         account_name: Account name from BS/IS
@@ -83,10 +85,9 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
         
     Returns:
         Tuple of (mapping_key, dataframe, category) or (None, None, None) if not found
-        category: 'Expenses', 'Income', 'Assets', etc. from mappings.yml
     """
     if debug:
-        print(f"    [MATCH] Searching for: '{account_name}'")
+        print(f"    [MATCH] Source account: '{account_name}'")
     
     # Check if this account should skip mapping
     if should_skip_mapping(account_name):
@@ -94,12 +95,15 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
             print(f"    [MATCH]   ⏭️  Skipped (total/profit line)")
         return 'SKIP', None, None
     
-    # Remove common suffixes/prefixes for better matching
+    # Remove common suffixes for better matching
     account_clean = account_name.strip()
     for suffix in ['：', ':', '（', '）', '(', ')']:
         account_clean = account_clean.replace(suffix, '').strip()
     
-    # ONLY use mappings.yml aliases - no name-based matching
+    if debug:
+        print(f"    [MATCH]   Step 1: Find mapping key for '{account_name}'")
+    
+    # Search through mappings to find which KEY this account belongs to
     for key, config in mappings.items():
         if key.startswith('_'):  # Skip special keys
             continue
@@ -110,34 +114,28 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
         aliases = config.get('aliases', [])
         category = config.get('category', None)
         
-        # Check if account_name exactly matches any alias
-        if account_name in aliases:
+        # Check if account_name is in this key's aliases
+        if account_name in aliases or account_clean in aliases:
+            if debug:
+                print(f"    [MATCH]     Found in mappings: key='{key}', category='{category}'")
+                print(f"    [MATCH]   Step 2: Check if key '{key}' exists in dfs...")
+                print(f"    [MATCH]     DFS keys: {list(dfs.keys())}")
+            
+            # Now check if this KEY exists in dfs
             if key in dfs:
                 if debug:
-                    print(f"    [MATCH]   ✅ Exact alias match: alias='{account_name}', key='{key}', category='{category}'")
+                    print(f"    [MATCH]     ✅ Key '{key}' found in dfs!")
                 return key, dfs[key], category
-        
-        # Check cleaned account name
-        if account_clean in aliases:
-            if key in dfs:
+            else:
                 if debug:
-                    print(f"    [MATCH]   ✅ Cleaned alias match: alias='{account_clean}', key='{key}', category='{category}'")
-                return key, dfs[key], category
-        
-        # Check each alias for exact match
-        for alias in aliases:
-            alias_clean = alias.strip()
-            # Exact match only
-            if alias == account_name or alias == account_clean:
-                if key in dfs:
-                    if debug:
-                        print(f"    [MATCH]   ✅ Exact alias match: alias='{alias}', key='{key}', category='{category}'")
-                    return key, dfs[key], category
+                    print(f"    [MATCH]     ❌ Key '{key}' NOT in dfs keys")
+                    print(f"    [MATCH]     (Account matched in mappings but not extracted in dfs)")
+                return None, None, category
     
+    # Not found in any mapping aliases
     if debug:
-        print(f"    [MATCH]   ❌ Not found in mappings.yml aliases")
-        print(f"    [MATCH]   Tried: '{account_name}' and cleaned: '{account_clean}'")
-        print(f"    [MATCH]   Available dfs keys: {list(dfs.keys())[:10]}...")
+        print(f"    [MATCH]   ❌ Account '{account_name}' not found in any mappings.yml aliases")
+        print(f"    [MATCH]   DFS keys available: {list(dfs.keys())}")
     
     return None, None, None
 
