@@ -273,14 +273,34 @@ def extract_financial_table(
     else:  # Income Statement
         end_keywords = ["净利润", "Net profit", "Net Profit"]
     
+    if debug:
+        print(f"[DEBUG] Looking for end markers: {end_keywords}")
+        print(f"[DEBUG] Searching from row {data_start_row} to {len(df)}")
+    
+    end_marker_found = False
     for row_idx in range(data_start_row, len(df)):
         row = df.iloc[row_idx]
         desc = str(row.iloc[desc_col_idx]).strip()
+        
+        if debug and row_idx < data_start_row + 10:  # Show first 10 rows
+            print(f"[DEBUG]   Row {row_idx}: '{desc}'")
+        
         if any(keyword.lower() in desc.lower() for keyword in end_keywords):
             data_end_row = row_idx + 1  # Include this row
+            end_marker_found = True
             if debug:
-                print(f"[DEBUG] Found end marker at row {row_idx}: '{desc}'")
+                print(f"[DEBUG] ✅ Found end marker at row {row_idx}: '{desc}'")
             break
+    
+    if debug:
+        if not end_marker_found:
+            print(f"[DEBUG] ⚠️  No end marker found! Will extract to end of dataframe (row {len(df)})")
+        print(f"[DEBUG] Data extraction range: rows {data_start_row} to {data_end_row} ({data_end_row - data_start_row} rows)")
+        print(f"[DEBUG] Preview of extraction range:")
+        for row_idx in range(data_start_row, min(data_start_row + 5, data_end_row)):
+            if row_idx < len(df):
+                desc = str(df.iloc[row_idx].iloc[desc_col_idx]).strip()
+                print(f"[DEBUG]   Row {row_idx}: '{desc}'")
     
     # Build result dataframe with Description + ALL adjusted columns
     result_rows = []
@@ -324,22 +344,44 @@ def extract_financial_table(
     if not result_rows:
         if debug:
             print(f"[DEBUG] ❌ No valid data rows found!")
+            print(f"[DEBUG] Processed {data_end_row - data_start_row} rows but none had valid data")
         return None
     
+    if debug:
+        print(f"[DEBUG] Extracted {len(result_rows)} rows before filtering")
+    
     result_df = pd.DataFrame(result_rows)
+    
+    if debug:
+        print(f"[DEBUG] Before removing zero rows:")
+        print(f"[DEBUG]   Shape: {result_df.shape}")
+        print(f"[DEBUG]   Sample (first 3 rows):")
+        print(result_df.head(3).to_string())
     
     # Remove rows where ALL date column values are 0
     date_cols = [col for col in result_df.columns if col != 'Description']
     if date_cols:
         # Keep rows where at least one date column is non-zero
+        rows_before = len(result_df)
         mask = result_df[date_cols].ne(0).any(axis=1)
         result_df = result_df[mask]
+        rows_after = len(result_df)
+        
+        if debug:
+            print(f"[DEBUG] Removed {rows_before - rows_after} rows with all zeros")
+    
+    if result_df.empty:
+        if debug:
+            print(f"[DEBUG] ❌ DataFrame is empty after removing zero rows!")
+        return None
     
     if debug:
         print(f"[DEBUG] ✅ Final DataFrame: {len(result_df)} rows × {len(result_df.columns)} columns")
         print(f"[DEBUG] Columns: {list(result_df.columns)}")
-        print(f"[DEBUG] Sample data:")
+        print(f"[DEBUG] Sample data (first 5 rows):")
         print(result_df.head(5).to_string())
+        print(f"[DEBUG] Sample data (last 5 rows):")
+        print(result_df.tail(5).to_string())
     
     return result_df
 
