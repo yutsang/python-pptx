@@ -187,10 +187,14 @@ Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Match    
 ```
 
 **Features**:
-- Uses **LATEST date column only** from BS/IS (first date column)
-- Automatically matches accounts using `mappings.yml` aliases
+- Uses **LATEST date column only** from BS/IS (last date column - most recent)
+- **Improved account matching**:
+  - Exact match in dfs keys
+  - Match via `mappings.yml` aliases
+  - Removes common suffixes ('合计', '总计', ':') for better matching
+  - Partial match as fallback
 - Finds **total row** in DFS (looks for '合计', '总计', 'Total' keywords, or uses last non-zero row)
-- Shows ✅ Match, ❌ Mismatch, or ⚠️ Not Found
+- Shows ✅ Match, ❌ Diff: X, or ⚠️ Not Found
 - Calculates absolute differences
 - Can export to Excel for review
 
@@ -198,4 +202,12 @@ Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Match    
 1. Searches for rows with keywords: '合计', '总计', 'Total', 'total'
 2. If not found, uses last non-zero row value
 3. Fallback: uses first row
+
+**Example with Debug**:
+```
+[RECON] Using latest date (last column): 2024-05-31  ← Most recent date
+    [MATCH] Searching for: '货币资金'
+    [MATCH]   ✅ Found via alias match: key='Cash'
+      Found total row: '货币资金合计'  ← Gets total row, not first
+```
 

@@ -14,23 +14,34 @@ def load_mappings(mappings_file: str = 'fdd_utils/mappings.yml') -> dict:
         return yaml.safe_load(f)
 
 
-def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mappings: dict) -> Tuple[Optional[str], Optional[pd.DataFrame]]:
+def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mappings: dict, debug: bool = False) -> Tuple[Optional[str], Optional[pd.DataFrame]]:
     """
-    Find an account in dfs using mappings aliases.
+    Find an account in dfs using mappings aliases with improved matching.
     
     Args:
         account_name: Account name from BS/IS
         dfs: Dictionary of DataFrames from extract_data_from_excel
         mappings: Mappings configuration
+        debug: Enable debug output
         
     Returns:
         Tuple of (mapping_key, dataframe) or (None, None) if not found
     """
-    # Try exact match first
+    if debug:
+        print(f"    [MATCH] Searching for: '{account_name}'")
+    
+    # Try exact match in dfs keys first
     if account_name in dfs:
+        if debug:
+            print(f"    [MATCH]   ✅ Exact match in dfs keys")
         return account_name, dfs[account_name]
     
-    # Try to find via aliases
+    # Remove common suffixes/prefixes for better matching
+    account_clean = account_name.strip()
+    for suffix in ['：', ':', '合计', '总计', 'Total', 'total']:
+        account_clean = account_clean.replace(suffix, '').strip()
+    
+    # Try to find via mappings
     for key, config in mappings.items():
         if key.startswith('_'):  # Skip special keys
             continue
@@ -40,17 +51,33 @@ def find_account_in_dfs(account_name: str, dfs: Dict[str, pd.DataFrame], mapping
         
         aliases = config.get('aliases', [])
         
-        # Check if account_name is in aliases
-        if account_name in aliases:
-            # Find the corresponding key in dfs
+        # Check if account_name exactly matches any alias
+        if account_name in aliases or account_clean in aliases:
             if key in dfs:
+                if debug:
+                    print(f"    [MATCH]   ✅ Found via alias match: key='{key}'")
                 return key, dfs[key]
         
-        # Check if any alias matches partially
+        # Check if any alias contains or is contained in account_name
         for alias in aliases:
-            if alias.lower() in account_name.lower() or account_name.lower() in alias.lower():
+            alias_clean = alias.strip()
+            # Exact substring match
+            if alias_clean.lower() in account_clean.lower() or account_clean.lower() in alias_clean.lower():
                 if key in dfs:
+                    if debug:
+                        print(f"    [MATCH]   ✅ Found via partial match: alias='{alias}', key='{key}'")
                     return key, dfs[key]
+    
+    # Last resort: try direct partial matching in dfs keys
+    for dfs_key in dfs.keys():
+        if account_clean.lower() in dfs_key.lower() or dfs_key.lower() in account_clean.lower():
+            if debug:
+                print(f"    [MATCH]   ✅ Found via direct key match: '{dfs_key}'")
+            return dfs_key, dfs[dfs_key]
+    
+    if debug:
+        print(f"    [MATCH]   ❌ Not found")
+        print(f"    [MATCH]   Available dfs keys: {list(dfs.keys())[:10]}...")
     
     return None, None
 
@@ -143,14 +170,14 @@ def reconcile_financial_statements(
         bs_df = bs_is_results['balance_sheet']
         date_cols = [col for col in bs_df.columns if col != 'Description']
         
-        # Use only the LATEST date column (first one)
-        latest_date = date_cols[0] if date_cols else None
+        # Use only the LATEST date column (LAST one, as dates are typically oldest to newest)
+        latest_date = date_cols[-1] if date_cols else None
         
         if debug:
             print(f"\n[RECON] Reconciling Balance Sheet...")
             print(f"[RECON]   Accounts to check: {len(bs_df)}")
             print(f"[RECON]   Available dates: {date_cols}")
-            print(f"[RECON]   Using latest date: {latest_date}")
+            print(f"[RECON]   Using latest date (last column): {latest_date}")
         
         if latest_date:
             for idx, row in bs_df.iterrows():
@@ -158,13 +185,10 @@ def reconcile_financial_statements(
                 source_value = row[latest_date]
                 
                 # Find matching account in dfs
-                dfs_key, dfs_df = find_account_in_dfs(account_name, dfs, mappings)
-                
-                if debug and idx < 5:
-                    print(f"[RECON]   '{account_name}' → dfs key: '{dfs_key}'")
+                dfs_key, dfs_df = find_account_in_dfs(account_name, dfs, mappings, debug=debug and idx < 10)
                 
                 # Get total value from dfs
-                dfs_value = get_total_from_dfs(dfs_df, latest_date, debug and idx < 5) if dfs_df is not None else None
+                dfs_value = get_total_from_dfs(dfs_df, latest_date, debug and idx < 10) if dfs_df is not None else None
                 
                 # Check match
                 if dfs_value is None:
@@ -192,14 +216,14 @@ def reconcile_financial_statements(
         is_df = bs_is_results['income_statement']
         date_cols = [col for col in is_df.columns if col != 'Description']
         
-        # Use only the LATEST date column (first one)
-        latest_date = date_cols[0] if date_cols else None
+        # Use only the LATEST date column (LAST one, as dates are typically oldest to newest)
+        latest_date = date_cols[-1] if date_cols else None
         
         if debug:
             print(f"\n[RECON] Reconciling Income Statement...")
             print(f"[RECON]   Accounts to check: {len(is_df)}")
             print(f"[RECON]   Available dates: {date_cols}")
-            print(f"[RECON]   Using latest date: {latest_date}")
+            print(f"[RECON]   Using latest date (last column): {latest_date}")
         
         if latest_date:
             for idx, row in is_df.iterrows():
@@ -207,13 +231,10 @@ def reconcile_financial_statements(
                 source_value = row[latest_date]
                 
                 # Find matching account in dfs
-                dfs_key, dfs_df = find_account_in_dfs(account_name, dfs, mappings)
-                
-                if debug and idx < 5:
-                    print(f"[RECON]   '{account_name}' → dfs key: '{dfs_key}'")
+                dfs_key, dfs_df = find_account_in_dfs(account_name, dfs, mappings, debug=debug and idx < 10)
                 
                 # Get total value from dfs
-                dfs_value = get_total_from_dfs(dfs_df, latest_date, debug and idx < 5) if dfs_df is not None else None
+                dfs_value = get_total_from_dfs(dfs_df, latest_date, debug and idx < 10) if dfs_df is not None else None
                 
                 # Check match
                 if dfs_value is None:
