@@ -567,19 +567,59 @@ def extract_balance_sheet_and_income_statement(
                 break
         
         # Extract project name (from header row pattern)
-        project_name = None
+        # Pattern: "示意性调整后资产负债表 - 东莞联洋" or "Balance Sheet - Project Name"
+        # Should appear in both BS and IS headers
+        project_name_bs = None
+        project_name_is = None
+        
         if bs_start_row is not None:
-            header_text = str(df.iloc[bs_start_row].values[0])
-            # Pattern: "xxxx利润表 - 东莞xx" or "Balance Sheet - Project Name"
-            if ' - ' in header_text:
-                project_name = header_text.split(' - ', 1)[1].strip()
-            elif '-' in header_text:
-                parts = header_text.split('-')
-                if len(parts) > 1:
-                    project_name = parts[-1].strip()
+            # Check all cells in BS header row for the pattern
+            bs_row = df.iloc[bs_start_row]
+            for val in bs_row:
+                val_str = str(val)
+                if '示意性调整后' in val_str or 'balance sheet' in val_str.lower():
+                    if ' - ' in val_str:
+                        project_name_bs = val_str.split(' - ', 1)[1].strip()
+                    elif '-' in val_str and '调整后' not in val_str.split('-')[-1]:
+                        project_name_bs = val_str.split('-')[-1].strip()
+                    break
             
-            if debug and project_name:
-                print(f"[DEBUG] ✅ Project name extracted: '{project_name}'")
+            if debug:
+                print(f"[DEBUG] BS header project name: '{project_name_bs}'")
+        
+        if is_start_row is not None:
+            # Check all cells in IS header row for the pattern
+            is_row = df.iloc[is_start_row]
+            for val in is_row:
+                val_str = str(val)
+                if '示意性调整后' in val_str or 'income statement' in val_str.lower():
+                    if ' - ' in val_str:
+                        project_name_is = val_str.split(' - ', 1)[1].strip()
+                    elif '-' in val_str and '调整后' not in val_str.split('-')[-1]:
+                        project_name_is = val_str.split('-')[-1].strip()
+                    break
+            
+            if debug:
+                print(f"[DEBUG] IS header project name: '{project_name_is}'")
+        
+        # Use project name if it appears in both headers (or if only one is found)
+        if project_name_bs and project_name_is:
+            if project_name_bs == project_name_is:
+                project_name = project_name_bs
+                if debug:
+                    print(f"[DEBUG] ✅ Project name confirmed in both headers: '{project_name}'")
+            else:
+                if debug:
+                    print(f"[DEBUG] ⚠️  Project names don't match! BS: '{project_name_bs}', IS: '{project_name_is}'")
+                project_name = project_name_bs  # Use BS name as default
+        elif project_name_bs:
+            project_name = project_name_bs
+        elif project_name_is:
+            project_name = project_name_is
+        else:
+            project_name = None
+            if debug:
+                print(f"[DEBUG] ❌ No project name found in headers")
         
         results['project_name'] = project_name
         
