@@ -154,7 +154,7 @@ def extract_financial_table(
 ) -> Optional[pd.DataFrame]:
     """
     Extract financial table (Balance Sheet or Income Statement) from a worksheet.
-    Gets ALL date columns under "Indicative adjusted" or "示意性调整后", not just the latest.
+    Gets ALL columns with "示意性调整后" or "Indicative adjusted".
     
     Args:
         df: DataFrame containing the financial data
@@ -163,7 +163,7 @@ def extract_financial_table(
         debug: If True, print debugging information
         
     Returns:
-        Cleaned DataFrame with Description column and ALL date columns
+        Cleaned DataFrame with Description column and ALL adjusted columns
     """
     if debug:
         print(f"\n[DEBUG] Extracting {table_name}...")
@@ -202,15 +202,33 @@ def extract_financial_table(
     if debug:
         print(f"[DEBUG] ✅ Description column at index: {desc_col_idx}")
     
-    # Find ALL date columns (row after header)
+    # Find ALL columns with "示意性调整后" or "Indicative adjusted"
+    header_row = df.iloc[header_row_idx]
+    adjusted_columns = []  # List of col_idx with adjusted header
+    
+    for col_idx in range(desc_col_idx + 1, len(header_row)):
+        header_value = str(header_row.iloc[col_idx]).lower()
+        if '示意性调整后' in header_value or 'indicative adjusted' in header_value:
+            adjusted_columns.append(col_idx)
+    
+    if not adjusted_columns:
+        if debug:
+            print(f"[DEBUG] ❌ No columns with '示意性调整后' or 'Indicative adjusted' found!")
+        return None
+    
+    if debug:
+        print(f"[DEBUG] ✅ Found {len(adjusted_columns)} adjusted columns at indices: {adjusted_columns}")
+    
+    # Get date row (row after header)
     date_row_idx = header_row_idx + 1
     date_row = df.iloc[date_row_idx]
     
+    # Parse dates for each adjusted column
     date_columns = []  # List of (col_idx, parsed_date, date_string)
-    for col_idx in range(desc_col_idx + 1, len(date_row)):
+    for col_idx in adjusted_columns:
         date_str = date_row.iloc[col_idx]
         if pd.isna(date_str) or str(date_str).strip() == '':
-            break  # Stop at first empty column
+            continue
         
         parsed_date = parse_date(date_str)
         if parsed_date:
@@ -218,8 +236,7 @@ def extract_financial_table(
     
     if not date_columns:
         if debug:
-            print(f"[DEBUG] ❌ No valid date columns found!")
-            print(f"[DEBUG] Date row: {date_row.values}")
+            print(f"[DEBUG] ❌ No valid dates found in adjusted columns!")
         return None
     
     if debug:
@@ -234,28 +251,41 @@ def extract_financial_table(
     if debug and multiply_by_1000:
         print(f"[DEBUG] Will multiply values by 1000 (CNY'000 detected)")
     
-    # Extract data starting from row after dates
+    # Determine end row based on table type
     data_start_row = date_row_idx + 1
+    data_end_row = len(df)
     
-    # Build result dataframe with Description + ALL date columns
-    result_rows = []
+    # For Balance Sheet: end at "负债及所有者权益总计" or "Total liabilities and owners'equity"
+    # For Income Statement: end at "净利润/（亏损）" or "Net profit/(loss)"
+    if table_name == "Balance Sheet":
+        end_keywords = ["负债及所有者权益总计", "Total liabilities and owners", "Total liabilities and owner"]
+    else:  # Income Statement
+        end_keywords = ["净利润", "Net profit", "Net Profit"]
+    
     for row_idx in range(data_start_row, len(df)):
         row = df.iloc[row_idx]
-        
-        # Stop at empty row
-        if row.isnull().all():
+        desc = str(row.iloc[desc_col_idx]).strip()
+        if any(keyword.lower() in desc.lower() for keyword in end_keywords):
+            data_end_row = row_idx + 1  # Include this row
+            if debug:
+                print(f"[DEBUG] Found end marker at row {row_idx}: '{desc}'")
             break
+    
+    # Build result dataframe with Description + ALL adjusted columns
+    result_rows = []
+    for row_idx in range(data_start_row, data_end_row):
+        row = df.iloc[row_idx]
         
         description = row.iloc[desc_col_idx]
         
-        # Skip if description is null
+        # Skip if description is null or empty
         if pd.isna(description) or str(description).strip() == '':
             continue
         
         # Build row dict with description and all date values
         row_dict = {'Description': str(description).strip()}
         
-        has_any_value = False
+        has_any_nonzero_value = False
         for col_idx, parsed_date, date_str in date_columns:
             value = row.iloc[col_idx]
             
@@ -271,15 +301,14 @@ def extract_financial_table(
                 row_dict[col_name] = int(numeric_value)
                 
                 if numeric_value != 0:
-                    has_any_value = True
+                    has_any_nonzero_value = True
             except (ValueError, TypeError):
                 # Use formatted date as column name
                 col_name = parsed_date.strftime('%Y-%m-%d')
-                row_dict[col_name] = None
+                row_dict[col_name] = 0
         
-        # Only add row if it has at least one non-zero value
-        if has_any_value:
-            result_rows.append(row_dict)
+        # Add row (even if all zeros, we'll filter later)
+        result_rows.append(row_dict)
     
     if not result_rows:
         if debug:
@@ -288,15 +317,18 @@ def extract_financial_table(
     
     result_df = pd.DataFrame(result_rows)
     
-    # Remove rows where all values are None or 0
-    value_cols = [col for col in result_df.columns if col != 'Description']
-    result_df = result_df.dropna(subset=value_cols, how='all')
+    # Remove rows where ALL date column values are 0
+    date_cols = [col for col in result_df.columns if col != 'Description']
+    if date_cols:
+        # Keep rows where at least one date column is non-zero
+        mask = result_df[date_cols].ne(0).any(axis=1)
+        result_df = result_df[mask]
     
     if debug:
         print(f"[DEBUG] ✅ Final DataFrame: {len(result_df)} rows × {len(result_df.columns)} columns")
         print(f"[DEBUG] Columns: {list(result_df.columns)}")
         print(f"[DEBUG] Sample data:")
-        print(result_df.head(3).to_string())
+        print(result_df.head(5).to_string())
     
     return result_df
 

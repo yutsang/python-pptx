@@ -120,9 +120,13 @@ if balance_sheet is not None:
 - Extracts both BS and IS from **single sheet**
 - Auto-detects statement boundaries via headers
 - Extracts project name (e.g., from "xxxx利润表 - 东莞xx")
-- Gets **ALL date columns** under "Indicative adjusted" (not just latest)
+- Gets **ALL columns** with "示意性调整后" or "Indicative adjusted"
+- **Smart end detection**:
+  - BS ends at "负债及所有者权益总计" or "Total liabilities and owners'equity"
+  - IS ends at "净利润/（亏损）" or "Net profit/(loss)"
 - Auto-multiplies by 1000 if "CNY'000" or "人民币千元" detected
 - Converts dates: FY22→2022-12-31, 9M22→2022-09-30, 30-Sep-2022→2022-09-30
+- **Removes empty rows** where all values are 0
 
 **Returns**: Dictionary with keys:
 - `'balance_sheet'`: DataFrame with `Description` column + ALL date columns (e.g., `2022-12-31`, `2021-12-31`)
