@@ -280,7 +280,7 @@ def reconcile_financial_statements(
                     continue
                 
                 # Find matching account in dfs (ONLY via mappings.yml)
-                dfs_key, dfs_df, category = find_account_in_dfs(account_name, dfs, mappings, debug=debug and idx < 10)
+                dfs_key, dfs_df, category = find_account_in_dfs(account_name, dfs, mappings, debug=debug)
                 
                 # Handle skipped accounts (totals/profit lines)
                 if dfs_key == 'SKIP':
@@ -296,7 +296,7 @@ def reconcile_financial_statements(
                     continue
                 
                 # Get total value from dfs
-                dfs_value = get_total_from_dfs(dfs_df, latest_date, debug and idx < 10) if dfs_df is not None else None
+                dfs_value = get_total_from_dfs(dfs_df, latest_date, debug) if dfs_df is not None else None
                 
                 # Check match
                 if dfs_value is None:
@@ -362,7 +362,7 @@ def reconcile_financial_statements(
                     continue
                 
                 # Find matching account in dfs (ONLY via mappings.yml)
-                dfs_key, dfs_df, category = find_account_in_dfs(account_name, dfs, mappings, debug=debug and idx < 10)
+                dfs_key, dfs_df, category = find_account_in_dfs(account_name, dfs, mappings, debug=debug)
                 
                 # Handle skipped accounts (totals/profit lines)
                 if dfs_key == 'SKIP':
@@ -378,15 +378,15 @@ def reconcile_financial_statements(
                     continue
                 
                 # Get total value from dfs
-                dfs_value = get_total_from_dfs(dfs_df, latest_date, debug and idx < 10) if dfs_df is not None else None
+                dfs_value = get_total_from_dfs(dfs_df, latest_date, debug) if dfs_df is not None else None
                 
                 # For expenses: Keep negative in display but convert to positive for comparison
                 source_for_comparison = source_value_raw
                 if category and 'expense' in category.lower():
                     if source_value_raw < 0:
                         source_for_comparison = abs(source_value_raw)
-                        if debug and idx < 5:
-                            print(f"    [CONVERT] For comparison: {source_value_raw} → {source_for_comparison} (negative to positive)")
+                        if debug:
+                            print(f"    [CONVERT] For comparison: {source_value_raw:,.0f} → {source_for_comparison:,.0f} (negative to positive)")
                 
                 # Check match
                 if dfs_value is None:

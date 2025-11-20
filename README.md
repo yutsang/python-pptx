@@ -172,11 +172,6 @@ bs_recon, is_recon = reconcile_financial_statements(
 
 # Print report (show only mismatches)
 print_reconciliation_report(bs_recon, is_recon, show_only_issues=True)
-
-# Save to Excel
-with pd.ExcelWriter('reconciliation.xlsx') as writer:
-    bs_recon.to_excel(writer, sheet_name='BS Reconciliation', index=False)
-    is_recon.to_excel(writer, sheet_name='IS Reconciliation', index=False)
 ```
 
 **Reconciliation Output**:

@@ -239,7 +239,7 @@ Capital:
   type: BS
   category: Equity
   aliases: ["Capital", "Share Capital", "Share capital", "Shareholder's Equity", "Shareholders' Equity",
-            "Shareholders Equity", "Shareholder Equity", "股东权益", "實收資本", "实收资本", "Paid-in capital]
+            "Shareholders Equity", "Shareholder Equity", "股东权益", "實收資本", "实收资本", "Paid-in capital"]
   system_prompts:
   user_prompts:
   patterns:
