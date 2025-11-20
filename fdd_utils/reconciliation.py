@@ -47,6 +47,7 @@ def should_skip_mapping(account_name: str) -> bool:
         'gross loss',
         'operating profit',
         'operating loss',
+        'profit/(loss) before taxation',
         'profit before taxation',
         'loss before taxation',
         'net profit',
@@ -210,6 +211,7 @@ def reconcile_financial_statements(
     dfs: Dict[str, pd.DataFrame],
     mappings_file: str = 'fdd_utils/mappings.yml',
     tolerance: float = 1.0,
+    materiality_threshold: float = 0.005,
     debug: bool = False
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -221,7 +223,8 @@ def reconcile_financial_statements(
                       with keys 'balance_sheet', 'income_statement', 'project_name'
         dfs: Dictionary of DataFrames from extract_data_from_excel
         mappings_file: Path to mappings.yml file
-        tolerance: Tolerance for matching (default: 1.0, allows ±1 difference)
+        tolerance: Absolute tolerance for matching (default: 1.0, allows ±1 difference)
+        materiality_threshold: Percentage threshold for immaterial differences (default: 0.005 = 0.5%)
         debug: If True, print debugging information
         
     Returns:
@@ -271,6 +274,7 @@ def reconcile_financial_statements(
                         'Source_Value': source_value,
                         'DFS_Account': '-',
                         'DFS_Value': '-',
+                        'Diff': '-',
                         'Match': '-'
                     })
                     continue
@@ -286,6 +290,7 @@ def reconcile_financial_statements(
                         'Source_Value': source_value,
                         'DFS_Account': '-',
                         'DFS_Value': '-',
+                        'Diff': '-',
                         'Match': '-'
                     })
                     continue
@@ -296,19 +301,31 @@ def reconcile_financial_statements(
                 # Check match
                 if dfs_value is None:
                     match_status = '⚠️ Not Found'
+                    difference = None
                 else:
                     difference = abs(source_value - dfs_value)
+                    
+                    # Check if within absolute tolerance
                     if difference <= tolerance:
                         match_status = '✅ Match'
                     else:
-                        match_status = f'❌ Diff: {difference:,.0f}'
+                        # Check if within materiality threshold (percentage)
+                        if source_value != 0:
+                            pct_diff = difference / abs(source_value)
+                            if pct_diff <= materiality_threshold:
+                                match_status = '✅ Immaterial'
+                            else:
+                                match_status = '❌ Diff'
+                        else:
+                            match_status = '❌ Diff'
                 
                 bs_recon_rows.append({
                     'Source_Account': account_name,
                     'Date': latest_date,
                     'Source_Value': source_value,
-                    'DFS_Account': dfs_key or 'Not Found',  # dfs_key is now the actual dfs key
+                    'DFS_Account': dfs_key or 'Not Found',
                     'DFS_Value': dfs_value if dfs_value is not None else 0,
+                    'Diff': difference if difference is not None else '-',
                     'Match': match_status
                 })
     
@@ -331,17 +348,15 @@ def reconcile_financial_statements(
                 account_name = row['Description']
                 source_value_raw = row[latest_date]
                 
-                # For Income Statement: Convert expenses (negative values) to positive first
-                source_value = source_value_raw
-                
                 # If source value is 0, skip DFS mapping
-                if source_value == 0:
+                if source_value_raw == 0:
                     is_recon_rows.append({
                         'Source_Account': account_name,
                         'Date': latest_date,
-                        'Source_Value': source_value,
+                        'Source_Value': source_value_raw,
                         'DFS_Account': '-',
                         'DFS_Value': '-',
+                        'Diff': '-',
                         'Match': '-'
                     })
                     continue
@@ -357,36 +372,50 @@ def reconcile_financial_statements(
                         'Source_Value': source_value_raw,
                         'DFS_Account': '-',
                         'DFS_Value': '-',
+                        'Diff': '-',
                         'Match': '-'
                     })
                     continue
                 
-                # Convert expenses to positive if needed
-                if category and 'expense' in category.lower():
-                    if source_value_raw < 0:
-                        source_value = abs(source_value_raw)
-                        if debug and idx < 5:
-                            print(f"    [CONVERT] Expense account: {source_value_raw} → {source_value} (negative to positive)")
-                
                 # Get total value from dfs
                 dfs_value = get_total_from_dfs(dfs_df, latest_date, debug and idx < 10) if dfs_df is not None else None
+                
+                # For expenses: Keep negative in display but convert to positive for comparison
+                source_for_comparison = source_value_raw
+                if category and 'expense' in category.lower():
+                    if source_value_raw < 0:
+                        source_for_comparison = abs(source_value_raw)
+                        if debug and idx < 5:
+                            print(f"    [CONVERT] For comparison: {source_value_raw} → {source_for_comparison} (negative to positive)")
                 
                 # Check match
                 if dfs_value is None:
                     match_status = '⚠️ Not Found'
+                    difference = None
                 else:
-                    difference = abs(source_value - dfs_value)
+                    difference = abs(source_for_comparison - dfs_value)
+                    
+                    # Check if within absolute tolerance
                     if difference <= tolerance:
                         match_status = '✅ Match'
                     else:
-                        match_status = f'❌ Diff: {difference:,.0f}'
+                        # Check if within materiality threshold (percentage)
+                        if source_for_comparison != 0:
+                            pct_diff = difference / abs(source_for_comparison)
+                            if pct_diff <= materiality_threshold:
+                                match_status = '✅ Immaterial'
+                            else:
+                                match_status = '❌ Diff'
+                        else:
+                            match_status = '❌ Diff'
                 
                 is_recon_rows.append({
                     'Source_Account': account_name,
                     'Date': latest_date,
-                    'Source_Value': source_value,  # Use converted value
-                    'DFS_Account': dfs_key or 'Not Found',  # dfs_key is now the actual dfs key name
+                    'Source_Value': source_value_raw,  # Keep original negative value
+                    'DFS_Account': dfs_key or 'Not Found',
                     'DFS_Value': dfs_value if dfs_value is not None else 0,
+                    'Diff': difference if difference is not None else '-',
                     'Match': match_status
                 })
     
@@ -452,6 +481,9 @@ def print_reconciliation_report(bs_recon_df: pd.DataFrame, is_recon_df: pd.DataF
             df_display['DFS_Value'] = df_display['DFS_Value'].apply(
                 lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
             )
+            df_display['Diff'] = df_display['Diff'].apply(
+                lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
+            )
             
             print(df_display.to_string(index=False))
         else:
@@ -473,6 +505,9 @@ def print_reconciliation_report(bs_recon_df: pd.DataFrame, is_recon_df: pd.DataF
                 lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
             )
             df_display['DFS_Value'] = df_display['DFS_Value'].apply(
+                lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
+            )
+            df_display['Diff'] = df_display['Diff'].apply(
                 lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
             )
             
@@ -514,6 +549,7 @@ if __name__ == "__main__":
         bs_is_results=bs_is_results,
         dfs=dfs,
         tolerance=1.0,
+        materiality_threshold=0.005,  # 0.5% materiality
         debug=True
     )
     

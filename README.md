@@ -165,7 +165,8 @@ dfs, keys, _, lang = extract_data_from_excel(
 bs_recon, is_recon = reconcile_financial_statements(
     bs_is_results=bs_is_results,
     dfs=dfs,
-    tolerance=1.0,  # Allow ±1 difference for rounding
+    tolerance=1.0,  # Allow ±1 absolute difference for rounding
+    materiality_threshold=0.005,  # 0.5% materiality threshold
     debug=True  # Shows which accounts are matched and total row detection
 )
 
@@ -180,10 +181,11 @@ with pd.ExcelWriter('reconciliation.xlsx') as writer:
 
 **Reconciliation Output**:
 ```
-Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Match
-货币资金          2024-12-31   4,119,178     货币资金     4,119,178    ✅ Match
-应收账款          2024-12-31   13,034,797    应收账款     13,034,797   ✅ Match
-投资性房地产      2024-12-31   168,526,613   投资性房地产 168,520,000  ❌ Diff: 6,613
+Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Diff        Match
+货币资金          2024-12-31   4,119,178     货币资金     4,119,178    0           ✅ Match
+应收账款          2024-12-31   13,034,797    应收账款     13,034,797   0           ✅ Match
+投资性房地产      2024-12-31   168,526,613   投资性房地产 168,520,000  6,613       ✅ Immaterial
+其他应收款        2024-12-31   1,500,000     其他应收款   1,200,000    300,000     ❌ Diff
 ```
 
 **Features**:
@@ -194,28 +196,35 @@ Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Match
   - **NO name-based matching** - only uses defined aliases
 - **Auto-skips total/subtotal/profit lines** (marked as "-"):
   - Chinese: xxx合计, xxx总计, xxx小计, 毛利, 营业利润, 净利润
-  - English: Total xxx, Subtotal, Sub-total, Gross profit, Operating profit, Net profit
+  - English: Total xxx, Subtotal, Sub-total, Gross profit, Operating profit, Profit/(loss) before taxation, Net profit
 - Finds **total row** in DFS (looks for '合计', '总计', 'Total' keywords ONLY - skips '小计'/subtotal rows)
 - **Smart matching logic**:
   - Source = 0 → Shows "-" (skipped)
   - Source ≠ 0 + Total row found → Compare values
   - Source ≠ 0 + Total row NOT found → ⚠️ Not Found
   - Total/profit lines → Shows "-" (skipped)
-- **Income Statement expenses**: Negative values auto-converted to positive (category='Expenses' in mappings.yml)
-- Shows: ✅ Match, ❌ Diff: X, ✅ Match (both zero), ⚠️ Not Found, ℹ️ Not Mapped
+- **Income Statement expenses**: Kept as negative in display but compared as positive (category='Expenses' in mappings.yml)
+- **Materiality threshold**: Differences < 0.5% of source value marked as ✅ Immaterial
+- Shows: ✅ Match, ✅ Immaterial, ❌ Diff, ⚠️ Not Found, or "-" (skipped)
+- **Diff column**: Shows absolute difference between source and dfs values
 
 **Important**: Account matching ONLY works if the account name is in `mappings.yml` aliases. Add missing accounts to mappings.yml if needed.
 
 **Example Output**:
 ```
-Source_Account      Date         Source_Value  DFS_Account  DFS_Value    Match
-货币资金            2024-05-31   4,119,178     货币资金     4,119,178    ✅ Match
-应收账款            2024-05-31   0             -            -            -
-流动资产合计        2024-05-31   9,246,577     -            -            -
-投资性房地产        2024-05-31   168,526,613   投资性房地产 168,520,000  ❌ Diff: 6,613
-管理费用            2024-05-31   1,234,567     管理费用     1,234,567    ✅ Match
-净利润/（亏损）     2024-05-31   -85,061,858   -            -            -
+Source_Account      Date         Source_Value  DFS_Account  DFS_Value    Diff        Match
+货币资金            2024-05-31   4,119,178     货币资金     4,119,178    0           ✅ Match
+应收账款            2024-05-31   0             -            -            -           -
+流动资产合计        2024-05-31   9,246,577     -            -            -           -
+投资性房地产        2024-05-31   168,526,613   投资性房地产 168,520,000  6,613       ✅ Immaterial
+管理费用            2024-05-31   -1,234,567    管理费用     1,234,567    0           ✅ Match
+净利润/（亏损）     2024-05-31   -85,061,858   -            -            -           -
 ```
+
+Note: 
+- Expenses shown as negative but compared as positive
+- Diff < 0.5% of source → ✅ Immaterial
+- Total/profit lines show "-"
 
 Note: Total/profit lines (合计, 总计, 净利润, etc.) show "-" for DFS columns as they are not mapped.
 
