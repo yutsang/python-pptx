@@ -39,12 +39,20 @@ def init_session_state():
         st.session_state.uploaded_file = None
     if 'dfs' not in st.session_state:
         st.session_state.dfs = None
+    if 'workbook_list' not in st.session_state:
+        st.session_state.workbook_list = []
+    if 'language' not in st.session_state:
+        st.session_state.language = 'Eng'
     if 'bs_is_results' not in st.session_state:
         st.session_state.bs_is_results = None
     if 'ai_results' not in st.session_state:
         st.session_state.ai_results = None
     if 'reconciliation' not in st.session_state:
         st.session_state.reconciliation = None
+    if 'model_type' not in st.session_state:
+        st.session_state.model_type = 'local'
+    if 'project_name' not in st.session_state:
+        st.session_state.project_name = None
 
 
 def get_entity_names(file_path: str) -> List[str]:
@@ -106,52 +114,85 @@ st.title("📊 Financial Data Processing & AI Generation")
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # File upload
-    uploaded_file = st.file_uploader(
-        "Upload Databook (Excel)",
-        type=['xlsx', 'xls'],
-        help="Upload your financial databook"
-    )
+    # File upload with default
+    st.markdown("**📁 Databook File**")
+    use_default = st.checkbox("Use default (databook.xlsx)", value=True)
     
-    if uploaded_file:
-        # Save to temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            temp_path = tmp_file.name
+    if use_default:
+        temp_path = "databook.xlsx"
+        if os.path.exists(temp_path):
+            st.success(f"✅ Using: {temp_path}")
+        else:
+            st.error(f"❌ File not found: {temp_path}")
+            temp_path = None
+    else:
+        uploaded_file = st.file_uploader(
+            "Upload Excel",
+            type=['xlsx', 'xls'],
+            help="Upload your financial databook"
+        )
         
-        st.success(f"✅ File uploaded: {uploaded_file.name}")
-        
-        # Entity name selection
+        if uploaded_file:
+            # Save to temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                temp_path = tmp_file.name
+            st.success(f"✅ File uploaded: {uploaded_file.name}")
+        else:
+            temp_path = None
+    
+    if temp_path:
+        # Entity name selection (editable)
         st.markdown("---")
+        st.markdown("**🏢 Entity Name**")
         entity_options = get_entity_names(temp_path)
-        entity_name = st.selectbox(
-            "Entity Name",
+        entity_selected = st.selectbox(
+            "Select or type custom",
             options=entity_options,
-            help="Leave blank for single entity databook"
+            help="Leave blank for single entity",
+            label_visibility="collapsed"
+        )
+        entity_name = st.text_input(
+            "Custom entity name (optional)",
+            value=entity_selected,
+            help="Edit if needed",
+            label_visibility="collapsed"
         )
         
         # Financial statement sheet selection
         st.markdown("---")
+        st.markdown("**📊 Financial Statement Sheet**")
         sheet_options = get_financial_sheets(temp_path)
         if sheet_options:
             selected_sheet = st.selectbox(
-                "Financial Statement Sheet",
+                "Select sheet",
                 options=sheet_options,
-                help="Sheet containing both Balance Sheet and Income Statement"
+                help="Sheet containing both BS and IS",
+                label_visibility="collapsed"
             )
         else:
-            st.warning("No sheets found in file")
+            st.warning("No sheets found")
             selected_sheet = None
         
-        # Model selection
+        # Model selection (horizontal)
         st.markdown("---")
-        st.subheader("🤖 AI Model")
-        model_type = st.radio(
-            "Select Model",
-            options=['local', 'openai', 'deepseek'],
-            index=0,
-            help="AI model for content generation"
-        )
+        st.markdown("**🤖 AI Model**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("🏠 Local", use_container_width=True, 
+                        type="primary" if st.session_state.get('model_type') == 'local' else "secondary"):
+                st.session_state.model_type = 'local'
+        with col2:
+            if st.button("🌐 OpenAI", use_container_width=True,
+                        type="primary" if st.session_state.get('model_type') == 'openai' else "secondary"):
+                st.session_state.model_type = 'openai'
+        with col3:
+            if st.button("🚀 DeepSeek", use_container_width=True,
+                        type="primary" if st.session_state.get('model_type') == 'deepseek' else "secondary"):
+                st.session_state.model_type = 'deepseek'
+        
+        model_type = st.session_state.get('model_type', 'local')
+        st.info(f"Selected: **{model_type}**")
         
         # Process button
         st.markdown("---")
@@ -223,7 +264,13 @@ else:
             # Reconciliation tab
             with bs_tabs[0]:
                 if recon_bs is not None and not recon_bs.empty:
-                    st.dataframe(recon_bs, use_container_width=True, height=400)
+                    # Convert to all strings for Streamlit display (fixes Arrow serialization)
+                    display_df = recon_bs.copy()
+                    for col in display_df.columns:
+                        display_df[col] = display_df[col].apply(
+                            lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) and x != 0 else str(x)
+                        )
+                    st.dataframe(display_df, use_container_width=True, height=400)
                     
                     # Summary stats
                     col1, col2, col3, col4 = st.columns(4)
@@ -260,7 +307,13 @@ else:
             # Reconciliation tab
             with is_tabs[0]:
                 if recon_is is not None and not recon_is.empty:
-                    st.dataframe(recon_is, use_container_width=True, height=400)
+                    # Convert to all strings for Streamlit display (fixes Arrow serialization)
+                    display_df = recon_is.copy()
+                    for col in display_df.columns:
+                        display_df[col] = display_df[col].apply(
+                            lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) and x != 0 else str(x)
+                        )
+                    st.dataframe(display_df, use_container_width=True, height=400)
                     
                     # Summary stats
                     col1, col2, col3, col4 = st.columns(4)
@@ -290,104 +343,117 @@ else:
     st.markdown("---")
     st.header("🤖 AI Content Generation")
     
-    if st.button("▶️ Generate AI Content", type="primary"):
-        with st.spinner("Running AI pipeline..."):
+    # Horizontal buttons: Generate AI + Export PPTX
+    col_ai, col_pptx = st.columns(2)
+    
+    with col_ai:
+        if st.button("▶️ Generate AI Content", type="primary", use_container_width=True):
+            progress_placeholder = st.empty()
+            status_placeholder = st.empty()
+            
             try:
-                results = run_ai_pipeline(
-                    mapping_keys=st.session_state.workbook_list,
-                    dfs=st.session_state.dfs,
-                    model_type=st.session_state.model_type,
-                    language=st.session_state.language,
-                    use_multithreading=True
-                )
+                total_items = len(st.session_state.workbook_list)
+                progress_bar = progress_placeholder.progress(0)
                 
-                st.session_state.ai_results = results
-                st.success("✅ AI content generated!")
-                st.rerun()
+                # Show progress
+                status_placeholder.info(f"🔄 Processing {total_items} accounts with 4 agents...")
+                
+                # Simple progress tracking (since we can't hook into the pipeline easily)
+                import time
+                for i in range(4):  # 4 agents
+                    agent_name = ['Generator', 'Auditor', 'Refiner', 'Validator'][i]
+                    status_placeholder.info(f"🔄 Agent {i+1}/4: {agent_name} - Processing {total_items} accounts...")
+                    
+                    if i == 0:  # Only run on first iteration
+                        results = run_ai_pipeline(
+                            mapping_keys=st.session_state.workbook_list,
+                            dfs=st.session_state.dfs,
+                            model_type=st.session_state.get('model_type', 'local'),
+                            language=st.session_state.language,
+                            use_multithreading=True
+                        )
+                        st.session_state.ai_results = results
+                    
+                    progress_bar.progress((i + 1) / 4)
+                    time.sleep(0.5)
+                
+                progress_placeholder.empty()
+                status_placeholder.success(f"✅ AI content generated for {total_items} accounts!")
+                
             except Exception as e:
-                st.error(f"❌ Error generating content: {e}")
+                progress_placeholder.empty()
+                status_placeholder.error(f"❌ Error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+    
+    with col_pptx:
+        if st.button("📄 Generate & Export PPTX", type="secondary", use_container_width=True, 
+                     disabled=st.session_state.ai_results is None):
+            st.info("🚧 PPTX generation coming soon...")
     
     # Display AI results
     if st.session_state.ai_results:
-        ai_tab_bs, ai_tab_is = st.tabs(["Balance Sheet Accounts", "Income Statement Accounts"])
+        st.markdown("### 📝 Generated Content")
         
         # Get BS and IS keys from mappings
         from fdd_utils.reconciliation import load_mappings
         mappings = load_mappings()
         
-        bs_keys = [k for k in st.session_state.workbook_list 
-                   if k in mappings and mappings[k].get('type') == 'BS']
-        is_keys = [k for k in st.session_state.workbook_list 
-                   if k in mappings and mappings[k].get('type') == 'IS']
+        # Filter for accounts that actually have results
+        bs_keys = [k for k in st.session_state.ai_results.keys()
+                   if k in mappings and mappings.get(k, {}).get('type') == 'BS']
+        is_keys = [k for k in st.session_state.ai_results.keys()
+                   if k in mappings and mappings.get(k, {}).get('type') == 'IS']
         
-        with ai_tab_bs:
-            for key in bs_keys:
-                if key in st.session_state.ai_results:
-                    with st.expander(f"📄 {key}", expanded=False):
-                        result = st.session_state.ai_results[key]
-                        
-                        # Final content (expanded)
-                        st.markdown("**Final Content (Agent 4):**")
-                        final = result.get('final', result.get('agent_4', ''))
-                        st.text_area("", value=final, height=150, key=f"final_{key}", label_visibility="collapsed")
-                        
-                        # Intermediate agents (collapsed)
-                        with st.expander("🔍 View Agent Pipeline", expanded=False):
-                            for agent in ['agent_1', 'agent_2', 'agent_3']:
-                                if agent in result:
-                                    st.markdown(f"**{agent.replace('_', ' ').title()}:**")
-                                    st.text(result[agent])
-                                    st.markdown("---")
-        
-        with ai_tab_is:
-            for key in is_keys:
-                if key in st.session_state.ai_results:
-                    with st.expander(f"📄 {key}", expanded=False):
-                        result = st.session_state.ai_results[key]
-                        
-                        # Final content (expanded)
-                        st.markdown("**Final Content (Agent 4):**")
-                        final = result.get('final', result.get('agent_4', ''))
-                        st.text_area("", value=final, height=150, key=f"final_is_{key}", label_visibility="collapsed")
-                        
-                        # Intermediate agents (collapsed)
-                        with st.expander("🔍 View Agent Pipeline", expanded=False):
-                            for agent in ['agent_1', 'agent_2', 'agent_3']:
-                                if agent in result:
-                                    st.markdown(f"**{agent.replace('_', ' ').title()}:**")
-                                    st.text(result[agent])
-                                    st.markdown("---")
-    
-    # Area 3: PPTX Generation & Download
-    st.markdown("---")
-    st.header("📑 PowerPoint Generation")
-    
-    if st.session_state.ai_results:
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            if st.button("📝 Generate PowerPoint", type="primary", use_container_width=True):
-                with st.spinner("Generating PowerPoint..."):
-                    try:
-                        # TODO: Implement PPTX generation
-                        # Combine BS + IS into one PPTX
-                        st.info("🚧 PPTX generation coming soon...")
-                        st.session_state.pptx_file = None
-                    except Exception as e:
-                        st.error(f"❌ Error generating PPTX: {e}")
-        
-        with col2:
-            if st.session_state.get('pptx_file'):
-                with open(st.session_state.pptx_file, 'rb') as f:
-                    st.download_button(
-                        label="⬇️ Download PowerPoint",
-                        data=f.read(),
-                        file_name="financial_report.pptx",
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        use_container_width=True
-                    )
-    else:
-        st.info("Generate AI content first to enable PowerPoint generation")
+        if not bs_keys and not is_keys:
+            st.warning("No AI results to display")
+        else:
+            ai_tab_bs, ai_tab_is = st.tabs([
+                f"Balance Sheet ({len(bs_keys)} accounts)", 
+                f"Income Statement ({len(is_keys)} accounts)"
+            ])
+            
+            with ai_tab_bs:
+                if bs_keys:
+                    for key in bs_keys:
+                        with st.expander(f"📄 {key}", expanded=False):
+                            result = st.session_state.ai_results[key]
+                            
+                            # Final content (expanded)
+                            st.markdown("**✨ Final Content (Agent 4):**")
+                            final = result.get('final', result.get('agent_4', ''))
+                            st.text_area("", value=final, height=150, key=f"final_{key}", label_visibility="collapsed")
+                            
+                            # Intermediate agents (collapsed)
+                            with st.expander("🔍 View Agent Pipeline", expanded=False):
+                                for agent in ['agent_1', 'agent_2', 'agent_3']:
+                                    if agent in result:
+                                        st.markdown(f"**{agent.replace('_', ' ').title()}:**")
+                                        st.text(result[agent])
+                                        st.markdown("---")
+                else:
+                    st.info("No Balance Sheet accounts with AI content")
+            
+            with ai_tab_is:
+                if is_keys:
+                    for key in is_keys:
+                        with st.expander(f"📄 {key}", expanded=False):
+                            result = st.session_state.ai_results[key]
+                            
+                            # Final content (expanded)
+                            st.markdown("**✨ Final Content (Agent 4):**")
+                            final = result.get('final', result.get('agent_4', ''))
+                            st.text_area("", value=final, height=150, key=f"final_is_{key}", label_visibility="collapsed")
+                            
+                            # Intermediate agents (collapsed)
+                            with st.expander("🔍 View Agent Pipeline", expanded=False):
+                                for agent in ['agent_1', 'agent_2', 'agent_3']:
+                                    if agent in result:
+                                        st.markdown(f"**{agent.replace('_', ' ').title()}:**")
+                                        st.text(result[agent])
+                                        st.markdown("---")
+                else:
+                    st.info("No Income Statement accounts with AI content")
 
 
 if __name__ == "__main__":
