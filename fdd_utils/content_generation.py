@@ -535,6 +535,7 @@ def ai_pipeline_sequential_by_agent(
     print("\n" + "="*60)
     print("AGENT 1: Content Generation")
     print("="*60)
+    print(f"Processing {len(mapping_keys)} items with {model_type} model")
     
     if use_multithreading and len(mapping_keys) > 1:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -547,14 +548,14 @@ def ai_pipeline_sequential_by_agent(
                     )
                     futures[future] = key
             
-            with tqdm(total=len(futures), desc="Agent 1", unit='item') as pbar:
+            with tqdm(total=len(futures), desc="Agent 1", unit='item', ascii=True) as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_1'] = content
                     pbar.update(1)
     else:
-        with tqdm(total=len(mapping_keys), desc="Agent 1", unit='item') as pbar:
+        with tqdm(total=len(mapping_keys), desc="Agent 1", unit='item', ascii=True) as pbar:
             for key in mapping_keys:
                 if key in dfs:
                     _, content = process_single_item_agent_1(
@@ -568,6 +569,7 @@ def ai_pipeline_sequential_by_agent(
     print("\n" + "="*60)
     print("AGENT 2: Value Checking")
     print("="*60)
+    print(f"Processing {len([k for k in mapping_keys if k in final_results and 'agent_1' in final_results[k]])} items")
     
     if use_multithreading and len(mapping_keys) > 1:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -581,14 +583,14 @@ def ai_pipeline_sequential_by_agent(
                     )
                     futures[future] = key
             
-            with tqdm(total=len(futures), desc="Agent 2", unit='item') as pbar:
+            with tqdm(total=len(futures), desc="Agent 2", unit='item', ascii=True) as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_2'] = content
                     pbar.update(1)
     else:
-        with tqdm(total=len(mapping_keys), desc="Agent 2", unit='item') as pbar:
+        with tqdm(total=len(mapping_keys), desc="Agent 2", unit='item', ascii=True) as pbar:
             for key in mapping_keys:
                 if key in final_results and 'agent_1' in final_results[key]:
                     _, content = process_single_item_agent_2(
@@ -603,6 +605,7 @@ def ai_pipeline_sequential_by_agent(
     print("\n" + "="*60)
     print("AGENT 3: Content Refinement")
     print("="*60)
+    print(f"Processing {len([k for k in mapping_keys if k in final_results and 'agent_2' in final_results[k]])} items")
     
     if use_multithreading and len(mapping_keys) > 1:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -616,14 +619,14 @@ def ai_pipeline_sequential_by_agent(
                     )
                     futures[future] = key
             
-            with tqdm(total=len(futures), desc="Agent 3", unit='item') as pbar:
+            with tqdm(total=len(futures), desc="Agent 3", unit='item', ascii=True) as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_3'] = content
                     pbar.update(1)
     else:
-        with tqdm(total=len(mapping_keys), desc="Agent 3", unit='item') as pbar:
+        with tqdm(total=len(mapping_keys), desc="Agent 3", unit='item', ascii=True) as pbar:
             for key in mapping_keys:
                 if key in final_results and 'agent_2' in final_results[key]:
                     _, content = process_single_item_agent_3(
@@ -638,6 +641,7 @@ def ai_pipeline_sequential_by_agent(
     print("\n" + "="*60)
     print("AGENT 4: Format Checking")
     print("="*60)
+    print(f"Processing {len([k for k in mapping_keys if k in final_results and 'agent_3' in final_results[k]])} items")
     
     if use_multithreading and len(mapping_keys) > 1:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -651,7 +655,7 @@ def ai_pipeline_sequential_by_agent(
                     )
                     futures[future] = key
             
-            with tqdm(total=len(futures), desc="Agent 4", unit='item') as pbar:
+            with tqdm(total=len(futures), desc="Agent 4", unit='item', ascii=True) as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
@@ -659,7 +663,7 @@ def ai_pipeline_sequential_by_agent(
                         final_results[mapping_key]['final'] = content  # Also store as final
                     pbar.update(1)
     else:
-        with tqdm(total=len(mapping_keys), desc="Agent 4", unit='item') as pbar:
+        with tqdm(total=len(mapping_keys), desc="Agent 4", unit='item', ascii=True) as pbar:
             for key in mapping_keys:
                 if key in final_results and 'agent_3' in final_results[key]:
                     _, content = process_single_item_agent_4(
@@ -671,6 +675,18 @@ def ai_pipeline_sequential_by_agent(
                         final_results[key]['final'] = content  # Also store as final
                 pbar.update(1)
     
+    # Set final content with fallback logic
+    for key in final_results:
+        # Try agent_4 first, then agent_3, then agent_2, then agent_1
+        final_content = None
+        for agent in ['agent_4', 'agent_3', 'agent_2', 'agent_1']:
+            content = final_results[key].get(agent)
+            if content and len(str(content).strip()) > 0:
+                final_content = content
+                break
+
+        final_results[key]['final'] = final_content or ""
+
     # Finalize logging and save results
     logger.finalize(final_results)
     

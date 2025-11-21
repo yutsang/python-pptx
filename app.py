@@ -384,39 +384,43 @@ else:
                     language=st.session_state.language,
                     use_multithreading=True
                 )
+
+                # Log results for debugging
+                if results:
+                    print(f"AI Pipeline completed: {len(results)} accounts processed")
+                    content_count = 0
+                    for key, value in results.items():
+                        if isinstance(value, dict):
+                            for agent_key, content in value.items():
+                                if content and len(str(content).strip()) > 0:
+                                    content_count += 1
+                    print(f"Content generated: {content_count} items")
+                else:
+                    print("AI Pipeline failed: No results generated")
+
                 st.session_state.ai_results = results
 
-                # Simulate progress through agents
-                for agent_idx in range(total_agents):
-                    agent_names = ['Generator', 'Auditor', 'Refiner', 'Validator']
-                    agent_name = agent_names[agent_idx]
+                # Show actual progress based on results
+                if results and len(results) > 0:
+                    # Check if any content was actually generated
+                    has_content = False
+                    total_content_items = 0
+                    for key, value in results.items():
+                        if isinstance(value, dict):
+                            for agent_key, content in value.items():
+                                if content and len(str(content).strip()) > 0:
+                                    has_content = True
+                                    total_content_items += 1
 
-                    status_placeholder.info(f"🔄 Agent {agent_idx+1}/4: {agent_name} - Processing {total_items} accounts...")
+                    if has_content:
+                        status_placeholder.success(f"✅ AI content generated successfully! {total_content_items} content items created for {len(results)} accounts.")
+                    else:
+                        status_placeholder.warning(f"⚠️ AI processing completed but no content was generated. This usually means the AI model is not properly configured.")
+                        status_placeholder.info(f"💡 Selected model: **{st.session_state.get('model_type', 'local').upper()}** - Check configuration and try again.")
+                else:
+                    status_placeholder.error(f"❌ AI processing failed completely - no results generated. Check AI model setup.")
 
-                    # Update progress for each account in this agent
-                    for account_idx in range(total_items):
-                        current_account = st.session_state.workbook_list[account_idx] if account_idx < len(st.session_state.workbook_list) else f"Account {account_idx+1}"
-                        step_count += 1
-
-                        # Calculate ETA
-                        elapsed = time.time() - start_time
-                        avg_time_per_step = elapsed / step_count
-                        remaining_steps = total_steps - step_count
-                        eta_seconds = avg_time_per_step * remaining_steps
-
-                        # Format ETA
-                        if eta_seconds < 60:
-                            eta_str = f"{int(eta_seconds)}s"
-                        elif eta_seconds < 3600:
-                            eta_str = f"{int(eta_seconds/60)}m {int(eta_seconds%60)}s"
-                        else:
-                            eta_str = f"{int(eta_seconds/3600)}h {int((eta_seconds%3600)/60)}m"
-
-                        eta_placeholder.info(f"📊 Agent {agent_idx+1}/4: {agent_name} | Account: {current_account} | Step {step_count}/{total_steps} | ETA: {eta_str}")
-                        progress_bar.progress(step_count / total_steps)
-
-                        # Small delay to show progress
-                        time.sleep(0.1)
+                progress_bar.progress(1.0)  # Complete the progress bar
 
                 progress_placeholder.empty()
                 eta_placeholder.empty()
@@ -438,7 +442,72 @@ else:
     if st.session_state.ai_results:
         st.markdown("### 📝 Generated Content")
 
-        # Get BS and IS keys from mappings
+        # Get BS and IS keys from mappings first
+        from fdd_utils.reconciliation import load_mappings
+        mappings = load_mappings()
+
+        # Filter for accounts that actually have results
+        bs_keys = []
+        is_keys = []
+
+        for k in st.session_state.ai_results.keys():
+            if k in mappings:
+                acc_type = mappings[k].get('type')
+                if acc_type == 'BS':
+                    bs_keys.append(k)
+                elif acc_type == 'IS':
+                    is_keys.append(k)
+
+        # Check if there's any actual content
+        has_content = False
+        for key, value in st.session_state.ai_results.items():
+            if isinstance(value, dict):
+                for agent_key, content in value.items():
+                    if content and len(str(content).strip()) > 0:
+                        has_content = True
+                        break
+                if has_content:
+                    break
+
+        if not has_content:
+            st.warning("⚠️ AI processing completed but no content was generated.")
+            st.error("**Possible causes:**")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**For Local AI:**")
+                st.markdown("- Local AI server not running")
+                st.markdown("- Wrong server URL/port")
+                st.markdown("- Model not loaded")
+            with col2:
+                st.markdown("**For Cloud AI:**")
+                st.markdown("- Invalid API key")
+                st.markdown("- Network connection issues")
+                st.markdown("- Rate limits exceeded")
+
+            st.info("💡 **Selected model:** " + st.session_state.get('model_type', 'local').upper())
+            st.info("🔧 Configure your AI model and try again.")
+
+            # Show sample structure anyway
+            st.markdown("---")
+            st.markdown("### 📋 Expected Content Structure")
+            st.info("When AI models are properly configured, you will see content for each account like this:")
+
+            # Show sample content structure
+            sample_accounts = bs_keys[:2] + is_keys[:2]  # Show first 2 from each type
+            for account in sample_accounts[:4]:  # Max 4 samples
+                with st.expander(f"📄 {account} (Sample Structure)", expanded=False):
+                    st.markdown("**✨ Final Content (Agent 4):**")
+                    st.text_area("",
+                        f"This would contain the final polished content for {account}...",
+                        height=100, disabled=True, label_visibility="collapsed")
+
+                    with st.expander("🔍 View Agent Pipeline (Sample)", expanded=False):
+                        st.markdown("**Generator (Agent 1):** Raw generated content...")
+                        st.markdown("**Auditor (Agent 2):** Verified and corrected content...")
+                        st.markdown("**Refiner (Agent 3):** Improved and refined content...")
+                        st.markdown("**Validator (Agent 4):** Final formatted content...")
+
+        # Continue with normal processing if we have content
         from fdd_utils.reconciliation import load_mappings
         mappings = load_mappings()
 
