@@ -134,18 +134,35 @@ class UnifiedLogger:
     
     def log_agent_start(self, agent_name: str, mapping_key: str):
         """Log when an agent starts processing."""
-        self.logger.info(f"[{agent_name}] Processing: {mapping_key}")
+        # Map agent names to actual names
+        agent_name_map = {
+            'agent_1': 'Generator',
+            'agent_2': 'Auditor',
+            'agent_3': 'Refiner',
+            'agent_4': 'Validator'
+        }
+        display_name = agent_name_map.get(agent_name, agent_name)
+        self.logger.info(f"[{display_name}] Processing: {mapping_key}")
     
     def log_agent_complete(self, agent_name: str, mapping_key: str, result: Dict[str, Any], 
                           system_prompt: str = '', user_prompt: str = ''):
         """Log when an agent completes processing."""
+        # Map agent names to actual names
+        agent_name_map = {
+            'agent_1': 'Generator',
+            'agent_2': 'Auditor',
+            'agent_3': 'Refiner',
+            'agent_4': 'Validator'
+        }
+        display_name = agent_name_map.get(agent_name, agent_name)
+        
         duration = result.get('duration', 0)
         tokens = result.get('tokens_used', 0)
         content = result.get('content', '')
         
         # Console log with progress
         self.logger.info(
-            f"[{agent_name}] ✅ {mapping_key} | "
+            f"[{display_name}] ✅ {mapping_key} | "
             f"Duration: {duration:.2f}s | Tokens: {tokens} | "
             f"Content: {len(content)} chars"
         )
@@ -167,7 +184,15 @@ class UnifiedLogger:
     
     def log_error(self, agent_name: str, mapping_key: str, error: Exception):
         """Log errors during processing."""
-        self.logger.error(f"[{agent_name}] Error processing {mapping_key}: {str(error)}")
+        # Map agent names to actual names
+        agent_name_map = {
+            'agent_1': 'Generator',
+            'agent_2': 'Auditor',
+            'agent_3': 'Refiner',
+            'agent_4': 'Validator'
+        }
+        display_name = agent_name_map.get(agent_name, agent_name)
+        self.logger.error(f"[{display_name}] Error processing {mapping_key}: {str(error)}")
         
         if mapping_key not in self.run_data['processing_results']:
             self.run_data['processing_results'][mapping_key] = {}
@@ -541,7 +566,7 @@ def ai_pipeline_sequential_by_agent(
     
     # Agent 1: Process ALL items
     print("\n" + "="*60)
-    print("AGENT 1: Content Generation")
+    print("AGENT 1: Generator - Content Generation")
     print("="*60)
     print(f"Processing {len(mapping_keys)} items with {model_type} model")
     
@@ -556,14 +581,14 @@ def ai_pipeline_sequential_by_agent(
                     )
                     futures[future] = key
             
-            with tqdm(total=len(futures), desc="Agent 1", unit='item', ascii=True) as pbar:
+            with tqdm(total=len(futures), desc="Generator", unit='item', ascii=False, disable=False) as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_1'] = content
                     pbar.update(1)
     else:
-        with tqdm(total=len(mapping_keys), desc="Agent 1", unit='item', ascii=True) as pbar:
+        with tqdm(total=len(mapping_keys), desc="Generator", unit='item', ascii=False, disable=False) as pbar:
             for key in mapping_keys:
                 if key in dfs:
                     _, content = process_single_item_agent_1(
@@ -575,7 +600,7 @@ def ai_pipeline_sequential_by_agent(
     
     # Agent 2: Process ALL items with Agent 1 outputs
     print("\n" + "="*60)
-    print("AGENT 2: Value Checking")
+    print("AGENT 2: Auditor - Value Checking")
     print("="*60)
     print(f"Processing {len([k for k in mapping_keys if k in final_results and 'agent_1' in final_results[k]])} items")
     
@@ -591,14 +616,14 @@ def ai_pipeline_sequential_by_agent(
                     )
                     futures[future] = key
             
-            with tqdm(total=len(futures), desc="Agent 2", unit='item', ascii=True) as pbar:
+            with tqdm(total=len(futures), desc="Auditor", unit='item', ascii=False, disable=False) as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_2'] = content
                     pbar.update(1)
     else:
-        with tqdm(total=len(mapping_keys), desc="Agent 2", unit='item', ascii=True) as pbar:
+        with tqdm(total=len(mapping_keys), desc="Auditor", unit='item', ascii=False, disable=False) as pbar:
             for key in mapping_keys:
                 if key in final_results and 'agent_1' in final_results[key]:
                     _, content = process_single_item_agent_2(
@@ -611,7 +636,7 @@ def ai_pipeline_sequential_by_agent(
     
     # Agent 3: Process ALL items with Agent 2 outputs
     print("\n" + "="*60)
-    print("AGENT 3: Content Refinement")
+    print("AGENT 3: Refiner - Content Refinement")
     print("="*60)
     print(f"Processing {len([k for k in mapping_keys if k in final_results and 'agent_2' in final_results[k]])} items")
     
@@ -627,14 +652,14 @@ def ai_pipeline_sequential_by_agent(
                     )
                     futures[future] = key
             
-            with tqdm(total=len(futures), desc="Agent 3", unit='item', ascii=True) as pbar:
+            with tqdm(total=len(futures), desc="Refiner", unit='item', ascii=False, disable=False) as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_3'] = content
                     pbar.update(1)
     else:
-        with tqdm(total=len(mapping_keys), desc="Agent 3", unit='item', ascii=True) as pbar:
+        with tqdm(total=len(mapping_keys), desc="Refiner", unit='item', ascii=False, disable=False) as pbar:
             for key in mapping_keys:
                 if key in final_results and 'agent_2' in final_results[key]:
                     _, content = process_single_item_agent_3(
@@ -647,7 +672,7 @@ def ai_pipeline_sequential_by_agent(
     
     # Agent 4: Process ALL items with Agent 3 outputs
     print("\n" + "="*60)
-    print("AGENT 4: Format Checking")
+    print("AGENT 4: Validator - Format Checking")
     print("="*60)
     print(f"Processing {len([k for k in mapping_keys if k in final_results and 'agent_3' in final_results[k]])} items")
     
@@ -663,7 +688,7 @@ def ai_pipeline_sequential_by_agent(
                     )
                     futures[future] = key
             
-            with tqdm(total=len(futures), desc="Agent 4", unit='item', ascii=True) as pbar:
+            with tqdm(total=len(futures), desc="Validator", unit='item', ascii=False, disable=False) as pbar:
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
@@ -671,7 +696,7 @@ def ai_pipeline_sequential_by_agent(
                         final_results[mapping_key]['final'] = content  # Also store as final
                     pbar.update(1)
     else:
-        with tqdm(total=len(mapping_keys), desc="Agent 4", unit='item', ascii=True) as pbar:
+        with tqdm(total=len(mapping_keys), desc="Validator", unit='item', ascii=False, disable=False) as pbar:
             for key in mapping_keys:
                 if key in final_results and 'agent_3' in final_results[key]:
                     _, content = process_single_item_agent_4(

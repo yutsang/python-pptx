@@ -33,12 +33,14 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS
+# Custom CSS for full width
 st.markdown("""
 <style>
-.block-container {padding-top: 1rem;}
+.block-container {padding-top: 1rem; max-width: 100% !important;}
 .stTabs [data-baseweb="tab-list"] {gap: 2px;}
 .stTabs [data-baseweb="tab"] {padding: 10px 20px;}
+.main .block-container {max-width: 100%; padding-left: 2rem; padding-right: 2rem;}
+[data-testid="stAppViewContainer"] {max-width: 100%;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -152,24 +154,29 @@ with st.sidebar:
             temp_path = None
     
     if temp_path:
-        # Entity name selection (combined)
+        # Entity name selection (dropdown + text box)
         st.markdown("---")
         st.markdown("**🏢 Entity Name**")
         entity_options = get_entity_names(temp_path)
-        entity_name = st.selectbox(
-            "Select entity or type custom",
-            options=[""] + entity_options + ["[Custom]"],
-            help="Select from list or choose '[Custom]' to type your own",
-            label_visibility="collapsed"
+        
+        # Dropdown for selection
+        selected_entity = st.selectbox(
+            "Select entity from list",
+            options=[""] + entity_options,
+            help="Select an entity from the list",
+            label_visibility="collapsed",
+            key="entity_dropdown"
         )
-
-        if entity_name == "[Custom]":
-            entity_name = st.text_input(
-                "Type custom entity name",
-                placeholder="Enter entity name...",
-                help="Custom entity name",
-                label_visibility="collapsed"
-            )
+        
+        # Text box for modification/custom input
+        entity_name = st.text_input(
+            "Or type/modify entity name",
+            value=selected_entity if selected_entity else "",
+            placeholder="Enter or modify entity name...",
+            help="Type a custom entity name or modify the selected one",
+            label_visibility="collapsed",
+            key="entity_text_input"
+        )
         
         # Financial statement sheet selection
         st.markdown("---")
@@ -253,6 +260,25 @@ else:
     # Area 1: Data Display
     st.header("📈 Data Display")
     
+    # Load mappings to filter accounts by type
+    from fdd_utils.reconciliation import load_mappings
+    mappings = load_mappings()
+    
+    # Separate accounts by type (BS or IS)
+    bs_accounts = []
+    is_accounts = []
+    other_accounts = []
+    
+    for key in st.session_state.workbook_list:
+        if key in st.session_state.dfs:
+            acc_type = mappings.get(key, {}).get('type', '')
+            if acc_type == 'BS':
+                bs_accounts.append(key)
+            elif acc_type == 'IS':
+                is_accounts.append(key)
+            else:
+                other_accounts.append(key)
+    
     # Create tabs for BS and IS
     tab_bs, tab_is = st.tabs(["Balance Sheet", "Income Statement"])
     
@@ -261,8 +287,8 @@ else:
         recon_bs = st.session_state.reconciliation[0] if st.session_state.reconciliation else None
         
         if bs_data is not None:
-            # Second level tabs
-            bs_tabs = st.tabs(["📊 Reconciliation"] + [f"📋 {key}" for key in st.session_state.workbook_list if key in st.session_state.dfs])
+            # Second level tabs - only show BS accounts
+            bs_tabs = st.tabs(["📊 Reconciliation"] + [f"📋 {key}" for key in bs_accounts])
             
             # Reconciliation tab
             with bs_tabs[0]:
@@ -292,10 +318,11 @@ else:
                 else:
                     st.info("No reconciliation data available")
             
-            # Individual account tabs
-            for idx, key in enumerate([k for k in st.session_state.workbook_list if k in st.session_state.dfs], 1):
-                with bs_tabs[idx]:
-                    st.dataframe(st.session_state.dfs[key], use_container_width=True)
+            # Individual account tabs - only BS accounts
+            for idx, key in enumerate(bs_accounts, 1):
+                if idx < len(bs_tabs):
+                    with bs_tabs[idx]:
+                        st.dataframe(st.session_state.dfs[key], use_container_width=True)
         else:
             st.info("No Balance Sheet data extracted")
     
@@ -304,8 +331,8 @@ else:
         recon_is = st.session_state.reconciliation[1] if st.session_state.reconciliation else None
         
         if is_data is not None:
-            # Second level tabs
-            is_tabs = st.tabs(["📊 Reconciliation"] + [f"📋 {key}" for key in st.session_state.workbook_list if key in st.session_state.dfs])
+            # Second level tabs - only show IS accounts
+            is_tabs = st.tabs(["📊 Reconciliation"] + [f"📋 {key}" for key in is_accounts])
             
             # Reconciliation tab
             with is_tabs[0]:
@@ -335,10 +362,11 @@ else:
                 else:
                     st.info("No reconciliation data available")
             
-            # Individual account tabs
-            for idx, key in enumerate([k for k in st.session_state.workbook_list if k in st.session_state.dfs], 1):
-                with is_tabs[idx]:
-                    st.dataframe(st.session_state.dfs[key], use_container_width=True)
+            # Individual account tabs - only IS accounts
+            for idx, key in enumerate(is_accounts, 1):
+                if idx < len(is_tabs):
+                    with is_tabs[idx]:
+                        st.dataframe(st.session_state.dfs[key], use_container_width=True)
         else:
             st.info("No Income Statement data extracted")
     
@@ -374,7 +402,7 @@ else:
                 import time
                 start_time = time.time()
 
-                status_placeholder.info(f"🔄 Running Agent 1/4: Generator...")
+                status_placeholder.info(f"🔄 Running Agent 1/4: Generator (Content Generation)...")
                 eta_placeholder.info(f"📊 Processing {total_items} accounts through Generator...")
 
                 results = run_ai_pipeline(
@@ -494,16 +522,16 @@ else:
             sample_accounts = bs_keys[:2] + is_keys[:2]  # Show first 2 from each type
             for account in sample_accounts[:4]:  # Max 4 samples
                 with st.expander(f"📄 {account} (Sample Structure)", expanded=False):
-                    st.markdown("**✨ Final Content (Agent 4):**")
+                    st.markdown("**✨ Final Content (Validator):**")
                     st.text_area("",
                         f"This would contain the final polished content for {account}...",
                         height=100, disabled=True, label_visibility="collapsed")
 
                     with st.expander("🔍 View Agent Pipeline (Sample)", expanded=False):
-                        st.markdown("**Generator (Agent 1):** Raw generated content...")
-                        st.markdown("**Auditor (Agent 2):** Verified and corrected content...")
-                        st.markdown("**Refiner (Agent 3):** Improved and refined content...")
-                        st.markdown("**Validator (Agent 4):** Final formatted content...")
+                        st.markdown("**Generator:** Raw generated content...")
+                        st.markdown("**Auditor:** Verified and corrected content...")
+                        st.markdown("**Refiner:** Improved and refined content...")
+                        st.markdown("**Validator:** Final formatted content...")
 
         # Continue with normal processing if we have content
         from fdd_utils.reconciliation import load_mappings
@@ -535,19 +563,26 @@ else:
                         with st.expander(f"📄 {key}", expanded=False):
                             result = st.session_state.ai_results[key]
 
-                            # Final content (expanded)
-                            st.markdown("**✨ Final Content (Agent 4):**")
+                            # Final content (expanded) - use actual agent name
+                            st.markdown("**✨ Final Content (Validator):**")
                             final = result.get('final', result.get('agent_4', ''))
                             if final and str(final).strip():
                                 st.text_area("", value=str(final), height=150, key=f"final_{key}", label_visibility="collapsed")
                             else:
                                 st.warning("No final content available")
 
-                            # Intermediate agents (collapsed)
+                            # Intermediate agents (collapsed) - use actual agent names
                             with st.expander("🔍 View Agent Pipeline", expanded=False):
+                                agent_map = {
+                                    'agent_1': 'Generator',
+                                    'agent_2': 'Auditor',
+                                    'agent_3': 'Refiner',
+                                    'agent_4': 'Validator'
+                                }
                                 for agent in ['agent_1', 'agent_2', 'agent_3']:
                                     if agent in result and result[agent] is not None:
-                                        st.markdown(f"**{agent.replace('_', ' ').title()}:**")
+                                        agent_name = agent_map.get(agent, agent.replace('_', ' ').title())
+                                        st.markdown(f"**{agent_name}:**")
                                         st.text(str(result[agent]))
                                         st.markdown("---")
                 else:
