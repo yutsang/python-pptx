@@ -107,6 +107,12 @@ class UnifiedLogger:
         # Console handler
         ch = logging.StreamHandler()
         ch.setLevel(logging.INFO)
+        # Ensure console output uses UTF-8 encoding
+        if hasattr(ch, 'stream') and hasattr(ch.stream, 'reconfigure'):
+            try:
+                ch.stream.reconfigure(encoding='utf-8')
+            except:
+                pass  # Ignore if reconfigure not available
         
         # Formatter
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -377,7 +383,9 @@ def process_single_item_agent_1(
         
     except Exception as e:
         logger.log_error('agent_1', mapping_key, e)
-        return mapping_key, None
+        # Return a basic placeholder instead of None to avoid downstream issues
+        placeholder = f"Content generation failed for {mapping_key}: {str(e)[:100]}"
+        return mapping_key, placeholder
 
 
 def process_single_item_agent_2(

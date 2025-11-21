@@ -458,15 +458,13 @@ else:
                 elif acc_type == 'IS':
                     is_keys.append(k)
 
-        # Check if there's any actual content
+        # Check if there's any actual content (including error messages)
         has_content = False
         for key, value in st.session_state.ai_results.items():
             if isinstance(value, dict):
-                for agent_key, content in value.items():
-                    if content and len(str(content).strip()) > 0:
-                        has_content = True
-                        break
-                if has_content:
+                final_content = value.get('final', '')
+                if final_content and len(str(final_content).strip()) > 0:
+                    has_content = True
                     break
 
         if not has_content:
@@ -540,17 +538,17 @@ else:
                             # Final content (expanded)
                             st.markdown("**✨ Final Content (Agent 4):**")
                             final = result.get('final', result.get('agent_4', ''))
-                            if final:
-                                st.text_area("", value=final, height=150, key=f"final_{key}", label_visibility="collapsed")
+                            if final and str(final).strip():
+                                st.text_area("", value=str(final), height=150, key=f"final_{key}", label_visibility="collapsed")
                             else:
                                 st.warning("No final content available")
 
                             # Intermediate agents (collapsed)
                             with st.expander("🔍 View Agent Pipeline", expanded=False):
                                 for agent in ['agent_1', 'agent_2', 'agent_3']:
-                                    if agent in result:
+                                    if agent in result and result[agent] is not None:
                                         st.markdown(f"**{agent.replace('_', ' ').title()}:**")
-                                        st.text(result[agent])
+                                        st.text(str(result[agent]))
                                         st.markdown("---")
                 else:
                     st.info("No Balance Sheet accounts with AI content")
@@ -564,17 +562,17 @@ else:
                             # Final content (expanded)
                             st.markdown("**✨ Final Content (Agent 4):**")
                             final = result.get('final', result.get('agent_4', ''))
-                            if final:
-                                st.text_area("", value=final, height=150, key=f"final_is_{key}", label_visibility="collapsed")
+                            if final and str(final).strip():
+                                st.text_area("", value=str(final), height=150, key=f"final_is_{key}", label_visibility="collapsed")
                             else:
                                 st.warning("No final content available")
 
                             # Intermediate agents (collapsed)
                             with st.expander("🔍 View Agent Pipeline", expanded=False):
                                 for agent in ['agent_1', 'agent_2', 'agent_3']:
-                                    if agent in result:
+                                    if agent in result and result[agent] is not None:
                                         st.markdown(f"**{agent.replace('_', ' ').title()}:**")
-                                        st.text(result[agent])
+                                        st.text(str(result[agent]))
                                         st.markdown("---")
                 else:
                     st.info("No Income Statement accounts with AI content")
@@ -603,16 +601,20 @@ def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
         result = ai_results[account_key]
         final_content = result.get('final', result.get('agent_4', ''))
 
-        if final_content:
-            # Add account header
-            content_lines.append(f"## {account_key}")
-            content_lines.append("")
+        # Always include accounts, even with empty/error content
+        content_lines.append(f"## {account_key}")
+        content_lines.append("")
 
+        if final_content and final_content.strip():
             # Add the content
             content_lines.append(final_content.strip())
-            content_lines.append("")
-            content_lines.append("---")
-            content_lines.append("")
+        else:
+            # Add placeholder for empty content
+            content_lines.append(f"[No content generated for {account_key}]")
+
+        content_lines.append("")
+        content_lines.append("---")
+        content_lines.append("")
 
     return "\n".join(content_lines)
 
