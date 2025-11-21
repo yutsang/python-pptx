@@ -1,10 +1,29 @@
 # Financial Data Processing with AI
 
-Automated financial content generation using 4-agent AI pipeline with smart number formatting.
+Automated financial content generation using 4-agent AI pipeline with smart number formatting and reconciliation.
 
 ---
 
-## Quick Start
+## Quick Start - Streamlit App
+
+```bash
+# Install dependencies
+pip install -r fdd_utils/requirements.txt
+
+# Run the app
+streamlit run app.py
+```
+
+**Features**:
+- 📤 Upload Excel databook
+- 🤖 Select AI model (local/openai/deepseek)
+- 📊 View Balance Sheet & Income Statement with reconciliation
+- 🔄 Generate AI content for all accounts
+- 📑 Export to PowerPoint (BS + IS combined)
+
+---
+
+## Quick Start - Python Code
 
 ```python
 from fdd_utils.process_databook import extract_data_from_excel
@@ -14,12 +33,12 @@ from fdd_utils.content_generation import run_ai_pipeline, extract_final_contents
 dfs, keys, _, lang = extract_data_from_excel(
     databook_path='databook.xlsx',
     entity_name='Company Name',  # or "" for single entity
-    mode='All'  # "All", "BS", or "IS"
+    mode='All'  # Always use "All" mode
 )
 
 # 2. Check extraction succeeded
 if not dfs or len(dfs) == 0:
-    print("❌ Extraction failed! Run: python test_extraction.py")
+    print("❌ Extraction failed!")
     exit()
 
 # 3. Run AI pipeline
@@ -68,9 +87,9 @@ Values are **automatically formatted** in code before being sent to AI:
 | 10,000 - 999,999 | K (1 d.p.) | 78.2K |
 | ≥ 1,000,000 | million (2 d.p.) | 12.35 million |
 
-### Special: Negative Retained Earnings
-- **未分配利润** (negative) → **未弥补亏损** (positive display)
-- **Retained Earnings** (negative) → **Accumulated Losses** (positive display)
+### Special Handling
+- **Negative Retained Earnings**: 未分配利润 (negative) → 未弥补亏损 (positive display)
+- **Income Statement Expenses**: Displayed as negative, compared as positive for reconciliation
 
 ---
 
@@ -81,60 +100,26 @@ Extract Balance Sheet and Income Statement from a **single sheet** containing bo
 ```python
 from fdd_utils.financial_extraction import extract_balance_sheet_and_income_statement
 
-# Extract BS and IS from single sheet
-# Both statements are in the same sheet, separated by headers:
-# - "示意性调整后资产负债表" or "Indicative adjusted balance sheet"  
-# - "示意性调整后利润表" or "Indicative adjusted income statement"
 results = extract_balance_sheet_and_income_statement(
     workbook_path="databook.xlsx",
-    sheet_name="Sheet1",     # Sheet name containing both BS and IS
-    debug=True               # Enable comprehensive debug prints
+    sheet_name="Financials",  # Sheet with both BS and IS
+    debug=True                # Enable debug output
 )
 
 # Access results
-balance_sheet = results['balance_sheet']      # DataFrame or None
-income_statement = results['income_statement']  # DataFrame or None
-project_name = results['project_name']        # Extracted from headers (e.g., "东莞联洋")
-
-# Work with the data
-if balance_sheet is not None:
-    print(f"Balance Sheet: {len(balance_sheet)} rows")
-    print(f"Columns: {list(balance_sheet.columns)}")
-    print(balance_sheet.head())
-    
-    # Access specific account
-    cash_row = balance_sheet[balance_sheet['Description'].str.contains('货币资金', na=False)]
-    if not cash_row.empty:
-        print(f"\n货币资金 (Cash):")
-        print(cash_row)
-
-if income_statement is not None:
-    print(f"\nIncome Statement: {len(income_statement)} rows")
-    print(income_statement.head())
+balance_sheet = results['balance_sheet']
+income_statement = results['income_statement']
+project_name = results['project_name']  # e.g., "东莞联洋"
 ```
 
 **Features**:
 - Extracts both BS and IS from **single sheet**
-- Auto-detects statement boundaries via headers
-- Extracts project name (e.g., from "xxxx利润表 - 东莞联洋")
-- Gets **ONLY columns** with "示意性调整后" or "Indicative adjusted" (filters out 管理层数, 审定数, etc.)
-- **Smart end detection**:
-  - BS ends at "负债及所有者权益总计" or "Total liabilities and owners'equity"
-  - IS ends at "净利润/（亏损）" or "Net profit/(loss)"
-- Auto-multiplies by 1000 if "CNY'000" or "人民币千元" detected
-- Converts dates: FY22→2022-12-31, 9M22→2022-09-30, 30-Sep-2022→2022-09-30
-- **Smart column cleanup**: Removes date columns that have all zeros in Income Statement from BOTH statements
-- **Removes empty rows**: Filters out rows where all values are 0
-
-**Returns**: Dictionary with keys:
-- `'balance_sheet'`: DataFrame with `Description` column + ALL date columns (e.g., `2022-12-31`, `2021-12-31`)
-- `'income_statement'`: DataFrame with `Description` column + ALL date columns
-- `'project_name'`: String (project/entity name extracted from headers)
-
-**Example Result**:
-```
-Balance Sheet columns: ['Description', '2024-12-31', '2023-12-31', '2022-12-31']
-```
+- Auto-detects boundaries via headers ("示意性调整后资产负债表", "示意性调整后利润表")
+- Extracts project name from headers
+- Gets **ONLY "示意性调整后"** columns (filters out 管理层数, 审定数, etc.)
+- Removes date columns with all zeros (based on Income Statement)
+- Multiplies by 1000 if "CNY'000" or "人民币千元" detected
+- Converts dates: FY22→2022-12-31, 9M22→2022-09-30
 
 ---
 
@@ -143,67 +128,20 @@ Balance Sheet columns: ['Description', '2024-12-31', '2023-12-31', '2022-12-31']
 Verify data accuracy by comparing two extraction methods:
 
 ```python
-from fdd_utils.financial_extraction import extract_balance_sheet_and_income_statement
-from fdd_utils.process_databook import extract_data_from_excel
 from fdd_utils.reconciliation import reconcile_financial_statements, print_reconciliation_report
 
-# Extract from both sources
-# Source 1: BS/IS from single sheet
-bs_is_results = extract_balance_sheet_and_income_statement(
-    workbook_path="databook.xlsx",
-    sheet_name="Financials"
-)
-
-# Source 2: Account-by-account extraction
-dfs, keys, _, lang = extract_data_from_excel(
-    databook_path="databook.xlsx",
-    entity_name="",
-    mode="All"
-)
-
-# Reconcile the two sources (uses LATEST date column only)
+# Reconcile the two sources
 bs_recon, is_recon = reconcile_financial_statements(
     bs_is_results=bs_is_results,
     dfs=dfs,
-    tolerance=1.0,  # Allow ±1 absolute difference for rounding
-    materiality_threshold=0.005,  # 0.5% materiality threshold
-    debug=True  # Shows which accounts are matched and total row detection
+    tolerance=1.0,               # ±1 absolute difference
+    materiality_threshold=0.005, # 0.5% materiality
+    debug=True
 )
 
-# Print report (show only mismatches)
+# Print report
 print_reconciliation_report(bs_recon, is_recon, show_only_issues=True)
 ```
-
-**Reconciliation Output**:
-```
-Source_Account    Date         Source_Value  DFS_Account  DFS_Value    Diff        Match
-货币资金          2024-12-31   4,119,178     货币资金     4,119,178    0           ✅ Match
-应收账款          2024-12-31   13,034,797    应收账款     13,034,797   0           ✅ Match
-投资性房地产      2024-12-31   168,526,613   投资性房地产 168,520,000  6,613       ✅ Immaterial
-其他应收款        2024-12-31   1,500,000     其他应收款   1,200,000    300,000     ❌ Diff
-```
-
-**Features**:
-- Uses **LATEST date column only** from BS/IS (last date column - most recent)
-- **Strict account matching using ONLY mappings.yml aliases**:
-  - Exact alias match (e.g., "货币资金" in aliases → key "Cash")
-  - Cleans suffixes ('：', '(', ')') before matching
-  - **NO name-based matching** - only uses defined aliases
-- **Auto-skips total/subtotal/profit lines** (marked as "-"):
-  - Chinese: xxx合计, xxx总计, xxx小计, 毛利, 营业利润, 净利润
-  - English: Total xxx, Subtotal, Sub-total, Gross profit, Operating profit, Profit/(loss) before taxation, Net profit
-- Finds **total row** in DFS (looks for '合计', '总计', 'Total' keywords ONLY - skips '小计'/subtotal rows)
-- **Smart matching logic**:
-  - Source = 0 → Shows "-" (skipped)
-  - Source ≠ 0 + Total row found → Compare values
-  - Source ≠ 0 + Total row NOT found → ⚠️ Not Found
-  - Total/profit lines → Shows "-" (skipped)
-- **Income Statement expenses**: Kept as negative in display but compared as positive (category='Expenses' in mappings.yml)
-- **Materiality threshold**: Differences < 0.5% of source value marked as ✅ Immaterial
-- Shows: ✅ Match, ✅ Immaterial, ❌ Diff, ⚠️ Not Found, or "-" (skipped)
-- **Diff column**: Shows absolute difference between source and dfs values
-
-**Important**: Account matching ONLY works if the account name is in `mappings.yml` aliases. Add missing accounts to mappings.yml if needed.
 
 **Example Output**:
 ```
@@ -213,27 +151,65 @@ Source_Account      Date         Source_Value  DFS_Account  DFS_Value    Diff   
 流动资产合计        2024-05-31   9,246,577     -            -            -           -
 投资性房地产        2024-05-31   168,526,613   投资性房地产 168,520,000  6,613       ✅ Immaterial
 管理费用            2024-05-31   -1,234,567    管理费用     1,234,567    0           ✅ Match
-净利润/（亏损）     2024-05-31   -85,061,858   -            -            -           -
 ```
 
-Note: 
-- Expenses shown as negative but compared as positive
-- Diff < 0.5% of source → ✅ Immaterial
-- Total/profit lines show "-"
+**Features**:
+- Uses **LATEST date** (last column)
+- **Strict alias-only matching** via mappings.yml
+- Skips total/subtotal/profit lines (shows "-")
+- Skips accounts with source value = 0
+- **Materiality threshold**: Diff < 0.5% → ✅ Immaterial
+- Expenses: Negative display, positive comparison
+- Skips '小计'/Subtotal rows in DFS when finding totals
 
-Note: Total/profit lines (合计, 总计, 净利润, etc.) show "-" for DFS columns as they are not mapped.
+**Match Status**:
+- ✅ **Match**: Exact match (within tolerance)
+- ✅ **Immaterial**: Diff < 0.5% of source value
+- ❌ **Diff**: Material difference
+- ⚠️ **Not Found**: Account not in mappings.yml or not extracted
+- **-**: Skipped (total/subtotal/profit line or zero value)
 
-**Example with Debug**:
+---
+
+## Recent Updates (Nov 2025)
+
+### Number Formatting
+- 万/K = 1 decimal place
+- 亿/million = 2 decimal places
+- Negative retained earnings → 未弥补亏损/Accumulated Losses
+
+### Financial Extraction
+- Extracts from single sheet with both BS and IS
+- Filters for "示意性调整后" columns only
+- Smart end detection (负债及所有者权益总计, 净利润)
+- Removes empty date columns
+
+### Reconciliation
+- Latest date only (last column)
+- Alias-only matching (no name guessing)
+- Materiality threshold (0.5% default)
+- Skips totals/subtotals/profit lines
+- Diff column shows absolute difference
+
+---
+
+## Files Structure
+
 ```
-    [MATCH] Searching for: '流动资产合计'
-    [MATCH]   ⏭️  Skipped (total/profit line) → ℹ️ Not Mapped
+fdd_utils/
+├── process_databook.py       # Excel extraction + formatting
+├── financial_extraction.py   # BS/IS from single sheet
+├── reconciliation.py          # Data reconciliation
+├── content_generation.py     # 4-agent AI pipeline
+├── ai_helper.py              # AI model interface
+├── mappings.yml              # Account aliases + prompts
+├── prompts.yml               # Agent 2/3/4 prompts
+├── config.yml                # AI parameters
+└── logs/                     # Run outputs
 
-    [MATCH] Searching for: '货币资金'
-    [MATCH]   ✅ Exact alias match: alias='货币资金', key='Cash'
-      Found total row: '货币资金合计'
-
-    [MATCH] Searching for: '管理费用'
-    [MATCH]   ✅ Found: key='GA', category='Expenses'
-    [CONVERT] Expense: -1234567 → 1234567 (negative to positive)
+app.py                        # Streamlit app
 ```
 
+---
+
+**Start**: `streamlit run app.py` 🚀
