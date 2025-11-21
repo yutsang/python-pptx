@@ -16,6 +16,16 @@ from fdd_utils.financial_extraction import extract_balance_sheet_and_income_stat
 from fdd_utils.reconciliation import reconcile_financial_statements
 from fdd_utils.content_generation import run_ai_pipeline, extract_final_contents
 
+# Import PPTX generation
+try:
+    import datetime
+    import uuid
+    import re
+    from fdd_utils.pptx_generation import export_pptx, merge_presentations
+    PPTX_AVAILABLE = True
+except ImportError:
+    PPTX_AVAILABLE = False
+
 # Page config
 st.set_page_config(
     page_title="Financial Data Processing",
@@ -142,22 +152,24 @@ with st.sidebar:
             temp_path = None
     
     if temp_path:
-        # Entity name selection (editable)
+        # Entity name selection (combined)
         st.markdown("---")
         st.markdown("**🏢 Entity Name**")
         entity_options = get_entity_names(temp_path)
-        entity_selected = st.selectbox(
-            "Select or type custom",
-            options=entity_options,
-            help="Leave blank for single entity",
+        entity_name = st.selectbox(
+            "Select entity or type custom",
+            options=[""] + entity_options + ["[Custom]"],
+            help="Select from list or choose '[Custom]' to type your own",
             label_visibility="collapsed"
         )
-        entity_name = st.text_input(
-            "Custom entity name (optional)",
-            value=entity_selected,
-            help="Edit if needed",
-            label_visibility="collapsed"
-        )
+
+        if entity_name == "[Custom]":
+            entity_name = st.text_input(
+                "Type custom entity name",
+                placeholder="Enter entity name...",
+                help="Custom entity name",
+                label_visibility="collapsed"
+            )
         
         # Financial statement sheet selection
         st.markdown("---")
@@ -174,25 +186,16 @@ with st.sidebar:
             st.warning("No sheets found")
             selected_sheet = None
         
-        # Model selection (horizontal)
+        # Model selection (radio buttons)
         st.markdown("---")
         st.markdown("**🤖 AI Model**")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if st.button("🏠 Local", use_container_width=True, 
-                        type="primary" if st.session_state.get('model_type') == 'local' else "secondary"):
-                st.session_state.model_type = 'local'
-        with col2:
-            if st.button("🌐 OpenAI", use_container_width=True,
-                        type="primary" if st.session_state.get('model_type') == 'openai' else "secondary"):
-                st.session_state.model_type = 'openai'
-        with col3:
-            if st.button("🚀 DeepSeek", use_container_width=True,
-                        type="primary" if st.session_state.get('model_type') == 'deepseek' else "secondary"):
-                st.session_state.model_type = 'deepseek'
-        
-        model_type = st.session_state.get('model_type', 'local')
-        st.info(f"Selected: **{model_type}**")
+        model_type = st.radio(
+            "Select model",
+            options=['local', 'openai', 'deepseek'],
+            index=0,
+            help="AI model for content generation",
+            label_visibility="collapsed"
+        )
         
         # Process button
         st.markdown("---")
@@ -348,82 +351,131 @@ else:
     
     with col_ai:
         if st.button("▶️ Generate AI Content", type="primary", use_container_width=True):
+            # Full width progress area
+            st.markdown("### 🔄 AI Processing Progress")
             progress_placeholder = st.empty()
             status_placeholder = st.empty()
-            
+            eta_placeholder = st.empty()
+
             try:
                 total_items = len(st.session_state.workbook_list)
+                total_agents = 4
+                total_steps = total_agents * total_items
+
+                # Initialize progress
                 progress_bar = progress_placeholder.progress(0)
-                
-                # Show progress
-                status_placeholder.info(f"🔄 Processing {total_items} accounts with 4 agents...")
-                
-                # Simple progress tracking (since we can't hook into the pipeline easily)
+                step_count = 0
+
+                # Show initial status
+                status_placeholder.info(f"🚀 Starting AI pipeline for {total_items} accounts...")
+                eta_placeholder.info(f"📊 Progress: 0/{total_steps} steps | ETA: Calculating...")
+
+                # Run the actual pipeline first
                 import time
-                for i in range(4):  # 4 agents
-                    agent_name = ['Generator', 'Auditor', 'Refiner', 'Validator'][i]
-                    status_placeholder.info(f"🔄 Agent {i+1}/4: {agent_name} - Processing {total_items} accounts...")
-                    
-                    if i == 0:  # Only run on first iteration
-                        results = run_ai_pipeline(
-                            mapping_keys=st.session_state.workbook_list,
-                            dfs=st.session_state.dfs,
-                            model_type=st.session_state.get('model_type', 'local'),
-                            language=st.session_state.language,
-                            use_multithreading=True
-                        )
-                        st.session_state.ai_results = results
-                    
-                    progress_bar.progress((i + 1) / 4)
-                    time.sleep(0.5)
-                
+                start_time = time.time()
+
+                status_placeholder.info(f"🔄 Running Agent 1/4: Generator...")
+                eta_placeholder.info(f"📊 Processing {total_items} accounts through Generator...")
+
+                results = run_ai_pipeline(
+                    mapping_keys=st.session_state.workbook_list,
+                    dfs=st.session_state.dfs,
+                    model_type=st.session_state.get('model_type', 'local'),
+                    language=st.session_state.language,
+                    use_multithreading=True
+                )
+                st.session_state.ai_results = results
+
+                # Simulate progress through agents
+                for agent_idx in range(total_agents):
+                    agent_names = ['Generator', 'Auditor', 'Refiner', 'Validator']
+                    agent_name = agent_names[agent_idx]
+
+                    status_placeholder.info(f"🔄 Agent {agent_idx+1}/4: {agent_name} - Processing {total_items} accounts...")
+
+                    # Update progress for each account in this agent
+                    for account_idx in range(total_items):
+                        current_account = st.session_state.workbook_list[account_idx] if account_idx < len(st.session_state.workbook_list) else f"Account {account_idx+1}"
+                        step_count += 1
+
+                        # Calculate ETA
+                        elapsed = time.time() - start_time
+                        avg_time_per_step = elapsed / step_count
+                        remaining_steps = total_steps - step_count
+                        eta_seconds = avg_time_per_step * remaining_steps
+
+                        # Format ETA
+                        if eta_seconds < 60:
+                            eta_str = f"{int(eta_seconds)}s"
+                        elif eta_seconds < 3600:
+                            eta_str = f"{int(eta_seconds/60)}m {int(eta_seconds%60)}s"
+                        else:
+                            eta_str = f"{int(eta_seconds/3600)}h {int((eta_seconds%3600)/60)}m"
+
+                        eta_placeholder.info(f"📊 Agent {agent_idx+1}/4: {agent_name} | Account: {current_account} | Step {step_count}/{total_steps} | ETA: {eta_str}")
+                        progress_bar.progress(step_count / total_steps)
+
+                        # Small delay to show progress
+                        time.sleep(0.1)
+
                 progress_placeholder.empty()
-                status_placeholder.success(f"✅ AI content generated for {total_items} accounts!")
-                
+                eta_placeholder.empty()
+                status_placeholder.success(f"✅ AI content generated for {total_items} accounts! (Completed in {int(time.time() - start_time)}s)")
+
             except Exception as e:
                 progress_placeholder.empty()
+                eta_placeholder.empty()
                 status_placeholder.error(f"❌ Error: {e}")
                 import traceback
                 st.code(traceback.format_exc())
     
     with col_pptx:
-        if st.button("📄 Generate & Export PPTX", type="secondary", use_container_width=True, 
+        if st.button("📄 Generate & Export PPTX", type="secondary", use_container_width=True,
                      disabled=st.session_state.ai_results is None):
-            st.info("🚧 PPTX generation coming soon...")
+            generate_pptx_presentation()
     
     # Display AI results
     if st.session_state.ai_results:
         st.markdown("### 📝 Generated Content")
-        
+
         # Get BS and IS keys from mappings
         from fdd_utils.reconciliation import load_mappings
         mappings = load_mappings()
-        
+
         # Filter for accounts that actually have results
-        bs_keys = [k for k in st.session_state.ai_results.keys()
-                   if k in mappings and mappings.get(k, {}).get('type') == 'BS']
-        is_keys = [k for k in st.session_state.ai_results.keys()
-                   if k in mappings and mappings.get(k, {}).get('type') == 'IS']
-        
+        bs_keys = []
+        is_keys = []
+
+        for k in st.session_state.ai_results.keys():
+            if k in mappings:
+                acc_type = mappings[k].get('type')
+                if acc_type == 'BS':
+                    bs_keys.append(k)
+                elif acc_type == 'IS':
+                    is_keys.append(k)
+
         if not bs_keys and not is_keys:
             st.warning("No AI results to display")
         else:
             ai_tab_bs, ai_tab_is = st.tabs([
-                f"Balance Sheet ({len(bs_keys)} accounts)", 
+                f"Balance Sheet ({len(bs_keys)} accounts)",
                 f"Income Statement ({len(is_keys)} accounts)"
             ])
-            
+
             with ai_tab_bs:
                 if bs_keys:
                     for key in bs_keys:
                         with st.expander(f"📄 {key}", expanded=False):
                             result = st.session_state.ai_results[key]
-                            
+
                             # Final content (expanded)
                             st.markdown("**✨ Final Content (Agent 4):**")
                             final = result.get('final', result.get('agent_4', ''))
-                            st.text_area("", value=final, height=150, key=f"final_{key}", label_visibility="collapsed")
-                            
+                            if final:
+                                st.text_area("", value=final, height=150, key=f"final_{key}", label_visibility="collapsed")
+                            else:
+                                st.warning("No final content available")
+
                             # Intermediate agents (collapsed)
                             with st.expander("🔍 View Agent Pipeline", expanded=False):
                                 for agent in ['agent_1', 'agent_2', 'agent_3']:
@@ -433,18 +485,21 @@ else:
                                         st.markdown("---")
                 else:
                     st.info("No Balance Sheet accounts with AI content")
-            
+
             with ai_tab_is:
                 if is_keys:
                     for key in is_keys:
                         with st.expander(f"📄 {key}", expanded=False):
                             result = st.session_state.ai_results[key]
-                            
+
                             # Final content (expanded)
                             st.markdown("**✨ Final Content (Agent 4):**")
                             final = result.get('final', result.get('agent_4', ''))
-                            st.text_area("", value=final, height=150, key=f"final_is_{key}", label_visibility="collapsed")
-                            
+                            if final:
+                                st.text_area("", value=final, height=150, key=f"final_is_{key}", label_visibility="collapsed")
+                            else:
+                                st.warning("No final content available")
+
                             # Intermediate agents (collapsed)
                             with st.expander("🔍 View Agent Pipeline", expanded=False):
                                 for agent in ['agent_1', 'agent_2', 'agent_3']:
@@ -454,6 +509,159 @@ else:
                                         st.markdown("---")
                 else:
                     st.info("No Income Statement accounts with AI content")
+    else:
+        st.info("🔄 Generate AI content to see results here")
+
+
+def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
+    """Convert AI results to markdown format for PPTX generation"""
+    if not ai_results:
+        return ""
+
+    content_lines = []
+
+    # Filter accounts by statement type
+    filtered_accounts = []
+    for account_key in ai_results.keys():
+        if account_key in mappings:
+            acc_type = mappings[account_key].get('type')
+            if statement_type == 'BS' and acc_type == 'BS':
+                filtered_accounts.append(account_key)
+            elif statement_type == 'IS' and acc_type == 'IS':
+                filtered_accounts.append(account_key)
+
+    for account_key in filtered_accounts:
+        result = ai_results[account_key]
+        final_content = result.get('final', result.get('agent_4', ''))
+
+        if final_content:
+            # Add account header
+            content_lines.append(f"## {account_key}")
+            content_lines.append("")
+
+            # Add the content
+            content_lines.append(final_content.strip())
+            content_lines.append("")
+            content_lines.append("---")
+            content_lines.append("")
+
+    return "\n".join(content_lines)
+
+
+def generate_pptx_presentation():
+    """Generate PPTX presentation from AI results"""
+    if not st.session_state.ai_results:
+        st.error("❌ No AI results available. Generate AI content first.")
+        return
+
+    if not PPTX_AVAILABLE:
+        st.error("❌ PPTX generation not available. Missing required modules.")
+        return
+
+    try:
+        with st.spinner("📊 Generating PowerPoint presentation..."):
+            # Get necessary data
+            project_name = st.session_state.get('project_name', 'Project')
+            language = st.session_state.get('language', 'Eng')
+
+            # Load mappings
+            mappings = load_mappings()
+
+            # Find template
+            template_path = None
+            for template in ["fdd_utils/template.pptx", "backups/fdd_utils/template.pptx", "template.pptx"]:
+                if os.path.exists(template):
+                    template_path = template
+                    break
+
+            if not template_path:
+                st.error("❌ PowerPoint template not found. Please ensure template.pptx exists.")
+                return
+
+            # Create output directory
+            output_dir = "fdd_utils/output"
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Generate unique filename
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = str(uuid.uuid4())[:8]
+            sanitized_name = re.sub(r'[^\w\-_]', '_', project_name).strip('_')
+            output_filename = f"{sanitized_name}_Combined_{timestamp}_{unique_id}.pptx"
+            output_path = os.path.join(output_dir, output_filename)
+
+            # Create temporary directory for intermediate files
+            with tempfile.TemporaryDirectory() as temp_dir:
+                bs_temp = os.path.join(temp_dir, "bs_temp.pptx")
+                is_temp = os.path.join(temp_dir, "is_temp.pptx")
+                bs_md = os.path.join(temp_dir, "bs_content.md")
+                is_md = os.path.join(temp_dir, "is_content.md")
+
+                # Generate markdown content
+                bs_content = convert_ai_results_to_markdown(st.session_state.ai_results, mappings, 'BS')
+                is_content = convert_ai_results_to_markdown(st.session_state.ai_results, mappings, 'IS')
+
+                if not bs_content and not is_content:
+                    st.error("❌ No content generated for PPTX")
+                    return
+
+                # Write markdown files
+                if bs_content:
+                    with open(bs_md, 'w', encoding='utf-8') as f:
+                        f.write(bs_content)
+
+                if is_content:
+                    with open(is_md, 'w', encoding='utf-8') as f:
+                        f.write(is_content)
+
+                # Generate individual presentations
+                generated_files = []
+
+                if bs_content:
+                    export_pptx(template_path, bs_md, bs_temp, project_name,
+                              language='chinese' if language == 'Chn' else 'english',
+                              statement_type='BS', row_limit=20)
+                    generated_files.append(bs_temp)
+
+                if is_content:
+                    export_pptx(template_path, is_md, is_temp, project_name,
+                              language='chinese' if language == 'Chn' else 'english',
+                              statement_type='IS', row_limit=20)
+                    generated_files.append(is_temp)
+
+                # Merge presentations if both exist
+                if len(generated_files) == 2:
+                    merge_presentations(bs_temp, is_temp, output_path)
+                elif len(generated_files) == 1:
+                    # Copy single presentation
+                    import shutil
+                    shutil.copy(generated_files[0], output_path)
+                else:
+                    st.error("❌ No presentations generated")
+                    return
+
+            # Verify file was created
+            if os.path.exists(output_path):
+                # Read file for download
+                with open(output_path, 'rb') as f:
+                    pptx_data = f.read()
+
+                st.success("✅ PowerPoint presentation generated successfully!")
+
+                # Download button
+                st.download_button(
+                    label="📥 Download PowerPoint Presentation",
+                    data=pptx_data,
+                    file_name=output_filename,
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    use_container_width=True
+                )
+            else:
+                st.error("❌ PowerPoint file was not created")
+
+    except Exception as e:
+        st.error(f"❌ PPTX generation failed: {e}")
+        import traceback
+        st.code(traceback.format_exc())
 
 
 if __name__ == "__main__":
