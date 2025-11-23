@@ -45,6 +45,162 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
+    """Convert AI results to markdown format for PPTX generation"""
+    if not ai_results:
+        return ""
+
+    content_lines = []
+
+    # Filter accounts by statement type
+    filtered_accounts = []
+    for account_key in ai_results.keys():
+        if account_key in mappings:
+            acc_type = mappings[account_key].get('type')
+            if statement_type == 'BS' and acc_type == 'BS':
+                filtered_accounts.append(account_key)
+            elif statement_type == 'IS' and acc_type == 'IS':
+                filtered_accounts.append(account_key)
+
+    for account_key in filtered_accounts:
+        result = ai_results[account_key]
+        final_content = result.get('final', result.get('agent_4', ''))
+
+        # Always include accounts, even with empty/error content
+        content_lines.append(f"## {account_key}")
+        content_lines.append("")
+
+        if final_content and final_content.strip():
+            # Add the content
+            content_lines.append(final_content.strip())
+        else:
+            # Add placeholder for empty content
+            content_lines.append(f"[No content generated for {account_key}]")
+
+        content_lines.append("")
+        content_lines.append("---")
+        content_lines.append("")
+
+    return "\n".join(content_lines)
+
+
+def generate_pptx_presentation():
+    """Generate PPTX presentation from AI results"""
+    if not st.session_state.ai_results:
+        st.error("❌ No AI results available. Generate AI content first.")
+        return
+
+    if not PPTX_AVAILABLE:
+        st.error("❌ PPTX generation not available. Missing required modules.")
+        return
+
+    try:
+        with st.spinner("📊 Generating PowerPoint presentation..."):
+            # Get necessary data
+            project_name = st.session_state.get('project_name', 'Project')
+            language = st.session_state.get('language', 'Eng')
+
+            # Load mappings
+            from fdd_utils.reconciliation import load_mappings
+            mappings = load_mappings()
+
+            # Find template
+            template_path = None
+            for template in ["fdd_utils/template.pptx", "backups/fdd_utils/template.pptx", "template.pptx"]:
+                if os.path.exists(template):
+                    template_path = template
+                    break
+
+            if not template_path:
+                st.error("❌ PowerPoint template not found. Please ensure template.pptx exists.")
+                return
+
+            # Create output directory
+            output_dir = "fdd_utils/output"
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Generate unique filename
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = str(uuid.uuid4())[:8]
+            sanitized_name = re.sub(r'[^\w\-_]', '_', project_name).strip('_')
+            output_filename = f"{sanitized_name}_Combined_{timestamp}_{unique_id}.pptx"
+            output_path = os.path.join(output_dir, output_filename)
+
+            # Create temporary directory for intermediate files
+            with tempfile.TemporaryDirectory() as temp_dir:
+                bs_temp = os.path.join(temp_dir, "bs_temp.pptx")
+                is_temp = os.path.join(temp_dir, "is_temp.pptx")
+                bs_md = os.path.join(temp_dir, "bs_content.md")
+                is_md = os.path.join(temp_dir, "is_content.md")
+
+                # Generate markdown content
+                bs_content = convert_ai_results_to_markdown(st.session_state.ai_results, mappings, 'BS')
+                is_content = convert_ai_results_to_markdown(st.session_state.ai_results, mappings, 'IS')
+
+                if not bs_content and not is_content:
+                    st.error("❌ No content generated for PPTX")
+                    return
+
+                # Write markdown files
+                if bs_content:
+                    with open(bs_md, 'w', encoding='utf-8') as f:
+                        f.write(bs_content)
+
+                if is_content:
+                    with open(is_md, 'w', encoding='utf-8') as f:
+                        f.write(is_content)
+
+                # Generate individual presentations
+                generated_files = []
+
+                if bs_content:
+                    export_pptx(template_path, bs_md, bs_temp, project_name,
+                              language='chinese' if language == 'Chn' else 'english',
+                              statement_type='BS', row_limit=20)
+                    generated_files.append(bs_temp)
+
+                if is_content:
+                    export_pptx(template_path, is_md, is_temp, project_name,
+                              language='chinese' if language == 'Chn' else 'english',
+                              statement_type='IS', row_limit=20)
+                    generated_files.append(is_temp)
+
+                # Merge presentations if both exist
+                if len(generated_files) == 2:
+                    merge_presentations(bs_temp, is_temp, output_path)
+                elif len(generated_files) == 1:
+                    # Copy single presentation
+                    import shutil
+                    shutil.copy(generated_files[0], output_path)
+                else:
+                    st.error("❌ No presentations generated")
+                    return
+
+            # Verify file was created
+            if os.path.exists(output_path):
+                # Read file for download
+                with open(output_path, 'rb') as f:
+                    pptx_data = f.read()
+
+                st.success("✅ PowerPoint presentation generated successfully!")
+
+                # Download button
+                st.download_button(
+                    label="📥 Download PowerPoint Presentation",
+                    data=pptx_data,
+                    file_name=output_filename,
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    use_container_width=True
+                )
+            else:
+                st.error("❌ PowerPoint file was not created")
+
+    except Exception as e:
+        st.error(f"❌ PPTX generation failed: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+
+
 def load_latest_results_from_logs():
     """Load the most recent results from logs directory"""
     import yaml
@@ -866,50 +1022,37 @@ else:
                         if not isinstance(result, dict):
                             result = {}
                         
-                        # Check if has content
-                        final = result.get('final', result.get('agent_4', ''))
-                        has_final = final and str(final).strip() and str(final).lower() not in ['none', 'null', 'nan']
+                        st.markdown(f"### 📄 {key}")
                         
-                        expander_label = f"📄 {key}" + (" ⚠️ (empty)" if not has_final else "")
-                        with st.expander(expander_label, expanded=False):
-                            # Final content (expanded) - use actual agent name
-                            st.markdown("**✨ Final Content (Validator):**")
-                            if has_final:
-                                st.text_area("", value=str(final), height=150, key=f"final_{key}", label_visibility="collapsed")
-                            else:
-                                st.warning("No final content available")
-                                # Show what we have
-                                st.markdown("**Available agent outputs:**")
-                                for agent_key in ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'final']:
-                                    if agent_key in result:
-                                        content = result[agent_key]
-                                        if content:
-                                            st.text(f"{agent_key}: {str(content)[:100]}...")
-                                        else:
-                                            st.text(f"{agent_key}: (empty)")
-
-                            # Intermediate agents - use collapsible markdown instead of nested expander
-                            st.markdown("---")
-                            show_pipeline = st.checkbox(f"🔍 View Agent Pipeline", key=f"pipeline_{key}", value=False)
-                            if show_pipeline:
-                                agent_map = {
-                                    'agent_1': 'Generator',
-                                    'agent_2': 'Auditor',
-                                    'agent_3': 'Refiner',
-                                    'agent_4': 'Validator'
-                                }
-                                found_any = False
-                                for agent in ['agent_1', 'agent_2', 'agent_3', 'agent_4']:
-                                    if agent in result and result[agent] is not None:
-                                        content_str = str(result[agent]).strip()
-                                        if content_str and content_str.lower() not in ['none', 'null', 'nan']:
-                                            found_any = True
-                                            agent_name = agent_map.get(agent, agent.replace('_', ' ').title())
-                                            st.markdown(f"**{agent_name}:**")
-                                            st.text(content_str)
-                                            st.markdown("---")
-                                if not found_any:
-                                    st.info("No agent outputs available")
+                        # Second level tabs: Agent names
+                        agent_map = {
+                            'agent_1': 'Generator',
+                            'agent_2': 'Auditor',
+                            'agent_3': 'Refiner',
+                            'agent_4': 'Validator',
+                            'final': 'Final (Validator)'
+                        }
+                        
+                        # Create tabs for each agent that has content
+                        agent_tab_names = []
+                        agent_tab_keys = []
+                        for agent_key in ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'final']:
+                            content = result.get(agent_key, '')
+                            if content and str(content).strip() and str(content).lower() not in ['none', 'null', 'nan']:
+                                agent_tab_names.append(agent_map.get(agent_key, agent_key))
+                                agent_tab_keys.append(agent_key)
+                        
+                        if agent_tab_names:
+                            agent_tabs = st.tabs(agent_tab_names)
+                            for agent_idx, agent_key in enumerate(agent_tab_keys):
+                                with agent_tabs[agent_idx]:
+                                    content = result.get(agent_key, '')
+                                    if content:
+                                        st.text_area("", value=str(content), height=300, key=f"{key}_{agent_key}", label_visibility="collapsed")
+                                    else:
+                                        st.info("No content available for this agent")
+                        else:
+                            st.warning("No agent outputs available for this account")
                 tab_idx += 1
             
             if is_keys:
@@ -919,50 +1062,37 @@ else:
                         if not isinstance(result, dict):
                             result = {}
                         
-                        # Check if has content
-                        final = result.get('final', result.get('agent_4', ''))
-                        has_final = final and str(final).strip() and str(final).lower() not in ['none', 'null', 'nan']
+                        st.markdown(f"### 📄 {key}")
                         
-                        expander_label = f"📄 {key}" + (" ⚠️ (empty)" if not has_final else "")
-                        with st.expander(expander_label, expanded=False):
-                            # Final content (expanded) - use actual agent name
-                            st.markdown("**✨ Final Content (Validator):**")
-                            if has_final:
-                                st.text_area("", value=str(final), height=150, key=f"final_is_{key}", label_visibility="collapsed")
-                            else:
-                                st.warning("No final content available")
-                                # Show what we have
-                                st.markdown("**Available agent outputs:**")
-                                for agent_key in ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'final']:
-                                    if agent_key in result:
-                                        content = result[agent_key]
-                                        if content:
-                                            st.text(f"{agent_key}: {str(content)[:100]}...")
-                                        else:
-                                            st.text(f"{agent_key}: (empty)")
-
-                            # Intermediate agents - use checkbox instead of nested expander
-                            st.markdown("---")
-                            show_pipeline = st.checkbox(f"🔍 View Agent Pipeline", key=f"pipeline_is_{key}", value=False)
-                            if show_pipeline:
-                                agent_map = {
-                                    'agent_1': 'Generator',
-                                    'agent_2': 'Auditor',
-                                    'agent_3': 'Refiner',
-                                    'agent_4': 'Validator'
-                                }
-                                found_any = False
-                                for agent in ['agent_1', 'agent_2', 'agent_3', 'agent_4']:
-                                    if agent in result and result[agent] is not None:
-                                        content_str = str(result[agent]).strip()
-                                        if content_str and content_str.lower() not in ['none', 'null', 'nan']:
-                                            found_any = True
-                                            agent_name = agent_map.get(agent, agent.replace('_', ' ').title())
-                                            st.markdown(f"**{agent_name}:**")
-                                            st.text(content_str)
-                                            st.markdown("---")
-                                if not found_any:
-                                    st.info("No agent outputs available")
+                        # Second level tabs: Agent names
+                        agent_map = {
+                            'agent_1': 'Generator',
+                            'agent_2': 'Auditor',
+                            'agent_3': 'Refiner',
+                            'agent_4': 'Validator',
+                            'final': 'Final (Validator)'
+                        }
+                        
+                        # Create tabs for each agent that has content
+                        agent_tab_names = []
+                        agent_tab_keys = []
+                        for agent_key in ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'final']:
+                            content = result.get(agent_key, '')
+                            if content and str(content).strip() and str(content).lower() not in ['none', 'null', 'nan']:
+                                agent_tab_names.append(agent_map.get(agent_key, agent_key))
+                                agent_tab_keys.append(agent_key)
+                        
+                        if agent_tab_names:
+                            agent_tabs = st.tabs(agent_tab_names)
+                            for agent_idx, agent_key in enumerate(agent_tab_keys):
+                                with agent_tabs[agent_idx]:
+                                    content = result.get(agent_key, '')
+                                    if content:
+                                        st.text_area("", value=str(content), height=300, key=f"is_{key}_{agent_key}", label_visibility="collapsed")
+                                    else:
+                                        st.info("No content available for this agent")
+                        else:
+                            st.warning("No agent outputs available for this account")
                 tab_idx += 1
             
             if other_keys:
@@ -975,123 +1105,6 @@ else:
                             st.json(result)
     else:
         st.info("🔄 Generate AI content to see results here")
-
-
-def generate_pptx_presentation():
-    """Generate PPTX presentation from AI results"""
-    if not st.session_state.ai_results:
-        st.error("❌ No AI results available. Generate AI content first.")
-        return
-
-    if not PPTX_AVAILABLE:
-        st.error("❌ PPTX generation not available. Missing required modules.")
-        return
-
-    try:
-        with st.spinner("📊 Generating PowerPoint presentation..."):
-            # Get necessary data
-            project_name = st.session_state.get('project_name', 'Project')
-            language = st.session_state.get('language', 'Eng')
-
-            # Load mappings
-            from fdd_utils.reconciliation import load_mappings
-            mappings = load_mappings()
-
-            # Find template
-            template_path = None
-            for template in ["fdd_utils/template.pptx", "backups/fdd_utils/template.pptx", "template.pptx"]:
-                if os.path.exists(template):
-                    template_path = template
-                    break
-
-            if not template_path:
-                st.error("❌ PowerPoint template not found. Please ensure template.pptx exists.")
-                return
-
-            # Create output directory
-            output_dir = "fdd_utils/output"
-            os.makedirs(output_dir, exist_ok=True)
-
-            # Generate unique filename
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            unique_id = str(uuid.uuid4())[:8]
-            sanitized_name = re.sub(r'[^\w\-_]', '_', project_name).strip('_')
-            output_filename = f"{sanitized_name}_Combined_{timestamp}_{unique_id}.pptx"
-            output_path = os.path.join(output_dir, output_filename)
-
-            # Create temporary directory for intermediate files
-            with tempfile.TemporaryDirectory() as temp_dir:
-                bs_temp = os.path.join(temp_dir, "bs_temp.pptx")
-                is_temp = os.path.join(temp_dir, "is_temp.pptx")
-                bs_md = os.path.join(temp_dir, "bs_content.md")
-                is_md = os.path.join(temp_dir, "is_content.md")
-
-                # Generate markdown content
-                bs_content = convert_ai_results_to_markdown(st.session_state.ai_results, mappings, 'BS')
-                is_content = convert_ai_results_to_markdown(st.session_state.ai_results, mappings, 'IS')
-
-                if not bs_content and not is_content:
-                    st.error("❌ No content generated for PPTX")
-                    return
-
-                # Write markdown files
-                if bs_content:
-                    with open(bs_md, 'w', encoding='utf-8') as f:
-                        f.write(bs_content)
-
-                if is_content:
-                    with open(is_md, 'w', encoding='utf-8') as f:
-                        f.write(is_content)
-
-                # Generate individual presentations
-                generated_files = []
-
-                if bs_content:
-                    export_pptx(template_path, bs_md, bs_temp, project_name,
-                              language='chinese' if language == 'Chn' else 'english',
-                              statement_type='BS', row_limit=20)
-                    generated_files.append(bs_temp)
-
-                if is_content:
-                    export_pptx(template_path, is_md, is_temp, project_name,
-                              language='chinese' if language == 'Chn' else 'english',
-                              statement_type='IS', row_limit=20)
-                    generated_files.append(is_temp)
-
-                # Merge presentations if both exist
-                if len(generated_files) == 2:
-                    merge_presentations(bs_temp, is_temp, output_path)
-                elif len(generated_files) == 1:
-                    # Copy single presentation
-                    import shutil
-                    shutil.copy(generated_files[0], output_path)
-                else:
-                    st.error("❌ No presentations generated")
-                    return
-
-            # Verify file was created
-            if os.path.exists(output_path):
-                # Read file for download
-                with open(output_path, 'rb') as f:
-                    pptx_data = f.read()
-
-                st.success("✅ PowerPoint presentation generated successfully!")
-
-                # Download button
-                st.download_button(
-                    label="📥 Download PowerPoint Presentation",
-                    data=pptx_data,
-                    file_name=output_filename,
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    use_container_width=True
-                )
-            else:
-                st.error("❌ PowerPoint file was not created")
-
-    except Exception as e:
-        st.error(f"❌ PPTX generation failed: {e}")
-        import traceback
-        st.code(traceback.format_exc())
 
 
 def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
