@@ -45,6 +45,36 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def load_latest_results_from_logs():
+    """Load the most recent results from logs directory"""
+    import yaml
+    import os
+    import glob
+    
+    logs_dir = 'fdd_utils/logs'
+    if not os.path.exists(logs_dir):
+        return None
+    
+    # Find all run directories
+    run_dirs = glob.glob(os.path.join(logs_dir, 'run_*'))
+    if not run_dirs:
+        return None
+    
+    # Get the most recent one
+    latest_run = max(run_dirs, key=os.path.getmtime)
+    results_file = os.path.join(latest_run, 'results.yml')
+    
+    if os.path.exists(results_file):
+        try:
+            with open(results_file, 'r', encoding='utf-8') as f:
+                results = yaml.safe_load(f)
+            return results
+        except Exception as e:
+            print(f"Error loading results from {results_file}: {e}")
+            return None
+    return None
+
+
 def init_session_state():
     """Initialize session state variables"""
     if 'uploaded_file' not in st.session_state:
@@ -59,12 +89,21 @@ def init_session_state():
         st.session_state.bs_is_results = None
     if 'ai_results' not in st.session_state:
         st.session_state.ai_results = None
+        # Try to load from latest log file
+        latest_results = load_latest_results_from_logs()
+        if latest_results:
+            st.session_state.ai_results = latest_results
+            st.session_state.results_loaded_from_logs = True
     if 'reconciliation' not in st.session_state:
         st.session_state.reconciliation = None
     if 'model_type' not in st.session_state:
         st.session_state.model_type = 'local'
     if 'project_name' not in st.session_state:
         st.session_state.project_name = None
+    if 'last_run_folder' not in st.session_state:
+        st.session_state.last_run_folder = None
+    if 'results_loaded_from_logs' not in st.session_state:
+        st.session_state.results_loaded_from_logs = False
 
 
 def get_entity_names(file_path: str) -> List[str]:
@@ -286,9 +325,11 @@ else:
         bs_data = st.session_state.bs_is_results.get('balance_sheet') if st.session_state.bs_is_results else None
         recon_bs = st.session_state.reconciliation[0] if st.session_state.reconciliation else None
         
-        if bs_data is not None:
+        # Always show tabs if we have BS accounts, even if bs_data is None
+        if bs_accounts:
             # Second level tabs - only show BS accounts
-            bs_tabs = st.tabs(["📊 Reconciliation"] + [f"📋 {key}" for key in bs_accounts])
+            tab_names = ["📊 Reconciliation"] + [f"📋 {key}" for key in bs_accounts]
+            bs_tabs = st.tabs(tab_names)
             
             # Reconciliation tab
             with bs_tabs[0]:
@@ -322,7 +363,12 @@ else:
             for idx, key in enumerate(bs_accounts, 1):
                 if idx < len(bs_tabs):
                     with bs_tabs[idx]:
-                        st.dataframe(st.session_state.dfs[key], use_container_width=True)
+                        if key in st.session_state.dfs:
+                            st.dataframe(st.session_state.dfs[key], use_container_width=True)
+                        else:
+                            st.warning(f"Data not found for account: {key}")
+        elif bs_data is not None:
+            st.info("No Balance Sheet accounts found in workbook list")
         else:
             st.info("No Balance Sheet data extracted")
     
@@ -330,9 +376,11 @@ else:
         is_data = st.session_state.bs_is_results.get('income_statement') if st.session_state.bs_is_results else None
         recon_is = st.session_state.reconciliation[1] if st.session_state.reconciliation else None
         
-        if is_data is not None:
+        # Always show tabs if we have IS accounts, even if is_data is None
+        if is_accounts:
             # Second level tabs - only show IS accounts
-            is_tabs = st.tabs(["📊 Reconciliation"] + [f"📋 {key}" for key in is_accounts])
+            tab_names = ["📊 Reconciliation"] + [f"📋 {key}" for key in is_accounts]
+            is_tabs = st.tabs(tab_names)
             
             # Reconciliation tab
             with is_tabs[0]:
@@ -366,7 +414,12 @@ else:
             for idx, key in enumerate(is_accounts, 1):
                 if idx < len(is_tabs):
                     with is_tabs[idx]:
-                        st.dataframe(st.session_state.dfs[key], use_container_width=True)
+                        if key in st.session_state.dfs:
+                            st.dataframe(st.session_state.dfs[key], use_container_width=True)
+                        else:
+                            st.warning(f"Data not found for account: {key}")
+        elif is_data is not None:
+            st.info("No Income Statement accounts found in workbook list")
         else:
             st.info("No Income Statement data extracted")
     
@@ -377,14 +430,20 @@ else:
     # Horizontal buttons: Generate AI + Export PPTX
     col_ai, col_pptx = st.columns(2)
     
+    # Progress area - full width, outside columns
+    progress_container = st.container()
+    
     with col_ai:
-        if st.button("▶️ Generate AI Content", type="primary", use_container_width=True):
-            # Full width progress area
+        generate_clicked = st.button("▶️ Generate AI Content", type="primary", use_container_width=True)
+    
+    # Progress display - full width, outside button columns
+    if generate_clicked:
+        with progress_container:
             st.markdown("### 🔄 AI Processing Progress")
             progress_placeholder = st.empty()
             status_placeholder = st.empty()
             eta_placeholder = st.empty()
-
+            
             try:
                 total_items = len(st.session_state.workbook_list)
                 total_agents = 4
@@ -511,14 +570,42 @@ else:
     if st.session_state.ai_results:
         st.markdown("### 📝 Generated Content")
         
-        # Debug: Show results info
-        with st.expander("🔍 Debug: Results Info", expanded=False):
-            st.write(f"Total results: {len(st.session_state.ai_results)}")
-            st.write(f"Result keys: {list(st.session_state.ai_results.keys())[:10]}...")  # Show first 10
+        # Show if results were loaded from logs
+        if st.session_state.get('results_loaded_from_logs'):
+            st.info("ℹ️ Results loaded from latest log file. Click 'Generate AI Content' to create new results.")
+            if st.button("🔄 Reload from Latest Log File"):
+                latest_results = load_latest_results_from_logs()
+                if latest_results:
+                    st.session_state.ai_results = latest_results
+                    st.session_state.results_loaded_from_logs = True
+                    st.rerun()
+                else:
+                    st.warning("No results found in log files")
+        
+        # Debug: Show results info - always expanded for troubleshooting
+        with st.expander("🔍 Debug: Results Info", expanded=True):
+            st.write(f"**Total results:** {len(st.session_state.ai_results)}")
             if st.session_state.ai_results:
-                first_key = list(st.session_state.ai_results.keys())[0]
-                st.write(f"First result key: '{first_key}'")
-                st.write(f"First result structure: {list(st.session_state.ai_results[first_key].keys()) if isinstance(st.session_state.ai_results[first_key], dict) else type(st.session_state.ai_results[first_key])}")
+                all_keys = list(st.session_state.ai_results.keys())
+                st.write(f"**Result keys:** {all_keys[:20]}{'...' if len(all_keys) > 20 else ''}")
+                
+                # Show detailed structure of first few results
+                for idx, key in enumerate(all_keys[:3]):
+                    result = st.session_state.ai_results[key]
+                    st.write(f"**Result {idx+1} - Key: '{key}'**")
+                    if isinstance(result, dict):
+                        st.write(f"  - Type: dict with keys: {list(result.keys())}")
+                        for agent_key in ['final', 'agent_4', 'agent_3', 'agent_2', 'agent_1']:
+                            if agent_key in result:
+                                content = result[agent_key]
+                                content_str = str(content) if content else "None"
+                                content_len = len(content_str.strip()) if content_str else 0
+                                # Show more of the preview for debugging
+                                preview = content_str[:200] if content_len > 0 else ""
+                                st.write(f"  - {agent_key}: {content_len} chars" + (f" (preview: {preview}...)" if content_len > 0 else " (empty)"))
+                    else:
+                        st.write(f"  - Type: {type(result)}")
+                        st.write(f"  - Value: {str(result)[:100]}")
 
         # Get BS and IS keys from mappings first
         from fdd_utils.reconciliation import load_mappings
@@ -533,24 +620,73 @@ else:
             result = st.session_state.ai_results[k]
             # Check if result is a dict with content
             if isinstance(result, dict):
-                # Check if there's any actual content
+                # Check if there's any actual content - be more lenient
                 has_content = False
-                for agent_key in ['final', 'agent_4', 'agent_3', 'agent_2', 'agent_1']:
-                    if agent_key in result and result[agent_key] and len(str(result[agent_key]).strip()) > 0:
-                        has_content = True
-                        break
+                content_preview = ""
                 
-                if has_content:
-                    if k in mappings:
-                        acc_type = mappings[k].get('type')
-                        if acc_type == 'BS':
+                # First, check standard structure (agent_1, agent_2, etc.)
+                for agent_key in ['final', 'agent_4', 'agent_3', 'agent_2', 'agent_1']:
+                    if agent_key in result:
+                        content = result[agent_key]
+                        if content is not None:
+                            content_str = str(content).strip()
+                            # More lenient check - accept any non-empty string
+                            if (len(content_str) > 0 and 
+                                content_str.lower() not in ['none', 'null', 'nan', '', 'n/a', 'na'] and
+                                not content_str.isspace()):
+                                has_content = True
+                                if not content_preview:
+                                    content_preview = content_str[:100]
+                                break
+                
+                # If no content found, check if this is log file structure (nested with 'output' key)
+                if not has_content:
+                    for agent_name in result.keys():
+                        if isinstance(result[agent_name], dict):
+                            # Check for 'output' key in nested structure
+                            if 'output' in result[agent_name]:
+                                output_content = result[agent_name]['output']
+                                if output_content is not None:
+                                    content_str = str(output_content).strip()
+                                    if (len(content_str) > 0 and 
+                                        content_str.lower() not in ['none', 'null', 'nan', '', 'n/a', 'na'] and
+                                        not content_str.isspace()):
+                                        has_content = True
+                                        if not content_preview:
+                                            content_preview = content_str[:100]
+                                        # Also extract to top level for display
+                                        if agent_name == 'agent_1':
+                                            result['agent_1'] = output_content
+                                        elif agent_name == 'agent_2':
+                                            result['agent_2'] = output_content
+                                        elif agent_name == 'agent_3':
+                                            result['agent_3'] = output_content
+                                        elif agent_name == 'agent_4':
+                                            result['agent_4'] = output_content
+                                            result['final'] = output_content
+                                        break
+                
+                # Always categorize by type, even if no content (for debugging)
+                if k in mappings:
+                    acc_type = mappings[k].get('type')
+                    if acc_type == 'BS':
+                        if has_content:
                             bs_keys.append(k)
-                        elif acc_type == 'IS':
+                        else:
+                            # Add to bs_keys anyway for display, but mark as empty
+                            bs_keys.append(k)
+                    elif acc_type == 'IS':
+                        if has_content:
                             is_keys.append(k)
                         else:
-                            other_keys.append(k)
+                            # Add to is_keys anyway for display, but mark as empty
+                            is_keys.append(k)
                     else:
-                        # If not in mappings, add to other
+                        if has_content:
+                            other_keys.append(k)
+                else:
+                    # If not in mappings, add to other
+                    if has_content:
                         other_keys.append(k)
 
         # Check if there's any actual content (including error messages)
@@ -600,25 +736,20 @@ else:
                         st.markdown("**Refiner:** Improved and refined content...")
                         st.markdown("**Validator:** Final formatted content...")
 
-        # Continue with normal processing if we have content
-        from fdd_utils.reconciliation import load_mappings
-        mappings = load_mappings()
-
-        # Filter for accounts that actually have results
-        bs_keys = []
-        is_keys = []
-
-        for k in st.session_state.ai_results.keys():
-            if k in mappings:
-                acc_type = mappings[k].get('type')
-                if acc_type == 'BS':
-                    bs_keys.append(k)
-                elif acc_type == 'IS':
-                    is_keys.append(k)
-
+        # Show summary
+        st.info(f"📊 **Summary:** {len(bs_keys)} Balance Sheet accounts, {len(is_keys)} Income Statement accounts, {len(other_keys)} other accounts")
+        
         if not bs_keys and not is_keys and not other_keys:
-            st.warning("No AI results to display")
+            st.warning("⚠️ No AI results to display with content")
             st.info(f"Found {len(st.session_state.ai_results)} results but none have content. Check debug info above.")
+            
+            # Show all keys even without content for debugging
+            st.markdown("### 📋 All Results (including empty)")
+            all_result_keys = list(st.session_state.ai_results.keys())
+            for key in all_result_keys[:10]:  # Show first 10
+                with st.expander(f"📄 {key} (no content)", expanded=False):
+                    result = st.session_state.ai_results[key]
+                    st.json(result if isinstance(result, dict) else {"value": str(result)})
         else:
             ai_tab_bs, ai_tab_is = st.tabs([
                 f"Balance Sheet ({len(bs_keys)} accounts)",
@@ -628,16 +759,31 @@ else:
             with ai_tab_bs:
                 if bs_keys:
                     for key in bs_keys:
-                        with st.expander(f"📄 {key}", expanded=False):
-                            result = st.session_state.ai_results[key]
-
+                        result = st.session_state.ai_results.get(key, {})
+                        if not isinstance(result, dict):
+                            result = {}
+                        
+                        # Check if has content
+                        final = result.get('final', result.get('agent_4', ''))
+                        has_final = final and str(final).strip() and str(final).lower() not in ['none', 'null', 'nan']
+                        
+                        expander_label = f"📄 {key}" + (" ⚠️ (empty)" if not has_final else "")
+                        with st.expander(expander_label, expanded=False):
                             # Final content (expanded) - use actual agent name
                             st.markdown("**✨ Final Content (Validator):**")
-                            final = result.get('final', result.get('agent_4', ''))
-                            if final and str(final).strip():
+                            if has_final:
                                 st.text_area("", value=str(final), height=150, key=f"final_{key}", label_visibility="collapsed")
                             else:
                                 st.warning("No final content available")
+                                # Show what we have
+                                st.markdown("**Available agent outputs:**")
+                                for agent_key in ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'final']:
+                                    if agent_key in result:
+                                        content = result[agent_key]
+                                        if content:
+                                            st.text(f"{agent_key}: {str(content)[:100]}...")
+                                        else:
+                                            st.text(f"{agent_key}: (empty)")
 
                             # Intermediate agents (collapsed) - use actual agent names
                             with st.expander("🔍 View Agent Pipeline", expanded=False):
@@ -647,28 +793,49 @@ else:
                                     'agent_3': 'Refiner',
                                     'agent_4': 'Validator'
                                 }
-                                for agent in ['agent_1', 'agent_2', 'agent_3']:
+                                found_any = False
+                                for agent in ['agent_1', 'agent_2', 'agent_3', 'agent_4']:
                                     if agent in result and result[agent] is not None:
-                                        agent_name = agent_map.get(agent, agent.replace('_', ' ').title())
-                                        st.markdown(f"**{agent_name}:**")
-                                        st.text(str(result[agent]))
-                                        st.markdown("---")
+                                        content_str = str(result[agent]).strip()
+                                        if content_str and content_str.lower() not in ['none', 'null', 'nan']:
+                                            found_any = True
+                                            agent_name = agent_map.get(agent, agent.replace('_', ' ').title())
+                                            st.markdown(f"**{agent_name}:**")
+                                            st.text(content_str)
+                                            st.markdown("---")
+                                if not found_any:
+                                    st.info("No agent outputs available")
                 else:
                     st.info("No Balance Sheet accounts with AI content")
 
             with ai_tab_is:
                 if is_keys:
                     for key in is_keys:
-                        with st.expander(f"📄 {key}", expanded=False):
-                            result = st.session_state.ai_results[key]
-
+                        result = st.session_state.ai_results.get(key, {})
+                        if not isinstance(result, dict):
+                            result = {}
+                        
+                        # Check if has content
+                        final = result.get('final', result.get('agent_4', ''))
+                        has_final = final and str(final).strip() and str(final).lower() not in ['none', 'null', 'nan']
+                        
+                        expander_label = f"📄 {key}" + (" ⚠️ (empty)" if not has_final else "")
+                        with st.expander(expander_label, expanded=False):
                             # Final content (expanded) - use actual agent name
                             st.markdown("**✨ Final Content (Validator):**")
-                            final = result.get('final', result.get('agent_4', ''))
-                            if final and str(final).strip():
+                            if has_final:
                                 st.text_area("", value=str(final), height=150, key=f"final_is_{key}", label_visibility="collapsed")
                             else:
                                 st.warning("No final content available")
+                                # Show what we have
+                                st.markdown("**Available agent outputs:**")
+                                for agent_key in ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'final']:
+                                    if agent_key in result:
+                                        content = result[agent_key]
+                                        if content:
+                                            st.text(f"{agent_key}: {str(content)[:100]}...")
+                                        else:
+                                            st.text(f"{agent_key}: (empty)")
 
                             # Intermediate agents (collapsed) - use actual agent names
                             with st.expander("🔍 View Agent Pipeline", expanded=False):
@@ -678,12 +845,18 @@ else:
                                     'agent_3': 'Refiner',
                                     'agent_4': 'Validator'
                                 }
-                                for agent in ['agent_1', 'agent_2', 'agent_3']:
+                                found_any = False
+                                for agent in ['agent_1', 'agent_2', 'agent_3', 'agent_4']:
                                     if agent in result and result[agent] is not None:
-                                        agent_name = agent_map.get(agent, agent.replace('_', ' ').title())
-                                        st.markdown(f"**{agent_name}:**")
-                                        st.text(str(result[agent]))
-                                        st.markdown("---")
+                                        content_str = str(result[agent]).strip()
+                                        if content_str and content_str.lower() not in ['none', 'null', 'nan']:
+                                            found_any = True
+                                            agent_name = agent_map.get(agent, agent.replace('_', ' ').title())
+                                            st.markdown(f"**{agent_name}:**")
+                                            st.text(content_str)
+                                            st.markdown("---")
+                                if not found_any:
+                                    st.info("No agent outputs available")
                 else:
                     st.info("No Income Statement accounts with AI content")
     else:
