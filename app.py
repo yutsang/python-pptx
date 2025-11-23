@@ -310,6 +310,23 @@ else:
     from fdd_utils.reconciliation import load_mappings
     mappings = load_mappings()
     
+    # Helper function to find mapping key from account name (checks aliases)
+    def find_mapping_key(account_name):
+        """Find the mapping key for an account name, checking aliases"""
+        # First try direct key lookup
+        if account_name in mappings:
+            return account_name
+        
+        # Then check aliases
+        for mapping_key, config in mappings.items():
+            if mapping_key.startswith('_'):
+                continue
+            if isinstance(config, dict):
+                aliases = config.get('aliases', [])
+                if account_name in aliases:
+                    return mapping_key
+        return None
+    
     # Separate accounts by type (BS or IS)
     bs_accounts = []
     is_accounts = []
@@ -319,22 +336,32 @@ else:
     if st.session_state.workbook_list:
         for key in st.session_state.workbook_list:
             if key in st.session_state.dfs:
-                acc_type = mappings.get(key, {}).get('type', '')
-                if acc_type == 'BS':
-                    bs_accounts.append(key)
-                elif acc_type == 'IS':
-                    is_accounts.append(key)
+                # Find the mapping key (may be different from account name)
+                mapping_key = find_mapping_key(key)
+                if mapping_key:
+                    acc_type = mappings[mapping_key].get('type', '')
+                    if acc_type == 'BS':
+                        bs_accounts.append(key)
+                    elif acc_type == 'IS':
+                        is_accounts.append(key)
+                    else:
+                        other_accounts.append(key)
                 else:
                     other_accounts.append(key)
     else:
         # If workbook_list is empty, try to use all keys from dfs
         if st.session_state.dfs:
             for key in st.session_state.dfs.keys():
-                acc_type = mappings.get(key, {}).get('type', '')
-                if acc_type == 'BS':
-                    bs_accounts.append(key)
-                elif acc_type == 'IS':
-                    is_accounts.append(key)
+                # Find the mapping key (may be different from account name)
+                mapping_key = find_mapping_key(key)
+                if mapping_key:
+                    acc_type = mappings[mapping_key].get('type', '')
+                    if acc_type == 'BS':
+                        bs_accounts.append(key)
+                    elif acc_type == 'IS':
+                        is_accounts.append(key)
+                    else:
+                        other_accounts.append(key)
                 else:
                     other_accounts.append(key)
     
@@ -674,6 +701,23 @@ else:
         is_keys = []
         other_keys = []
 
+        # Helper function to find mapping key from account name (checks aliases)
+        def find_mapping_key_for_result(account_name):
+            """Find the mapping key for an account name, checking aliases"""
+            # First try direct key lookup
+            if account_name in mappings:
+                return account_name
+            
+            # Then check aliases
+            for mapping_key, config in mappings.items():
+                if mapping_key.startswith('_'):
+                    continue
+                if isinstance(config, dict):
+                    aliases = config.get('aliases', [])
+                    if account_name in aliases:
+                        return mapping_key
+            return None
+        
         for k in st.session_state.ai_results.keys():
             result = st.session_state.ai_results[k]
             # Check if result is a dict with content
@@ -724,21 +768,14 @@ else:
                                             result['final'] = output_content
                                         break
                 
-                # Always categorize by type, even if no content (for debugging)
-                if k in mappings:
-                    acc_type = mappings[k].get('type')
+                # Find mapping key (may be different from account name)
+                mapping_key = find_mapping_key_for_result(k)
+                if mapping_key:
+                    acc_type = mappings[mapping_key].get('type')
                     if acc_type == 'BS':
-                        if has_content:
-                            bs_keys.append(k)
-                        else:
-                            # Add to bs_keys anyway for display, but mark as empty
-                            bs_keys.append(k)
+                        bs_keys.append(k)
                     elif acc_type == 'IS':
-                        if has_content:
-                            is_keys.append(k)
-                        else:
-                            # Add to is_keys anyway for display, but mark as empty
-                            is_keys.append(k)
+                        is_keys.append(k)
                     else:
                         if has_content:
                             other_keys.append(k)
@@ -788,11 +825,12 @@ else:
                         f"This would contain the final polished content for {account}...",
                         height=100, disabled=True, label_visibility="collapsed")
 
-                    with st.expander("🔍 View Agent Pipeline (Sample)", expanded=False):
-                        st.markdown("**Generator:** Raw generated content...")
-                        st.markdown("**Auditor:** Verified and corrected content...")
-                        st.markdown("**Refiner:** Improved and refined content...")
-                        st.markdown("**Validator:** Final formatted content...")
+                    st.markdown("---")
+                    st.markdown("**🔍 View Agent Pipeline (Sample):**")
+                    st.markdown("**Generator:** Raw generated content...")
+                    st.markdown("**Auditor:** Verified and corrected content...")
+                    st.markdown("**Refiner:** Improved and refined content...")
+                    st.markdown("**Validator:** Final formatted content...")
 
         # Show summary
         st.info(f"📊 **Summary:** {len(bs_keys)} Balance Sheet accounts, {len(is_keys)} Income Statement accounts, {len(other_keys)} other accounts")
@@ -809,13 +847,20 @@ else:
                     result = st.session_state.ai_results[key]
                     st.json(result if isinstance(result, dict) else {"value": str(result)})
         else:
-            ai_tab_bs, ai_tab_is = st.tabs([
-                f"Balance Sheet ({len(bs_keys)} accounts)",
-                f"Income Statement ({len(is_keys)} accounts)"
-            ])
-
-            with ai_tab_bs:
-                if bs_keys:
+            # Create dynamic tabs based on what we have
+            tab_list = []
+            if bs_keys:
+                tab_list.append(f"Balance Sheet ({len(bs_keys)} accounts)")
+            if is_keys:
+                tab_list.append(f"Income Statement ({len(is_keys)} accounts)")
+            if other_keys:
+                tab_list.append(f"Other ({len(other_keys)} accounts)")
+            
+            ai_tabs = st.tabs(tab_list)
+            tab_idx = 0
+            
+            if bs_keys:
+                with ai_tabs[tab_idx]:
                     for key in bs_keys:
                         result = st.session_state.ai_results.get(key, {})
                         if not isinstance(result, dict):
@@ -843,8 +888,10 @@ else:
                                         else:
                                             st.text(f"{agent_key}: (empty)")
 
-                            # Intermediate agents (collapsed) - use actual agent names
-                            with st.expander("🔍 View Agent Pipeline", expanded=False):
+                            # Intermediate agents - use collapsible markdown instead of nested expander
+                            st.markdown("---")
+                            show_pipeline = st.checkbox(f"🔍 View Agent Pipeline", key=f"pipeline_{key}", value=False)
+                            if show_pipeline:
                                 agent_map = {
                                     'agent_1': 'Generator',
                                     'agent_2': 'Auditor',
@@ -863,11 +910,10 @@ else:
                                             st.markdown("---")
                                 if not found_any:
                                     st.info("No agent outputs available")
-                else:
-                    st.info("No Balance Sheet accounts with AI content")
-
-            with ai_tab_is:
-                if is_keys:
+                tab_idx += 1
+            
+            if is_keys:
+                with ai_tabs[tab_idx]:
                     for key in is_keys:
                         result = st.session_state.ai_results.get(key, {})
                         if not isinstance(result, dict):
@@ -895,8 +941,10 @@ else:
                                         else:
                                             st.text(f"{agent_key}: (empty)")
 
-                            # Intermediate agents (collapsed) - use actual agent names
-                            with st.expander("🔍 View Agent Pipeline", expanded=False):
+                            # Intermediate agents - use checkbox instead of nested expander
+                            st.markdown("---")
+                            show_pipeline = st.checkbox(f"🔍 View Agent Pipeline", key=f"pipeline_is_{key}", value=False)
+                            if show_pipeline:
                                 agent_map = {
                                     'agent_1': 'Generator',
                                     'agent_2': 'Auditor',
@@ -915,8 +963,16 @@ else:
                                             st.markdown("---")
                                 if not found_any:
                                     st.info("No agent outputs available")
-                else:
-                    st.info("No Income Statement accounts with AI content")
+                tab_idx += 1
+            
+            if other_keys:
+                with ai_tabs[tab_idx]:
+                    for key in other_keys:
+                        result = st.session_state.ai_results.get(key, {})
+                        if not isinstance(result, dict):
+                            result = {}
+                        with st.expander(f"📄 {key}", expanded=False):
+                            st.json(result)
     else:
         st.info("🔄 Generate AI content to see results here")
 

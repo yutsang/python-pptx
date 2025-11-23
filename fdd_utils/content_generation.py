@@ -6,6 +6,7 @@ Features: Multi-threading, unified logging, tqdm progress bars
 
 import yaml
 import os
+import sys
 import pandas as pd
 import time
 import re
@@ -15,6 +16,22 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from fdd_utils.ai_helper import AIHelper
+
+# Set UTF-8 encoding for console output
+if sys.platform != 'win32':
+    import locale
+    try:
+        locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+    except:
+        pass
+else:
+    # Windows: Set console code page to UTF-8
+    try:
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+    except:
+        pass
 
 
 def clean_agent_output(content: str) -> str:
@@ -104,15 +121,17 @@ class UnifiedLogger:
         fh = logging.FileHandler(self.log_file, encoding='utf-8')
         fh.setLevel(logging.DEBUG)
         
-        # Console handler
-        ch = logging.StreamHandler()
+        # Console handler with UTF-8 encoding
+        import sys
+        ch = logging.StreamHandler(sys.stdout)
         ch.setLevel(logging.INFO)
-        # Ensure console output uses UTF-8 encoding
-        if hasattr(ch, 'stream') and hasattr(ch.stream, 'reconfigure'):
-            try:
-                ch.stream.reconfigure(encoding='utf-8')
-            except:
-                pass  # Ignore if reconfigure not available
+        # Force UTF-8 encoding for console output
+        try:
+            if sys.stdout.encoding != 'utf-8':
+                import io
+                sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        except:
+            pass  # Ignore if can't reconfigure
         
         # Formatter
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -167,20 +186,28 @@ class UnifiedLogger:
         content = result.get('content', '')
         
         # Console log with progress - handle encoding for Chinese characters
+        # Use UTF-8 encoding explicitly
         try:
-            self.logger.info(
-                f"[{display_name}] ✅ {mapping_key} | "
-                f"Duration: {duration:.2f}s | Tokens: {tokens} | "
-                f"Content: {len(content)} chars"
-            )
-        except UnicodeEncodeError:
-            # Fallback for encoding issues
-            safe_key = mapping_key.encode('ascii', 'replace').decode('ascii')
-            self.logger.info(
-                f"[{display_name}] ✅ {safe_key} | "
-                f"Duration: {duration:.2f}s | Tokens: {tokens} | "
-                f"Content: {len(content)} chars"
-            )
+            # Ensure the message is properly encoded
+            message = f"[{display_name}] ✅ {mapping_key} | Duration: {duration:.2f}s | Tokens: {tokens} | Content: {len(content)} chars"
+            self.logger.info(message)
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            # Fallback: use repr for safe display
+            try:
+                safe_key = repr(mapping_key) if isinstance(mapping_key, str) else str(mapping_key)
+                self.logger.info(
+                    f"[{display_name}] ✅ {safe_key} | "
+                    f"Duration: {duration:.2f}s | Tokens: {tokens} | "
+                    f"Content: {len(content)} chars"
+                )
+            except:
+                # Last resort: ASCII only
+                safe_key = mapping_key.encode('ascii', 'replace').decode('ascii') if isinstance(mapping_key, str) else str(mapping_key)
+                self.logger.info(
+                    f"[{display_name}] Processed | "
+                    f"Duration: {duration:.2f}s | Tokens: {tokens} | "
+                    f"Content: {len(content)} chars"
+                )
         
         # Store in run data with full details
         if mapping_key not in self.run_data['processing_results']:
