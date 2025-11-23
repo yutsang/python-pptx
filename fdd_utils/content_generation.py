@@ -142,7 +142,13 @@ class UnifiedLogger:
             'agent_4': 'Validator'
         }
         display_name = agent_name_map.get(agent_name, agent_name)
-        self.logger.info(f"[{display_name}] Processing: {mapping_key}")
+        # Use repr to handle encoding issues with Chinese characters
+        try:
+            self.logger.info(f"[{display_name}] Processing: {mapping_key}")
+        except UnicodeEncodeError:
+            # Fallback for encoding issues
+            safe_key = mapping_key.encode('ascii', 'replace').decode('ascii')
+            self.logger.info(f"[{display_name}] Processing: {safe_key}")
     
     def log_agent_complete(self, agent_name: str, mapping_key: str, result: Dict[str, Any], 
                           system_prompt: str = '', user_prompt: str = ''):
@@ -160,12 +166,21 @@ class UnifiedLogger:
         tokens = result.get('tokens_used', 0)
         content = result.get('content', '')
         
-        # Console log with progress
-        self.logger.info(
-            f"[{display_name}] ✅ {mapping_key} | "
-            f"Duration: {duration:.2f}s | Tokens: {tokens} | "
-            f"Content: {len(content)} chars"
-        )
+        # Console log with progress - handle encoding for Chinese characters
+        try:
+            self.logger.info(
+                f"[{display_name}] ✅ {mapping_key} | "
+                f"Duration: {duration:.2f}s | Tokens: {tokens} | "
+                f"Content: {len(content)} chars"
+            )
+        except UnicodeEncodeError:
+            # Fallback for encoding issues
+            safe_key = mapping_key.encode('ascii', 'replace').decode('ascii')
+            self.logger.info(
+                f"[{display_name}] ✅ {safe_key} | "
+                f"Duration: {duration:.2f}s | Tokens: {tokens} | "
+                f"Content: {len(content)} chars"
+            )
         
         # Store in run data with full details
         if mapping_key not in self.run_data['processing_results']:
@@ -525,7 +540,8 @@ def ai_pipeline_sequential_by_agent(
     language: str = 'Eng',
     use_heuristic: bool = False,
     use_multithreading: bool = True,
-    max_workers: Optional[int] = None
+    max_workers: Optional[int] = None,
+    progress_callback: Optional[callable] = None
 ) -> Dict[str, Dict[str, str]]:
     """
     Sequential-by-agent pipeline: Process ALL items through Agent 1, 
@@ -547,6 +563,9 @@ def ai_pipeline_sequential_by_agent(
     if max_workers is None:
         import multiprocessing
         max_workers = multiprocessing.cpu_count()
+    
+    # Calculate total items for progress tracking
+    total_items = len([k for k in mapping_keys if k in dfs])
     
     # Initialize unified logger
     logger = UnifiedLogger()
@@ -582,13 +601,18 @@ def ai_pipeline_sequential_by_agent(
                     futures[future] = key
             
             with tqdm(total=len(futures), desc="Generator", unit='item', ascii=False, disable=False) as pbar:
+                completed = 0
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_1'] = content
+                    completed += 1
                     pbar.update(1)
+                    if progress_callback:
+                        progress_callback(1, 'Generator', completed, len(futures), completed)
     else:
         with tqdm(total=len(mapping_keys), desc="Generator", unit='item', ascii=False, disable=False) as pbar:
+            completed = 0
             for key in mapping_keys:
                 if key in dfs:
                     _, content = process_single_item_agent_1(
@@ -596,7 +620,10 @@ def ai_pipeline_sequential_by_agent(
                     )
                     if key in final_results:
                         final_results[key]['agent_1'] = content
-                pbar.update(1)
+                    completed += 1
+                    pbar.update(1)
+                    if progress_callback:
+                        progress_callback(1, 'Generator', completed, len([k for k in mapping_keys if k in dfs]), completed)
     
     # Agent 2: Process ALL items with Agent 1 outputs
     print("\n" + "="*60)
@@ -617,13 +644,19 @@ def ai_pipeline_sequential_by_agent(
                     futures[future] = key
             
             with tqdm(total=len(futures), desc="Auditor", unit='item', ascii=False, disable=False) as pbar:
+                completed = 0
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_2'] = content
+                    completed += 1
                     pbar.update(1)
+                    if progress_callback:
+                        progress_callback(2, 'Auditor', completed, len(futures), total_items + completed)
     else:
         with tqdm(total=len(mapping_keys), desc="Auditor", unit='item', ascii=False, disable=False) as pbar:
+            completed = 0
+            agent_2_items = [k for k in mapping_keys if k in final_results and 'agent_1' in final_results[k]]
             for key in mapping_keys:
                 if key in final_results and 'agent_1' in final_results[key]:
                     _, content = process_single_item_agent_2(
@@ -632,7 +665,10 @@ def ai_pipeline_sequential_by_agent(
                     )
                     if key in final_results:
                         final_results[key]['agent_2'] = content
-                pbar.update(1)
+                    completed += 1
+                    pbar.update(1)
+                    if progress_callback:
+                        progress_callback(2, 'Auditor', completed, len(agent_2_items), total_items + completed)
     
     # Agent 3: Process ALL items with Agent 2 outputs
     print("\n" + "="*60)
@@ -653,13 +689,19 @@ def ai_pipeline_sequential_by_agent(
                     futures[future] = key
             
             with tqdm(total=len(futures), desc="Refiner", unit='item', ascii=False, disable=False) as pbar:
+                completed = 0
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_3'] = content
+                    completed += 1
                     pbar.update(1)
+                    if progress_callback:
+                        progress_callback(3, 'Refiner', completed, len(futures), 2 * total_items + completed)
     else:
         with tqdm(total=len(mapping_keys), desc="Refiner", unit='item', ascii=False, disable=False) as pbar:
+            completed = 0
+            agent_3_items = [k for k in mapping_keys if k in final_results and 'agent_2' in final_results[k]]
             for key in mapping_keys:
                 if key in final_results and 'agent_2' in final_results[key]:
                     _, content = process_single_item_agent_3(
@@ -668,7 +710,10 @@ def ai_pipeline_sequential_by_agent(
                     )
                     if key in final_results:
                         final_results[key]['agent_3'] = content
-                pbar.update(1)
+                    completed += 1
+                    pbar.update(1)
+                    if progress_callback:
+                        progress_callback(3, 'Refiner', completed, len(agent_3_items), 2 * total_items + completed)
     
     # Agent 4: Process ALL items with Agent 3 outputs
     print("\n" + "="*60)
@@ -689,14 +734,20 @@ def ai_pipeline_sequential_by_agent(
                     futures[future] = key
             
             with tqdm(total=len(futures), desc="Validator", unit='item', ascii=False, disable=False) as pbar:
+                completed = 0
                 for future in as_completed(futures):
                     mapping_key, content = future.result()
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_4'] = content
                         final_results[mapping_key]['final'] = content  # Also store as final
+                    completed += 1
                     pbar.update(1)
+                    if progress_callback:
+                        progress_callback(4, 'Validator', completed, len(futures), 3 * total_items + completed)
     else:
         with tqdm(total=len(mapping_keys), desc="Validator", unit='item', ascii=False, disable=False) as pbar:
+            completed = 0
+            agent_4_items = [k for k in mapping_keys if k in final_results and 'agent_3' in final_results[k]]
             for key in mapping_keys:
                 if key in final_results and 'agent_3' in final_results[key]:
                     _, content = process_single_item_agent_4(
@@ -706,7 +757,10 @@ def ai_pipeline_sequential_by_agent(
                     if key in final_results:
                         final_results[key]['agent_4'] = content
                         final_results[key]['final'] = content  # Also store as final
-                pbar.update(1)
+                    completed += 1
+                    pbar.update(1)
+                    if progress_callback:
+                        progress_callback(4, 'Validator', completed, len(agent_4_items), 3 * total_items + completed)
     
     # Set final content with fallback logic
     for key in final_results:
@@ -733,6 +787,32 @@ def ai_pipeline_sequential_by_agent(
     print("="*60 + "\n")
     
     return final_results
+
+
+def run_ai_pipeline_with_progress(
+    mapping_keys: List[str],
+    dfs: Dict[str, pd.DataFrame],
+    model_type: str = 'deepseek',
+    language: str = 'Eng',
+    use_heuristic: bool = False,
+    use_multithreading: bool = True,
+    max_workers: Optional[int] = None,
+    progress_callback: Optional[callable] = None
+) -> Dict[str, Dict[str, str]]:
+    """
+    AI pipeline with progress callback support for Streamlit.
+    Same as run_ai_pipeline but with progress updates.
+    """
+    return ai_pipeline_sequential_by_agent(
+        mapping_keys=mapping_keys,
+        dfs=dfs,
+        model_type=model_type,
+        language=language,
+        use_heuristic=use_heuristic,
+        use_multithreading=use_multithreading,
+        max_workers=max_workers,
+        progress_callback=progress_callback
+    )
 
 
 def run_ai_pipeline(

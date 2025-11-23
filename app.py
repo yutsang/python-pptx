@@ -14,7 +14,7 @@ from typing import Dict, List
 from fdd_utils.process_databook import extract_data_from_excel
 from fdd_utils.financial_extraction import extract_balance_sheet_and_income_statement
 from fdd_utils.reconciliation import reconcile_financial_statements
-from fdd_utils.content_generation import run_ai_pipeline, extract_final_contents
+from fdd_utils.content_generation import run_ai_pipeline, run_ai_pipeline_with_progress, extract_final_contents
 
 # Import PPTX generation
 try:
@@ -390,27 +390,62 @@ else:
                 total_agents = 4
                 total_steps = total_agents * total_items
 
-                # Initialize progress
-                progress_bar = progress_placeholder.progress(0)
-                step_count = 0
-
+                # Initialize progress tracking
+                progress_state = {'current_step': 0, 'current_agent': 0, 'current_item': 0}
+                
+                # Progress callback function for real-time updates
+                def update_progress(agent_num, agent_name, item_num, total_items_in_agent, completed_items):
+                    progress_state['current_agent'] = agent_num
+                    progress_state['current_item'] = item_num
+                    
+                    # Calculate overall progress
+                    completed_steps = (agent_num - 1) * total_items + completed_items
+                    progress = min(completed_steps / total_steps, 1.0)
+                    
+                    # Update progress bar
+                    progress_placeholder.progress(progress)
+                    
+                    # Update status
+                    status_placeholder.info(
+                        f"🔄 Running Agent {agent_num}/4: {agent_name} | "
+                        f"Processing item {item_num}/{total_items_in_agent}"
+                    )
+                    
+                    # Calculate ETA
+                    import time
+                    if hasattr(update_progress, 'start_time'):
+                        elapsed = time.time() - update_progress.start_time
+                        if completed_steps > 0:
+                            avg_time_per_step = elapsed / completed_steps
+                            remaining_steps = total_steps - completed_steps
+                            eta_seconds = avg_time_per_step * remaining_steps
+                            eta_minutes = int(eta_seconds / 60)
+                            eta_secs = int(eta_seconds % 60)
+                            eta_placeholder.info(
+                                f"📊 Progress: {completed_steps}/{total_steps} steps | "
+                                f"ETA: {eta_minutes}m {eta_secs}s"
+                            )
+                    else:
+                        update_progress.start_time = time.time()
+                        eta_placeholder.info(f"📊 Progress: {completed_steps}/{total_steps} steps | ETA: Calculating...")
+                
                 # Show initial status
-                status_placeholder.info(f"🚀 Starting AI pipeline for {total_items} accounts...")
-                eta_placeholder.info(f"📊 Progress: 0/{total_steps} steps | ETA: Calculating...")
-
-                # Run the actual pipeline first
                 import time
                 start_time = time.time()
+                update_progress.start_time = start_time
+                
+                status_placeholder.info(f"🚀 Starting AI pipeline for {total_items} accounts...")
+                eta_placeholder.info(f"📊 Progress: 0/{total_steps} steps | ETA: Calculating...")
+                progress_placeholder.progress(0)
 
-                status_placeholder.info(f"🔄 Running Agent 1/4: Generator (Content Generation)...")
-                eta_placeholder.info(f"📊 Processing {total_items} accounts through Generator...")
-
-                results = run_ai_pipeline(
+                # Run the actual pipeline with progress updates
+                results = run_ai_pipeline_with_progress(
                     mapping_keys=st.session_state.workbook_list,
                     dfs=st.session_state.dfs,
                     model_type=st.session_state.get('model_type', 'local'),
                     language=st.session_state.language,
-                    use_multithreading=True
+                    use_multithreading=True,
+                    progress_callback=update_progress
                 )
 
                 # Log results for debugging
@@ -423,6 +458,11 @@ else:
                                 if content and len(str(content).strip()) > 0:
                                     content_count += 1
                     print(f"Content generated: {content_count} items")
+                    print(f"Results keys: {list(results.keys())}")
+                    # Debug: Print first result structure
+                    if results:
+                        first_key = list(results.keys())[0]
+                        print(f"First result structure for '{first_key}': {list(results[first_key].keys())}")
                 else:
                     print("AI Pipeline failed: No results generated")
 
@@ -448,11 +488,12 @@ else:
                 else:
                     status_placeholder.error(f"❌ AI processing failed completely - no results generated. Check AI model setup.")
 
-                progress_bar.progress(1.0)  # Complete the progress bar
-
-                progress_placeholder.empty()
+                progress_placeholder.progress(1.0)  # Complete the progress bar
                 eta_placeholder.empty()
                 status_placeholder.success(f"✅ AI content generated for {total_items} accounts! (Completed in {int(time.time() - start_time)}s)")
+                
+                # Force rerun to display results in UI
+                st.rerun()
 
             except Exception as e:
                 progress_placeholder.empty()
@@ -469,6 +510,15 @@ else:
     # Display AI results
     if st.session_state.ai_results:
         st.markdown("### 📝 Generated Content")
+        
+        # Debug: Show results info
+        with st.expander("🔍 Debug: Results Info", expanded=False):
+            st.write(f"Total results: {len(st.session_state.ai_results)}")
+            st.write(f"Result keys: {list(st.session_state.ai_results.keys())[:10]}...")  # Show first 10
+            if st.session_state.ai_results:
+                first_key = list(st.session_state.ai_results.keys())[0]
+                st.write(f"First result key: '{first_key}'")
+                st.write(f"First result structure: {list(st.session_state.ai_results[first_key].keys()) if isinstance(st.session_state.ai_results[first_key], dict) else type(st.session_state.ai_results[first_key])}")
 
         # Get BS and IS keys from mappings first
         from fdd_utils.reconciliation import load_mappings
@@ -477,14 +527,31 @@ else:
         # Filter for accounts that actually have results
         bs_keys = []
         is_keys = []
+        other_keys = []
 
         for k in st.session_state.ai_results.keys():
-            if k in mappings:
-                acc_type = mappings[k].get('type')
-                if acc_type == 'BS':
-                    bs_keys.append(k)
-                elif acc_type == 'IS':
-                    is_keys.append(k)
+            result = st.session_state.ai_results[k]
+            # Check if result is a dict with content
+            if isinstance(result, dict):
+                # Check if there's any actual content
+                has_content = False
+                for agent_key in ['final', 'agent_4', 'agent_3', 'agent_2', 'agent_1']:
+                    if agent_key in result and result[agent_key] and len(str(result[agent_key]).strip()) > 0:
+                        has_content = True
+                        break
+                
+                if has_content:
+                    if k in mappings:
+                        acc_type = mappings[k].get('type')
+                        if acc_type == 'BS':
+                            bs_keys.append(k)
+                        elif acc_type == 'IS':
+                            is_keys.append(k)
+                        else:
+                            other_keys.append(k)
+                    else:
+                        # If not in mappings, add to other
+                        other_keys.append(k)
 
         # Check if there's any actual content (including error messages)
         has_content = False
@@ -549,8 +616,9 @@ else:
                 elif acc_type == 'IS':
                     is_keys.append(k)
 
-        if not bs_keys and not is_keys:
+        if not bs_keys and not is_keys and not other_keys:
             st.warning("No AI results to display")
+            st.info(f"Found {len(st.session_state.ai_results)} results but none have content. Check debug info above.")
         else:
             ai_tab_bs, ai_tab_is = st.tabs([
                 f"Balance Sheet ({len(bs_keys)} accounts)",
@@ -594,64 +662,32 @@ else:
                         with st.expander(f"📄 {key}", expanded=False):
                             result = st.session_state.ai_results[key]
 
-                            # Final content (expanded)
-                            st.markdown("**✨ Final Content (Agent 4):**")
+                            # Final content (expanded) - use actual agent name
+                            st.markdown("**✨ Final Content (Validator):**")
                             final = result.get('final', result.get('agent_4', ''))
                             if final and str(final).strip():
                                 st.text_area("", value=str(final), height=150, key=f"final_is_{key}", label_visibility="collapsed")
                             else:
                                 st.warning("No final content available")
 
-                            # Intermediate agents (collapsed)
+                            # Intermediate agents (collapsed) - use actual agent names
                             with st.expander("🔍 View Agent Pipeline", expanded=False):
+                                agent_map = {
+                                    'agent_1': 'Generator',
+                                    'agent_2': 'Auditor',
+                                    'agent_3': 'Refiner',
+                                    'agent_4': 'Validator'
+                                }
                                 for agent in ['agent_1', 'agent_2', 'agent_3']:
                                     if agent in result and result[agent] is not None:
-                                        st.markdown(f"**{agent.replace('_', ' ').title()}:**")
+                                        agent_name = agent_map.get(agent, agent.replace('_', ' ').title())
+                                        st.markdown(f"**{agent_name}:**")
                                         st.text(str(result[agent]))
                                         st.markdown("---")
                 else:
                     st.info("No Income Statement accounts with AI content")
     else:
         st.info("🔄 Generate AI content to see results here")
-
-
-def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
-    """Convert AI results to markdown format for PPTX generation"""
-    if not ai_results:
-        return ""
-
-    content_lines = []
-
-    # Filter accounts by statement type
-    filtered_accounts = []
-    for account_key in ai_results.keys():
-        if account_key in mappings:
-            acc_type = mappings[account_key].get('type')
-            if statement_type == 'BS' and acc_type == 'BS':
-                filtered_accounts.append(account_key)
-            elif statement_type == 'IS' and acc_type == 'IS':
-                filtered_accounts.append(account_key)
-
-    for account_key in filtered_accounts:
-        result = ai_results[account_key]
-        final_content = result.get('final', result.get('agent_4', ''))
-
-        # Always include accounts, even with empty/error content
-        content_lines.append(f"## {account_key}")
-        content_lines.append("")
-
-        if final_content and final_content.strip():
-            # Add the content
-            content_lines.append(final_content.strip())
-        else:
-            # Add placeholder for empty content
-            content_lines.append(f"[No content generated for {account_key}]")
-
-        content_lines.append("")
-        content_lines.append("---")
-        content_lines.append("")
-
-    return "\n".join(content_lines)
 
 
 def generate_pptx_presentation():
@@ -671,6 +707,7 @@ def generate_pptx_presentation():
             language = st.session_state.get('language', 'Eng')
 
             # Load mappings
+            from fdd_utils.reconciliation import load_mappings
             mappings = load_mappings()
 
             # Find template
@@ -768,6 +805,47 @@ def generate_pptx_presentation():
         st.error(f"❌ PPTX generation failed: {e}")
         import traceback
         st.code(traceback.format_exc())
+
+
+def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
+    """Convert AI results to markdown format for PPTX generation"""
+    if not ai_results:
+        return ""
+
+    content_lines = []
+
+    # Filter accounts by statement type
+    filtered_accounts = []
+    for account_key in ai_results.keys():
+        if account_key in mappings:
+            acc_type = mappings[account_key].get('type')
+            if statement_type == 'BS' and acc_type == 'BS':
+                filtered_accounts.append(account_key)
+            elif statement_type == 'IS' and acc_type == 'IS':
+                filtered_accounts.append(account_key)
+
+    for account_key in filtered_accounts:
+        result = ai_results[account_key]
+        final_content = result.get('final', result.get('agent_4', ''))
+
+        # Always include accounts, even with empty/error content
+        content_lines.append(f"## {account_key}")
+        content_lines.append("")
+
+        if final_content and final_content.strip():
+            # Add the content
+            content_lines.append(final_content.strip())
+        else:
+            # Add placeholder for empty content
+            content_lines.append(f"[No content generated for {account_key}]")
+
+        content_lines.append("")
+        content_lines.append("---")
+        content_lines.append("")
+
+    return "\n".join(content_lines)
+
+
 
 
 if __name__ == "__main__":
