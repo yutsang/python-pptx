@@ -299,6 +299,13 @@ else:
     # Area 1: Data Display
     st.header("📈 Data Display")
     
+    # Debug info
+    with st.expander("🔍 Debug: Data Display Info", expanded=False):
+        st.write(f"**workbook_list length:** {len(st.session_state.workbook_list) if st.session_state.workbook_list else 0}")
+        st.write(f"**workbook_list:** {st.session_state.workbook_list[:10] if st.session_state.workbook_list else 'None'}...")
+        st.write(f"**dfs keys:** {list(st.session_state.dfs.keys())[:10] if st.session_state.dfs else 'None'}...")
+        st.write(f"**dfs length:** {len(st.session_state.dfs) if st.session_state.dfs else 0}")
+    
     # Load mappings to filter accounts by type
     from fdd_utils.reconciliation import load_mappings
     mappings = load_mappings()
@@ -308,15 +315,28 @@ else:
     is_accounts = []
     other_accounts = []
     
-    for key in st.session_state.workbook_list:
-        if key in st.session_state.dfs:
-            acc_type = mappings.get(key, {}).get('type', '')
-            if acc_type == 'BS':
-                bs_accounts.append(key)
-            elif acc_type == 'IS':
-                is_accounts.append(key)
-            else:
-                other_accounts.append(key)
+    # Check if workbook_list exists and has items
+    if st.session_state.workbook_list:
+        for key in st.session_state.workbook_list:
+            if key in st.session_state.dfs:
+                acc_type = mappings.get(key, {}).get('type', '')
+                if acc_type == 'BS':
+                    bs_accounts.append(key)
+                elif acc_type == 'IS':
+                    is_accounts.append(key)
+                else:
+                    other_accounts.append(key)
+    else:
+        # If workbook_list is empty, try to use all keys from dfs
+        if st.session_state.dfs:
+            for key in st.session_state.dfs.keys():
+                acc_type = mappings.get(key, {}).get('type', '')
+                if acc_type == 'BS':
+                    bs_accounts.append(key)
+                elif acc_type == 'IS':
+                    is_accounts.append(key)
+                else:
+                    other_accounts.append(key)
     
     # Create tabs for BS and IS
     tab_bs, tab_is = st.tabs(["Balance Sheet", "Income Statement"])
@@ -325,7 +345,7 @@ else:
         bs_data = st.session_state.bs_is_results.get('balance_sheet') if st.session_state.bs_is_results else None
         recon_bs = st.session_state.reconciliation[0] if st.session_state.reconciliation else None
         
-        # Always show tabs if we have BS accounts, even if bs_data is None
+        # Show tabs if we have BS accounts OR if we have dfs data
         if bs_accounts:
             # Second level tabs - only show BS accounts
             tab_names = ["📊 Reconciliation"] + [f"📋 {key}" for key in bs_accounts]
@@ -367,20 +387,62 @@ else:
                             st.dataframe(st.session_state.dfs[key], use_container_width=True)
                         else:
                             st.warning(f"Data not found for account: {key}")
-        elif bs_data is not None:
-            st.info("No Balance Sheet accounts found in workbook list")
+        elif st.session_state.dfs:
+            # If no BS accounts found but we have dfs, show all dfs keys
+            all_dfs_keys = list(st.session_state.dfs.keys())
+            if all_dfs_keys:
+                st.warning(f"⚠️ No BS accounts found in mappings. Showing all {len(all_dfs_keys)} accounts from data.")
+                tab_names = ["📊 Reconciliation"] + [f"📋 {key}" for key in all_dfs_keys]
+                bs_tabs = st.tabs(tab_names)
+                
+                # Reconciliation tab
+                with bs_tabs[0]:
+                    if recon_bs is not None and not recon_bs.empty:
+                        display_df = recon_bs.copy()
+                        for col in display_df.columns:
+                            display_df[col] = display_df[col].apply(
+                                lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) and x != 0 else str(x)
+                            )
+                        st.dataframe(display_df, use_container_width=True, height=400)
+                    else:
+                        st.info("No reconciliation data available")
+                
+                # Individual account tabs
+                for idx, key in enumerate(all_dfs_keys, 1):
+                    if idx < len(bs_tabs):
+                        with bs_tabs[idx]:
+                            if key in st.session_state.dfs:
+                                st.dataframe(st.session_state.dfs[key], use_container_width=True)
+                            else:
+                                st.warning(f"Data not found for account: {key}")
+            else:
+                st.info("No data available in dfs")
         else:
-            st.info("No Balance Sheet data extracted")
+            st.info("No Balance Sheet data available")
     
     with tab_is:
         is_data = st.session_state.bs_is_results.get('income_statement') if st.session_state.bs_is_results else None
         recon_is = st.session_state.reconciliation[1] if st.session_state.reconciliation else None
         
-        # Always show tabs if we have IS accounts, even if is_data is None
+        # Show tabs if we have IS accounts OR if we have dfs data
         if is_accounts:
             # Second level tabs - only show IS accounts
             tab_names = ["📊 Reconciliation"] + [f"📋 {key}" for key in is_accounts]
             is_tabs = st.tabs(tab_names)
+        elif st.session_state.dfs and not bs_accounts:
+            # If no IS accounts found but we have dfs (and no BS accounts shown), show all dfs keys
+            all_dfs_keys = list(st.session_state.dfs.keys())
+            if all_dfs_keys:
+                st.warning(f"⚠️ No IS accounts found in mappings. Showing all {len(all_dfs_keys)} accounts from data.")
+                tab_names = ["📊 Reconciliation"] + [f"📋 {key}" for key in all_dfs_keys]
+                is_tabs = st.tabs(tab_names)
+                is_accounts = all_dfs_keys  # Use all keys for display
+            else:
+                st.info("No data available in dfs")
+        else:
+            st.info("No Income Statement data available")
+        
+        if is_accounts:
             
             # Reconciliation tab
             with is_tabs[0]:
@@ -418,10 +480,6 @@ else:
                             st.dataframe(st.session_state.dfs[key], use_container_width=True)
                         else:
                             st.warning(f"Data not found for account: {key}")
-        elif is_data is not None:
-            st.info("No Income Statement accounts found in workbook list")
-        else:
-            st.info("No Income Statement data extracted")
     
     # Area 2: AI Content Generation
     st.markdown("---")
