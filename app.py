@@ -83,15 +83,41 @@ def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
 
     for account_key in filtered_accounts:
         result = ai_results[account_key]
-        final_content = result.get('final', result.get('agent_4', ''))
+        
+        # Extract final content, handling nested structures
+        def extract_final_content(result_dict):
+            """Extract final content from result, handling nested structures"""
+            # Try final first
+            content = result_dict.get('final', '')
+            if isinstance(content, dict):
+                content = content.get('output', '')
+            
+            # If no final, try agent_4
+            if not content or not str(content).strip():
+                content = result_dict.get('agent_4', '')
+                if isinstance(content, dict):
+                    content = content.get('output', '')
+            
+            # If still no content, try other agents in reverse order
+            if not content or not str(content).strip():
+                for agent_key in ['agent_3', 'agent_2', 'agent_1']:
+                    content = result_dict.get(agent_key, '')
+                    if isinstance(content, dict):
+                        content = content.get('output', '')
+                    if content and str(content).strip():
+                        break
+            
+            return content
+        
+        final_content = extract_final_content(result)
 
         # Always include accounts, even with empty/error content
         content_lines.append(f"## {account_key}")
         content_lines.append("")
 
-        if final_content and final_content.strip():
+        if final_content and str(final_content).strip():
             # Add the content
-            content_lines.append(final_content.strip())
+            content_lines.append(str(final_content).strip())
         else:
             # Add placeholder for empty content
             content_lines.append(f"[No content generated for {account_key}]")
@@ -704,7 +730,6 @@ else:
             st.markdown("### 🔄 AI Processing Progress")
             progress_placeholder = st.empty()
             status_placeholder = st.empty()
-            eta_placeholder = st.empty()
             
             try:
                 total_items = len(st.session_state.workbook_list)
@@ -726,13 +751,7 @@ else:
                     # Update progress bar
                     progress_placeholder.progress(progress)
                     
-                    # Update status
-                    status_placeholder.info(
-                        f"🔄 Running Agent {agent_num}/4: {agent_name} | "
-                        f"Processing item {item_num}/{total_items_in_agent}"
-                    )
-                    
-                    # Calculate ETA
+                    # Calculate ETA and combine all info into one status
                     import time
                     if hasattr(update_progress, 'start_time'):
                         elapsed = time.time() - update_progress.start_time
@@ -742,21 +761,34 @@ else:
                             eta_seconds = avg_time_per_step * remaining_steps
                             eta_minutes = int(eta_seconds / 60)
                             eta_secs = int(eta_seconds % 60)
-                            eta_placeholder.info(
-                                f"📊 Progress: {completed_steps}/{total_steps} steps | "
+                            status_placeholder.info(
+                                f"🔄 Running Agent {agent_num}/4: {agent_name} | "
+                                f"Processing item {item_num}/{total_items_in_agent} | "
+                                f"Progress: {completed_steps}/{total_steps} steps | "
                                 f"ETA: {eta_minutes}m {eta_secs}s"
+                            )
+                        else:
+                            status_placeholder.info(
+                                f"🔄 Running Agent {agent_num}/4: {agent_name} | "
+                                f"Processing item {item_num}/{total_items_in_agent} | "
+                                f"Progress: {completed_steps}/{total_steps} steps | "
+                                f"ETA: Calculating..."
                             )
                     else:
                         update_progress.start_time = time.time()
-                        eta_placeholder.info(f"📊 Progress: {completed_steps}/{total_steps} steps | ETA: Calculating...")
+                        status_placeholder.info(
+                            f"🔄 Running Agent {agent_num}/4: {agent_name} | "
+                            f"Processing item {item_num}/{total_items_in_agent} | "
+                            f"Progress: {completed_steps}/{total_steps} steps | "
+                            f"ETA: Calculating..."
+                        )
                 
                 # Show initial status
                 import time
                 start_time = time.time()
                 update_progress.start_time = start_time
                 
-                status_placeholder.info(f"🚀 Starting AI pipeline for {total_items} accounts...")
-                eta_placeholder.info(f"📊 Progress: 0/{total_steps} steps | ETA: Calculating...")
+                status_placeholder.info(f"🚀 Starting AI pipeline for {total_items} accounts... | Progress: 0/{total_steps} steps | ETA: Calculating...")
                 progress_placeholder.progress(0)
 
                 # Run the actual pipeline with progress updates
@@ -810,7 +842,6 @@ else:
                     status_placeholder.error(f"❌ AI processing failed completely - no results generated. Check AI model setup.")
 
                 progress_placeholder.progress(1.0)  # Complete the progress bar
-                eta_placeholder.empty()
                 status_placeholder.success(f"✅ AI content generated for {total_items} accounts! (Completed in {int(time.time() - start_time)}s)")
                 
                 # Force rerun to display results in UI
@@ -818,7 +849,6 @@ else:
 
             except Exception as e:
                 progress_placeholder.empty()
-                eta_placeholder.empty()
                 status_placeholder.error(f"❌ Error: {e}")
                 import traceback
                 st.code(traceback.format_exc())
@@ -1034,9 +1064,9 @@ else:
             ai_tabs = st.tabs(tab_list)
             tab_idx = 0
             
-            # Helper function to create account tabs with agent tabs
+            # Helper function to create account tabs with collapsible agent boxes
             def create_account_agent_tabs(keys, prefix=""):
-                """Create tabs for accounts, each with agent tabs inside"""
+                """Create tabs for accounts, each with collapsible boxes for agents inside"""
                 if not keys:
                     return
                 
@@ -1058,30 +1088,36 @@ else:
                         if not isinstance(result, dict):
                             result = {}
                         
-                        # Third layer tabs: Agent names
-                        agent_tab_names = []
-                        agent_tab_keys = []
-                        for agent_key in ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'final']:
-                            content = result.get(agent_key, '')
-                            if content and str(content).strip() and str(content).lower() not in ['none', 'null', 'nan']:
-                                agent_tab_names.append(agent_map.get(agent_key, agent_key))
-                                agent_tab_keys.append(agent_key)
+                        # Extract content from nested structure if needed
+                        def extract_content(result_dict, agent_key):
+                            """Extract content from result, handling nested structures"""
+                            content = result_dict.get(agent_key, '')
+                            
+                            # If content is a dict, try to get 'output' key
+                            if isinstance(content, dict):
+                                content = content.get('output', '')
+                            
+                            return content
                         
-                        if agent_tab_names:
-                            agent_tabs = st.tabs(agent_tab_names)
-                            for agent_idx, agent_key in enumerate(agent_tab_keys):
-                                with agent_tabs[agent_idx]:
-                                    content = result.get(agent_key, '')
-                                    if content:
-                                        st.text_area(
-                                            label=f"Content for {agent_map.get(agent_key, agent_key)}",
-                                            value=str(content),
-                                            height=300,
-                                            key=f"{prefix}{key}_{agent_key}"
-                                        )
-                                    else:
-                                        st.info("No content available for this agent")
-                        else:
+                        # Create collapsible boxes for each agent that has content
+                        agent_order = ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'final']
+                        has_any_content = False
+                        
+                        for agent_key in agent_order:
+                            content = extract_content(result, agent_key)
+                            if content and str(content).strip() and str(content).lower() not in ['none', 'null', 'nan']:
+                                has_any_content = True
+                                agent_name = agent_map.get(agent_key, agent_key)
+                                with st.expander(f"📝 {agent_name}", expanded=(agent_key == 'final')):
+                                    st.text_area(
+                                        label=f"Content for {agent_name}",
+                                        value=str(content),
+                                        height=300,
+                                        key=f"{prefix}{key}_{agent_key}",
+                                        label_visibility="collapsed"
+                                    )
+                        
+                        if not has_any_content:
                             st.warning("No agent outputs available for this account")
             
             if bs_keys:
