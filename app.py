@@ -47,7 +47,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
+def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS', bs_is_results=None, dfs=None):
     """Convert AI results to markdown format for PPTX generation"""
     if not ai_results:
         return ""
@@ -92,22 +92,27 @@ def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
             # Try final first
             content = result_dict.get('final', '')
             if isinstance(content, dict):
-                content = content.get('output', '')
+                content = content.get('output', content.get('content', ''))
             
             # If no final, try agent_4
             if not content or not str(content).strip():
                 content = result_dict.get('agent_4', '')
                 if isinstance(content, dict):
-                    content = content.get('output', '')
+                    content = content.get('output', content.get('content', ''))
             
             # If still no content, try other agents in reverse order
             if not content or not str(content).strip():
                 for agent_key in ['agent_3', 'agent_2', 'agent_1']:
                     content = result_dict.get(agent_key, '')
                     if isinstance(content, dict):
-                        content = content.get('output', '')
+                        content = content.get('output', content.get('content', ''))
                     if content and str(content).strip():
                         break
+            
+            # If still no content, check if result_dict itself is a string
+            if not content or not str(content).strip():
+                if isinstance(result_dict, str):
+                    content = result_dict
             
             return content
         
@@ -117,11 +122,39 @@ def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
         content_lines.append(f"## {account_key}")
         content_lines.append("")
 
+        # Add financial table data if available
+        if dfs and account_key in dfs:
+            df = dfs[account_key]
+            if not df.empty:
+                content_lines.append("### Financial Data")
+                content_lines.append("")
+                try:
+                    # Convert DataFrame to markdown table
+                    # Limit rows to avoid overwhelming the slide
+                    df_display = df.head(20)  # Show first 20 rows
+                    if hasattr(df_display, 'to_markdown'):
+                        content_lines.append(df_display.to_markdown(index=False))
+                    else:
+                        # Fallback: convert to string table format
+                        content_lines.append(df_display.to_string(index=False))
+                    if len(df) > 20:
+                        content_lines.append(f"\n*... and {len(df) - 20} more rows*")
+                except Exception as e:
+                    # Fallback to string representation if markdown conversion fails
+                    content_lines.append(str(df.head(20)))
+                content_lines.append("")
+                content_lines.append("---")
+                content_lines.append("")
+
         if final_content and str(final_content).strip():
-            # Add the content
+            # Add the AI commentary content
+            content_lines.append("### Commentary")
+            content_lines.append("")
             content_lines.append(str(final_content).strip())
         else:
             # Add placeholder for empty content
+            content_lines.append("### Commentary")
+            content_lines.append("")
             content_lines.append(f"[No content generated for {account_key}]")
 
         content_lines.append("")
@@ -180,9 +213,21 @@ def generate_pptx_presentation():
                 bs_md = os.path.join(temp_dir, "bs_content.md")
                 is_md = os.path.join(temp_dir, "is_content.md")
 
-                # Generate markdown content
-                bs_content = convert_ai_results_to_markdown(st.session_state.ai_results, mappings, 'BS')
-                is_content = convert_ai_results_to_markdown(st.session_state.ai_results, mappings, 'IS')
+                # Generate markdown content with financial tables
+                bs_content = convert_ai_results_to_markdown(
+                    st.session_state.ai_results, 
+                    mappings, 
+                    'BS',
+                    bs_is_results=st.session_state.bs_is_results,
+                    dfs=st.session_state.dfs
+                )
+                is_content = convert_ai_results_to_markdown(
+                    st.session_state.ai_results, 
+                    mappings, 
+                    'IS',
+                    bs_is_results=st.session_state.bs_is_results,
+                    dfs=st.session_state.dfs
+                )
 
                 if not bs_content and not is_content:
                     st.error("❌ No content generated for PPTX")
