@@ -220,10 +220,16 @@ class PowerPointGenerator:
     def _process_markdown_content(self, content: str) -> Dict:
         """Process markdown content into structured data"""
         if not content:
+            logger.warning("Empty content provided to _process_markdown_content")
             return {}
+
+        logger.info(f"Processing markdown content, length: {len(content)}")
+        logger.debug(f"Content preview (first 500 chars): {content[:500]}")
 
         # Split by headers (## Account Name)
         sections = re.split(r'^##\s+(.+)$', content, flags=re.MULTILINE)
+
+        logger.info(f"Found {len(sections)} sections after splitting")
 
         processed_sections = {}
 
@@ -233,32 +239,48 @@ class PowerPointGenerator:
                 account_name = sections[i].strip()
                 account_content = sections[i + 1].strip()
 
+                logger.info(f"Processing section: {account_name}, content length: {len(account_content)}")
+
                 processed_sections[account_name] = {
                     'content': account_content,
                     'is_chinese': detect_chinese_text(account_content)
                 }
 
+        logger.info(f"Processed {len(processed_sections)} sections")
         return processed_sections
 
     def _apply_content_to_presentation(self, sections: Dict):
         """Apply processed content to presentation slides"""
         if not self.presentation:
+            logger.warning("No presentation loaded")
             return
+
+        logger.info(f"Applying {len(sections)} sections to presentation with {len(self.presentation.slides)} slides")
 
         # Find content placeholders and fill them
         slide_idx = 0
         for slide in self.presentation.slides:
             if slide_idx >= len(sections):
+                logger.warning(f"More slides ({len(self.presentation.slides)}) than sections ({len(sections)})")
                 break
 
             account_name = list(sections.keys())[slide_idx]
             section_data = sections[account_name]
 
+            logger.info(f"Processing slide {slide_idx + 1} for account: {account_name}")
+
             # Find content shape (usually named 'Content' or similar)
             content_shape = self.find_shape_by_name(slide.shapes, "Content")
-            if content_shape and content_shape.has_text_frame:
-                # Apply content to shape
-                self._fill_content_shape(content_shape, section_data)
+            if content_shape:
+                logger.info(f"Found Content shape on slide {slide_idx + 1}")
+                if content_shape.has_text_frame:
+                    # Apply content to shape
+                    self._fill_content_shape(content_shape, section_data)
+                    logger.info(f"Applied content to slide {slide_idx + 1}")
+                else:
+                    logger.warning(f"Content shape found but has no text_frame on slide {slide_idx + 1}")
+            else:
+                logger.warning(f"No 'Content' shape found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
 
             slide_idx += 1
 

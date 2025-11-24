@@ -229,18 +229,30 @@ def generate_pptx_presentation():
                     dfs=st.session_state.dfs
                 )
 
+                # Debug: Log content lengths
+                print(f"DEBUG: BS content length: {len(bs_content) if bs_content else 0}")
+                print(f"DEBUG: IS content length: {len(is_content) if is_content else 0}")
+                if bs_content:
+                    print(f"DEBUG: BS content preview (first 500 chars): {bs_content[:500]}")
+                if is_content:
+                    print(f"DEBUG: IS content preview (first 500 chars): {is_content[:500]}")
+
                 if not bs_content and not is_content:
                     st.error("❌ No content generated for PPTX")
+                    st.info(f"DEBUG: AI results keys: {list(st.session_state.ai_results.keys())[:10] if st.session_state.ai_results else 'None'}")
+                    st.info(f"DEBUG: DFS keys: {list(st.session_state.dfs.keys())[:10] if st.session_state.dfs else 'None'}")
                     return
 
                 # Write markdown files
                 if bs_content:
                     with open(bs_md, 'w', encoding='utf-8') as f:
                         f.write(bs_content)
+                    print(f"DEBUG: Wrote BS markdown to {bs_md}, size: {os.path.getsize(bs_md)} bytes")
 
                 if is_content:
                     with open(is_md, 'w', encoding='utf-8') as f:
                         f.write(is_content)
+                    print(f"DEBUG: Wrote IS markdown to {is_md}, size: {os.path.getsize(is_md)} bytes")
 
                 # Generate individual presentations - keep them separate
                 generated_files = []
@@ -789,7 +801,7 @@ else:
     
     # Area 2: AI Content Generation - embedded in processed data
     st.markdown("---")
-    col_header, col_pptx = st.columns([3, 1])
+    col_header, col_pptx, col_download = st.columns([3, 1, 0.3])
     with col_header:
         st.header("🤖 AI Content Generation")
     with col_pptx:
@@ -799,9 +811,37 @@ else:
                      disabled=st.session_state.ai_results is None, key=pptx_key):
             st.session_state.button_click_counter += 1
             generate_pptx_presentation()
+    with col_download:
+        st.markdown("<br>", unsafe_allow_html=True)  # Align with button
+        # Download icon button - only show if PPTX is ready
+        if st.session_state.get('pptx_ready', False) and 'pptx_download_data' in st.session_state:
+            download_icon_key = f"download_icon_{st.session_state.button_click_counter}"
+            if st.button("📥", help="Download generated PPTX", key=download_icon_key, use_container_width=True):
+                # Trigger download
+                st.session_state.trigger_download = True
+                st.rerun()
+    
+    # Handle download trigger from icon button
+    if st.session_state.get('trigger_download', False) and 'pptx_download_data' in st.session_state:
+        download_data = st.session_state.pptx_download_data
+        download_filename = st.session_state.pptx_download_filename
+        download_mime = st.session_state.pptx_download_mime
+        
+        # Clear trigger
+        del st.session_state.trigger_download
+        
+        # Show download button
+        st.download_button(
+            label="📥 Download",
+            data=download_data,
+            file_name=download_filename,
+            mime=download_mime,
+            use_container_width=True,
+            key=f"manual_download_{st.session_state.button_click_counter}"
+        )
     
     # Auto-trigger download if PPTX is ready (hidden button approach)
-    if st.session_state.get('pptx_ready', False) and 'pptx_download_data' in st.session_state:
+    elif st.session_state.get('pptx_ready', False) and 'pptx_download_data' in st.session_state:
         download_data = st.session_state.pptx_download_data
         download_filename = st.session_state.pptx_download_filename
         download_mime = st.session_state.pptx_download_mime
