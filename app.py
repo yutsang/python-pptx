@@ -143,6 +143,7 @@ def generate_pptx_presentation():
         with st.spinner("📊 Generating PowerPoint presentation..."):
             # Get necessary data
             project_name = st.session_state.get('project_name', 'Project')
+            entity_name = st.session_state.get('entity_name', project_name)
             language = st.session_state.get('language', 'Eng')
 
             # Load mappings
@@ -164,11 +165,12 @@ def generate_pptx_presentation():
             output_dir = "fdd_utils/output"
             os.makedirs(output_dir, exist_ok=True)
 
-            # Generate unique filename
+            # Generate filename: entity_name_date_time.pptx
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            unique_id = str(uuid.uuid4())[:8]
-            sanitized_name = re.sub(r'[^\w\-_]', '_', project_name).strip('_')
-            output_filename = f"{sanitized_name}_Combined_{timestamp}_{unique_id}.pptx"
+            sanitized_entity = re.sub(r'[^\w\-_]', '_', str(entity_name)).strip('_')
+            if not sanitized_entity or sanitized_entity == '_':
+                sanitized_entity = 'Project'
+            output_filename = f"{sanitized_entity}_{timestamp}.pptx"
             output_path = os.path.join(output_dir, output_filename)
 
             # Create temporary directory for intermediate files
@@ -221,21 +223,51 @@ def generate_pptx_presentation():
                     st.error("❌ No presentations generated")
                     return
 
-            # Verify file was created
+            # Ensure file is fully written and closed before reading
+            import time
+            time.sleep(0.5)  # Brief pause to ensure file is closed
+            
+            # Verify file was created and read it
             if os.path.exists(output_path):
+                # Wait for file to be fully written
+                max_wait = 5
+                wait_time = 0
+                file_size = 0
+                while wait_time < max_wait:
+                    try:
+                        current_size = os.path.getsize(output_path)
+                        if current_size > 0 and current_size == file_size:
+                            # File size stable, ready to read
+                            break
+                        file_size = current_size
+                        time.sleep(0.2)
+                        wait_time += 0.2
+                    except (IOError, OSError):
+                        time.sleep(0.2)
+                        wait_time += 0.2
+                
                 # Read file for download
-                with open(output_path, 'rb') as f:
-                    pptx_data = f.read()
+                try:
+                    with open(output_path, 'rb') as f:
+                        pptx_data = f.read()
+                except Exception as e:
+                    st.error(f"❌ Error reading PowerPoint file: {e}")
+                    return
+
+                if len(pptx_data) == 0:
+                    st.error("❌ PowerPoint file is empty or corrupted")
+                    return
 
                 st.success("✅ PowerPoint presentation generated successfully!")
-
-                # Download button
+                
+                # Auto-download using download button
                 st.download_button(
                     label="📥 Download PowerPoint Presentation",
                     data=pptx_data,
                     file_name=output_filename,
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    use_container_width=True
+                    use_container_width=True,
+                    key=f"download_{st.session_state.button_click_counter}"
                 )
             else:
                 st.error("❌ PowerPoint file was not created")
@@ -305,6 +337,12 @@ def init_session_state():
         st.session_state.last_run_folder = None
     if 'results_loaded_from_logs' not in st.session_state:
         st.session_state.results_loaded_from_logs = False
+    if 'entity_name' not in st.session_state:
+        st.session_state.entity_name = None
+    if 'pptx_download_trigger' not in st.session_state:
+        st.session_state.pptx_download_trigger = None
+    if 'button_click_counter' not in st.session_state:
+        st.session_state.button_click_counter = 0
 
 
 def get_entity_names(file_path: str) -> List[str]:
@@ -484,6 +522,7 @@ with st.sidebar:
                     st.session_state.reconciliation = (recon_bs, recon_is)
                     st.session_state.model_type = model_type
                     st.session_state.project_name = bs_is_results.get('project_name') if bs_is_results else None
+                    st.session_state.entity_name = entity_name
                     
                     st.success("✅ Data processed successfully!")
                     st.rerun()
@@ -714,12 +753,17 @@ else:
         st.header("🤖 AI Content Generation")
     with col_pptx:
         st.markdown("<br>", unsafe_allow_html=True)  # Align button with header
+        pptx_key = f"pptx_btn_{st.session_state.button_click_counter}"
         if st.button("📄 Generate & Export PPTX", type="secondary", use_container_width=True,
-                     disabled=st.session_state.ai_results is None):
+                     disabled=st.session_state.ai_results is None, key=pptx_key):
+            st.session_state.button_click_counter += 1
             generate_pptx_presentation()
     
     # Generate AI Content button - embedded in processed data section
-    generate_clicked = st.button("▶️ Generate AI Content", type="primary", use_container_width=True)
+    ai_key = f"ai_btn_{st.session_state.button_click_counter}"
+    generate_clicked = st.button("▶️ Generate AI Content", type="primary", use_container_width=True, key=ai_key)
+    if generate_clicked:
+        st.session_state.button_click_counter += 1
     
     # Progress area - full width
     progress_container = st.container()
@@ -869,31 +913,6 @@ else:
                 else:
                     st.warning("No results found in log files")
         
-        # Debug: Show results info - always expanded for troubleshooting
-        with st.expander("🔍 Debug: Results Info", expanded=True):
-            st.write(f"**Total results:** {len(st.session_state.ai_results)}")
-            if st.session_state.ai_results:
-                all_keys = list(st.session_state.ai_results.keys())
-                st.write(f"**Result keys:** {all_keys[:20]}{'...' if len(all_keys) > 20 else ''}")
-                
-                # Show detailed structure of first few results
-                for idx, key in enumerate(all_keys[:3]):
-                    result = st.session_state.ai_results[key]
-                    st.write(f"**Result {idx+1} - Key: '{key}'**")
-                    if isinstance(result, dict):
-                        st.write(f"  - Type: dict with keys: {list(result.keys())}")
-                        for agent_key in ['final', 'agent_4', 'agent_3', 'agent_2', 'agent_1']:
-                            if agent_key in result:
-                                content = result[agent_key]
-                                content_str = str(content) if content else "None"
-                                content_len = len(content_str.strip()) if content_str else 0
-                                # Show more of the preview for debugging
-                                preview = content_str[:200] if content_len > 0 else ""
-                                st.write(f"  - {agent_key}: {content_len} chars" + (f" (preview: {preview}...)" if content_len > 0 else " (empty)"))
-                    else:
-                        st.write(f"  - Type: {type(result)}")
-                        st.write(f"  - Value: {str(result)[:100]}")
-
         # Get BS and IS keys from mappings first
         from fdd_utils.reconciliation import load_mappings
         mappings = load_mappings()
@@ -1099,25 +1118,46 @@ else:
                             
                             return content
                         
-                        # Create collapsible boxes for each agent that has content
-                        agent_order = ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'final']
-                        has_any_content = False
+                        # Show Final first
+                        final_content = extract_content(result, 'final')
+                        has_final = final_content and str(final_content).strip() and str(final_content).lower() not in ['none', 'null', 'nan']
                         
-                        for agent_key in agent_order:
+                        if has_final:
+                            st.markdown("#### ✨ Final (Validator)")
+                            st.text_area(
+                                label="Final content",
+                                value=str(final_content),
+                                height=300,
+                                key=f"{prefix}{key}_final_display",
+                                label_visibility="collapsed"
+                            )
+                            st.markdown("---")
+                        
+                        # Combine agent 1-4 in one collapsible box
+                        agent_contents = []
+                        agent_names_list = []
+                        for agent_key in ['agent_1', 'agent_2', 'agent_3', 'agent_4']:
                             content = extract_content(result, agent_key)
                             if content and str(content).strip() and str(content).lower() not in ['none', 'null', 'nan']:
-                                has_any_content = True
                                 agent_name = agent_map.get(agent_key, agent_key)
-                                with st.expander(f"📝 {agent_name}", expanded=(agent_key == 'final')):
+                                agent_contents.append((agent_name, str(content)))
+                                agent_names_list.append(agent_name)
+                        
+                        if agent_contents:
+                            with st.expander(f"🔍 Agent Pipeline ({', '.join(agent_names_list)})", expanded=False):
+                                for agent_name, content in agent_contents:
+                                    st.markdown(f"**{agent_name}:**")
                                     st.text_area(
                                         label=f"Content for {agent_name}",
-                                        value=str(content),
-                                        height=300,
-                                        key=f"{prefix}{key}_{agent_key}",
+                                        value=content,
+                                        height=200,
+                                        key=f"{prefix}{key}_{agent_name}_pipeline",
                                         label_visibility="collapsed"
                                     )
+                                    if agent_contents.index((agent_name, content)) < len(agent_contents) - 1:
+                                        st.markdown("---")
                         
-                        if not has_any_content:
+                        if not has_final and not agent_contents:
                             st.warning("No agent outputs available for this account")
             
             if bs_keys:

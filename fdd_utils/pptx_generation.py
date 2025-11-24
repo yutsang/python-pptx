@@ -374,6 +374,9 @@ def export_pptx(template_path: str, markdown_path: str, output_path: str,
         pptx_gen.presentation = temp_presentation
         pptx_gen.update_project_titles(project_name, statement_type)
         temp_presentation.save(output_path)
+        # Ensure presentation is properly closed
+        del temp_presentation
+        del pptx_gen
 
     # Note: Excel embedding functionality would need to be implemented
     # if excel_file_path and project_name:
@@ -421,6 +424,10 @@ def merge_presentations(bs_presentation_path: str, is_presentation_path: str, ou
 
         # Save merged presentation
         merged_prs.save(output_path)
+        
+        # Ensure presentation objects are properly closed
+        del merged_prs
+        del is_prs
 
         logger.info("✅ Presentation merge completed successfully")
     except Exception as e:
