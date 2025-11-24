@@ -271,22 +271,23 @@ def generate_pptx_presentation():
             time.sleep(0.5)
             
             # Prepare download data - keep files separate, no merge
+            # Store files in session state for download
+            import time
+            time.sleep(0.3)  # Wait for files to be ready
+            
             if len(output_files) == 1:
                 # Single file - download directly
                 file_path = output_files[0][1]
                 if os.path.exists(file_path):
-                    # Wait for file to be ready
-                    import time
-                    time.sleep(0.3)
                     with open(file_path, 'rb') as f:
                         download_data = f.read()
                     download_filename = os.path.basename(file_path)
                     
-                    # Store in session state and trigger download via rerun
+                    # Store in session state for download button
                     st.session_state.pptx_download_data = download_data
                     st.session_state.pptx_download_filename = download_filename
                     st.session_state.pptx_download_mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                    st.rerun()
+                    st.session_state.pptx_ready = True
             else:
                 # Multiple files - create zip and download
                 zip_buffer = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
@@ -296,28 +297,26 @@ def generate_pptx_presentation():
                             zip_file.write(file_path, os.path.basename(file_path))
                 zip_buffer.close()
                 
-                # Wait a bit for zip to be ready
-                import time
-                time.sleep(0.3)
-                
                 # Read zip file
                 with open(zip_buffer.name, 'rb') as f:
                     zip_data = f.read()
                 
                 zip_filename = f"{sanitized_entity}_{timestamp}.zip"
                 
-                # Store in session state and trigger download
+                # Store in session state for download button
                 st.session_state.pptx_download_data = zip_data
                 st.session_state.pptx_download_filename = zip_filename
                 st.session_state.pptx_download_mime = "application/zip"
+                st.session_state.pptx_ready = True
                 
                 # Clean up temp zip file
                 try:
                     os.unlink(zip_buffer.name)
                 except:
                     pass
-                
-                st.rerun()
+            
+            # Rerun to show download button
+            st.rerun()
 
     except Exception as e:
         st.error(f"❌ PPTX generation failed: {e}")
@@ -383,6 +382,8 @@ def init_session_state():
         st.session_state.pptx_download_trigger = None
     if 'button_click_counter' not in st.session_state:
         st.session_state.button_click_counter = 0
+    if 'pptx_ready' not in st.session_state:
+        st.session_state.pptx_ready = False
 
 
 def get_entity_names(file_path: str) -> List[str]:
@@ -799,34 +800,83 @@ else:
             st.session_state.button_click_counter += 1
             generate_pptx_presentation()
     
-    # Auto-download if download data is ready
-    if 'pptx_download_data' in st.session_state and st.session_state.pptx_download_data:
+    # Auto-trigger download if PPTX is ready (hidden button approach)
+    if st.session_state.get('pptx_ready', False) and 'pptx_download_data' in st.session_state:
         download_data = st.session_state.pptx_download_data
         download_filename = st.session_state.pptx_download_filename
         download_mime = st.session_state.pptx_download_mime
         
-        # Clear the download trigger
-        del st.session_state.pptx_download_data
-        del st.session_state.pptx_download_filename
-        del st.session_state.pptx_download_mime
+        # Create hidden download button and auto-trigger it
+        # This allows user to choose download location via browser's save dialog
+        download_btn_key = f"auto_download_{st.session_state.button_click_counter}"
         
-        # Auto-trigger download using JavaScript
-        b64_data = base64.b64encode(download_data).decode()
+        # Hide the button using CSS and auto-click it
+        st.markdown(
+            f"""
+            <style>
+            div[data-testid="stDownloadButton"] {{
+                display: none;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        # Create download button (hidden)
+        st.download_button(
+            label="Download",
+            data=download_data,
+            file_name=download_filename,
+            mime=download_mime,
+            key=download_btn_key
+        )
+        
+        # Auto-click the download button using JavaScript
+        # This triggers browser's save dialog where user can choose location
         st.markdown(
             f"""
             <script>
             (function() {{
-                const link = document.createElement('a');
-                link.href = 'data:{download_mime};base64,{b64_data}';
-                link.download = '{download_filename}';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
+                // Wait for button to be rendered, then auto-click
+                setTimeout(function() {{
+                    // Find the download button by its data attribute
+                    const downloadButtons = document.querySelectorAll('a[download]');
+                    if (downloadButtons.length > 0) {{
+                        // Click the most recent download button
+                        downloadButtons[downloadButtons.length - 1].click();
+                    }} else {{
+                        // Fallback: find by button text
+                        const buttons = document.querySelectorAll('button');
+                        for (let btn of buttons) {{
+                            if (btn.textContent.includes('Download') || btn.getAttribute('data-testid') === 'baseButton-secondary') {{
+                                btn.click();
+                                break;
+                            }}
+                        }}
+                    }}
+                }}, 200);
             }})();
             </script>
             """,
             unsafe_allow_html=True
         )
+        
+        # Clear download data after triggering
+        # Use a flag to ensure we only clear after download is triggered
+        if 'pptx_download_triggered' not in st.session_state:
+            st.session_state.pptx_download_triggered = True
+        else:
+            # Clear on second render cycle
+            if 'pptx_download_data' in st.session_state:
+                del st.session_state.pptx_download_data
+            if 'pptx_download_filename' in st.session_state:
+                del st.session_state.pptx_download_filename
+            if 'pptx_download_mime' in st.session_state:
+                del st.session_state.pptx_download_mime
+            if 'pptx_ready' in st.session_state:
+                del st.session_state.pptx_ready
+            if 'pptx_download_triggered' in st.session_state:
+                del st.session_state.pptx_download_triggered
     
     # Generate AI Content button - embedded in processed data section
     ai_key = f"ai_btn_{st.session_state.button_click_counter}"
