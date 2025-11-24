@@ -52,11 +52,30 @@ def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
 
     content_lines = []
 
+    # Helper function to find mapping key from account name (checks aliases)
+    def find_mapping_key_for_pptx(account_name):
+        """Find the mapping key for an account name, checking aliases"""
+        # First try direct key lookup
+        if account_name in mappings:
+            return account_name
+        
+        # Then check aliases
+        for mapping_key, config in mappings.items():
+            if mapping_key.startswith('_'):
+                continue
+            if isinstance(config, dict):
+                aliases = config.get('aliases', [])
+                if account_name in aliases:
+                    return mapping_key
+        return None
+
     # Filter accounts by statement type
     filtered_accounts = []
     for account_key in ai_results.keys():
-        if account_key in mappings:
-            acc_type = mappings[account_key].get('type')
+        # Use find_mapping_key to check aliases
+        mapping_key = find_mapping_key_for_pptx(account_key)
+        if mapping_key:
+            acc_type = mappings[mapping_key].get('type')
             if statement_type == 'BS' and acc_type == 'BS':
                 filtered_accounts.append(account_key)
             elif statement_type == 'IS' and acc_type == 'IS':
@@ -356,7 +375,7 @@ with st.sidebar:
         
         # Dropdown for selection
         selected_entity = st.selectbox(
-            "Select entity from list",
+            label="Select entity from list",
             options=[""] + entity_options,
             help="Select an entity from the list",
             label_visibility="collapsed",
@@ -365,7 +384,7 @@ with st.sidebar:
         
         # Text box for modification/custom input
         entity_name = st.text_input(
-            "Or type/modify entity name",
+            label="Or type/modify entity name",
             value=selected_entity if selected_entity else "",
             placeholder="Enter or modify entity name...",
             help="Type a custom entity name or modify the selected one",
@@ -379,7 +398,7 @@ with st.sidebar:
         sheet_options = get_financial_sheets(temp_path)
         if sheet_options:
             selected_sheet = st.selectbox(
-                "Select sheet",
+                label="Select sheet",
                 options=sheet_options,
                 help="Sheet containing both BS and IS",
                 label_visibility="collapsed"
@@ -392,7 +411,7 @@ with st.sidebar:
         st.markdown("---")
         st.markdown("**🤖 AI Model**")
         model_type = st.radio(
-            "Select model",
+            label="Select model",
             options=['local', 'openai', 'deepseek'],
             index=0,
             help="AI model for content generation",
@@ -452,15 +471,13 @@ with st.sidebar:
 if st.session_state.dfs is None:
     st.info("👈 Upload a databook and click 'Process Data' to begin")
 else:
-    # Area 1: Data Display
-    st.header("📈 Data Display")
-    
-    # Debug info
-    with st.expander("🔍 Debug: Data Display Info", expanded=False):
-        st.write(f"**workbook_list length:** {len(st.session_state.workbook_list) if st.session_state.workbook_list else 0}")
-        st.write(f"**workbook_list:** {st.session_state.workbook_list[:10] if st.session_state.workbook_list else 'None'}...")
-        st.write(f"**dfs keys:** {list(st.session_state.dfs.keys())[:10] if st.session_state.dfs else 'None'}...")
-        st.write(f"**dfs length:** {len(st.session_state.dfs) if st.session_state.dfs else 0}")
+    # Refresh button in top right
+    col_title, col_refresh = st.columns([10, 1])
+    with col_title:
+        st.header("📈 Data Display")
+    with col_refresh:
+        if st.button("🔄", help="Refresh page", use_container_width=True):
+            st.rerun()
     
     # Load mappings to filter accounts by type
     from fdd_utils.reconciliation import load_mappings
@@ -664,18 +681,22 @@ else:
                         else:
                             st.warning(f"Data not found for account: {key}")
     
-    # Area 2: AI Content Generation
+    # Area 2: AI Content Generation - embedded in processed data
     st.markdown("---")
-    st.header("🤖 AI Content Generation")
+    col_header, col_pptx = st.columns([3, 1])
+    with col_header:
+        st.header("🤖 AI Content Generation")
+    with col_pptx:
+        st.markdown("<br>", unsafe_allow_html=True)  # Align button with header
+        if st.button("📄 Generate & Export PPTX", type="secondary", use_container_width=True,
+                     disabled=st.session_state.ai_results is None):
+            generate_pptx_presentation()
     
-    # Horizontal buttons: Generate AI + Export PPTX
-    col_ai, col_pptx = st.columns(2)
+    # Generate AI Content button - embedded in processed data section
+    generate_clicked = st.button("▶️ Generate AI Content", type="primary", use_container_width=True)
     
-    # Progress area - full width, outside columns
+    # Progress area - full width
     progress_container = st.container()
-    
-    with col_ai:
-        generate_clicked = st.button("▶️ Generate AI Content", type="primary", use_container_width=True)
     
     # Progress display - full width, outside button columns
     if generate_clicked:
@@ -801,11 +822,6 @@ else:
                 status_placeholder.error(f"❌ Error: {e}")
                 import traceback
                 st.code(traceback.format_exc())
-    
-    with col_pptx:
-        if st.button("📄 Generate & Export PPTX", type="secondary", use_container_width=True,
-                     disabled=st.session_state.ai_results is None):
-            generate_pptx_presentation()
     
     # Display AI results
     if st.session_state.ai_results:
@@ -977,9 +993,12 @@ else:
             for account in sample_accounts[:4]:  # Max 4 samples
                 with st.expander(f"📄 {account} (Sample Structure)", expanded=False):
                     st.markdown("**✨ Final Content (Validator):**")
-                    st.text_area("",
-                        f"This would contain the final polished content for {account}...",
-                        height=100, disabled=True, label_visibility="collapsed")
+                    st.text_area(
+                        label=f"Sample content for {account}",
+                        value=f"This would contain the final polished content for {account}...",
+                        height=100,
+                        disabled=True
+                    )
 
                     st.markdown("---")
                     st.markdown("**🔍 View Agent Pipeline (Sample):**")
@@ -1003,7 +1022,7 @@ else:
                     result = st.session_state.ai_results[key]
                     st.json(result if isinstance(result, dict) else {"value": str(result)})
         else:
-            # Create dynamic tabs based on what we have
+            # Create 3-layer tabs: BS/IS -> Account -> Agent
             tab_list = []
             if bs_keys:
                 tab_list.append(f"Balance Sheet ({len(bs_keys)} accounts)")
@@ -1015,25 +1034,31 @@ else:
             ai_tabs = st.tabs(tab_list)
             tab_idx = 0
             
-            if bs_keys:
-                with ai_tabs[tab_idx]:
-                    for key in bs_keys:
+            # Helper function to create account tabs with agent tabs
+            def create_account_agent_tabs(keys, prefix=""):
+                """Create tabs for accounts, each with agent tabs inside"""
+                if not keys:
+                    return
+                
+                # Create account tabs (second layer)
+                account_tab_names = [f"📄 {key}" for key in keys]
+                account_tabs = st.tabs(account_tab_names)
+                
+                agent_map = {
+                    'agent_1': 'Generator',
+                    'agent_2': 'Auditor',
+                    'agent_3': 'Refiner',
+                    'agent_4': 'Validator',
+                    'final': 'Final (Validator)'
+                }
+                
+                for acc_idx, key in enumerate(keys):
+                    with account_tabs[acc_idx]:
                         result = st.session_state.ai_results.get(key, {})
                         if not isinstance(result, dict):
                             result = {}
                         
-                        st.markdown(f"### 📄 {key}")
-                        
-                        # Second level tabs: Agent names
-                        agent_map = {
-                            'agent_1': 'Generator',
-                            'agent_2': 'Auditor',
-                            'agent_3': 'Refiner',
-                            'agent_4': 'Validator',
-                            'final': 'Final (Validator)'
-                        }
-                        
-                        # Create tabs for each agent that has content
+                        # Third layer tabs: Agent names
                         agent_tab_names = []
                         agent_tab_keys = []
                         for agent_key in ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'final']:
@@ -1048,51 +1073,25 @@ else:
                                 with agent_tabs[agent_idx]:
                                     content = result.get(agent_key, '')
                                     if content:
-                                        st.text_area("", value=str(content), height=300, key=f"{key}_{agent_key}", label_visibility="collapsed")
+                                        st.text_area(
+                                            label=f"Content for {agent_map.get(agent_key, agent_key)}",
+                                            value=str(content),
+                                            height=300,
+                                            key=f"{prefix}{key}_{agent_key}"
+                                        )
                                     else:
                                         st.info("No content available for this agent")
                         else:
                             st.warning("No agent outputs available for this account")
+            
+            if bs_keys:
+                with ai_tabs[tab_idx]:
+                    create_account_agent_tabs(bs_keys, "bs_")
                 tab_idx += 1
             
             if is_keys:
                 with ai_tabs[tab_idx]:
-                    for key in is_keys:
-                        result = st.session_state.ai_results.get(key, {})
-                        if not isinstance(result, dict):
-                            result = {}
-                        
-                        st.markdown(f"### 📄 {key}")
-                        
-                        # Second level tabs: Agent names
-                        agent_map = {
-                            'agent_1': 'Generator',
-                            'agent_2': 'Auditor',
-                            'agent_3': 'Refiner',
-                            'agent_4': 'Validator',
-                            'final': 'Final (Validator)'
-                        }
-                        
-                        # Create tabs for each agent that has content
-                        agent_tab_names = []
-                        agent_tab_keys = []
-                        for agent_key in ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'final']:
-                            content = result.get(agent_key, '')
-                            if content and str(content).strip() and str(content).lower() not in ['none', 'null', 'nan']:
-                                agent_tab_names.append(agent_map.get(agent_key, agent_key))
-                                agent_tab_keys.append(agent_key)
-                        
-                        if agent_tab_names:
-                            agent_tabs = st.tabs(agent_tab_names)
-                            for agent_idx, agent_key in enumerate(agent_tab_keys):
-                                with agent_tabs[agent_idx]:
-                                    content = result.get(agent_key, '')
-                                    if content:
-                                        st.text_area("", value=str(content), height=300, key=f"is_{key}_{agent_key}", label_visibility="collapsed")
-                                    else:
-                                        st.info("No content available for this agent")
-                        else:
-                            st.warning("No agent outputs available for this account")
+                    create_account_agent_tabs(is_keys, "is_")
                 tab_idx += 1
             
             if other_keys:
@@ -1105,45 +1104,6 @@ else:
                             st.json(result)
     else:
         st.info("🔄 Generate AI content to see results here")
-
-
-def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS'):
-    """Convert AI results to markdown format for PPTX generation"""
-    if not ai_results:
-        return ""
-
-    content_lines = []
-
-    # Filter accounts by statement type
-    filtered_accounts = []
-    for account_key in ai_results.keys():
-        if account_key in mappings:
-            acc_type = mappings[account_key].get('type')
-            if statement_type == 'BS' and acc_type == 'BS':
-                filtered_accounts.append(account_key)
-            elif statement_type == 'IS' and acc_type == 'IS':
-                filtered_accounts.append(account_key)
-
-    for account_key in filtered_accounts:
-        result = ai_results[account_key]
-        final_content = result.get('final', result.get('agent_4', ''))
-
-        # Always include accounts, even with empty/error content
-        content_lines.append(f"## {account_key}")
-        content_lines.append("")
-
-        if final_content and final_content.strip():
-            # Add the content
-            content_lines.append(final_content.strip())
-        else:
-            # Add placeholder for empty content
-            content_lines.append(f"[No content generated for {account_key}]")
-
-        content_lines.append("")
-        content_lines.append("---")
-        content_lines.append("")
-
-    return "\n".join(content_lines)
 
 
 
