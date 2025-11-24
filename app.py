@@ -322,11 +322,6 @@ def init_session_state():
         st.session_state.bs_is_results = None
     if 'ai_results' not in st.session_state:
         st.session_state.ai_results = None
-        # Try to load from latest log file
-        latest_results = load_latest_results_from_logs()
-        if latest_results:
-            st.session_state.ai_results = latest_results
-            st.session_state.results_loaded_from_logs = True
     if 'reconciliation' not in st.session_state:
         st.session_state.reconciliation = None
     if 'model_type' not in st.session_state:
@@ -335,8 +330,6 @@ def init_session_state():
         st.session_state.project_name = None
     if 'last_run_folder' not in st.session_state:
         st.session_state.last_run_folder = None
-    if 'results_loaded_from_logs' not in st.session_state:
-        st.session_state.results_loaded_from_logs = False
     if 'entity_name' not in st.session_state:
         st.session_state.entity_name = None
     if 'pptx_download_trigger' not in st.session_state:
@@ -901,18 +894,6 @@ else:
     if st.session_state.ai_results:
         st.markdown("### 📝 Generated Content")
         
-        # Show if results were loaded from logs
-        if st.session_state.get('results_loaded_from_logs'):
-            st.info("ℹ️ Results loaded from latest log file. Click 'Generate AI Content' to create new results.")
-            if st.button("🔄 Reload from Latest Log File"):
-                latest_results = load_latest_results_from_logs()
-                if latest_results:
-                    st.session_state.ai_results = latest_results
-                    st.session_state.results_loaded_from_logs = True
-                    st.rerun()
-                else:
-                    st.warning("No results found in log files")
-        
         # Get BS and IS keys from mappings first
         from fdd_utils.reconciliation import load_mappings
         mappings = load_mappings()
@@ -1056,9 +1037,6 @@ else:
                     st.markdown("**Refiner:** Improved and refined content...")
                     st.markdown("**Validator:** Final formatted content...")
 
-        # Show summary
-        st.info(f"📊 **Summary:** {len(bs_keys)} Balance Sheet accounts, {len(is_keys)} Income Statement accounts, {len(other_keys)} other accounts")
-        
         if not bs_keys and not is_keys and not other_keys:
             st.warning("⚠️ No AI results to display with content")
             st.info(f"Found {len(st.session_state.ai_results)} results but none have content. Check debug info above.")
@@ -1124,10 +1102,13 @@ else:
                         
                         if has_final:
                             st.markdown("#### ✨ Final (Validator)")
+                            # Dynamic height based on content length
+                            content_length = len(str(final_content))
+                            dynamic_height = min(max(100, int(content_length / 3)), 600)  # Between 100-600px
                             st.text_area(
                                 label="Final content",
                                 value=str(final_content),
-                                height=300,
+                                height=dynamic_height,
                                 key=f"{prefix}{key}_final_display",
                                 label_visibility="collapsed"
                             )
@@ -1147,10 +1128,13 @@ else:
                             with st.expander(f"🔍 Agent Pipeline ({', '.join(agent_names_list)})", expanded=False):
                                 for agent_name, content in agent_contents:
                                     st.markdown(f"**{agent_name}:**")
+                                    # Dynamic height based on content length
+                                    content_length = len(str(content))
+                                    dynamic_height = min(max(80, int(content_length / 4)), 400)  # Between 80-400px
                                     st.text_area(
                                         label=f"Content for {agent_name}",
                                         value=content,
-                                        height=200,
+                                        height=dynamic_height,
                                         key=f"{prefix}{key}_{agent_name}_pipeline",
                                         label_visibility="collapsed"
                                     )
@@ -1178,8 +1162,6 @@ else:
                             result = {}
                         with st.expander(f"📄 {key}", expanded=False):
                             st.json(result)
-    else:
-        st.info("🔄 Generate AI content to see results here")
 
 
 
