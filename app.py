@@ -139,39 +139,39 @@ def generate_pptx_presentation():
         st.error("❌ PPTX generation not available. Missing required modules.")
         return
 
+    # Get necessary data
+    project_name = st.session_state.get('project_name', 'Project')
+    entity_name = st.session_state.get('entity_name', project_name)
+    language = st.session_state.get('language', 'Eng')
+
+    # Load mappings
+    from fdd_utils.reconciliation import load_mappings
+    mappings = load_mappings()
+
+    # Find template
+    template_path = None
+    for template in ["fdd_utils/template.pptx", "backups/fdd_utils/template.pptx", "template.pptx"]:
+        if os.path.exists(template):
+            template_path = template
+            break
+
+    if not template_path:
+        st.error("❌ PowerPoint template not found. Please ensure template.pptx exists.")
+        return
+
+    # Create output directory
+    output_dir = "fdd_utils/output"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Generate filename: entity_name_date_time.pptx
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    sanitized_entity = re.sub(r'[^\w\-_]', '_', str(entity_name)).strip('_')
+    if not sanitized_entity or sanitized_entity == '_':
+        sanitized_entity = 'Project'
+    output_filename = f"{sanitized_entity}_{timestamp}.pptx"
+    output_path = os.path.join(output_dir, output_filename)
+
     try:
-        with st.spinner("📊 Generating PowerPoint presentation..."):
-            # Get necessary data
-            project_name = st.session_state.get('project_name', 'Project')
-            entity_name = st.session_state.get('entity_name', project_name)
-            language = st.session_state.get('language', 'Eng')
-
-            # Load mappings
-            from fdd_utils.reconciliation import load_mappings
-            mappings = load_mappings()
-
-            # Find template
-            template_path = None
-            for template in ["fdd_utils/template.pptx", "backups/fdd_utils/template.pptx", "template.pptx"]:
-                if os.path.exists(template):
-                    template_path = template
-                    break
-
-            if not template_path:
-                st.error("❌ PowerPoint template not found. Please ensure template.pptx exists.")
-                return
-
-            # Create output directory
-            output_dir = "fdd_utils/output"
-            os.makedirs(output_dir, exist_ok=True)
-
-            # Generate filename: entity_name_date_time.pptx
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            sanitized_entity = re.sub(r'[^\w\-_]', '_', str(entity_name)).strip('_')
-            if not sanitized_entity or sanitized_entity == '_':
-                sanitized_entity = 'Project'
-            output_filename = f"{sanitized_entity}_{timestamp}.pptx"
-            output_path = os.path.join(output_dir, output_filename)
 
             # Create temporary directory for intermediate files
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -258,9 +258,7 @@ def generate_pptx_presentation():
                     st.error("❌ PowerPoint file is empty or corrupted")
                     return
 
-                st.success("✅ PowerPoint presentation generated successfully!")
-                
-                # Auto-download using download button
+                # Auto-download using download button (no messages, just download)
                 st.download_button(
                     label="📥 Download PowerPoint Presentation",
                     data=pptx_data,
@@ -782,8 +780,9 @@ else:
                     progress_state['current_item'] = item_num
                     
                     # Calculate overall progress
-                    completed_steps = (agent_num - 1) * total_items + completed_items
-                    progress = min(completed_steps / total_steps, 1.0)
+                    # The completed_items parameter already includes offset from previous agents
+                    completed_steps = completed_items
+                    progress = min(completed_steps / total_steps, 1.0) if total_steps > 0 else 0.0
                     
                     # Update progress bar
                     progress_placeholder.progress(progress)

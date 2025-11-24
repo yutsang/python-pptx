@@ -407,20 +407,54 @@ def merge_presentations(bs_presentation_path: str, is_presentation_path: str, ou
         is_prs = Presentation(is_presentation_path)
 
         # Copy all slides from IS to BS
-        for slide in is_prs.slides:
-            # Create new slide with same layout
-            slide_layout = slide.slide_layout
-            new_slide = merged_prs.slides.add_slide(slide_layout)
-
-            # Copy content from IS slide to new slide
-            for shape in slide.shapes:
-                if shape.has_text_frame:
-                    # Find corresponding shape in new slide
-                    for new_shape in new_slide.shapes:
-                        if (hasattr(new_shape, 'name') and hasattr(shape, 'name') and
-                            new_shape.name == shape.name and new_shape.has_text_frame):
-                            new_shape.text_frame.text = shape.text_frame.text
-                            break
+        # Use XML-level copying for reliable slide duplication
+        import xml.etree.ElementTree as ET
+        from copy import deepcopy
+        
+        for slide_idx, slide in enumerate(is_prs.slides):
+            try:
+                # Get the slide layout
+                slide_layout = slide.slide_layout
+                
+                # Create new slide with same layout
+                new_slide = merged_prs.slides.add_slide(slide_layout)
+                
+                # Get XML elements
+                source_slide_xml = slide._element
+                target_slide_xml = new_slide._element
+                
+                # Remove placeholder shapes from new slide (from layout)
+                # We'll replace them with actual content
+                shapes_to_remove = list(new_slide.shapes)
+                for shape in shapes_to_remove:
+                    try:
+                        sp_tree = target_slide_xml.get_or_add_spTree()
+                        sp_tree.remove(shape._element)
+                    except:
+                        pass
+                
+                # Copy all shapes from source slide
+                source_sp_tree = source_slide_xml.get_or_add_spTree()
+                target_sp_tree = target_slide_xml.get_or_add_spTree()
+                
+                for shape_element in source_sp_tree:
+                    # Deep copy the shape element
+                    new_shape_element = deepcopy(shape_element)
+                    # Add to target slide
+                    target_sp_tree.append(new_shape_element)
+                    
+            except Exception as e:
+                logger.error(f"Error copying slide {slide_idx}, using fallback method: {e}")
+                # Fallback: simple text copy
+                slide_layout = slide.slide_layout
+                new_slide = merged_prs.slides.add_slide(slide_layout)
+                for shape in slide.shapes:
+                    if shape.has_text_frame:
+                        for new_shape in new_slide.shapes:
+                            if (hasattr(new_shape, 'name') and hasattr(shape, 'name') and
+                                new_shape.name == shape.name and new_shape.has_text_frame):
+                                new_shape.text_frame.text = shape.text_frame.text
+                                break
 
         # Save merged presentation
         merged_prs.save(output_path)
@@ -428,6 +462,10 @@ def merge_presentations(bs_presentation_path: str, is_presentation_path: str, ou
         # Ensure presentation objects are properly closed
         del merged_prs
         del is_prs
+        
+        # Force garbage collection to ensure file handles are released
+        import gc
+        gc.collect()
 
         logger.info("✅ Presentation merge completed successfully")
     except Exception as e:
