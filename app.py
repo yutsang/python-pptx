@@ -8,6 +8,8 @@ import streamlit as st
 import pandas as pd
 import os
 import tempfile
+import base64
+import zipfile
 from typing import Dict, List
 
 # Import modules
@@ -163,13 +165,11 @@ def generate_pptx_presentation():
     output_dir = "fdd_utils/output"
     os.makedirs(output_dir, exist_ok=True)
 
-    # Generate filename: entity_name_date_time.pptx
+    # Generate timestamp for filenames
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     sanitized_entity = re.sub(r'[^\w\-_]', '_', str(entity_name)).strip('_')
     if not sanitized_entity or sanitized_entity == '_':
         sanitized_entity = 'Project'
-    output_filename = f"{sanitized_entity}_{timestamp}.pptx"
-    output_path = os.path.join(output_dir, output_filename)
 
     try:
 
@@ -197,78 +197,82 @@ def generate_pptx_presentation():
                     with open(is_md, 'w', encoding='utf-8') as f:
                         f.write(is_content)
 
-                # Generate individual presentations
+                # Generate individual presentations - keep them separate
                 generated_files = []
+                output_files = []
 
                 if bs_content:
-                    export_pptx(template_path, bs_md, bs_temp, project_name,
+                    bs_output_path = os.path.join(output_dir, f"{sanitized_entity}_BS_{timestamp}.pptx")
+                    export_pptx(template_path, bs_md, bs_output_path, project_name,
                               language='chinese' if language == 'Chn' else 'english',
                               statement_type='BS', row_limit=20)
-                    generated_files.append(bs_temp)
+                    generated_files.append(bs_output_path)
+                    output_files.append(('BS', bs_output_path))
 
                 if is_content:
-                    export_pptx(template_path, is_md, is_temp, project_name,
+                    is_output_path = os.path.join(output_dir, f"{sanitized_entity}_IS_{timestamp}.pptx")
+                    export_pptx(template_path, is_md, is_output_path, project_name,
                               language='chinese' if language == 'Chn' else 'english',
                               statement_type='IS', row_limit=20)
-                    generated_files.append(is_temp)
+                    generated_files.append(is_output_path)
+                    output_files.append(('IS', is_output_path))
 
-                # Merge presentations if both exist
-                if len(generated_files) == 2:
-                    merge_presentations(bs_temp, is_temp, output_path)
-                elif len(generated_files) == 1:
-                    # Copy single presentation
-                    import shutil
-                    shutil.copy(generated_files[0], output_path)
-                else:
+                if not generated_files:
                     st.error("❌ No presentations generated")
                     return
 
-            # Ensure file is fully written and closed before reading
+            # Wait for files to be fully written
             import time
-            time.sleep(0.5)  # Brief pause to ensure file is closed
+            time.sleep(0.5)
             
-            # Verify file was created and read it
-            if os.path.exists(output_path):
-                # Wait for file to be fully written
-                max_wait = 5
-                wait_time = 0
-                file_size = 0
-                while wait_time < max_wait:
-                    try:
-                        current_size = os.path.getsize(output_path)
-                        if current_size > 0 and current_size == file_size:
-                            # File size stable, ready to read
-                            break
-                        file_size = current_size
-                        time.sleep(0.2)
-                        wait_time += 0.2
-                    except (IOError, OSError):
-                        time.sleep(0.2)
-                        wait_time += 0.2
-                
-                # Read file for download
-                try:
-                    with open(output_path, 'rb') as f:
-                        pptx_data = f.read()
-                except Exception as e:
-                    st.error(f"❌ Error reading PowerPoint file: {e}")
-                    return
-
-                if len(pptx_data) == 0:
-                    st.error("❌ PowerPoint file is empty or corrupted")
-                    return
-
-                # Auto-download using download button (no messages, just download)
-                st.download_button(
-                    label="📥 Download PowerPoint Presentation",
-                    data=pptx_data,
-                    file_name=output_filename,
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    use_container_width=True,
-                    key=f"download_{st.session_state.button_click_counter}"
-                )
+            # Prepare download data - keep files separate, no merge
+            if len(output_files) == 1:
+                # Single file - download directly
+                file_path = output_files[0][1]
+                if os.path.exists(file_path):
+                    # Wait for file to be ready
+                    import time
+                    time.sleep(0.3)
+                    with open(file_path, 'rb') as f:
+                        download_data = f.read()
+                    download_filename = os.path.basename(file_path)
+                    
+                    # Store in session state and trigger download via rerun
+                    st.session_state.pptx_download_data = download_data
+                    st.session_state.pptx_download_filename = download_filename
+                    st.session_state.pptx_download_mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    st.rerun()
             else:
-                st.error("❌ PowerPoint file was not created")
+                # Multiple files - create zip and download
+                zip_buffer = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                    for file_type, file_path in output_files:
+                        if os.path.exists(file_path):
+                            zip_file.write(file_path, os.path.basename(file_path))
+                zip_buffer.close()
+                
+                # Wait a bit for zip to be ready
+                import time
+                time.sleep(0.3)
+                
+                # Read zip file
+                with open(zip_buffer.name, 'rb') as f:
+                    zip_data = f.read()
+                
+                zip_filename = f"{sanitized_entity}_{timestamp}.zip"
+                
+                # Store in session state and trigger download
+                st.session_state.pptx_download_data = zip_data
+                st.session_state.pptx_download_filename = zip_filename
+                st.session_state.pptx_download_mime = "application/zip"
+                
+                # Clean up temp zip file
+                try:
+                    os.unlink(zip_buffer.name)
+                except:
+                    pass
+                
+                st.rerun()
 
     except Exception as e:
         st.error(f"❌ PPTX generation failed: {e}")
@@ -749,6 +753,35 @@ else:
                      disabled=st.session_state.ai_results is None, key=pptx_key):
             st.session_state.button_click_counter += 1
             generate_pptx_presentation()
+    
+    # Auto-download if download data is ready
+    if 'pptx_download_data' in st.session_state and st.session_state.pptx_download_data:
+        download_data = st.session_state.pptx_download_data
+        download_filename = st.session_state.pptx_download_filename
+        download_mime = st.session_state.pptx_download_mime
+        
+        # Clear the download trigger
+        del st.session_state.pptx_download_data
+        del st.session_state.pptx_download_filename
+        del st.session_state.pptx_download_mime
+        
+        # Auto-trigger download using JavaScript
+        b64_data = base64.b64encode(download_data).decode()
+        st.markdown(
+            f"""
+            <script>
+            (function() {{
+                const link = document.createElement('a');
+                link.href = 'data:{download_mime};base64,{b64_data}';
+                link.download = '{download_filename}';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }})();
+            </script>
+            """,
+            unsafe_allow_html=True
+        )
     
     # Generate AI Content button - embedded in processed data section
     ai_key = f"ai_btn_{st.session_state.button_click_counter}"
