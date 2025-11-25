@@ -429,6 +429,9 @@ def process_single_item_agent_1(
     logger: UnifiedLogger
 ) -> Tuple[str, str]:
     """Process single item through Agent 1 (Content Generator)."""
+    import signal
+    import threading
+    
     try:
         logger.log_agent_start('agent_1', mapping_key)
         
@@ -437,8 +440,38 @@ def process_single_item_agent_1(
             'agent_1', ai_helper.language, mapping_key, df
         )
         
-        # Get response (reuse AIHelper)
-        response = ai_helper.get_response(user_prompt, system_prompt)
+        # Validate prompts are not empty
+        if not system_prompt or not user_prompt:
+            logger.logger.warning(f"Empty prompts for {mapping_key}, using fallback")
+            placeholder = f"Content generation skipped for {mapping_key}: No prompts available"
+            return mapping_key, placeholder
+        
+        # Add timeout wrapper for AI call (30 seconds per item)
+        result_container = {'response': None, 'error': None, 'completed': False}
+        
+        def call_ai():
+            try:
+                result_container['response'] = ai_helper.get_response(user_prompt, system_prompt)
+                result_container['completed'] = True
+            except Exception as e:
+                result_container['error'] = e
+                result_container['completed'] = True
+        
+        thread = threading.Thread(target=call_ai)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=30)  # 30 second timeout per AI call
+        
+        if not result_container['completed']:
+            # Timeout occurred
+            logger.logger.error(f"AI call timeout for {mapping_key} after 30 seconds")
+            placeholder = f"Content generation timeout for {mapping_key} (exceeded 30s limit)"
+            return mapping_key, placeholder
+        
+        if result_container['error']:
+            raise result_container['error']
+        
+        response = result_container['response']
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
         # Clean agent output to remove meta-commentary
@@ -463,6 +496,8 @@ def process_single_item_agent_2(
     logger: UnifiedLogger
 ) -> Tuple[str, str]:
     """Process single item through Agent 2 (Value Checker)."""
+    import threading
+    
     try:
         logger.log_agent_start('agent_2', mapping_key)
         
@@ -476,8 +511,30 @@ def process_single_item_agent_2(
             output=agent_1_output
         )
         
-        # Get response (reuse AIHelper)
-        response = ai_helper.get_response(user_prompt, system_prompt)
+        # Add timeout wrapper (30 seconds)
+        result_container = {'response': None, 'error': None, 'completed': False}
+        
+        def call_ai():
+            try:
+                result_container['response'] = ai_helper.get_response(user_prompt, system_prompt)
+                result_container['completed'] = True
+            except Exception as e:
+                result_container['error'] = e
+                result_container['completed'] = True
+        
+        thread = threading.Thread(target=call_ai)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=30)
+        
+        if not result_container['completed']:
+            logger.logger.error(f"AI call timeout for {mapping_key} (agent_2) after 30 seconds")
+            return mapping_key, agent_1_output  # Return previous output on timeout
+        
+        if result_container['error']:
+            raise result_container['error']
+        
+        response = result_container['response']
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
         # Clean agent output to remove meta-commentary
@@ -500,6 +557,8 @@ def process_single_item_agent_3(
     logger: UnifiedLogger
 ) -> Tuple[str, str]:
     """Process single item through Agent 3 (Content Refiner)."""
+    import threading
+    
     try:
         logger.log_agent_start('agent_3', mapping_key)
         
@@ -512,8 +571,30 @@ def process_single_item_agent_3(
             original_length=original_length
         )
         
-        # Get response (reuse AIHelper)
-        response = ai_helper.get_response(user_prompt, system_prompt)
+        # Add timeout wrapper (30 seconds)
+        result_container = {'response': None, 'error': None, 'completed': False}
+        
+        def call_ai():
+            try:
+                result_container['response'] = ai_helper.get_response(user_prompt, system_prompt)
+                result_container['completed'] = True
+            except Exception as e:
+                result_container['error'] = e
+                result_container['completed'] = True
+        
+        thread = threading.Thread(target=call_ai)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=30)
+        
+        if not result_container['completed']:
+            logger.logger.error(f"AI call timeout for {mapping_key} (agent_3) after 30 seconds")
+            return mapping_key, agent_2_output  # Return previous output on timeout
+        
+        if result_container['error']:
+            raise result_container['error']
+        
+        response = result_container['response']
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
         # Clean agent output to remove meta-commentary
@@ -535,6 +616,8 @@ def process_single_item_agent_4(
     logger: UnifiedLogger
 ) -> Tuple[str, str]:
     """Process single item through Agent 4 (Format Checker)."""
+    import threading
+    
     try:
         logger.log_agent_start('agent_4', mapping_key)
         
@@ -544,8 +627,30 @@ def process_single_item_agent_4(
             content=agent_3_output
         )
         
-        # Get response (reuse AIHelper)
-        response = ai_helper.get_response(user_prompt, system_prompt)
+        # Add timeout wrapper (30 seconds)
+        result_container = {'response': None, 'error': None, 'completed': False}
+        
+        def call_ai():
+            try:
+                result_container['response'] = ai_helper.get_response(user_prompt, system_prompt)
+                result_container['completed'] = True
+            except Exception as e:
+                result_container['error'] = e
+                result_container['completed'] = True
+        
+        thread = threading.Thread(target=call_ai)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=30)
+        
+        if not result_container['completed']:
+            logger.logger.error(f"AI call timeout for {mapping_key} (agent_4) after 30 seconds")
+            return mapping_key, agent_3_output  # Return previous output on timeout
+        
+        if result_container['error']:
+            raise result_container['error']
+        
+        response = result_container['response']
         content = response['content'].strip().replace("\n\n", "\n").replace("\n \n", "\n")
         
         # Clean agent output to remove meta-commentary
