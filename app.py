@@ -513,39 +513,33 @@ if st.session_state.dfs is None:
                 key="entity_dropdown"
             )
             
-            # If dropdown changed and has a value, update session state
+            # Use widget value directly - don't set session state with widget key name
+            # Get initial value from session state or dropdown
+            initial_value = st.session_state.get('entity_name', '')
             if selected_entity and selected_entity != prev_dropdown:
-                st.session_state.entity_name = selected_entity
+                initial_value = selected_entity
                 st.session_state.prev_entity_dropdown = selected_entity
             
-            # Get value for text input - prioritize dropdown selection
-            if selected_entity:
-                text_input_value = selected_entity
-                # Update session state to match dropdown (but don't set widget key)
-                if st.session_state.get('entity_name', '') != selected_entity:
-                    st.session_state.entity_name = selected_entity
-            else:
-                # Use existing value if dropdown is empty
-                text_input_value = st.session_state.get('entity_name', '')
-            
-            # Editable text box - use value directly, don't set via session state
+            # Editable text box - widget manages its own state
+            # Use value parameter to set initial value without triggering warning
             entity_name = st.text_input(
                 label="Or type/modify entity name",
-                value=text_input_value,
+                value=initial_value if initial_value else "",
                 placeholder="Enter or modify entity name...",
                 help="Type a custom entity name or modify the selected one",
                 label_visibility="collapsed",
                 key="entity_text_input"
             )
             
-            # Update session state when text changes (user edits) - but only if different
-            if entity_name != st.session_state.get('entity_name', ''):
+            # Update session state from widget value (not the other way around)
+            # This avoids the warning about widget keys
+            if entity_name:
                 st.session_state.entity_name = entity_name
-                # Track if user manually edited
-                if entity_name != selected_entity and selected_entity:
-                    st.session_state.prev_entity_dropdown = selected_entity
-                elif entity_name == selected_entity:
-                    st.session_state.prev_entity_dropdown = selected_entity
+            
+            # Sync dropdown selection to text input - update session state and rerun
+            if selected_entity and selected_entity != prev_dropdown:
+                st.session_state.entity_name = selected_entity
+                st.session_state.prev_entity_dropdown = selected_entity
         else:
             # Initialize if not exists
             if 'entity_name' not in st.session_state:

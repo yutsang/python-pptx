@@ -372,6 +372,118 @@ class PowerPointGenerator:
         
         logger.info(f"Successfully filled shape with {len([l for l in content_lines if l.strip()])} paragraphs")
 
+    def _calculate_max_lines_for_textbox(self, shape):
+        """Calculate maximum lines that can fit in textbox"""
+        if not shape or not hasattr(shape, 'height'):
+            return 35  # Default fallback
+        
+        # Get shape height in EMU (English Metric Units)
+        shape_height_emu = shape.height
+        
+        # Convert EMU to points (1 EMU = 1/914400 inches, 1 inch = 72 points)
+        shape_height_pt = shape_height_emu * 72 / 914400
+        
+        # Account for margins and padding - use maximum space
+        effective_height_pt = shape_height_pt * 0.95  # 95% utilization
+        
+        # Calculate line height based on font size (9pt) and line spacing (1.0)
+        font_size_pt = 9
+        line_spacing = 1.0
+        line_height_pt = font_size_pt * line_spacing
+        
+        # Calculate maximum rows that can fit
+        max_rows = int(effective_height_pt / line_height_pt)
+        
+        return max(25, max_rows)  # At least 25 lines
+    
+    def _calculate_content_lines(self, category: str, mapping_key: str, commentary: str) -> int:
+        """Calculate how many lines a piece of content will take"""
+        lines = 0
+        
+        # Category line (if exists)
+        if category:
+            lines += 1
+        
+        # Key line (grey char + key name + dash + first line of commentary)
+        lines += 1
+        
+        # Commentary lines (estimate based on text length)
+        # Average 50 chars per line for 9pt Arial
+        commentary_lines = commentary.split('\n')
+        for line in commentary_lines:
+            line = line.strip()
+            if line:
+                # Estimate lines needed for this text (50 chars per line)
+                chars_per_line = 50
+                line_count = max(1, (len(line) + chars_per_line - 1) // chars_per_line)
+                lines += line_count
+        
+        return lines
+    
+    def _distribute_content_across_slides(self, structured_data: List[Dict], max_slides: int = 4):
+        """Distribute content across slides based on textbox capacity"""
+        if not structured_data:
+            return []
+        
+        # Find a textbox shape to calculate capacity
+        sample_shape = None
+        for slide in self.presentation.slides:
+            shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
+            if shape:
+                sample_shape = shape
+                break
+        
+        if not sample_shape:
+            # Fallback: try alternative names
+            for slide in self.presentation.slides:
+                for alt_name in ["textMainBullets_L", "textMainBullets_R", "Content Placeholder 2"]:
+                    shape = self.find_shape_by_name(slide.shapes, alt_name)
+                    if shape:
+                        sample_shape = shape
+                        break
+                if sample_shape:
+                    break
+        
+        max_lines_per_slide = self._calculate_max_lines_for_textbox(sample_shape) if sample_shape else 35
+        
+        # Distribute content
+        distribution = []  # List of (slide_idx, [account_data_list])
+        current_slide_idx = 0
+        current_slide_content = []
+        current_slide_lines = 0
+        
+        for account_data in structured_data:
+            category = account_data.get('category', '')
+            mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
+            commentary = account_data.get('commentary', '')
+            
+            content_lines = self._calculate_content_lines(category, mapping_key, commentary)
+            
+            # Check if this fits on current slide
+            if current_slide_lines + content_lines <= max_lines_per_slide and current_slide_idx < max_slides:
+                # Add to current slide
+                current_slide_content.append(account_data)
+                current_slide_lines += content_lines
+            else:
+                # Save current slide if it has content
+                if current_slide_content:
+                    distribution.append((current_slide_idx, current_slide_content))
+                
+                # Start new slide
+                if current_slide_idx < max_slides - 1:
+                    current_slide_idx += 1
+                    current_slide_content = [account_data]
+                    current_slide_lines = content_lines
+                else:
+                    # Max slides reached, stop
+                    break
+        
+        # Add last slide if it has content
+        if current_slide_content:
+            distribution.append((current_slide_idx, current_slide_content))
+        
+        return distribution
+    
     def apply_structured_data_to_slides(self, structured_data: List[Dict], start_slide: int, 
                                        project_name: str, statement_type: str):
         """Apply structured data directly to slides (slides 1-4 for BS, 5-8 for IS)"""
@@ -380,24 +492,50 @@ class PowerPointGenerator:
         
         logger.info(f"Applying {len(structured_data)} accounts to slides starting at {start_slide}")
         
-        # Limit to 4 slides per statement type
-        max_slides = min(len(structured_data), 4)
-        slide_indices = list(range(start_slide - 1, start_slide - 1 + max_slides))  # Convert to 0-based
+        # Distribute content across slides based on textbox capacity (max 4 slides)
+        distribution = self._distribute_content_across_slides(structured_data, max_slides=4)
         
-        for idx, account_data in enumerate(structured_data[:max_slides]):
-            slide_idx = slide_indices[idx]
-            if slide_idx >= len(self.presentation.slides):
-                logger.warning(f"Slide index {slide_idx + 1} exceeds available slides ({len(self.presentation.slides)})")
-                break
+        # Ensure we have enough slides
+        max_slide_idx = max((slide_idx for slide_idx, _ in distribution), default=0)
+        needed_slides = start_slide + max_slide_idx
+        current_slide_count = len(self.presentation.slides)
+        
+        if needed_slides > current_slide_count:
+            # Add slides if needed (use the same layout as existing slides)
+            if current_slide_count > 0:
+                slide_layout = self.presentation.slides[0].slide_layout
+                for _ in range(needed_slides - current_slide_count):
+                    self.presentation.slides.add_slide(slide_layout)
+        
+        # Track which slides are used
+        used_slide_indices = set()
+        
+        # Apply content to slides
+        for slide_idx, account_data_list in distribution:
+            actual_slide_idx = start_slide - 1 + slide_idx  # Convert to 0-based
+            if actual_slide_idx >= len(self.presentation.slides):
+                logger.warning(f"Slide index {actual_slide_idx + 1} exceeds available slides")
+                continue
             
-            slide = self.presentation.slides[slide_idx]
-            account_name = account_data.get('account_name', '')
-            financial_data = account_data.get('financial_data')
-            commentary = account_data.get('commentary', '')
-            summary = account_data.get('summary', '')
-            is_chinese = account_data.get('is_chinese', False)  # Extract is_chinese flag
+            used_slide_indices.add(actual_slide_idx)
+            slide = self.presentation.slides[actual_slide_idx]
             
-            logger.info(f"Processing slide {slide_idx + 1} for account: {account_name}")
+            # Fill table only on first slide of this statement type
+            if slide_idx == 0:
+                # Try to find financial data from first account
+                first_account_data = account_data_list[0] if account_data_list else None
+                financial_data = first_account_data.get('financial_data') if first_account_data else None
+                
+                if financial_data is not None:
+                    table_shape = None
+                    for table_name in ["Table Placeholder", "Table Placeholder 2", "Table"]:
+                        table_shape = self.find_shape_by_name(slide.shapes, table_name)
+                        if table_shape:
+                            logger.info(f"Found table shape '{table_name}' on slide {actual_slide_idx + 1}")
+                            break
+                    
+                    if table_shape:
+                        self._fill_table_placeholder(table_shape, financial_data)
             
             # Update projTitle
             proj_title_shape = self.find_shape_by_name(slide.shapes, "projTitle")
@@ -405,48 +543,13 @@ class PowerPointGenerator:
                 if project_name:
                     proj_title_shape.text_frame.text = project_name
             
-            # Fill Table Placeholder with financial data (only on first slide of each statement type)
-            if idx == 0:  # Only fill table on first slide (slide 1 for BS, slide 5 for IS)
-                # Try different table placeholder names
-                table_shape = None
-                for table_name in ["Table Placeholder", "Table Placeholder 2", "Table"]:
-                    table_shape = self.find_shape_by_name(slide.shapes, table_name)
-                    if table_shape:
-                        logger.info(f"Found table shape '{table_name}' on slide {slide_idx + 1}")
-                        break
-                
-                if table_shape and financial_data is not None:
-                    self._fill_table_placeholder(table_shape, financial_data)
-                elif financial_data is not None:
-                    logger.warning(f"Table Placeholder not found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
-            
-            # Fill coSummaryShape with per-page summary (summary of commentary on this page)
-            summary_shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
-            if summary_shape and summary_shape.has_text_frame:
-                summary_shape.text_frame.clear()
-                # Generate per-page summary from commentary (not just first 200 chars)
-                page_summary = self._generate_page_summary(commentary, is_chinese)
-                if not page_summary and summary:
-                    # Fallback to provided summary if page summary generation fails
-                    page_summary = summary
-                
-                if page_summary:
-                    p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
-                    p.text = page_summary
-                    for run in p.runs:
-                        run.font.size = get_font_size_for_text(page_summary, force_chinese_mode=is_chinese)
-                        run.font.name = get_font_name_for_text(page_summary)
-                    logger.info(f"Filled coSummaryShape with per-page summary on slide {slide_idx + 1}")
-            
-            # Fill textMainBullets with commentary (AI output) - improved from backup method
+            # Fill textMainBullets with all accounts for this slide
             bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
             if not bullets_shape:
-                # Try alternative names from backup method
                 for alt_name in ["textMainBullets_L", "textMainBullets_R", "Content Placeholder 2"]:
                     bullets_shape = self.find_shape_by_name(slide.shapes, alt_name)
                     if bullets_shape:
                         break
-                # Fallback: try to find any text shape
                 if not bullets_shape:
                     for shape in slide.shapes:
                         if hasattr(shape, 'text_frame'):
@@ -458,21 +561,99 @@ class PowerPointGenerator:
                 tf.clear()
                 tf.word_wrap = True
                 from pptx.enum.text import MSO_VERTICAL_ANCHOR
-                tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP  # Ensure text starts from top
+                tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
                 
-                # Get category and mapping_key from account_data
-                category = account_data.get('category', '')
-                mapping_key = account_data.get('mapping_key', account_name)
-                
-                if commentary:
-                    # Format commentary with category as first level, then key name with grey char
+                # Fill with all accounts for this slide
+                for account_idx, account_data in enumerate(account_data_list):
+                    category = account_data.get('category', '')
+                    mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
+                    commentary = account_data.get('commentary', '')
+                    is_chinese = account_data.get('is_chinese', False)
+                    
+                    # Fill commentary with category and key formatting
                     self._fill_text_main_bullets_with_category_and_key(
                         tf, category, mapping_key, commentary, is_chinese
                     )
+                    
+                    # Add spacing between accounts (except for last one)
+                    if account_idx < len(account_data_list) - 1:
+                        p_spacer = tf.add_paragraph()
+                        p_spacer.space_after = Pt(6)
                 
-                logger.info(f"Filled textMainBullets with commentary on slide {slide_idx + 1}")
-            else:
-                logger.warning(f"textMainBullets not found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
+                # Generate combined summary for this slide from all accounts
+                all_summaries = []
+                for account_data in account_data_list:
+                    summary = account_data.get('summary', '')
+                    if summary:
+                        all_summaries.append(summary)
+                
+                # Fill coSummaryShape with combined summary
+                summary_shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
+                if summary_shape and summary_shape.has_text_frame:
+                    summary_shape.text_frame.clear()
+                    if all_summaries:
+                        combined_summary = ' '.join(all_summaries[:3])  # First 3 summaries
+                        if len(combined_summary) > 200:
+                            combined_summary = combined_summary[:200] + "..."
+                        p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
+                        p.text = combined_summary
+                        is_chinese = account_data_list[0].get('is_chinese', False) if account_data_list else False
+                        for run in p.runs:
+                            run.font.size = get_font_size_for_text(combined_summary, force_chinese_mode=is_chinese)
+                            run.font.name = get_font_name_for_text(combined_summary)
+                
+                logger.info(f"Filled slide {actual_slide_idx + 1} with {len(account_data_list)} accounts")
+        
+        # Remove unused slides for this statement type
+        statement_slide_range = list(range(start_slide - 1, min(start_slide + 3, len(self.presentation.slides))))
+        unused_slides = [idx for idx in statement_slide_range if idx not in used_slide_indices]
+        
+        if unused_slides:
+            self._remove_slides(unused_slides)
+            logger.info(f"Removed {len(unused_slides)} unused slides for {statement_type}")
+    
+    def _remove_slides(self, slide_indices):
+        """Remove slides by indices (from backup method)"""
+        # Sort in reverse order to maintain indices while removing
+        for slide_idx in sorted(slide_indices, reverse=True):
+            if slide_idx < len(self.presentation.slides):
+                try:
+                    # Use XML-based removal (from backup method)
+                    xml_slides = self.presentation.slides._sldIdLst
+                    slides = list(xml_slides)
+                    # Remove relationship
+                    rId = slides[slide_idx].rId
+                    self.presentation.part.drop_rel(rId)
+                    # Remove from XML
+                    xml_slides.remove(slides[slide_idx])
+                    logger.info(f"Removed slide {slide_idx + 1}")
+                except Exception as e:
+                    logger.warning(f"Could not remove slide {slide_idx + 1}: {e}")
+            
+            logger.info(f"Processing slide {slide_idx + 1} for account: {account_name}")
+            
+            # Update projTitle
+            proj_title_shape = self.find_shape_by_name(slide.shapes, "projTitle")
+            if proj_title_shape and proj_title_shape.has_text_frame:
+                if project_name:
+                    proj_title_shape.text_frame.text = project_name
+            
+            # Fill Table Placeholder with financial data (only on first slide of each statement type)
+            # For each account, fill its own financial data table
+            if financial_data is not None:
+                # Try different table placeholder names
+                table_shape = None
+                for table_name in ["Table Placeholder", "Table Placeholder 2", "Table"]:
+                    table_shape = self.find_shape_by_name(slide.shapes, table_name)
+                    if table_shape:
+                        logger.info(f"Found table shape '{table_name}' on slide {slide_idx + 1}")
+                        break
+                
+                if table_shape:
+                    self._fill_table_placeholder(table_shape, financial_data)
+                else:
+                    logger.warning(f"Table Placeholder not found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
+            
     
     def _fill_table_placeholder(self, shape, df):
         """Fill table placeholder with DataFrame data, preserving original formatting (from backup method)"""
