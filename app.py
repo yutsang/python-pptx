@@ -432,10 +432,22 @@ if st.session_state.dfs is None:
     
     with col_entity:
         st.markdown("**🏢 Entity Name**")
-        # Get temp_path from sidebar state
+        # Get temp_path from sidebar state or default
         temp_path = st.session_state.get('temp_path', None)
+        if not temp_path:
+            # Check if default file exists
+            default_path = "databook.xlsx"
+            if os.path.exists(default_path):
+                temp_path = default_path
+                st.session_state.temp_path = default_path
+        
         if temp_path and os.path.exists(temp_path):
             entity_options = get_entity_names(temp_path)
+            # Initialize entity_name in session state if not exists
+            if 'entity_name' not in st.session_state:
+                st.session_state.entity_name = ""
+            
+            # Dropdown for selection
             selected_entity = st.selectbox(
                 label="Select entity from list",
                 options=[""] + entity_options,
@@ -443,41 +455,72 @@ if st.session_state.dfs is None:
                 label_visibility="collapsed",
                 key="entity_dropdown"
             )
+            
+            # Update session state when dropdown changes
+            if selected_entity:
+                st.session_state.entity_name = selected_entity
+            
+            # Editable text box
             entity_name = st.text_input(
                 label="Or type/modify entity name",
-                value=selected_entity if selected_entity else "",
+                value=st.session_state.entity_name,
                 placeholder="Enter or modify entity name...",
                 help="Type a custom entity name or modify the selected one",
                 label_visibility="collapsed",
                 key="entity_text_input"
             )
+            # Update session state when text changes
+            if entity_name != st.session_state.entity_name:
+                st.session_state.entity_name = entity_name
         else:
+            # Initialize if not exists
+            if 'entity_name' not in st.session_state:
+                st.session_state.entity_name = ""
             entity_name = st.text_input(
                 label="Entity name",
+                value=st.session_state.entity_name,
                 placeholder="Enter entity name...",
                 label_visibility="collapsed",
                 key="entity_text_input"
             )
+            if entity_name != st.session_state.entity_name:
+                st.session_state.entity_name = entity_name
     
     with col_sheet:
         st.markdown("**📊 Financial Statement Sheet**")
+        # Get temp_path from sidebar state or default
         temp_path = st.session_state.get('temp_path', None)
+        if not temp_path:
+            # Check if default file exists
+            default_path = "databook.xlsx"
+            if os.path.exists(default_path):
+                temp_path = default_path
+                st.session_state.temp_path = default_path
+        
         if temp_path and os.path.exists(temp_path):
             sheet_options = get_financial_sheets(temp_path)
             if sheet_options:
+                # Initialize selected_sheet in session state if not exists
+                if 'selected_sheet' not in st.session_state:
+                    st.session_state.selected_sheet = sheet_options[0] if sheet_options else None
+                
                 selected_sheet = st.selectbox(
                     label="Select sheet",
                     options=sheet_options,
+                    index=0 if st.session_state.selected_sheet not in sheet_options else sheet_options.index(st.session_state.selected_sheet),
                     help="Sheet containing both BS and IS",
                     label_visibility="collapsed",
                     key="sheet_select"
                 )
+                st.session_state.selected_sheet = selected_sheet
             else:
                 st.warning("No sheets found")
                 selected_sheet = None
+                st.session_state.selected_sheet = None
         else:
-            st.info("Upload file first")
+            st.info("Please select or upload a file")
             selected_sheet = None
+            st.session_state.selected_sheet = None
     
     # Process button
     if st.button("🚀 Process Data", type="primary", use_container_width=True, key="process_data_main"):
@@ -496,7 +539,7 @@ with st.sidebar:
     
     # File upload with default
     st.markdown("**📁 Databook File**")
-    use_default = st.checkbox("Use default (databook.xlsx)", value=True)
+    use_default = st.checkbox("Use default (databook.xlsx)", value=True, key="use_default_file")
     
     if use_default:
         temp_path = "databook.xlsx"
@@ -506,12 +549,14 @@ with st.sidebar:
         else:
             st.error(f"❌ File not found: {temp_path}")
             temp_path = None
-            st.session_state.temp_path = None
+            if 'temp_path' in st.session_state:
+                del st.session_state.temp_path
     else:
         uploaded_file = st.file_uploader(
             "Upload Excel",
             type=['xlsx', 'xls'],
-            help="Upload your financial databook"
+            help="Upload your financial databook",
+            key="file_uploader"
         )
         
         if uploaded_file:
@@ -523,7 +568,8 @@ with st.sidebar:
             st.session_state.temp_path = temp_path
         else:
             temp_path = None
-            st.session_state.temp_path = None
+            if 'temp_path' in st.session_state:
+                del st.session_state.temp_path
     
     # Model selection (radio buttons)
     if temp_path:
@@ -547,6 +593,13 @@ with st.sidebar:
 if st.session_state.get('process_data_clicked', False):
     st.session_state.process_data_clicked = False
     temp_path = st.session_state.get('temp_path', None)
+    # If no temp_path but default exists, use it
+    if not temp_path:
+        default_path = "databook.xlsx"
+        if os.path.exists(default_path):
+            temp_path = default_path
+            st.session_state.temp_path = default_path
+    
     entity_name = st.session_state.get('entity_name', '')
     selected_sheet = st.session_state.get('selected_sheet', None)
     
