@@ -363,6 +363,12 @@ def init_session_state():
         st.session_state.button_click_counter = 0
     if 'pptx_ready' not in st.session_state:
         st.session_state.pptx_ready = False
+    if 'temp_path' not in st.session_state:
+        st.session_state.temp_path = None
+    if 'selected_sheet' not in st.session_state:
+        st.session_state.selected_sheet = None
+    if 'prev_entity_dropdown' not in st.session_state:
+        st.session_state.prev_entity_dropdown = ''
 
 
 def get_entity_names(file_path: str) -> List[str]:
@@ -1011,17 +1017,34 @@ else:
                 import threading
                 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
                 
+                # Get values from session state before passing to thread (capture before thread)
+                workbook_list = st.session_state.workbook_list if 'workbook_list' in st.session_state else []
+                dfs = st.session_state.dfs if 'dfs' in st.session_state else {}
+                model_type = st.session_state.get('model_type', 'local')
+                language = st.session_state.get('language', 'Eng')
+                # mappings is already loaded above in the outer scope
+                
+                # Validate required data
+                if not workbook_list:
+                    st.error("❌ No accounts to process. Please process data first.")
+                    st.stop()
+                
+                if not dfs:
+                    st.error("❌ No data available. Please process data first.")
+                    st.stop()
+                
                 def run_ai_with_timeout(timeout_seconds=10):
                     """Run AI pipeline with timeout"""
                     result_container = {'result': None, 'error': None, 'completed': False}
                     
                     def run_ai():
                         try:
+                            # Use captured variables from outer scope
                             result_container['result'] = run_ai_pipeline_with_progress(
-                                mapping_keys=st.session_state.workbook_list,
-                                dfs=st.session_state.dfs,
-                                model_type=st.session_state.get('model_type', 'local'),
-                                language=st.session_state.language,
+                                mapping_keys=workbook_list,
+                                dfs=dfs,
+                                model_type=model_type,
+                                language=language,
                                 use_multithreading=True,
                                 progress_callback=update_progress
                             )
