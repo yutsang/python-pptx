@@ -956,27 +956,32 @@ class PowerPointGenerator:
             except:
                 pass
         
-        # Add key name with filled round bullet + space + key name (black bold) + "-" (not bold) + plain text
+        # Add key name with grey char + space + key name (black bold) + "-" (not bold) + plain text
         p_key = text_frame.add_paragraph()
-        p_key.level = 1  # Use level 1 for bullet (filled round bullet)
+        p_key.level = 0  # No bullet level, we'll use grey character
         try:
-            # Set bullet formatting explicitly
-            # In python-pptx, setting level > 0 should automatically enable bullets
-            # But we need to ensure the paragraph format is correct
-            p_key.left_indent = Inches(0.15)  # 0.15" indent for text
-            p_key.first_line_indent = Inches(-0.15)  # 0.15" special hanging (bullet at 0, text starts at 0.15")
+            # Set formatting
+            p_key.left_indent = Inches(0.15)  # 0.15" indent
+            p_key.first_line_indent = Inches(-0.15)  # 0.15" special hanging
             p_key.space_before = Pt(0)
             p_key.space_after = Pt(6)  # 6pt spacing after
             p_key.line_spacing = 1.0
-            
-            # Try to explicitly set bullet style if possible
-            # Note: python-pptx doesn't have direct bullet style control, but level > 0 should work
-            # The bullet character and style are determined by the template's default bullet format
         except Exception as e:
             logger.warning(f"Could not set paragraph formatting: {e}")
             pass
         
-        # Key name (black bold Arial 9) - no grey char, use PPTX bullet instead
+        # Grey char (U+25A0) + space
+        run_bullet = p_key.add_run()
+        run_bullet.text = '\u25A0 '  # U+25A0 (black square) + space
+        run_bullet.font.size = Pt(9)
+        run_bullet.font.name = 'Arial'
+        run_bullet.font.bold = False
+        try:
+            run_bullet.font.color.rgb = RGBColor(128, 128, 128)  # Grey
+        except:
+            pass
+        
+        # Key name (black bold Arial 9)
         run_key = p_key.add_run()
         run_key.text = display_name
         run_key.font.size = Pt(9)
