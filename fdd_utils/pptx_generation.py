@@ -61,7 +61,7 @@ def detect_chinese_text(text: str, force_chinese_mode: bool = False) -> bool:
     return (chinese_chars / total_chars) > 0.3
 
 
-def get_font_size_for_text(text: str, base_size: int = Pt(9), force_chinese_mode: bool = False) -> Pt:
+def get_font_size_for_text(text: str, base_size: int = 9, force_chinese_mode: bool = False) -> Pt:
     """Get appropriate font size for text content"""
     is_chinese = detect_chinese_text(text, force_chinese_mode)
 
