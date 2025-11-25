@@ -200,14 +200,16 @@ def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='
                 financial_data = df
         
         # Check if account has all zeros - exclude from display if so
+        # Round to 0.01 and check if rounded value is 0 to avoid floating point issues
         has_non_zero_balance = False
         if financial_data is not None and not financial_data.empty:
             # Check all numeric columns (skip first column which is usually account names)
             numeric_cols = financial_data.select_dtypes(include=[float, int]).columns
             if len(numeric_cols) > 0:
-                # Check if any value is non-zero
+                # Check if any value is non-zero after rounding to 0.01
                 for col in numeric_cols:
-                    if (financial_data[col].abs() > 0.01).any():  # Allow for small rounding errors
+                    rounded_values = (financial_data[col] * 100).round() / 100  # Round to 0.01
+                    if (rounded_values.abs() > 0.01).any():
                         has_non_zero_balance = True
                         break
         else:
@@ -723,6 +725,14 @@ with st.sidebar:
             label_visibility="collapsed",
             key="model_type"
         )
+        
+        # Show current model in green
+        model_display = {
+            'local': 'Local Model',
+            'openai': 'OpenAI GPT',
+            'deepseek': 'DeepSeek'
+        }
+        st.markdown(f"<p style='color: green; font-weight: bold;'>Currently using: {model_display.get(st.session_state.model_type, st.session_state.model_type.upper())}</p>", unsafe_allow_html=True)
 
 # Process data if button was clicked
 if st.session_state.get('process_data_clicked', False):

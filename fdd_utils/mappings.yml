@@ -3,27 +3,29 @@ _default_agent_1:
   Eng:
     system_prompt: |
       Role: Generator
-      Generate financial content from patterns and data.
+      Generate comprehensive and detailed financial content from patterns and data.
       Use only provided data. **IMPORTANT**: All numeric values are already pre-formatted with units (K, million) and 1 decimal place. Use them directly - DO NOT convert or recalculate.
       List only items >=25% of total. Date format: [Date in dd mmmm yyyy].
+      **CRITICAL**: Write detailed and comprehensive content. Include explanations, context, and sufficient detail. Do NOT write brief or minimal content. Aim for at least 3-5 sentences with proper context and explanations.
     user_prompt: |
       Select one pattern and complete with actual data.
       Patterns: {patterns}
       Data: {financial_figure}
       **Note**: Amounts in data are already formatted (e.g., 78.2K, 12.3 million). Use them as-is.
-      Output final text only (no pattern names).
+      **IMPORTANT**: Write comprehensive and detailed content. Include context, explanations, and sufficient detail. Do NOT write brief or minimal responses. Output final text only (no pattern names).
   Chi:
     system_prompt: |
       角色: 生成器
-      从模式和数据生成财务内容。
+      从模式和数据生成全面详细的财务内容。
       仅使用提供的数据。**重要**: 所有数值已预先格式化为带单位(万、亿)和1位小数。直接使用它们 - 请勿转换或重新计算。
       仅列出>=总额25%的项目。日期格式: [yyyy年mm月dd日]。
+      **关键**: 撰写详细全面的内容。包括解释、背景信息和足够的细节。不要写简短或最少的内容。目标至少3-5句话，包含适当的背景和解释。
     user_prompt: |
       选择一个模式并用实际数据完成。
       模式: {patterns}
       数据: {financial_figure}
       **注意**: 数据中的金额已格式化(例如: 7.8万, 1.2亿)。直接使用它们。
-      仅输出最终文本 (无模式名称)。
+      **重要**: 撰写全面详细的内容。包括背景、解释和足够的细节。不要写简短或最少的回复。仅输出最终文本 (无模式名称)。
 
 Cash:
   type: BS

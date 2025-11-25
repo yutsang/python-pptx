@@ -608,7 +608,8 @@ class PowerPointGenerator:
                             category_text = category_translations.get(category, category)
                         
                         # Add "(continued)" or "(续)" if this slide needs continuation
-                        if needs_continuation and account_idx == 0:  # First account on this slide
+                        # BUT NOT on the first category of the first slide (account_idx == 0 and current_category is None)
+                        if needs_continuation and account_idx == 0 and current_category is not None:  # Not first category
                             cont_text = " (续)" if (is_chinese or is_chinese_databook) else " (continued)"
                             category_text += cont_text
                         
@@ -704,8 +705,14 @@ class PowerPointGenerator:
                     import traceback
                     logger.debug(traceback.format_exc())
     
-    def _fill_table_placeholder(self, shape, df):
-        """Fill table placeholder with DataFrame data, preserving original formatting"""
+    def _fill_table_placeholder(self, shape, df, table_name: str = None, currency_unit: str = None):
+        """Fill table placeholder with DataFrame data, preserving original formatting
+        Args:
+            shape: Table shape or placeholder
+            df: DataFrame with data
+            table_name: Name of the table (e.g., "示意性调整后资产负债表 - xxxx")
+            currency_unit: Currency unit (e.g., "人民币千元" or "CNY'000") to replace "Description"
+        """
         try:
             # Check if shape is a TablePlaceholder (textbox placeholder)
             from pptx.shapes.placeholder import TablePlaceholder
@@ -785,8 +792,56 @@ class PowerPointGenerator:
                                 'font_color': run.font.color.rgb if hasattr(run.font.color, 'rgb') and run.font.color.rgb else None
                             }
                 
-                # Clear existing content but preserve formatting
-                for row in range(len(table.rows)):
+                # Adjust column widths: make first column (description) 1.6x wider
+                if len(table.columns) > 0:
+                    try:
+                        # Get current width of first column
+                        first_col_width = table.columns[0].width
+                        # Set first column to 1.6x wider
+                        table.columns[0].width = int(first_col_width * 1.6)
+                        # Adjust other columns proportionally if needed
+                    except:
+                        pass
+                
+                # Make all row heights narrower
+                try:
+                    from pptx.util import Inches
+                    narrow_height = Inches(0.3)  # Narrower row height
+                    for row in table.rows:
+                        row.height = narrow_height
+                except:
+                    pass
+                
+                # Add table name as first row if provided
+                if table_name:
+                    # Insert a new row at the top for table name
+                    try:
+                        name_row = table.rows[0]  # Use first row for name
+                        # Merge all cells in first row for table name
+                        if len(table.columns) > 1:
+                            name_row.cells[0].merge(name_row.cells[len(table.columns) - 1])
+                        name_cell = name_row.cells[0]
+                        name_cell.text = table_name
+                        # Format table name: Arial 9, bold, centered
+                        if name_cell.text_frame.paragraphs:
+                            p = name_cell.text_frame.paragraphs[0]
+                            p.alignment = 1  # Center alignment
+                            if p.runs:
+                                run = p.runs[0]
+                            else:
+                                run = p.add_run()
+                            run.font.name = 'Arial'
+                            run.font.size = Pt(9)
+                            run.font.bold = True
+                        # Shift data down - we'll use rows starting from index 1
+                        data_start_row = 1
+                    except:
+                        data_start_row = 0
+                else:
+                    data_start_row = 0
+                
+                # Clear existing content but preserve formatting (skip name row if exists)
+                for row in range(data_start_row, len(table.rows)):
                     for col in range(len(table.columns)):
                         if row < len(table.rows) and col < len(table.columns):
                             cell = table.cell(row, col)
@@ -794,10 +849,15 @@ class PowerPointGenerator:
                 
                 # Fill header row with formatting - Arial 9, bold, highlighted
                 max_cols = min(len(df.columns), len(table.columns))
+                header_row_idx = data_start_row
                 for col_idx, col_name in enumerate(df.columns[:max_cols]):
                     if col_idx < len(table.columns):
-                        cell = table.cell(0, col_idx)
-                        cell.text = str(col_name)
+                        cell = table.cell(header_row_idx, col_idx)
+                        # Replace "Description" with currency unit if found
+                        if currency_unit and (col_name.lower() == 'description' or '描述' in str(col_name) or '项目' in str(col_name)):
+                            cell.text = currency_unit
+                        else:
+                            cell.text = str(col_name)
                         # Apply header formatting: Arial 9, bold, highlighted background
                         if cell.text_frame.paragraphs:
                             if cell.text_frame.paragraphs[0].runs:
@@ -817,13 +877,14 @@ class PowerPointGenerator:
                             except:
                                 pass
                         
-                        logger.debug(f"Filled header cell {col_idx}: {col_name}")
+                        logger.debug(f"Filled header cell {col_idx}: {cell.text}")
                 
                 # Fill data rows with formatting - show ALL rows (no limit)
                 # If table has fewer rows than data, we need to add rows or show all available
                 max_rows = len(df)  # Show all rows
-                # Ensure we have enough rows in the table
-                while len(table.rows) - 1 < max_rows:
+                # Ensure we have enough rows in the table (account for name row if exists)
+                rows_needed = max_rows + data_start_row + 1  # +1 for header row
+                while len(table.rows) < rows_needed:
                     # Add a new row by copying the last row's format
                     last_row_idx = len(table.rows) - 1
                     new_row = table.rows.add_row()
@@ -852,7 +913,7 @@ class PowerPointGenerator:
                 
                 # Now fill all rows with Arial 9 font
                 # Check for title, date, total, and subtotal rows to highlight
-                for row_idx in range(min(max_rows, len(table.rows) - 1)):
+                for row_idx in range(min(max_rows, len(table.rows) - data_start_row - 1)):
                     df_row = df.iloc[row_idx]
                     first_col_value = str(df_row.iloc[0]) if len(df_row) > 0 else ""
                     
@@ -864,9 +925,11 @@ class PowerPointGenerator:
                     if any(keyword in first_col_lower for keyword in special_keywords):
                         is_special_row = True
                     
+                    # Data row index = header_row_idx + 1 + row_idx
+                    data_row_idx = header_row_idx + 1 + row_idx
                     for col_idx, col_name in enumerate(df.columns[:max_cols]):
                         if col_idx < len(table.columns):
-                            cell = table.cell(row_idx + 1, col_idx)
+                            cell = table.cell(data_row_idx, col_idx)
                             value = df_row[col_name]
                             
                             # Format numbers (from backup method)
@@ -1198,15 +1261,15 @@ class PowerPointGenerator:
             lines_added += 1
     
     def _generate_ai_summary(self, commentary: str, is_chinese: bool) -> str:
-        """Generate AI summary from page commentary"""
+        """Generate AI summary from page commentary - limit to 200 characters in prompt"""
         try:
             from fdd_utils.ai_helper import AIHelper
             
-            # Create summary prompt
+            # Create summary prompt with explicit 200 character limit
             if is_chinese:
-                prompt = f"请为以下内容生成一个简洁的摘要（不超过200字）：\n\n{commentary[:2000]}"
+                prompt = f"请为以下内容生成一个简洁的摘要，严格限制在200个字符以内（包括标点符号），不要超过200字符：\n\n{commentary[:2000]}"
             else:
-                prompt = f"Please generate a concise summary (max 200 words) for the following content:\n\n{commentary[:2000]}"
+                prompt = f"Please generate a concise summary, strictly limited to 200 characters (including punctuation), do not exceed 200 characters:\n\n{commentary[:2000]}"
             
             # Call AI
             ai_helper = AIHelper()
@@ -1214,7 +1277,7 @@ class PowerPointGenerator:
             
             if response and response.strip():
                 summary = response.strip()
-                # Limit to 200 characters
+                # Trust AI to follow the limit, but trim if it exceeds
                 if len(summary) > 200:
                     summary = summary[:197] + "..."
                 return summary
@@ -1299,7 +1362,38 @@ class PowerPointGenerator:
             bs_df = bs_is_results.get('balance_sheet')
             is_df = bs_is_results.get('income_statement')
             
+            # Extract table names and currency units from databook
+            # Try to find table name and currency from the sheet
+            bs_table_name = None
+            is_table_name = None
+            currency_unit = None
+            
+            try:
+                # Read the Excel file to find table names and currency
+                excel_df = pd.read_excel(excel_path, sheet_name=sheet_name, header=None)
+                # Look for table name patterns (e.g., "示意性调整后资产负债表")
+                for idx, row in excel_df.iterrows():
+                    row_text = ' '.join([str(cell) for cell in row if pd.notna(cell)])
+                    if '资产负债表' in row_text or 'Balance Sheet' in row_text:
+                        # Extract table name (might include entity name)
+                        bs_table_name = row_text.strip()
+                        if project_name:
+                            bs_table_name = f"{bs_table_name} - {project_name}"
+                    if '利润表' in row_text or 'Income Statement' in row_text:
+                        is_table_name = row_text.strip()
+                        if project_name:
+                            is_table_name = f"{is_table_name} - {project_name}"
+                    # Look for currency unit
+                    if '人民币千元' in row_text or "CNY'000" in row_text or "CNY 000" in row_text:
+                        if '人民币千元' in row_text:
+                            currency_unit = '人民币千元'
+                        elif "CNY'000" in row_text or "CNY 000" in row_text:
+                            currency_unit = "CNY'000"
+            except:
+                pass
+            
             logger.info(f"Extracted BS: {bs_df.shape if bs_df is not None else 'None'}, IS: {is_df.shape if is_df is not None else 'None'}")
+            logger.info(f"Table names - BS: {bs_table_name}, IS: {is_table_name}, Currency: {currency_unit}")
             
             # Embed BS table to slide 0 (page 1)
             if bs_df is not None and not bs_df.empty and len(self.presentation.slides) > 0:
@@ -1314,7 +1408,7 @@ class PowerPointGenerator:
                 
                 if table_shape:
                     logger.info(f"Found table shape on slide 1, embedding BS table ({bs_df.shape})")
-                    self._fill_table_placeholder(table_shape, bs_df)
+                    self._fill_table_placeholder(table_shape, bs_df, table_name=bs_table_name, currency_unit=currency_unit)
                 else:
                     logger.warning(f"Table Placeholder not found on slide 1 for BS table")
             
@@ -1357,7 +1451,7 @@ class PowerPointGenerator:
                     if table_shape:
                         logger.info(f"✅ Found table shape on slide {is_slide_idx + 1}, embedding IS table ({is_df.shape})")
                         logger.info(f"Table shape type: {type(table_shape)}, has_table: {hasattr(table_shape, 'table')}")
-                        self._fill_table_placeholder(table_shape, is_df)
+                        self._fill_table_placeholder(table_shape, is_df, table_name=is_table_name, currency_unit=currency_unit)
                     else:
                         logger.error(f"❌ Table Placeholder not found on slide {is_slide_idx + 1} for IS table")
                         logger.error(f"Available shapes: {[s.name if hasattr(s, 'name') else f'{type(s).__name__}' for s in is_slide.shapes]}")
