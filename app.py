@@ -199,6 +199,28 @@ def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='
             if not df.empty:
                 financial_data = df
         
+        # Check if account has all zeros - exclude from display if so
+        has_non_zero_balance = False
+        if financial_data is not None and not financial_data.empty:
+            # Check all numeric columns (skip first column which is usually account names)
+            numeric_cols = financial_data.select_dtypes(include=[float, int]).columns
+            if len(numeric_cols) > 0:
+                # Check if any value is non-zero
+                for col in numeric_cols:
+                    if (financial_data[col].abs() > 0.01).any():  # Allow for small rounding errors
+                        has_non_zero_balance = True
+                        break
+        else:
+            # If no financial data, include it (might be a header or total row)
+            has_non_zero_balance = True
+        
+        # Skip accounts with all zero balances
+        if not has_non_zero_balance:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Skipping account {account_key} ({mapping_key}) - all balances are zero")
+            continue
+        
         # Detect if content is Chinese
         from fdd_utils.pptx_generation import detect_chinese_text
         commentary_text = str(final_content).strip() if final_content and str(final_content).strip() else f"[No content generated for {account_key}]"

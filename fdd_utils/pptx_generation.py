@@ -667,15 +667,16 @@ class PowerPointGenerator:
                 
                 logger.info(f"Filled slide {actual_slide_idx + 1} with {len(account_data_list)} accounts")
         
-        # Remove unused slides for this statement type
-        # Slides range: start_slide to start_slide + 3 (4 slides total, 0-indexed: start_slide-1 to start_slide+2)
+        # Note: Unused slides will be removed at the end, after all content and tables are embedded
+        # Store unused slides for later removal
         statement_slide_range = list(range(start_slide - 1, min(start_slide + 3, len(self.presentation.slides))))
         unused_slides = [idx for idx in statement_slide_range if idx not in used_slide_indices]
-        
         if unused_slides:
-            logger.info(f"Found {len(unused_slides)} unused slides for {statement_type}: {[idx + 1 for idx in unused_slides]}")
-            self._remove_slides(unused_slides)
-            logger.info(f"Removed {len(unused_slides)} unused slides for {statement_type}")
+            # Store for later removal - don't remove now
+            if not hasattr(self, '_unused_slides_to_remove'):
+                self._unused_slides_to_remove = []
+            self._unused_slides_to_remove.extend(unused_slides)
+            logger.info(f"Marked {len(unused_slides)} unused slides for {statement_type} for later removal: {[idx + 1 for idx in unused_slides]}")
     
     def _remove_slides(self, slide_indices):
         """Remove slides by indices (from backup method)"""
@@ -791,34 +792,31 @@ class PowerPointGenerator:
                             cell = table.cell(row, col)
                             cell.text = ""
                 
-                # Fill header row with formatting
+                # Fill header row with formatting - Arial 9, bold, highlighted
                 max_cols = min(len(df.columns), len(table.columns))
                 for col_idx, col_name in enumerate(df.columns[:max_cols]):
                     if col_idx < len(table.columns):
                         cell = table.cell(0, col_idx)
                         cell.text = str(col_name)
-                        # Apply header formatting
-                        if (0, col_idx) in original_formats and cell.text_frame.paragraphs:
-                            format_info = original_formats[(0, col_idx)]
+                        # Apply header formatting: Arial 9, bold, highlighted background
+                        if cell.text_frame.paragraphs:
                             if cell.text_frame.paragraphs[0].runs:
                                 run = cell.text_frame.paragraphs[0].runs[0]
                             else:
                                 run = cell.text_frame.paragraphs[0].add_run()
                             
-                            if format_info['font_name']:
-                                run.font.name = format_info['font_name']
-                            if format_info['font_size']:
-                                run.font.size = format_info['font_size']
-                            if format_info['font_bold'] is not None:
-                                run.font.bold = format_info['font_bold']
-                            if format_info['font_italic'] is not None:
-                                run.font.italic = format_info['font_italic']
-                            if format_info['font_color']:
-                                try:
-                                    run.font.color.rgb = format_info['font_color']
-                                except:
-                                    from pptx.dml.color import RGBColor
-                                    run.font.color.rgb = RGBColor(0, 0, 0)
+                            run.font.name = 'Arial'
+                            run.font.size = Pt(9)
+                            run.font.bold = True
+                            
+                            # Highlight header row with light grey background
+                            try:
+                                from pptx.dml.color import RGBColor
+                                cell.fill.solid()
+                                cell.fill.fore_color.rgb = RGBColor(217, 217, 217)  # Light grey
+                            except:
+                                pass
+                        
                         logger.debug(f"Filled header cell {col_idx}: {col_name}")
                 
                 # Fill data rows with formatting - show ALL rows (no limit)
@@ -852,9 +850,20 @@ class PowerPointGenerator:
                             except:
                                 pass
                 
-                # Now fill all rows
+                # Now fill all rows with Arial 9 font
+                # Check for title, date, total, and subtotal rows to highlight
                 for row_idx in range(min(max_rows, len(table.rows) - 1)):
                     df_row = df.iloc[row_idx]
+                    first_col_value = str(df_row.iloc[0]) if len(df_row) > 0 else ""
+                    
+                    # Check if this is a title, date, total, or subtotal row
+                    is_special_row = False
+                    first_col_lower = first_col_value.lower()
+                    special_keywords = ['total', '合计', '总计', '小计', 'subtotal', 'sub-total', 'sub total', 
+                                      'title', '标题', 'date', '日期', '年', '月']
+                    if any(keyword in first_col_lower for keyword in special_keywords):
+                        is_special_row = True
+                    
                     for col_idx, col_name in enumerate(df.columns[:max_cols]):
                         if col_idx < len(table.columns):
                             cell = table.cell(row_idx + 1, col_idx)
@@ -876,29 +885,32 @@ class PowerPointGenerator:
                             else:
                                 cell.text = str(value)
                             
-                            # Apply data row formatting
-                            if (row_idx + 1, col_idx) in original_formats and cell.text_frame.paragraphs:
-                                format_info = original_formats[(row_idx + 1, col_idx)]
+                            # Apply formatting: Arial 9 for all cells
+                            if cell.text_frame.paragraphs:
                                 if cell.text_frame.paragraphs[0].runs:
                                     run = cell.text_frame.paragraphs[0].runs[0]
                                 else:
                                     run = cell.text_frame.paragraphs[0].add_run()
                                 
-                                if format_info['font_name']:
-                                    run.font.name = format_info['font_name']
-                                if format_info['font_size']:
-                                    run.font.size = format_info['font_size']
-                                if format_info['font_bold'] is not None:
-                                    run.font.bold = format_info['font_bold']
-                                if format_info['font_italic'] is not None:
-                                    run.font.italic = format_info['font_italic']
-                                if format_info['font_color']:
-                                    try:
-                                        run.font.color.rgb = format_info['font_color']
-                                    except:
-                                        from pptx.dml.color import RGBColor
-                                        run.font.color.rgb = RGBColor(0, 0, 0)
-                    logger.debug(f"Filled table row {row_idx + 1}")
+                                run.font.name = 'Arial'
+                                run.font.size = Pt(9)
+                                
+                                # Bold for special rows (title, date, total, subtotal)
+                                if is_special_row:
+                                    run.font.bold = True
+                                else:
+                                    run.font.bold = False
+                            
+                            # Highlight special rows with light grey background
+                            if is_special_row:
+                                try:
+                                    from pptx.dml.color import RGBColor
+                                    cell.fill.solid()
+                                    cell.fill.fore_color.rgb = RGBColor(217, 217, 217)  # Light grey
+                                except:
+                                    pass
+                    
+                    logger.debug(f"Filled table row {row_idx + 1} (special: {is_special_row})")
                 
                 logger.info(f"✅ Updated table with Excel data (formatting preserved)")
             else:
@@ -1494,10 +1506,18 @@ def export_pptx_from_structured_data_combined(template_path: str, bs_data: List[
             generator.apply_structured_data_to_slides(is_data, 5, project_name, 'IS', is_chinese_databook=is_chinese_databook)
         
         # Embed financial tables: BS to page 1, IS to page 5
-        # IMPORTANT: Do this AFTER applying data and removing unused slides
-        # This ensures the correct slides exist and tables are embedded properly
+        # IMPORTANT: Do this BEFORE removing unused slides
+        # This ensures tables are embedded on the correct slides
         if temp_path and selected_sheet:
             generator.embed_financial_tables(temp_path, selected_sheet, project_name, language)
+        
+        # NOW remove unused slides at the very end, after all content and tables are embedded
+        if hasattr(generator, '_unused_slides_to_remove') and generator._unused_slides_to_remove:
+            # Sort in reverse order to maintain indices while removing
+            unused_slides_sorted = sorted(set(generator._unused_slides_to_remove), reverse=True)
+            logger.info(f"Removing {len(unused_slides_sorted)} unused slides at the end: {[idx + 1 for idx in unused_slides_sorted]}")
+            generator._remove_slides(unused_slides_sorted)
+            logger.info(f"✅ Removed {len(unused_slides_sorted)} unused slides")
         
         # Save presentation
         generator.save(output_path)
