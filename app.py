@@ -204,10 +204,27 @@ def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='
         commentary_text = str(final_content).strip() if final_content and str(final_content).strip() else f"[No content generated for {account_key}]"
         is_chinese = detect_chinese_text(commentary_text)
         
+        # Get proper account name from financial statement for display
+        # If databook is Chinese, use the name from financial statement
+        display_name = mapping_key  # Default to mapping_key
+        if financial_statement_df is not None and not financial_statement_df.empty:
+            # Find the account name from financial statement that matches this mapping_key
+            first_col = financial_statement_df.iloc[:, 0] if len(financial_statement_df.columns) > 0 else None
+            if first_col is not None:
+                for account_name_in_statement in first_col:
+                    if pd.notna(account_name_in_statement):
+                        account_name_str = str(account_name_in_statement).strip()
+                        # Check if this matches our mapping_key or account_key
+                        found_mapping_key = find_mapping_key_for_pptx(account_name_str)
+                        if found_mapping_key == mapping_key or account_name_str == account_key:
+                            display_name = account_name_str
+                            break
+        
         # Structure the data for PPTX
         account_data = {
             'account_name': account_key,
             'mapping_key': mapping_key,
+            'display_name': display_name,  # Proper name from financial statement
             'category': category,
             'financial_data': financial_data,
             'commentary': commentary_text,
@@ -298,11 +315,14 @@ def generate_pptx_presentation():
                 # Generate ONE combined presentation with both BS and IS
                 combined_output_path = os.path.join(output_dir, f"{sanitized_entity}_{timestamp}.pptx")
                 from fdd_utils.pptx_generation import export_pptx_from_structured_data_combined
+                # Pass language info to PPTX generation
+                is_chinese_databook = (language == 'Chn')
                 export_pptx_from_structured_data_combined(
                     template_path, bs_data, is_data, combined_output_path, project_name,
                     language='chinese' if language == 'Chn' else 'english',
                     temp_path=temp_path if 'temp_path' in locals() else st.session_state.get('temp_path'),
-                    selected_sheet=st.session_state.get('selected_sheet')
+                    selected_sheet=st.session_state.get('selected_sheet'),
+                    is_chinese_databook=is_chinese_databook
                 )
                 generated_files = [combined_output_path]
                 output_files = [('Combined', combined_output_path)]

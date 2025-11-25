@@ -421,7 +421,7 @@ class PowerPointGenerator:
         return lines
     
     def _distribute_content_across_slides(self, structured_data: List[Dict], max_slides: int = 4):
-        """Distribute content across slides based on textbox capacity"""
+        """Distribute content across slides based on textbox capacity with page break logic"""
         if not structured_data:
             return []
         
@@ -446,46 +446,56 @@ class PowerPointGenerator:
         
         max_lines_per_slide = self._calculate_max_lines_for_textbox(sample_shape) if sample_shape else 35
         
-        # Distribute content
-        distribution = []  # List of (slide_idx, [account_data_list])
+        # Distribute content with page break support
+        distribution = []  # List of (slide_idx, [account_data_list], needs_continuation)
         current_slide_idx = 0
         current_slide_content = []
         current_slide_lines = 0
+        previous_category = None
         
         for account_data in structured_data:
             category = account_data.get('category', '')
             mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
             commentary = account_data.get('commentary', '')
             
-            content_lines = self._calculate_content_lines(category, mapping_key, commentary)
+            # Category header line (only if category changes)
+            category_lines = 1 if (category and category != previous_category) else 0
+            previous_category = category
+            
+            # Calculate content lines (key + commentary, category is handled separately)
+            content_lines = self._calculate_content_lines('', mapping_key, commentary)  # Don't count category here
             
             # Check if this fits on current slide
-            if current_slide_lines + content_lines <= max_lines_per_slide and current_slide_idx < max_slides:
+            if current_slide_lines + category_lines + content_lines <= max_lines_per_slide and current_slide_idx < max_slides:
                 # Add to current slide
                 current_slide_content.append(account_data)
-                current_slide_lines += content_lines
+                current_slide_lines += category_lines + content_lines
             else:
                 # Save current slide if it has content
                 if current_slide_content:
-                    distribution.append((current_slide_idx, current_slide_content))
+                    # Mark if we're at max and have more content
+                    needs_continuation = (current_slide_idx < max_slides - 1)
+                    distribution.append((current_slide_idx, current_slide_content, needs_continuation))
                 
                 # Start new slide
                 if current_slide_idx < max_slides - 1:
                     current_slide_idx += 1
                     current_slide_content = [account_data]
-                    current_slide_lines = content_lines
+                    current_slide_lines = category_lines + content_lines
                 else:
-                    # Max slides reached, stop
+                    # Max slides reached, add continuation marker to last slide
+                    if current_slide_content:
+                        distribution.append((current_slide_idx, current_slide_content, True))
                     break
         
         # Add last slide if it has content
         if current_slide_content:
-            distribution.append((current_slide_idx, current_slide_content))
+            distribution.append((current_slide_idx, current_slide_content, False))
         
         return distribution
     
     def apply_structured_data_to_slides(self, structured_data: List[Dict], start_slide: int, 
-                                       project_name: str, statement_type: str):
+                                       project_name: str, statement_type: str, is_chinese_databook: bool = False):
         """Apply structured data directly to slides (slides 1-4 for BS, 5-8 for IS)"""
         if not self.presentation:
             self.load_template()
@@ -511,7 +521,7 @@ class PowerPointGenerator:
         used_slide_indices = set()
         
         # Apply content to slides
-        for slide_idx, account_data_list in distribution:
+        for slide_idx, account_data_list, needs_continuation in distribution:
             actual_slide_idx = start_slide - 1 + slide_idx  # Convert to 0-based
             if actual_slide_idx >= len(self.presentation.slides):
                 logger.warning(f"Slide index {actual_slide_idx + 1} exceeds available slides")
@@ -556,12 +566,13 @@ class PowerPointGenerator:
                 for account_idx, account_data in enumerate(account_data_list):
                     category = account_data.get('category', '')
                     mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
+                    display_name = account_data.get('display_name', mapping_key)  # Use proper name from financial statement
                     commentary = account_data.get('commentary', '')
                     is_chinese = account_data.get('is_chinese', False)
                     
                     # Show category header only when category changes
                     if category and category != current_category:
-                        # Add category header
+                        # Add category header - use Chinese if databook is Chinese
                         p_category = tf.add_paragraph()
                         p_category.level = 0
                         try:
@@ -574,7 +585,27 @@ class PowerPointGenerator:
                             pass
                         
                         run_category = p_category.add_run()
-                        run_category.text = category
+                        # Use Chinese category name if databook is Chinese
+                        category_text = category
+                        if is_chinese_databook:
+                            # Translate category to Chinese
+                            category_translations = {
+                                'Current assets': '流动资产',
+                                'Non-current assets': '非流动资产',
+                                'Current liabilities': '流动负债',
+                                'Non-current liabilities': '非流动负债',
+                                'Equity': '所有者权益',
+                                'Revenue': '营业收入',
+                                'Cost of sales': '营业成本',
+                                'Operating expenses': '营业费用',
+                                'Other income': '其他收入',
+                                'Other expenses': '其他费用',
+                                'Finance costs': '财务费用',
+                                'Tax': '税费'
+                            }
+                            category_text = category_translations.get(category, category)
+                        
+                        run_category.text = category_text
                         run_category.font.size = Pt(9)
                         run_category.font.name = 'Arial'
                         run_category.font.bold = False
@@ -587,14 +618,14 @@ class PowerPointGenerator:
                         current_category = category
                     
                     # Fill commentary with key formatting (no category, already shown)
-                    self._fill_text_main_bullets_with_category_and_key(
-                        tf, None, mapping_key, commentary, is_chinese  # Pass None for category
-                    )
+                    # Use display_name (from financial statement) instead of mapping_key
+                    # Check if this is the last account and we need continuation
+                    is_last_account = (account_idx == len(account_data_list) - 1)
+                    needs_cont = needs_continuation and is_last_account
                     
-                    # Add spacing between accounts (except for last one)
-                    if account_idx < len(account_data_list) - 1:
-                        p_spacer = tf.add_paragraph()
-                        p_spacer.space_after = Pt(6)
+                    self._fill_text_main_bullets_with_category_and_key(
+                        tf, None, display_name, commentary, is_chinese, is_chinese_databook, needs_continuation=needs_cont
+                    )
                 
                 # Generate combined summary for this slide from all accounts
                 all_summaries = []
@@ -798,8 +829,10 @@ class PowerPointGenerator:
                 
                 logger.info(f"✅ Updated table with Excel data (formatting preserved)")
             else:
-                # If no table, try to add text representation to text frame
-                logger.info("Table Placeholder is not a table shape, using text representation")
+                # If no table, this is an error - table placeholder should be a table shape
+                logger.error("Table Placeholder is not a table shape! Cannot embed financial table.")
+                logger.error(f"Shape type: {type(shape)}, has_table: {hasattr(shape, 'table')}")
+                # Try to create a table representation in text frame as last resort
                 if shape.has_text_frame:
                     shape.text_frame.clear()
                     # Convert DataFrame to formatted text table - show ALL rows
@@ -811,7 +844,7 @@ class PowerPointGenerator:
                     
                     p = shape.text_frame.paragraphs[0] if shape.text_frame.paragraphs else shape.text_frame.add_paragraph()
                     p.text = text_table
-                    logger.info(f"Added text table representation with all {len(df)} rows ({len(text_table)} chars)")
+                    logger.warning(f"Added text table representation with all {len(df)} rows ({len(text_table)} chars) - NOT IDEAL, should be table format")
         except Exception as e:
             logger.error(f"Could not fill table placeholder: {e}")
             import traceback
@@ -866,15 +899,18 @@ class PowerPointGenerator:
         
         return bullet_lines
     
-    def _fill_text_main_bullets_with_category_and_key(self, text_frame, category: str, mapping_key: str, 
-                                                      commentary: str, is_chinese: bool):
+    def _fill_text_main_bullets_with_category_and_key(self, text_frame, category: str, display_name: str, 
+                                                      commentary: str, is_chinese: bool, is_chinese_databook: bool = False,
+                                                      needs_continuation: bool = False):
         """
         Fill textMainBullets shape with commentary formatted as:
         - Category as first level (dark blue Arial 9) - only if category is provided
-        - Key name with grey char (U+25A0) + space + key name (black bold Arial 9) + "-" (not bold) + plain text
+        - Key name with filled round bullet + space + key name (black bold Arial 9) + "-" (not bold) + plain text
+        - Indentation 0.15" with special hanging 0.15", spacing after 6pt
         """
         from pptx.util import Inches
         from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN
         
         # Add category as first level (if category exists and is not None)
         # Note: category is now handled at slide level, so this is only for individual calls
@@ -900,32 +936,21 @@ class PowerPointGenerator:
             except:
                 pass
         
-        # Add key name with grey char + space + key name (black bold) + "-" (not bold) + plain text
+        # Add key name with filled round bullet + space + key name (black bold) + "-" (not bold) + plain text
         p_key = text_frame.add_paragraph()
-        p_key.level = 0
+        p_key.level = 1  # Use level 1 for bullet (filled round bullet)
         try:
-            p_key.left_indent = Inches(0.21)
-            p_key.first_line_indent = Inches(-0.19)
+            p_key.left_indent = Inches(0.15)  # 0.15" indent
+            p_key.first_line_indent = Inches(-0.15)  # 0.15" special hanging
             p_key.space_before = Pt(0)
-            p_key.space_after = Pt(0)
+            p_key.space_after = Pt(6)  # 6pt spacing after
             p_key.line_spacing = 1.0
         except:
             pass
         
-        # Grey char (U+25A0) + space
-        run_bullet = p_key.add_run()
-        run_bullet.text = '\u25A0 '  # U+25A0 (black square) + space
-        run_bullet.font.size = Pt(9)
-        run_bullet.font.name = 'Arial'
-        run_bullet.font.bold = False
-        try:
-            run_bullet.font.color.rgb = RGBColor(128, 128, 128)  # Grey
-        except:
-            pass
-        
-        # Key name (black bold Arial 9)
+        # Key name (black bold Arial 9) - no grey char, use PPTX bullet instead
         run_key = p_key.add_run()
-        run_key.text = mapping_key
+        run_key.text = display_name
         run_key.font.size = Pt(9)
         run_key.font.name = 'Arial'
         run_key.font.bold = True
@@ -962,12 +987,12 @@ class PowerPointGenerator:
             else:
                 # Subsequent lines as new paragraphs (indented continuation)
                 p_text = text_frame.add_paragraph()
-                p_text.level = 0
+                p_text.level = 0  # No bullet for continuation
                 try:
-                    p_text.left_indent = Inches(0.4)  # More indented for continuation
-                    p_text.first_line_indent = Inches(-0.19)
+                    p_text.left_indent = Inches(0.15)  # Same indent as key
+                    p_text.first_line_indent = Inches(-0.15)  # Same hanging
                     p_text.space_before = Pt(0)
-                    p_text.space_after = Pt(0)
+                    p_text.space_after = Pt(6)  # 6pt spacing after
                     p_text.line_spacing = 1.0
                 except:
                     pass
@@ -975,14 +1000,36 @@ class PowerPointGenerator:
                 run_text.text = line
             
             # Apply formatting to the run
-            if first_line_added and line_idx == 0:
-                # Format was already set above, but ensure it's applied
-                pass
             run_text.font.size = Pt(9)
             run_text.font.name = 'Arial'
             run_text.font.bold = False
             try:
                 run_text.font.color.rgb = RGBColor(0, 0, 0)  # Black
+            except:
+                pass
+        
+        # Add continuation marker if needed
+        if needs_continuation:
+            p_cont = text_frame.add_paragraph()
+            p_cont.level = 0
+            try:
+                p_cont.left_indent = Inches(0.15)
+                p_cont.first_line_indent = Inches(-0.15)
+                p_cont.space_before = Pt(0)
+                p_cont.space_after = Pt(6)
+                p_cont.line_spacing = 1.0
+            except:
+                pass
+            
+            run_cont = p_cont.add_run()
+            cont_text = "(续)" if (is_chinese or is_chinese_databook) else "(continued)"
+            run_cont.text = cont_text
+            run_cont.font.size = Pt(9)
+            run_cont.font.name = 'Arial'
+            run_cont.font.bold = False
+            run_cont.font.italic = True
+            try:
+                run_cont.font.color.rgb = RGBColor(128, 128, 128)  # Grey
             except:
                 pass
     
@@ -1164,24 +1211,11 @@ class PowerPointGenerator:
                 else:
                     logger.warning(f"Table Placeholder not found on slide 1 for BS table")
             
-            # Embed IS table to first IS slide (slide 5, 1-indexed = slide index 4, 0-indexed)
-            # IS data starts at slide 5 (1-indexed) = slide index 4 (0-indexed)
+            # Embed IS table to slide 5 (1-indexed) = slide index 4 (0-indexed)
+            # IS slides are 5-8 (1-indexed) = indices 4-7 (0-indexed)
+            # Just paste it to slide index 4 (page 5) - unused slides will be removed later
             if is_df is not None and not is_df.empty:
-                # Find the first IS slide - it should be at index 4 (page 5)
-                # But after removing unused slides, we need to find the actual first IS slide
-                is_slide_idx = None
-                # Look for first slide that has IS content (starting from index 4)
-                for idx in range(4, min(8, len(self.presentation.slides))):
-                    slide = self.presentation.slides[idx]
-                    # Check if this slide has content (has textMainBullets with content)
-                    bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
-                    if bullets_shape and bullets_shape.has_text_frame and bullets_shape.text:
-                        is_slide_idx = idx
-                        break
-                
-                # If no content found, use index 4 as default
-                if is_slide_idx is None:
-                    is_slide_idx = 4
+                is_slide_idx = 4  # First IS slide (page 5, 1-indexed)
                 
                 if len(self.presentation.slides) > is_slide_idx:
                     is_slide = self.presentation.slides[is_slide_idx]
@@ -1194,7 +1228,7 @@ class PowerPointGenerator:
                                 break
                     
                     if table_shape:
-                        logger.info(f"Found table shape on slide {is_slide_idx + 1}, embedding IS table ({is_df.shape})")
+                        logger.info(f"Embedding IS table to slide {is_slide_idx + 1} ({is_df.shape})")
                         self._fill_table_placeholder(table_shape, is_df)
                     else:
                         logger.warning(f"Table Placeholder not found on slide {is_slide_idx + 1} for IS table, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in is_slide.shapes]}")
@@ -1308,7 +1342,7 @@ def export_pptx(template_path: str, markdown_path: str, output_path: str,
 def export_pptx_from_structured_data_combined(template_path: str, bs_data: List[Dict], is_data: List[Dict], 
                                               output_path: str, project_name: Optional[str] = None, 
                                               language: str = 'english', temp_path: Optional[str] = None,
-                                              selected_sheet: Optional[str] = None):
+                                              selected_sheet: Optional[str] = None, is_chinese_databook: bool = False):
     """
     Export ONE combined PowerPoint presentation with both BS and IS
     
@@ -1335,11 +1369,11 @@ def export_pptx_from_structured_data_combined(template_path: str, bs_data: List[
 
         # Apply BS data to slides 1-4
         if bs_data:
-            generator.apply_structured_data_to_slides(bs_data, 1, project_name, 'BS')
+            generator.apply_structured_data_to_slides(bs_data, 1, project_name, 'BS', is_chinese_databook=is_chinese_databook)
         
         # Apply IS data to slides 5-8
         if is_data:
-            generator.apply_structured_data_to_slides(is_data, 5, project_name, 'IS')
+            generator.apply_structured_data_to_slides(is_data, 5, project_name, 'IS', is_chinese_databook=is_chinese_databook)
         
         # Embed financial tables: BS to page 1, IS to page 5
         # IMPORTANT: Do this AFTER applying data and removing unused slides
