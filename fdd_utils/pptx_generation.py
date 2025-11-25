@@ -420,16 +420,23 @@ class PowerPointGenerator:
                 elif financial_data is not None:
                     logger.warning(f"Table Placeholder not found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
             
-            # Fill coSummaryShape with summary
+            # Fill coSummaryShape with per-page summary (summary of commentary on this page)
             summary_shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
             if summary_shape and summary_shape.has_text_frame:
                 summary_shape.text_frame.clear()
-                if summary:
+                # Generate per-page summary from commentary (not just first 200 chars)
+                page_summary = self._generate_page_summary(commentary, is_chinese)
+                if not page_summary and summary:
+                    # Fallback to provided summary if page summary generation fails
+                    page_summary = summary
+                
+                if page_summary:
                     p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
-                    p.text = summary
+                    p.text = page_summary
                     for run in p.runs:
-                        run.font.size = get_font_size_for_text(summary)
-                        run.font.name = get_font_name_for_text(summary)
+                        run.font.size = get_font_size_for_text(page_summary, force_chinese_mode=is_chinese)
+                        run.font.name = get_font_name_for_text(page_summary)
+                    logger.info(f"Filled coSummaryShape with per-page summary on slide {slide_idx + 1}")
             
             # Fill textMainBullets with commentary (AI output) - improved from backup method
             bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
@@ -454,34 +461,8 @@ class PowerPointGenerator:
                 tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP  # Ensure text starts from top
                 
                 if commentary:
-                    # Split commentary into lines and create paragraphs (from backup method)
-                    commentary_lines = commentary.split('\n')
-                    for line_idx, line in enumerate(commentary_lines):
-                        line = line.strip()
-                        if not line:
-                            continue
-                        
-                        p = tf.add_paragraph()
-                        # Apply paragraph formatting (from backup method)
-                        try:
-                            p.space_before = get_space_before_for_text(line, force_chinese_mode=is_chinese)
-                        except:
-                            pass
-                        try:
-                            p.space_after = get_space_after_for_text(line, force_chinese_mode=is_chinese)
-                        except:
-                            pass
-                        try:
-                            p.line_spacing = get_line_spacing_for_text(line, force_chinese_mode=is_chinese)
-                        except:
-                            pass
-                        
-                        # Add text with proper formatting
-                        run = p.add_run()
-                        run.text = line
-                        run.font.size = get_font_size_for_text(line, force_chinese_mode=is_chinese)
-                        run.font.name = get_font_name_for_text(line)
-                        p.level = 0  # Bullet level
+                    # Use detailed line break logic and level 1-3 text handling from backup
+                    self._fill_text_main_bullets_with_levels(tf, commentary, is_chinese)
                 
                 logger.info(f"Filled textMainBullets with commentary on slide {slide_idx + 1}")
             else:
@@ -548,9 +529,39 @@ class PowerPointGenerator:
                                     run.font.color.rgb = RGBColor(0, 0, 0)
                         logger.debug(f"Filled header cell {col_idx}: {col_name}")
                 
-                # Fill data rows with formatting
-                max_rows = min(len(df), len(table.rows) - 1)
-                for row_idx in range(max_rows):
+                # Fill data rows with formatting - show ALL rows (no limit)
+                # If table has fewer rows than data, we need to add rows or show all available
+                max_rows = len(df)  # Show all rows
+                # Ensure we have enough rows in the table
+                while len(table.rows) - 1 < max_rows:
+                    # Add a new row by copying the last row's format
+                    last_row_idx = len(table.rows) - 1
+                    new_row = table.rows.add_row()
+                    # Copy formatting from last row
+                    for col_idx in range(len(table.columns)):
+                        if col_idx < len(table.columns):
+                            try:
+                                source_cell = table.cell(last_row_idx, col_idx)
+                                target_cell = new_row.cells[col_idx]
+                                if source_cell.text_frame.paragraphs and source_cell.text_frame.paragraphs[0].runs:
+                                    source_run = source_cell.text_frame.paragraphs[0].runs[0]
+                                    if target_cell.text_frame.paragraphs:
+                                        target_run = target_cell.text_frame.paragraphs[0].add_run()
+                                    else:
+                                        target_run = target_cell.text_frame.paragraphs[0].add_run()
+                                    if source_run.font.name:
+                                        target_run.font.name = source_run.font.name
+                                    if source_run.font.size:
+                                        target_run.font.size = source_run.font.size
+                                    if source_run.font.bold is not None:
+                                        target_run.font.bold = source_run.font.bold
+                                    if source_run.font.italic is not None:
+                                        target_run.font.italic = source_run.font.italic
+                            except:
+                                pass
+                
+                # Now fill all rows
+                for row_idx in range(min(max_rows, len(table.rows) - 1)):
                     df_row = df.iloc[row_idx]
                     for col_idx, col_name in enumerate(df.columns[:max_cols]):
                         if col_idx < len(table.columns):
@@ -603,29 +614,209 @@ class PowerPointGenerator:
                 logger.info("Table Placeholder is not a table shape, using text representation")
                 if shape.has_text_frame:
                     shape.text_frame.clear()
-                    # Convert DataFrame to formatted text table
+                    # Convert DataFrame to formatted text table - show ALL rows
                     try:
-                        # Limit rows for display
-                        df_display = df.head(15)
-                        text_table = df_display.to_string(index=False)
-                        if len(df) > 15:
-                            text_table += f"\n\n... and {len(df) - 15} more rows"
+                        # Show all rows, no limit
+                        text_table = df.to_string(index=False)
                     except:
-                        text_table = str(df.head(15))
+                        text_table = str(df)
                     
                     p = shape.text_frame.paragraphs[0] if shape.text_frame.paragraphs else shape.text_frame.add_paragraph()
                     p.text = text_table
-                    logger.info(f"Added text table representation ({len(text_table)} chars)")
+                    logger.info(f"Added text table representation with all {len(df)} rows ({len(text_table)} chars)")
         except Exception as e:
             logger.error(f"Could not fill table placeholder: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            # Fallback: add text representation
+            # Fallback: add text representation - show ALL rows
             if shape.has_text_frame:
                 shape.text_frame.clear()
-                text_repr = str(df.head(10))
+                # Show all rows, not just first 10
+                text_repr = df.to_string(index=False)
                 p = shape.text_frame.paragraphs[0] if shape.text_frame.paragraphs else shape.text_frame.add_paragraph()
                 p.text = text_repr
+    
+    def _detect_bullet_levels(self, text: str) -> List[Tuple[int, str]]:
+        """
+        Detect bullet levels (1-3) from commentary text
+        Returns list of (level, text) tuples where level 0 = no bullet, 1-3 = bullet levels
+        """
+        lines = text.split('\n')
+        bullet_lines = []
+        
+        for line in lines:
+            stripped = line.strip()
+            original_line = line
+            
+            # Detect bullet lines with '- ' prefix
+            if original_line.lstrip().startswith('- '):
+                # Calculate indentation level (based on spaces/tabs before the bullet)
+                indent_spaces = len(original_line) - len(original_line.lstrip())
+                
+                # Determine bullet level based on indentation (2 spaces per level)
+                level = min(3, (indent_spaces // 2) + 1)  # Cap at level 3
+                
+                # Clean and store bullet line
+                clean_line = stripped[2:]  # Remove '- '
+                
+                # Special handling for level 3 bullets that contain a dash indicating sub-level
+                if level == 3 and " - " in clean_line:
+                    # Split at the first occurrence of " - "
+                    parts = clean_line.split(" - ", 1)
+                    if len(parts) > 1:
+                        # Add level 3 content
+                        bullet_lines.append((level, parts[0].strip()))
+                        # Add continuation as level 3 (indented)
+                        bullet_lines.append((level, parts[1].strip()))
+                    else:
+                        bullet_lines.append((level, clean_line))
+                else:
+                    bullet_lines.append((level, clean_line))
+            elif stripped:
+                # Regular content (no bullet) - level 0
+                bullet_lines.append((0, stripped))
+        
+        return bullet_lines
+    
+    def _fill_text_main_bullets_with_levels(self, text_frame, commentary: str, is_chinese: bool):
+        """
+        Fill textMainBullets shape with commentary using detailed line break logic
+        and level 1-3 text handling with page breaks
+        """
+        from pptx.util import Inches
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN
+        
+        # Detect bullet levels
+        bullet_lines = self._detect_bullet_levels(commentary)
+        
+        # Calculate max lines that can fit in the shape
+        # Estimate based on shape height (conservative estimate)
+        max_lines = 35  # Default conservative estimate
+        
+        lines_added = 0
+        
+        for level, text in bullet_lines:
+            if not text.strip():
+                continue
+            
+            # Check if we need a page break (if shape is getting full)
+            # Note: Actual page breaks would require creating new slides, which is handled
+            # at a higher level. Here we just ensure content fits.
+            if lines_added >= max_lines:
+                # Add continuation indicator
+                p = text_frame.add_paragraph()
+                p.level = 0
+                run = p.add_run()
+                run.text = "... (continued on next page)" if not is_chinese else "... (续下页)"
+                run.font.size = get_font_size_for_text(run.text, force_chinese_mode=is_chinese)
+                run.font.name = get_font_name_for_text(run.text)
+                run.font.italic = True
+                break
+            
+            # Create paragraph with appropriate level
+            p = text_frame.add_paragraph()
+            p.level = level  # Set bullet level (0-3)
+            
+            # Apply paragraph formatting based on level
+            try:
+                # Level 0 (no bullet) or Level 1 (main bullet)
+                if level == 0 or level == 1:
+                    p.left_indent = Inches(0.21)  # 0.21" indent before text
+                    p.first_line_indent = Inches(-0.19)  # 0.19" special hanging
+                    p.space_before = Pt(0)  # 0pt spacing before
+                    p.space_after = Pt(0)  # 0pt spacing after
+                    p.line_spacing = 1.0  # Single line spacing
+                elif level == 2:
+                    # Level 2 - more indented
+                    p.left_indent = Inches(0.4)
+                    p.first_line_indent = Inches(-0.19)
+                    p.space_before = Pt(0)
+                    p.space_after = Pt(0)
+                    p.line_spacing = 1.0
+                elif level == 3:
+                    # Level 3 - most indented
+                    p.left_indent = Inches(0.6)
+                    p.first_line_indent = Inches(-0.19)
+                    p.space_before = Pt(0)
+                    p.space_after = Pt(0)
+                    p.line_spacing = 1.0
+            except:
+                pass  # Silently handle formatting errors
+            
+            # Add text with proper formatting
+            run = p.add_run()
+            run.text = text
+            run.font.size = get_font_size_for_text(text, force_chinese_mode=is_chinese)
+            run.font.name = get_font_name_for_text(text)
+            
+            # Apply level-specific formatting
+            if level == 1:
+                run.font.bold = True
+                try:
+                    run.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue for level 1
+                except:
+                    pass
+            elif level == 0:
+                # Regular text - no special formatting
+                pass
+            
+            lines_added += 1
+    
+    def _generate_page_summary(self, commentary: str, is_chinese: bool) -> str:
+        """
+        Generate a per-page summary from commentary text
+        This is the summary of the commentary for that particular page
+        """
+        if not commentary or not commentary.strip():
+            return ""
+        
+        # Split commentary into sentences/paragraphs
+        # For Chinese, split by sentence endings
+        if is_chinese or detect_chinese_text(commentary):
+            # Chinese sentence endings
+            sentences = []
+            current_sentence = ""
+            for char in commentary:
+                current_sentence += char
+                if char in ['。', '！', '？', '；']:
+                    sentences.append(current_sentence.strip())
+                    current_sentence = ""
+            if current_sentence.strip():
+                sentences.append(current_sentence.strip())
+            
+            # Take first 2-3 sentences as summary (up to 200 chars)
+            summary_parts = []
+            total_chars = 0
+            for sentence in sentences[:3]:
+                if total_chars + len(sentence) <= 200:
+                    summary_parts.append(sentence)
+                    total_chars += len(sentence)
+                else:
+                    break
+            
+            summary = ''.join(summary_parts)
+            if len(commentary) > total_chars:
+                summary += "..."
+        else:
+            # English - split by periods
+            sentences = commentary.split('.')
+            summary_parts = []
+            total_chars = 0
+            for sentence in sentences[:3]:
+                sentence = sentence.strip()
+                if sentence:
+                    if total_chars + len(sentence) <= 200:
+                        summary_parts.append(sentence + '.')
+                        total_chars += len(sentence) + 1
+                    else:
+                        break
+            
+            summary = ' '.join(summary_parts)
+            if len(commentary) > total_chars:
+                summary += "..."
+        
+        return summary.strip()
 
     def embed_financial_tables(self, excel_path: str, sheet_name: str, project_name: str, language: str):
         """Embed financial tables: BS to page 1, IS to page 5"""
