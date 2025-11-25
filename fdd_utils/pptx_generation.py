@@ -913,7 +913,10 @@ class PowerPointGenerator:
                 
                 # Now fill all rows with Arial 9 font
                 # Check for title, date, total, and subtotal rows to highlight
-                for row_idx in range(min(max_rows, len(table.rows) - data_start_row - 1)):
+                logger.info(f"Filling {max_rows} data rows, starting at row index {header_row_idx + 1}, table has {len(table.rows)} rows")
+                for row_idx in range(max_rows):
+                    if row_idx >= len(df):
+                        break
                     df_row = df.iloc[row_idx]
                     first_col_value = str(df_row.iloc[0]) if len(df_row) > 0 else ""
                     
@@ -927,53 +930,65 @@ class PowerPointGenerator:
                     
                     # Data row index = header_row_idx + 1 + row_idx
                     data_row_idx = header_row_idx + 1 + row_idx
-                    for col_idx, col_name in enumerate(df.columns[:max_cols]):
-                        if col_idx < len(table.columns):
-                            cell = table.cell(data_row_idx, col_idx)
-                            value = df_row[col_name]
-                            
-                            # Format numbers (from backup method)
-                            if isinstance(value, (int, float)):
-                                # Format with 1 decimal place and thousand separators
-                                try:
-                                    val_str = str(value)
-                                    if any(char in val_str for char in ['年', '月', '日', '-', '/', '至']):
-                                        cell.text = val_str
-                                    elif 2000 <= value <= 2100:
-                                        cell.text = val_str
-                                    else:
-                                        cell.text = f"{value:,.1f}" if value != 0 else "0"
-                                except:
-                                    cell.text = str(value)
-                            else:
-                                cell.text = str(value)
-                            
-                            # Apply formatting: Arial 9 for all cells
-                            if cell.text_frame.paragraphs:
-                                if cell.text_frame.paragraphs[0].runs:
-                                    run = cell.text_frame.paragraphs[0].runs[0]
-                                else:
-                                    run = cell.text_frame.paragraphs[0].add_run()
-                                
-                                run.font.name = 'Arial'
-                                run.font.size = Pt(9)
-                                
-                                # Bold for special rows (title, date, total, subtotal)
-                                if is_special_row:
-                                    run.font.bold = True
-                                else:
-                                    run.font.bold = False
-                            
-                            # Highlight special rows with light grey background
-                            if is_special_row:
-                                try:
-                                    from pptx.dml.color import RGBColor
-                                    cell.fill.solid()
-                                    cell.fill.fore_color.rgb = RGBColor(217, 217, 217)  # Light grey
-                                except:
-                                    pass
+                    if data_row_idx >= len(table.rows):
+                        logger.warning(f"Data row index {data_row_idx} exceeds table rows {len(table.rows)}, skipping")
+                        break
                     
-                    logger.debug(f"Filled table row {row_idx + 1} (special: {is_special_row})")
+                    for col_idx, col_name in enumerate(df.columns[:max_cols]):
+                        if col_idx >= len(table.columns):
+                            break
+                        cell = table.cell(data_row_idx, col_idx)
+                        
+                        # Get value from DataFrame
+                        if col_name in df_row.index:
+                            value = df_row[col_name]
+                        else:
+                            value = ""
+                        
+                        # Format numbers (from backup method)
+                        if isinstance(value, (int, float)) and pd.notna(value):
+                            # Format with 1 decimal place and thousand separators
+                            try:
+                                val_str = str(value)
+                                if any(char in val_str for char in ['年', '月', '日', '-', '/', '至']):
+                                    cell.text = val_str
+                                elif 2000 <= value <= 2100:
+                                    cell.text = val_str
+                                else:
+                                    cell.text = f"{value:,.1f}" if value != 0 else "0"
+                            except:
+                                cell.text = str(value)
+                        elif pd.notna(value) and str(value).strip():
+                            cell.text = str(value)
+                        else:
+                            cell.text = ""
+                        
+                        # Apply formatting: Arial 9 for all cells
+                        if cell.text_frame.paragraphs:
+                            if cell.text_frame.paragraphs[0].runs:
+                                run = cell.text_frame.paragraphs[0].runs[0]
+                            else:
+                                run = cell.text_frame.paragraphs[0].add_run()
+                            
+                            run.font.name = 'Arial'
+                            run.font.size = Pt(9)
+                            
+                            # Bold for special rows (title, date, total, subtotal)
+                            if is_special_row:
+                                run.font.bold = True
+                            else:
+                                run.font.bold = False
+                        
+                        # Highlight special rows with light grey background
+                        if is_special_row:
+                            try:
+                                from pptx.dml.color import RGBColor
+                                cell.fill.solid()
+                                cell.fill.fore_color.rgb = RGBColor(217, 217, 217)  # Light grey
+                            except:
+                                pass
+                    
+                    logger.debug(f"Filled table row {row_idx + 1} (data_row_idx: {data_row_idx}, special: {is_special_row})")
                 
                 logger.info(f"✅ Updated table with Excel data (formatting preserved)")
             else:
@@ -1261,25 +1276,22 @@ class PowerPointGenerator:
             lines_added += 1
     
     def _generate_ai_summary(self, commentary: str, is_chinese: bool) -> str:
-        """Generate AI summary from page commentary - limit to 200 characters in prompt"""
+        """Generate AI summary from page commentary - let AI control the length"""
         try:
             from fdd_utils.ai_helper import AIHelper
             
-            # Create summary prompt with explicit 200 character limit
+            # Create summary prompt - let AI determine appropriate length
             if is_chinese:
-                prompt = f"请为以下内容生成一个简洁的摘要，严格限制在200个字符以内（包括标点符号），不要超过200字符：\n\n{commentary[:2000]}"
+                prompt = f"请为以下内容生成一个简洁的摘要，长度由你决定，确保涵盖主要内容：\n\n{commentary[:2000]}"
             else:
-                prompt = f"Please generate a concise summary, strictly limited to 200 characters (including punctuation), do not exceed 200 characters:\n\n{commentary[:2000]}"
+                prompt = f"Please generate a concise summary for the following content. Determine the appropriate length to cover the main points:\n\n{commentary[:2000]}"
             
-            # Call AI
+            # Call AI with more tokens to allow AI to control length
             ai_helper = AIHelper()
-            response = ai_helper.call_ai(prompt, max_tokens=200)
+            response = ai_helper.call_ai(prompt, max_tokens=300)
             
             if response and response.strip():
                 summary = response.strip()
-                # Trust AI to follow the limit, but trim if it exceeds
-                if len(summary) > 200:
-                    summary = summary[:197] + "..."
                 return summary
         except Exception as e:
             logger.warning(f"Could not generate AI summary: {e}")
@@ -1375,13 +1387,18 @@ class PowerPointGenerator:
                 for idx, row in excel_df.iterrows():
                     row_text = ' '.join([str(cell) for cell in row if pd.notna(cell)])
                     if '资产负债表' in row_text or 'Balance Sheet' in row_text:
-                        # Extract table name (might include entity name)
+                        # Extract table name - remove any entity name suffix if already present
                         bs_table_name = row_text.strip()
-                        if project_name:
+                        # If it already contains " - " followed by entity name, keep it as is
+                        # Otherwise, it's just the table name without entity
+                        if project_name and project_name not in bs_table_name:
+                            # Only add entity name if it's not already there
                             bs_table_name = f"{bs_table_name} - {project_name}"
                     if '利润表' in row_text or 'Income Statement' in row_text:
                         is_table_name = row_text.strip()
-                        if project_name:
+                        # If it already contains " - " followed by entity name, keep it as is
+                        if project_name and project_name not in is_table_name:
+                            # Only add entity name if it's not already there
                             is_table_name = f"{is_table_name} - {project_name}"
                     # Look for currency unit
                     if '人民币千元' in row_text or "CNY'000" in row_text or "CNY 000" in row_text:
