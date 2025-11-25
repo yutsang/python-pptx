@@ -1035,7 +1035,7 @@ else:
                 
                 def run_ai_with_timeout(timeout_seconds=10):
                     """Run AI pipeline with timeout"""
-                    result_container = {'result': None, 'error': None, 'completed': False}
+                    result_container = {'result': None, 'error': None, 'completed': False, 'partial': None}
                     
                     def run_ai():
                         try:
@@ -1060,46 +1060,110 @@ else:
                     
                     if not result_container['completed']:
                         # Thread is still running, timeout occurred
+                        # Check if there are any partial results in session state
+                        if 'ai_results' in st.session_state and st.session_state.ai_results:
+                            result_container['partial'] = st.session_state.ai_results
                         raise TimeoutError(f"AI processing timed out after {timeout_seconds} seconds")
                     
                     if result_container['error']:
+                        # Even on error, check for partial results
+                        if 'ai_results' in st.session_state and st.session_state.ai_results:
+                            result_container['partial'] = st.session_state.ai_results
                         raise result_container['error']
                     
                     return result_container['result']
                 
-                # Retry logic: 3 attempts with 10 second timeout each
+                # Retry logic: 3 attempts with 10 second timeout each, with skip option
                 max_retries = 3
                 timeout_seconds = 10
                 results = None
                 last_error = None
+                partial_results = None
+                skip_retry_clicked = False
                 
                 for attempt in range(1, max_retries + 1):
                     try:
                         status_placeholder.info(f"🔄 Attempt {attempt}/{max_retries}: Starting AI processing (timeout: {timeout_seconds}s)...")
-                        results = run_ai_with_timeout(timeout_seconds)
+                        timeout_result = run_ai_with_timeout(timeout_seconds)
+                        results = timeout_result
                         status_placeholder.success(f"✅ AI processing completed successfully on attempt {attempt}")
                         break
                     except TimeoutError as e:
                         last_error = e
-                        if attempt < max_retries:
-                            status_placeholder.warning(f"⏱️ {str(e)} - Retrying ({attempt}/{max_retries})...")
-                            import time
-                            time.sleep(1)  # Brief pause before retry
+                        # Check for partial results in session state
+                        if 'ai_results' in st.session_state and st.session_state.ai_results:
+                            partial_results = st.session_state.ai_results
+                        
+                        if attempt < max_retries and not skip_retry_clicked:
+                            # Show skip option with button
+                            status_placeholder.warning(f"⏱️ {str(e)}")
+                            skip_key = f"skip_retry_{attempt}_{st.session_state.button_click_counter}"
+                            if st.button("⏭️ Skip Retry & Use Latest Output", key=skip_key, use_container_width=True, type="secondary"):
+                                skip_retry_clicked = True
+                                if partial_results:
+                                    results = partial_results
+                                    status_placeholder.success(f"✅ Using latest available AI output ({len(partial_results)} accounts)")
+                                    break
+                                else:
+                                    status_placeholder.warning("⚠️ No previous AI output available. Continuing with retry...")
+                            
+                            if not skip_retry_clicked:
+                                status_placeholder.info(f"🔄 Retrying ({attempt}/{max_retries})...")
+                                import time
+                                time.sleep(1)  # Brief pause before retry
                         else:
-                            status_placeholder.error(f"❌ AI processing failed after {max_retries} attempts: {str(e)}")
-                            raise
+                            # Last attempt failed or skip was clicked - offer to use partial results
+                            if partial_results:
+                                status_placeholder.warning(f"⏱️ {str(e)} - Using latest available output")
+                                results = partial_results
+                                status_placeholder.success(f"✅ Using latest available AI output ({len(partial_results)} accounts)")
+                                break
+                            else:
+                                status_placeholder.error(f"❌ AI processing failed after {max_retries} attempts: {str(e)}")
+                                if not skip_retry_clicked:
+                                    raise
                     except Exception as e:
                         last_error = e
-                        if attempt < max_retries:
-                            status_placeholder.warning(f"⚠️ Error on attempt {attempt}: {str(e)} - Retrying...")
-                            import time
-                            time.sleep(1)  # Brief pause before retry
+                        # Check for partial results
+                        if 'ai_results' in st.session_state and st.session_state.ai_results:
+                            partial_results = st.session_state.ai_results
+                        
+                        if attempt < max_retries and not skip_retry_clicked:
+                            # Show skip option
+                            status_placeholder.warning(f"⚠️ Error on attempt {attempt}: {str(e)}")
+                            skip_key = f"skip_retry_error_{attempt}_{st.session_state.button_click_counter}"
+                            if st.button("⏭️ Skip Retry & Use Latest Output", key=skip_key, use_container_width=True, type="secondary"):
+                                skip_retry_clicked = True
+                                if partial_results:
+                                    results = partial_results
+                                    status_placeholder.success(f"✅ Using latest available AI output ({len(partial_results)} accounts)")
+                                    break
+                                else:
+                                    status_placeholder.warning("⚠️ No previous AI output available. Continuing with retry...")
+                            
+                            if not skip_retry_clicked:
+                                status_placeholder.info(f"🔄 Retrying ({attempt}/{max_retries})...")
+                                import time
+                                time.sleep(1)  # Brief pause before retry
                         else:
-                            status_placeholder.error(f"❌ AI processing failed after {max_retries} attempts: {str(e)}")
-                            raise
+                            # Last attempt failed or skip was clicked
+                            if partial_results:
+                                status_placeholder.warning(f"⚠️ {str(e)} - Using latest available output")
+                                results = partial_results
+                                status_placeholder.success(f"✅ Using latest available AI output ({len(partial_results)} accounts)")
+                                break
+                            else:
+                                status_placeholder.error(f"❌ AI processing failed after {max_retries} attempts: {str(e)}")
+                                if not skip_retry_clicked:
+                                    raise
                 
                 if results is None:
-                    raise Exception(f"AI processing failed after {max_retries} attempts. Last error: {last_error}")
+                    # Final check - use partial results if available
+                    if partial_results:
+                        results = partial_results
+                        status_placeholder.info(f"✅ Using latest available AI output ({len(partial_results)} accounts)")
+                    else:
+                        raise Exception(f"AI processing failed after {max_retries} attempts. Last error: {last_error}")
 
                 # Log results for debugging
                 if results:
