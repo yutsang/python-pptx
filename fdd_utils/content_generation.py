@@ -331,18 +331,26 @@ def load_prompts_and_format(
         with open(mappings_file, 'r', encoding='utf-8') as file:
             mappings_data = yaml.safe_load(file)
         
+        # Load generic prompts first as fallback
+        generic_prompts = mappings_data.get('_default_agent_1', {}).get(language, {})
+        default_system_prompt = generic_prompts.get('system_prompt', '')
+        default_user_prompt = generic_prompts.get('user_prompt', '')
+        
+        # Try to load account-specific prompts
         account_data = mappings_data.get(mapping_key, {})
         agent_prompts = account_data.get('agent_1_prompts', {}).get(language, {})
-        system_prompt = agent_prompts.get('system_prompt', '')
-        user_prompt_template = agent_prompts.get('user_prompt', '')
+        account_system_prompt = agent_prompts.get('system_prompt', '')
+        account_user_prompt = agent_prompts.get('user_prompt', '')
         
-        # Fallback to generic agent_1 prompts if account-specific not found
-        if not system_prompt or not user_prompt_template:
-            generic_prompts = mappings_data.get('_default_agent_1', {}).get(language, {})
-            if not system_prompt:
-                system_prompt = generic_prompts.get('system_prompt', '')
-            if not user_prompt_template:
-                user_prompt_template = generic_prompts.get('user_prompt', '')
+        # Use account-specific if available and not empty, otherwise use default
+        system_prompt = account_system_prompt.strip() if account_system_prompt and account_system_prompt.strip() else default_system_prompt
+        user_prompt_template = account_user_prompt.strip() if account_user_prompt and account_user_prompt.strip() else default_user_prompt
+        
+        # Final fallback: if still empty, use defaults
+        if not system_prompt or not system_prompt.strip():
+            system_prompt = default_system_prompt
+        if not user_prompt_template or not user_prompt_template.strip():
+            user_prompt_template = default_user_prompt
     
     # Agent 2-4: Read from prompts.yml (generic)
     else:
