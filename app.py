@@ -737,7 +737,7 @@ with st.sidebar:
         
         # Show current model with Streamlit green success reminder
         model_display = {
-            'local': 'Local Model (Ollama)',
+            'local': 'Local Model (qwen3-chat)',
             'openai': 'OpenAI GPT (gpt-4o-mini)',
             'deepseek': 'DeepSeek (deepseek-chat)'
         }

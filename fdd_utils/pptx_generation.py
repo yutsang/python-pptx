@@ -772,6 +772,16 @@ class PowerPointGenerator:
             currency_unit: Currency unit (e.g., "人民币千元" or "CNY'000") to replace "Description"
         """
         try:
+            # Debug: Log DataFrame content
+            logger.info(f"Filling table with DF shape: {df.shape}")
+            if not df.empty:
+                logger.info(f"First row data: {df.iloc[0].to_dict()}")
+                # Check if any data is non-zero
+                numeric_cols = df.select_dtypes(include=['number']).columns
+                if len(numeric_cols) > 0:
+                    non_zero_count = (df[numeric_cols] != 0).sum().sum()
+                    logger.info(f"Non-zero values in DF: {non_zero_count}")
+            
             # Check if shape is a TablePlaceholder (textbox placeholder)
             from pptx.shapes.placeholder import TablePlaceholder
             
@@ -996,52 +1006,77 @@ class PowerPointGenerator:
                         logger.warning(f"Data row index {data_row_idx} exceeds table rows {len(table.rows)}, skipping")
                         break
                     
+                    # Log first row processing
+                    if row_idx == 0:
+                        logger.info(f"Processing first data row: {df_row.values[:3]}")
+
                     for col_idx, col_name in enumerate(df.columns[:max_cols]):
                         if col_idx >= len(table.columns):
                             break
                         cell = table.cell(data_row_idx, col_idx)
                         
-                        # Get value from DataFrame
-                        if col_name in df_row.index:
-                            value = df_row[col_name]
-                        else:
-                            value = ""
+                        # Get value from DataFrame safely
+                        value = df_row[col_name] if col_name in df_row.index else ""
                         
-                        # Format numbers (from backup method)
-                        if isinstance(value, (int, float)) and pd.notna(value):
-                            # Format with 1 decimal place and thousand separators
-                            try:
-                                val_str = str(value)
-                                if any(char in val_str for char in ['年', '月', '日', '-', '/', '至']):
-                                    cell.text = val_str
-                                elif 2000 <= value <= 2100:
-                                    cell.text = val_str
-                                else:
-                                    cell.text = f"{value:,.1f}" if value != 0 else "0"
-                            except:
-                                cell.text = str(value)
-                        elif pd.notna(value) and str(value).strip():
-                            cell.text = str(value)
-                        else:
-                            cell.text = ""
+                        # Format value to string
+                        text_val = ""
+                        try:
+                            if pd.isna(value):
+                                text_val = ""
+                            elif isinstance(value, (int, float)):
+                                text_val = f"{value:,.1f}" if value != 0 else "0"
+                            else:
+                                text_val = str(value).strip()
+                                # Handle potential string representations of numbers
+                                if text_val.replace('.','',1).isdigit():
+                                    # It's a number string, try to format it
+                                    try:
+                                        float_val = float(text_val)
+                                        text_val = f"{float_val:,.1f}" if float_val != 0 else "0"
+                                    except:
+                                        pass
+                        except Exception as e:
+                            text_val = str(value)
+                        
+                        # Set text
+                        cell.text = text_val
+                        
+                        # Log first cell value of first row
+                        if row_idx == 0 and col_idx < 2:
+                            logger.info(f"Setting cell ({data_row_idx}, {col_idx}) to: '{text_val}'")
                         
                         # Apply formatting: Arial 9 for all cells
-                        if cell.text_frame.paragraphs:
-                            if cell.text_frame.paragraphs[0].runs:
-                                run = cell.text_frame.paragraphs[0].runs[0]
-                            else:
-                                run = cell.text_frame.paragraphs[0].add_run()
+                        # Note: Always access paragraphs[0] AFTER setting text
+                        if not cell.text_frame.paragraphs:
+                            cell.text_frame.add_paragraph()
                             
+                        p = cell.text_frame.paragraphs[0]
+                        if not p.runs:
+                            p.add_run()
+                            
+                        # Apply formatting to ALL runs (setting cell.text might create one run, but best to be safe)
+                        for run in p.runs:
+                            run.text = text_val # Ensure text is set in the run
                             run.font.name = 'Arial'
                             run.font.size = Pt(9)
                             
-                            # Bold for special rows (title, date, total, subtotal)
-                            if is_special_row:
-                                run.font.bold = True
-                            else:
-                                run.font.bold = False
+                            # Force Black color for data rows
+                            try:
+                                run.font.color.rgb = RGBColor(0, 0, 0)
+                            except:
+                                pass
+                            
+                            # Bold for special rows
+                            run.font.bold = is_special_row
                         
-                        # Highlight special rows with light grey background
+                        # Highlight special rows
+                        if is_special_row:
+                            try:
+                                from pptx.dml.color import RGBColor
+                                cell.fill.solid()
+                                cell.fill.fore_color.rgb = RGBColor(217, 217, 217)
+                            except:
+                                pass
                         if is_special_row:
                             try:
                                 from pptx.dml.color import RGBColor
@@ -1526,17 +1561,37 @@ Original content:
                                 table_shape = shape
                                 logger.info(f"Found shape with table attribute: {getattr(shape, 'name', 'unnamed')}")
                                 break
+                            # Also check via BaseShape has_table property
+                            if hasattr(shape, 'has_table') and shape.has_table:
+                                table_shape = shape
+                                logger.info(f"Found shape with has_table property: {getattr(shape, 'name', 'unnamed')}")
+                                break
                         except:
                             pass
                 
                 if table_shape:
                     logger.info(f"✅ Found table shape on slide 1: {getattr(table_shape, 'name', 'unnamed')}")
                     logger.info(f"BS DataFrame shape: {bs_df.shape}, columns: {list(bs_df.columns)}")
-                    logger.info(f"BS DataFrame sample (first 3 rows):\n{bs_df.head(3)}")
+                    # Ensure we have at least a header row in the shape
+                    if hasattr(table_shape, 'table') and table_shape.table and len(table_shape.table.rows) == 0:
+                         table_shape.table.rows.add_row()
                     self._fill_table_placeholder(table_shape, bs_df, table_name=bs_table_name, currency_unit=currency_unit)
                 else:
                     logger.warning(f"❌ Table Placeholder not found on slide 1 for BS table")
                     logger.warning(f"Available shapes: {[s.name if hasattr(s, 'name') else type(s).__name__ for s in slide_0.shapes]}")
+                    # LAST RESORT: Create a new table if none found
+                    logger.info("Attempting to create new table on slide 1 as last resort")
+                    try:
+                        # Default position for BS table
+                        left = Inches(0.5)
+                        top = Inches(1.5)
+                        width = Inches(12.33)
+                        height = Inches(4.0)
+                        table_shape = slide_0.shapes.add_table(len(bs_df)+1, len(bs_df.columns), left, top, width, height)
+                        self._fill_table_placeholder(table_shape, bs_df, table_name=bs_table_name, currency_unit=currency_unit)
+                        logger.info("✅ Created new BS table on slide 1")
+                    except Exception as e:
+                        logger.error(f"Failed to create new BS table: {e}")
             else:
                 logger.warning(f"BS DataFrame is None or empty, skipping BS table embedding")
             
@@ -1551,7 +1606,6 @@ Original content:
                 if len(self.presentation.slides) > is_slide_idx:
                     is_slide = self.presentation.slides[is_slide_idx]
                     logger.info(f"Slide {is_slide_idx + 1} exists, searching for Table Placeholder...")
-                    logger.info(f"Available shapes on slide {is_slide_idx + 1}: {[s.name if hasattr(s, 'name') else f'{type(s).__name__}' for s in is_slide.shapes]}")
                     
                     # Try to find table shape - check all shapes for table capability
                     table_shape = None
@@ -1578,11 +1632,24 @@ Original content:
                     
                     if table_shape:
                         logger.info(f"✅ Found table shape on slide {is_slide_idx + 1}, embedding IS table ({is_df.shape})")
-                        logger.info(f"Table shape type: {type(table_shape)}, has_table: {hasattr(table_shape, 'table')}")
+                        if hasattr(table_shape, 'table') and table_shape.table and len(table_shape.table.rows) == 0:
+                             table_shape.table.rows.add_row()
                         self._fill_table_placeholder(table_shape, is_df, table_name=is_table_name, currency_unit=currency_unit)
                     else:
                         logger.error(f"❌ Table Placeholder not found on slide {is_slide_idx + 1} for IS table")
-                        logger.error(f"Available shapes: {[s.name if hasattr(s, 'name') else f'{type(s).__name__}' for s in is_slide.shapes]}")
+                        # LAST RESORT: Create a new table if none found
+                        logger.info(f"Attempting to create new table on slide {is_slide_idx + 1} as last resort")
+                        try:
+                            # Default position for IS table
+                            left = Inches(0.5)
+                            top = Inches(1.5)
+                            width = Inches(12.33)
+                            height = Inches(4.0)
+                            table_shape = is_slide.shapes.add_table(len(is_df)+1, len(is_df.columns), left, top, width, height)
+                            self._fill_table_placeholder(table_shape, is_df, table_name=is_table_name, currency_unit=currency_unit)
+                            logger.info(f"✅ Created new IS table on slide {is_slide_idx + 1}")
+                        except Exception as e:
+                            logger.error(f"Failed to create new IS table: {e}")
                 else:
                     logger.error(f"❌ Slide {is_slide_idx + 1} does not exist for IS table (only {len(self.presentation.slides)} slides)")
                     logger.error(f"IS data should be on slide 5, but presentation only has {len(self.presentation.slides)} slides")

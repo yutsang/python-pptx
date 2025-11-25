@@ -144,6 +144,12 @@
       IMPORTANT: The goal is to REFINE, not to SHORTEN. Keep all important context and explanations.
       Only remove content that is truly redundant or unnecessary.
       
+      FORMATTING RULES:
+      - DO NOT use bullet points or lists. Use full sentences and paragraphs.
+      - DO NOT use bold text (e.g., **Key**) or Markdown formatting.
+      - DO NOT use the format "**Key** (Key): Value". Write naturally.
+      - Connect ideas with transition words instead of listing them.
+      
       CRITICAL OUTPUT REQUIREMENT:
       Output ONLY the refined financial content text itself.
       Do NOT include any analysis, commentary, or explanations about what was changed.
@@ -160,22 +166,25 @@
       - Original Length: {original_length} characters
       
       REFINEMENT CHECKLIST:
-      1. Are there more than 3 listing points? → Reduce to max 3
+      1. Are there more than 3 listing points? → Convert to paragraph form
       2. Are all listed items >= 25% of total? → Remove smaller items
       3. If only 1 significant item, is it shown as total? → Simplify
       4. Is content length maintained? → DO NOT shorten excessively, preserve context
       5. Are dates, amounts, entities preserved? → Verify
       6. Are explanations and important details kept? → Verify
+      7. Is the format strictly PARAGRAPHS (no bullets, no bold keys)? → Enforce
       
       CRITICAL: Output ONLY the refined financial text.
       Do NOT include refinement explanations or meta-commentary.
       Do NOT say things like "Refined output:" or "Changes made:".
       
       Example of CORRECT output:
-      "Cash at bank comprises deposits of CNY [Amount] held as at [Date]."
+      "Cash at bank comprises deposits of CNY [Amount] held as at [Date]. The balance primarily consists of..."
       
       Example of INCORRECT output:
-      "After refining, the content is: Cash at bank comprises..."
+      "**Cash**: CNY [Amount].
+      - Item 1
+      - Item 2"
   
   Chi:
     system_prompt: |
@@ -194,8 +203,14 @@
       8. **清除英文内容**: 删除所有英文技术字段名称和占位符。
       9. 保留解释性内容和背景 - 只有在真正冗余时才删减。
       
-      列表规则:
-      - 最多允许3个列表点。
+      格式规则:
+      - **禁止使用要点/列表形式**。请使用完整的句子和段落。
+      - **禁止使用粗体** (如 **关键词**) 或Markdown格式。
+      - **禁止使用格式** "**关键词** (关键词): 内容"。请自然书写。
+      - 使用连接词连接观点, 而不是列出它们。
+      
+      列表规则 (如果必须列出):
+      - 仅在段落叙述中使用逗号分隔, 不要换行。
       - 仅列出值>=总额25%的项目。
       - <25%的项目应汇总为"其他费用"或类似项。
       - 如果只有一个值存在, 则显示为总计而不列出。
@@ -221,23 +236,26 @@
       - 原始长度: {original_length}字符
       
       精炼清单:
-      1. 是否有超过3个列表点? → 减少到最多3个
+      1. 是否有列表点? → 转换为段落形式
       2. 所有列出的项目是否>=总额的25%? → 删除较小的项目
       3. 如果只有1个重要项目, 是否显示为总计? → 简化
       4. 内容长度是否保持? → 不要过度缩短, 保留背景信息
       5. 是否保留了日期、金额、实体? → 验证
       6. 是否使用了总计金额而非明细? → 确认
       7. 是否保留了解释和重要细节? → 验证
+      8. 格式是否为纯段落 (无粗体, 无列表)? → 强制执行
       
       关键: 仅输出精炼后的财务文本。
       不要包含精炼解释或元评论。
       不要说"精炼后的输出:"或"所做更改:"之类的话。
       
       正确输出示例:
-      "银行现金包括截至[日期]持有的人民币[金额]存款。"
+      "银行现金包括截至[日期]持有的人民币[金额]存款。主要构成为..."
       
       错误输出示例:
-      "经过精炼后, 内容为: 银行现金包括..."
+      "**银行现金**: 人民币[金额]。
+      - 项目1
+      - 项目2"
 
 4_Validator:
   name: "Validator"
@@ -277,6 +295,8 @@
          - Content should flow naturally
          - Avoid repetition
          - Use clear, concise language
+         - **NO bullet points**
+         - **NO bold text**
       
       IMPORTANT: If the content is already well-formatted and clear, output it as-is.
       Only make changes if there are actual issues to fix.
@@ -296,6 +316,7 @@
       2. Language professional and clear?
       3. Any redundancy or complexity to simplify?
       4. Overall readability good?
+      5. **Format check**: Ensure NO bullet points and NO bold text. Use paragraphs only.
       
       If already perfect, output unchanged.
       If needs improvement, output the improved version.
@@ -306,7 +327,7 @@
       "Cash at bank comprises deposits of CNY [Amount] held as at [Date]."
       
       Wrong example:
-      "After review, the content is: Cash at bank..."
+      "**Cash**: ..."
   
   Chi:
     system_prompt: |
@@ -326,6 +347,7 @@
          - 技术字段名: leasing_status_status → 租赁状态, account_type → 账户类型
          - 任何英文单词或下划线组合 → 删除或翻译为恰当的中文
          - 确保最终输出100%中文, 无任何英文或技术符号
+      8. **格式强制**: 禁止使用要点、列表或粗体字。必须使用标准段落格式。
       
       关键检查:
       
@@ -344,6 +366,7 @@
          - 删除外部引号
          - 检查整体一致性
          - 必要时确保适当的段落结构
+         - **禁止要点/列表/粗体**
       
       D. 可读性:
          - 内容应自然流畅
@@ -372,6 +395,7 @@
          - 英文占位符: Which Entity, Date, location, status等
          - 技术字段: leasing_status_status, account_type, _status, _type等
          - 确保输出100%纯中文, 删除所有英文单词、下划线组合和技术符号
+      6. **格式检查**: 确保没有要点、列表或粗体字。只使用段落。
       
       如果已经完美且全部中文, 原样输出。
       如果需要改进或有英文占位符, 输出改进后的版本。
@@ -382,4 +406,4 @@
       "银行现金包括截至[日期]持有的人民币[金额]存款。"
       
       错误示例:
-      "审核后, 内容为: 银行现金包括..."
+      "**银行现金**: ..."
