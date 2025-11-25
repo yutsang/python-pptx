@@ -466,16 +466,21 @@ if st.session_state.dfs is None:
                 key="entity_dropdown"
             )
             
-            # If dropdown changed, update text input
-            if selected_entity != prev_dropdown and selected_entity:
+            # If dropdown changed and has a value, update text input immediately
+            if selected_entity and selected_entity != prev_dropdown:
                 st.session_state.entity_name = selected_entity
                 st.session_state.prev_entity_dropdown = selected_entity
+                st.session_state.entity_text_input = selected_entity  # Force update text input
             
-            # Get current value for text input (prioritize dropdown selection)
-            text_input_value = st.session_state.get('entity_name', '')
-            if selected_entity and selected_entity != text_input_value:
+            # Get value for text input - prioritize dropdown selection
+            if selected_entity:
                 text_input_value = selected_entity
-                st.session_state.entity_name = selected_entity
+                # Update session state to match dropdown
+                if st.session_state.get('entity_name', '') != selected_entity:
+                    st.session_state.entity_name = selected_entity
+            else:
+                # Use existing value if dropdown is empty
+                text_input_value = st.session_state.get('entity_name', '')
             
             # Editable text box - automatically copies dropdown selection
             entity_name = st.text_input(
@@ -490,8 +495,12 @@ if st.session_state.dfs is None:
             # Update session state when text changes (user edits)
             if entity_name:
                 st.session_state.entity_name = entity_name
-                # If user manually edited, update prev_dropdown to prevent auto-overwrite
-                if entity_name != selected_entity:
+                # If user manually edited and it's different from dropdown, track it
+                if entity_name != selected_entity and selected_entity:
+                    # User edited manually, keep their edit
+                    st.session_state.prev_entity_dropdown = selected_entity
+                elif entity_name == selected_entity:
+                    # Text matches dropdown, sync them
                     st.session_state.prev_entity_dropdown = selected_entity
         else:
             # Initialize if not exists
@@ -998,15 +1007,76 @@ else:
                 status_placeholder.info(f"🚀 Starting AI pipeline for {total_items} accounts... | Progress: 0/{total_steps} steps | ETA: Calculating...")
                 progress_placeholder.progress(0)
 
-                # Run the actual pipeline with progress updates
-                results = run_ai_pipeline_with_progress(
-                    mapping_keys=st.session_state.workbook_list,
-                    dfs=st.session_state.dfs,
-                    model_type=st.session_state.get('model_type', 'local'),
-                    language=st.session_state.language,
-                    use_multithreading=True,
-                    progress_callback=update_progress
-                )
+                # Run the actual pipeline with progress updates - with timeout and retry
+                import threading
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+                
+                def run_ai_with_timeout(timeout_seconds=10):
+                    """Run AI pipeline with timeout"""
+                    result_container = {'result': None, 'error': None, 'completed': False}
+                    
+                    def run_ai():
+                        try:
+                            result_container['result'] = run_ai_pipeline_with_progress(
+                                mapping_keys=st.session_state.workbook_list,
+                                dfs=st.session_state.dfs,
+                                model_type=st.session_state.get('model_type', 'local'),
+                                language=st.session_state.language,
+                                use_multithreading=True,
+                                progress_callback=update_progress
+                            )
+                            result_container['completed'] = True
+                        except Exception as e:
+                            result_container['error'] = e
+                            result_container['completed'] = True
+                    
+                    thread = threading.Thread(target=run_ai)
+                    thread.daemon = True
+                    thread.start()
+                    thread.join(timeout=timeout_seconds)
+                    
+                    if not result_container['completed']:
+                        # Thread is still running, timeout occurred
+                        raise TimeoutError(f"AI processing timed out after {timeout_seconds} seconds")
+                    
+                    if result_container['error']:
+                        raise result_container['error']
+                    
+                    return result_container['result']
+                
+                # Retry logic: 3 attempts with 10 second timeout each
+                max_retries = 3
+                timeout_seconds = 10
+                results = None
+                last_error = None
+                
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        status_placeholder.info(f"🔄 Attempt {attempt}/{max_retries}: Starting AI processing (timeout: {timeout_seconds}s)...")
+                        results = run_ai_with_timeout(timeout_seconds)
+                        status_placeholder.success(f"✅ AI processing completed successfully on attempt {attempt}")
+                        break
+                    except TimeoutError as e:
+                        last_error = e
+                        if attempt < max_retries:
+                            status_placeholder.warning(f"⏱️ {str(e)} - Retrying ({attempt}/{max_retries})...")
+                            import time
+                            time.sleep(1)  # Brief pause before retry
+                        else:
+                            status_placeholder.error(f"❌ AI processing failed after {max_retries} attempts: {str(e)}")
+                            raise
+                    except Exception as e:
+                        last_error = e
+                        if attempt < max_retries:
+                            status_placeholder.warning(f"⚠️ Error on attempt {attempt}: {str(e)} - Retrying...")
+                            import time
+                            time.sleep(1)  # Brief pause before retry
+                        else:
+                            status_placeholder.error(f"❌ AI processing failed after {max_retries} attempts: {str(e)}")
+                            raise
+                
+                if results is None:
+                    raise Exception(f"AI processing failed after {max_retries} attempts. Last error: {last_error}")
 
                 # Log results for debugging
                 if results:
