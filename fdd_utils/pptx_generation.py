@@ -430,7 +430,7 @@ class PowerPointGenerator:
                         run.font.size = get_font_size_for_text(summary)
                         run.font.name = get_font_name_for_text(summary)
             
-            # Fill textMainBullets with commentary
+            # Fill textMainBullets with commentary (AI output)
             bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
             if bullets_shape and bullets_shape.has_text_frame:
                 bullets_shape.text_frame.clear()
@@ -448,8 +448,11 @@ class PowerPointGenerator:
                         p.text = line
                         p.level = 0  # Bullet level
                         for run in p.runs:
-                            run.font.size = get_font_size_for_text(line)
+                            run.font.size = get_font_size_for_text(line, force_chinese_mode=is_chinese)
                             run.font.name = get_font_name_for_text(line)
+                logger.info(f"Filled textMainBullets with commentary on slide {slide_idx + 1}")
+            else:
+                logger.warning(f"textMainBullets not found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
     
     def _fill_table_placeholder(self, shape, df):
         """Fill table placeholder with DataFrame data"""
@@ -514,6 +517,66 @@ class PowerPointGenerator:
                 text_repr = str(df.head(10))
                 p = shape.text_frame.paragraphs[0] if shape.text_frame.paragraphs else shape.text_frame.add_paragraph()
                 p.text = text_repr
+
+    def embed_financial_tables(self, excel_path: str, sheet_name: str, project_name: str, language: str):
+        """Embed financial tables: BS to page 1, IS to page 5"""
+        try:
+            import pandas as pd
+            from fdd_utils.financial_extraction import extract_balance_sheet_and_income_statement
+            
+            logger.info(f"Embedding financial tables from {excel_path}, sheet: {sheet_name}")
+            
+            # Use the existing extraction function
+            bs_is_results = extract_balance_sheet_and_income_statement(excel_path, sheet_name, debug=False)
+            if not bs_is_results:
+                logger.warning("No BS/IS data extracted")
+                return
+            
+            # Extract BS and IS DataFrames from results
+            # The structure should have 'balance_sheet' and 'income_statement' keys with DataFrames
+            bs_df = bs_is_results.get('balance_sheet')
+            is_df = bs_is_results.get('income_statement')
+            
+            logger.info(f"Extracted BS: {bs_df.shape if bs_df is not None else 'None'}, IS: {is_df.shape if is_df is not None else 'None'}")
+            
+            # Embed BS table to slide 0 (page 1)
+            if bs_df is not None and not bs_df.empty and len(self.presentation.slides) > 0:
+                slide_0 = self.presentation.slides[0]
+                table_shape = self.find_shape_by_name(slide_0.shapes, "Table Placeholder")
+                if not table_shape:
+                    # Try alternative names
+                    for name in ["Table Placeholder 2", "Table"]:
+                        table_shape = self.find_shape_by_name(slide_0.shapes, name)
+                        if table_shape:
+                            break
+                
+                if table_shape:
+                    logger.info(f"Found table shape on slide 1, embedding BS table ({bs_df.shape})")
+                    self._fill_table_placeholder(table_shape, bs_df)
+                else:
+                    logger.warning(f"Table Placeholder not found on slide 1 for BS table")
+            
+            # Embed IS table to slide 4 (page 5, 0-indexed)
+            if is_df is not None and not is_df.empty and len(self.presentation.slides) > 4:
+                slide_4 = self.presentation.slides[4]
+                table_shape = self.find_shape_by_name(slide_4.shapes, "Table Placeholder")
+                if not table_shape:
+                    # Try alternative names
+                    for name in ["Table Placeholder 2", "Table"]:
+                        table_shape = self.find_shape_by_name(slide_4.shapes, name)
+                        if table_shape:
+                            break
+                
+                if table_shape:
+                    logger.info(f"Found table shape on slide 5, embedding IS table ({is_df.shape})")
+                    self._fill_table_placeholder(table_shape, is_df)
+                else:
+                    logger.warning(f"Table Placeholder not found on slide 5 for IS table")
+                    
+        except Exception as e:
+            logger.error(f"Error embedding financial tables: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     def save(self, output_path: str):
         """Save the presentation"""
@@ -612,6 +675,59 @@ def export_pptx(template_path: str, markdown_path: str, output_path: str,
 
     logger.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
     return output_path
+
+
+def export_pptx_from_structured_data_combined(template_path: str, bs_data: List[Dict], is_data: List[Dict], 
+                                              output_path: str, project_name: Optional[str] = None, 
+                                              language: str = 'english', temp_path: Optional[str] = None,
+                                              selected_sheet: Optional[str] = None):
+    """
+    Export ONE combined PowerPoint presentation with both BS and IS
+    
+    Args:
+        template_path: Path to PPTX template
+        bs_data: List of BS account data dicts
+        is_data: List of IS account data dicts
+        output_path: Output PPTX file path
+        project_name: Project/entity name for titles
+        language: Language ('english' or 'chinese')
+        temp_path: Path to Excel file for table embedding
+        selected_sheet: Sheet name for table embedding
+    """
+    try:
+        logger.info(f"Starting COMBINED PPTX generation...")
+        logger.info(f"Template: {template_path}")
+        logger.info(f"Output: {output_path}")
+        logger.info(f"Language: {language}")
+        logger.info(f"BS accounts: {len(bs_data)}, IS accounts: {len(is_data)}")
+
+        # Load template
+        generator = PowerPointGenerator(template_path, language, row_limit=20)
+        generator.load_template()
+
+        # Apply BS data to slides 1-4
+        if bs_data:
+            generator.apply_structured_data_to_slides(bs_data, 1, project_name, 'BS')
+        
+        # Apply IS data to slides 5-8
+        if is_data:
+            generator.apply_structured_data_to_slides(is_data, 5, project_name, 'IS')
+        
+        # Embed financial tables: BS to page 1, IS to page 5
+        if temp_path and selected_sheet:
+            generator.embed_financial_tables(temp_path, selected_sheet, project_name, language)
+        
+        # Save presentation
+        generator.save(output_path)
+        
+        logger.info(f"✅ Combined PPTX generation completed: {output_path}")
+        return output_path
+        
+    except Exception as e:
+        logger.error(f"PPTX generation failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise
 
 
 def export_pptx_from_structured_data(template_path: str, structured_data: List[Dict], output_path: str,

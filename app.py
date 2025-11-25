@@ -223,31 +223,17 @@ def generate_pptx_presentation():
                     st.info(f"DEBUG: DFS keys: {list(st.session_state.dfs.keys())[:10] if st.session_state.dfs else 'None'}")
                     return
 
-                # Generate individual presentations - keep them separate, use structured data
-                generated_files = []
-                output_files = []
-
-                if bs_data:
-                    bs_output_path = os.path.join(output_dir, f"{sanitized_entity}_BS_{timestamp}.pptx")
-                    from fdd_utils.pptx_generation import export_pptx_from_structured_data
-                    export_pptx_from_structured_data(
-                        template_path, bs_data, bs_output_path, project_name,
-                        language='chinese' if language == 'Chn' else 'english',
-                        statement_type='BS', start_slide=1
-                    )
-                    generated_files.append(bs_output_path)
-                    output_files.append(('BS', bs_output_path))
-
-                if is_data:
-                    is_output_path = os.path.join(output_dir, f"{sanitized_entity}_IS_{timestamp}.pptx")
-                    from fdd_utils.pptx_generation import export_pptx_from_structured_data
-                    export_pptx_from_structured_data(
-                        template_path, is_data, is_output_path, project_name,
-                        language='chinese' if language == 'Chn' else 'english',
-                        statement_type='IS', start_slide=5
-                    )
-                    generated_files.append(is_output_path)
-                    output_files.append(('IS', is_output_path))
+                # Generate ONE combined presentation with both BS and IS
+                combined_output_path = os.path.join(output_dir, f"{sanitized_entity}_{timestamp}.pptx")
+                from fdd_utils.pptx_generation import export_pptx_from_structured_data_combined
+                export_pptx_from_structured_data_combined(
+                    template_path, bs_data, is_data, combined_output_path, project_name,
+                    language='chinese' if language == 'Chn' else 'english',
+                    temp_path=temp_path if 'temp_path' in locals() else st.session_state.get('temp_path'),
+                    selected_sheet=st.session_state.get('selected_sheet')
+                )
+                generated_files = [combined_output_path]
+                output_files = [('Combined', combined_output_path)]
 
                 if not generated_files:
                     st.error("❌ No presentations generated")
@@ -425,10 +411,86 @@ def get_financial_sheets(file_path: str) -> List[str]:
 # Initialize
 init_session_state()
 
-# Title
-st.title("📊 Financial Data Processing & AI Generation")
+# Title with refresh button
+col_title, col_refresh = st.columns([10, 1])
+with col_title:
+    st.title("📊 Financial Data Processing & AI Generation")
+with col_refresh:
+    if st.button("🔄", help="Refresh page and reset", use_container_width=True, key="refresh_main"):
+        # Clear session state to reset
+        for key in ['dfs', 'workbook_list', 'language', 'bs_is_results', 'ai_results', 
+                    'reconciliation', 'entity_name', 'project_name', 'pptx_ready', 
+                    'pptx_download_data', 'pptx_download_filename', 'pptx_download_mime']:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.rerun()
 
-# Sidebar
+# Show entity name and financial sheet selection in main area (only if data not processed)
+if st.session_state.dfs is None:
+    # Entity name and financial sheet in parallel
+    col_entity, col_sheet = st.columns(2)
+    
+    with col_entity:
+        st.markdown("**🏢 Entity Name**")
+        # Get temp_path from sidebar state
+        temp_path = st.session_state.get('temp_path', None)
+        if temp_path and os.path.exists(temp_path):
+            entity_options = get_entity_names(temp_path)
+            selected_entity = st.selectbox(
+                label="Select entity from list",
+                options=[""] + entity_options,
+                help="Select an entity from the list",
+                label_visibility="collapsed",
+                key="entity_dropdown"
+            )
+            entity_name = st.text_input(
+                label="Or type/modify entity name",
+                value=selected_entity if selected_entity else "",
+                placeholder="Enter or modify entity name...",
+                help="Type a custom entity name or modify the selected one",
+                label_visibility="collapsed",
+                key="entity_text_input"
+            )
+        else:
+            entity_name = st.text_input(
+                label="Entity name",
+                placeholder="Enter entity name...",
+                label_visibility="collapsed",
+                key="entity_text_input"
+            )
+    
+    with col_sheet:
+        st.markdown("**📊 Financial Statement Sheet**")
+        temp_path = st.session_state.get('temp_path', None)
+        if temp_path and os.path.exists(temp_path):
+            sheet_options = get_financial_sheets(temp_path)
+            if sheet_options:
+                selected_sheet = st.selectbox(
+                    label="Select sheet",
+                    options=sheet_options,
+                    help="Sheet containing both BS and IS",
+                    label_visibility="collapsed",
+                    key="sheet_select"
+                )
+            else:
+                st.warning("No sheets found")
+                selected_sheet = None
+        else:
+            st.info("Upload file first")
+            selected_sheet = None
+    
+    # Process button
+    if st.button("🚀 Process Data", type="primary", use_container_width=True, key="process_data_main"):
+        temp_path = st.session_state.get('temp_path', None)
+        if not temp_path:
+            st.error("Please upload a file first")
+        else:
+            st.session_state.entity_name = entity_name
+            st.session_state.selected_sheet = selected_sheet
+            st.session_state.process_data_clicked = True
+            st.rerun()
+
+# Sidebar - simplified
 with st.sidebar:
     st.header("⚙️ Configuration")
     
@@ -440,9 +502,11 @@ with st.sidebar:
         temp_path = "databook.xlsx"
         if os.path.exists(temp_path):
             st.success(f"✅ Using: {temp_path}")
+            st.session_state.temp_path = temp_path
         else:
             st.error(f"❌ File not found: {temp_path}")
             temp_path = None
+            st.session_state.temp_path = None
     else:
         uploaded_file = st.file_uploader(
             "Upload Excel",
@@ -456,50 +520,13 @@ with st.sidebar:
                 tmp_file.write(uploaded_file.getvalue())
                 temp_path = tmp_file.name
             st.success(f"✅ File uploaded: {uploaded_file.name}")
+            st.session_state.temp_path = temp_path
         else:
             temp_path = None
+            st.session_state.temp_path = None
     
+    # Model selection (radio buttons)
     if temp_path:
-        # Entity name selection (dropdown + text box)
-        st.markdown("---")
-        st.markdown("**🏢 Entity Name**")
-        entity_options = get_entity_names(temp_path)
-        
-        # Dropdown for selection
-        selected_entity = st.selectbox(
-            label="Select entity from list",
-            options=[""] + entity_options,
-            help="Select an entity from the list",
-            label_visibility="collapsed",
-            key="entity_dropdown"
-        )
-        
-        # Text box for modification/custom input
-        entity_name = st.text_input(
-            label="Or type/modify entity name",
-            value=selected_entity if selected_entity else "",
-            placeholder="Enter or modify entity name...",
-            help="Type a custom entity name or modify the selected one",
-            label_visibility="collapsed",
-            key="entity_text_input"
-        )
-        
-        # Financial statement sheet selection
-        st.markdown("---")
-        st.markdown("**📊 Financial Statement Sheet**")
-        sheet_options = get_financial_sheets(temp_path)
-        if sheet_options:
-            selected_sheet = st.selectbox(
-                label="Select sheet",
-                options=sheet_options,
-                help="Sheet containing both BS and IS",
-                label_visibility="collapsed"
-            )
-        else:
-            st.warning("No sheets found")
-            selected_sheet = None
-        
-        # Model selection (radio buttons)
         st.markdown("---")
         st.markdown("**🤖 AI Model**")
         model_type = st.radio(
@@ -507,70 +534,80 @@ with st.sidebar:
             options=['local', 'openai', 'deepseek'],
             index=0,
             help="AI model for content generation",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
+            key="model_type"
         )
-        
-        # Process button
-        st.markdown("---")
-        if st.button("🚀 Process Data", type="primary", use_container_width=True):
-            with st.spinner("Processing..."):
-                try:
-                    # Extract account-by-account data
-                    dfs, workbook_list, _, language = extract_data_from_excel(
-                        databook_path=temp_path,
-                        entity_name=entity_name,
-                        mode="All"  # Always use All mode
+        st.session_state.model_type = model_type
+
+# Process data if button was clicked
+if st.session_state.get('process_data_clicked', False):
+    st.session_state.process_data_clicked = False
+    temp_path = st.session_state.get('temp_path', None)
+    entity_name = st.session_state.get('entity_name', '')
+    selected_sheet = st.session_state.get('selected_sheet', None)
+    
+    if temp_path:
+        with st.spinner("Processing..."):
+            try:
+                # Extract account-by-account data
+                dfs, workbook_list, _, language = extract_data_from_excel(
+                    databook_path=temp_path,
+                    entity_name=entity_name,
+                    mode="All"  # Always use All mode
+                )
+                
+                # Extract BS/IS from single sheet
+                bs_is_results = None
+                if selected_sheet:
+                    bs_is_results = extract_balance_sheet_and_income_statement(
+                        workbook_path=temp_path,
+                        sheet_name=selected_sheet,
+                        debug=False
                     )
-                    
-                    # Extract BS/IS from single sheet
-                    bs_is_results = None
-                    if selected_sheet:
-                        bs_is_results = extract_balance_sheet_and_income_statement(
-                            workbook_path=temp_path,
-                            sheet_name=selected_sheet,
-                            debug=False
-                        )
-                    
-                    # Reconcile if both sources available
-                    recon_bs, recon_is = None, None
-                    if dfs and bs_is_results:
-                        recon_bs, recon_is = reconcile_financial_statements(
-                            bs_is_results=bs_is_results,
-                            dfs=dfs,
-                            tolerance=1.0,
-                            materiality_threshold=0.005,
-                            debug=False
-                        )
-                    
-                    # Store in session state
-                    st.session_state.dfs = dfs
-                    st.session_state.workbook_list = workbook_list
-                    st.session_state.language = language
-                    st.session_state.bs_is_results = bs_is_results
-                    st.session_state.reconciliation = (recon_bs, recon_is)
-                    st.session_state.model_type = model_type
-                    st.session_state.project_name = bs_is_results.get('project_name') if bs_is_results else None
-                    st.session_state.entity_name = entity_name
-                    
-                    st.success("✅ Data processed successfully!")
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"❌ Error processing data: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
+                
+                # Reconcile if both sources available
+                recon_bs, recon_is = None, None
+                if dfs and bs_is_results:
+                    recon_bs, recon_is = reconcile_financial_statements(
+                        bs_is_results=bs_is_results,
+                        dfs=dfs,
+                        tolerance=1.0,
+                        materiality_threshold=0.005,
+                        debug=False
+                    )
+                
+                # Store in session state
+                st.session_state.dfs = dfs
+                st.session_state.workbook_list = workbook_list
+                st.session_state.language = language
+                st.session_state.bs_is_results = bs_is_results
+                st.session_state.reconciliation = (recon_bs, recon_is)
+                model_type = st.session_state.get('model_type', 'local')
+                st.session_state.model_type = model_type
+                st.session_state.project_name = bs_is_results.get('project_name') if bs_is_results else None
+                st.session_state.entity_name = entity_name
+                
+                st.success("✅ Data processed successfully!")
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"❌ Error processing data: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
 # Main content
 if st.session_state.dfs is None:
-    st.info("👈 Upload a databook and click 'Process Data' to begin")
+    st.info("👈 Upload a databook, set entity name and sheet, then click 'Process Data' to begin")
 else:
-    # Refresh button in top right
-    col_title, col_refresh = st.columns([10, 1])
-    with col_title:
+    # Data Display header with reports count on right
+    col_display, col_reports = st.columns([8, 2])
+    with col_display:
         st.header("📈 Data Display")
-    with col_refresh:
-        if st.button("🔄", help="Refresh page", use_container_width=True):
-            st.rerun()
+    with col_reports:
+        # Count matches
+        if st.session_state.workbook_list:
+            matches_count = len([k for k in st.session_state.workbook_list if k in st.session_state.dfs])
+            st.metric("Reports", matches_count)
     
     # Load mappings to filter accounts by type
     from fdd_utils.reconciliation import load_mappings
