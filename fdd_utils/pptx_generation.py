@@ -607,6 +607,11 @@ class PowerPointGenerator:
                             }
                             category_text = category_translations.get(category, category)
                         
+                        # Add "(continued)" or "(续)" if this slide needs continuation
+                        if needs_continuation and account_idx == 0:  # First account on this slide
+                            cont_text = " (续)" if (is_chinese or is_chinese_databook) else " (continued)"
+                            category_text += cont_text
+                        
                         run_category.text = category_text
                         run_category.font.size = Pt(9)
                         run_category.font.name = 'Arial'
@@ -630,23 +635,31 @@ class PowerPointGenerator:
                         is_chinese_databook=is_chinese_databook, needs_continuation=needs_cont
                     )
                 
-                # Generate combined summary for this slide from all accounts
-                all_summaries = []
+                # Generate AI summary for this slide from all commentary
+                all_commentary = []
                 for account_data in account_data_list:
-                    summary = account_data.get('summary', '')
-                    if summary:
-                        all_summaries.append(summary)
+                    commentary = account_data.get('commentary', '')
+                    if commentary:
+                        all_commentary.append(commentary)
                 
-                # Fill coSummaryShape with combined summary
+                # Fill coSummaryShape with AI-generated summary
                 summary_shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
                 if summary_shape and summary_shape.has_text_frame:
                     summary_shape.text_frame.clear()
-                    if all_summaries:
-                        combined_summary = ' '.join(all_summaries[:3])  # First 3 summaries
-                        if len(combined_summary) > 200:
-                            combined_summary = combined_summary[:200] + "..."
-                        p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
-                        p.text = combined_summary
+                    if all_commentary:
+                        # Combine all commentary for this page
+                        page_commentary = '\n\n'.join(all_commentary)
+                        # Generate summary using AI
+                        ai_summary = self._generate_ai_summary(page_commentary, is_chinese_databook)
+                        if ai_summary:
+                            p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
+                            p.text = ai_summary
+                        else:
+                            # Fallback to simple summary
+                            combined_summary = ' '.join([acc.get('summary', '')[:50] for acc in account_data_list if acc.get('summary')])[:200]
+                            if combined_summary:
+                                p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
+                                p.text = combined_summary
                         is_chinese = account_data_list[0].get('is_chinese', False) if account_data_list else False
                         for run in p.runs:
                             run.font.size = get_font_size_for_text(combined_summary, force_chinese_mode=is_chinese)
@@ -691,23 +704,67 @@ class PowerPointGenerator:
                     logger.debug(traceback.format_exc())
     
     def _fill_table_placeholder(self, shape, df):
-        """Fill table placeholder with DataFrame data, preserving original formatting (from backup method)"""
+        """Fill table placeholder with DataFrame data, preserving original formatting"""
         try:
-            # Check if shape has a table (Table Placeholder might be a table shape)
-            # First check if it's a table shape directly
+            # Check if shape is a TablePlaceholder (textbox placeholder)
+            from pptx.shapes.placeholder import TablePlaceholder
+            
             table = None
-            if hasattr(shape, 'table') and shape.table:
-                table = shape.table
-                logger.info(f"Found table with {len(table.rows)} rows and {len(table.columns)} columns")
-            elif hasattr(shape, 'insert_table'):
-                # If it's a placeholder that can be converted to table, try that
-                logger.warning(f"Shape is a placeholder, trying to access as table...")
-                # Try to get table from placeholder
+            # Check if it's a TablePlaceholder (textbox placeholder named "Table Placeholder")
+            is_table_placeholder = False
+            try:
+                is_table_placeholder = isinstance(shape, TablePlaceholder)
+            except:
+                # Check by name
+                if hasattr(shape, 'name') and 'Table' in shape.name and 'Placeholder' in shape.name:
+                    is_table_placeholder = True
+            
+            if is_table_placeholder:
+                # It's a table placeholder - insert a table into it
+                logger.info(f"Found TablePlaceholder ({shape.name if hasattr(shape, 'name') else 'unnamed'}), inserting table with {len(df)} rows and {len(df.columns)} columns")
                 try:
-                    if hasattr(shape, 'table'):
-                        table = shape.table
-                except:
-                    pass
+                    # Get placeholder dimensions
+                    left = shape.left
+                    top = shape.top
+                    width = shape.width
+                    height = shape.height
+                    
+                    # Find the slide containing this shape
+                    slide = None
+                    for s in self.presentation.slides:
+                        if shape in s.shapes:
+                            slide = s
+                            break
+                    
+                    if slide:
+                        # Remove the placeholder shape
+                        sp = shape._element
+                        slide.shapes._spTree.remove(sp)
+                        
+                        # Add new table at the same position
+                        table_shape = slide.shapes.add_table(
+                            rows=len(df) + 1,  # +1 for header
+                            cols=len(df.columns),
+                            left=left,
+                            top=top,
+                            width=width,
+                            height=height
+                        )
+                        table = table_shape.table
+                        logger.info(f"✅ Inserted new table: {len(table.rows)} rows, {len(table.columns)} columns")
+                except Exception as e:
+                    logger.error(f"Could not insert table into placeholder: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
+            elif hasattr(shape, 'table'):
+                # Try to access existing table
+                try:
+                    table = shape.table
+                    logger.info(f"Found existing table with {len(table.rows)} rows and {len(table.columns)} columns")
+                except ValueError:
+                    # Shape doesn't contain a table
+                    logger.warning(f"Shape has table attribute but doesn't contain a table")
+                    table = None
             
             if table:
                 
@@ -1041,30 +1098,7 @@ class PowerPointGenerator:
             except:
                 pass
         
-        # Add continuation marker if needed
-        if needs_continuation:
-            p_cont = text_frame.add_paragraph()
-            p_cont.level = 0
-            try:
-                p_cont.left_indent = Inches(0.15)
-                p_cont.first_line_indent = Inches(-0.15)
-                p_cont.space_before = Pt(0)
-                p_cont.space_after = Pt(6)
-                p_cont.line_spacing = 1.0
-            except:
-                pass
-            
-            run_cont = p_cont.add_run()
-            cont_text = "(续)" if (is_chinese or is_chinese_databook) else "(continued)"
-            run_cont.text = cont_text
-            run_cont.font.size = Pt(9)
-            run_cont.font.name = 'Arial'
-            run_cont.font.bold = False
-            run_cont.font.italic = True
-            try:
-                run_cont.font.color.rgb = RGBColor(128, 128, 128)  # Grey
-            except:
-                pass
+        # Note: "(continued)" is now added to category header, not here
     
     def _fill_text_main_bullets_with_levels(self, text_frame, commentary: str, is_chinese: bool):
         """
@@ -1150,6 +1184,34 @@ class PowerPointGenerator:
                 pass
             
             lines_added += 1
+    
+    def _generate_ai_summary(self, commentary: str, is_chinese: bool) -> str:
+        """Generate AI summary from page commentary"""
+        try:
+            from fdd_utils.ai_helper import AIHelper
+            
+            # Create summary prompt
+            if is_chinese:
+                prompt = f"请为以下内容生成一个简洁的摘要（不超过200字）：\n\n{commentary[:2000]}"
+            else:
+                prompt = f"Please generate a concise summary (max 200 words) for the following content:\n\n{commentary[:2000]}"
+            
+            # Call AI
+            ai_helper = AIHelper()
+            response = ai_helper.call_ai(prompt, max_tokens=200)
+            
+            if response and response.strip():
+                summary = response.strip()
+                # Limit to 200 characters
+                if len(summary) > 200:
+                    summary = summary[:197] + "..."
+                return summary
+        except Exception as e:
+            logger.warning(f"Could not generate AI summary: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+        
+        return None
     
     def _generate_page_summary(self, commentary: str, is_chinese: bool) -> str:
         """
