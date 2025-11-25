@@ -506,7 +506,7 @@ class PowerPointGenerator:
         distribution = self._distribute_content_across_slides(structured_data, max_slides=4)
         
         # Ensure we have enough slides
-        max_slide_idx = max((slide_idx for slide_idx, _ in distribution), default=0)
+        max_slide_idx = max((slide_idx for slide_idx, _, _ in distribution), default=0)
         needed_slides = start_slide + max_slide_idx
         current_slide_count = len(self.presentation.slides)
         
