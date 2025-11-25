@@ -710,8 +710,12 @@ class PowerPointGenerator:
                             p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
                             p.text = ai_summary
                         else:
-                            # Fallback to simple summary
-                            combined_summary = ' '.join([acc.get('summary', '')[:50] for acc in account_data_list if acc.get('summary')])[:200]
+                            # Fallback to simple summary using _generate_page_summary which is smarter
+                            # Combine all summaries first
+                            raw_combined = ' '.join([acc.get('summary', '') for acc in account_data_list if acc.get('summary')])
+                            # Use the smarter generation function instead of hard truncation
+                            combined_summary = self._generate_page_summary(raw_combined, is_chinese_databook)
+                            
                             if combined_summary:
                                 p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
                                 p.text = combined_summary
@@ -870,6 +874,10 @@ class PowerPointGenerator:
                 if table_name:
                     # Insert a new row at the top for table name
                     try:
+                        # Ensure table has at least one row
+                        if len(table.rows) == 0:
+                            table.rows.add_row()
+                            
                         name_row = table.rows[0]  # Use first row for name
                         # Merge all cells in first row for table name
                         if len(table.columns) > 1:
@@ -1400,14 +1408,14 @@ Original content:
             if current_sentence.strip():
                 sentences.append(current_sentence.strip())
             
-            # Take first 3-5 complete sentences as summary (~200 words equivalent)
+            # Take first 5-8 complete sentences as summary (~300 words equivalent)
             # Don't hard limit by characters - take complete sentences
             summary_parts = []
             word_count = 0
-            for sentence in sentences[:5]:  # Up to 5 sentences
+            for sentence in sentences[:8]:  # Up to 8 sentences
                 summary_parts.append(sentence)
                 word_count += len(sentence)
-                if word_count >= 150:  # Rough target of ~150-200 Chinese characters
+                if word_count >= 250:  # Target ~250-300 Chinese characters
                     break
             
             summary = ''.join(summary_parts)
@@ -1416,12 +1424,12 @@ Original content:
             sentences = commentary.split('.')
             summary_parts = []
             word_count = 0
-            for sentence in sentences[:5]:  # Up to 5 sentences
+            for sentence in sentences[:8]:  # Up to 8 sentences
                 sentence = sentence.strip()
                 if sentence:
                     summary_parts.append(sentence + '.')
                     word_count += len(sentence.split())
-                    if word_count >= 50:  # Target ~50-80 words for English
+                    if word_count >= 100:  # Target ~100-150 words for English
                         break
             
             summary = ' '.join(summary_parts)

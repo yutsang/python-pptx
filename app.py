@@ -342,6 +342,12 @@ def generate_pptx_presentation():
                 is_chinese_databook = (language == 'Chn')
                 # Get temp_path and selected_sheet from session state
                 excel_temp_path = st.session_state.get('temp_path')
+                # Fallback to default if temp_path is missing or invalid
+                if not excel_temp_path or not os.path.exists(excel_temp_path):
+                    if os.path.exists("databook.xlsx"):
+                        excel_temp_path = "databook.xlsx"
+                        print(f"DEBUG: temp_path invalid, falling back to {excel_temp_path}")
+                
                 excel_selected_sheet = st.session_state.get('selected_sheet')
                 print(f"DEBUG: Embedding tables from: {excel_temp_path}, sheet: {excel_selected_sheet}")
                 export_pptx_from_structured_data_combined(
