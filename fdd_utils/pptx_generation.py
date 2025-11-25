@@ -621,10 +621,12 @@ class PowerPointGenerator:
                 logger.info(f"Filled slide {actual_slide_idx + 1} with {len(account_data_list)} accounts")
         
         # Remove unused slides for this statement type
+        # Slides range: start_slide to start_slide + 3 (4 slides total, 0-indexed: start_slide-1 to start_slide+2)
         statement_slide_range = list(range(start_slide - 1, min(start_slide + 3, len(self.presentation.slides))))
         unused_slides = [idx for idx in statement_slide_range if idx not in used_slide_indices]
         
         if unused_slides:
+            logger.info(f"Found {len(unused_slides)} unused slides for {statement_type}: {[idx + 1 for idx in unused_slides]}")
             self._remove_slides(unused_slides)
             logger.info(f"Removed {len(unused_slides)} unused slides for {statement_type}")
     
@@ -637,14 +639,22 @@ class PowerPointGenerator:
                     # Use XML-based removal (from backup method)
                     xml_slides = self.presentation.slides._sldIdLst
                     slides = list(xml_slides)
-                    # Remove relationship
-                    rId = slides[slide_idx].rId
-                    self.presentation.part.drop_rel(rId)
-                    # Remove from XML
-                    xml_slides.remove(slides[slide_idx])
-                    logger.info(f"Removed slide {slide_idx + 1}")
+                    
+                    if slide_idx < len(slides):
+                        # Get the slide element to remove
+                        slide_element = slides[slide_idx]
+                        # Remove relationship
+                        rId = slide_element.rId
+                        self.presentation.part.drop_rel(rId)
+                        # Remove from XML
+                        xml_slides.remove(slide_element)
+                        logger.info(f"Removed slide {slide_idx + 1}")
+                    else:
+                        logger.warning(f"Slide index {slide_idx} out of range (only {len(slides)} slides)")
                 except Exception as e:
                     logger.warning(f"Could not remove slide {slide_idx + 1}: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
     
     def _fill_table_placeholder(self, shape, df):
         """Fill table placeholder with DataFrame data, preserving original formatting (from backup method)"""
@@ -1154,11 +1164,25 @@ class PowerPointGenerator:
                 else:
                     logger.warning(f"Table Placeholder not found on slide 1 for BS table")
             
-            # Embed IS table to slide 4 (page 5, 0-indexed) - first IS slide
+            # Embed IS table to first IS slide (slide 5, 1-indexed = slide index 4, 0-indexed)
             # IS data starts at slide 5 (1-indexed) = slide index 4 (0-indexed)
             if is_df is not None and not is_df.empty:
-                # Find the first IS slide (should be at index 4, but check if slides exist)
-                is_slide_idx = 4  # First IS slide (0-indexed, page 5)
+                # Find the first IS slide - it should be at index 4 (page 5)
+                # But after removing unused slides, we need to find the actual first IS slide
+                is_slide_idx = None
+                # Look for first slide that has IS content (starting from index 4)
+                for idx in range(4, min(8, len(self.presentation.slides))):
+                    slide = self.presentation.slides[idx]
+                    # Check if this slide has content (has textMainBullets with content)
+                    bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
+                    if bullets_shape and bullets_shape.has_text_frame and bullets_shape.text:
+                        is_slide_idx = idx
+                        break
+                
+                # If no content found, use index 4 as default
+                if is_slide_idx is None:
+                    is_slide_idx = 4
+                
                 if len(self.presentation.slides) > is_slide_idx:
                     is_slide = self.presentation.slides[is_slide_idx]
                     table_shape = self.find_shape_by_name(is_slide.shapes, "Table Placeholder")
@@ -1173,7 +1197,7 @@ class PowerPointGenerator:
                         logger.info(f"Found table shape on slide {is_slide_idx + 1}, embedding IS table ({is_df.shape})")
                         self._fill_table_placeholder(table_shape, is_df)
                     else:
-                        logger.warning(f"Table Placeholder not found on slide {is_slide_idx + 1} for IS table")
+                        logger.warning(f"Table Placeholder not found on slide {is_slide_idx + 1} for IS table, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in is_slide.shapes]}")
                 else:
                     logger.warning(f"Slide {is_slide_idx + 1} does not exist for IS table (only {len(self.presentation.slides)} slides)")
                     
@@ -1318,6 +1342,8 @@ def export_pptx_from_structured_data_combined(template_path: str, bs_data: List[
             generator.apply_structured_data_to_slides(is_data, 5, project_name, 'IS')
         
         # Embed financial tables: BS to page 1, IS to page 5
+        # IMPORTANT: Do this AFTER applying data and removing unused slides
+        # This ensures the correct slides exist and tables are embedded properly
         if temp_path and selected_sheet:
             generator.embed_financial_tables(temp_path, selected_sheet, project_name, language)
         

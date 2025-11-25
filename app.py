@@ -81,7 +81,47 @@ def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='
         first_para = content_str.split('\n')[0] if '\n' in content_str else content_str
         return first_para[:200] + "..." if len(first_para) > 200 else first_para
 
-    # Get original key order from mappings.yml (preserve YAML order)
+    # Use order from financial statements (bs_is_results) - this provides the proper presentation order
+    # Get the financial statement DataFrame to extract account order
+    financial_statement_df = None
+    if bs_is_results:
+        if statement_type == 'BS':
+            financial_statement_df = bs_is_results.get('balance_sheet')
+        elif statement_type == 'IS':
+            financial_statement_df = bs_is_results.get('income_statement')
+    
+    # Create order map from financial statement (row order = presentation order)
+    financial_statement_order = {}
+    if financial_statement_df is not None and not financial_statement_df.empty:
+        # Get account names from the first column (usually account names)
+        # The first column typically contains account names
+        first_col = financial_statement_df.iloc[:, 0] if len(financial_statement_df.columns) > 0 else None
+        
+        if first_col is not None:
+            for idx, account_name_in_statement in enumerate(first_col):
+                if pd.notna(account_name_in_statement) and str(account_name_in_statement).strip():
+                    account_name_str = str(account_name_in_statement).strip()
+                    # Skip totals, subtotals, and headers
+                    skip_keywords = ['total', '合计', '总计', '小计', 'subtotal', 'sub-total', 'sub total']
+                    if any(skip in account_name_str.lower() for skip in skip_keywords):
+                        continue
+                    
+                    # Find matching mapping key for this account name
+                    mapping_key = find_mapping_key_for_pptx(account_name_str)
+                    if mapping_key:
+                        financial_statement_order[mapping_key] = idx
+                    # Also try direct match with account_key (for cases where account_key matches statement name)
+                    financial_statement_order[account_name_str] = idx
+                    
+                    # Also check aliases - if any alias matches, use that mapping_key's order
+                    for map_key, config in mappings.items():
+                        if map_key.startswith('_'):
+                            continue
+                        if isinstance(config, dict):
+                            aliases = config.get('aliases', [])
+                            if account_name_str in aliases:
+                                financial_statement_order[map_key] = idx
+    
     # Filter and collect accounts with their mapping info
     account_info_list = []
     for account_key in ai_results.keys():
@@ -91,63 +131,28 @@ def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='
             acc_type = mappings[mapping_key].get('type')
             if statement_type == 'BS' and acc_type == 'BS':
                 category = mappings[mapping_key].get('category', '')
+                # Get order from financial statement, fallback to 9999
+                order = financial_statement_order.get(mapping_key, financial_statement_order.get(account_key, 9999))
                 account_info_list.append({
                     'account_key': account_key,
                     'mapping_key': mapping_key,
                     'category': category,
-                    'order': None  # Will be set based on mappings order
+                    'order': order
                 })
             elif statement_type == 'IS' and acc_type == 'IS':
                 category = mappings[mapping_key].get('category', '')
+                # Get order from financial statement, fallback to 9999
+                order = financial_statement_order.get(mapping_key, financial_statement_order.get(account_key, 9999))
                 account_info_list.append({
                     'account_key': account_key,
                     'mapping_key': mapping_key,
                     'category': category,
-                    'order': None  # Will be set based on mappings order
+                    'order': order
                 })
     
-    # Sort by original key order in mappings.yml
-    # Get order from mappings (iterate through mappings to preserve order)
-    mapping_order = {}
-    order_idx = 0
-    for mapping_key, config in mappings.items():
-        if mapping_key.startswith('_'):
-            continue
-        if isinstance(config, dict):
-            acc_type = config.get('type', '')
-            if statement_type == 'BS' and acc_type == 'BS':
-                mapping_order[mapping_key] = order_idx
-                order_idx += 1
-            elif statement_type == 'IS' and acc_type == 'IS':
-                mapping_order[mapping_key] = order_idx
-                order_idx += 1
-    
-    # Assign order to accounts and sort
-    for account_info in account_info_list:
-        account_info['order'] = mapping_order.get(account_info['mapping_key'], 9999)
-    
-    # Sort by order (key order from mappings), then by category order (CA before NCA)
-    # Define category order for proper grouping
-    category_order = {
-        'Current assets': 1,
-        'Non-current assets': 2,
-        'Current liabilities': 3,
-        'Non-current liabilities': 4,
-        'Equity': 5,
-        'Revenue': 1,
-        'Cost of sales': 2,
-        'Operating expenses': 3,
-        'Other income': 4,
-        'Other expenses': 5,
-        'Finance costs': 6,
-        'Tax': 7
-    }
-    
-    def get_category_sort_key(category):
-        return category_order.get(category, 999)
-    
-    # Sort by order (key order), then by category order, then by mapping_key
-    account_info_list.sort(key=lambda x: (x['order'], get_category_sort_key(x['category']), x['mapping_key']))
+    # Sort by financial statement order (this preserves the proper presentation order)
+    # Then group by category, but maintain order within category
+    account_info_list.sort(key=lambda x: (x['order'], x['category'], x['mapping_key']))
 
     for account_info in account_info_list:
         account_key = account_info['account_key']
