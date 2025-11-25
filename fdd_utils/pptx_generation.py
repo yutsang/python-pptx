@@ -431,65 +431,173 @@ class PowerPointGenerator:
                         run.font.size = get_font_size_for_text(summary)
                         run.font.name = get_font_name_for_text(summary)
             
-            # Fill textMainBullets with commentary (AI output)
+            # Fill textMainBullets with commentary (AI output) - improved from backup method
             bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
+            if not bullets_shape:
+                # Try alternative names from backup method
+                for alt_name in ["textMainBullets_L", "textMainBullets_R", "Content Placeholder 2"]:
+                    bullets_shape = self.find_shape_by_name(slide.shapes, alt_name)
+                    if bullets_shape:
+                        break
+                # Fallback: try to find any text shape
+                if not bullets_shape:
+                    for shape in slide.shapes:
+                        if hasattr(shape, 'text_frame'):
+                            bullets_shape = shape
+                            break
+            
             if bullets_shape and bullets_shape.has_text_frame:
-                bullets_shape.text_frame.clear()
+                tf = bullets_shape.text_frame
+                tf.clear()
+                tf.word_wrap = True
+                from pptx.enum.text import MSO_VERTICAL_ANCHOR
+                tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP  # Ensure text starts from top
+                
                 if commentary:
-                    # Split commentary into bullet points
+                    # Split commentary into lines and create paragraphs (from backup method)
                     commentary_lines = commentary.split('\n')
                     for line_idx, line in enumerate(commentary_lines):
                         line = line.strip()
                         if not line:
                             continue
-                        if line_idx == 0:
-                            p = bullets_shape.text_frame.paragraphs[0] if bullets_shape.text_frame.paragraphs else bullets_shape.text_frame.add_paragraph()
-                        else:
-                            p = bullets_shape.text_frame.add_paragraph()
-                        p.text = line
+                        
+                        p = tf.add_paragraph()
+                        # Apply paragraph formatting (from backup method)
+                        try:
+                            p.space_before = get_space_before_for_text(line, force_chinese_mode=is_chinese)
+                        except:
+                            pass
+                        try:
+                            p.space_after = get_space_after_for_text(line, force_chinese_mode=is_chinese)
+                        except:
+                            pass
+                        try:
+                            p.line_spacing = get_line_spacing_for_text(line, force_chinese_mode=is_chinese)
+                        except:
+                            pass
+                        
+                        # Add text with proper formatting
+                        run = p.add_run()
+                        run.text = line
+                        run.font.size = get_font_size_for_text(line, force_chinese_mode=is_chinese)
+                        run.font.name = get_font_name_for_text(line)
                         p.level = 0  # Bullet level
-                        for run in p.runs:
-                            run.font.size = get_font_size_for_text(line, force_chinese_mode=is_chinese)
-                            run.font.name = get_font_name_for_text(line)
+                
                 logger.info(f"Filled textMainBullets with commentary on slide {slide_idx + 1}")
             else:
                 logger.warning(f"textMainBullets not found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
     
     def _fill_table_placeholder(self, shape, df):
-        """Fill table placeholder with DataFrame data"""
+        """Fill table placeholder with DataFrame data, preserving original formatting (from backup method)"""
         try:
             # Check if shape has a table (Table Placeholder might be a table shape)
             if hasattr(shape, 'table') and shape.table:
                 table = shape.table
                 logger.info(f"Found table with {len(table.rows)} rows and {len(table.columns)} columns")
                 
-                # Fill table with DataFrame data
-                max_rows = min(len(df) + 1, len(table.rows))  # +1 for header
+                # Store original formatting for each cell (from backup method)
+                original_formats = {}
+                for row_idx in range(len(table.rows)):
+                    for col_idx in range(len(table.columns)):
+                        cell = table.cell(row_idx, col_idx)
+                        # Store font properties
+                        if cell.text_frame.paragraphs and cell.text_frame.paragraphs[0].runs:
+                            run = cell.text_frame.paragraphs[0].runs[0]
+                            original_formats[(row_idx, col_idx)] = {
+                                'font_name': run.font.name if run.font.name else None,
+                                'font_size': run.font.size if run.font.size else None,
+                                'font_bold': run.font.bold,
+                                'font_italic': run.font.italic,
+                                'font_color': run.font.color.rgb if hasattr(run.font.color, 'rgb') and run.font.color.rgb else None
+                            }
+                
+                # Clear existing content but preserve formatting
+                for row in range(len(table.rows)):
+                    for col in range(len(table.columns)):
+                        if row < len(table.rows) and col < len(table.columns):
+                            cell = table.cell(row, col)
+                            cell.text = ""
+                
+                # Fill header row with formatting
                 max_cols = min(len(df.columns), len(table.columns))
+                for col_idx, col_name in enumerate(df.columns[:max_cols]):
+                    if col_idx < len(table.columns):
+                        cell = table.cell(0, col_idx)
+                        cell.text = str(col_name)
+                        # Apply header formatting
+                        if (0, col_idx) in original_formats and cell.text_frame.paragraphs:
+                            format_info = original_formats[(0, col_idx)]
+                            if cell.text_frame.paragraphs[0].runs:
+                                run = cell.text_frame.paragraphs[0].runs[0]
+                            else:
+                                run = cell.text_frame.paragraphs[0].add_run()
+                            
+                            if format_info['font_name']:
+                                run.font.name = format_info['font_name']
+                            if format_info['font_size']:
+                                run.font.size = format_info['font_size']
+                            if format_info['font_bold'] is not None:
+                                run.font.bold = format_info['font_bold']
+                            if format_info['font_italic'] is not None:
+                                run.font.italic = format_info['font_italic']
+                            if format_info['font_color']:
+                                try:
+                                    run.font.color.rgb = format_info['font_color']
+                                except:
+                                    from pptx.dml.color import RGBColor
+                                    run.font.color.rgb = RGBColor(0, 0, 0)
+                        logger.debug(f"Filled header cell {col_idx}: {col_name}")
                 
-                # Fill header row
-                if len(table.rows) > 0:
-                    header_row = table.rows[0]
-                    for col_idx, col_name in enumerate(df.columns[:max_cols]):
-                        if col_idx < len(header_row.cells):
-                            cell = header_row.cells[col_idx]
-                            cell.text = str(col_name)
-                            logger.debug(f"Filled header cell {col_idx}: {col_name}")
-                
-                # Fill data rows
-                for row_idx in range(min(len(df), len(table.rows) - 1)):
-                    table_row = table.rows[row_idx + 1]
+                # Fill data rows with formatting
+                max_rows = min(len(df), len(table.rows) - 1)
+                for row_idx in range(max_rows):
                     df_row = df.iloc[row_idx]
                     for col_idx, col_name in enumerate(df.columns[:max_cols]):
-                        if col_idx < len(table_row.cells):
-                            cell = table_row.cells[col_idx]
+                        if col_idx < len(table.columns):
+                            cell = table.cell(row_idx + 1, col_idx)
                             value = df_row[col_name]
-                            # Format numbers
+                            
+                            # Format numbers (from backup method)
                             if isinstance(value, (int, float)):
-                                cell.text = f"{value:,.0f}" if value != 0 else "0"
+                                # Format with 1 decimal place and thousand separators
+                                try:
+                                    val_str = str(value)
+                                    if any(char in val_str for char in ['年', '月', '日', '-', '/', '至']):
+                                        cell.text = val_str
+                                    elif 2000 <= value <= 2100:
+                                        cell.text = val_str
+                                    else:
+                                        cell.text = f"{value:,.1f}" if value != 0 else "0"
+                                except:
+                                    cell.text = str(value)
                             else:
                                 cell.text = str(value)
+                            
+                            # Apply data row formatting
+                            if (row_idx + 1, col_idx) in original_formats and cell.text_frame.paragraphs:
+                                format_info = original_formats[(row_idx + 1, col_idx)]
+                                if cell.text_frame.paragraphs[0].runs:
+                                    run = cell.text_frame.paragraphs[0].runs[0]
+                                else:
+                                    run = cell.text_frame.paragraphs[0].add_run()
+                                
+                                if format_info['font_name']:
+                                    run.font.name = format_info['font_name']
+                                if format_info['font_size']:
+                                    run.font.size = format_info['font_size']
+                                if format_info['font_bold'] is not None:
+                                    run.font.bold = format_info['font_bold']
+                                if format_info['font_italic'] is not None:
+                                    run.font.italic = format_info['font_italic']
+                                if format_info['font_color']:
+                                    try:
+                                        run.font.color.rgb = format_info['font_color']
+                                    except:
+                                        from pptx.dml.color import RGBColor
+                                        run.font.color.rgb = RGBColor(0, 0, 0)
                     logger.debug(f"Filled table row {row_idx + 1}")
+                
+                logger.info(f"✅ Updated table with Excel data (formatting preserved)")
             else:
                 # If no table, try to add text representation to text frame
                 logger.info("Table Placeholder is not a table shape, using text representation")
