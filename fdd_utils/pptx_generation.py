@@ -629,31 +629,6 @@ class PowerPointGenerator:
                     logger.info(f"Removed slide {slide_idx + 1}")
                 except Exception as e:
                     logger.warning(f"Could not remove slide {slide_idx + 1}: {e}")
-            
-            logger.info(f"Processing slide {slide_idx + 1} for account: {account_name}")
-            
-            # Update projTitle
-            proj_title_shape = self.find_shape_by_name(slide.shapes, "projTitle")
-            if proj_title_shape and proj_title_shape.has_text_frame:
-                if project_name:
-                    proj_title_shape.text_frame.text = project_name
-            
-            # Fill Table Placeholder with financial data (only on first slide of each statement type)
-            # For each account, fill its own financial data table
-            if financial_data is not None:
-                # Try different table placeholder names
-                table_shape = None
-                for table_name in ["Table Placeholder", "Table Placeholder 2", "Table"]:
-                    table_shape = self.find_shape_by_name(slide.shapes, table_name)
-                    if table_shape:
-                        logger.info(f"Found table shape '{table_name}' on slide {slide_idx + 1}")
-                        break
-                
-                if table_shape:
-                    self._fill_table_placeholder(table_shape, financial_data)
-                else:
-                    logger.warning(f"Table Placeholder not found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
-            
     
     def _fill_table_placeholder(self, shape, df):
         """Fill table placeholder with DataFrame data, preserving original formatting (from backup method)"""
