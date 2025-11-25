@@ -141,6 +141,34 @@ class PowerPointGenerator:
             if hasattr(shape, 'name') and shape.name == name:
                 return shape
         return None
+    
+    def find_content_shape(self, shapes):
+        """Find content shape by trying multiple possible names"""
+        # Try different possible names for content shapes
+        possible_names = [
+            'Content',
+            'Text-commentary',
+            'textMainBullets',
+            'Text',
+            'Commentary',
+            'MainContent',
+            'Body'
+        ]
+        
+        for name in possible_names:
+            shape = self.find_shape_by_name(shapes, name)
+            if shape and shape.has_text_frame:
+                return shape
+        
+        # If no named shape found, try to find any text frame shape that's not a title
+        for shape in shapes:
+            if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                shape_name = getattr(shape, 'name', '')
+                # Skip title shapes and other non-content shapes
+                if shape_name and 'title' not in shape_name.lower() and 'proj' not in shape_name.lower():
+                    return shape
+        
+        return None
 
     def replace_text_preserve_formatting(self, shape, replacements: Dict[str, str]):
         """Replace text while preserving formatting"""
@@ -269,10 +297,10 @@ class PowerPointGenerator:
 
             logger.info(f"Processing slide {slide_idx + 1} for account: {account_name}")
 
-            # Find content shape (usually named 'Content' or similar)
-            content_shape = self.find_shape_by_name(slide.shapes, "Content")
+            # Find content shape using flexible name matching
+            content_shape = self.find_content_shape(slide.shapes)
             if content_shape:
-                logger.info(f"Found Content shape on slide {slide_idx + 1}")
+                logger.info(f"Found content shape '{content_shape.name}' on slide {slide_idx + 1}")
                 if content_shape.has_text_frame:
                     # Apply content to shape
                     self._fill_content_shape(content_shape, section_data)
@@ -280,34 +308,68 @@ class PowerPointGenerator:
                 else:
                     logger.warning(f"Content shape found but has no text_frame on slide {slide_idx + 1}")
             else:
-                logger.warning(f"No 'Content' shape found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
+                logger.warning(f"No content shape found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
+                # Try to use the first available text frame as fallback
+                for shape in slide.shapes:
+                    if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                        shape_name = getattr(shape, 'name', 'unnamed')
+                        if 'title' not in shape_name.lower() and 'proj' not in shape_name.lower():
+                            logger.info(f"Using fallback shape '{shape_name}' on slide {slide_idx + 1}")
+                            self._fill_content_shape(shape, section_data)
+                            break
 
             slide_idx += 1
 
     def _fill_content_shape(self, shape, section_data: Dict):
         """Fill content shape with processed data"""
         if not shape.has_text_frame:
+            logger.warning("Shape does not have text_frame")
             return
 
         content = section_data.get('content', '')
         is_chinese = section_data.get('is_chinese', False)
 
+        logger.info(f"Filling shape with content length: {len(content)}")
+
         # Clear existing content
-        shape.text_frame.text = ""
-
+        shape.text_frame.clear()
+        
+        if not content or not content.strip():
+            logger.warning("No content to fill")
+            return
+        
+        # Split content into paragraphs if it contains newlines
+        content_lines = content.split('\n')
+        
         # Add content with proper formatting
-        p = shape.text_frame.paragraphs[0]
-        p.text = content
+        for idx, line in enumerate(content_lines):
+            line = line.strip()
+            if not line and idx > 0:
+                # Skip empty lines except add a paragraph break
+                continue
+            
+            if idx == 0:
+                # Use first paragraph or create one
+                if shape.text_frame.paragraphs:
+                    p = shape.text_frame.paragraphs[0]
+                else:
+                    p = shape.text_frame.add_paragraph()
+            else:
+                p = shape.text_frame.add_paragraph()
+            
+            p.text = line
+            
+            # Apply formatting to runs
+            for run in p.runs:
+                run.font.size = get_font_size_for_text(line, force_chinese_mode=is_chinese)
+                run.font.name = get_font_name_for_text(line)
 
-        # Apply formatting
-        for run in p.runs:
-            run.font.size = get_font_size_for_text(content, force_chinese_mode=is_chinese)
-            run.font.name = get_font_name_for_text(content)
-
-        # Set paragraph formatting
-        p.space_after = get_space_after_for_text(content, force_chinese_mode=is_chinese)
-        p.space_before = get_space_before_for_text(content, force_chinese_mode=is_chinese)
-        p.line_spacing = get_line_spacing_for_text(content, force_chinese_mode=is_chinese)
+            # Set paragraph formatting
+            p.space_after = get_space_after_for_text(line, force_chinese_mode=is_chinese)
+            p.space_before = get_space_before_for_text(line, force_chinese_mode=is_chinese)
+            p.line_spacing = get_line_spacing_for_text(line, force_chinese_mode=is_chinese)
+        
+        logger.info(f"Successfully filled shape with {len([l for l in content_lines if l.strip()])} paragraphs")
 
     def save(self, output_path: str):
         """Save the presentation"""

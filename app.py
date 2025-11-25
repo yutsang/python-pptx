@@ -813,110 +813,23 @@ else:
             generate_pptx_presentation()
     with col_download:
         st.markdown("<br>", unsafe_allow_html=True)  # Align with button
-        # Download icon button - only show if PPTX is ready
+        # Download icon button - only show if PPTX is ready, directly downloads
         if st.session_state.get('pptx_ready', False) and 'pptx_download_data' in st.session_state:
+            download_data = st.session_state.pptx_download_data
+            download_filename = st.session_state.pptx_download_filename
+            download_mime = st.session_state.pptx_download_mime
+            
             download_icon_key = f"download_icon_{st.session_state.button_click_counter}"
-            if st.button("📥", help="Download generated PPTX", key=download_icon_key, use_container_width=True):
-                # Trigger download
-                st.session_state.trigger_download = True
-                st.rerun()
-    
-    # Handle download trigger from icon button
-    if st.session_state.get('trigger_download', False) and 'pptx_download_data' in st.session_state:
-        download_data = st.session_state.pptx_download_data
-        download_filename = st.session_state.pptx_download_filename
-        download_mime = st.session_state.pptx_download_mime
-        
-        # Clear trigger
-        del st.session_state.trigger_download
-        
-        # Show download button
-        st.download_button(
-            label="📥 Download",
-            data=download_data,
-            file_name=download_filename,
-            mime=download_mime,
-            use_container_width=True,
-            key=f"manual_download_{st.session_state.button_click_counter}"
-        )
-    
-    # Auto-trigger download if PPTX is ready (hidden button approach)
-    elif st.session_state.get('pptx_ready', False) and 'pptx_download_data' in st.session_state:
-        download_data = st.session_state.pptx_download_data
-        download_filename = st.session_state.pptx_download_filename
-        download_mime = st.session_state.pptx_download_mime
-        
-        # Create hidden download button and auto-trigger it
-        # This allows user to choose download location via browser's save dialog
-        download_btn_key = f"auto_download_{st.session_state.button_click_counter}"
-        
-        # Hide the button using CSS and auto-click it
-        st.markdown(
-            f"""
-            <style>
-            div[data-testid="stDownloadButton"] {{
-                display: none;
-            }}
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-        
-        # Create download button (hidden)
-        st.download_button(
-            label="Download",
-            data=download_data,
-            file_name=download_filename,
-            mime=download_mime,
-            key=download_btn_key
-        )
-        
-        # Auto-click the download button using JavaScript
-        # This triggers browser's save dialog where user can choose location
-        st.markdown(
-            f"""
-            <script>
-            (function() {{
-                // Wait for button to be rendered, then auto-click
-                setTimeout(function() {{
-                    // Find the download button by its data attribute
-                    const downloadButtons = document.querySelectorAll('a[download]');
-                    if (downloadButtons.length > 0) {{
-                        // Click the most recent download button
-                        downloadButtons[downloadButtons.length - 1].click();
-                    }} else {{
-                        // Fallback: find by button text
-                        const buttons = document.querySelectorAll('button');
-                        for (let btn of buttons) {{
-                            if (btn.textContent.includes('Download') || btn.getAttribute('data-testid') === 'baseButton-secondary') {{
-                                btn.click();
-                                break;
-                            }}
-                        }}
-                    }}
-                }}, 200);
-            }})();
-            </script>
-            """,
-            unsafe_allow_html=True
-        )
-        
-        # Clear download data after triggering
-        # Use a flag to ensure we only clear after download is triggered
-        if 'pptx_download_triggered' not in st.session_state:
-            st.session_state.pptx_download_triggered = True
-        else:
-            # Clear on second render cycle
-            if 'pptx_download_data' in st.session_state:
-                del st.session_state.pptx_download_data
-            if 'pptx_download_filename' in st.session_state:
-                del st.session_state.pptx_download_filename
-            if 'pptx_download_mime' in st.session_state:
-                del st.session_state.pptx_download_mime
-            if 'pptx_ready' in st.session_state:
-                del st.session_state.pptx_ready
-            if 'pptx_download_triggered' in st.session_state:
-                del st.session_state.pptx_download_triggered
+            # Use download_button styled as a small icon
+            st.download_button(
+                label="📥",
+                data=download_data,
+                file_name=download_filename,
+                mime=download_mime,
+                help="Download generated PPTX",
+                key=download_icon_key,
+                use_container_width=True
+            )
     
     # Generate AI Content button - embedded in processed data section
     ai_key = f"ai_btn_{st.session_state.button_click_counter}"
