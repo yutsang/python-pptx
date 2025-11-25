@@ -23,7 +23,7 @@ try:
     import datetime
     import uuid
     import re
-    from fdd_utils.pptx_generation import export_pptx, merge_presentations
+    from fdd_utils.pptx_generation import export_pptx, merge_presentations, export_pptx_from_structured_data
     PPTX_AVAILABLE = True
 except ImportError:
     PPTX_AVAILABLE = False
@@ -47,12 +47,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS', bs_is_results=None, dfs=None):
-    """Convert AI results to markdown format for PPTX generation"""
+def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='BS', bs_is_results=None, dfs=None):
+    """Convert AI results to structured data for PPTX generation"""
     if not ai_results:
-        return ""
+        return []
 
-    content_lines = []
+    structured_data = []
 
     # Helper function to find mapping key from account name (checks aliases)
     def find_mapping_key_for_pptx(account_name):
@@ -70,6 +70,16 @@ def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS', bs
                 if account_name in aliases:
                     return mapping_key
         return None
+
+    # Helper to extract summary from content
+    def extract_summary(content):
+        """Extract summary from content (first paragraph or first 200 chars)"""
+        if not content:
+            return ""
+        content_str = str(content).strip()
+        # Take first paragraph or first 200 characters
+        first_para = content_str.split('\n')[0] if '\n' in content_str else content_str
+        return first_para[:200] + "..." if len(first_para) > 200 else first_para
 
     # Filter accounts by statement type
     filtered_accounts = []
@@ -117,51 +127,25 @@ def convert_ai_results_to_markdown(ai_results, mappings, statement_type='BS', bs
             return content
         
         final_content = extract_final_content(result)
-
-        # Always include accounts, even with empty/error content
-        content_lines.append(f"## {account_key}")
-        content_lines.append("")
-
-        # Add financial table data if available
+        
+        # Extract financial data
+        financial_data = None
         if dfs and account_key in dfs:
             df = dfs[account_key]
             if not df.empty:
-                content_lines.append("### Financial Data")
-                content_lines.append("")
-                try:
-                    # Convert DataFrame to markdown table
-                    # Limit rows to avoid overwhelming the slide
-                    df_display = df.head(20)  # Show first 20 rows
-                    if hasattr(df_display, 'to_markdown'):
-                        content_lines.append(df_display.to_markdown(index=False))
-                    else:
-                        # Fallback: convert to string table format
-                        content_lines.append(df_display.to_string(index=False))
-                    if len(df) > 20:
-                        content_lines.append(f"\n*... and {len(df) - 20} more rows*")
-                except Exception as e:
-                    # Fallback to string representation if markdown conversion fails
-                    content_lines.append(str(df.head(20)))
-                content_lines.append("")
-                content_lines.append("---")
-                content_lines.append("")
+                financial_data = df
+        
+        # Structure the data for PPTX
+        account_data = {
+            'account_name': account_key,
+            'financial_data': financial_data,
+            'commentary': str(final_content).strip() if final_content and str(final_content).strip() else f"[No content generated for {account_key}]",
+            'summary': extract_summary(final_content) if final_content else ""
+        }
+        
+        structured_data.append(account_data)
 
-        if final_content and str(final_content).strip():
-            # Add the AI commentary content
-            content_lines.append("### Commentary")
-            content_lines.append("")
-            content_lines.append(str(final_content).strip())
-        else:
-            # Add placeholder for empty content
-            content_lines.append("### Commentary")
-            content_lines.append("")
-            content_lines.append(f"[No content generated for {account_key}]")
-
-        content_lines.append("")
-        content_lines.append("---")
-        content_lines.append("")
-
-    return "\n".join(content_lines)
+    return structured_data
 
 
 def generate_pptx_presentation():
@@ -213,15 +197,15 @@ def generate_pptx_presentation():
                 bs_md = os.path.join(temp_dir, "bs_content.md")
                 is_md = os.path.join(temp_dir, "is_content.md")
 
-                # Generate markdown content with financial tables
-                bs_content = convert_ai_results_to_markdown(
+                # Generate structured data for PPTX
+                bs_data = convert_ai_results_to_structured_data(
                     st.session_state.ai_results, 
                     mappings, 
                     'BS',
                     bs_is_results=st.session_state.bs_is_results,
                     dfs=st.session_state.dfs
                 )
-                is_content = convert_ai_results_to_markdown(
+                is_data = convert_ai_results_to_structured_data(
                     st.session_state.ai_results, 
                     mappings, 
                     'IS',
@@ -229,48 +213,39 @@ def generate_pptx_presentation():
                     dfs=st.session_state.dfs
                 )
 
-                # Debug: Log content lengths
-                print(f"DEBUG: BS content length: {len(bs_content) if bs_content else 0}")
-                print(f"DEBUG: IS content length: {len(is_content) if is_content else 0}")
-                if bs_content:
-                    print(f"DEBUG: BS content preview (first 500 chars): {bs_content[:500]}")
-                if is_content:
-                    print(f"DEBUG: IS content preview (first 500 chars): {is_content[:500]}")
+                # Debug: Log data
+                print(f"DEBUG: BS accounts: {len(bs_data)}")
+                print(f"DEBUG: IS accounts: {len(is_data)}")
 
-                if not bs_content and not is_content:
+                if not bs_data and not is_data:
                     st.error("❌ No content generated for PPTX")
                     st.info(f"DEBUG: AI results keys: {list(st.session_state.ai_results.keys())[:10] if st.session_state.ai_results else 'None'}")
                     st.info(f"DEBUG: DFS keys: {list(st.session_state.dfs.keys())[:10] if st.session_state.dfs else 'None'}")
                     return
 
-                # Write markdown files
-                if bs_content:
-                    with open(bs_md, 'w', encoding='utf-8') as f:
-                        f.write(bs_content)
-                    print(f"DEBUG: Wrote BS markdown to {bs_md}, size: {os.path.getsize(bs_md)} bytes")
-
-                if is_content:
-                    with open(is_md, 'w', encoding='utf-8') as f:
-                        f.write(is_content)
-                    print(f"DEBUG: Wrote IS markdown to {is_md}, size: {os.path.getsize(is_md)} bytes")
-
-                # Generate individual presentations - keep them separate
+                # Generate individual presentations - keep them separate, use structured data
                 generated_files = []
                 output_files = []
 
-                if bs_content:
+                if bs_data:
                     bs_output_path = os.path.join(output_dir, f"{sanitized_entity}_BS_{timestamp}.pptx")
-                    export_pptx(template_path, bs_md, bs_output_path, project_name,
-                              language='chinese' if language == 'Chn' else 'english',
-                              statement_type='BS', row_limit=20)
+                    from fdd_utils.pptx_generation import export_pptx_from_structured_data
+                    export_pptx_from_structured_data(
+                        template_path, bs_data, bs_output_path, project_name,
+                        language='chinese' if language == 'Chn' else 'english',
+                        statement_type='BS', start_slide=1
+                    )
                     generated_files.append(bs_output_path)
                     output_files.append(('BS', bs_output_path))
 
-                if is_content:
+                if is_data:
                     is_output_path = os.path.join(output_dir, f"{sanitized_entity}_IS_{timestamp}.pptx")
-                    export_pptx(template_path, is_md, is_output_path, project_name,
-                              language='chinese' if language == 'Chn' else 'english',
-                              statement_type='IS', row_limit=20)
+                    from fdd_utils.pptx_generation import export_pptx_from_structured_data
+                    export_pptx_from_structured_data(
+                        template_path, is_data, is_output_path, project_name,
+                        language='chinese' if language == 'Chn' else 'english',
+                        statement_type='IS', start_slide=5
+                    )
                     generated_files.append(is_output_path)
                     output_files.append(('IS', is_output_path))
 

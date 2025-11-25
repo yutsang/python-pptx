@@ -8,6 +8,7 @@ import os
 import re
 import logging
 from typing import Dict, List, Optional, Tuple
+import pandas as pd
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
@@ -371,6 +372,149 @@ class PowerPointGenerator:
         
         logger.info(f"Successfully filled shape with {len([l for l in content_lines if l.strip()])} paragraphs")
 
+    def apply_structured_data_to_slides(self, structured_data: List[Dict], start_slide: int, 
+                                       project_name: str, statement_type: str):
+        """Apply structured data directly to slides (slides 1-4 for BS, 5-8 for IS)"""
+        if not self.presentation:
+            self.load_template()
+        
+        logger.info(f"Applying {len(structured_data)} accounts to slides starting at {start_slide}")
+        
+        # Limit to 4 slides per statement type
+        max_slides = min(len(structured_data), 4)
+        slide_indices = list(range(start_slide - 1, start_slide - 1 + max_slides))  # Convert to 0-based
+        
+        for idx, account_data in enumerate(structured_data[:max_slides]):
+            slide_idx = slide_indices[idx]
+            if slide_idx >= len(self.presentation.slides):
+                logger.warning(f"Slide index {slide_idx + 1} exceeds available slides ({len(self.presentation.slides)})")
+                break
+            
+            slide = self.presentation.slides[slide_idx]
+            account_name = account_data.get('account_name', '')
+            financial_data = account_data.get('financial_data')
+            commentary = account_data.get('commentary', '')
+            summary = account_data.get('summary', '')
+            
+            logger.info(f"Processing slide {slide_idx + 1} for account: {account_name}")
+            
+            # Update projTitle
+            proj_title_shape = self.find_shape_by_name(slide.shapes, "projTitle")
+            if proj_title_shape and proj_title_shape.has_text_frame:
+                if project_name:
+                    proj_title_shape.text_frame.text = project_name
+            
+            # Fill Table Placeholder with financial data (only on first slide of each statement type)
+            if idx == 0:  # Only fill table on first slide (slide 1 for BS, slide 5 for IS)
+                # Try different table placeholder names
+                table_shape = None
+                for table_name in ["Table Placeholder", "Table Placeholder 2", "Table"]:
+                    table_shape = self.find_shape_by_name(slide.shapes, table_name)
+                    if table_shape:
+                        logger.info(f"Found table shape '{table_name}' on slide {slide_idx + 1}")
+                        break
+                
+                if table_shape and financial_data is not None:
+                    self._fill_table_placeholder(table_shape, financial_data)
+                elif financial_data is not None:
+                    logger.warning(f"Table Placeholder not found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
+            
+            # Fill coSummaryShape with summary
+            summary_shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
+            if summary_shape and summary_shape.has_text_frame:
+                summary_shape.text_frame.clear()
+                if summary:
+                    p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
+                    p.text = summary
+                    for run in p.runs:
+                        run.font.size = get_font_size_for_text(summary)
+                        run.font.name = get_font_name_for_text(summary)
+            
+            # Fill textMainBullets with commentary
+            bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
+            if bullets_shape and bullets_shape.has_text_frame:
+                bullets_shape.text_frame.clear()
+                if commentary:
+                    # Split commentary into bullet points
+                    commentary_lines = commentary.split('\n')
+                    for line_idx, line in enumerate(commentary_lines):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line_idx == 0:
+                            p = bullets_shape.text_frame.paragraphs[0] if bullets_shape.text_frame.paragraphs else bullets_shape.text_frame.add_paragraph()
+                        else:
+                            p = bullets_shape.text_frame.add_paragraph()
+                        p.text = line
+                        p.level = 0  # Bullet level
+                        for run in p.runs:
+                            run.font.size = get_font_size_for_text(line)
+                            run.font.name = get_font_name_for_text(line)
+    
+    def _fill_table_placeholder(self, shape, df):
+        """Fill table placeholder with DataFrame data"""
+        try:
+            # Check if shape has a table (Table Placeholder might be a table shape)
+            if hasattr(shape, 'table') and shape.table:
+                table = shape.table
+                logger.info(f"Found table with {len(table.rows)} rows and {len(table.columns)} columns")
+                
+                # Fill table with DataFrame data
+                max_rows = min(len(df) + 1, len(table.rows))  # +1 for header
+                max_cols = min(len(df.columns), len(table.columns))
+                
+                # Fill header row
+                if len(table.rows) > 0:
+                    header_row = table.rows[0]
+                    for col_idx, col_name in enumerate(df.columns[:max_cols]):
+                        if col_idx < len(header_row.cells):
+                            cell = header_row.cells[col_idx]
+                            cell.text = str(col_name)
+                            logger.debug(f"Filled header cell {col_idx}: {col_name}")
+                
+                # Fill data rows
+                for row_idx in range(min(len(df), len(table.rows) - 1)):
+                    table_row = table.rows[row_idx + 1]
+                    df_row = df.iloc[row_idx]
+                    for col_idx, col_name in enumerate(df.columns[:max_cols]):
+                        if col_idx < len(table_row.cells):
+                            cell = table_row.cells[col_idx]
+                            value = df_row[col_name]
+                            # Format numbers
+                            if isinstance(value, (int, float)):
+                                cell.text = f"{value:,.0f}" if value != 0 else "0"
+                            else:
+                                cell.text = str(value)
+                    logger.debug(f"Filled table row {row_idx + 1}")
+            else:
+                # If no table, try to add text representation to text frame
+                logger.info("Table Placeholder is not a table shape, using text representation")
+                if shape.has_text_frame:
+                    shape.text_frame.clear()
+                    # Convert DataFrame to formatted text table
+                    try:
+                        # Limit rows for display
+                        df_display = df.head(15)
+                        text_table = df_display.to_string(index=False)
+                        if len(df) > 15:
+                            text_table += f"\n\n... and {len(df) - 15} more rows"
+                    except:
+                        text_table = str(df.head(15))
+                    
+                    p = shape.text_frame.paragraphs[0] if shape.text_frame.paragraphs else shape.text_frame.add_paragraph()
+                    p.text = text_table
+                    logger.info(f"Added text table representation ({len(text_table)} chars)")
+        except Exception as e:
+            logger.error(f"Could not fill table placeholder: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Fallback: add text representation
+            if shape.has_text_frame:
+                shape.text_frame.clear()
+                text_repr = str(df.head(10))
+                p = shape.text_frame.paragraphs[0] if shape.text_frame.paragraphs else shape.text_frame.add_paragraph()
+                p.text = text_repr
+
     def save(self, output_path: str):
         """Save the presentation"""
         if not self.presentation:
@@ -468,6 +612,47 @@ def export_pptx(template_path: str, markdown_path: str, output_path: str,
 
     logger.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
     return output_path
+
+
+def export_pptx_from_structured_data(template_path: str, structured_data: List[Dict], output_path: str,
+                                     project_name: Optional[str] = None, language: str = 'english',
+                                     statement_type: str = 'BS', start_slide: int = 1):
+    """
+    Export PowerPoint presentation from structured data (not markdown)
+    
+    Args:
+        template_path: Path to PPTX template
+        structured_data: List of account data dicts with keys: account_name, financial_data, commentary, summary
+        output_path: Output PPTX file path
+        project_name: Project/entity name for titles
+        language: Language ('english' or 'chinese')
+        statement_type: Statement type ('BS' or 'IS')
+        start_slide: Starting slide index (1-4 for BS, 5-8 for IS)
+    """
+    try:
+        logger.info(f"Starting PPTX generation from structured data...")
+        logger.info(f"Template: {template_path}")
+        logger.info(f"Output: {output_path}")
+        logger.info(f"Language: {language}")
+        logger.info(f"Statement type: {statement_type}, Start slide: {start_slide}")
+        logger.info(f"Accounts to process: {len(structured_data)}")
+
+        # Load template
+        generator = PowerPointGenerator(template_path, language, row_limit=20)
+        generator.load_template()
+
+        # Apply structured data to slides
+        generator.apply_structured_data_to_slides(structured_data, start_slide, project_name, statement_type)
+
+        # Save presentation
+        generator.save(output_path)
+        
+        logger.info(f"✅ PPTX generation completed: {output_path}")
+        return output_path
+        
+    except Exception as e:
+        logger.error(f"PPTX generation failed: {e}")
+        raise
 
 
 def merge_presentations(bs_presentation_path: str, is_presentation_path: str, output_path: str):
