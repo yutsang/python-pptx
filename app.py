@@ -454,6 +454,9 @@ if st.session_state.dfs is None:
             if 'entity_name' not in st.session_state:
                 st.session_state.entity_name = ""
             
+            # Track previous dropdown value to detect changes
+            prev_dropdown = st.session_state.get('prev_entity_dropdown', '')
+            
             # Dropdown for selection
             selected_entity = st.selectbox(
                 label="Select entity from list",
@@ -463,22 +466,33 @@ if st.session_state.dfs is None:
                 key="entity_dropdown"
             )
             
-            # Update session state when dropdown changes - copy to text input
-            if selected_entity:
+            # If dropdown changed, update text input
+            if selected_entity != prev_dropdown and selected_entity:
+                st.session_state.entity_name = selected_entity
+                st.session_state.prev_entity_dropdown = selected_entity
+            
+            # Get current value for text input (prioritize dropdown selection)
+            text_input_value = st.session_state.get('entity_name', '')
+            if selected_entity and selected_entity != text_input_value:
+                text_input_value = selected_entity
                 st.session_state.entity_name = selected_entity
             
             # Editable text box - automatically copies dropdown selection
             entity_name = st.text_input(
                 label="Or type/modify entity name",
-                value=st.session_state.entity_name if 'entity_name' in st.session_state else selected_entity if selected_entity else "",
+                value=text_input_value,
                 placeholder="Enter or modify entity name...",
                 help="Type a custom entity name or modify the selected one",
                 label_visibility="collapsed",
                 key="entity_text_input"
             )
+            
             # Update session state when text changes (user edits)
             if entity_name:
                 st.session_state.entity_name = entity_name
+                # If user manually edited, update prev_dropdown to prevent auto-overwrite
+                if entity_name != selected_entity:
+                    st.session_state.prev_entity_dropdown = selected_entity
         else:
             # Initialize if not exists
             if 'entity_name' not in st.session_state:
@@ -664,15 +678,8 @@ if st.session_state.get('process_data_clicked', False):
 if st.session_state.dfs is None:
     st.info("👈 Upload a databook, set entity name and sheet, then click 'Process Data' to begin")
 else:
-    # Data Display header with reports count on right (same row)
-    col_display, col_reports = st.columns([8, 2])
-    with col_display:
-        st.header("📈 Data Display")
-    with col_reports:
-        # Count matches (immaterial tab rows)
-        if st.session_state.workbook_list:
-            matches_count = len([k for k in st.session_state.workbook_list if k in st.session_state.dfs])
-            st.metric("Reports", matches_count, help="Number of matched accounts")
+    # Data Display header
+    st.header("📈 Data Display")
     
     # Load mappings to filter accounts by type
     from fdd_utils.reconciliation import load_mappings
@@ -757,20 +764,23 @@ else:
                         )
                     st.dataframe(display_df, use_container_width=True, height=400)
                     
-                    # Summary stats
-                    col1, col2, col3, col4 = st.columns(4)
+                    # Summary stats with Reports (immaterial) on the right
+                    col1, col2, col3, col4, col_reports = st.columns([1, 1, 1, 1, 1])
                     with col1:
                         matches = (recon_bs['Match'] == '✅ Match').sum()
                         st.metric("✅ Matches", matches)
                     with col2:
-                        immaterial = (recon_bs['Match'] == '✅ Immaterial').sum()
-                        st.metric("✅ Immaterial", immaterial)
-                    with col3:
                         diffs = (recon_bs['Match'] == '❌ Diff').sum()
                         st.metric("❌ Differences", diffs)
-                    with col4:
+                    with col3:
                         not_found = (recon_bs['Match'] == '⚠️ Not Found').sum()
                         st.metric("⚠️ Not Found", not_found)
+                    with col4:
+                        immaterial = (recon_bs['Match'] == '✅ Immaterial').sum()
+                        st.metric("✅ Immaterial", immaterial)
+                    with col_reports:
+                        # Reports = total immaterial rows
+                        st.metric("Reports", immaterial, help="Immaterial row matches")
                 else:
                     st.info("No reconciliation data available")
             
@@ -850,20 +860,23 @@ else:
                         )
                     st.dataframe(display_df, use_container_width=True, height=400)
                     
-                    # Summary stats
-                    col1, col2, col3, col4 = st.columns(4)
+                    # Summary stats with Reports (immaterial) on the right
+                    col1, col2, col3, col4, col_reports = st.columns([1, 1, 1, 1, 1])
                     with col1:
                         matches = (recon_is['Match'] == '✅ Match').sum()
                         st.metric("✅ Matches", matches)
                     with col2:
-                        immaterial = (recon_is['Match'] == '✅ Immaterial').sum()
-                        st.metric("✅ Immaterial", immaterial)
-                    with col3:
                         diffs = (recon_is['Match'] == '❌ Diff').sum()
                         st.metric("❌ Differences", diffs)
-                    with col4:
+                    with col3:
                         not_found = (recon_is['Match'] == '⚠️ Not Found').sum()
                         st.metric("⚠️ Not Found", not_found)
+                    with col4:
+                        immaterial = (recon_is['Match'] == '✅ Immaterial').sum()
+                        st.metric("✅ Immaterial", immaterial)
+                    with col_reports:
+                        # Reports = total immaterial rows
+                        st.metric("Reports", immaterial, help="Immaterial row matches")
                 else:
                     st.info("No reconciliation data available")
             
