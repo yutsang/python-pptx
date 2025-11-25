@@ -589,23 +589,77 @@ class PowerPointGenerator:
                         run_category = p_category.add_run()
                         # Use Chinese category name if databook is Chinese
                         category_text = category
-                        if is_chinese_databook:
-                            # Translate category to Chinese
+                        if is_chinese_databook or is_chinese:
+                            # Translate category to Chinese - comprehensive list
                             category_translations = {
+                                # Balance Sheet - Assets
                                 'Current assets': '流动资产',
+                                'Current Assets': '流动资产',
                                 'Non-current assets': '非流动资产',
+                                'Non-Current Assets': '非流动资产',
+                                'Non current assets': '非流动资产',
+                                'Assets': '资产',
+                                # Balance Sheet - Liabilities
                                 'Current liabilities': '流动负债',
+                                'Current Liabilities': '流动负债',
                                 'Non-current liabilities': '非流动负债',
+                                'Non-Current Liabilities': '非流动负债',
+                                'Non current liabilities': '非流动负债',
+                                'Liabilities': '负债',
+                                # Balance Sheet - Equity
                                 'Equity': '所有者权益',
+                                "Owner's equity": '所有者权益',
+                                "Owners' equity": '所有者权益',
+                                'Shareholders equity': '股东权益',
+                                "Shareholders' equity": '股东权益',
+                                # Income Statement - Revenue
                                 'Revenue': '营业收入',
+                                'Sales': '销售收入',
+                                'Income': '收入',
+                                'Operating revenue': '营业收入',
+                                'Operating Revenue': '营业收入',
+                                # Income Statement - Costs
                                 'Cost of sales': '营业成本',
+                                'Cost of Sales': '营业成本',
+                                'Cost of goods sold': '销售成本',
+                                'COGS': '销售成本',
+                                # Income Statement - Expenses
                                 'Operating expenses': '营业费用',
+                                'Operating Expenses': '营业费用',
+                                'Selling expenses': '销售费用',
+                                'Administrative expenses': '管理费用',
+                                'General and administrative': '管理费用',
+                                'G&A': '管理费用',
+                                # Income Statement - Other
                                 'Other income': '其他收入',
+                                'Other Income': '其他收入',
                                 'Other expenses': '其他费用',
+                                'Other Expenses': '其他费用',
                                 'Finance costs': '财务费用',
-                                'Tax': '税费'
+                                'Finance Costs': '财务费用',
+                                'Financial expenses': '财务费用',
+                                'Interest expense': '利息费用',
+                                'Tax': '税费',
+                                'Income tax': '所得税',
+                                'Taxes': '税费',
+                                'Tax expense': '所得税费用',
+                                # Profit items
+                                'Gross profit': '毛利',
+                                'Operating profit': '营业利润',
+                                'Net profit': '净利润',
+                                'Profit before tax': '利润总额',
                             }
-                            category_text = category_translations.get(category, category)
+                            # Try direct match first, then case-insensitive match
+                            category_text = category_translations.get(category)
+                            if category_text is None:
+                                # Try case-insensitive match
+                                category_lower = category.lower()
+                                for eng_cat, chi_cat in category_translations.items():
+                                    if eng_cat.lower() == category_lower:
+                                        category_text = chi_cat
+                                        break
+                                else:
+                                    category_text = category  # Keep original if no match
                         
                         # Add "(continued)" or "(续)" if this slide needs continuation
                         # BUT NOT on the first category of the first slide (account_idx == 0 and current_category is None)
@@ -1276,19 +1330,42 @@ class PowerPointGenerator:
             lines_added += 1
     
     def _generate_ai_summary(self, commentary: str, is_chinese: bool) -> str:
-        """Generate AI summary from page commentary - let AI control the length"""
+        """Generate AI summary from page commentary - AI controls length (~200 words target)"""
         try:
             from fdd_utils.ai_helper import AIHelper
             
-            # Create summary prompt - let AI determine appropriate length
+            # Create summary prompt - ask AI to write ~200 words summary
+            # Don't hard limit - let AI produce a coherent summary
             if is_chinese:
-                prompt = f"请为以下内容生成一个简洁的摘要，长度由你决定，确保涵盖主要内容：\n\n{commentary[:2000]}"
+                prompt = f"""请为以下财务评论内容生成一个概要摘要。
+
+目标长度：约200字（可根据内容适当增减，确保完整表达要点）
+
+要求：
+1. 涵盖所有关键财务数据和变动
+2. 保持专业、简洁的语言风格
+3. 不要截断句子中途
+4. 确保摘要是完整、可读的段落
+
+原始内容：
+{commentary[:3000]}"""
             else:
-                prompt = f"Please generate a concise summary for the following content. Determine the appropriate length to cover the main points:\n\n{commentary[:2000]}"
+                prompt = f"""Please generate a summary for the following financial commentary.
+
+Target length: approximately 200 words (adjust as needed to cover key points completely)
+
+Requirements:
+1. Cover all key financial data and changes
+2. Maintain professional, concise language
+3. Do not truncate sentences mid-way
+4. Ensure the summary is a complete, readable paragraph
+
+Original content:
+{commentary[:3000]}"""
             
-            # Call AI with more tokens to allow AI to control length
+            # Call AI with enough tokens to allow proper summary generation
             ai_helper = AIHelper()
-            response = ai_helper.call_ai(prompt, max_tokens=300)
+            response = ai_helper.call_ai(prompt, max_tokens=500)
             
             if response and response.strip():
                 summary = response.strip()
@@ -1303,7 +1380,8 @@ class PowerPointGenerator:
     def _generate_page_summary(self, commentary: str, is_chinese: bool) -> str:
         """
         Generate a per-page summary from commentary text
-        This is the summary of the commentary for that particular page
+        This is a fallback when AI summary is not available
+        Extracts first few complete sentences without hard truncation
         """
         if not commentary or not commentary.strip():
             return ""
@@ -1322,36 +1400,31 @@ class PowerPointGenerator:
             if current_sentence.strip():
                 sentences.append(current_sentence.strip())
             
-            # Take first 2-3 sentences as summary (up to 200 chars)
+            # Take first 3-5 complete sentences as summary (~200 words equivalent)
+            # Don't hard limit by characters - take complete sentences
             summary_parts = []
-            total_chars = 0
-            for sentence in sentences[:3]:
-                if total_chars + len(sentence) <= 200:
-                    summary_parts.append(sentence)
-                    total_chars += len(sentence)
-                else:
+            word_count = 0
+            for sentence in sentences[:5]:  # Up to 5 sentences
+                summary_parts.append(sentence)
+                word_count += len(sentence)
+                if word_count >= 150:  # Rough target of ~150-200 Chinese characters
                     break
             
             summary = ''.join(summary_parts)
-            if len(commentary) > total_chars:
-                summary += "..."
         else:
             # English - split by periods
             sentences = commentary.split('.')
             summary_parts = []
-            total_chars = 0
-            for sentence in sentences[:3]:
+            word_count = 0
+            for sentence in sentences[:5]:  # Up to 5 sentences
                 sentence = sentence.strip()
                 if sentence:
-                    if total_chars + len(sentence) <= 200:
-                        summary_parts.append(sentence + '.')
-                        total_chars += len(sentence) + 1
-                    else:
+                    summary_parts.append(sentence + '.')
+                    word_count += len(sentence.split())
+                    if word_count >= 50:  # Target ~50-80 words for English
                         break
             
             summary = ' '.join(summary_parts)
-            if len(commentary) > total_chars:
-                summary += "..."
         
         return summary.strip()
 
@@ -1362,6 +1435,11 @@ class PowerPointGenerator:
             from fdd_utils.financial_extraction import extract_balance_sheet_and_income_statement
             
             logger.info(f"Embedding financial tables from {excel_path}, sheet: {sheet_name}")
+            
+            # Validate inputs
+            if not excel_path or not sheet_name:
+                logger.warning(f"Missing excel_path ({excel_path}) or sheet_name ({sheet_name}), skipping table embedding")
+                return
             
             # Use the existing extraction function
             bs_is_results = extract_balance_sheet_and_income_statement(excel_path, sheet_name, debug=False)
@@ -1415,19 +1493,44 @@ class PowerPointGenerator:
             # Embed BS table to slide 0 (page 1)
             if bs_df is not None and not bs_df.empty and len(self.presentation.slides) > 0:
                 slide_0 = self.presentation.slides[0]
+                logger.info(f"Looking for table shape on slide 1, available shapes: {[s.name if hasattr(s, 'name') else type(s).__name__ for s in slide_0.shapes]}")
+                
                 table_shape = self.find_shape_by_name(slide_0.shapes, "Table Placeholder")
                 if not table_shape:
                     # Try alternative names
-                    for name in ["Table Placeholder 2", "Table"]:
+                    for name in ["Table Placeholder 2", "Table", "table", "TABLE", "Content Placeholder 2"]:
                         table_shape = self.find_shape_by_name(slide_0.shapes, name)
                         if table_shape:
+                            logger.info(f"Found table shape with name: {name}")
                             break
                 
+                # If still not found, try to find any shape with "table" in name or has table attribute
+                if not table_shape:
+                    for shape in slide_0.shapes:
+                        shape_name = getattr(shape, 'name', '').lower()
+                        if 'table' in shape_name:
+                            table_shape = shape
+                            logger.info(f"Found table shape by partial name match: {shape.name}")
+                            break
+                        # Check if shape has table
+                        try:
+                            if hasattr(shape, 'table') and shape.table is not None:
+                                table_shape = shape
+                                logger.info(f"Found shape with table attribute: {getattr(shape, 'name', 'unnamed')}")
+                                break
+                        except:
+                            pass
+                
                 if table_shape:
-                    logger.info(f"Found table shape on slide 1, embedding BS table ({bs_df.shape})")
+                    logger.info(f"✅ Found table shape on slide 1: {getattr(table_shape, 'name', 'unnamed')}")
+                    logger.info(f"BS DataFrame shape: {bs_df.shape}, columns: {list(bs_df.columns)}")
+                    logger.info(f"BS DataFrame sample (first 3 rows):\n{bs_df.head(3)}")
                     self._fill_table_placeholder(table_shape, bs_df, table_name=bs_table_name, currency_unit=currency_unit)
                 else:
-                    logger.warning(f"Table Placeholder not found on slide 1 for BS table")
+                    logger.warning(f"❌ Table Placeholder not found on slide 1 for BS table")
+                    logger.warning(f"Available shapes: {[s.name if hasattr(s, 'name') else type(s).__name__ for s in slide_0.shapes]}")
+            else:
+                logger.warning(f"BS DataFrame is None or empty, skipping BS table embedding")
             
             # Embed IS table to slide 5 (1-indexed) = slide index 4 (0-indexed)
             # IS slides are 5-8 (1-indexed) = indices 4-7 (0-indexed)

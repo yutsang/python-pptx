@@ -225,7 +225,8 @@ def process_excel_data(dfs, sheet_name, entity_name):
             result_df = result_table.iloc[date_row_idx + 1:, [result_table.columns.get_loc(description_col_original), value_column_index]]
             result_df.columns = [description_column_name, value_column_name]
             result_df[value_column_name] = result_df[value_column_name].astype(float)
-            result_df = result_df[result_df[value_column_name] != 0]
+            # Filter out rows where value is 0 or below 0.01 (treat as insignificant/zero)
+            result_df = result_df[result_df[value_column_name].abs() >= 0.01]
  
             # Check all values in a specific column or set of columns
             contains_cny = False

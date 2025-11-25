@@ -73,13 +73,13 @@ def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='
 
     # Helper to extract summary from content
     def extract_summary(content):
-        """Extract summary from content (first paragraph or first 200 chars)"""
+        """Extract summary from content - pass full content for AI to summarize later"""
         if not content:
             return ""
         content_str = str(content).strip()
-        # Take first paragraph or first 200 characters
-        first_para = content_str.split('\n')[0] if '\n' in content_str else content_str
-        return first_para[:200] + "..." if len(first_para) > 200 else first_para
+        # Return full content - AI will control the summary length later (~200 words)
+        # Don't truncate here as it may cut meaningful text mid-sentence
+        return content_str
 
     # Use order from financial statements (bs_is_results) - this provides the proper presentation order
     # Get the financial statement DataFrame to extract account order
@@ -199,28 +199,27 @@ def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='
             if not df.empty:
                 financial_data = df
         
-        # Check if account has all zeros - exclude from display if so
-        # Round to 0.01 and check if rounded value is 0 to avoid floating point issues
-        has_non_zero_balance = False
+        # Check if account has all zeros or values below 0.01 - exclude from display if so
+        # Values below 0.01 are treated as insignificant/zero
+        has_significant_balance = False
         if financial_data is not None and not financial_data.empty:
             # Check all numeric columns (skip first column which is usually account names)
             numeric_cols = financial_data.select_dtypes(include=[float, int]).columns
             if len(numeric_cols) > 0:
-                # Check if any value is non-zero after rounding to 0.01
+                # Check if any value is >= 0.01 (significant)
                 for col in numeric_cols:
-                    rounded_values = (financial_data[col] * 100).round() / 100  # Round to 0.01
-                    if (rounded_values.abs() > 0.01).any():
-                        has_non_zero_balance = True
+                    if (financial_data[col].abs() >= 0.01).any():
+                        has_significant_balance = True
                         break
         else:
             # If no financial data, include it (might be a header or total row)
-            has_non_zero_balance = True
+            has_significant_balance = True
         
-        # Skip accounts with all zero balances
-        if not has_non_zero_balance:
+        # Skip accounts with all zero or insignificant balances (< 0.01)
+        if not has_significant_balance:
             import logging
             logger = logging.getLogger(__name__)
-            logger.info(f"Skipping account {account_key} ({mapping_key}) - all balances are zero")
+            logger.info(f"Skipping account {account_key} ({mapping_key}) - all balances are zero or below 0.01")
             continue
         
         # Detect if content is Chinese
@@ -341,11 +340,15 @@ def generate_pptx_presentation():
                 from fdd_utils.pptx_generation import export_pptx_from_structured_data_combined
                 # Pass language info to PPTX generation
                 is_chinese_databook = (language == 'Chn')
+                # Get temp_path and selected_sheet from session state
+                excel_temp_path = st.session_state.get('temp_path')
+                excel_selected_sheet = st.session_state.get('selected_sheet')
+                print(f"DEBUG: Embedding tables from: {excel_temp_path}, sheet: {excel_selected_sheet}")
                 export_pptx_from_structured_data_combined(
                     template_path, bs_data, is_data, combined_output_path, project_name,
                     language='chinese' if language == 'Chn' else 'english',
-                    temp_path=temp_path if 'temp_path' in locals() else st.session_state.get('temp_path'),
-                    selected_sheet=st.session_state.get('selected_sheet'),
+                    temp_path=excel_temp_path,
+                    selected_sheet=excel_selected_sheet,
                     is_chinese_databook=is_chinese_databook
                 )
                 generated_files = [combined_output_path]
@@ -726,13 +729,13 @@ with st.sidebar:
             key="model_type"
         )
         
-        # Show current model in green
+        # Show current model with Streamlit green success reminder
         model_display = {
-            'local': 'Local Model',
-            'openai': 'OpenAI GPT',
-            'deepseek': 'DeepSeek'
+            'local': 'Local Model (Ollama)',
+            'openai': 'OpenAI GPT (gpt-4o-mini)',
+            'deepseek': 'DeepSeek (deepseek-chat)'
         }
-        st.markdown(f"<p style='color: green; font-weight: bold;'>Currently using: {model_display.get(st.session_state.model_type, st.session_state.model_type.upper())}</p>", unsafe_allow_html=True)
+        st.success(f"🤖 AI Mode: {model_display.get(st.session_state.model_type, st.session_state.model_type.upper())}")
 
 # Process data if button was clicked
 if st.session_state.get('process_data_clicked', False):
