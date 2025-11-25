@@ -290,7 +290,6 @@
       
       Content: {content}
       Language: {language}
-      Account: {key}
       
       Check and polish:
       1. Currency format correct?
@@ -363,7 +362,6 @@
       
       内容: {content}
       语言: {language}
-      账户: {key}
       
       检查并润色:
       1. 货币格式是否正确?

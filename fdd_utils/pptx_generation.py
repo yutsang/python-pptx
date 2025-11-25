@@ -137,10 +137,12 @@ class PowerPointGenerator:
         logger.info(f"Loaded template: {self.template_path}")
 
     def find_shape_by_name(self, shapes, name: str):
-        """Find shape by name in slide"""
+        """Find shape by name in slide (case-insensitive)"""
+        name_lower = name.lower()
         for shape in shapes:
-            if hasattr(shape, 'name') and shape.name == name:
-                return shape
+            if hasattr(shape, 'name'):
+                if shape.name == name or shape.name.lower() == name_lower:
+                    return shape
         return None
     
     def find_content_shape(self, shapes):
@@ -692,9 +694,22 @@ class PowerPointGenerator:
         """Fill table placeholder with DataFrame data, preserving original formatting (from backup method)"""
         try:
             # Check if shape has a table (Table Placeholder might be a table shape)
+            # First check if it's a table shape directly
+            table = None
             if hasattr(shape, 'table') and shape.table:
                 table = shape.table
                 logger.info(f"Found table with {len(table.rows)} rows and {len(table.columns)} columns")
+            elif hasattr(shape, 'insert_table'):
+                # If it's a placeholder that can be converted to table, try that
+                logger.warning(f"Shape is a placeholder, trying to access as table...")
+                # Try to get table from placeholder
+                try:
+                    if hasattr(shape, 'table'):
+                        table = shape.table
+                except:
+                    pass
+            
+            if table:
                 
                 # Store original formatting for each cell (from backup method)
                 original_formats = {}
@@ -833,6 +848,10 @@ class PowerPointGenerator:
                 # If no table, this is an error - table placeholder should be a table shape
                 logger.error("Table Placeholder is not a table shape! Cannot embed financial table.")
                 logger.error(f"Shape type: {type(shape)}, has_table: {hasattr(shape, 'table')}")
+                logger.error(f"Shape name: {shape.name if hasattr(shape, 'name') else 'unnamed'}")
+                # Check if shape has table attribute but it's None
+                if hasattr(shape, 'table'):
+                    logger.error(f"shape.table is: {shape.table}")
                 # Try to create a table representation in text frame as last resort
                 if shape.has_text_frame:
                     shape.text_frame.clear()
@@ -941,12 +960,20 @@ class PowerPointGenerator:
         p_key = text_frame.add_paragraph()
         p_key.level = 1  # Use level 1 for bullet (filled round bullet)
         try:
-            p_key.left_indent = Inches(0.15)  # 0.15" indent
-            p_key.first_line_indent = Inches(-0.15)  # 0.15" special hanging
+            # Set bullet formatting explicitly
+            # In python-pptx, setting level > 0 should automatically enable bullets
+            # But we need to ensure the paragraph format is correct
+            p_key.left_indent = Inches(0.15)  # 0.15" indent for text
+            p_key.first_line_indent = Inches(-0.15)  # 0.15" special hanging (bullet at 0, text starts at 0.15")
             p_key.space_before = Pt(0)
             p_key.space_after = Pt(6)  # 6pt spacing after
             p_key.line_spacing = 1.0
-        except:
+            
+            # Try to explicitly set bullet style if possible
+            # Note: python-pptx doesn't have direct bullet style control, but level > 0 should work
+            # The bullet character and style are determined by the template's default bullet format
+        except Exception as e:
+            logger.warning(f"Could not set paragraph formatting: {e}")
             pass
         
         # Key name (black bold Arial 9) - no grey char, use PPTX bullet instead
@@ -990,8 +1017,8 @@ class PowerPointGenerator:
                 p_text = text_frame.add_paragraph()
                 p_text.level = 0  # No bullet for continuation
                 try:
-                    p_text.left_indent = Inches(0.15)  # Same indent as key
-                    p_text.first_line_indent = Inches(-0.15)  # Same hanging
+                    p_text.left_indent = Inches(0.15)  # 0.15" indent (same as key text)
+                    p_text.first_line_indent = Inches(0)  # No hanging for continuation lines
                     p_text.space_before = Pt(0)
                     p_text.space_after = Pt(6)  # 6pt spacing after
                     p_text.line_spacing = 1.0
@@ -1218,23 +1245,46 @@ class PowerPointGenerator:
             if is_df is not None and not is_df.empty:
                 is_slide_idx = 4  # First IS slide (page 5, 1-indexed)
                 
+                logger.info(f"Looking for IS table on slide {is_slide_idx + 1} (index {is_slide_idx}), total slides: {len(self.presentation.slides)}")
+                
                 if len(self.presentation.slides) > is_slide_idx:
                     is_slide = self.presentation.slides[is_slide_idx]
-                    table_shape = self.find_shape_by_name(is_slide.shapes, "Table Placeholder")
+                    logger.info(f"Slide {is_slide_idx + 1} exists, searching for Table Placeholder...")
+                    logger.info(f"Available shapes on slide {is_slide_idx + 1}: {[s.name if hasattr(s, 'name') else f'{type(s).__name__}' for s in is_slide.shapes]}")
+                    
+                    # Try to find table shape - check all shapes for table capability
+                    table_shape = None
+                    # First try by name
+                    for name in ["Table Placeholder", "Table Placeholder 2", "Table", "table", "TABLE"]:
+                        table_shape = self.find_shape_by_name(is_slide.shapes, name)
+                        if table_shape:
+                            logger.info(f"Found table shape by name: {name}")
+                            break
+                    
+                    # If not found by name, try to find any shape that has a table
                     if not table_shape:
-                        # Try alternative names
-                        for name in ["Table Placeholder 2", "Table"]:
-                            table_shape = self.find_shape_by_name(is_slide.shapes, name)
-                            if table_shape:
+                        for shape in is_slide.shapes:
+                            if hasattr(shape, 'table') and shape.table is not None:
+                                table_shape = shape
+                                logger.info(f"Found table shape by table attribute: {shape.name if hasattr(shape, 'name') else 'unnamed'}")
+                                break
+                            # Also check if it's a table shape type
+                            from pptx.shapes.base import BaseShape
+                            if hasattr(shape, 'has_table') and shape.has_table:
+                                table_shape = shape
+                                logger.info(f"Found table shape by has_table: {shape.name if hasattr(shape, 'name') else 'unnamed'}")
                                 break
                     
                     if table_shape:
-                        logger.info(f"Embedding IS table to slide {is_slide_idx + 1} ({is_df.shape})")
+                        logger.info(f"✅ Found table shape on slide {is_slide_idx + 1}, embedding IS table ({is_df.shape})")
+                        logger.info(f"Table shape type: {type(table_shape)}, has_table: {hasattr(table_shape, 'table')}")
                         self._fill_table_placeholder(table_shape, is_df)
                     else:
-                        logger.warning(f"Table Placeholder not found on slide {is_slide_idx + 1} for IS table, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in is_slide.shapes]}")
+                        logger.error(f"❌ Table Placeholder not found on slide {is_slide_idx + 1} for IS table")
+                        logger.error(f"Available shapes: {[s.name if hasattr(s, 'name') else f'{type(s).__name__}' for s in is_slide.shapes]}")
                 else:
-                    logger.warning(f"Slide {is_slide_idx + 1} does not exist for IS table (only {len(self.presentation.slides)} slides)")
+                    logger.error(f"❌ Slide {is_slide_idx + 1} does not exist for IS table (only {len(self.presentation.slides)} slides)")
+                    logger.error(f"IS data should be on slide 5, but presentation only has {len(self.presentation.slides)} slides")
                     
         except Exception as e:
             logger.error(f"Error embedding financial tables: {e}")
