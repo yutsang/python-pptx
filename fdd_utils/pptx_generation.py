@@ -818,8 +818,10 @@ class PowerPointGenerator:
                         slide.shapes._spTree.remove(sp)
                         
                         # Add new table at the same position
+                        # Need: 1 row for title (if table_name), 1 for header, N for data
+                        total_rows = len(df) + 2 if table_name else len(df) + 1
                         table_shape = slide.shapes.add_table(
-                            rows=len(df) + 1,  # +1 for header
+                            rows=total_rows,
                             cols=len(df.columns),
                             left=left,
                             top=top,
@@ -952,36 +954,18 @@ class PowerPointGenerator:
                         logger.debug(f"Filled header cell {col_idx}: {cell.text}")
                 
                 # Fill data rows with formatting - show ALL rows (no limit)
-                # If table has fewer rows than data, we need to add rows or show all available
+                # Check if table has enough rows, if not, limit to available rows
                 max_rows = len(df)  # Show all rows
-                # Ensure we have enough rows in the table (account for name row if exists)
                 rows_needed = max_rows + data_start_row + 1  # +1 for header row
-                while len(table.rows) < rows_needed:
-                    # Add a new row by copying the last row's format
-                    last_row_idx = len(table.rows) - 1
-                    new_row = table.rows.add_row()
-                    # Copy formatting from last row
-                    for col_idx in range(len(table.columns)):
-                        if col_idx < len(table.columns):
-                            try:
-                                source_cell = table.cell(last_row_idx, col_idx)
-                                target_cell = new_row.cells[col_idx]
-                                if source_cell.text_frame.paragraphs and source_cell.text_frame.paragraphs[0].runs:
-                                    source_run = source_cell.text_frame.paragraphs[0].runs[0]
-                                    if target_cell.text_frame.paragraphs:
-                                        target_run = target_cell.text_frame.paragraphs[0].add_run()
-                                    else:
-                                        target_run = target_cell.text_frame.paragraphs[0].add_run()
-                                    if source_run.font.name:
-                                        target_run.font.name = source_run.font.name
-                                    if source_run.font.size:
-                                        target_run.font.size = source_run.font.size
-                                    if source_run.font.bold is not None:
-                                        target_run.font.bold = source_run.font.bold
-                                    if source_run.font.italic is not None:
-                                        target_run.font.italic = source_run.font.italic
-                            except:
-                                pass
+                available_rows = len(table.rows)
+                
+                if available_rows < rows_needed:
+                    logger.warning(f"Table has {available_rows} rows but needs {rows_needed}. Will only fill {available_rows - data_start_row - 1} data rows.")
+                    max_rows = min(max_rows, available_rows - data_start_row - 1)
+                    if max_rows < 0:
+                        max_rows = 0
+                
+                logger.info(f"Table has {available_rows} rows available, will fill {max_rows} data rows")
                 
                 # Now fill all rows with Arial 9 font
                 # Check for title, date, total, and subtotal rows to highlight
@@ -1484,8 +1468,8 @@ Original content:
                 logger.warning(f"Missing excel_path ({excel_path}) or sheet_name ({sheet_name}), skipping table embedding")
                 return
             
-            # Use the existing extraction function
-            bs_is_results = extract_balance_sheet_and_income_statement(excel_path, sheet_name, debug=False)
+            # Use the existing extraction function with DEBUG enabled
+            bs_is_results = extract_balance_sheet_and_income_statement(excel_path, sheet_name, debug=True)
             if not bs_is_results:
                 logger.warning("No BS/IS data extracted")
                 return
@@ -1587,7 +1571,9 @@ Original content:
                         top = Inches(1.5)
                         width = Inches(12.33)
                         height = Inches(4.0)
-                        table_shape = slide_0.shapes.add_table(len(bs_df)+1, len(bs_df.columns), left, top, width, height)
+                        # Need: 1 for title (if table_name), 1 for header, N for data
+                        total_rows = len(bs_df) + 2 if bs_table_name else len(bs_df) + 1
+                        table_shape = slide_0.shapes.add_table(total_rows, len(bs_df.columns), left, top, width, height)
                         self._fill_table_placeholder(table_shape, bs_df, table_name=bs_table_name, currency_unit=currency_unit)
                         logger.info("✅ Created new BS table on slide 1")
                     except Exception as e:
@@ -1645,7 +1631,9 @@ Original content:
                             top = Inches(1.5)
                             width = Inches(12.33)
                             height = Inches(4.0)
-                            table_shape = is_slide.shapes.add_table(len(is_df)+1, len(is_df.columns), left, top, width, height)
+                            # Need: 1 for title (if table_name), 1 for header, N for data
+                            total_rows = len(is_df) + 2 if is_table_name else len(is_df) + 1
+                            table_shape = is_slide.shapes.add_table(total_rows, len(is_df.columns), left, top, width, height)
                             self._fill_table_placeholder(table_shape, is_df, table_name=is_table_name, currency_unit=currency_unit)
                             logger.info(f"✅ Created new IS table on slide {is_slide_idx + 1}")
                         except Exception as e:
