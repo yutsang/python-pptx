@@ -395,6 +395,7 @@ class PowerPointGenerator:
             financial_data = account_data.get('financial_data')
             commentary = account_data.get('commentary', '')
             summary = account_data.get('summary', '')
+            is_chinese = account_data.get('is_chinese', False)  # Extract is_chinese flag
             
             logger.info(f"Processing slide {slide_idx + 1} for account: {account_name}")
             

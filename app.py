@@ -135,12 +135,18 @@ def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='
             if not df.empty:
                 financial_data = df
         
+        # Detect if content is Chinese
+        from fdd_utils.pptx_generation import detect_chinese_text
+        commentary_text = str(final_content).strip() if final_content and str(final_content).strip() else f"[No content generated for {account_key}]"
+        is_chinese = detect_chinese_text(commentary_text)
+        
         # Structure the data for PPTX
         account_data = {
             'account_name': account_key,
             'financial_data': financial_data,
-            'commentary': str(final_content).strip() if final_content and str(final_content).strip() else f"[No content generated for {account_key}]",
-            'summary': extract_summary(final_content) if final_content else ""
+            'commentary': commentary_text,
+            'summary': extract_summary(final_content) if final_content else "",
+            'is_chinese': is_chinese
         }
         
         structured_data.append(account_data)
@@ -411,11 +417,12 @@ def get_financial_sheets(file_path: str) -> List[str]:
 # Initialize
 init_session_state()
 
-# Title with refresh button
+# Title with refresh button at top right
 col_title, col_refresh = st.columns([10, 1])
 with col_title:
     st.title("📊 Financial Data Processing & AI Generation")
 with col_refresh:
+    st.markdown("<br>", unsafe_allow_html=True)  # Align button with title
     if st.button("🔄", help="Refresh page and reset", use_container_width=True, key="refresh_main"):
         # Clear session state to reset
         for key in ['dfs', 'workbook_list', 'language', 'bs_is_results', 'ai_results', 
@@ -456,21 +463,21 @@ if st.session_state.dfs is None:
                 key="entity_dropdown"
             )
             
-            # Update session state when dropdown changes
+            # Update session state when dropdown changes - copy to text input
             if selected_entity:
                 st.session_state.entity_name = selected_entity
             
-            # Editable text box
+            # Editable text box - automatically copies dropdown selection
             entity_name = st.text_input(
                 label="Or type/modify entity name",
-                value=st.session_state.entity_name,
+                value=st.session_state.entity_name if 'entity_name' in st.session_state else selected_entity if selected_entity else "",
                 placeholder="Enter or modify entity name...",
                 help="Type a custom entity name or modify the selected one",
                 label_visibility="collapsed",
                 key="entity_text_input"
             )
-            # Update session state when text changes
-            if entity_name != st.session_state.entity_name:
+            # Update session state when text changes (user edits)
+            if entity_name:
                 st.session_state.entity_name = entity_name
         else:
             # Initialize if not exists
@@ -657,15 +664,15 @@ if st.session_state.get('process_data_clicked', False):
 if st.session_state.dfs is None:
     st.info("👈 Upload a databook, set entity name and sheet, then click 'Process Data' to begin")
 else:
-    # Data Display header with reports count on right
+    # Data Display header with reports count on right (same row)
     col_display, col_reports = st.columns([8, 2])
     with col_display:
         st.header("📈 Data Display")
     with col_reports:
-        # Count matches
+        # Count matches (immaterial tab rows)
         if st.session_state.workbook_list:
             matches_count = len([k for k in st.session_state.workbook_list if k in st.session_state.dfs])
-            st.metric("Reports", matches_count)
+            st.metric("Reports", matches_count, help="Number of matched accounts")
     
     # Load mappings to filter accounts by type
     from fdd_utils.reconciliation import load_mappings
