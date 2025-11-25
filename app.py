@@ -529,15 +529,19 @@ with st.sidebar:
     if temp_path:
         st.markdown("---")
         st.markdown("**🤖 AI Model**")
-        model_type = st.radio(
+        # Initialize model_type in session state if not exists
+        if 'model_type' not in st.session_state:
+            st.session_state.model_type = 'local'
+        
+        # Widget with key automatically manages session state - don't modify it manually
+        st.radio(
             label="Select model",
             options=['local', 'openai', 'deepseek'],
-            index=0,
+            index=['local', 'openai', 'deepseek'].index(st.session_state.model_type) if st.session_state.model_type in ['local', 'openai', 'deepseek'] else 0,
             help="AI model for content generation",
             label_visibility="collapsed",
             key="model_type"
         )
-        st.session_state.model_type = model_type
 
 # Process data if button was clicked
 if st.session_state.get('process_data_clicked', False):
@@ -582,8 +586,9 @@ if st.session_state.get('process_data_clicked', False):
                 st.session_state.language = language
                 st.session_state.bs_is_results = bs_is_results
                 st.session_state.reconciliation = (recon_bs, recon_is)
-                model_type = st.session_state.get('model_type', 'local')
-                st.session_state.model_type = model_type
+                # model_type is already set by the radio widget, don't modify it here
+                if 'model_type' not in st.session_state:
+                    st.session_state.model_type = 'local'
                 st.session_state.project_name = bs_is_results.get('project_name') if bs_is_results else None
                 st.session_state.entity_name = entity_name
                 
