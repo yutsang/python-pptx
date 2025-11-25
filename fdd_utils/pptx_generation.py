@@ -624,7 +624,8 @@ class PowerPointGenerator:
                     needs_cont = needs_continuation and is_last_account
                     
                     self._fill_text_main_bullets_with_category_and_key(
-                        tf, None, display_name, commentary, is_chinese, is_chinese_databook, needs_continuation=needs_cont
+                        tf, None, display_name, commentary, is_chinese, 
+                        is_chinese_databook=is_chinese_databook, needs_continuation=needs_cont
                     )
                 
                 # Generate combined summary for this slide from all accounts
