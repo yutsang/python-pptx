@@ -81,19 +81,58 @@ def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='
         first_para = content_str.split('\n')[0] if '\n' in content_str else content_str
         return first_para[:200] + "..." if len(first_para) > 200 else first_para
 
-    # Filter accounts by statement type
-    filtered_accounts = []
+    # Get original key order from mappings.yml (preserve YAML order)
+    # Filter and collect accounts with their mapping info
+    account_info_list = []
     for account_key in ai_results.keys():
         # Use find_mapping_key to check aliases
         mapping_key = find_mapping_key_for_pptx(account_key)
         if mapping_key:
             acc_type = mappings[mapping_key].get('type')
             if statement_type == 'BS' and acc_type == 'BS':
-                filtered_accounts.append(account_key)
+                category = mappings[mapping_key].get('category', '')
+                account_info_list.append({
+                    'account_key': account_key,
+                    'mapping_key': mapping_key,
+                    'category': category,
+                    'order': None  # Will be set based on mappings order
+                })
             elif statement_type == 'IS' and acc_type == 'IS':
-                filtered_accounts.append(account_key)
+                category = mappings[mapping_key].get('category', '')
+                account_info_list.append({
+                    'account_key': account_key,
+                    'mapping_key': mapping_key,
+                    'category': category,
+                    'order': None  # Will be set based on mappings order
+                })
+    
+    # Sort by original key order in mappings.yml
+    # Get order from mappings (iterate through mappings to preserve order)
+    mapping_order = {}
+    order_idx = 0
+    for mapping_key, config in mappings.items():
+        if mapping_key.startswith('_'):
+            continue
+        if isinstance(config, dict):
+            acc_type = config.get('type', '')
+            if statement_type == 'BS' and acc_type == 'BS':
+                mapping_order[mapping_key] = order_idx
+                order_idx += 1
+            elif statement_type == 'IS' and acc_type == 'IS':
+                mapping_order[mapping_key] = order_idx
+                order_idx += 1
+    
+    # Assign order to accounts and sort
+    for account_info in account_info_list:
+        account_info['order'] = mapping_order.get(account_info['mapping_key'], 9999)
+    
+    # Sort by order, then by category, then by mapping_key
+    account_info_list.sort(key=lambda x: (x['order'], x['category'], x['mapping_key']))
 
-    for account_key in filtered_accounts:
+    for account_info in account_info_list:
+        account_key = account_info['account_key']
+        mapping_key = account_info['mapping_key']
+        category = account_info['category']
         result = ai_results[account_key]
         
         # Extract final content, handling nested structures
@@ -143,6 +182,8 @@ def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='
         # Structure the data for PPTX
         account_data = {
             'account_name': account_key,
+            'mapping_key': mapping_key,
+            'category': category,
             'financial_data': financial_data,
             'commentary': commentary_text,
             'summary': extract_summary(final_content) if final_content else "",
@@ -472,23 +513,22 @@ if st.session_state.dfs is None:
                 key="entity_dropdown"
             )
             
-            # If dropdown changed and has a value, update text input immediately
+            # If dropdown changed and has a value, update session state
             if selected_entity and selected_entity != prev_dropdown:
                 st.session_state.entity_name = selected_entity
                 st.session_state.prev_entity_dropdown = selected_entity
-                st.session_state.entity_text_input = selected_entity  # Force update text input
             
             # Get value for text input - prioritize dropdown selection
             if selected_entity:
                 text_input_value = selected_entity
-                # Update session state to match dropdown
+                # Update session state to match dropdown (but don't set widget key)
                 if st.session_state.get('entity_name', '') != selected_entity:
                     st.session_state.entity_name = selected_entity
             else:
                 # Use existing value if dropdown is empty
                 text_input_value = st.session_state.get('entity_name', '')
             
-            # Editable text box - automatically copies dropdown selection
+            # Editable text box - use value directly, don't set via session state
             entity_name = st.text_input(
                 label="Or type/modify entity name",
                 value=text_input_value,
@@ -498,15 +538,13 @@ if st.session_state.dfs is None:
                 key="entity_text_input"
             )
             
-            # Update session state when text changes (user edits)
-            if entity_name:
+            # Update session state when text changes (user edits) - but only if different
+            if entity_name != st.session_state.get('entity_name', ''):
                 st.session_state.entity_name = entity_name
-                # If user manually edited and it's different from dropdown, track it
+                # Track if user manually edited
                 if entity_name != selected_entity and selected_entity:
-                    # User edited manually, keep their edit
                     st.session_state.prev_entity_dropdown = selected_entity
                 elif entity_name == selected_entity:
-                    # Text matches dropdown, sync them
                     st.session_state.prev_entity_dropdown = selected_entity
         else:
             # Initialize if not exists

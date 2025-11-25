@@ -460,9 +460,15 @@ class PowerPointGenerator:
                 from pptx.enum.text import MSO_VERTICAL_ANCHOR
                 tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP  # Ensure text starts from top
                 
+                # Get category and mapping_key from account_data
+                category = account_data.get('category', '')
+                mapping_key = account_data.get('mapping_key', account_name)
+                
                 if commentary:
-                    # Use detailed line break logic and level 1-3 text handling from backup
-                    self._fill_text_main_bullets_with_levels(tf, commentary, is_chinese)
+                    # Format commentary with category as first level, then key name with grey char
+                    self._fill_text_main_bullets_with_category_and_key(
+                        tf, category, mapping_key, commentary, is_chinese
+                    )
                 
                 logger.info(f"Filled textMainBullets with commentary on slide {slide_idx + 1}")
             else:
@@ -678,10 +684,129 @@ class PowerPointGenerator:
         
         return bullet_lines
     
+    def _fill_text_main_bullets_with_category_and_key(self, text_frame, category: str, mapping_key: str, 
+                                                      commentary: str, is_chinese: bool):
+        """
+        Fill textMainBullets shape with commentary formatted as:
+        - Category as first level (dark blue Arial 9)
+        - Key name with grey char (U+25A0) + space + key name (black bold Arial 9) + "-" (not bold) + plain text
+        """
+        from pptx.util import Inches
+        from pptx.dml.color import RGBColor
+        
+        # Add category as first level (if category exists)
+        if category:
+            p_category = text_frame.add_paragraph()
+            p_category.level = 0
+            try:
+                p_category.left_indent = Inches(0.21)
+                p_category.first_line_indent = Inches(-0.19)
+                p_category.space_before = Pt(0)
+                p_category.space_after = Pt(0)
+                p_category.line_spacing = 1.0
+            except:
+                pass
+            
+            run_category = p_category.add_run()
+            run_category.text = category
+            run_category.font.size = Pt(9)  # Arial 9
+            run_category.font.name = 'Arial'
+            run_category.font.bold = False
+            try:
+                run_category.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue
+            except:
+                pass
+        
+        # Add key name with grey char + space + key name (black bold) + "-" (not bold) + plain text
+        p_key = text_frame.add_paragraph()
+        p_key.level = 0
+        try:
+            p_key.left_indent = Inches(0.21)
+            p_key.first_line_indent = Inches(-0.19)
+            p_key.space_before = Pt(0)
+            p_key.space_after = Pt(0)
+            p_key.line_spacing = 1.0
+        except:
+            pass
+        
+        # Grey char (U+25A0) + space
+        run_bullet = p_key.add_run()
+        run_bullet.text = '\u25A0 '  # U+25A0 (black square) + space
+        run_bullet.font.size = Pt(9)
+        run_bullet.font.name = 'Arial'
+        run_bullet.font.bold = False
+        try:
+            run_bullet.font.color.rgb = RGBColor(128, 128, 128)  # Grey
+        except:
+            pass
+        
+        # Key name (black bold Arial 9)
+        run_key = p_key.add_run()
+        run_key.text = mapping_key
+        run_key.font.size = Pt(9)
+        run_key.font.name = 'Arial'
+        run_key.font.bold = True
+        try:
+            run_key.font.color.rgb = RGBColor(0, 0, 0)  # Black
+        except:
+            pass
+        
+        # "-" (not bold)
+        run_dash = p_key.add_run()
+        run_dash.text = " - "
+        run_dash.font.size = Pt(9)
+        run_dash.font.name = 'Arial'
+        run_dash.font.bold = False
+        try:
+            run_dash.font.color.rgb = RGBColor(0, 0, 0)  # Black
+        except:
+            pass
+        
+        # Plain text (commentary content)
+        # Split commentary into paragraphs and add each as continuation
+        commentary_lines = commentary.split('\n')
+        first_line_added = False
+        for line_idx, line in enumerate(commentary_lines):
+            line = line.strip()
+            if not line:
+                continue
+            
+            if not first_line_added:
+                # First line continues on same paragraph after the dash
+                run_text = p_key.add_run()
+                run_text.text = line
+                first_line_added = True
+            else:
+                # Subsequent lines as new paragraphs (indented continuation)
+                p_text = text_frame.add_paragraph()
+                p_text.level = 0
+                try:
+                    p_text.left_indent = Inches(0.4)  # More indented for continuation
+                    p_text.first_line_indent = Inches(-0.19)
+                    p_text.space_before = Pt(0)
+                    p_text.space_after = Pt(0)
+                    p_text.line_spacing = 1.0
+                except:
+                    pass
+                run_text = p_text.add_run()
+                run_text.text = line
+            
+            # Apply formatting to the run
+            if first_line_added and line_idx == 0:
+                # Format was already set above, but ensure it's applied
+                pass
+            run_text.font.size = Pt(9)
+            run_text.font.name = 'Arial'
+            run_text.font.bold = False
+            try:
+                run_text.font.color.rgb = RGBColor(0, 0, 0)  # Black
+            except:
+                pass
+    
     def _fill_text_main_bullets_with_levels(self, text_frame, commentary: str, is_chinese: bool):
         """
         Fill textMainBullets shape with commentary using detailed line break logic
-        and level 1-3 text handling with page breaks
+        and level 1-3 text handling with page breaks (legacy method, kept for compatibility)
         """
         from pptx.util import Inches
         from pptx.dml.color import RGBColor
