@@ -126,8 +126,28 @@ def convert_ai_results_to_structured_data(ai_results, mappings, statement_type='
     for account_info in account_info_list:
         account_info['order'] = mapping_order.get(account_info['mapping_key'], 9999)
     
-    # Sort by order, then by category, then by mapping_key
-    account_info_list.sort(key=lambda x: (x['order'], x['category'], x['mapping_key']))
+    # Sort by order (key order from mappings), then by category order (CA before NCA)
+    # Define category order for proper grouping
+    category_order = {
+        'Current assets': 1,
+        'Non-current assets': 2,
+        'Current liabilities': 3,
+        'Non-current liabilities': 4,
+        'Equity': 5,
+        'Revenue': 1,
+        'Cost of sales': 2,
+        'Operating expenses': 3,
+        'Other income': 4,
+        'Other expenses': 5,
+        'Finance costs': 6,
+        'Tax': 7
+    }
+    
+    def get_category_sort_key(category):
+        return category_order.get(category, 999)
+    
+    # Sort by order (key order), then by category order, then by mapping_key
+    account_info_list.sort(key=lambda x: (x['order'], get_category_sort_key(x['category']), x['mapping_key']))
 
     for account_info in account_info_list:
         account_key = account_info['account_key']

@@ -520,22 +520,9 @@ class PowerPointGenerator:
             used_slide_indices.add(actual_slide_idx)
             slide = self.presentation.slides[actual_slide_idx]
             
-            # Fill table only on first slide of this statement type
-            if slide_idx == 0:
-                # Try to find financial data from first account
-                first_account_data = account_data_list[0] if account_data_list else None
-                financial_data = first_account_data.get('financial_data') if first_account_data else None
-                
-                if financial_data is not None:
-                    table_shape = None
-                    for table_name in ["Table Placeholder", "Table Placeholder 2", "Table"]:
-                        table_shape = self.find_shape_by_name(slide.shapes, table_name)
-                        if table_shape:
-                            logger.info(f"Found table shape '{table_name}' on slide {actual_slide_idx + 1}")
-                            break
-                    
-                    if table_shape:
-                        self._fill_table_placeholder(table_shape, financial_data)
+            # Note: Financial tables are filled by embed_financial_tables() which is called after
+            # applying all data. This ensures the full BS/IS tables are embedded, not just individual account data.
+            # So we skip filling tables here to avoid conflicts.
             
             # Update projTitle
             proj_title_shape = self.find_shape_by_name(slide.shapes, "projTitle")
@@ -563,16 +550,45 @@ class PowerPointGenerator:
                 from pptx.enum.text import MSO_VERTICAL_ANCHOR
                 tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
                 
-                # Fill with all accounts for this slide
+                # Fill with all accounts for this slide, grouped by category
+                # Show category header only once per category group
+                current_category = None
                 for account_idx, account_data in enumerate(account_data_list):
                     category = account_data.get('category', '')
                     mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
                     commentary = account_data.get('commentary', '')
                     is_chinese = account_data.get('is_chinese', False)
                     
-                    # Fill commentary with category and key formatting
+                    # Show category header only when category changes
+                    if category and category != current_category:
+                        # Add category header
+                        p_category = tf.add_paragraph()
+                        p_category.level = 0
+                        try:
+                            p_category.left_indent = Inches(0.21)
+                            p_category.first_line_indent = Inches(-0.19)
+                            p_category.space_before = Pt(6) if current_category else Pt(0)  # Space before if not first
+                            p_category.space_after = Pt(0)
+                            p_category.line_spacing = 1.0
+                        except:
+                            pass
+                        
+                        run_category = p_category.add_run()
+                        run_category.text = category
+                        run_category.font.size = Pt(9)
+                        run_category.font.name = 'Arial'
+                        run_category.font.bold = False
+                        try:
+                            from pptx.dml.color import RGBColor
+                            run_category.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue
+                        except:
+                            pass
+                        
+                        current_category = category
+                    
+                    # Fill commentary with key formatting (no category, already shown)
                     self._fill_text_main_bullets_with_category_and_key(
-                        tf, category, mapping_key, commentary, is_chinese
+                        tf, None, mapping_key, commentary, is_chinese  # Pass None for category
                     )
                     
                     # Add spacing between accounts (except for last one)
@@ -844,13 +860,14 @@ class PowerPointGenerator:
                                                       commentary: str, is_chinese: bool):
         """
         Fill textMainBullets shape with commentary formatted as:
-        - Category as first level (dark blue Arial 9)
+        - Category as first level (dark blue Arial 9) - only if category is provided
         - Key name with grey char (U+25A0) + space + key name (black bold Arial 9) + "-" (not bold) + plain text
         """
         from pptx.util import Inches
         from pptx.dml.color import RGBColor
         
-        # Add category as first level (if category exists)
+        # Add category as first level (if category exists and is not None)
+        # Note: category is now handled at slide level, so this is only for individual calls
         if category:
             p_category = text_frame.add_paragraph()
             p_category.level = 0
@@ -1137,22 +1154,28 @@ class PowerPointGenerator:
                 else:
                     logger.warning(f"Table Placeholder not found on slide 1 for BS table")
             
-            # Embed IS table to slide 4 (page 5, 0-indexed)
-            if is_df is not None and not is_df.empty and len(self.presentation.slides) > 4:
-                slide_4 = self.presentation.slides[4]
-                table_shape = self.find_shape_by_name(slide_4.shapes, "Table Placeholder")
-                if not table_shape:
-                    # Try alternative names
-                    for name in ["Table Placeholder 2", "Table"]:
-                        table_shape = self.find_shape_by_name(slide_4.shapes, name)
-                        if table_shape:
-                            break
-                
-                if table_shape:
-                    logger.info(f"Found table shape on slide 5, embedding IS table ({is_df.shape})")
-                    self._fill_table_placeholder(table_shape, is_df)
+            # Embed IS table to slide 4 (page 5, 0-indexed) - first IS slide
+            # IS data starts at slide 5 (1-indexed) = slide index 4 (0-indexed)
+            if is_df is not None and not is_df.empty:
+                # Find the first IS slide (should be at index 4, but check if slides exist)
+                is_slide_idx = 4  # First IS slide (0-indexed, page 5)
+                if len(self.presentation.slides) > is_slide_idx:
+                    is_slide = self.presentation.slides[is_slide_idx]
+                    table_shape = self.find_shape_by_name(is_slide.shapes, "Table Placeholder")
+                    if not table_shape:
+                        # Try alternative names
+                        for name in ["Table Placeholder 2", "Table"]:
+                            table_shape = self.find_shape_by_name(is_slide.shapes, name)
+                            if table_shape:
+                                break
+                    
+                    if table_shape:
+                        logger.info(f"Found table shape on slide {is_slide_idx + 1}, embedding IS table ({is_df.shape})")
+                        self._fill_table_placeholder(table_shape, is_df)
+                    else:
+                        logger.warning(f"Table Placeholder not found on slide {is_slide_idx + 1} for IS table")
                 else:
-                    logger.warning(f"Table Placeholder not found on slide 5 for IS table")
+                    logger.warning(f"Slide {is_slide_idx + 1} does not exist for IS table (only {len(self.presentation.slides)} slides)")
                     
         except Exception as e:
             logger.error(f"Error embedding financial tables: {e}")
