@@ -961,7 +961,7 @@ else:
                 progress_state = {'current_step': 0, 'current_agent': 0, 'current_item': 0}
                 
                 # Progress callback function for real-time updates
-                def update_progress(agent_num, agent_name, item_num, total_items_in_agent, completed_items):
+                def update_progress(agent_num, agent_name, item_num, total_items_in_agent, completed_items, key_name=None):
                     progress_state['current_agent'] = agent_num
                     progress_state['current_item'] = item_num
                     
@@ -975,6 +975,7 @@ else:
                     
                     # Calculate ETA and combine all info into one status
                     import time
+                    key_display = f" | Key: {key_name}" if key_name else ""
                     if hasattr(update_progress, 'start_time'):
                         elapsed = time.time() - update_progress.start_time
                         if completed_steps > 0:
@@ -985,14 +986,14 @@ else:
                             eta_secs = int(eta_seconds % 60)
                             status_placeholder.info(
                                 f"🔄 Running Agent {agent_num}/4: {agent_name} | "
-                                f"Processing item {item_num}/{total_items_in_agent} | "
+                                f"Processing item {item_num}/{total_items_in_agent}{key_display} | "
                                 f"Progress: {completed_steps}/{total_steps} steps | "
                                 f"ETA: {eta_minutes}m {eta_secs}s"
                             )
                         else:
                             status_placeholder.info(
                                 f"🔄 Running Agent {agent_num}/4: {agent_name} | "
-                                f"Processing item {item_num}/{total_items_in_agent} | "
+                                f"Processing item {item_num}/{total_items_in_agent}{key_display} | "
                                 f"Progress: {completed_steps}/{total_steps} steps | "
                                 f"ETA: Calculating..."
                             )
@@ -1000,7 +1001,7 @@ else:
                         update_progress.start_time = time.time()
                         status_placeholder.info(
                             f"🔄 Running Agent {agent_num}/4: {agent_name} | "
-                            f"Processing item {item_num}/{total_items_in_agent} | "
+                            f"Processing item {item_num}/{total_items_in_agent}{key_display} | "
                             f"Progress: {completed_steps}/{total_steps} steps | "
                             f"ETA: Calculating..."
                         )

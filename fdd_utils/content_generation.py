@@ -634,9 +634,10 @@ def ai_pipeline_sequential_by_agent(
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_1'] = content
                     completed += 1
+                    pbar.set_description(f"Generator: {mapping_key}")
                     pbar.update(1)
                     if progress_callback:
-                        progress_callback(1, 'Generator', completed, len(futures), completed)
+                        progress_callback(1, 'Generator', completed, len(futures), completed, mapping_key)
     else:
         with tqdm(total=len(mapping_keys), desc="Generator", unit='item', ascii=False, disable=False) as pbar:
             completed = 0
@@ -648,9 +649,10 @@ def ai_pipeline_sequential_by_agent(
                     if key in final_results:
                         final_results[key]['agent_1'] = content
                     completed += 1
+                    pbar.set_description(f"Generator: {key}")
                     pbar.update(1)
                     if progress_callback:
-                        progress_callback(1, 'Generator', completed, len([k for k in mapping_keys if k in dfs]), completed)
+                        progress_callback(1, 'Generator', completed, len([k for k in mapping_keys if k in dfs]), completed, key)
     
     # Agent 2: Process ALL items with Agent 1 outputs
     print("\n" + "="*60)
@@ -677,9 +679,10 @@ def ai_pipeline_sequential_by_agent(
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_2'] = content
                     completed += 1
+                    pbar.set_description(f"Auditor: {mapping_key}")
                     pbar.update(1)
                     if progress_callback:
-                        progress_callback(2, 'Auditor', completed, len(futures), total_items + completed)
+                        progress_callback(2, 'Auditor', completed, len(futures), total_items + completed, mapping_key)
     else:
         with tqdm(total=len(mapping_keys), desc="Auditor", unit='item', ascii=False, disable=False) as pbar:
             completed = 0
@@ -693,9 +696,10 @@ def ai_pipeline_sequential_by_agent(
                     if key in final_results:
                         final_results[key]['agent_2'] = content
                     completed += 1
+                    pbar.set_description(f"Auditor: {key}")
                     pbar.update(1)
                     if progress_callback:
-                        progress_callback(2, 'Auditor', completed, len(agent_2_items), total_items + completed)
+                        progress_callback(2, 'Auditor', completed, len(agent_2_items), total_items + completed, key)
     
     # Agent 3: Process ALL items with Agent 2 outputs
     print("\n" + "="*60)
@@ -722,9 +726,10 @@ def ai_pipeline_sequential_by_agent(
                     if mapping_key in final_results:
                         final_results[mapping_key]['agent_3'] = content
                     completed += 1
+                    pbar.set_description(f"Refiner: {mapping_key}")
                     pbar.update(1)
                     if progress_callback:
-                        progress_callback(3, 'Refiner', completed, len(futures), 2 * total_items + completed)
+                        progress_callback(3, 'Refiner', completed, len(futures), 2 * total_items + completed, mapping_key)
     else:
         with tqdm(total=len(mapping_keys), desc="Refiner", unit='item', ascii=False, disable=False) as pbar:
             completed = 0
@@ -738,9 +743,10 @@ def ai_pipeline_sequential_by_agent(
                     if key in final_results:
                         final_results[key]['agent_3'] = content
                     completed += 1
+                    pbar.set_description(f"Refiner: {key}")
                     pbar.update(1)
                     if progress_callback:
-                        progress_callback(3, 'Refiner', completed, len(agent_3_items), 2 * total_items + completed)
+                        progress_callback(3, 'Refiner', completed, len(agent_3_items), 2 * total_items + completed, key)
     
     # Agent 4: Process ALL items with Agent 3 outputs
     print("\n" + "="*60)
@@ -768,9 +774,10 @@ def ai_pipeline_sequential_by_agent(
                         final_results[mapping_key]['agent_4'] = content
                         final_results[mapping_key]['final'] = content  # Also store as final
                     completed += 1
+                    pbar.set_description(f"Validator: {mapping_key}")
                     pbar.update(1)
                     if progress_callback:
-                        progress_callback(4, 'Validator', completed, len(futures), 3 * total_items + completed)
+                        progress_callback(4, 'Validator', completed, len(futures), 3 * total_items + completed, mapping_key)
     else:
         with tqdm(total=len(mapping_keys), desc="Validator", unit='item', ascii=False, disable=False) as pbar:
             completed = 0
@@ -785,9 +792,10 @@ def ai_pipeline_sequential_by_agent(
                         final_results[key]['agent_4'] = content
                         final_results[key]['final'] = content  # Also store as final
                     completed += 1
+                    pbar.set_description(f"Validator: {key}")
                     pbar.update(1)
                     if progress_callback:
-                        progress_callback(4, 'Validator', completed, len(agent_4_items), 3 * total_items + completed)
+                        progress_callback(4, 'Validator', completed, len(agent_4_items), 3 * total_items + completed, key)
     
     # Set final content with fallback logic
     for key in final_results:
