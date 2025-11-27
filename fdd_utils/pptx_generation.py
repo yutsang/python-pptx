@@ -504,34 +504,87 @@ class PowerPointGenerator:
                 remaining_lines = adjusted_capacity - current_slot_lines
                 
                 # If we have substantial space (> 3 lines), try to split the content
-                # Reduced threshold from 5 to 3 to split more aggressively
-                if remaining_lines > 3 and content_lines > 8:
-                    # Split the account content
-                    lines_in_commentary = commentary.split('\n')
-                    chars_per_line = 55  # Slightly more conservative estimate
+                # More aggressive splitting to balance content across slots
+                if remaining_lines > 3 and content_lines > 5:
+                    # Split the account content - try paragraph-level split first
+                    paragraphs = commentary.split('\n\n')  # Split by double newline (paragraphs)
+                    if len(paragraphs) == 1:
+                        # No paragraph breaks, split by single newlines
+                        paragraphs = commentary.split('\n')
+                    
+                    chars_per_line = 55
                     
                     # Estimate how many commentary lines we can fit
                     available_for_commentary = remaining_lines - category_lines - 1  # -1 for key line
                     
                     if available_for_commentary > 0:
-                        # Calculate how many characters fit
-                        chars_available = available_for_commentary * chars_per_line
+                        # Try to fit whole paragraphs first
+                        part1_paragraphs = []
+                        part1_lines_used = 0
+                        split_index = 0
                         
-                        # Split commentary at approximately this point
-                        if len(commentary) > chars_available:
-                            # Find a good break point (sentence end)
-                            split_point = chars_available
-                            # Try to find sentence end near split point with wider search window
-                            for end_char in ['. ', '。', '! ', '！', '? ', '？']:
-                                pos = commentary.rfind(end_char, 0, split_point + 80)
-                                if pos > chars_available - 150 and pos < chars_available + 150:
-                                    split_point = pos + len(end_char)
-                                    break
+                        for i, para in enumerate(paragraphs):
+                            para_lines = max(1, (len(para) + chars_per_line - 1) // chars_per_line)
+                            if part1_lines_used + para_lines <= available_for_commentary * 0.9:  # 90% to be safe
+                                part1_paragraphs.append(para)
+                                part1_lines_used += para_lines
+                                split_index = i + 1
+                            else:
+                                break
+                        
+                        # If we can fit at least one paragraph, split there
+                        if part1_paragraphs and split_index < len(paragraphs):
+                            part1_commentary = '\n\n'.join(part1_paragraphs).strip()
+                            part2_commentary = '\n\n'.join(paragraphs[split_index:]).strip()
+                        elif not part1_paragraphs and len(paragraphs) > 0:
+                            # First paragraph doesn't fit - split at sentence level
+                            para = paragraphs[0]
+                            chars_available = available_for_commentary * chars_per_line
                             
-                            # Create partial account data
-                            part1_commentary = commentary[:split_point].strip()
-                            part2_commentary = commentary[split_point:].strip()
-                            
+                            if len(para) > chars_available:
+                                # Find sentence boundary
+                                split_point = chars_available
+                                best_split = None
+                                
+                                # Try to find sentence end near split point
+                                for end_char in ['. ', '。', '! ', '！', '? ', '？', '。 ', '！ ', '？ ']:
+                                    pos = para.rfind(end_char, max(0, split_point - 200), split_point + 100)
+                                    if pos > 0:
+                                        best_split = pos + len(end_char)
+                                        break
+                                
+                                # If no sentence end found, try comma or semicolon
+                                if not best_split:
+                                    for punct in [', ', '，', '; ', '；']:
+                                        pos = para.rfind(punct, max(0, split_point - 150), split_point + 50)
+                                        if pos > 0:
+                                            best_split = pos + len(punct)
+                                            break
+                                
+                                # If still no good split point, just split at word boundary
+                                if not best_split:
+                                    best_split = para.rfind(' ', max(0, split_point - 50), split_point + 50)
+                                    if best_split == -1:
+                                        best_split = split_point
+                                
+                                part1_commentary = para[:best_split].strip()
+                                # Join remaining paragraph with other paragraphs
+                                remaining_para = para[best_split:].strip()
+                                if len(paragraphs) > 1:
+                                    part2_commentary = remaining_para + '\n\n' + '\n\n'.join(paragraphs[1:])
+                                else:
+                                    part2_commentary = remaining_para
+                            else:
+                                # First paragraph fits but others don't
+                                part1_commentary = para
+                                part2_commentary = '\n\n'.join(paragraphs[1:]) if len(paragraphs) > 1 else ""
+                        else:
+                            # All content fits or no split possible
+                            part1_commentary = commentary
+                            part2_commentary = None
+                        
+                        # Only proceed with split if we have both parts
+                        if part1_commentary and part2_commentary:
                             # Add first part to current slot
                             account_part1 = account_data.copy()
                             account_part1['commentary'] = part1_commentary
@@ -542,10 +595,12 @@ class PowerPointGenerator:
                             # Save current slot
                             slide_idx, slot_name = slots[current_slot_idx]
                             distribution.append((slide_idx, slot_name, current_slot_content))
+                            logger.info(f"Split '{mapping_key}': Part 1 ({len(part1_commentary)} chars) to slot {current_slot_idx}, Part 2 ({len(part2_commentary)} chars) to next slot")
                             
                             # Move to next slot
                             current_slot_idx += 1
                             if current_slot_idx >= len(slots):
+                                logger.warning(f"Ran out of slots after splitting '{mapping_key}'")
                                 break
                             
                             # Add second part to new slot
@@ -793,9 +848,16 @@ class PowerPointGenerator:
                         current_category = category
                     
                     # Fill commentary with key formatting
-                    # For continuation accounts, show "(cont'd)" after key name
+                    # For continuation accounts, show "(cont'd)" or "(续)" after key name
                     if is_continuation:
-                        display_name_with_cont = f"{display_name} (cont'd)" if not is_chinese else f"{display_name} (续)"
+                        # More prominent continuation marker
+                        if is_chinese or is_chinese_databook:
+                            display_name_with_cont = f"{display_name} (续)"
+                        else:
+                            display_name_with_cont = f"{display_name} (cont'd)"
+                        
+                        # Log continuation for debugging
+                        logger.info(f"Displaying continuation: {display_name_with_cont}")
                     else:
                         display_name_with_cont = display_name
                     
