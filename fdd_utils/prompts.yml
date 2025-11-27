@@ -27,6 +27,12 @@
       5. VERIFY dates are formatted as 'dd mmmm yyyy' (e.g., 30 September 2022).
       6. VERIFY listing items: only list items >= 25% of total.
       
+      **CRITICAL LANGUAGE REQUIREMENT**:
+      THIS IS AN ENGLISH DATABOOK. Your output MUST be 100% in ENGLISH.
+      - If previous content contains ANY Chinese characters, TRANSLATE them to English.
+      - All financial terms, dates, and descriptions must be in English.
+      - Do NOT mix languages. Output must be pure English only.
+      
       CRITICAL OUTPUT REQUIREMENT:
       Output ONLY the corrected financial content text itself.
       Do NOT include any explanations, summaries, or commentary about what was checked or changed.
@@ -78,6 +84,12 @@
       6. 验证列表项目: 仅列出>=总额25%的项目。
       7. 过滤详细子账户名称: 不要包含如"应付利息_借款利息"等详细账户名称。
       8. **清除英文占位符**: 删除所有英文技术字段如"leasing_status_status"、"account_type"等, 或将其翻译为适当的中文术语。
+      
+      **关键语言要求**:
+      这是一个中文数据簿。您的输出必须100%为中文。
+      - 如果先前内容包含任何英文字符（数字和标点符号除外）, 请将其翻译为中文。
+      - 所有财务术语、日期和描述必须为中文。
+      - 不要混用语言。输出必须是纯中文。
       
       关键输出要求:
       仅输出更正后的财务内容文本本身。
@@ -150,6 +162,13 @@
       - DO NOT use the format "**Key** (Key): Value". Write naturally.
       - Connect ideas with transition words instead of listing them.
       
+      **CRITICAL LANGUAGE REQUIREMENT**:
+      THIS IS AN ENGLISH DATABOOK. Your output MUST be 100% in ENGLISH.
+      - If previous content contains ANY Chinese characters (except numbers), TRANSLATE them to English.
+      - All financial terms, dates, descriptions, and explanations must be in English.
+      - Do NOT mix languages. Output must be pure English only.
+      - If you see mixed language content, translate everything to English.
+      
       CRITICAL OUTPUT REQUIREMENT:
       Output ONLY the refined financial content text itself.
       Do NOT include any analysis, commentary, or explanations about what was changed.
@@ -219,6 +238,13 @@
       
       重要: 目标是精炼, 而不是缩短。保留所有重要的背景和解释。
       只删除真正冗余或不必要的内容。
+      
+      **关键语言要求**:
+      这是一个中文数据簿。您的输出必须100%为中文。
+      - 如果先前内容包含任何英文（数字和标点符号除外）, 请将其翻译为中文。
+      - 所有财务术语、日期和描述必须为中文。
+      - 不要混用语言。输出必须是纯中文。
+      - 英文占位符和技术字段必须翻译或删除。
       
       关键输出要求:
       仅输出精炼后的财务内容文本本身。
@@ -298,6 +324,13 @@
          - **NO bullet points**
          - **NO bold text**
       
+      **CRITICAL LANGUAGE REQUIREMENT - FINAL CHECK**:
+      THIS IS AN ENGLISH DATABOOK. Your output MUST be 100% in ENGLISH.
+      - If ANY Chinese characters appear in the content (except numbers), TRANSLATE them to English immediately.
+      - All financial terms, dates, descriptions must be in English.
+      - This is the FINAL stage - ensure ZERO Chinese characters in output.
+      - Do NOT mix languages. Output must be pure English only.
+      
       IMPORTANT: If the content is already well-formatted and clear, output it as-is.
       Only make changes if there are actual issues to fix.
       
@@ -335,6 +368,15 @@
       
       您是负责在最终输出前验证和润色财务内容的最终质量控制员。您的角色是确保内容符合报告标准。
       
+      **关键语言要求 - 最终检查**:
+      这是一个中文数据簿。您的输出必须100%为中文。
+      - 如果内容中出现任何英文（数字和标点符号除外）, 必须立即翻译为中文。
+      - 所有财务术语、日期、描述必须为中文。
+      - 这是最终阶段 - 确保输出中零英文字符。
+      - 不要混用语言。输出必须是纯中文。
+      - 英文占位符必须翻译: Which Entity → 实体名称, Date → 日期, location → 地点, status → 状态
+      - 技术字段必须翻译或删除: leasing_status_status → 租赁状态, account_type → 账户类型
+      
       核心原则:
       1. 验证所有格式正确且一致。
       2. 润色文字以确保专业语气。
@@ -342,12 +384,7 @@
       4. 验证货币格式符合语言标准。
       5. 确保内容流畅自然, 易于阅读。
       6. 如果内容已经完美, 可以原样输出。
-      7. **关键**: 删除或翻译所有英文内容:
-         - 英文占位符: Which Entity → 哪个实体, Date → 日期
-         - 技术字段名: leasing_status_status → 租赁状态, account_type → 账户类型
-         - 任何英文单词或下划线组合 → 删除或翻译为恰当的中文
-         - 确保最终输出100%中文, 无任何英文或技术符号
-      8. **格式强制**: 禁止使用要点、列表或粗体字。必须使用标准段落格式。
+      7. **格式强制**: 禁止使用要点、列表或粗体字。必须使用标准段落格式。
       
       关键检查:
       

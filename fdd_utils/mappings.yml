@@ -7,12 +7,19 @@ _default_agent_1:
       Use only provided data. **IMPORTANT**: All numeric values are already pre-formatted with units (K, million) and 1 decimal place. Use them directly - DO NOT convert or recalculate.
       List only items >=25% of total. Date format: [Date in dd mmmm yyyy].
       **CRITICAL**: Write comprehensive content. Do NOT only show the balance. If there are more detailed items within the account that are grouped, add 2-3 more sentences summarizing those details. Include explanations and context as needed, but focus on providing meaningful information beyond just stating the balance.
+      
+      **CRITICAL LANGUAGE REQUIREMENT**:
+      THIS IS AN ENGLISH DATABOOK. Your output MUST be 100% in ENGLISH.
+      - Write all content in English from the start.
+      - Do NOT use Chinese characters (except in proper names if unavoidable).
+      - All financial terms, dates, and descriptions must be in English.
     user_prompt: |
       Select one pattern and complete with actual data.
       Patterns: {patterns}
       Data: {financial_figure}
       **Note**: Amounts in data are already formatted (e.g., 78.2K, 12.3 million). Use them as-is.
-      **IMPORTANT**: Write comprehensive content. Do NOT only show the balance. If there are more detailed items within the account that are grouped, add 2-3 more sentences summarizing those details. Include context and explanations as needed. Output final text only (no pattern names).
+      **IMPORTANT**: Write comprehensive content. Do NOT only show the balance. If there are more detailed items within the account that are grouped, add 2-3 more sentences summarizing those details. Include context and explanations as needed.
+      **LANGUAGE**: Output must be 100% in ENGLISH. Output final text only (no pattern names).
   Chi:
     system_prompt: |
       角色: 生成器
@@ -20,12 +27,19 @@ _default_agent_1:
       仅使用提供的数据。**重要**: 所有数值已预先格式化为带单位(万、亿)和1位小数。直接使用它们 - 请勿转换或重新计算。
       仅列出>=总额25%的项目。日期格式: [yyyy年mm月dd日]。
       **关键**: 撰写全面的内容。不要只显示余额。如果账户内有更多详细项目且已分组，请添加2-3句话总结这些细节。根据需要包括解释和背景信息，但重点应放在提供有意义的信息，而不仅仅是说明余额。
+      
+      **关键语言要求**:
+      这是一个中文数据簿。您的输出必须100%为中文。
+      - 从一开始就用中文编写所有内容。
+      - 不要使用英文字符（数字和标点符号除外）。
+      - 所有财务术语、日期和描述必须为中文。
     user_prompt: |
       选择一个模式并用实际数据完成。
       模式: {patterns}
       数据: {financial_figure}
       **注意**: 数据中的金额已格式化(例如: 7.8万, 1.2亿)。直接使用它们。
-      **重要**: 撰写全面的内容。不要只显示余额。如果账户内有更多详细项目且已分组，请添加2-3句话总结这些细节。根据需要包括背景和解释。仅输出最终文本 (无模式名称)。
+      **重要**: 撰写全面的内容。不要只显示余额。如果账户内有更多详细项目且已分组，请添加2-3句话总结这些细节。根据需要包括背景和解释。
+      **语言**: 输出必须100%为中文。仅输出最终文本 (无模式名称)。
 
 Cash:
   type: BS
@@ -36,21 +50,25 @@ Cash:
       system_prompt: |
         Role: Content Generator
         Generate financial content from patterns and data.
-        Use only provided data, translate to English, format currency correctly.
+        Use only provided data, format currency correctly.
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
       user_prompt: |
         Select and complete one pattern with actual data.
         Patterns: {patterns}
         Data: {financial_figure}
+        **LANGUAGE**: Output must be 100% in ENGLISH.
         Output only final text without pattern names.
     Chi:
       system_prompt: |
         角色: 内容生成器
         从模式和数据生成财务内容。
-        仅使用提供的数据, 翻译为中文, 正确格式化货币。
+        仅使用提供的数据, 正确格式化货币。
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         选择并用实际数据完成一个模式。
         模式: {patterns}
         数据: {financial_figure}
+        **语言**: 输出必须100%为中文。
         仅输出最终文本, 不包含模式名称。
   patterns:
     Pattern 1:  |
