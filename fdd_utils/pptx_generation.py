@@ -383,7 +383,7 @@ class PowerPointGenerator:
     def _calculate_max_lines_for_textbox(self, shape):
         """Calculate maximum lines that can fit in textbox"""
         if not shape or not hasattr(shape, 'height'):
-            return 35  # Default fallback
+            return 40  # Default fallback - increased from 35
         
         # Get shape height in EMU (English Metric Units)
         shape_height_emu = shape.height
@@ -391,8 +391,8 @@ class PowerPointGenerator:
         # Convert EMU to points (1 EMU = 1/914400 inches, 1 inch = 72 points)
         shape_height_pt = shape_height_emu * 72 / 914400
         
-        # Account for margins and padding - use safer space (85% utilization)
-        effective_height_pt = shape_height_pt * 0.85
+        # Account for margins and padding - use 95% utilization (increased from 85%)
+        effective_height_pt = shape_height_pt * 0.95
         
         # Calculate line height based on font size (9pt) and line spacing (1.0)
         font_size_pt = 9
@@ -402,7 +402,7 @@ class PowerPointGenerator:
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
         
-        return max(20, max_rows)  # At least 20 lines (reduced from 25 to prevent overflow)
+        return max(30, max_rows)  # At least 30 lines (increased from 20)
     
     def _calculate_content_lines(self, category: str, mapping_key: str, commentary: str) -> int:
         """Calculate how many lines a piece of content will take"""
@@ -416,13 +416,18 @@ class PowerPointGenerator:
         lines += 1
         
         # Commentary lines (estimate based on text length)
-        # Average 50 chars per line for 9pt Arial
+        # Detect if Chinese or English for better estimation
+        is_chinese = any('\u4e00' <= c <= '\u9fff' for c in commentary)
+        
+        # Chinese: ~35 chars per line (wider characters)
+        # English: ~70 chars per line (narrower characters, more fits)
+        chars_per_line = 35 if is_chinese else 70
+        
         commentary_lines = commentary.split('\n')
         for line in commentary_lines:
             line = line.strip()
             if line:
-                # Estimate lines needed for this text (50 chars per line)
-                chars_per_line = 50
+                # Estimate lines needed for this text
                 line_count = max(1, (len(line) + chars_per_line - 1) // chars_per_line)
                 lines += line_count
         
@@ -452,9 +457,16 @@ class PowerPointGenerator:
             if sample_shape:
                 break
         
-        max_lines_per_textbox = self._calculate_max_lines_for_textbox(sample_shape) if sample_shape else 35
-        logger.info(f"📊 Starting content distribution: {len(structured_data)} accounts")
-        logger.info(f"📏 Max lines per textbox: {max_lines_per_textbox}")
+        max_lines_per_textbox = self._calculate_max_lines_for_textbox(sample_shape) if sample_shape else 40
+        logger.info(f"\n{'='*80}")
+        logger.info(f"📊 CONTENT DISTRIBUTION STARTING")
+        logger.info(f"{'='*80}")
+        logger.info(f"Total accounts: {len(structured_data)}")
+        logger.info(f"Max lines per textbox: {max_lines_per_textbox}")
+        if sample_shape:
+            logger.info(f"Sample shape height: {sample_shape.height / 914400:.2f} inches")
+            logger.info(f"Estimated capacity: {max_lines_per_textbox} lines")
+        logger.info(f"{'='*80}\n")
         
         # Define slot structure: (slide_idx, slot_name)
         # Slide 0 (P1): 1 slot, Slides 1-3 (P2-4): 2 slots each
@@ -491,14 +503,18 @@ class PowerPointGenerator:
             content_lines = self._calculate_content_lines('', mapping_key, commentary)
             total_lines = category_lines + content_lines
             
-            logger.info(f"  Category: {category}, Category lines: {category_lines}, Content lines: {content_lines}, Total: {total_lines}")
+            # Detect language for logging
+            is_chinese_content = any('\u4e00' <= c <= '\u9fff' for c in commentary)
+            chars_setting = 35 if is_chinese_content else 70
+            logger.info(f"  Category: '{category}', Lines: cat={category_lines}, content={content_lines}, total={total_lines}")
+            logger.info(f"  Commentary length: {len(commentary)} chars, Language: {'Chinese' if is_chinese_content else 'English'}, Chars/line: {chars_setting}")
             
             # Adjust capacity for L slots to balance with R slots better
-            # Use 95% capacity for L slots (reduced from 92% to fill more)
+            # Use 98% capacity for L slots to encourage better balance
             slide_idx_check, slot_name_check = slots[current_slot_idx]
             adjusted_capacity = max_lines_per_textbox
             if slot_name_check == 'L':
-                adjusted_capacity = int(max_lines_per_textbox * 0.95)  # 95% capacity for L slots
+                adjusted_capacity = int(max_lines_per_textbox * 0.98)  # 98% capacity for L slots
             
             logger.info(f"  Current slot {current_slot_idx} ({slot_name_check}): {current_slot_lines}/{adjusted_capacity} lines used")
             
@@ -525,7 +541,9 @@ class PowerPointGenerator:
                         # No paragraph breaks, split by single newlines
                         paragraphs = commentary.split('\n')
                     
-                    chars_per_line = 55
+                    # Detect language for better char estimation
+                    is_chinese = any('\u4e00' <= c <= '\u9fff' for c in commentary)
+                    chars_per_line = 35 if is_chinese else 70
                     
                     # Estimate how many commentary lines we can fit
                     available_for_commentary = remaining_lines - category_lines - 1  # -1 for key line
