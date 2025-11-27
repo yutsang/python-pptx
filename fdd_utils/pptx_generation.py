@@ -549,154 +549,193 @@ class PowerPointGenerator:
                     proj_title_shape.text_frame.text = project_name
             
             # Fill textMainBullets with all accounts for this slide
-            bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
-            if not bullets_shape:
-                for alt_name in ["textMainBullets_L", "textMainBullets_R", "Content Placeholder 2"]:
-                    bullets_shape = self.find_shape_by_name(slide.shapes, alt_name)
-                    if bullets_shape:
-                        break
-                if not bullets_shape:
-                    for shape in slide.shapes:
-                        if hasattr(shape, 'text_frame'):
-                            bullets_shape = shape
-                            break
+            # Check if this slide has both L and R shapes (slides 2-4, 6-8)
+            bullets_shape_L = self.find_shape_by_name(slide.shapes, "textMainBullets_L")
+            bullets_shape_R = self.find_shape_by_name(slide.shapes, "textMainBullets_R")
             
-            if bullets_shape and bullets_shape.has_text_frame:
-                tf = bullets_shape.text_frame
-                tf.clear()
-                tf.word_wrap = True
-                from pptx.enum.text import MSO_VERTICAL_ANCHOR
-                tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
+            # If both L and R exist, we'll split content between them
+            has_both_shapes = (bullets_shape_L is not None and bullets_shape_R is not None)
+            
+            if has_both_shapes:
+                # Slides 2-4 or 6-8: has both Left and Right shapes
+                logger.info(f"Slide {actual_slide_idx + 1}: Found BOTH L and R shapes, will split content")
+                bullets_shapes = [bullets_shape_L, bullets_shape_R]
+            else:
+                # Slide 1 or 5: single shape
+                bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
+                if not bullets_shape:
+                    # Try L or R as fallback
+                    bullets_shape = bullets_shape_L or bullets_shape_R
+                    if not bullets_shape:
+                        for alt_name in ["Content Placeholder 2"]:
+                            bullets_shape = self.find_shape_by_name(slide.shapes, alt_name)
+                            if bullets_shape:
+                                break
+                    if not bullets_shape:
+                        for shape in slide.shapes:
+                            if hasattr(shape, 'text_frame'):
+                                bullets_shape = shape
+                                break
+                bullets_shapes = [bullets_shape] if bullets_shape else []
+                logger.info(f"Slide {actual_slide_idx + 1}: Found single shape")
+            
+            if bullets_shapes and all(s and s.has_text_frame for s in bullets_shapes):
+                # If we have both L and R, split accounts evenly
+                if has_both_shapes and len(account_data_list) > 1:
+                    # Split accounts: first half to L, second half to R
+                    mid_point = (len(account_data_list) + 1) // 2
+                    account_splits = [account_data_list[:mid_point], account_data_list[mid_point:]]
+                    logger.info(f"Splitting {len(account_data_list)} accounts: {mid_point} to L, {len(account_data_list) - mid_point} to R")
+                else:
+                    # Single shape or single account - use first shape only
+                    account_splits = [account_data_list]
                 
-                # Fill with all accounts for this slide, grouped by category
-                # Show category header only once per category group
-                current_category = None
-                for account_idx, account_data in enumerate(account_data_list):
-                    category = account_data.get('category', '')
-                    mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
-                    display_name = account_data.get('display_name', mapping_key)  # Use proper name from financial statement
-                    commentary = account_data.get('commentary', '')
-                    is_chinese = account_data.get('is_chinese', False)
+                # Fill each shape with its assigned accounts
+                for shape_idx, bullets_shape in enumerate(bullets_shapes):
+                    if shape_idx >= len(account_splits):
+                        break
                     
-                    # Show category header only when category changes
-                    if category and category != current_category:
-                        # Add category header - use Chinese if databook is Chinese
-                        p_category = tf.add_paragraph()
-                        p_category.level = 0
-                        try:
-                            p_category.left_indent = Inches(0.21)
-                            p_category.first_line_indent = Inches(-0.19)
-                            p_category.space_before = Pt(6) if current_category else Pt(0)  # Space before if not first
-                            p_category.space_after = Pt(0)
-                            p_category.line_spacing = 1.0
-                        except:
-                            pass
-                        
-                        run_category = p_category.add_run()
-                        # Use Chinese category name if databook is Chinese
-                        category_text = category
-                        if is_chinese_databook or is_chinese:
-                            # Translate category to Chinese - comprehensive list
-                            category_translations = {
-                                # Balance Sheet - Assets
-                                'Current assets': '流动资产',
-                                'Current Assets': '流动资产',
-                                'Non-current assets': '非流动资产',
-                                'Non-Current Assets': '非流动资产',
-                                'Non current assets': '非流动资产',
-                                'Assets': '资产',
-                                # Balance Sheet - Liabilities
-                                'Current liabilities': '流动负债',
-                                'Current Liabilities': '流动负债',
-                                'Non-current liabilities': '非流动负债',
-                                'Non-Current Liabilities': '非流动负债',
-                                'Non current liabilities': '非流动负债',
-                                'Liabilities': '负债',
-                                # Balance Sheet - Equity
-                                'Equity': '所有者权益',
-                                "Owner's equity": '所有者权益',
-                                "Owners' equity": '所有者权益',
-                                'Shareholders equity': '股东权益',
-                                "Shareholders' equity": '股东权益',
-                                # Income Statement - Revenue
-                                'Revenue': '营业收入',
-                                'Sales': '销售收入',
-                                'Income': '收入',
-                                'Operating revenue': '营业收入',
-                                'Operating Revenue': '营业收入',
-                                # Income Statement - Costs
-                                'Cost of sales': '营业成本',
-                                'Cost of Sales': '营业成本',
-                                'Cost of goods sold': '销售成本',
-                                'COGS': '销售成本',
-                                # Income Statement - Expenses
-                                'Operating expenses': '营业费用',
-                                'Operating Expenses': '营业费用',
-                                'Selling expenses': '销售费用',
-                                'Administrative expenses': '管理费用',
-                                'General and administrative': '管理费用',
-                                'G&A': '管理费用',
-                                # Income Statement - Other
-                                'Other income': '其他收入',
-                                'Other Income': '其他收入',
-                                'Other expenses': '其他费用',
-                                'Other Expenses': '其他费用',
-                                'Finance costs': '财务费用',
-                                'Finance Costs': '财务费用',
-                                'Financial expenses': '财务费用',
-                                'Interest expense': '利息费用',
-                                'Tax': '税费',
-                                'Income tax': '所得税',
-                                'Taxes': '税费',
-                                'Tax expense': '所得税费用',
-                                # Profit items
-                                'Gross profit': '毛利',
-                                'Operating profit': '营业利润',
-                                'Net profit': '净利润',
-                                'Profit before tax': '利润总额',
-                            }
-                            # Try direct match first, then case-insensitive match
-                            category_text = category_translations.get(category)
-                            if category_text is None:
-                                # Try case-insensitive match
-                                category_lower = category.lower()
-                                for eng_cat, chi_cat in category_translations.items():
-                                    if eng_cat.lower() == category_lower:
-                                        category_text = chi_cat
-                                        break
-                                else:
-                                    category_text = category  # Keep original if no match
-                        
-                        # Add "(continued)" or "(续)" if this slide needs continuation
-                        # BUT NOT on the first category of the first slide (account_idx == 0 and current_category is None)
-                        if needs_continuation and account_idx == 0 and current_category is not None:  # Not first category
-                            cont_text = " (续)" if (is_chinese or is_chinese_databook) else " (continued)"
-                            category_text += cont_text
-                        
-                        run_category.text = category_text
-                        run_category.font.size = Pt(9)
-                        run_category.font.name = 'Arial'
-                        run_category.font.bold = False
-                        try:
-                            from pptx.dml.color import RGBColor
-                            run_category.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue
-                        except:
-                            pass
-                        
-                        current_category = category
+                    accounts_for_shape = account_splits[shape_idx]
+                    if not accounts_for_shape:
+                        continue
                     
-                    # Fill commentary with key formatting (no category, already shown)
-                    # Use display_name (from financial statement) instead of mapping_key
-                    # Check if this is the last account and we need continuation
-                    is_last_account = (account_idx == len(account_data_list) - 1)
-                    needs_cont = needs_continuation and is_last_account
+                    tf = bullets_shape.text_frame
+                    tf.clear()
+                    tf.word_wrap = True
+                    from pptx.enum.text import MSO_VERTICAL_ANCHOR
+                    tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
                     
-                    self._fill_text_main_bullets_with_category_and_key(
-                        tf, None, display_name, commentary, is_chinese, 
-                        is_chinese_databook=is_chinese_databook, needs_continuation=needs_cont
-                    )
+                    logger.info(f"Filling shape {shape_idx} ({bullets_shape.name if hasattr(bullets_shape, 'name') else 'unnamed'}) with {len(accounts_for_shape)} accounts")
+                    
+                    # Fill with accounts for this shape, grouped by category
+                    # Show category header only once per category group
+                    current_category = None
+                    for account_idx, account_data in enumerate(accounts_for_shape):
+                        category = account_data.get('category', '')
+                        mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
+                        display_name = account_data.get('display_name', mapping_key)  # Use proper name from financial statement
+                        commentary = account_data.get('commentary', '')
+                        is_chinese = account_data.get('is_chinese', False)
+                        
+                        # Show category header only when category changes
+                        if category and category != current_category:
+                            # Add category header - use Chinese if databook is Chinese
+                            p_category = tf.add_paragraph()
+                            p_category.level = 0
+                            try:
+                                p_category.left_indent = Inches(0.21)
+                                p_category.first_line_indent = Inches(-0.19)
+                                p_category.space_before = Pt(6) if current_category else Pt(0)  # Space before if not first
+                                p_category.space_after = Pt(0)
+                                p_category.line_spacing = 1.0
+                            except:
+                                pass
+                            
+                            run_category = p_category.add_run()
+                            # Use Chinese category name if databook is Chinese
+                            category_text = category
+                            if is_chinese_databook or is_chinese:
+                                # Translate category to Chinese - comprehensive list
+                                category_translations = {
+                                    # Balance Sheet - Assets
+                                    'Current assets': '流动资产',
+                                    'Current Assets': '流动资产',
+                                    'Non-current assets': '非流动资产',
+                                    'Non-Current Assets': '非流动资产',
+                                    'Non current assets': '非流动资产',
+                                    'Assets': '资产',
+                                    # Balance Sheet - Liabilities
+                                    'Current liabilities': '流动负债',
+                                    'Current Liabilities': '流动负债',
+                                    'Non-current liabilities': '非流动负债',
+                                    'Non-Current Liabilities': '非流动负债',
+                                    'Non current liabilities': '非流动负债',
+                                    'Liabilities': '负债',
+                                    # Balance Sheet - Equity
+                                    'Equity': '所有者权益',
+                                    "Owner's equity": '所有者权益',
+                                    "Owners' equity": '所有者权益',
+                                    'Shareholders equity': '股东权益',
+                                    "Shareholders' equity": '股东权益',
+                                    # Income Statement - Revenue
+                                    'Revenue': '营业收入',
+                                    'Sales': '销售收入',
+                                    'Income': '收入',
+                                    'Operating revenue': '营业收入',
+                                    'Operating Revenue': '营业收入',
+                                    # Income Statement - Costs
+                                    'Cost of sales': '营业成本',
+                                    'Cost of Sales': '营业成本',
+                                    'Cost of goods sold': '销售成本',
+                                    'COGS': '销售成本',
+                                    # Income Statement - Expenses
+                                    'Operating expenses': '营业费用',
+                                    'Operating Expenses': '营业费用',
+                                    'Selling expenses': '销售费用',
+                                    'Administrative expenses': '管理费用',
+                                    'General and administrative': '管理费用',
+                                    'G&A': '管理费用',
+                                    # Income Statement - Other
+                                    'Other income': '其他收入',
+                                    'Other Income': '其他收入',
+                                    'Other expenses': '其他费用',
+                                    'Other Expenses': '其他费用',
+                                    'Finance costs': '财务费用',
+                                    'Finance Costs': '财务费用',
+                                    'Financial expenses': '财务费用',
+                                    'Interest expense': '利息费用',
+                                    'Tax': '税费',
+                                    'Income tax': '所得税',
+                                    'Taxes': '税费',
+                                    'Tax expense': '所得税费用',
+                                    # Profit items
+                                    'Gross profit': '毛利',
+                                    'Operating profit': '营业利润',
+                                    'Net profit': '净利润',
+                                    'Profit before tax': '利润总额',
+                                }
+                                # Try direct match first, then case-insensitive match
+                                category_text = category_translations.get(category)
+                                if category_text is None:
+                                    # Try case-insensitive match
+                                    category_lower = category.lower()
+                                    for eng_cat, chi_cat in category_translations.items():
+                                        if eng_cat.lower() == category_lower:
+                                            category_text = chi_cat
+                                            break
+                                    else:
+                                        category_text = category  # Keep original if no match
+                            
+                            # Add "(continued)" or "(续)" if this slide needs continuation
+                            # BUT NOT on the first category of the first slide (account_idx == 0 and current_category is None)
+                            if needs_continuation and account_idx == 0 and current_category is not None:  # Not first category
+                                cont_text = " (续)" if (is_chinese or is_chinese_databook) else " (continued)"
+                                category_text += cont_text
+                            
+                            run_category.text = category_text
+                            run_category.font.size = Pt(9)
+                            run_category.font.name = 'Arial'
+                            run_category.font.bold = False
+                            try:
+                                from pptx.dml.color import RGBColor
+                                run_category.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue
+                            except:
+                                pass
+                            
+                            current_category = category
+                        
+                        # Fill commentary with key formatting (no category, already shown)
+                        # Use display_name (from financial statement) instead of mapping_key
+                        # Check if this is the last account and we need continuation
+                        is_last_account = (account_idx == len(accounts_for_shape) - 1)
+                        needs_cont = needs_continuation and is_last_account and shape_idx == len(bullets_shapes) - 1
+                        
+                        self._fill_text_main_bullets_with_category_and_key(
+                            tf, None, display_name, commentary, is_chinese, 
+                            is_chinese_databook=is_chinese_databook, needs_continuation=needs_cont
+                        )
                 
-                # Generate AI summary for this slide from all commentary
+                # Generate AI summary for this slide from all commentary (all shapes combined)
                 all_commentary = []
                 for account_data in account_data_list:
                     commentary = account_data.get('commentary', '')
@@ -895,7 +934,7 @@ class PowerPointGenerator:
                     # Get placeholder dimensions - Override with requested width
                     left = shape.left
                     top = shape.top
-                    width = Inches(4.78) # Fixed width
+                    width = Inches(4.78)  # Fixed width: 4.78"
                     height = shape.height
                     
                     # Find the slide containing this shape (already found above)
@@ -957,6 +996,9 @@ class PowerPointGenerator:
                             table.rows.add_row()
                             
                         name_row = table.rows[0]  # Use first row for name
+                        # Set title row height to 0.28"
+                        name_row.height = Inches(0.28)
+                        
                         # Merge all cells in first row for table name
                         if len(table.columns) > 1:
                             name_row.cells[0].merge(name_row.cells[len(table.columns) - 1])
@@ -992,6 +1034,12 @@ class PowerPointGenerator:
                 # Ensure header row exists
                 if len(table.rows) <= header_row_idx:
                     table.rows.add_row()
+                
+                # Set header row height to 0.28"
+                try:
+                    table.rows[header_row_idx].height = Inches(0.28)
+                except:
+                    pass
                     
                 for col_idx, col_name in enumerate(df.columns[:max_cols]):
                     if col_idx < len(table.columns):
@@ -1062,6 +1110,12 @@ class PowerPointGenerator:
                     if data_row_idx >= len(table.rows):
                         logger.warning(f"Data row index {data_row_idx} exceeds table rows {len(table.rows)}, skipping")
                         break
+                    
+                    # Set data row height to be narrower (0.18" for content rows)
+                    try:
+                        table.rows[data_row_idx].height = Inches(0.18)
+                    except:
+                        pass
                     
                     # Log first row processing
                     if row_idx == 0:
