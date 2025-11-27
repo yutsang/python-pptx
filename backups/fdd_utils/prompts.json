@@ -1,0 +1,449 @@
+{
+  "system_prompts": {
+    "english": {
+      "Agent 1": "You are a content generation specialist for financial reports. Your role is to generate comprehensive financial analysis content based on worksheet data and predefined patterns. Focus on:\n1. Content generation using patterns from pattern.json\n2. Integration of actual worksheet data into narrative content\n3. Professional financial writing suitable for audit reports\n4. Consistent formatting and structure\n5. Clear, accurate descriptions of financial positions\n6. Replace all entity placeholders (e.g., [ENTITY_NAME], [COMPANY_NAME]) with the SPECIFIC entity name from the provided financial data tables\n7. CRITICAL: Use the SPECIFIC entity names from the table data (e.g., 'Third-party receivables', 'Company #1') NOT the reporting entity name\n8. ALWAYS specify the exact dollar amounts and currency when filling in financial figures\n9. ALWAYS identify and mention the specific entity names you are filling in\n10. IMPORTANT: When the table shows specific entity names like 'Third-party receivables', use those exact names, not the reporting entity name\n11. For tax names, use abbreviations (e.g., 'VAT' for Value Added Tax, 'CIT' for Corporate Income Tax)\n12. Check if numbers are already in K/M format - if so, use as-is; if not, convert appropriately\n13. Do not add outer quotation marks to your response\n14. CRITICAL: NEVER copy and paste the entire table data as your output. Always write professional narrative commentary\n15. CRITICAL: If you cannot generate proper commentary, provide a brief 2-3 sentence summary. NEVER dump raw table data\n16. STRICTLY FORBIDDEN: Do not output table rows, column headers, or raw data listings. Only narrative text allowed\n17. CRITICAL WORD LIMIT: Each account commentary must be limited to 100-120 words maximum. Provide high-level summary only. Do NOT list zero-value items",
+      "Agent 2": "You are a validation specialist for financial reports. Your role is to validate Agent 1's output for pattern compliance and entity accuracy. Focus on:\n1. Pattern validation: Check if Agent 1 used the correct pattern from pattern.json\n2. Entity validation: Verify if the entity names make sense (e.g., AR should not be 'due from the entity itself')\n3. Number format validation: Check if numbers are properly formatted (K/M notation)\n4. Content quality: Ensure no template artifacts or placeholder text remain\n5. Logical consistency: Verify that the content logically matches the financial data",
+      "AI Proofreader": "You are an AI proofreader for financial due diligence narratives. Review Agent 1 content for: pattern compliance, figure formatting (K/M 1dp; handle '000), entity/details correctness per tables (not reporting entity), grammar/pro tone (remove outer quotes), language normalization (keep original language; use VAT, CIT, WHT, Surtax). CRITICAL RULES: 1. do not invent data; 2. keep concise; 3. IF COMMENTARY REQUIRES LISTING ITEMS, LIMIT TO TOP 2 ONLY; 4. NEVER list more than 2 items; 5. STRICTLY REJECT any output that is raw table data, column headers, or data dumps; 6. If you detect raw table output, replace with professional 2-3 sentence summary; 7. Only narrative commentary allowed, no data listings. Return JSON with: is_compliant (bool), issues (array), corrected_content (string), figure_checks (array), entity_checks (array), grammar_notes (array), pattern_used (string). corrected_content must be the final cleaned narrative text only, never raw data.",
+      "Agent 3": "You are AI3, a pattern compliance validation specialist. Your task is to check if content follows patterns correspondingly and clean up excessive items. CRITICAL REQUIREMENTS: 1. Compare AI1 content against available pattern templates 2. Check proper pattern structure and professional formatting 3. Verify all placeholders are filled with actual data 4. If AI1 lists too many items, limit to top 2 most important 5. Remove quotation marks quoting full sections 6. Check for anything that shouldn't be there (template artifacts) 7. Ensure content follows pattern structure consistently 8. Verify proper K/M conversion with 1 decimal place formatting"
+    },
+    "chinese": {
+      "Agent 1": "您是中国财务报告翻译专家。您的任务是将英文财务分析内容完整翻译成简体中文。\n\n重要要求：\n1. 必须将所有英文内容翻译成简体中文\n2. 数字格式：金额大于1万使用萬元（如12.5萬元），大于1亿使用億元（如1.2億元），保留1位小数\n3. 保留百分比和技术术语（如VAT、CIT、WHT、Surtax、IPO）\n4. 重要：不要显示货币代码（如CNY、RMB、USD），只显示数字和单位（萬元/億元）\n5. 列举项目时，只列出非零项目，跳过所有0.0值的项目\n6. 保持专业的财务报告语气和格式结构\n7. 确保最终输出100%是中文内容，除了上述保留的数字和技术术语\n8. 不要添加任何解释或额外文本\n9. 翻译必须准确、专业，适合中国财务报告使用\n10. 禁止在翻译结果中保留任何英文句子或短语\n11. 直接返回翻译后的完整中文内容，金额使用萬元/億元单位，不带货币代码\n12. 关键：严禁复制粘贴整个表格数据作为输出。始终编写专业的叙述性评论\n13. 关键：如果无法生成适当的评论，提供简短的2-3句摘要。严禁转储原始表格数据\n14. 严格禁止：不要输出表格行、列标题或原始数据列表。只允许叙述性文本\n15. 关键字数限制：每个账户的评论必须限制在100-120字以内，只提供高层次摘要，不要列出零值项目",
+      "Agent 2": "您是中国财务报告验证专家。您的角色是验证翻译后的中文内容质量和准确性。重点关注：\n1. 翻译质量：确保所有英文内容已被正确翻译成简体中文\n2. 实体验证：验证实体名称是否合理且符合中文表达习惯\n3. 数字格式验证：检查数字、货币符号和技术术语是否正确保留\n4. 内容质量：确保没有英文词汇或句子残留\n5. 逻辑一致性：验证翻译后的内容逻辑是否与财务数据匹配\n6. 中文表达：确保翻译后的内容符合中文财务报告的专业表达",
+      "AI Proofreader": "您是中国财务报告翻译质量校对员。审查翻译后的内容是否符合：翻译完整性、数据格式化（中文财务报告使用萬元或億元单位，保留1位小数；处理'000'）、实体/细节准确性、语法/专业语气（移除外引号）、语言质量（确保100%简体中文；保留VAT、CIT、WHT等技术术语）。关键规则：1. 不要发明数据；2. 保持简洁；3. 如果评论需要列出项目，只列出非零项目，跳过所有0.0值的项目；4. 任何评论部分绝不列出超过2个非零项目；5. 重要：移除所有货币代码（CNY、RMB、USD），只显示数字和单位；6. 数字格式：>10000使用萬元（如12.5萬元，不是CNY12.5萬元），>100000000使用億元（如1.2億元）；7. 严格拒绝任何原始表格数据、列标题或数据转储的输出；8. 如果检测到原始表格输出，替换为专业的2-3句摘要；9. 只允许叙述性评论，不允许数据列表。返回JSON格式：is_compliant (bool), issues (array), corrected_content (string), figure_checks (array), entity_checks (array), grammar_notes (array), pattern_used (string)。corrected_content必须是最终清理后的简体中文叙述性文本，绝不是原始数据，数字使用萬元/億元单位，不带任何货币代码。"
+    }
+  },
+  "user_prompts": {
+        "Cash": {
+      "title": "Cash Analysis for [ENTITY_NAME]",
+      "description": "Generate content for Cash using worksheet data and patterns for [ENTITY_NAME]",
+      "analysis_points": [
+        "Current Balance: Review the current cash balance and composition for [ENTITY_NAME]",
+        "Bank Accounts: Identify major bank accounts and their balances for [ENTITY_NAME]",
+        "Cash Flow: Assess cash flow patterns and liquidity for [ENTITY_NAME]",
+        "Risk Assessment: Evaluate cash management risks for [ENTITY_NAME]",
+        "Business Impact: Consider the impact on business operations for [ENTITY_NAME]"
+      ],
+      "key_questions": [
+        "What is the current cash balance and its composition for [ENTITY_NAME]?",
+        "How has cash changed over time for [ENTITY_NAME]?",
+        "What are the key risks and considerations for [ENTITY_NAME]?",
+        "How does this impact business operations for [ENTITY_NAME]?",
+        "What are the future expectations for [ENTITY_NAME]?"
+      ],
+      "data_sources": [
+        "Financial statements",
+        "Bank reconciliations",
+        "Cash flow statements",
+        "Management representations"
+      ]
+     },
+     "Other CA": {
+       "title": "Other Current Assets Analysis for [ENTITY_NAME]",
+       "description": "Analyze the other current assets position for [ENTITY_NAME]",
+       "analysis_points": [
+         "Asset Composition: Review the composition and nature of other current assets for [ENTITY_NAME]",
+         "Asset Recognition: Assess the recognition and valuation of other current assets for [ENTITY_NAME]",
+         "Asset Trends: Analyze historical trends in other current assets for [ENTITY_NAME]",
+         "Asset Quality: Evaluate the quality and recoverability of other current assets for [ENTITY_NAME]",
+         "Business Impact: Consider the impact on liquidity and working capital for [ENTITY_NAME]"
+       ],
+       "key_questions": [
+         "What are the main components of other current assets for [ENTITY_NAME]?",
+         "How have other current assets changed over time for [ENTITY_NAME]?",
+         "Are the other current assets properly valued and recoverable for [ENTITY_NAME]?",
+         "What is the impact on liquidity and working capital for [ENTITY_NAME]?",
+         "What are the future expectations for other current assets for [ENTITY_NAME]?"
+       ],
+       "data_sources": [
+         "Balance sheet analysis",
+         "Asset schedules",
+         "Management representations",
+         "Historical asset analysis"
+       ]
+     },
+     "Other NCA": {
+       "title": "Other Non-Current Assets Analysis for [ENTITY_NAME]",
+       "description": "Analyze the other non-current assets position for [ENTITY_NAME]",
+       "analysis_points": [
+         "Asset Composition: Review the composition and nature of other non-current assets for [ENTITY_NAME]",
+         "Asset Recognition: Assess the recognition and valuation of other non-current assets for [ENTITY_NAME]",
+         "Asset Trends: Analyze historical trends in other non-current assets for [ENTITY_NAME]",
+         "Asset Quality: Evaluate the quality and recoverability of other non-current assets for [ENTITY_NAME]",
+         "Business Impact: Consider the impact on long-term financial position for [ENTITY_NAME]"
+       ],
+       "key_questions": [
+         "What are the main components of other non-current assets for [ENTITY_NAME]?",
+         "How have other non-current assets changed over time for [ENTITY_NAME]?",
+         "Are the other non-current assets properly valued and recoverable for [ENTITY_NAME]?",
+         "What is the impact on long-term financial position for [ENTITY_NAME]?",
+         "What are the future expectations for other non-current assets for [ENTITY_NAME]?"
+       ],
+       "data_sources": [
+         "Balance sheet analysis",
+         "Asset schedules",
+         "Management representations",
+         "Historical asset analysis"
+       ]
+     },
+     "Reserve": {
+       "title": "Surplus Reserve Analysis for [ENTITY_NAME]",
+       "description": "Analyze the surplus reserve position for [ENTITY_NAME]",
+       "analysis_points": [
+         "Reserve Composition: Review the composition and sources of surplus reserve for [ENTITY_NAME]",
+         "Reserve Recognition: Assess the recognition and accumulation of surplus reserve for [ENTITY_NAME]",
+         "Reserve Trends: Analyze historical trends in surplus reserve for [ENTITY_NAME]",
+         "Reserve Utilization: Evaluate the utilization and distribution of surplus reserve for [ENTITY_NAME]",
+         "Business Impact: Consider the impact on equity and financial flexibility for [ENTITY_NAME]"
+       ],
+       "key_questions": [
+         "What are the main sources of surplus reserve for [ENTITY_NAME]?",
+         "How has surplus reserve changed over time for [ENTITY_NAME]?",
+         "How is surplus reserve being utilized or distributed for [ENTITY_NAME]?",
+         "What is the impact on equity and financial flexibility for [ENTITY_NAME]?",
+         "What are the future expectations for surplus reserve for [ENTITY_NAME]?"
+       ],
+       "data_sources": [
+         "Equity analysis",
+         "Reserve schedules",
+         "Management representations",
+         "Historical equity analysis"
+       ]
+     },
+     "Other Income": {
+       "title": "Other Income Analysis for [ENTITY_NAME]",
+       "description": "Analyze the other income sources for [ENTITY_NAME]",
+       "analysis_points": [
+         "Income Sources: Review the sources and composition of other income for [ENTITY_NAME]",
+         "Income Recognition: Assess the timing and recognition of other income for [ENTITY_NAME]",
+         "Income Trends: Analyze historical trends and patterns in other income for [ENTITY_NAME]",
+         "Income Quality: Evaluate the quality and sustainability of other income sources for [ENTITY_NAME]",
+         "Business Impact: Consider the impact of other income on overall profitability for [ENTITY_NAME]"
+       ],
+       "key_questions": [
+         "What are the main sources of other income for [ENTITY_NAME]?",
+         "How has other income changed over time for [ENTITY_NAME]?",
+         "Are other income sources sustainable and recurring for [ENTITY_NAME]?",
+         "How does other income contribute to overall profitability for [ENTITY_NAME]?",
+         "What are the future expectations for other income for [ENTITY_NAME]?"
+       ],
+       "data_sources": [
+         "Income statements",
+         "Management representations",
+         "Historical income analysis",
+         "Industry benchmarks"
+       ]
+     },
+     "Non-operating Income": {
+       "title": "Non-operating Income Analysis for [ENTITY_NAME]",
+       "description": "Analyze the non-operating income sources for [ENTITY_NAME]",
+       "analysis_points": [
+         "Income Sources: Review the sources and composition of non-operating income for [ENTITY_NAME]",
+         "Income Recognition: Assess the timing and recognition of non-operating income for [ENTITY_NAME]",
+         "Income Trends: Analyze historical trends and patterns in non-operating income for [ENTITY_NAME]",
+         "Income Quality: Evaluate the quality and sustainability of non-operating income sources for [ENTITY_NAME]",
+         "Business Impact: Consider the impact of non-operating income on overall profitability for [ENTITY_NAME]"
+       ],
+       "key_questions": [
+         "What are the main sources of non-operating income for [ENTITY_NAME]?",
+         "How has non-operating income changed over time for [ENTITY_NAME]?",
+         "Are non-operating income sources sustainable and recurring for [ENTITY_NAME]?",
+         "How does non-operating income contribute to overall profitability for [ENTITY_NAME]?",
+         "What are the future expectations for non-operating income for [ENTITY_NAME]?"
+       ],
+       "data_sources": [
+         "Income statements",
+         "Management representations",
+         "Historical income analysis",
+         "Industry benchmarks"
+       ]
+     },
+     "Non-operating Exp": {
+       "title": "Non-operating Expenses Analysis for [ENTITY_NAME]",
+       "description": "Analyze the non-operating expenses for [ENTITY_NAME]",
+       "analysis_points": [
+         "Expense Composition: Review the composition and nature of non-operating expenses for [ENTITY_NAME]",
+         "Expense Recognition: Assess the timing and recognition of non-operating expenses for [ENTITY_NAME]",
+         "Expense Trends: Analyze historical trends and patterns in non-operating expenses for [ENTITY_NAME]",
+         "Expense Control: Evaluate expense management and control measures for [ENTITY_NAME]",
+         "Business Impact: Consider the impact of non-operating expenses on overall profitability for [ENTITY_NAME]"
+       ],
+       "key_questions": [
+         "What are the main components of non-operating expenses for [ENTITY_NAME]?",
+         "How have non-operating expenses changed over time for [ENTITY_NAME]?",
+         "Are there any unusual or non-recurring expenses for [ENTITY_NAME]?",
+         "How effective is expense management for [ENTITY_NAME]?",
+         "What are the future expectations for non-operating expenses for [ENTITY_NAME]?"
+       ],
+       "data_sources": [
+         "Expense analysis reports",
+         "Management representations",
+         "Historical expense analysis",
+         "Budget comparisons"
+       ]
+     },
+     "LT DTA": {
+       "title": "Long-term Deferred Tax Assets Analysis for [ENTITY_NAME]",
+       "description": "Analyze the long-term deferred tax assets for [ENTITY_NAME]",
+       "analysis_points": [
+         "DTA Composition: Review the composition of long-term deferred tax assets for [ENTITY_NAME]",
+         "DTA Recognition: Assess the recognition and timing of deferred tax assets for [ENTITY_NAME]",
+         "DTA Recoverability: Evaluate the recoverability of deferred tax assets for [ENTITY_NAME]",
+         "DTA Trends: Analyze historical trends in deferred tax assets for [ENTITY_NAME]",
+         "Business Impact: Consider the impact of deferred tax assets on overall financial position for [ENTITY_NAME]"
+       ],
+       "key_questions": [
+         "What are the main components of long-term deferred tax assets for [ENTITY_NAME]?",
+         "How recoverable are the deferred tax assets for [ENTITY_NAME]?",
+         "How have deferred tax assets changed over time for [ENTITY_NAME]?",
+         "What is the impact on future tax payments for [ENTITY_NAME]?",
+         "What are the future expectations for deferred tax assets for [ENTITY_NAME]?"
+       ],
+       "data_sources": [
+         "Tax computations",
+         "Deferred tax schedules",
+         "Management representations",
+         "Tax planning analysis"
+       ]
+     },
+    "AR": {
+      "title": "Accounts Receivable Analysis for [ENTITY_NAME]",
+      "description": "Analyze the accounts receivable position for [ENTITY_NAME]",
+      "analysis_points": [
+        "Receivable Balance: Review the total accounts receivable balance and aging profile for [ENTITY_NAME]",
+        "Customer Analysis: Identify major customers, their payment terms, and credit risk assessment for [ENTITY_NAME]",
+        "Aging Analysis: Assess the aging of receivables and potential credit risk exposure for [ENTITY_NAME]",
+        "Bad Debt Provision: Evaluate the adequacy of bad debt provisions and methodology for [ENTITY_NAME]",
+        "Collection Performance: Analyze collection efficiency, trends, and days sales outstanding for [ENTITY_NAME]"
+      ],
+      "key_questions": [
+        "What is the composition of accounts receivable by customer and aging for [ENTITY_NAME]?",
+        "Who are the major customers and what are their payment terms for [ENTITY_NAME]?",
+        "What is the aging profile of receivables and potential credit risk for [ENTITY_NAME]?",
+        "Is the bad debt provision adequate based on historical experience for [ENTITY_NAME]?",
+        "How does collection performance compare to industry standards for [ENTITY_NAME]?"
+      ],
+      "data_sources": [
+        "Aged receivables reports",
+        "Customer master data",
+        "Collection history",
+        "Industry benchmarks"
+      ]
+    },
+    "AP": {
+      "title": "Accounts Payable Analysis for [ENTITY_NAME]",
+      "description": "Analyze the accounts payable position for [ENTITY_NAME]",
+      "analysis_points": [
+        "Payable Balance: Review the total accounts payable balance and aging profile for [ENTITY_NAME]",
+        "Supplier Analysis: Identify major suppliers, their payment terms, and relationship assessment for [ENTITY_NAME]",
+        "Aging Analysis: Assess the aging of payables and payment timing compliance for [ENTITY_NAME]",
+        "Payment Performance: Analyze payment efficiency, trends, and days payable outstanding for [ENTITY_NAME]",
+        "Working Capital Impact: Evaluate the impact on working capital and cash flow management for [ENTITY_NAME]"
+      ],
+      "key_questions": [
+        "What is the composition of accounts payable by supplier and aging for [ENTITY_NAME]?",
+        "Who are the major suppliers and what are their payment terms for [ENTITY_NAME]?",
+        "What is the aging profile of payables and compliance with payment terms for [ENTITY_NAME]?",
+        "How does payment performance compare to terms and industry standards for [ENTITY_NAME]?",
+        "What is the impact on working capital management and cash flow for [ENTITY_NAME]?"
+      ],
+      "data_sources": [
+        "Aged payables reports",
+        "Supplier master data",
+        "Payment history",
+        "Working capital analysis"
+      ]
+    },
+    "OI": {
+      "title": "Operating Income Analysis for [ENTITY_NAME]",
+      "description": "Analyze the operating income position for [ENTITY_NAME]",
+              "analysis_points": [
+          "Income Composition: Review the composition and sources of operating income for [ENTITY_NAME]",
+          "Income Recognition: Assess the timing and recognition of operating income for [ENTITY_NAME]",
+          "Income Trends: Analyze historical trends and patterns in operating income for [ENTITY_NAME]",
+          "Income Quality: Evaluate the quality and sustainability of operating income sources for [ENTITY_NAME]",
+          "Business Impact: Consider the impact of operating income on overall profitability for [ENTITY_NAME]"
+        ],
+      "key_questions": [
+        "What are the main sources of other income for [ENTITY_NAME]?",
+        "How has other income changed over time for [ENTITY_NAME]?",
+        "Are other income sources sustainable and recurring for [ENTITY_NAME]?",
+        "How does other income contribute to overall profitability for [ENTITY_NAME]?",
+        "What are the future expectations for other income for [ENTITY_NAME]?"
+      ],
+      "data_sources": [
+        "Income statements",
+        "Management representations",
+        "Historical income analysis",
+        "Industry benchmarks"
+      ]
+    },
+    "OC": {
+      "title": "Operating Cost Analysis for [ENTITY_NAME]",
+      "description": "Analyze the operating cost position for [ENTITY_NAME]",
+      "analysis_points": [
+        "Cost Composition: Review the composition and nature of operating costs for [ENTITY_NAME]",
+        "Cost Recognition: Assess the timing and recognition of operating costs for [ENTITY_NAME]",
+        "Cost Trends: Analyze historical trends and patterns in operating costs for [ENTITY_NAME]",
+        "Cost Control: Evaluate cost management and control measures for [ENTITY_NAME]",
+        "Business Impact: Consider the impact of operating costs on overall profitability for [ENTITY_NAME]"
+      ],
+      "key_questions": [
+        "What are the main components of other costs for [ENTITY_NAME]?",
+        "How have other costs changed over time for [ENTITY_NAME]?",
+        "Are there any unusual or non-recurring costs for [ENTITY_NAME]?",
+        "How effective is cost management for [ENTITY_NAME]?",
+        "What are the future expectations for other costs for [ENTITY_NAME]?"
+      ],
+      "data_sources": [
+        "Cost analysis reports",
+        "Management representations",
+        "Historical cost analysis",
+        "Budget comparisons"
+      ]
+    },
+    "Tax and Surcharges": {
+      "title": "Tax and Surcharges Analysis for [ENTITY_NAME]",
+      "description": "Analyze the tax and surcharges position for [ENTITY_NAME]",
+      "analysis_points": [
+        "Tax Composition: Review the composition of taxes and surcharges for [ENTITY_NAME]",
+        "Tax Compliance: Assess compliance with tax regulations for [ENTITY_NAME]",
+        "Tax Efficiency: Analyze tax efficiency and optimization opportunities for [ENTITY_NAME]",
+        "Tax Trends: Evaluate historical trends in tax payments for [ENTITY_NAME]",
+        "Business Impact: Consider the impact of taxes on overall profitability for [ENTITY_NAME]"
+      ],
+      "key_questions": [
+        "What are the main tax components for [ENTITY_NAME]?",
+        "How does the tax burden compare to industry standards for [ENTITY_NAME]?",
+        "Are there any tax optimization opportunities for [ENTITY_NAME]?",
+        "How has the tax burden changed over time for [ENTITY_NAME]?",
+        "What are the future tax expectations for [ENTITY_NAME]?"
+      ],
+      "data_sources": [
+        "Tax returns",
+        "Tax computations",
+        "Industry benchmarks",
+        "Management representations"
+      ]
+    },
+    "GA": {
+      "title": "G&A Expenses Analysis for [ENTITY_NAME]",
+      "description": "Analyze the general and administrative expenses for [ENTITY_NAME]",
+      "analysis_points": [
+        "G&A Composition: Review the composition of G&A expenses for [ENTITY_NAME]",
+        "G&A Efficiency: Assess the efficiency of administrative operations for [ENTITY_NAME]",
+        "G&A Trends: Analyze historical trends in G&A expenses for [ENTITY_NAME]",
+        "G&A Control: Evaluate cost control measures for G&A expenses for [ENTITY_NAME]",
+        "Business Impact: Consider the impact of G&A on overall profitability for [ENTITY_NAME]"
+      ],
+      "key_questions": [
+        "What are the main components of G&A expenses for [ENTITY_NAME]?",
+        "How efficient are administrative operations for [ENTITY_NAME]?",
+        "How do G&A expenses compare to industry standards for [ENTITY_NAME]?",
+        "What cost control measures are in place for [ENTITY_NAME]?",
+        "What are the future expectations for G&A expenses for [ENTITY_NAME]?"
+      ],
+      "data_sources": [
+        "G&A expense reports",
+        "Management representations",
+        "Industry benchmarks",
+        "Budget analysis"
+      ]
+    },
+    "Fin Exp": {
+      "title": "Finance Expenses Analysis for [ENTITY_NAME]",
+      "description": "Analyze the finance expenses for [ENTITY_NAME]",
+      "analysis_points": [
+        "Finance Cost Composition: Review the composition of finance expenses for [ENTITY_NAME]",
+        "Debt Structure: Assess the debt structure and financing arrangements for [ENTITY_NAME]",
+        "Interest Rate Risk: Evaluate exposure to interest rate fluctuations for [ENTITY_NAME]",
+        "Finance Cost Trends: Analyze historical trends in finance expenses for [ENTITY_NAME]",
+        "Business Impact: Consider the impact of finance costs on overall profitability for [ENTITY_NAME]"
+      ],
+      "key_questions": [
+        "What are the main components of finance expenses for [ENTITY_NAME]?",
+        "How does the debt structure affect finance costs for [ENTITY_NAME]?",
+        "What is the exposure to interest rate risk for [ENTITY_NAME]?",
+        "How have finance expenses changed over time for [ENTITY_NAME]?",
+        "What are the future expectations for finance expenses for [ENTITY_NAME]?"
+      ],
+      "data_sources": [
+        "Debt schedules",
+        "Interest rate analysis",
+        "Management representations",
+        "Credit agreements"
+      ]
+    },
+    "Cr Loss": {
+      "title": "Credit Losses Analysis for [ENTITY_NAME]",
+      "description": "Analyze the credit losses and provisions for [ENTITY_NAME]",
+      "analysis_points": [
+        "Credit Risk Assessment: Review credit risk exposure and assessment for [ENTITY_NAME]",
+        "Provision Adequacy: Assess the adequacy of credit loss provisions for [ENTITY_NAME]",
+        "Credit Loss Trends: Analyze historical trends in credit losses for [ENTITY_NAME]",
+        "Recovery Rates: Evaluate credit loss recovery rates for [ENTITY_NAME]",
+        "Business Impact: Consider the impact of credit losses on overall profitability for [ENTITY_NAME]"
+      ],
+      "key_questions": [
+        "What is the credit risk exposure for [ENTITY_NAME]?",
+        "Are credit loss provisions adequate for [ENTITY_NAME]?",
+        "What are the recovery rates on credit losses for [ENTITY_NAME]?",
+        "How have credit losses changed over time for [ENTITY_NAME]?",
+        "What are the future expectations for credit losses for [ENTITY_NAME]?"
+      ],
+      "data_sources": [
+        "Credit risk reports",
+        "Provision methodology",
+        "Historical loss data",
+        "Industry benchmarks"
+      ]
+    },
+    "Income tax": {
+      "title": "Income Tax Analysis for [ENTITY_NAME]",
+      "description": "Analyze the income tax position for [ENTITY_NAME]",
+      "analysis_points": [
+        "Tax Rate Analysis: Review effective tax rates and statutory rates for [ENTITY_NAME]",
+        "Tax Expense Recognition: Assess the recognition and timing of tax expenses for [ENTITY_NAME]",
+        "Deferred Tax: Evaluate deferred tax assets and liabilities for [ENTITY_NAME]",
+        "Tax Planning: Analyze tax planning and optimization strategies for [ENTITY_NAME]",
+        "Business Impact: Consider the impact of taxes on overall profitability for [ENTITY_NAME]"
+      ],
+      "key_questions": [
+        "What is the effective tax rate for [ENTITY_NAME]?",
+        "How does the effective rate compare to statutory rates for [ENTITY_NAME]?",
+        "What deferred tax positions exist for [ENTITY_NAME]?",
+        "What tax planning opportunities are available for [ENTITY_NAME]?",
+        "What are the future tax expectations for [ENTITY_NAME]?"
+      ],
+      "data_sources": [
+        "Tax computations",
+        "Deferred tax schedules",
+        "Tax planning analysis",
+        "Management representations"
+      ]
+    }
+  },
+  "generic_prompt": {
+    "title": "Generic Financial Analysis for [ENTITY_NAME]",
+    "description": "Analyze the financial position for [ENTITY_NAME]",
+    "analysis_points": [
+      "Current Balance: Review the current balance and composition for [ENTITY_NAME]",
+      "Trend Analysis: Assess historical trends and changes for [ENTITY_NAME]",
+      "Risk Assessment: Evaluate any associated risks for [ENTITY_NAME]",
+      "Business Impact: Consider the impact on business operations for [ENTITY_NAME]",
+      "Future Outlook: Assess future expectations and plans for [ENTITY_NAME]"
+    ],
+    "key_questions": [
+      "What is the current balance and its composition for [ENTITY_NAME]?",
+      "How has this changed over time for [ENTITY_NAME]?",
+      "What are the key risks and considerations for [ENTITY_NAME]?",
+      "How does this impact business operations for [ENTITY_NAME]?",
+      "What are the future expectations for [ENTITY_NAME]?"
+    ],
+    "data_sources": [
+      "Financial statements",
+      "Management representations",
+      "Industry analysis",
+      "Historical data"
+    ]
+  }
+}

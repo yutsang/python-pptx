@@ -1,0 +1,27 @@
+agents_executed: []
+end_time: '2025-11-21T13:23:17.931519'
+processing_results:
+  Cash:
+    agent_1:
+      error: Connection error.
+      timestamp: '2025-11-21T13:23:15.186623'
+    agent_2:
+      error: Connection error.
+      timestamp: '2025-11-21T13:23:16.621259'
+    agent_3:
+      error: object of type 'NoneType' has no len()
+      timestamp: '2025-11-21T13:23:16.622000'
+    agent_4:
+      error: Connection error.
+      timestamp: '2025-11-21T13:23:17.931212'
+run_id: '20251121_132313'
+start_time: '2025-11-21T13:23:13.702544'
+summary:
+  agents_used:
+  - agent_4
+  - agent_1
+  - agent_3
+  - agent_2
+  total_duration_seconds: 0
+  total_items_processed: 1
+  total_tokens_used: 0

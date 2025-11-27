@@ -1,0 +1,27 @@
+# AI Pipeline Requirements
+# Updated for multi-agent architecture with multi-threading
+
+# Core Dependencies
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0
+pyyaml>=6.0
+
+# AI and API
+openai>=1.0.0
+httpx>=0.24.0
+
+# Progress and Logging
+tqdm>=4.65.0
+
+# Data Processing
+tabulate>=0.9.0  # For DataFrame to markdown conversion
+
+# Optional: PowerPoint generation (if needed)
+# python-pptx>=0.6.21
+
+# Development (optional)
+# pytest>=7.4.0
+# black>=23.0.0
+# flake8>=6.0.0
+
