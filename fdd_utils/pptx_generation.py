@@ -13,6 +13,7 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -137,12 +138,17 @@ class PowerPointGenerator:
         logger.info(f"Loaded template: {self.template_path}")
 
     def find_shape_by_name(self, shapes, name: str):
-        """Find shape by name in slide (case-insensitive)"""
+        """Find shape by name in slide (case-insensitive), recursive"""
         name_lower = name.lower()
         for shape in shapes:
-            if hasattr(shape, 'name'):
-                if shape.name == name or shape.name.lower() == name_lower:
-                    return shape
+            if hasattr(shape, 'name') and (shape.name == name or shape.name.lower() == name_lower):
+                return shape
+            
+            # Check for group
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                found = self.find_shape_by_name(shape.shapes, name)
+                if found:
+                    return found
         return None
     
     def find_content_shape(self, shapes):
@@ -937,13 +943,8 @@ class PowerPointGenerator:
                 # Make first column (description) wider, distribute rest
                 if len(table.columns) > 0:
                     try:
-                        total_width = table_shape.width if 'table_shape' in locals() else shape.width
-                        first_col_width = int(total_width * 0.8) # 80% for description
-                        other_col_width = int((total_width - first_col_width) / (len(table.columns) - 1)) if len(table.columns) > 1 else 0
-                        
-                        table.columns[0].width = first_col_width
-                        for i in range(1, len(table.columns)):
-                            table.columns[i].width = other_col_width
+                        # Make first column (description) wider by 80% (1.8x)
+                        table.columns[0].width = int(table.columns[0].width * 1.8)
                     except:
                         pass
                 
