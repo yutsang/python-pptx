@@ -485,7 +485,7 @@ def init_session_state():
 
 
 def get_entity_names(file_path: str) -> List[str]:
-    """Extract potential entity names from Excel file"""
+    """Extract potential entity names from Excel file, including project name from headers"""
     try:
         xls = pd.ExcelFile(file_path, engine='openpyxl')
         entity_names = set()
@@ -493,8 +493,33 @@ def get_entity_names(file_path: str) -> List[str]:
         # Check first few sheets for entity patterns
         for sheet in xls.sheet_names[:5]:
             try:
-                df = pd.read_excel(file_path, sheet_name=sheet, nrows=10, engine='openpyxl')
+                df = pd.read_excel(file_path, sheet_name=sheet, nrows=20, engine='openpyxl')
                 df_str = df.to_string()
+                
+                # Look for project name in headers (same logic as financial_extraction)
+                # Pattern: "示意性调整后资产负债表 - 东莞联洋" or "Balance Sheet - Project Name"
+                for row_idx, row in df.iterrows():
+                    for val in row:
+                        if pd.notna(val):
+                            val_str = str(val)
+                            # Check for BS/IS header patterns
+                            if ('示意性调整后' in val_str or 'balance sheet' in val_str.lower() or 
+                                '利润表' in val_str or 'income statement' in val_str.lower()):
+                                if ' - ' in val_str:
+                                    # Extract project name after " - "
+                                    project_name = val_str.split(' - ', 1)[1].strip()
+                                    if project_name and len(project_name) > 2 and len(project_name) < 50:
+                                        entity_names.add(project_name)
+                                elif '-' in val_str:
+                                    # Try to extract after single dash
+                                    parts = val_str.split('-')
+                                    if len(parts) > 1:
+                                        project_name = parts[-1].strip()
+                                        # Avoid adding table type names
+                                        if (project_name and len(project_name) > 2 and len(project_name) < 50 and
+                                            '调整后' not in project_name and 'sheet' not in project_name.lower() and
+                                            '利润表' not in project_name and '资产负债表' not in project_name):
+                                            entity_names.add(project_name)
                 
                 # Look for patterns like "xxx公司", "xxx - 东莞xx"
                 import re
