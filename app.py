@@ -553,17 +553,25 @@ with col_title:
 with col_refresh:
     st.markdown("<br>", unsafe_allow_html=True)  # Align button with title
     if st.button("🔄", help="Refresh page and reset", use_container_width=True, key="refresh_main"):
-        # Clear session state to reset
-        for key in ['dfs', 'workbook_list', 'language', 'bs_is_results', 'ai_results', 
-                    'reconciliation', 'entity_name', 'project_name', 'pptx_ready', 
-                    'pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
+        # Reset session state to defaults
+        st.session_state.dfs = None
+        st.session_state.workbook_list = []
+        st.session_state.language = 'Eng'
+        st.session_state.bs_is_results = None
+        st.session_state.ai_results = None
+        st.session_state.reconciliation = None
+        st.session_state.entity_name = ""
+        st.session_state.project_name = None
+        st.session_state.pptx_ready = False
+        # Clear other keys
+        for key in ['pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
                     'prev_uploaded_file', 'prev_entity_dropdown', 'selected_sheet']:
             if key in st.session_state:
                 del st.session_state[key]
         st.rerun()
 
 # Show entity name and financial sheet selection in main area (only if data not processed)
-if st.session_state.dfs is None:
+if st.session_state.get('dfs') is None:
     # Entity name and financial sheet in parallel
     col_entity, col_sheet = st.columns(2)
     
@@ -709,16 +717,21 @@ with st.sidebar:
         # Check if file has changed - clear all cache if so
         prev_file = st.session_state.get('prev_uploaded_file', None)
         if prev_file != uploaded_file.name:
-            # File changed - clear all data and entity-related cache
-            for key in ['dfs', 'workbook_list', 'language', 'bs_is_results', 'ai_results', 
-                        'reconciliation', 'entity_name', 'project_name', 'pptx_ready', 
-                        'pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
+            # File changed - reset all data to default values
+            st.session_state.dfs = None
+            st.session_state.workbook_list = []
+            st.session_state.language = 'Eng'
+            st.session_state.bs_is_results = None
+            st.session_state.ai_results = None
+            st.session_state.reconciliation = None
+            st.session_state.entity_name = ""
+            st.session_state.project_name = None
+            st.session_state.pptx_ready = False
+            # Clear PPTX download data
+            for key in ['pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
                         'prev_entity_dropdown', 'selected_sheet']:
                 if key in st.session_state:
-                    if key == 'entity_name':
-                        st.session_state[key] = ""  # Clear but keep key
-                    else:
-                        del st.session_state[key]
+                    del st.session_state[key]
             st.session_state.prev_uploaded_file = uploaded_file.name
         
         st.success(f"✅ Using uploaded file: {uploaded_file.name}")
@@ -732,16 +745,21 @@ with st.sidebar:
             # Check if we switched from uploaded to default - clear all cache
             prev_file = st.session_state.get('prev_uploaded_file', None)
             if prev_file is not None:
-                # Switched back to default - clear all data
-                for key in ['dfs', 'workbook_list', 'language', 'bs_is_results', 'ai_results', 
-                            'reconciliation', 'entity_name', 'project_name', 'pptx_ready', 
-                            'pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
+                # Switched back to default - reset all data to default values
+                st.session_state.dfs = None
+                st.session_state.workbook_list = []
+                st.session_state.language = 'Eng'
+                st.session_state.bs_is_results = None
+                st.session_state.ai_results = None
+                st.session_state.reconciliation = None
+                st.session_state.entity_name = ""
+                st.session_state.project_name = None
+                st.session_state.pptx_ready = False
+                # Clear PPTX download data
+                for key in ['pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
                             'prev_entity_dropdown', 'selected_sheet']:
                     if key in st.session_state:
-                        if key == 'entity_name':
-                            st.session_state[key] = ""  # Clear but keep key
-                        else:
-                            del st.session_state[key]
+                        del st.session_state[key]
                 st.session_state.prev_uploaded_file = None
             
             st.success(f"✅ Using default: {default_path}")
@@ -843,7 +861,7 @@ if st.session_state.get('process_data_clicked', False):
                 st.code(traceback.format_exc())
 
 # Main content
-if st.session_state.dfs is None:
+if st.session_state.get('dfs') is None:
     st.info("👈 Upload a databook, set entity name and sheet, then click 'Process Data' to begin")
 else:
     # Data Display header
@@ -1066,7 +1084,7 @@ else:
         st.markdown("<br>", unsafe_allow_html=True)  # Align button with header
         pptx_key = f"pptx_btn_{st.session_state.button_click_counter}"
         if st.button("📄 Generate & Export PPTX", type="secondary", use_container_width=True,
-                     disabled=st.session_state.ai_results is None, key=pptx_key):
+                     disabled=st.session_state.get('ai_results') is None, key=pptx_key):
             st.session_state.button_click_counter += 1
             generate_pptx_presentation()
     with col_download:

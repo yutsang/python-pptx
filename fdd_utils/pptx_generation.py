@@ -1108,13 +1108,21 @@ class PowerPointGenerator:
                 BLACK = RGBColor(0, 0, 0)
                 
                 # Adjust column widths - make all columns narrower to fit more data
+                # Income Statement gets wider date columns
+                is_income_statement = table_name and ('利润表' in table_name or 'Income Statement' in table_name)
+                
                 if len(table.columns) > 0:
                     try:
-                        # Make first column (description) slightly wider but not as much
+                        # Make first column (description) slightly wider
                         table.columns[0].width = int(table.columns[0].width * 1.3)
-                        # Make all other columns narrower (85% of original)
+                        
+                        # Income Statement: wider date columns (90% vs 85%)
+                        # Balance Sheet: narrower date columns (85%)
+                        date_col_multiplier = 0.90 if is_income_statement else 0.85
+                        
+                        # Make all other columns (date columns) narrower
                         for col_idx in range(1, len(table.columns)):
-                            table.columns[col_idx].width = int(table.columns[col_idx].width * 0.85)
+                            table.columns[col_idx].width = int(table.columns[col_idx].width * date_col_multiplier)
                     except:
                         pass
                 
