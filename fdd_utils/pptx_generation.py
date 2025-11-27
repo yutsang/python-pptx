@@ -385,8 +385,8 @@ class PowerPointGenerator:
         # Convert EMU to points (1 EMU = 1/914400 inches, 1 inch = 72 points)
         shape_height_pt = shape_height_emu * 72 / 914400
         
-        # Account for margins and padding - use maximum space
-        effective_height_pt = shape_height_pt * 0.95  # 95% utilization
+        # Account for margins and padding - use safer space (85% utilization)
+        effective_height_pt = shape_height_pt * 0.85
         
         # Calculate line height based on font size (9pt) and line spacing (1.0)
         font_size_pt = 9
@@ -396,7 +396,7 @@ class PowerPointGenerator:
         # Calculate maximum rows that can fit
         max_rows = int(effective_height_pt / line_height_pt)
         
-        return max(25, max_rows)  # At least 25 lines
+        return max(20, max_rows)  # At least 20 lines (reduced from 25 to prevent overflow)
     
     def _calculate_content_lines(self, category: str, mapping_key: str, commentary: str) -> int:
         """Calculate how many lines a piece of content will take"""
@@ -1066,6 +1066,11 @@ class PowerPointGenerator:
                     if row_idx == 0:
                         logger.info(f"Processing first data row: {df_row.values[:3]}")
 
+                    # Determine if we need to divide by 1000
+                    divide_by_1000 = False
+                    if currency_unit and ("千" in currency_unit or "000" in currency_unit):
+                        divide_by_1000 = True
+                        
                     for col_idx, col_name in enumerate(df.columns[:max_cols]):
                         if col_idx >= len(table.columns):
                             break
@@ -1074,21 +1079,32 @@ class PowerPointGenerator:
                         # Get value from DataFrame safely
                         value = df_row[col_name] if col_name in df_row.index else ""
                         
+                        # Special handling for Description column (index 0)
+                        if col_idx == 0:
+                            # Shorten description to prevent row height expansion
+                            str_val = str(value)
+                            if len(str_val) > 35:
+                                value = str_val[:32] + "..."
+                        
                         # Format value to string
                         text_val = ""
                         try:
                             if pd.isna(value):
                                 text_val = ""
                             elif isinstance(value, (int, float)):
-                                text_val = f"{value:,.1f}" if value != 0 else "0"
+                                if divide_by_1000 and col_idx > 0: # Don't divide description
+                                    value = value / 1000
+                                text_val = f"{value:,.0f}" if value != 0 else "-" # Round to 0 d.p., use dash for zero
                             else:
                                 text_val = str(value).strip()
                                 # Handle potential string representations of numbers
-                                if text_val.replace('.','',1).isdigit():
+                                if col_idx > 0 and text_val.replace('.','',1).isdigit(): # Only for data columns
                                     # It's a number string, try to format it
                                     try:
                                         float_val = float(text_val)
-                                        text_val = f"{float_val:,.1f}" if float_val != 0 else "0"
+                                        if divide_by_1000:
+                                            float_val = float_val / 1000
+                                        text_val = f"{float_val:,.0f}" if float_val != 0 else "-"
                                     except:
                                         pass
                         except Exception as e:
@@ -1101,7 +1117,7 @@ class PowerPointGenerator:
                         if row_idx == 0 and col_idx < 2:
                             logger.info(f"Setting cell ({data_row_idx}, {col_idx}) to: '{text_val}'")
                         
-                        # Apply formatting: Arial 9 for all cells
+                        # Apply formatting: Arial 7pt (reduced from 9pt) for all cells
                         # Note: Always access paragraphs[0] AFTER setting text
                         if not cell.text_frame.paragraphs:
                             cell.text_frame.add_paragraph()
@@ -1114,7 +1130,7 @@ class PowerPointGenerator:
                         for run in p.runs:
                             run.text = text_val # Ensure text is set in the run
                             run.font.name = 'Arial'
-                            run.font.size = Pt(9)
+                            run.font.size = Pt(7) # Reduced to 7pt
                             
                             # Force Black color for data rows
                             try:

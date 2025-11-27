@@ -514,11 +514,15 @@ def get_entity_names(file_path: str) -> List[str]:
                     matches = re.findall(pattern, df_str)
                     for match in matches[:3]:
                         if len(match) > 2 and len(match) < 50:
-                            entity_names.add(match.strip())
+                            cleaned_match = match.strip()
+                            if cleaned_match:  # Only add non-empty strings
+                                entity_names.add(cleaned_match)
             except:
                 continue
         
-        return [''] + sorted(list(entity_names))
+        # Filter out empty or whitespace-only strings from the set
+        filtered_names = [name for name in entity_names if name and name.strip()]
+        return [''] + sorted(list(filtered_names))
     except:
         return ['']
 
@@ -737,9 +741,9 @@ with st.sidebar:
         
         # Show current model with Streamlit green success reminder
         model_display = {
-            'local': 'Local Model (qwen3-chat)',
-            'openai': 'OpenAI GPT (gpt-4o-mini)',
-            'deepseek': 'DeepSeek (deepseek-chat)'
+            'local': 'qwen3-chat',
+            'openai': 'gpt-4o-mini',
+            'deepseek': 'deepseek-chat'
         }
         st.success(f"🤖 AI Mode: {model_display.get(st.session_state.model_type, st.session_state.model_type.upper())}")
 
