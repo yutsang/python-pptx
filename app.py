@@ -342,12 +342,6 @@ def generate_pptx_presentation():
                 is_chinese_databook = (language == 'Chn')
                 # Get temp_path and selected_sheet from session state
                 excel_temp_path = st.session_state.get('temp_path')
-                # Fallback to default if temp_path is missing or invalid
-                if not excel_temp_path or not os.path.exists(excel_temp_path):
-                    if os.path.exists("databook.xlsx"):
-                        excel_temp_path = "databook.xlsx"
-                        print(f"DEBUG: temp_path invalid, falling back to {excel_temp_path}")
-                
                 excel_selected_sheet = st.session_state.get('selected_sheet')
                 print(f"DEBUG: Embedding tables from: {excel_temp_path}, sheet: {excel_selected_sheet}")
                 export_pptx_from_structured_data_combined(
@@ -577,14 +571,8 @@ if st.session_state.get('dfs') is None:
     
     with col_entity:
         st.markdown("**🏢 Entity Name**")
-        # Get temp_path from sidebar state or default
+        # Get temp_path from sidebar state
         temp_path = st.session_state.get('temp_path', None)
-        if not temp_path:
-            # Check if default file exists
-            default_path = "databook.xlsx"
-            if os.path.exists(default_path):
-                temp_path = default_path
-                st.session_state.temp_path = default_path
         
         if temp_path and os.path.exists(temp_path):
             entity_options = get_entity_names(temp_path)
@@ -647,14 +635,8 @@ if st.session_state.get('dfs') is None:
     
     with col_sheet:
         st.markdown("**📊 Financial Statement Sheet**")
-        # Get temp_path from sidebar state or default
+        # Get temp_path from sidebar state
         temp_path = st.session_state.get('temp_path', None)
-        if not temp_path:
-            # Check if default file exists
-            default_path = "databook.xlsx"
-            if os.path.exists(default_path):
-                temp_path = default_path
-                st.session_state.temp_path = default_path
         
         if temp_path and os.path.exists(temp_path):
             sheet_options = get_financial_sheets(temp_path)
@@ -696,14 +678,14 @@ if st.session_state.get('dfs') is None:
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # File upload - no checkbox, always available
+    # File upload - required, no default
     st.markdown("**📁 Databook File**")
     
-    # File uploader (always shown)
+    # File uploader (always shown, required)
     uploaded_file = st.file_uploader(
-        "Upload Excel (or use default databook.xlsx)",
+        "Upload Excel file",
         type=['xlsx', 'xls'],
-        help="Upload your financial databook, or leave empty to use databook.xlsx",
+        help="Upload your financial databook",
         key="file_uploader"
     )
     
@@ -734,41 +716,14 @@ with st.sidebar:
                     del st.session_state[key]
             st.session_state.prev_uploaded_file = uploaded_file.name
         
-        st.success(f"✅ Using uploaded file: {uploaded_file.name}")
+        st.success(f"✅ File loaded: {uploaded_file.name}")
         st.session_state.temp_path = temp_path
     else:
-        # No upload - use default databook.xlsx if it exists
-        default_path = "databook.xlsx"
-        if os.path.exists(default_path):
-            temp_path = default_path
-            
-            # Check if we switched from uploaded to default - clear all cache
-            prev_file = st.session_state.get('prev_uploaded_file', None)
-            if prev_file is not None:
-                # Switched back to default - reset all data to default values
-                st.session_state.dfs = None
-                st.session_state.workbook_list = []
-                st.session_state.language = 'Eng'
-                st.session_state.bs_is_results = None
-                st.session_state.ai_results = None
-                st.session_state.reconciliation = None
-                st.session_state.entity_name = ""
-                st.session_state.project_name = None
-                st.session_state.pptx_ready = False
-                # Clear PPTX download data
-                for key in ['pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
-                            'prev_entity_dropdown', 'selected_sheet']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                st.session_state.prev_uploaded_file = None
-            
-            st.success(f"✅ Using default: {default_path}")
-            st.session_state.temp_path = temp_path
-        else:
-            st.warning("⚠️ Default databook.xlsx not found. Please upload a file.")
-            temp_path = None
-            if 'temp_path' in st.session_state:
-                del st.session_state.temp_path
+        # No upload - require file upload
+        st.warning("⚠️ Please upload a databook file to begin")
+        temp_path = None
+        if 'temp_path' in st.session_state:
+            del st.session_state.temp_path
     
     # Model selection (radio buttons)
     if temp_path:
@@ -800,13 +755,6 @@ with st.sidebar:
 if st.session_state.get('process_data_clicked', False):
     st.session_state.process_data_clicked = False
     temp_path = st.session_state.get('temp_path', None)
-    # If no temp_path but default exists, use it
-    if not temp_path:
-        default_path = "databook.xlsx"
-        if os.path.exists(default_path):
-            temp_path = default_path
-            st.session_state.temp_path = default_path
-    
     entity_name = st.session_state.get('entity_name', '')
     selected_sheet = st.session_state.get('selected_sheet', None)
     
