@@ -938,7 +938,7 @@ class PowerPointGenerator:
                 if len(table.columns) > 0:
                     try:
                         total_width = table_shape.width if 'table_shape' in locals() else shape.width
-                        first_col_width = int(total_width * 0.4) # 40% for description
+                        first_col_width = int(total_width * 0.8) # 80% for description
                         other_col_width = int((total_width - first_col_width) / (len(table.columns) - 1)) if len(table.columns) > 1 else 0
                         
                         table.columns[0].width = first_col_width
@@ -1067,9 +1067,12 @@ class PowerPointGenerator:
                         logger.info(f"Processing first data row: {df_row.values[:3]}")
 
                     # Determine if we need to divide by 1000
-                    divide_by_1000 = False
-                    if currency_unit and ("千" in currency_unit or "000" in currency_unit):
-                        divide_by_1000 = True
+                    # NOTE: We already disabled multiplication in extraction, so values should be in thousands
+                    # But if for some reason we still need to handle it (e.g. different source), we check here
+                    # User asked to remove *1000 logic, so we assume values are correct as-is (in thousands)
+                    divide_by_1000 = False 
+                    # if currency_unit and ("千" in currency_unit or "000" in currency_unit):
+                    #     divide_by_1000 = True
                         
                     for col_idx, col_name in enumerate(df.columns[:max_cols]):
                         if col_idx >= len(table.columns):
@@ -1564,7 +1567,8 @@ Original content:
                 return
             
             # Use the existing extraction function with DEBUG enabled
-            bs_is_results = extract_balance_sheet_and_income_statement(excel_path, sheet_name, debug=True)
+            # multiply_values=False to keep original units (thousands) for PPTX table
+            bs_is_results = extract_balance_sheet_and_income_statement(excel_path, sheet_name, debug=True, multiply_values=False)
             if not bs_is_results:
                 logger.warning("No BS/IS data extracted")
                 return

@@ -160,7 +160,8 @@ def extract_financial_table(
     df: pd.DataFrame,
     table_name: str,
     entity_keywords: Optional[List[str]] = None,
-    debug: bool = False
+    debug: bool = False,
+    multiply_values: bool = True
 ) -> Optional[pd.DataFrame]:
     """
     Extract financial table (Balance Sheet or Income Statement) from a worksheet.
@@ -171,6 +172,7 @@ def extract_financial_table(
         table_name: Name of the table (e.g., "Balance Sheet", "Income Statement")
         entity_keywords: Optional list of entity name components to search for
         debug: If True, print debugging information
+        multiply_values: If True, multiply by 1000 if CNY'000 detected
         
     Returns:
         Cleaned DataFrame with Description column and ALL adjusted columns
@@ -334,10 +336,12 @@ def extract_financial_table(
     
     # Check if CNY'000 multiplier needed
     date_row_str = ' '.join(date_row.astype(str).values)
-    multiply_by_1000 = "CNY'000" in date_row_str or "人民币千元" in date_row_str
+    multiply_by_1000 = multiply_values and ("CNY'000" in date_row_str or "人民币千元" in date_row_str)
     
     if debug and multiply_by_1000:
         print(f"[DEBUG] Will multiply values by 1000 (CNY'000 detected)")
+    elif debug and not multiply_values:
+        print(f"[DEBUG] Multiplication disabled by parameter")
     
     # Determine end row based on table type
     data_start_row = date_row_idx + 1
@@ -551,7 +555,8 @@ def extract_financial_table(
 def extract_balance_sheet_and_income_statement(
     workbook_path: str,
     sheet_name: str,
-    debug: bool = False
+    debug: bool = False,
+    multiply_values: bool = True
 ) -> Dict[str, any]:
     """
     Extract Balance Sheet and Income Statement from a SINGLE Excel worksheet.
@@ -561,6 +566,7 @@ def extract_balance_sheet_and_income_statement(
         workbook_path: Path to Excel workbook
         sheet_name: Worksheet name containing both BS and IS
         debug: If True, print debugging information
+        multiply_values: If True, multiply by 1000 if CNY'000 detected
         
     Returns:
         Dictionary with keys:
@@ -688,7 +694,7 @@ def extract_balance_sheet_and_income_statement(
             df_bs = df.iloc[bs_start_row:bs_end_row].copy().reset_index(drop=True)
             
             results['balance_sheet'] = extract_financial_table(
-                df_bs, "Balance Sheet", None, debug
+                df_bs, "Balance Sheet", None, debug, multiply_values
             )
         
         # Extract Income Statement
@@ -697,7 +703,7 @@ def extract_balance_sheet_and_income_statement(
             df_is = df.iloc[is_start_row:].copy().reset_index(drop=True)
             
             results['income_statement'] = extract_financial_table(
-                df_is, "Income Statement", None, debug
+                df_is, "Income Statement", None, debug, multiply_values
             )
         
         # Post-processing: Remove date columns with all zeros in Income Statement
