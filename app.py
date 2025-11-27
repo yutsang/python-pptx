@@ -540,6 +540,83 @@ def get_financial_sheets(file_path: str) -> List[str]:
 # Initialize
 init_session_state()
 
+# Sidebar - must run first to set temp_path before main content reads it
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    
+    # File upload - required, no default
+    st.markdown("**📁 Databook File**")
+    
+    # File uploader (always shown, required)
+    uploaded_file = st.file_uploader(
+        "Upload Excel file",
+        type=['xlsx', 'xls'],
+        help="Upload your financial databook",
+        key="file_uploader"
+    )
+    
+    # Determine which file to use
+    if uploaded_file:
+        # Save uploaded file to temp location
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            temp_path = tmp_file.name
+        
+        # Check if file has changed - clear all cache if so
+        prev_file = st.session_state.get('prev_uploaded_file', None)
+        if prev_file != uploaded_file.name:
+            # File changed - reset all data to default values
+            st.session_state.dfs = None
+            st.session_state.workbook_list = []
+            st.session_state.language = 'Eng'
+            st.session_state.bs_is_results = None
+            st.session_state.ai_results = None
+            st.session_state.reconciliation = None
+            st.session_state.entity_name = ""
+            st.session_state.project_name = None
+            st.session_state.pptx_ready = False
+            # Clear PPTX download data
+            for key in ['pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
+                        'prev_entity_dropdown', 'selected_sheet']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.session_state.prev_uploaded_file = uploaded_file.name
+        
+        st.success(f"✅ File loaded: {uploaded_file.name}")
+        st.session_state.temp_path = temp_path
+    else:
+        # No upload - require file upload
+        st.warning("⚠️ Please upload a databook file to begin")
+        temp_path = None
+        if 'temp_path' in st.session_state:
+            del st.session_state.temp_path
+    
+    # Model selection (radio buttons)
+    if temp_path:
+        st.markdown("---")
+        st.markdown("**🤖 AI Model**")
+        # Initialize model_type in session state if not exists
+        if 'model_type' not in st.session_state:
+            st.session_state.model_type = 'local'
+        
+        # Widget with key automatically manages session state - don't modify it manually
+        st.radio(
+            label="Select model",
+            options=['local', 'openai', 'deepseek'],
+            index=['local', 'openai', 'deepseek'].index(st.session_state.model_type) if st.session_state.model_type in ['local', 'openai', 'deepseek'] else 0,
+            help="AI model for content generation",
+            label_visibility="collapsed",
+            key="model_type"
+        )
+        
+        # Show current model with Streamlit green success reminder
+        model_display = {
+            'local': 'qwen3-chat',
+            'openai': 'gpt-4o-mini',
+            'deepseek': 'deepseek-chat'
+        }
+        st.success(f"🤖 AI Mode: {model_display.get(st.session_state.model_type, st.session_state.model_type.upper())}")
+
 # Title with refresh button at top right
 col_title, col_refresh = st.columns([10, 1])
 with col_title:
@@ -669,83 +746,6 @@ if st.session_state.get('dfs') is None:
         else:
             st.session_state.process_data_clicked = True
             st.rerun()
-
-# Sidebar - simplified
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    
-    # File upload - required, no default
-    st.markdown("**📁 Databook File**")
-    
-    # File uploader (always shown, required)
-    uploaded_file = st.file_uploader(
-        "Upload Excel file",
-        type=['xlsx', 'xls'],
-        help="Upload your financial databook",
-        key="file_uploader"
-    )
-    
-    # Determine which file to use
-    if uploaded_file:
-        # Save uploaded file to temp location
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            temp_path = tmp_file.name
-        
-        # Check if file has changed - clear all cache if so
-        prev_file = st.session_state.get('prev_uploaded_file', None)
-        if prev_file != uploaded_file.name:
-            # File changed - reset all data to default values
-            st.session_state.dfs = None
-            st.session_state.workbook_list = []
-            st.session_state.language = 'Eng'
-            st.session_state.bs_is_results = None
-            st.session_state.ai_results = None
-            st.session_state.reconciliation = None
-            st.session_state.entity_name = ""
-            st.session_state.project_name = None
-            st.session_state.pptx_ready = False
-            # Clear PPTX download data
-            for key in ['pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
-                        'prev_entity_dropdown', 'selected_sheet']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.session_state.prev_uploaded_file = uploaded_file.name
-        
-        st.success(f"✅ File loaded: {uploaded_file.name}")
-        st.session_state.temp_path = temp_path
-    else:
-        # No upload - require file upload
-        st.warning("⚠️ Please upload a databook file to begin")
-        temp_path = None
-        if 'temp_path' in st.session_state:
-            del st.session_state.temp_path
-    
-    # Model selection (radio buttons)
-    if temp_path:
-        st.markdown("---")
-        st.markdown("**🤖 AI Model**")
-        # Initialize model_type in session state if not exists
-        if 'model_type' not in st.session_state:
-            st.session_state.model_type = 'local'
-        
-        # Widget with key automatically manages session state - don't modify it manually
-        st.radio(
-            label="Select model",
-            options=['local', 'openai', 'deepseek'],
-            index=['local', 'openai', 'deepseek'].index(st.session_state.model_type) if st.session_state.model_type in ['local', 'openai', 'deepseek'] else 0,
-            help="AI model for content generation",
-            label_visibility="collapsed",
-            key="model_type"
-        )
-        
-        # Show current model with Streamlit green success reminder
-        model_display = {
-            'local': 'qwen3-chat',
-            'openai': 'gpt-4o-mini',
-            'deepseek': 'deepseek-chat'
-        }
-        st.success(f"🤖 AI Mode: {model_display.get(st.session_state.model_type, st.session_state.model_type.upper())}")
 
 # Process data if button was clicked
 if st.session_state.get('process_data_clicked', False):
