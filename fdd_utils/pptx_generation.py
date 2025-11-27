@@ -428,78 +428,153 @@ class PowerPointGenerator:
         
         return lines
     
-    def _distribute_content_across_slides(self, structured_data: List[Dict], max_slides: int = 4):
-        """Distribute content across slides based on textbox capacity with page break logic"""
+    def _distribute_content_across_slots(self, structured_data: List[Dict], max_slides: int = 4):
+        """
+        Distribute content across textbox slots based on capacity.
+        Slot structure:
+        - Slide 1: 1 slot (textMainBullets)
+        - Slides 2-4: 2 slots each (textMainBullets_L, textMainBullets_R)
+        Total: 1 + 2*3 = 7 slots for 4 slides
+        
+        Returns: List of (slide_idx, slot_idx, [account_data], is_partial, continuation_of)
+        """
         if not structured_data:
             return []
         
         # Find a textbox shape to calculate capacity
         sample_shape = None
         for slide in self.presentation.slides:
-            shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
-            if shape:
-                sample_shape = shape
+            for alt_name in ["textMainBullets", "textMainBullets_L", "textMainBullets_R"]:
+                shape = self.find_shape_by_name(slide.shapes, alt_name)
+                if shape:
+                    sample_shape = shape
+                    break
+            if sample_shape:
                 break
         
-        if not sample_shape:
-            # Fallback: try alternative names
-            for slide in self.presentation.slides:
-                for alt_name in ["textMainBullets_L", "textMainBullets_R", "Content Placeholder 2"]:
-                    shape = self.find_shape_by_name(slide.shapes, alt_name)
-                    if shape:
-                        sample_shape = shape
-                        break
-                if sample_shape:
-                    break
+        max_lines_per_textbox = self._calculate_max_lines_for_textbox(sample_shape) if sample_shape else 35
+        logger.info(f"Max lines per textbox: {max_lines_per_textbox}")
         
-        max_lines_per_slide = self._calculate_max_lines_for_textbox(sample_shape) if sample_shape else 35
+        # Define slot structure: (slide_idx, slot_name)
+        # Slide 0 (P1): 1 slot, Slides 1-3 (P2-4): 2 slots each
+        slots = [(0, 'single')]  # Slide 1
+        for slide_idx in range(1, max_slides):
+            slots.append((slide_idx, 'L'))
+            slots.append((slide_idx, 'R'))
         
-        # Distribute content with page break support
-        distribution = []  # List of (slide_idx, [account_data_list], needs_continuation)
-        current_slide_idx = 0
-        current_slide_content = []
-        current_slide_lines = 0
+        # Distribution result: [(slide_idx, slot_name, [account_data])]
+        distribution = []
+        
+        current_slot_idx = 0
+        current_slot_content = []
+        current_slot_lines = 0
         previous_category = None
         
         for account_data in structured_data:
+            if current_slot_idx >= len(slots):
+                logger.warning(f"Ran out of slots, stopping content distribution")
+                break
+            
             category = account_data.get('category', '')
             mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
             commentary = account_data.get('commentary', '')
             
             # Category header line (only if category changes)
             category_lines = 1 if (category and category != previous_category) else 0
-            previous_category = category
             
-            # Calculate content lines (key + commentary, category is handled separately)
-            content_lines = self._calculate_content_lines('', mapping_key, commentary)  # Don't count category here
+            # Calculate content lines (key + commentary)
+            content_lines = self._calculate_content_lines('', mapping_key, commentary)
+            total_lines = category_lines + content_lines
             
-            # Check if this fits on current slide
-            if current_slide_lines + category_lines + content_lines <= max_lines_per_slide and current_slide_idx < max_slides:
-                # Add to current slide
-                current_slide_content.append(account_data)
-                current_slide_lines += category_lines + content_lines
+            # Check if this account fits in current slot
+            if current_slot_lines + total_lines <= max_lines_per_textbox:
+                # Fits completely in current slot
+                current_slot_content.append(account_data)
+                current_slot_lines += total_lines
+                previous_category = category
             else:
-                # Save current slide if it has content
-                if current_slide_content:
-                    # Mark if we're at max and have more content
-                    needs_continuation = (current_slide_idx < max_slides - 1)
-                    distribution.append((current_slide_idx, current_slide_content, needs_continuation))
+                # Doesn't fit - need to handle split or move to next slot
+                remaining_lines = max_lines_per_textbox - current_slot_lines
                 
-                # Start new slide
-                if current_slide_idx < max_slides - 1:
-                    current_slide_idx += 1
-                    current_slide_content = [account_data]
-                    current_slide_lines = category_lines + content_lines
-                else:
-                    # Max slides reached, add continuation marker to last slide
-                    if current_slide_content:
-                        distribution.append((current_slide_idx, current_slide_content, True))
+                # If we have substantial space (> 5 lines), try to split the content
+                if remaining_lines > 5 and content_lines > 10:
+                    # Split the account content
+                    lines_in_commentary = commentary.split('\n')
+                    chars_per_line = 50
+                    
+                    # Estimate how many commentary lines we can fit
+                    available_for_commentary = remaining_lines - category_lines - 1  # -1 for key line
+                    
+                    if available_for_commentary > 0:
+                        # Calculate how many characters fit
+                        chars_available = available_for_commentary * chars_per_line
+                        
+                        # Split commentary at approximately this point
+                        if len(commentary) > chars_available:
+                            # Find a good break point (sentence end)
+                            split_point = chars_available
+                            # Try to find sentence end near split point
+                            for end_char in ['. ', '。', '! ', '！', '? ', '？']:
+                                pos = commentary.rfind(end_char, 0, split_point + 50)
+                                if pos > chars_available - 100 and pos < chars_available + 100:
+                                    split_point = pos + len(end_char)
+                                    break
+                            
+                            # Create partial account data
+                            part1_commentary = commentary[:split_point].strip()
+                            part2_commentary = commentary[split_point:].strip()
+                            
+                            # Add first part to current slot
+                            account_part1 = account_data.copy()
+                            account_part1['commentary'] = part1_commentary
+                            account_part1['is_partial'] = True
+                            account_part1['part_num'] = 1
+                            current_slot_content.append(account_part1)
+                            
+                            # Save current slot
+                            slide_idx, slot_name = slots[current_slot_idx]
+                            distribution.append((slide_idx, slot_name, current_slot_content))
+                            
+                            # Move to next slot
+                            current_slot_idx += 1
+                            if current_slot_idx >= len(slots):
+                                break
+                            
+                            # Add second part to new slot
+                            account_part2 = account_data.copy()
+                            account_part2['commentary'] = part2_commentary
+                            account_part2['is_continuation'] = True
+                            account_part2['part_num'] = 2
+                            account_part2['original_key'] = mapping_key
+                            
+                            # Calculate lines for part 2
+                            part2_lines = self._calculate_content_lines('', mapping_key, part2_commentary)
+                            current_slot_content = [account_part2]
+                            current_slot_lines = part2_lines
+                            previous_category = category
+                            continue
+                
+                # Can't split or not enough space - save current slot and move entire account to next
+                if current_slot_content:
+                    slide_idx, slot_name = slots[current_slot_idx]
+                    distribution.append((slide_idx, slot_name, current_slot_content))
+                
+                # Move to next slot
+                current_slot_idx += 1
+                if current_slot_idx >= len(slots):
                     break
+                
+                # Start new slot with this account
+                current_slot_content = [account_data]
+                current_slot_lines = total_lines
+                previous_category = category
         
-        # Add last slide if it has content
-        if current_slide_content:
-            distribution.append((current_slide_idx, current_slide_content, False))
+        # Save last slot if it has content
+        if current_slot_content and current_slot_idx < len(slots):
+            slide_idx, slot_name = slots[current_slot_idx]
+            distribution.append((slide_idx, slot_name, current_slot_content))
         
+        logger.info(f"Distributed content across {len(distribution)} slots")
         return distribution
     
     def apply_structured_data_to_slides(self, structured_data: List[Dict], start_slide: int, 
@@ -510,26 +585,34 @@ class PowerPointGenerator:
         
         logger.info(f"Applying {len(structured_data)} accounts to slides starting at {start_slide}")
         
-        # Distribute content across slides based on textbox capacity (max 4 slides)
-        distribution = self._distribute_content_across_slides(structured_data, max_slides=4)
+        # Distribute content across textbox slots based on capacity
+        slot_distribution = self._distribute_content_across_slots(structured_data, max_slides=4)
+        
+        # Group slot distribution by slide for easier processing
+        slides_content = {}  # {slide_idx: {'single': [...], 'L': [...], 'R': [...]}}
+        for slot_slide_idx, slot_name, account_list in slot_distribution:
+            if slot_slide_idx not in slides_content:
+                slides_content[slot_slide_idx] = {}
+            slides_content[slot_slide_idx][slot_name] = account_list
         
         # Ensure we have enough slides
-        max_slide_idx = max((slide_idx for slide_idx, _, _ in distribution), default=0)
-        needed_slides = start_slide + max_slide_idx
-        current_slide_count = len(self.presentation.slides)
-        
-        if needed_slides > current_slide_count:
-            # Add slides if needed (use the same layout as existing slides)
-            if current_slide_count > 0:
-                slide_layout = self.presentation.slides[0].slide_layout
-                for _ in range(needed_slides - current_slide_count):
-                    self.presentation.slides.add_slide(slide_layout)
+        if slides_content:
+            max_slide_idx = max(slides_content.keys())
+            needed_slides = start_slide + max_slide_idx
+            current_slide_count = len(self.presentation.slides)
+            
+            if needed_slides > current_slide_count:
+                # Add slides if needed
+                if current_slide_count > 0:
+                    slide_layout = self.presentation.slides[0].slide_layout
+                    for _ in range(needed_slides - current_slide_count):
+                        self.presentation.slides.add_slide(slide_layout)
         
         # Track which slides are used
         used_slide_indices = set()
         
         # Apply content to slides
-        for slide_idx, account_data_list, needs_continuation in distribution:
+        for slide_idx in sorted(slides_content.keys()):
             actual_slide_idx = start_slide - 1 + slide_idx  # Convert to 0-based
             if actual_slide_idx >= len(self.presentation.slides):
                 logger.warning(f"Slide index {actual_slide_idx + 1} exceeds available slides")
@@ -537,10 +620,9 @@ class PowerPointGenerator:
             
             used_slide_indices.add(actual_slide_idx)
             slide = self.presentation.slides[actual_slide_idx]
+            slot_contents = slides_content[slide_idx]  # {'single': [...], 'L': [...], 'R': [...]}
             
-            # Note: Financial tables are filled by embed_financial_tables() which is called after
-            # applying all data. This ensures the full BS/IS tables are embedded, not just individual account data.
-            # So we skip filling tables here to avoid conflicts.
+            # Note: Financial tables are filled by embed_financial_tables()
             
             # Update projTitle
             proj_title_shape = self.find_shape_by_name(slide.shapes, "projTitle")
@@ -548,228 +630,205 @@ class PowerPointGenerator:
                 if project_name:
                     proj_title_shape.text_frame.text = project_name
             
-            # Fill textMainBullets with all accounts for this slide
-            # Check if this slide has both L and R shapes (slides 2-4, 6-8)
-            bullets_shape_L = self.find_shape_by_name(slide.shapes, "textMainBullets_L")
-            bullets_shape_R = self.find_shape_by_name(slide.shapes, "textMainBullets_R")
+            # Collect all accounts on this slide for summary generation
+            all_slide_accounts = []
+            for slot_name, accounts in slot_contents.items():
+                all_slide_accounts.extend(accounts)
             
-            # If both L and R exist, we'll split content between them
-            has_both_shapes = (bullets_shape_L is not None and bullets_shape_R is not None)
-            
-            if has_both_shapes:
-                # Slides 2-4 or 6-8: has both Left and Right shapes
-                logger.info(f"Slide {actual_slide_idx + 1}: Found BOTH L and R shapes, will split content")
-                bullets_shapes = [bullets_shape_L, bullets_shape_R]
-            else:
-                # Slide 1 or 5: single shape
-                bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
+            # Fill each slot (single, L, or R) on this slide
+            for slot_name, account_data_list in slot_contents.items():
+                if not account_data_list:
+                    continue
+                
+                # Find the appropriate shape based on slot_name
+                bullets_shape = None
+                if slot_name == 'single':
+                    bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
+                    if not bullets_shape:
+                        # Fallback to L or R if single not found
+                        bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets_L")
+                        if not bullets_shape:
+                            bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets_R")
+                elif slot_name == 'L':
+                    bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets_L")
+                elif slot_name == 'R':
+                    bullets_shape = self.find_shape_by_name(slide.shapes, "textMainBullets_R")
+                
                 if not bullets_shape:
-                    # Try L or R as fallback
-                    bullets_shape = bullets_shape_L or bullets_shape_R
-                    if not bullets_shape:
-                        for alt_name in ["Content Placeholder 2"]:
-                            bullets_shape = self.find_shape_by_name(slide.shapes, alt_name)
-                            if bullets_shape:
-                                break
-                    if not bullets_shape:
-                        for shape in slide.shapes:
-                            if hasattr(shape, 'text_frame'):
-                                bullets_shape = shape
-                                break
-                bullets_shapes = [bullets_shape] if bullets_shape else []
-                logger.info(f"Slide {actual_slide_idx + 1}: Found single shape")
-            
-            if bullets_shapes and all(s and s.has_text_frame for s in bullets_shapes):
-                # If we have both L and R, split accounts evenly
-                if has_both_shapes and len(account_data_list) > 1:
-                    # Split accounts: first half to L, second half to R
-                    mid_point = (len(account_data_list) + 1) // 2
-                    account_splits = [account_data_list[:mid_point], account_data_list[mid_point:]]
-                    logger.info(f"Splitting {len(account_data_list)} accounts: {mid_point} to L, {len(account_data_list) - mid_point} to R")
-                else:
-                    # Single shape or single account - use first shape only
-                    account_splits = [account_data_list]
+                    logger.warning(f"Slide {actual_slide_idx + 1}: Could not find shape for slot '{slot_name}'")
+                    continue
                 
-                # Fill each shape with its assigned accounts
-                for shape_idx, bullets_shape in enumerate(bullets_shapes):
-                    if shape_idx >= len(account_splits):
-                        break
-                    
-                    accounts_for_shape = account_splits[shape_idx]
-                    if not accounts_for_shape:
-                        continue
-                    
-                    tf = bullets_shape.text_frame
-                    tf.clear()
-                    tf.word_wrap = True
-                    from pptx.enum.text import MSO_VERTICAL_ANCHOR
-                    tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
-                    
-                    logger.info(f"Filling shape {shape_idx} ({bullets_shape.name if hasattr(bullets_shape, 'name') else 'unnamed'}) with {len(accounts_for_shape)} accounts")
-                    
-                    # Fill with accounts for this shape, grouped by category
-                    # Show category header only once per category group
-                    current_category = None
-                    for account_idx, account_data in enumerate(accounts_for_shape):
-                        category = account_data.get('category', '')
-                        mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
-                        display_name = account_data.get('display_name', mapping_key)  # Use proper name from financial statement
-                        commentary = account_data.get('commentary', '')
-                        is_chinese = account_data.get('is_chinese', False)
-                        
-                        # Show category header only when category changes
-                        if category and category != current_category:
-                            # Add category header - use Chinese if databook is Chinese
-                            p_category = tf.add_paragraph()
-                            p_category.level = 0
-                            try:
-                                p_category.left_indent = Inches(0.21)
-                                p_category.first_line_indent = Inches(-0.19)
-                                p_category.space_before = Pt(6) if current_category else Pt(0)  # Space before if not first
-                                p_category.space_after = Pt(0)
-                                p_category.line_spacing = 1.0
-                            except:
-                                pass
-                            
-                            run_category = p_category.add_run()
-                            # Use Chinese category name if databook is Chinese
-                            category_text = category
-                            if is_chinese_databook or is_chinese:
-                                # Translate category to Chinese - comprehensive list
-                                category_translations = {
-                                    # Balance Sheet - Assets
-                                    'Current assets': '流动资产',
-                                    'Current Assets': '流动资产',
-                                    'Non-current assets': '非流动资产',
-                                    'Non-Current Assets': '非流动资产',
-                                    'Non current assets': '非流动资产',
-                                    'Assets': '资产',
-                                    # Balance Sheet - Liabilities
-                                    'Current liabilities': '流动负债',
-                                    'Current Liabilities': '流动负债',
-                                    'Non-current liabilities': '非流动负债',
-                                    'Non-Current Liabilities': '非流动负债',
-                                    'Non current liabilities': '非流动负债',
-                                    'Liabilities': '负债',
-                                    # Balance Sheet - Equity
-                                    'Equity': '所有者权益',
-                                    "Owner's equity": '所有者权益',
-                                    "Owners' equity": '所有者权益',
-                                    'Shareholders equity': '股东权益',
-                                    "Shareholders' equity": '股东权益',
-                                    # Income Statement - Revenue
-                                    'Revenue': '营业收入',
-                                    'Sales': '销售收入',
-                                    'Income': '收入',
-                                    'Operating revenue': '营业收入',
-                                    'Operating Revenue': '营业收入',
-                                    # Income Statement - Costs
-                                    'Cost of sales': '营业成本',
-                                    'Cost of Sales': '营业成本',
-                                    'Cost of goods sold': '销售成本',
-                                    'COGS': '销售成本',
-                                    # Income Statement - Expenses
-                                    'Operating expenses': '营业费用',
-                                    'Operating Expenses': '营业费用',
-                                    'Selling expenses': '销售费用',
-                                    'Administrative expenses': '管理费用',
-                                    'General and administrative': '管理费用',
-                                    'G&A': '管理费用',
-                                    # Income Statement - Other
-                                    'Other income': '其他收入',
-                                    'Other Income': '其他收入',
-                                    'Other expenses': '其他费用',
-                                    'Other Expenses': '其他费用',
-                                    'Finance costs': '财务费用',
-                                    'Finance Costs': '财务费用',
-                                    'Financial expenses': '财务费用',
-                                    'Interest expense': '利息费用',
-                                    'Tax': '税费',
-                                    'Income tax': '所得税',
-                                    'Taxes': '税费',
-                                    'Tax expense': '所得税费用',
-                                    # Profit items
-                                    'Gross profit': '毛利',
-                                    'Operating profit': '营业利润',
-                                    'Net profit': '净利润',
-                                    'Profit before tax': '利润总额',
-                                }
-                                # Try direct match first, then case-insensitive match
-                                category_text = category_translations.get(category)
-                                if category_text is None:
-                                    # Try case-insensitive match
-                                    category_lower = category.lower()
-                                    for eng_cat, chi_cat in category_translations.items():
-                                        if eng_cat.lower() == category_lower:
-                                            category_text = chi_cat
-                                            break
-                                    else:
-                                        category_text = category  # Keep original if no match
-                            
-                            # Add "(continued)" or "(续)" if this slide needs continuation
-                            # BUT NOT on the first category of the first slide (account_idx == 0 and current_category is None)
-                            if needs_continuation and account_idx == 0 and current_category is not None:  # Not first category
-                                cont_text = " (续)" if (is_chinese or is_chinese_databook) else " (continued)"
-                                category_text += cont_text
-                            
-                            run_category.text = category_text
-                            run_category.font.size = Pt(9)
-                            run_category.font.name = 'Arial'
-                            run_category.font.bold = False
-                            try:
-                                from pptx.dml.color import RGBColor
-                                run_category.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue
-                            except:
-                                pass
-                            
-                            current_category = category
-                        
-                        # Fill commentary with key formatting (no category, already shown)
-                        # Use display_name (from financial statement) instead of mapping_key
-                        # Check if this is the last account and we need continuation
-                        is_last_account = (account_idx == len(accounts_for_shape) - 1)
-                        needs_cont = needs_continuation and is_last_account and shape_idx == len(bullets_shapes) - 1
-                        
-                        self._fill_text_main_bullets_with_category_and_key(
-                            tf, None, display_name, commentary, is_chinese, 
-                            is_chinese_databook=is_chinese_databook, needs_continuation=needs_cont
-                        )
+                if not bullets_shape.has_text_frame:
+                    logger.warning(f"Slide {actual_slide_idx + 1}: Shape for slot '{slot_name}' has no text frame")
+                    continue
                 
-                # Generate AI summary for this slide from all commentary (all shapes combined)
-                all_commentary = []
-                for account_data in account_data_list:
+                # Fill this slot
+                tf = bullets_shape.text_frame
+                tf.clear()
+                tf.word_wrap = True
+                from pptx.enum.text import MSO_VERTICAL_ANCHOR
+                tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
+                
+                logger.info(f"Slide {actual_slide_idx + 1}, slot '{slot_name}': Filling with {len(account_data_list)} accounts")
+                
+                # Fill with accounts, grouped by category
+                # Show category header only once per category group
+                current_category = None
+                for account_idx, account_data in enumerate(account_data_list):
+                    category = account_data.get('category', '')
+                    mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
+                    display_name = account_data.get('display_name', mapping_key)
                     commentary = account_data.get('commentary', '')
-                    if commentary:
-                        all_commentary.append(commentary)
-                
-                # Fill coSummaryShape with AI-generated summary
-                summary_shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
-                if summary_shape and summary_shape.has_text_frame:
-                    summary_shape.text_frame.clear()
-                    if all_commentary:
-                        # Combine all commentary for this page
-                        page_commentary = '\n\n'.join(all_commentary)
-                        # Generate summary using AI
-                        ai_summary = self._generate_ai_summary(page_commentary, is_chinese_databook)
-                        if ai_summary:
+                    is_chinese = account_data.get('is_chinese', False)
+                    is_continuation = account_data.get('is_continuation', False)
+                    
+                    # Skip category header if this is a continuation of a split account
+                    # Show category header only when category changes
+                    if category and category != current_category and not is_continuation:
+                        # Add category header - use Chinese if databook is Chinese
+                        p_category = tf.add_paragraph()
+                        p_category.level = 0
+                        try:
+                            p_category.left_indent = Inches(0.21)
+                            p_category.first_line_indent = Inches(-0.19)
+                            p_category.space_before = Pt(6) if current_category else Pt(0)
+                            p_category.space_after = Pt(0)
+                            p_category.line_spacing = 1.0
+                        except:
+                            pass
+                        
+                        run_category = p_category.add_run()
+                        # Use Chinese category name if databook is Chinese
+                        category_text = category
+                        if is_chinese_databook or is_chinese:
+                            # Translate category to Chinese - comprehensive list
+                            category_translations = {
+                                # Balance Sheet - Assets
+                                'Current assets': '流动资产',
+                                'Current Assets': '流动资产',
+                                'Non-current assets': '非流动资产',
+                                'Non-Current Assets': '非流动资产',
+                                'Non current assets': '非流动资产',
+                                'Assets': '资产',
+                                # Balance Sheet - Liabilities
+                                'Current liabilities': '流动负债',
+                                'Current Liabilities': '流动负债',
+                                'Non-current liabilities': '非流动负债',
+                                'Non-Current Liabilities': '非流动负债',
+                                'Non current liabilities': '非流动负债',
+                                'Liabilities': '负债',
+                                # Balance Sheet - Equity
+                                'Equity': '所有者权益',
+                                "Owner's equity": '所有者权益',
+                                "Owners' equity": '所有者权益',
+                                'Shareholders equity': '股东权益',
+                                "Shareholders' equity": '股东权益',
+                                # Income Statement - Revenue
+                                'Revenue': '营业收入',
+                                'Sales': '销售收入',
+                                'Income': '收入',
+                                'Operating revenue': '营业收入',
+                                'Operating Revenue': '营业收入',
+                                # Income Statement - Costs
+                                'Cost of sales': '营业成本',
+                                'Cost of Sales': '营业成本',
+                                'Cost of goods sold': '销售成本',
+                                'COGS': '销售成本',
+                                # Income Statement - Expenses
+                                'Operating expenses': '营业费用',
+                                'Operating Expenses': '营业费用',
+                                'Selling expenses': '销售费用',
+                                'Administrative expenses': '管理费用',
+                                'General and administrative': '管理费用',
+                                'G&A': '管理费用',
+                                # Income Statement - Other
+                                'Other income': '其他收入',
+                                'Other Income': '其他收入',
+                                'Other expenses': '其他费用',
+                                'Other Expenses': '其他费用',
+                                'Finance costs': '财务费用',
+                                'Finance Costs': '财务费用',
+                                'Financial expenses': '财务费用',
+                                'Interest expense': '利息费用',
+                                'Tax': '税费',
+                                'Income tax': '所得税',
+                                'Taxes': '税费',
+                                'Tax expense': '所得税费用',
+                                # Profit items
+                                'Gross profit': '毛利',
+                                'Operating profit': '营业利润',
+                                'Net profit': '净利润',
+                                'Profit before tax': '利润总额',
+                            }
+                            # Try direct match first, then case-insensitive match
+                            category_text = category_translations.get(category)
+                            if category_text is None:
+                                # Try case-insensitive match
+                                category_lower = category.lower()
+                                for eng_cat, chi_cat in category_translations.items():
+                                    if eng_cat.lower() == category_lower:
+                                        category_text = chi_cat
+                                        break
+                                else:
+                                    category_text = category  # Keep original if no match
+                        
+                        run_category.text = category_text
+                        run_category.font.size = Pt(9)
+                        run_category.font.name = 'Arial'
+                        run_category.font.bold = False
+                        try:
+                            from pptx.dml.color import RGBColor
+                            run_category.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue
+                        except:
+                            pass
+                        
+                        current_category = category
+                    
+                    # Fill commentary with key formatting
+                    # For continuation accounts, show "(cont'd)" after key name
+                    if is_continuation:
+                        display_name_with_cont = f"{display_name} (cont'd)" if not is_chinese else f"{display_name} (续)"
+                    else:
+                        display_name_with_cont = display_name
+                    
+                    self._fill_text_main_bullets_with_category_and_key(
+                        tf, None, display_name_with_cont, commentary, is_chinese, 
+                        is_chinese_databook=is_chinese_databook, needs_continuation=False
+                    )
+            
+            # Generate AI summary for this slide from all slots' commentary combined
+            all_commentary = []
+            for account_data in all_slide_accounts:
+                commentary = account_data.get('commentary', '')
+                if commentary:
+                    all_commentary.append(commentary)
+            
+            # Fill coSummaryShape with AI-generated summary
+            summary_shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
+            if summary_shape and summary_shape.has_text_frame:
+                summary_shape.text_frame.clear()
+                if all_commentary:
+                    # Combine all commentary for this page
+                    page_commentary = '\n\n'.join(all_commentary)
+                    # Generate summary using AI
+                    ai_summary = self._generate_ai_summary(page_commentary, is_chinese_databook)
+                    if ai_summary:
+                        p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
+                        p.text = ai_summary
+                    else:
+                        # Fallback to simple summary
+                        raw_combined = ' '.join([acc.get('summary', '') for acc in all_slide_accounts if acc.get('summary')])
+                        combined_summary = self._generate_page_summary(raw_combined, is_chinese_databook)
+                        
+                        if combined_summary:
                             p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
-                            p.text = ai_summary
-                        else:
-                            # Fallback to simple summary using _generate_page_summary which is smarter
-                            # Combine all summaries first
-                            raw_combined = ' '.join([acc.get('summary', '') for acc in account_data_list if acc.get('summary')])
-                            # Use the smarter generation function instead of hard truncation
-                            combined_summary = self._generate_page_summary(raw_combined, is_chinese_databook)
-                            
-                            if combined_summary:
-                                p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
-                                p.text = combined_summary
-                        is_chinese = account_data_list[0].get('is_chinese', False) if account_data_list else False
-                        for run in p.runs:
-                            run.font.size = get_font_size_for_text(combined_summary, force_chinese_mode=is_chinese)
-                            run.font.name = get_font_name_for_text(combined_summary)
-                
-                logger.info(f"Filled slide {actual_slide_idx + 1} with {len(account_data_list)} accounts")
+                            p.text = combined_summary
+                    is_chinese = all_slide_accounts[0].get('is_chinese', False) if all_slide_accounts else False
+                    for run in p.runs:
+                        run.font.size = get_font_size_for_text(combined_summary if 'combined_summary' in locals() else ai_summary, force_chinese_mode=is_chinese)
+                        run.font.name = get_font_name_for_text(combined_summary if 'combined_summary' in locals() else ai_summary)
+            
+            logger.info(f"Filled slide {actual_slide_idx + 1} with {len(all_slide_accounts)} accounts across {len(slot_contents)} slots")
         
         # Note: Unused slides will be removed at the end, after all content and tables are embedded
         # Store unused slides for later removal
@@ -1723,7 +1782,7 @@ Original content:
                         # Default position for BS table
                         left = Inches(0.5)
                         top = Inches(1.5)
-                        width = Inches(12.33)
+                        width = Inches(4.78)
                         height = Inches(4.0)
                         # Need: 1 for title (if table_name), 1 for header, N for data
                         total_rows = len(bs_df) + 2 if bs_table_name else len(bs_df) + 1
@@ -1783,7 +1842,7 @@ Original content:
                             # Default position for IS table
                             left = Inches(0.5)
                             top = Inches(1.5)
-                            width = Inches(12.33)
+                            width = Inches(4.78)
                             height = Inches(4.0)
                             # Need: 1 for title (if table_name), 1 for header, N for data
                             total_rows = len(is_df) + 2 if is_table_name else len(is_df) + 1
