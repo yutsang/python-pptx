@@ -486,21 +486,29 @@ class PowerPointGenerator:
             content_lines = self._calculate_content_lines('', mapping_key, commentary)
             total_lines = category_lines + content_lines
             
+            # Adjust capacity for L slots to balance with R slots better
+            # Use 92% capacity for L slots to encourage earlier overflow to R slots
+            slide_idx_check, slot_name_check = slots[current_slot_idx]
+            adjusted_capacity = max_lines_per_textbox
+            if slot_name_check == 'L':
+                adjusted_capacity = int(max_lines_per_textbox * 0.92)  # 92% capacity for L slots
+            
             # Check if this account fits in current slot
-            if current_slot_lines + total_lines <= max_lines_per_textbox:
+            if current_slot_lines + total_lines <= adjusted_capacity:
                 # Fits completely in current slot
                 current_slot_content.append(account_data)
                 current_slot_lines += total_lines
                 previous_category = category
             else:
                 # Doesn't fit - need to handle split or move to next slot
-                remaining_lines = max_lines_per_textbox - current_slot_lines
+                remaining_lines = adjusted_capacity - current_slot_lines
                 
-                # If we have substantial space (> 5 lines), try to split the content
-                if remaining_lines > 5 and content_lines > 10:
+                # If we have substantial space (> 3 lines), try to split the content
+                # Reduced threshold from 5 to 3 to split more aggressively
+                if remaining_lines > 3 and content_lines > 8:
                     # Split the account content
                     lines_in_commentary = commentary.split('\n')
-                    chars_per_line = 50
+                    chars_per_line = 55  # Slightly more conservative estimate
                     
                     # Estimate how many commentary lines we can fit
                     available_for_commentary = remaining_lines - category_lines - 1  # -1 for key line
@@ -513,10 +521,10 @@ class PowerPointGenerator:
                         if len(commentary) > chars_available:
                             # Find a good break point (sentence end)
                             split_point = chars_available
-                            # Try to find sentence end near split point
+                            # Try to find sentence end near split point with wider search window
                             for end_char in ['. ', '。', '! ', '！', '? ', '？']:
-                                pos = commentary.rfind(end_char, 0, split_point + 50)
-                                if pos > chars_available - 100 and pos < chars_available + 100:
+                                pos = commentary.rfind(end_char, 0, split_point + 80)
+                                if pos > chars_available - 150 and pos < chars_available + 150:
                                     split_point = pos + len(end_char)
                                     break
                             
@@ -1037,12 +1045,14 @@ class PowerPointGenerator:
                 WHITE = RGBColor(255, 255, 255)
                 BLACK = RGBColor(0, 0, 0)
                 
-                # Adjust column widths
-                # Make first column (description) wider, distribute rest
+                # Adjust column widths - make all columns narrower to fit more data
                 if len(table.columns) > 0:
                     try:
-                        # Make first column (description) wider by 80% (1.8x)
-                        table.columns[0].width = int(table.columns[0].width * 1.8)
+                        # Make first column (description) slightly wider but not as much
+                        table.columns[0].width = int(table.columns[0].width * 1.3)
+                        # Make all other columns narrower (85% of original)
+                        for col_idx in range(1, len(table.columns)):
+                            table.columns[col_idx].width = int(table.columns[col_idx].width * 0.85)
                     except:
                         pass
                 
@@ -1154,15 +1164,20 @@ class PowerPointGenerator:
                     # Check if this is a title, date, total, or subtotal row
                     is_special_row = False
                     is_total_row = False
+                    is_date_row = False
                     first_col_lower = first_col_value.lower()
                     total_keywords = ['total', '合计', '总计', '小计', 'subtotal', 'sub-total', 'sub total']
-                    special_keywords = total_keywords + ['title', '标题', 'date', '日期', '年', '月']
+                    date_keywords = ['date', '日期', '年', '月']
+                    special_keywords = total_keywords + ['title', '标题'] + date_keywords
                     
                     if any(keyword in first_col_lower for keyword in special_keywords):
                         is_special_row = True
                     
                     if any(keyword in first_col_lower for keyword in total_keywords):
                         is_total_row = True
+                    
+                    if any(keyword in first_col_lower for keyword in date_keywords):
+                        is_date_row = True
                     
                     # Data row index = header_row_idx + 1 + row_idx
                     data_row_idx = header_row_idx + 1 + row_idx
@@ -1247,7 +1262,8 @@ class PowerPointGenerator:
                         for run in p.runs:
                             run.text = text_val # Ensure text is set in the run
                             run.font.name = 'Arial'
-                            run.font.size = Pt(7) # Reduced to 7pt
+                            # Date rows: 6pt (7-1), all other rows: 7pt
+                            run.font.size = Pt(6) if is_date_row else Pt(7)
                             
                             # Force Black color for data rows
                             try:
