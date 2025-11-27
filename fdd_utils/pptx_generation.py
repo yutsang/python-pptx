@@ -763,6 +763,66 @@ class PowerPointGenerator:
                     import traceback
                     logger.debug(traceback.format_exc())
     
+    def _set_cell_border(self, cell, border_position='top', color_rgb=None, width=Pt(1)):
+        """Set cell border"""
+        from pptx.oxml.xmlchemy import OxmlElement
+        
+        tc = cell._tc
+        tcPr = tc.get_or_add_tcPr()
+        
+        # Map position to tag name
+        tag_map = {'top': 'lnT', 'bottom': 'lnB', 'left': 'lnL', 'right': 'lnR'}
+        tag_name = tag_map.get(border_position)
+        if not tag_name:
+            return
+            
+        # Check if line element exists
+        ln = tcPr.find(f"{{http://schemas.openxmlformats.org/drawingml/2006/main}}{tag_name}")
+        if ln is None:
+            ln = OxmlElement(f"a:{tag_name}")
+            tcPr.append(ln)
+            
+        # Set properties
+        ln.set('w', str(int(width)))
+        ln.set('cap', 'flat')
+        ln.set('cmpd', 'sng')
+        ln.set('algn', 'ctr')
+        
+        # Set color
+        if color_rgb:
+            solidFill = OxmlElement('a:solidFill')
+            srgbClr = OxmlElement('a:srgbClr')
+            # Convert RGBColor or tuple to hex string
+            hex_color = "000000"
+            if isinstance(color_rgb, str):
+                hex_color = color_rgb.replace('#', '')
+            elif isinstance(color_rgb, tuple) and len(color_rgb) == 3:
+                hex_color = f"{color_rgb[0]:02x}{color_rgb[1]:02x}{color_rgb[2]:02x}"
+            # If it's an RGBColor object, user should pass str or tuple for this low-level func
+                
+            srgbClr.set('val', hex_color)
+            solidFill.append(srgbClr)
+            ln.append(solidFill)
+            
+            prstDash = OxmlElement('a:prstDash')
+            prstDash.set('val', 'solid')
+            ln.append(prstDash)
+            
+            round_ = OxmlElement('a:round')
+            ln.append(round_)
+            
+            headEnd = OxmlElement('a:headEnd')
+            headEnd.set('type', 'none')
+            headEnd.set('w', 'med')
+            headEnd.set('len', 'med')
+            ln.append(headEnd)
+            
+            tailEnd = OxmlElement('a:tailEnd')
+            tailEnd.set('type', 'none')
+            tailEnd.set('w', 'med')
+            tailEnd.set('len', 'med')
+            ln.append(tailEnd)
+
     def _fill_table_placeholder(self, shape, df, table_name: str = None, currency_unit: str = None):
         """Fill table placeholder with DataFrame data, preserving original formatting
         Args:
@@ -782,6 +842,33 @@ class PowerPointGenerator:
                     non_zero_count = (df[numeric_cols] != 0).sum().sum()
                     logger.info(f"Non-zero values in DF: {non_zero_count}")
             
+            # Find parent slide
+            slide = None
+            for s in self.presentation.slides:
+                for shp in s.shapes:
+                    if shp == shape:
+                        slide = s
+                        break
+                if slide:
+                    break
+            
+            # Adjust position and width
+            try:
+                target_width = Inches(4.78)
+                shape.width = target_width
+                
+                # Align top with Text-commentary if possible
+                if slide:
+                    ref_shape = self.find_shape_by_name(slide.shapes, "Text-commentary")
+                    if not ref_shape:
+                        ref_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
+                    
+                    if ref_shape:
+                        shape.top = ref_shape.top
+                        logger.info(f"Aligned table top to {ref_shape.name} at {shape.top}")
+            except Exception as e:
+                logger.warning(f"Could not adjust table position/width: {e}")
+
             # Check if shape is a TablePlaceholder (textbox placeholder)
             from pptx.shapes.placeholder import TablePlaceholder
             
@@ -799,19 +886,13 @@ class PowerPointGenerator:
                 # It's a table placeholder - insert a table into it
                 logger.info(f"Found TablePlaceholder ({shape.name if hasattr(shape, 'name') else 'unnamed'}), inserting table with {len(df)} rows and {len(df.columns)} columns")
                 try:
-                    # Get placeholder dimensions
+                    # Get placeholder dimensions - Override with requested width
                     left = shape.left
                     top = shape.top
-                    width = shape.width
+                    width = Inches(4.78) # Fixed width
                     height = shape.height
                     
-                    # Find the slide containing this shape
-                    slide = None
-                    for s in self.presentation.slides:
-                        if shape in s.shapes:
-                            slide = s
-                            break
-                    
+                    # Find the slide containing this shape (already found above)
                     if slide:
                         # Remove the placeholder shape
                         sp = shape._element
@@ -845,42 +926,26 @@ class PowerPointGenerator:
                     table = None
             
             if table:
+                # Colors
+                DARK_BLUE = RGBColor(0, 51, 102)
+                TIFFANY_BLUE = RGBColor(10, 186, 181)
+                GREY = RGBColor(217, 217, 217)
+                WHITE = RGBColor(255, 255, 255)
+                BLACK = RGBColor(0, 0, 0)
                 
-                # Store original formatting for each cell (from backup method)
-                original_formats = {}
-                for row_idx in range(len(table.rows)):
-                    for col_idx in range(len(table.columns)):
-                        cell = table.cell(row_idx, col_idx)
-                        # Store font properties
-                        if cell.text_frame.paragraphs and cell.text_frame.paragraphs[0].runs:
-                            run = cell.text_frame.paragraphs[0].runs[0]
-                            original_formats[(row_idx, col_idx)] = {
-                                'font_name': run.font.name if run.font.name else None,
-                                'font_size': run.font.size if run.font.size else None,
-                                'font_bold': run.font.bold,
-                                'font_italic': run.font.italic,
-                                'font_color': run.font.color.rgb if hasattr(run.font.color, 'rgb') and run.font.color.rgb else None
-                            }
-                
-                # Adjust column widths: make first column (description) 1.6x wider
+                # Adjust column widths
+                # Make first column (description) wider, distribute rest
                 if len(table.columns) > 0:
                     try:
-                        # Get current width of first column
-                        first_col_width = table.columns[0].width
-                        # Set first column to 1.6x wider
-                        table.columns[0].width = int(first_col_width * 1.6)
-                        # Adjust other columns proportionally if needed
+                        total_width = table_shape.width if 'table_shape' in locals() else shape.width
+                        first_col_width = int(total_width * 0.4) # 40% for description
+                        other_col_width = int((total_width - first_col_width) / (len(table.columns) - 1)) if len(table.columns) > 1 else 0
+                        
+                        table.columns[0].width = first_col_width
+                        for i in range(1, len(table.columns)):
+                            table.columns[i].width = other_col_width
                     except:
                         pass
-                
-                # Make all row heights narrower
-                try:
-                    from pptx.util import Inches
-                    narrow_height = Inches(0.3)  # Narrower row height
-                    for row in table.rows:
-                        row.height = narrow_height
-                except:
-                    pass
                 
                 # Add table name as first row if provided
                 if table_name:
@@ -896,10 +961,10 @@ class PowerPointGenerator:
                             name_row.cells[0].merge(name_row.cells[len(table.columns) - 1])
                         name_cell = name_row.cells[0]
                         name_cell.text = table_name
-                        # Format table name: Arial 9, bold, centered
+                        # Format table name: Arial 9, bold, centered, Dark Blue bg, White font
                         if name_cell.text_frame.paragraphs:
                             p = name_cell.text_frame.paragraphs[0]
-                            p.alignment = 1  # Center alignment
+                            p.alignment = PP_ALIGN.CENTER  # Center alignment
                             if p.runs:
                                 run = p.runs[0]
                             else:
@@ -907,6 +972,11 @@ class PowerPointGenerator:
                             run.font.name = 'Arial'
                             run.font.size = Pt(9)
                             run.font.bold = True
+                            run.font.color.rgb = WHITE
+                            
+                            name_cell.fill.solid()
+                            name_cell.fill.fore_color.rgb = DARK_BLUE
+                            
                         # Shift data down - we'll use rows starting from index 1
                         data_start_row = 1
                     except:
@@ -914,16 +984,14 @@ class PowerPointGenerator:
                 else:
                     data_start_row = 0
                 
-                # Clear existing content but preserve formatting (skip name row if exists)
-                for row in range(data_start_row, len(table.rows)):
-                    for col in range(len(table.columns)):
-                        if row < len(table.rows) and col < len(table.columns):
-                            cell = table.cell(row, col)
-                            cell.text = ""
-                
-                # Fill header row with formatting - Arial 9, bold, highlighted
+                # Fill header row with formatting
                 max_cols = min(len(df.columns), len(table.columns))
                 header_row_idx = data_start_row
+                
+                # Ensure header row exists
+                if len(table.rows) <= header_row_idx:
+                    table.rows.add_row()
+                    
                 for col_idx, col_name in enumerate(df.columns[:max_cols]):
                     if col_idx < len(table.columns):
                         cell = table.cell(header_row_idx, col_idx)
@@ -932,24 +1000,23 @@ class PowerPointGenerator:
                             cell.text = currency_unit
                         else:
                             cell.text = str(col_name)
-                        # Apply header formatting: Arial 9, bold, highlighted background
+                        # Apply header formatting: Arial 9, bold, Tiffany Blue bg, White font
                         if cell.text_frame.paragraphs:
-                            if cell.text_frame.paragraphs[0].runs:
-                                run = cell.text_frame.paragraphs[0].runs[0]
+                            p = cell.text_frame.paragraphs[0]
+                            p.alignment = PP_ALIGN.CENTER
+                            
+                            if p.runs:
+                                run = p.runs[0]
                             else:
-                                run = cell.text_frame.paragraphs[0].add_run()
+                                run = p.add_run()
                             
                             run.font.name = 'Arial'
                             run.font.size = Pt(9)
                             run.font.bold = True
+                            run.font.color.rgb = WHITE # White font for header
                             
-                            # Highlight header row with light grey background
-                            try:
-                                from pptx.dml.color import RGBColor
-                                cell.fill.solid()
-                                cell.fill.fore_color.rgb = RGBColor(217, 217, 217)  # Light grey
-                            except:
-                                pass
+                            cell.fill.solid()
+                            cell.fill.fore_color.rgb = TIFFANY_BLUE
                         
                         logger.debug(f"Filled header cell {col_idx}: {cell.text}")
                 
@@ -978,11 +1045,16 @@ class PowerPointGenerator:
                     
                     # Check if this is a title, date, total, or subtotal row
                     is_special_row = False
+                    is_total_row = False
                     first_col_lower = first_col_value.lower()
-                    special_keywords = ['total', '合计', '总计', '小计', 'subtotal', 'sub-total', 'sub total', 
-                                      'title', '标题', 'date', '日期', '年', '月']
+                    total_keywords = ['total', '合计', '总计', '小计', 'subtotal', 'sub-total', 'sub total']
+                    special_keywords = total_keywords + ['title', '标题', 'date', '日期', '年', '月']
+                    
                     if any(keyword in first_col_lower for keyword in special_keywords):
                         is_special_row = True
+                    
+                    if any(keyword in first_col_lower for keyword in total_keywords):
+                        is_total_row = True
                     
                     # Data row index = header_row_idx + 1 + row_idx
                     data_row_idx = header_row_idx + 1 + row_idx
@@ -1046,7 +1118,7 @@ class PowerPointGenerator:
                             
                             # Force Black color for data rows
                             try:
-                                run.font.color.rgb = RGBColor(0, 0, 0)
+                                run.font.color.rgb = BLACK
                             except:
                                 pass
                             
@@ -1056,16 +1128,23 @@ class PowerPointGenerator:
                         # Highlight special rows
                         if is_special_row:
                             try:
-                                from pptx.dml.color import RGBColor
                                 cell.fill.solid()
-                                cell.fill.fore_color.rgb = RGBColor(217, 217, 217)
+                                cell.fill.fore_color.rgb = GREY
                             except:
                                 pass
-                        if is_special_row:
+                        else:
+                            # White background for normal rows
                             try:
-                                from pptx.dml.color import RGBColor
                                 cell.fill.solid()
-                                cell.fill.fore_color.rgb = RGBColor(217, 217, 217)  # Light grey
+                                cell.fill.fore_color.rgb = WHITE
+                            except:
+                                pass
+                                
+                        # Add bold top horizontal line for total/subtotal rows
+                        if is_total_row:
+                            try:
+                                # Top border in Dark Blue, 2pt width. Pass hex string "003366"
+                                self._set_cell_border(cell, 'top', color_rgb="003366", width=Pt(2))
                             except:
                                 pass
                     
