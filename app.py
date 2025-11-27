@@ -583,11 +583,12 @@ if st.session_state.get('dfs') is None:
             # Track previous dropdown value to detect changes
             prev_dropdown = st.session_state.get('prev_entity_dropdown', '')
             
-            # Dropdown for selection
+            # Dropdown for selection - with visible label
+            st.markdown("*Select from detected entities:*")
             selected_entity = st.selectbox(
-                label="Select entity from list",
+                label="Select entity",
                 options=[""] + entity_options,
-                help="Select an entity from the list",
+                help="Auto-detected entities from the databook",
                 label_visibility="collapsed",
                 key="entity_dropdown"
             )
@@ -599,12 +600,12 @@ if st.session_state.get('dfs') is None:
                 initial_value = selected_entity
                 st.session_state.prev_entity_dropdown = selected_entity
             
-            # Editable text box - widget manages its own state
-            # Use value parameter to set initial value without triggering warning
+            # Editable text box - with visible label
+            st.markdown("*Or enter/edit entity name:*")
             entity_name = st.text_input(
-                label="Or type/modify entity name",
+                label="Entity name input",
                 value=initial_value if initial_value else "",
-                placeholder="Enter or modify entity name...",
+                placeholder="Type or modify entity name...",
                 help="Type a custom entity name or modify the selected one",
                 label_visibility="collapsed",
                 key="entity_text_input"
@@ -620,18 +621,11 @@ if st.session_state.get('dfs') is None:
                 st.session_state.entity_name = selected_entity
                 st.session_state.prev_entity_dropdown = selected_entity
         else:
+            # No file uploaded yet
+            st.info("👈 Please upload a databook file first")
             # Initialize if not exists
             if 'entity_name' not in st.session_state:
                 st.session_state.entity_name = ""
-            entity_name = st.text_input(
-                label="Entity name",
-                value=st.session_state.entity_name,
-                placeholder="Enter entity name...",
-                label_visibility="collapsed",
-                key="entity_text_input"
-            )
-            if entity_name != st.session_state.entity_name:
-                st.session_state.entity_name = entity_name
     
     with col_sheet:
         st.markdown("**📊 Financial Statement Sheet**")
@@ -659,7 +653,7 @@ if st.session_state.get('dfs') is None:
                 selected_sheet = None
                 st.session_state.selected_sheet = None
         else:
-            st.info("Please select or upload a file")
+            st.info("👈 Please upload a databook file first")
             selected_sheet = None
             st.session_state.selected_sheet = None
     
@@ -667,10 +661,12 @@ if st.session_state.get('dfs') is None:
     if st.button("🚀 Process Data", type="primary", use_container_width=True, key="process_data_main"):
         temp_path = st.session_state.get('temp_path', None)
         if not temp_path:
-            st.error("Please upload a file first")
+            st.error("⚠️ Please upload a file first")
+        elif not st.session_state.get('entity_name'):
+            st.warning("⚠️ Please enter an entity name")
+        elif not st.session_state.get('selected_sheet'):
+            st.warning("⚠️ Please select a financial statement sheet")
         else:
-            st.session_state.entity_name = entity_name
-            st.session_state.selected_sheet = selected_sheet
             st.session_state.process_data_clicked = True
             st.rerun()
 
