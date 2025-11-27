@@ -453,7 +453,8 @@ class PowerPointGenerator:
                 break
         
         max_lines_per_textbox = self._calculate_max_lines_for_textbox(sample_shape) if sample_shape else 35
-        logger.info(f"Max lines per textbox: {max_lines_per_textbox}")
+        logger.info(f"📊 Starting content distribution: {len(structured_data)} accounts")
+        logger.info(f"📏 Max lines per textbox: {max_lines_per_textbox}")
         
         # Define slot structure: (slide_idx, slot_name)
         # Slide 0 (P1): 1 slot, Slides 1-3 (P2-4): 2 slots each
@@ -461,6 +462,8 @@ class PowerPointGenerator:
         for slide_idx in range(1, max_slides):
             slots.append((slide_idx, 'L'))
             slots.append((slide_idx, 'R'))
+        
+        logger.info(f"📋 Total slots available: {len(slots)}")
         
         # Distribution result: [(slide_idx, slot_name, [account_data])]
         distribution = []
@@ -470,7 +473,9 @@ class PowerPointGenerator:
         current_slot_lines = 0
         previous_category = None
         
-        for account_data in structured_data:
+        for account_idx, account_data in enumerate(structured_data):
+            mapping_key_debug = account_data.get('mapping_key', account_data.get('account_name', ''))
+            logger.info(f"\n🔍 Account {account_idx + 1}/{len(structured_data)}: {mapping_key_debug}")
             if current_slot_idx >= len(slots):
                 logger.warning(f"Ran out of slots, stopping content distribution")
                 break
@@ -486,12 +491,16 @@ class PowerPointGenerator:
             content_lines = self._calculate_content_lines('', mapping_key, commentary)
             total_lines = category_lines + content_lines
             
+            logger.info(f"  Category: {category}, Category lines: {category_lines}, Content lines: {content_lines}, Total: {total_lines}")
+            
             # Adjust capacity for L slots to balance with R slots better
-            # Use 92% capacity for L slots to encourage earlier overflow to R slots
+            # Use 95% capacity for L slots (reduced from 92% to fill more)
             slide_idx_check, slot_name_check = slots[current_slot_idx]
             adjusted_capacity = max_lines_per_textbox
             if slot_name_check == 'L':
-                adjusted_capacity = int(max_lines_per_textbox * 0.92)  # 92% capacity for L slots
+                adjusted_capacity = int(max_lines_per_textbox * 0.95)  # 95% capacity for L slots
+            
+            logger.info(f"  Current slot {current_slot_idx} ({slot_name_check}): {current_slot_lines}/{adjusted_capacity} lines used")
             
             # Check if this account fits in current slot
             if current_slot_lines + total_lines <= adjusted_capacity:
@@ -499,13 +508,17 @@ class PowerPointGenerator:
                 current_slot_content.append(account_data)
                 current_slot_lines += total_lines
                 previous_category = category
+                logger.info(f"  Slot {current_slot_idx} ({slot_name_check}): Added '{mapping_key}' ({total_lines} lines), now {current_slot_lines}/{adjusted_capacity} lines used")
             else:
                 # Doesn't fit - need to handle split or move to next slot
                 remaining_lines = adjusted_capacity - current_slot_lines
                 
+                logger.info(f"  ❌ Doesn't fit. Remaining: {remaining_lines} lines, Content: {content_lines} lines")
+                
                 # If we have substantial space (> 3 lines), try to split the content
                 # More aggressive splitting to balance content across slots
                 if remaining_lines > 3 and content_lines > 5:
+                    logger.info(f"  ✂️  Attempting to split content...")
                     # Split the account content - try paragraph-level split first
                     paragraphs = commentary.split('\n\n')  # Split by double newline (paragraphs)
                     if len(paragraphs) == 1:
@@ -525,7 +538,7 @@ class PowerPointGenerator:
                         
                         for i, para in enumerate(paragraphs):
                             para_lines = max(1, (len(para) + chars_per_line - 1) // chars_per_line)
-                            if part1_lines_used + para_lines <= available_for_commentary * 0.9:  # 90% to be safe
+                            if part1_lines_used + para_lines <= available_for_commentary:  # Use full capacity
                                 part1_paragraphs.append(para)
                                 part1_lines_used += para_lines
                                 split_index = i + 1
@@ -616,28 +629,40 @@ class PowerPointGenerator:
                             current_slot_lines = part2_lines
                             previous_category = category
                             continue
+                    else:
+                        logger.info(f"  ⚠️  Not splitting: remaining_lines={remaining_lines}, content_lines={content_lines} (need >3 and >5)")
+                else:
+                    logger.info(f"  ⚠️  Not splitting: remaining_lines={remaining_lines}, content_lines={content_lines} (need >3 and >5)")
                 
                 # Can't split or not enough space - save current slot and move entire account to next
                 if current_slot_content:
                     slide_idx, slot_name = slots[current_slot_idx]
                     distribution.append((slide_idx, slot_name, current_slot_content))
+                    logger.info(f"  Slot {current_slot_idx} ({slot_name}): FULL with {len(current_slot_content)} accounts, {current_slot_lines} lines used")
                 
                 # Move to next slot
                 current_slot_idx += 1
                 if current_slot_idx >= len(slots):
+                    logger.warning(f"  Ran out of slots while processing '{mapping_key}'")
                     break
                 
                 # Start new slot with this account
+                slide_idx_new, slot_name_new = slots[current_slot_idx]
                 current_slot_content = [account_data]
                 current_slot_lines = total_lines
                 previous_category = category
+                logger.info(f"  Moving '{mapping_key}' to next slot {current_slot_idx} ({slot_name_new}), {total_lines} lines")
         
         # Save last slot if it has content
         if current_slot_content and current_slot_idx < len(slots):
             slide_idx, slot_name = slots[current_slot_idx]
             distribution.append((slide_idx, slot_name, current_slot_content))
+            logger.info(f"  Slot {current_slot_idx} ({slot_name}): FINAL with {len(current_slot_content)} accounts, {current_slot_lines} lines")
         
-        logger.info(f"Distributed content across {len(distribution)} slots")
+        logger.info(f"\n✅ Distribution complete: {len(distribution)} slots filled")
+        for slot_idx, (slide_idx, slot_name, accounts) in enumerate(distribution):
+            logger.info(f"  Slot {slot_idx} (Slide {slide_idx}, {slot_name}): {len(accounts)} accounts")
+        
         return distribution
     
     def apply_structured_data_to_slides(self, structured_data: List[Dict], start_slide: int, 

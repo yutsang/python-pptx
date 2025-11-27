@@ -661,7 +661,7 @@ if st.session_state.get('dfs') is None:
             prev_dropdown = st.session_state.get('prev_entity_dropdown', '')
             
             # Dropdown for selection - with visible label
-            st.markdown("*Select from detected entities:*")
+            # st.markdown("*Select from detected entities:*")
             selected_entity = st.selectbox(
                 label="Select entity",
                 options=[""] + entity_options,
@@ -678,7 +678,7 @@ if st.session_state.get('dfs') is None:
                 st.session_state.prev_entity_dropdown = selected_entity
             
             # Editable text box - with visible label
-            st.markdown("*Or enter/edit entity name:*")
+            #st.markdown("*Or enter/edit entity name:*")
             entity_name = st.text_input(
                 label="Entity name input",
                 value=initial_value if initial_value else "",
