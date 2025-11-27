@@ -556,7 +556,8 @@ with col_refresh:
         # Clear session state to reset
         for key in ['dfs', 'workbook_list', 'language', 'bs_is_results', 'ai_results', 
                     'reconciliation', 'entity_name', 'project_name', 'pptx_ready', 
-                    'pptx_download_data', 'pptx_download_filename', 'pptx_download_mime']:
+                    'pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
+                    'prev_uploaded_file', 'prev_entity_dropdown', 'selected_sheet']:
             if key in st.session_state:
                 del st.session_state[key]
         st.rerun()
@@ -687,36 +688,66 @@ if st.session_state.dfs is None:
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # File upload with default
+    # File upload - no checkbox, always available
     st.markdown("**📁 Databook File**")
-    use_default = st.checkbox("Use default (databook.xlsx)", value=True, key="use_default_file")
     
-    if use_default:
-        temp_path = "databook.xlsx"
-        if os.path.exists(temp_path):
-            st.success(f"✅ Using: {temp_path}")
-            st.session_state.temp_path = temp_path
-        else:
-            st.error(f"❌ File not found: {temp_path}")
-            temp_path = None
-            if 'temp_path' in st.session_state:
-                del st.session_state.temp_path
-    else:
-        uploaded_file = st.file_uploader(
-            "Upload Excel",
-            type=['xlsx', 'xls'],
-            help="Upload your financial databook",
-            key="file_uploader"
-        )
+    # File uploader (always shown)
+    uploaded_file = st.file_uploader(
+        "Upload Excel (or use default databook.xlsx)",
+        type=['xlsx', 'xls'],
+        help="Upload your financial databook, or leave empty to use databook.xlsx",
+        key="file_uploader"
+    )
+    
+    # Determine which file to use
+    if uploaded_file:
+        # Save uploaded file to temp location
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            temp_path = tmp_file.name
         
-        if uploaded_file:
-            # Save to temp file
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                temp_path = tmp_file.name
-            st.success(f"✅ File uploaded: {uploaded_file.name}")
+        # Check if file has changed - clear all cache if so
+        prev_file = st.session_state.get('prev_uploaded_file', None)
+        if prev_file != uploaded_file.name:
+            # File changed - clear all data and entity-related cache
+            for key in ['dfs', 'workbook_list', 'language', 'bs_is_results', 'ai_results', 
+                        'reconciliation', 'entity_name', 'project_name', 'pptx_ready', 
+                        'pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
+                        'prev_entity_dropdown', 'selected_sheet']:
+                if key in st.session_state:
+                    if key == 'entity_name':
+                        st.session_state[key] = ""  # Clear but keep key
+                    else:
+                        del st.session_state[key]
+            st.session_state.prev_uploaded_file = uploaded_file.name
+        
+        st.success(f"✅ Using uploaded file: {uploaded_file.name}")
+        st.session_state.temp_path = temp_path
+    else:
+        # No upload - use default databook.xlsx if it exists
+        default_path = "databook.xlsx"
+        if os.path.exists(default_path):
+            temp_path = default_path
+            
+            # Check if we switched from uploaded to default - clear all cache
+            prev_file = st.session_state.get('prev_uploaded_file', None)
+            if prev_file is not None:
+                # Switched back to default - clear all data
+                for key in ['dfs', 'workbook_list', 'language', 'bs_is_results', 'ai_results', 
+                            'reconciliation', 'entity_name', 'project_name', 'pptx_ready', 
+                            'pptx_download_data', 'pptx_download_filename', 'pptx_download_mime',
+                            'prev_entity_dropdown', 'selected_sheet']:
+                    if key in st.session_state:
+                        if key == 'entity_name':
+                            st.session_state[key] = ""  # Clear but keep key
+                        else:
+                            del st.session_state[key]
+                st.session_state.prev_uploaded_file = None
+            
+            st.success(f"✅ Using default: {default_path}")
             st.session_state.temp_path = temp_path
         else:
+            st.warning("⚠️ Default databook.xlsx not found. Please upload a file.")
             temp_path = None
             if 'temp_path' in st.session_state:
                 del st.session_state.temp_path
