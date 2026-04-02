@@ -9,6 +9,7 @@ final_report*
 *.xlsx
 !*.ipynb
 FDD.Draft Report.For AI solution purpose Only.pptx
+*.txt
 
 # old backups
 archive/
@@ -22,10 +23,11 @@ archive/
 *databook*.pptx
 
 # Add any other input/output file types as needed
-/utils/config.json
 fdd_utils/config.json
 fdd_utils/config.yml
-3/8/2025
+fdd_utils/logs/
+fdd_utils/output/
+python-pptx-hr/hr_utils/hr_config.yml
 
 # Python cache and build files
 __pycache__/
@@ -88,9 +90,10 @@ ehthumbs.db
 Thumbs.db
 desktop.ini
 
-# IDE files
+# IDE and editor files
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 *~

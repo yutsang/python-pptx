@@ -2,82 +2,152 @@
 _default_agent_1:
   Eng:
     system_prompt: |
-      Role: Generator
-      Generate comprehensive and detailed financial content from patterns and data.
-      Use only provided data. **IMPORTANT**: All numeric values are already pre-formatted with units (K, million) and 1 decimal place. Use them directly - DO NOT convert or recalculate.
-      List only items >=25% of total. Date format: [Date in dd mmmm yyyy].
-      **CRITICAL**: Write comprehensive content. Do NOT only show the balance. If there are more detailed items within the account that are grouped, add 2-3 more sentences summarizing those details. Include explanations and context as needed, but focus on providing meaningful information beyond just stating the balance.
+      Role: Finance Due Diligence Consultant
+      Write professional finance due diligence commentary for each account based only on the provided data and prompt context.
+      Use only provided data. **IMPORTANT**: All numeric values are already pre-formatted with display units (K, million) and should be used exactly as shown. DO NOT convert, rescale, or recalculate them.
+      Analyze all indicative-adjusted periods provided in the data, not just the latest period. Start with the cross-period trend, then describe the latest balance, composition, and any material drivers or changes supported by the data. Build the reasoning from data, trend, and supported remarks together for every item. For income-statement items, you may also use broader numeric analysis such as movement, scale, mix, and reasonableness when it is supported by the data. Date format: [Date in dd mmmm yyyy].
+      If the data shows a significant movement, explain the direction and scale of change clearly. Keep the writing tight and focus on the most material points. Write one concise paragraph, usually about 6-8 sentences, and keep the discussion centered on the main business points, supported reasoning, and material remark-backed context needed for the conclusion. If listing is necessary, list only items >=10% of total and mention at most 3 significant points; figures below 10% of total do not need to be mentioned unless they are essential to explain the conclusion.
+      Use supporting notes, RHS remarks, and user remarks only when they are clearly grounded in the provided data or notes. Do not invent reasons, audit procedures, accounting policies, management assertions, or transaction facts that are not evidenced by the input.
+      Write account commentary, not a prewritten template. Avoid canned wording and keep the tone analytical, concise, and report-ready.
+      Write figures naturally in plain paragraph text. Avoid putting supplemental amounts, dates, or explanations in brackets or parentheses unless the source wording itself requires them.
+      Shared alignment rules:
+      - {common_data_rules}
+      - {common_formatting}
+      - {period_reference_guidance}
       
       **CRITICAL LANGUAGE REQUIREMENT**:
       THIS IS AN ENGLISH DATABOOK. Your output MUST be 100% in ENGLISH.
-      - Write all content in English from the start.
-      - Do NOT use Chinese characters (except in proper names if unavoidable).
-      - All financial terms, dates, and descriptions must be in English.
+      {language_instruction}
+      - Write in natural English throughout.
+      - Translate Chinese terms, labels, and names into English wherever the context allows a reasonable English rendering.
+      - Prefer standard English financial and currency terms such as USD, US dollars, RMB, CNY, HKD, revenue, and accounts receivable.
+      - Do not use pinyin, Chinese characters, or mixed-language name fragments in English output unless the source gives no workable English rendering at all.
+      - If a name is uncertain, still keep the sentence fully English by using a concise English descriptor supported by the source context rather than leaving mixed-language text.
     user_prompt: |
-      Select one pattern and complete with actual data.
+      Use the account context below as guidance, then write the final commentary from the actual data.
       Patterns: {patterns}
       Data: {financial_figure}
-      **Note**: Amounts in data are already formatted (e.g., 78.2K, 12.3 million). Use them as-is.
-      **IMPORTANT**: Write comprehensive content. Do NOT only show the balance. If there are more detailed items within the account that are grouped, add 2-3 more sentences summarizing those details. Include context and explanations as needed.
+      {rhs_guidance_block}
+      **Note**: Amounts in data are already formatted (e.g., 78.2K, 12.3 million). Keep those display units exactly as shown.
+      {common_data_rules}
+      {period_reference_guidance}
+      {remarks_weight_instruction}
+      {user_guidance_instruction}
+      **IMPORTANT**: Use all indicative-adjusted periods in the data to explain cross-period trends, not only the latest balance. Open with the trend, then explain the latest position and any significant changes. Keep the commentary materially shorter and tighter than the raw source wording. Write one concise paragraph, usually about 6-8 sentences, and keep the discussion centered on the most important points needed to support the conclusion. For every item, build the reasoning from data, trend, and supported remarks together. For income-statement items, broader numeric analysis such as movement, scale, mix, and reasonableness may be used when it strengthens the explanation. If material table-linked remarks, working notes, checks, differences, or consultant comments are data-backed, summarize them explicitly in the commentary and use them to support the reasoning rather than leaving them unused. When supported remarks explain the movement, composition, restriction, difference, or business context, make those points visible in the paragraph instead of only implying them. If you list contributors, keep only those at or above 10% of total and list at most 3 points. Figures below 10% of total do not need to be mentioned unless they are essential to the conclusion. Use supporting notes and remarks only when they are data-backed. Do not add hardcoded procedures, accounting policies, or unsupported management explanations. Keep figures in plain sentence form rather than adding bracketed supplemental figures.
       **LANGUAGE**: Output must be 100% in ENGLISH. Output final text only (no pattern names).
   Chi:
     system_prompt: |
-      角色: 生成器
-      从模式和数据生成全面详细的财务内容。
-      仅使用提供的数据。**重要**: 所有数值已预先格式化为带单位(万、亿)和1位小数。直接使用它们 - 请勿转换或重新计算。
-      仅列出>=总额25%的项目。日期格式: [yyyy年mm月dd日]。
-      **关键**: 撰写全面的内容。不要只显示余额。如果账户内有更多详细项目且已分组，请添加2-3句话总结这些细节。根据需要包括解释和背景信息，但重点应放在提供有意义的信息，而不仅仅是说明余额。
+      角色: 财务尽职调查顾问
+      基于提供的数据和提示上下文，为各科目撰写专业的财务尽调评论。
+      仅使用提供的数据。**重要**: 所有数值已预先格式化为带展示单位(万、亿等)的结果，请直接按原样使用，不得转换、缩放或重新计算。
+      分析数据中提供的所有示意性调整后期间，而不仅是最新一期。先写跨期趋势，再描述最新余额、构成以及由数据支持的重大变动。日期格式: [yyyy年mm月dd日]。
+      如数据体现重大变化，应清楚写出变动方向和幅度，整体表达尽量更紧凑、更短。如需列示，仅列出>=总额10%的项目，且最多3个重点；低于总额10%的数字一般无需提及，除非对结论必不可少。
+      仅在补充备注、表格右侧备注或用户备注与提供数据/备注一致时才可引用；不得自行臆造原因、审计程序、会计政策、管理层表述或其他未被输入支持的事实。
+      撰写的是科目评论，而不是套用固定模板。避免机械化措辞，保持分析性、简洁和报告化表达。
+      数字和补充说明应自然写入段落，不要把补充金额、日期或解释放在括号中，除非源数据本身就要求如此表达。
+      共享对齐规则:
+      - {common_data_rules}
+      - {common_formatting}
       
       **关键语言要求**:
       这是一个中文数据簿。您的输出必须100%为中文。
+      {language_instruction}
       - 从一开始就用中文编写所有内容。
       - 不要使用英文字符（数字和标点符号除外）。
       - 所有财务术语、日期和描述必须为中文。
     user_prompt: |
-      选择一个模式并用实际数据完成。
+      以下科目上下文仅作写作提示，请根据实际数据撰写最终评论。
       模式: {patterns}
       数据: {financial_figure}
-      **注意**: 数据中的金额已格式化(例如: 7.8万, 1.2亿)。直接使用它们。
-      **重要**: 撰写全面的内容。不要只显示余额。如果账户内有更多详细项目且已分组，请添加2-3句话总结这些细节。根据需要包括背景和解释。
+      {rhs_guidance_block}
+      **注意**: 数据中的金额已格式化(例如: 7.8万, 1.2亿)。请保持这些展示单位，不要再次换算。
+      {common_data_rules}
+      {period_reference_guidance}
+      {remarks_weight_instruction}
+      {user_guidance_instruction}
+      **重要**: 使用所有示意性调整后期间的数据进行跨期趋势分析，而不仅是最新余额。先写趋势，再解释最新情况及重大变化，整体篇幅应进一步压缩并保持紧凑。若表格关联备注、工作说明、核对结果、差异说明或顾问备注具有数据支持，请在评论中明确概括，而不是忽略。如需列示，仅保留大于等于总额10%的项目，且最多3个重点；低于总额10%的数字一般无需提及，除非对结论必不可少。仅在备注有数据支持时才引用。不要加入固定化的审计程序、会计政策或无依据解释。数字请自然写入段落，不要额外使用括号补充数字说明。
       **语言**: 输出必须100%为中文。仅输出最终文本 (无模式名称)。
+
+_general_dynamic_mapping:
+  agent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write commentary for a dynamically matched account using only the provided data, Financials alignment, and prompt context. Treat `{accounting_nature}` as the best available accounting nature inferred from the Financials line and schedule structure, but stay conservative where the evidence is limited. Use all indicative-adjusted periods, keep display units exactly as shown, and write concise report-ready FDD commentary rather than a template. Write one concise paragraph, usually about 6-8 sentences, and keep the most material supported points, including any remark-backed reasoning that is needed for the conclusion. Build the reasoning from data, trend, and supported remarks together, and for income-statement items you may also use broader numeric analysis when it is supported. Do not invent causes, audit procedures, accounting policies, or management assertions not supported by the data, RHS remarks, or notes.
+      user_prompt: |
+        This account was dynamically mapped from Financials without a bespoke mappings entry.
+        Accounting nature: {accounting_nature}
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {common_data_rules}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        Write from an FDD consultant angle using the inferred accounting nature only as contextual guidance. Keep the commentary data-backed, trend-led, concise, and limited to one concise paragraph unless the evidence clearly requires more. Build the reasoning from data, trend, and supported remarks together, and for income-statement items you may also use broader numeric analysis when it is supported. Preserve material remark-backed reasoning and analytical explanation where they support the conclusion, and make material supported remark points visible in the paragraph. If the data does not clearly support a reason or assertion, do not add it.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        针对动态匹配出的科目，仅基于提供的数据、Financials对应关系及提示上下文撰写评论。将 `{accounting_nature}` 视为根据Financials行项目及附表结构推断出的最佳会计性质参考，但在证据不足时应保持保守。使用所有示意性调整后期间，保持金额展示单位不变，并以尽调顾问口吻输出简洁、报告化评论，而不是套话模板。不要加入无数据支持的原因、审计程序、会计政策或管理层说法。
+      user_prompt: |
+        该科目系基于Financials动态匹配，暂无专门的 mappings 配置。
+        会计性质: {accounting_nature}
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {common_data_rules}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        请从财务尽调顾问角度撰写评论，并将推断出的会计性质仅作为上下文参考。评论必须以数据为基础、以趋势为先，表达简洁；若数据不能清楚支持某项原因或判断，则不要加入。
+  patterns:
+    Pattern 1: |
+      Start with the cross-period trend, then explain the latest balance or period amount in the context of the inferred accounting nature. Use RHS remarks and supporting notes only when they are clearly consistent with the numbers and row labels.
+    Pattern 2: |
+      Focus on what the schedule shows about composition, movement, concentration, aging, or counterparties if visible. Stay conservative and avoid account-specific boilerplate when the dynamic mapping does not yet have a bespoke prompt.
 
 Cash:
   type: BS
   category: Current assets
-  aliases: ["Cash", "Cash and Cash Equivalents", "Cash and cash equivalents", "貨幣資金", "货币资金", "Cash at bank"]
+  aliases: ["Cash", "Cash and Cash Equivalents", "Cash and cash equivalents", "貨幣資金", "货币资金", "Cash at bank", "Cash at bank and on hand"]
   agent_1_prompts:
     Eng:
       system_prompt: |
-        Role: Content Generator
-        Generate financial content from patterns and data.
-        Use only provided data, format currency correctly.
+        Role: Finance Due Diligence Consultant
+        Write cash commentary from the provided data and account context. Use only provided data, keep currency display units exactly as shown, and analyze all indicative-adjusted periods. Lead with the cross-period trend before describing the latest balance or composition. Call out any significant change shown by the data, including the direction and scale of movement, and mention reasons only when the provided data, trend_summary, supplemental side-column context, or notes support them. Do not insert audit procedures or unsupported statements about restrictions or confirmations. Keep the paragraph concise and omit low-value detail. Write one concise paragraph, usually about 6-8 sentences, and keep the most material supported points while preserving useful remark-backed reasoning. If listing is necessary keep only items >=10% of total with at most 3 significant points; figures below 10% of total do not need to be mentioned unless essential. {period_reference_guidance}
         **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
       user_prompt: |
-        Select and complete one pattern with actual data.
+        Use the account context below as guidance, then write the final commentary from the actual data.
         Patterns: {patterns}
         Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        Use all indicative-adjusted periods for commentary and trend comparison, not only the latest balance. Start with the trend across periods, then explain the latest balance and composition. Use trend_summary and significant_movements to spot material movements. If you give supported reasons, make it clear they are data-backed. Keep the output tighter than before and normally limit it to one concise paragraph of about 6-8 sentences. For every item, build the reasoning from data, trend, and supported remarks together. For income-statement items, broader numeric analysis such as movement, scale, mix, and reasonableness may be used when it strengthens the explanation. Preserve material remark-backed reasoning, analysis, and explanation where they strengthen the conclusion, and make material supported remark points visible in the paragraph. If you list contributors, keep only items >=10% of total and list at most 3 points; figures below 10% of total do not need to be mentioned unless essential. Do not mention bank confirmations, bank statement review, or restrictions unless the provided data or remarks explicitly support them.
         **LANGUAGE**: Output must be 100% in ENGLISH.
         Output only final text without pattern names.
     Chi:
       system_prompt: |
-        角色: 内容生成器
-        从模式和数据生成财务内容。
-        仅使用提供的数据, 正确格式化货币。
+        角色: 财务尽职调查顾问
+        基于提供的数据和科目上下文撰写货币资金评论。仅使用提供的数据，保持金额展示单位不变，并分析所有示意性调整后期间。先写跨期趋势，再描述最新余额或构成。若数据体现重大变动，应写明变动方向和幅度；仅在提供的数据、trend_summary、右侧备注或说明支持时才可说明原因。不要加入未被输入支持的审计程序、限制说明或确认性表述。整体表达需更紧凑。如需列示，仅列出>=总额10%的项目且最多3个重点；低于总额10%的数字一般无需提及，除非对结论必不可少。{period_reference_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
-        选择并用实际数据完成一个模式。
+        以下科目上下文仅作写作提示，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        使用所有示意性调整后期间进行评论和趋势比较，而不仅是最新余额。先写趋势，再写最新余额与构成。利用 trend_summary 和 significant_movements 识别重大变动；若说明原因，必须有数据支持。整体表达应更精炼、更短。如需列示，仅保留>=总额10%的项目，且最多3个重点；低于总额10%的数字一般无需提及，除非对结论必不可少。除非数据或备注明确支持，否则不要写银行函证、对账或受限用途等表述。
         **语言**: 输出必须100%为中文。
         仅输出最终文本, 不包含模式名称。
   patterns:
     Pattern 1:  |
-      balance as at [Date] represented CNY[Amount] of cash at bank.\n\nManagement indicated that cash at
-      bank was under supervision by the bank but had no related use restrictions imposed.\n We read/obtained/check
-      all bank statements and found no exceptions/discrepancies.
+      Describe the trend in cash balances across all provided periods first, then explain the latest cash balance and main composition. Mention any restrictions, supervision arrangements, concentration, or unusual movement only if the data or remarks explicitly support them.
     Pattern 2: |
-      balance as at [Date] represented CNY[Amount] bank deposit.\n\nThe cash was under supervision with no
-      restricted use.\nWe have obtained the bank statements as at [Date] and found no discrepancies.
+      Comment on whether the balance mainly reflects cash at bank, on-hand cash, deposits, or other cash-equivalent items if supported by the schedule. If the balance changed materially across periods, highlight the direction and scale of movement before describing the latest position.
    
 AR:
   type: BS
@@ -87,11 +157,9 @@ AR:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at [Date] represented receivabbles of rental and property management income duie from
-      [Which Entity?]. The Target recognised revenue using straight-line method; we reclassified the levelling impact
-      of revenue recognition in the rent-free period to other non-current assets at the end of [Date].\n
-      Management did not accrue bad debt provision for accounts receivales from [Entity], we indicatively accrued
-      provision at the rate of [%] according to the Target\u2019s policy.
+      Start with the cross-period trend in accounts receivable, then explain the latest balance as trade receivables due from [customer / customer group / revenue stream] only when supported by the schedule or remarks. If the balance is concentrated in one or a few counterparties, mention that concentration and its driver only when evidenced by the data.
+    Pattern 2: |
+      Describe whether accounts receivable mainly represented receivables from [rental / property management / goods / services / other operating source] and comment on any visible aging, concentration, or provision movement only when supported. If an impairment or provision adjustment was recorded, explain the trend and latest position without inserting unsupported accounting-policy conclusions. Where the schedule or remarks explicitly show allowance basis, bad-debt provisioning rate, or straight-line rent / levelling-reclassification context, mention those supported points at a high level only.
  
 Prepayments:
   type: BS
@@ -101,9 +169,9 @@ Prepayments:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at [Date] represented {upfront utility expense payments|CNY[Amount] of upfront construction
-      cost and CNY[Amount] of utility expense payments} for the next [Period] months of {CNY[Amount]|prepaid
-      utility expenses including water, electricity and internet}.
+      Start with the trend in prepayments across periods, then explain the latest balance as mainly relating to [construction cost / utilities / services / operating advances / other supported purpose]. If the schedule shows a few major prepaid items or counterparties, mention only the material ones and explain the apparent business purpose when supported.
+    Pattern 2: |
+      Describe whether the prepayments balance mainly represented upfront payments for [project cost / utility expense / service fee / other supported item] and comment on any material increase, reclassification, or release across periods only when visible from the data or remarks.
  
 OR:
   type: BS
@@ -113,8 +181,9 @@ OR:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at [Date] {amount} of utilities paid on behalf of {Which Entity?}\nAs indicated by management,
-      the Target accrued [%] bad debt provision for utilities receivables aged within [Period].
+      Start with the cross-period movement in other receivables, then explain the latest balance as mainly representing amounts due from [related parties / third parties / staff / deposits / utilities paid on behalf / other supported category]. Highlight any concentration, repayment, provision, or recovery movement only when supported by the schedule or remarks.
+    Pattern 2: |
+      Describe whether other receivables mainly represented operating advances, temporary balances, or amounts paid on behalf of [counterparty type] only when supported. If the schedule shows bad-debt provisioning or aging, mention the visible movement and latest position without hardcoding policy assumptions. Where the remarks explicitly indicate recovery-risk assessment, related-party collectability, or allowance basis, include those supported observations at a high level only.
  
 Inventory:
   type: BS
@@ -134,28 +203,9 @@ IP:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at [Date] mainly represented the net book value of the Targeted properties of CNY[Amount].
-      The original value did not change over the period, the book value changed represented the depreciation of properties.\n
-      Project [Project_Name] was [type] that [Which Entity] previously acquired from [previous_owner]. The land was located
-      in [location] ([size] sqm), the construction of Project [Project_Name] was completed in [Date] and was
-      [leasing_status] over the period. The land and warehouses were depreciated using straight-line method of [Years]
-      and [Years] of useful life, with the residual value rate of [%] and [%], respectively.\n\nAs at this report date, Project
-      [Project_Name] did not conduct final accounts. Though management said that most of the primary contracts had been verified
-      and accounted, the original costs may still not be finalised. Potential under-estimated construction payables and CAPEX
-      commitment may still exist, you should confirm with management if there are any future CAPEX plans and factor the capital
-      commitments (if any) into your valuation model.\n\nTotal properties of Project [Project_Name] were mortgaged as loan
-      collateral in favour of [bank_name].
+      Start with the trend in investment property book value across periods, then explain the latest balance as mainly representing [land / buildings / warehouses / other supported property components]. If the schedule separately shows accumulated depreciation or amortization, explain whether the carrying amount movement mainly reflects periodic depreciation / amortization. If the data or remarks support it, comment on project status, occupancy / leasing status, mortgage status, or whether final accounts / cost settlement remain incomplete.
     Pattern 2: |
-      balance as at [Date] comprised the net book value of {assets} (CNY[Amount]). The original costs of {property_type}
-      did not change over the Period.\n\nProject [Project_Name] was located in [location]. Both land parcels were in [usage] and
-      acquired directly from [source]. Phase I land was acquired in [Year] at a consideration of CNY[Amount] with LUR expired in
-      [Date]. Phase II land was acquired in [Year] at a consideration of CNY[Amount] with LUR expired in [Date].\n
-      The land lots of Project [Project_Name] were amortised using straight-line method with [Years] of useful life and [%]
-      residual value. [property_type] were depreciated using straight-line method with [Years] of useful life and [%] residual
-      value. As at this report date, Project [Project_Name] was completed but no final accounts had been conducted. Though management
-      said that most of the primary contracts had been verified and accounted, the original costs may still not be finalised.
-      Potential under-estimated construction payables and CAPEX commitments may still exist. Management said there was no CAPEX plan
-      at current stage.
+      Describe the latest investment property composition for [project / asset group] and how the carrying amount moved across periods. Where supported, mention [location / land use / completion timing / depreciation or amortization method / useful life / residual value / collateral status / future capex placeholder] as contextual points, but keep unsupported contract, policy, or valuation details out of the commentary.
  
 IA:
   type: BS
@@ -170,19 +220,20 @@ NCA:
   type: BS
   category: Non-current assets
   aliases: ["NCA", "Non-current Assets", "Non-current asset", "Non-current assets", "Non Current Assets", "Non Current Asset",
-    "Fixed Assets", "Fixed Asset", "Fixed assets", "Fixed asset", "FA", "固定資產", "固定资产"]
+            "Fixed Assets", "Fixed Asset", "Fixed assets", "Fixed asset", "FA", "固定資產", "固定资产",
+            "Construction in progress", "在建工程"]
   system_prompts:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at {date} represented the residual value of {assets} including {items}. THese were depreciated using
-      {depreciation_method} with {useful_life_range} and {residual_value}.
-    Pattern 2: balance as at {date} mainly represented {asset type} with a useful life of {useful_life}.
+      Start with the trend in fixed assets / non-current assets across periods, then explain the latest balance as mainly representing [asset classes / construction in progress / equipment / buildings / leasehold improvements / other supported items]. Mention depreciation method, useful life, residual value, or transfer from CIP only when those details are explicitly supported by the data or remarks.
+    Pattern 2: |
+      Describe whether the latest balance mainly represented [asset type / project asset group] and explain any visible additions, disposals, depreciation, impairment, or capitalization movement across periods only when supported by the schedule or notes.
  
 NCL:
   type: BS
   category: Non-current liabilities
-  aliases: ["NCA", "Non-current Liabilities", "Non-current liability", "Non-current liabilities", "Non Current Liabilities",
+  aliases: ["NCL", "Non-current Liabilities", "Non-current liability", "Non-current liabilities", "Non Current Liabilities",
             "Non Current Liability", "长期借款", "長期借款"]
   system_prompts:
   user_prompts:
@@ -194,13 +245,23 @@ Other NCA:
   category: Non-current assets
   aliases: ["Other NCA", "Other Non-current Assets", "Other Non-current asset", "Other Non-current assets", "Other Non Current Assets",
             "Other Non Current Asset", "Other Fixed Assets", "Other Fixed Asset", "Other Fixed assets", "Other Fixed asset",
-            "其他非流动资产", 其他非流動資產"]
+            "Other non-current assets", "其他非流动资产", "其他非流動資產"]
   system_prompts:
   user_prompts:
   patterns:
     Pattern 1: |
-      represented the {receivables|levelling impact} arising from {levelling impact of revenue recognition|revenue recognition}
-      in the rent-free period.
+      Start with the trend in other non-current assets across periods, then explain the latest balance as mainly representing [long-term deposits / long-term prepayments / deferred items / timing differences / other supported balances]. If the item appears linked to a rent-free period, straight-line revenue recognition / levelling impact, project deposit, or other deferred arrangement, mention that only when evidenced by the data or remarks.
+    Pattern 2: |
+      Describe whether other non-current assets mainly represented [deferred operating item / levelling impact / refundable deposit / long-term advance / other supported item] and explain any material increase, release, or reclassification across periods only when supported.
+
+Long-term deferred expenses:
+  type: BS
+  category: Non-current assets
+  aliases: ["Long-term deferred expenses", "长期待摊费用", "長期待攤費用"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: N/A
        
 Other CA:
   type: BS
@@ -210,8 +271,10 @@ Other CA:
   system_prompts:
   user_prompts:
   patterns:
-    Pattern 1: balance as at {date} represented the deductible VAT input derived from {source} of CNY{amount}.
-    Pattern 2: balance as at {date} mainly represented CNY{amount} of deductible input VAT derived from {source}.
+    Pattern 1: |
+      Start with the trend in other current assets across periods, then explain the latest balance as mainly representing [deductible input VAT / deposits / prepaid tax / recoverable balance / other supported current-asset item]. Mention only the material components and any clear movement drivers supported by the schedule or remarks.
+    Pattern 2: |
+      Describe whether other current assets mainly represented [tax-related balances / operating deposits / temporary operating balances / other supported item] and explain any material increase, utilization, or release across periods only when supported.
  
 AP:
   type: BS
@@ -222,18 +285,31 @@ AP:
   user_prompts:
   patterns:
     Pattern 1: |
-      represented the {receivables|levelling impact} arising from
-      {levelling impact of revenue recognition|revenue recognition} in the rent-free period.
+      Start with the cross-period trend in accounts payable, then explain the latest balance as mainly representing amounts due to [suppliers / contractors / related parties / service providers / other supported counterparty group]. If the balance is concentrated in a few payables or shows reclassifications, mention only the material supported items.
+    Pattern 2: |
+      Describe whether accounts payable mainly reflected payables for [construction / procurement / operating services / related-party operating balances / other supported purpose] and explain any material increase, settlement delay, or reclassification across periods only when evidenced by the data or remarks.
  
 Advances:
   type: BS
   category: Current liabilities
   aliases: ["Advances", "Advances from Customers", "Advances from customers", "Advances from customer",
-            "Advances from Customer", "预收款项", "預收款項", "Advance payments received"]
+            "Advances from Customer", "预收款项", "預收款項", "Advance payments received", "Contract liabilities",
+            "Contract liability", "合同负债", "合同負債"]
   system_prompts:
   user_prompts:
   patterns:
     Pattern 1: N/A
+
+Employee benefits payable:
+  type: BS
+  category: Current liabilities
+  aliases: ["Employee benefits payable", "Employee benefit payable", "Accrued payroll", "Payroll payable",
+            "Accrued salaries", "Staff payable", "应付职工薪酬", "應付職工薪酬"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      Describe the employee-benefits payable balance as at {date}, including whether it mainly relates to unpaid wages, bonuses, social contributions, or other staff-related accruals only when supported by the schedule or remarks.
  
 Tax payable:
   type: BS
@@ -243,17 +319,21 @@ Tax payable:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at [Date] represented {type1} payable of {amount1} and {type2} payable of {amount2}.
+      Start with the trend in taxes payable across periods, then explain the latest balance as mainly representing [VAT / EIT / land appreciation tax / urban maintenance and construction tax / education surcharge / other supported tax items]. Mention only the material tax categories and any visible settlement timing effects supported by the schedule.
+    Pattern 2: |
+      Describe whether the taxes payable balance mainly consisted of [major tax types] and explain any significant movement across periods in the context of taxable income, revenue, transaction volume, or settlement timing only when supported by the data or remarks.
  
 OP:
   type: BS
   category: Current liabilities
-  aliases: ["OP", "Other Payables", "Other payables", "Other Payable", "Other payables", "其他应付款", "其他應付款"]
+  aliases: ["OP", "Other Payables", "Other payables", "Other Payable", "Other payables", "Other current liabilities", "其他应付款", "其他應付款"]
   system_prompts:
   user_prompts:
   patterns:
     Pattern 1: |
-      balance as at {date} represented:\n\n{amount1} of {type1}, including {datails1}\n{amount2} of {type2}.
+      Start with the trend in other payables across periods, then explain the latest balance as mainly representing [related-party balances / accrued expenses / deposits / temporary receipts / project-related balances / other supported items]. If the schedule shows a few major components, mention only the material ones and keep smaller items aggregated.
+    Pattern 2: |
+      Describe whether other payables mainly represented [counterparty / nature of balance] and explain any material increase, settlement delay, or reclassification across periods only when supported by the schedule or remarks.
  
 Capital:
   type: BS
@@ -263,16 +343,22 @@ Capital:
   system_prompts:
   user_prompts:
   patterns:
-    Pattern 1: share capital of {amount1} was paid up as at {date}.
+    Pattern 1: |
+      Describe the paid-in capital or share capital balance as at [date], and state whether it remained stable across periods or changed due to [capital injection / restructuring / other supported equity event] only when shown by the data.
+    Pattern 2: |
+      Explain whether the latest capital balance represented fully paid-in registered capital, issued share capital, or another supported equity base, and mention any visible movements across periods only when evidenced by the schedule or remarks.
  
 Reserve:
   type: BS
   category: Equity
-  aliases: ["Reserve", "Reserves", "盈余公积", "盈餘公積"]
+  aliases: ["Reserve", "Reserves", "盈余公积", "盈餘公積", "Surplus reserve", "法定盈余公积", "法定盈餘公積"]
   system_prompts:
   user_prompts:
   patterns:
-    Pattern 1: balance as at {date} represented the surplus reserve {type} from {source}.
+    Pattern 1: |
+      Describe the reserve balance as at [date], including whether it mainly represented [statutory surplus reserve / discretionary reserve / other supported reserve type], and comment on movements across periods only when they are shown by the data.
+    Pattern 2: |
+      Explain whether the reserve balance changed in line with [profit appropriation / transfer within equity / other supported equity movement] only when such movement is visible from the schedule or remarks.
  
 Capital reserve:
   type: BS
@@ -286,7 +372,7 @@ Capital reserve:
 R/E:
   type: BS
   category: Equity
-  aliases: ["Retained earnings", "未分配利润"]
+  aliases: ["Retained earnings", "Retained Earnings", "未分配利润", "留存收益"]
   system_prompts:
   user_prompts:
   patterns:
@@ -300,22 +386,22 @@ OI:
   user_prompts:
   patterns:
     Pattern 1: |
-      total income for the period ended {date} was CNY{amount}, primarily comprising {details}. The income
-      was mainly derived from {source}.
-    Pattern 2: other income for the period totaled CNY{amount}, representing {details} from {source}.
+      Start with the revenue trend across periods, then explain the latest balance as mainly generated from [major revenue streams / projects / customer groups / service lines] only when supported by the schedule or remarks. Mention concentration or seasonality only when evidenced by the data.
+    Pattern 2: |
+      Describe the latest revenue composition and any significant period-on-period movement using only data-backed sources or remarks, such as [rental income / management income / trading income / service income / other supported stream].
  
 OC:
   type: IS
   category: Expenses
   aliases: ["OC", "Operating costs", "Operating Costs", "Operating Cost", 
-    "Operating cost", "營業成本", "营业成本", "Costs", "Cost"]
+    "Operating cost", "COGS", "營業成本", "营业成本", "Costs", "Cost"]
   system_prompts:
   user_prompts:
   patterns:
     Pattern 1: |
-      total costs for the period ended {date} amounted to CNY{amount}, primarily consisting of {details}.
-      The costs were mainly attributable to {source}.
-    Pattern 2: other costs for the period totaled CNY{amount}, representing {details}.
+      Start with the operating cost trend across periods, then explain the latest balance as mainly comprising [major cost buckets / project costs / service costs / procurement costs / other supported components]. Mention cost mix shifts or timing effects only when supported by the schedule or remarks.
+    Pattern 2: |
+      Describe the latest cost composition and any significant movement using only data-backed details, and if visible, link the movement to the corresponding revenue or operating activity without adding unsupported explanations.
  
 Tax and Surcharges:
   type: IS
@@ -326,9 +412,9 @@ Tax and Surcharges:
   user_prompts:
   patterns:
     Pattern 1: |
-      tax and surcharges for the period ended {date} amounted to CNY{amount}, including VAT of CNY{vat_amount},
-      urban maintenance and construction tax of CNY{umct_amount}, and education surcharge of CNY{edu_amount}.
-    Pattern 2: the entity paid total taxes and surcharges of CNY{amount} during the period, comprising {details}.
+      Start with the tax-and-surcharges trend across periods, then explain the latest balance as mainly comprising [major tax items] only when evidenced by the schedule. Keep smaller tax lines aggregated unless they are material.
+    Pattern 2: |
+      Describe the latest tax-and-surcharges composition using only the components evidenced by the data, and relate any material movement to revenue scale or transaction activity only when supported.
  
 GA:
   type: IS
@@ -338,9 +424,9 @@ GA:
   user_prompts:
   patterns:
     Pattern 1: |
-      general and administrative expenses for the period ended {date} totaled CNY{amount}, primarily consisting
-      of {details}.
-    Pattern 2: G&A expenses amounted to CNY{amount} during the period, representing {details}.
+      Start with the G&A expense trend across periods, then explain the latest balance as mainly comprising [staff cost / professional fee / office expense / depreciation / other supported expense lines]. Mention only the material cost buckets and supported movement drivers.
+    Pattern 2: |
+      Describe the latest G&A expense composition and any notable movement using only data-backed details, keeping smaller categories aggregated unless they are material to the conclusion.
  
 Fin Exp:
   type: IS
@@ -351,13 +437,14 @@ Fin Exp:
   user_prompts:
   patterns:
     Pattern 1: |
-      finance expenses for the period ended {date} amounted to CNY{amount}, primarily comprising {details}.
-    Pattern 2: financial expenses totaled CNY{amount} during the period, representing {details}.
+      Start with the finance-expense trend across periods, then explain the latest balance as mainly comprising [interest expense / guarantee fee / bank charge / FX impact / other supported finance items]. Mention debt-related or financing-structure context only when supported by the data or remarks.
+    Pattern 2: |
+      Describe the latest finance-expense composition and any notable movement using only data-backed details, such as changes in borrowing level, interest-bearing balances, or fee mix where visible.
  
 Selling cost:
   type: IS
   category: Expenses
-  aliases: ["Selling cost", "Selling costs", "销售费用"]
+  aliases: ["Selling cost", "Selling costs", "销售费用", "Selling and distribution expenses", "Distribution expenses", "销售及分销费用"]
   system_prompts:
   user_prompts:
   patterns:
@@ -367,12 +454,14 @@ Cr Loss:
   type: IS
   category: Expenses
   aliases: ["Cr Loss", "Credit Losses", "Credit losses", "Credit loss", "Credit Loss", "信用损失",
-            "信用損失"]
+            "信用損失", "信用减值损失", "信用減值損失"]
   system_prompts:
   user_prompts:
   patterns:
-    Pattern 1: credit losses for the period ended {date} amounted to CNY{amount}, representing {details}.
-    Pattern 2: provisions for credit losses totaled CNY{amount} during the period, primarily for {details}.
+    Pattern 1: |
+      Start with the credit-loss trend across periods, then explain the latest charge or balance as mainly relating to [receivables / other receivables / contract assets / other supported exposure]. Mention provisions, reversals, or concentration only when evidenced by the schedule or remarks.
+    Pattern 2: |
+      Describe provisions or reversals for credit losses using only the details evidenced by the schedule or remarks, and keep any discussion of policy, aging, or expected-loss methodology at placeholder level unless expressly supported.
  
 Other Income:
   type: IS
@@ -382,8 +471,10 @@ Other Income:
   system_prompts:
   user_prompts:
   patterns:
-    Pattern 1: other income for the period ended {date} totaled CNY{amount}, primarily comprising {details}.
-    Pattern 2: additional income sources amounted to CNY{amount} during the period, representing {details}.
+    Pattern 1: |
+      Start with the other-income trend across periods, then explain the latest balance as mainly comprising [government grants / tax rebates / compensation / subsidy / other supported non-core income item]. Mention only the material supported components.
+    Pattern 2: |
+      Describe additional income sources using only the details evidenced by the schedule or remarks, and comment on any material one-off or recurring pattern only when supported.
  
 Non-operating Income:
   type: IS
@@ -393,8 +484,10 @@ Non-operating Income:
   system_prompts:
   user_prompts:
   patterns:
-    Pattern 1: non-operating income for the period ended {date} amounted to CNY{amount}, primarily comprising {details}.
-    Pattern 2: other non-operating income sources totaled CNY{amount} during the period, representing {details}.
+    Pattern 1: |
+      Start with the non-operating-income trend across periods, then explain the latest balance as mainly arising from [asset disposal / compensation / gain on settlement / miscellaneous non-core item / other supported source]. Keep the discussion at a high level unless the schedule clearly supports more detail.
+    Pattern 2: |
+      Describe non-operating income items using only the details evidenced by the schedule or remarks, and indicate whether they appear non-recurring only when that conclusion is supported.
  
 Non-operating Exp:
   type: IS
@@ -404,8 +497,10 @@ Non-operating Exp:
   system_prompts:
   user_prompts:
   patterns:
-    Pattern 1: non-operating expenses for the period ended {date} amounted to CNY{amount}, primarily comprising {details}.
-    Pattern 2: other non-operating expenses totaled CNY{amount} during the period, representing {details}.
+    Pattern 1: |
+      Start with the non-operating-expense trend across periods, then explain the latest balance as mainly arising from [asset write-off / penalty / donation / loss on disposal / miscellaneous non-core item / other supported source]. Mention only the material supported components.
+    Pattern 2: |
+      Describe non-operating expense items using only the details evidenced by the schedule or remarks, and comment on whether the charge appears non-recurring only when supported.
  
 Income tax:
   type: IS
@@ -416,18 +511,19 @@ Income tax:
   user_prompts:
   patterns:
     Pattern 1: |
-      income tax expense for the period ended {date} amounted to CNY{amount}, representing the estimated tax
-      liability based on {tax_rate}% effective tax rate.
-    Pattern 2: the entity recorded income tax expense of CNY{amount} during the period, based on {details}.
+      Start with the income-tax trend across periods, then explain the latest balance in the context of [taxable profit / deferred tax movement / tax adjustment / effective tax rate placeholder] only when supported by the schedule or remarks. Do not insert unsupported tax-policy conclusions.
+    Pattern 2: |
+      Describe income tax expense using only the details evidenced by the schedule or remarks, and mention current versus deferred tax drivers only when those components are visible.
  
 LT DTA:
   type: IS
   category: Others
   aliases: ["LT DTA", "Long-term Deferred Tax Assets", "Long-term deferred tax assets", "Long-term Deferred Tax Asset",
-            "Long-term deferred tax asset", "递延所得税资产", "遞延所得稅資產"]
+            "Long-term deferred tax asset", "DTA and DTL", "Deferred tax assets", "Deferred tax liabilities", "递延所得税资产", "遞延所得稅資產"]
   system_prompts:
   user_prompts:
   patterns:
     Pattern 1: |
-      long-term deferred tax assets as at {date} amounted to CNY{amount}, primarily representing {details}.
-    Pattern 2: deferred tax assets totaled CNY{amount} as at {date}, comprising {details}.
+      Start with the deferred-tax-asset trend across periods, then explain the latest balance as mainly arising from [tax losses / impairment provision / fair value / timing difference / other supported temporary difference] only when supported by the data or remarks.
+    Pattern 2: |
+      Describe deferred tax assets using only the details evidenced by the schedule or remarks, and mention offsetting deferred tax liabilities or utilization expectations only when clearly supported.

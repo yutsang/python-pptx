@@ -1,0 +1,39 @@
+openai:
+  api_key: ""
+  api_base: ""
+  chat_model: ""
+  api_version_completion: ""
+
+local:
+  api_base: "http://localhost:8000/v1"
+  api_key: "not-needed"
+  chat_model: "local-qwen2"
+
+deepseek:
+  api_key: ""
+  api_base: "https://api.deepseek.com/v1"
+  chat_model: "deepseek-chat"
+
+agents:
+  1_Generator:
+    temperature: 0.7
+    max_tokens: 2000
+    top_p: 0.9
+  2_Auditor:
+    temperature: 0.3
+    max_tokens: 2000
+    top_p: 0.9
+  3_Refiner:
+    temperature: 0.5
+    max_tokens: 2000
+    top_p: 0.9
+  4_Validator:
+    temperature: 0.2
+    max_tokens: 2000
+    top_p: 0.9
+
+processing:
+  data_format_for_ai: "json"
+
+logging:
+  suppress_http_logs: true

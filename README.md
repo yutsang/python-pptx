@@ -8,10 +8,10 @@ Automated financial content generation using 4-agent AI pipeline with smart numb
 
 ```bash
 # Install dependencies
-pip install -r fdd_utils/requirements.txt
+pip install -r requirements.txt
 
 # Run the app
-streamlit run app.py
+streamlit run fdd_app.py
 ```
 
 **Features**:
@@ -26,8 +26,8 @@ streamlit run app.py
 ## Quick Start - Python Code
 
 ```python
-from fdd_utils.process_databook import extract_data_from_excel
-from fdd_utils.content_generation import run_ai_pipeline, extract_final_contents
+from fdd_utils.workbook import extract_data_from_excel
+from fdd_utils.ai import run_ai_pipeline, extract_final_contents
 
 # 1. Extract data from Excel
 dfs, keys, _, lang = extract_data_from_excel(
@@ -98,19 +98,24 @@ Values are **automatically formatted** in code before being sent to AI:
 Extract Balance Sheet and Income Statement from a **single sheet** containing both statements:
 
 ```python
-from fdd_utils.financial_extraction import extract_balance_sheet_and_income_statement
+from fdd_utils.workbook import extract_balance_sheet_and_income_statement
 
 results = extract_balance_sheet_and_income_statement(
-    workbook_path="databook.xlsx",
-    sheet_name="Financials",  # Sheet with both BS and IS
+    workbook_path="path/to/databook.xlsx",
+    sheet_name="Financials",  # Or another selected financial summary sheet
     debug=True                # Enable debug output
 )
 
 # Access results
 balance_sheet = results['balance_sheet']
 income_statement = results['income_statement']
-project_name = results['project_name']  # e.g., "东莞联洋"
+project_name = results['project_name']  # extracted project/entity name
 ```
+
+Use a workbook that actually contains a financial summary sheet.
+Some databooks use a literal `Financials` sheet, while others use entity-specific
+names such as `Financials - <entity>`, so pick the actual sheet name from the workbook
+rather than assuming one fixed tab name.
 
 **Features**:
 - Extracts both BS and IS from **single sheet**
@@ -128,7 +133,29 @@ project_name = results['project_name']  # e.g., "东莞联洋"
 Verify data accuracy by comparing two extraction methods:
 
 ```python
-from fdd_utils.reconciliation import reconcile_financial_statements, print_reconciliation_report
+from fdd_utils.workbook import extract_balance_sheet_and_income_statement
+from fdd_utils.workbook import extract_data_from_excel
+from fdd_utils.workbook import (
+    find_reconciliation_example,
+    print_reconciliation_report,
+    reconcile_financial_statements,
+)
+
+example = find_reconciliation_example()
+if not example:
+    raise FileNotFoundError("No local reconciliation example workbook with a Financials sheet was found.")
+
+bs_is_results = extract_balance_sheet_and_income_statement(
+    workbook_path=example["workbook_path"],
+    sheet_name=example["sheet_name"],
+    debug=False,
+)
+
+dfs, _, _, _ = extract_data_from_excel(
+    databook_path=example["workbook_path"],
+    entity_name=example["entity_name"],
+    mode="All",
+)
 
 # Reconcile the two sources
 bs_recon, is_recon = reconcile_financial_statements(
@@ -143,14 +170,14 @@ bs_recon, is_recon = reconcile_financial_statements(
 print_reconciliation_report(bs_recon, is_recon, show_only_issues=True)
 ```
 
-**Example Output**:
+**Illustrative Output**:
 ```
 Source_Account      Date         Source_Value  DFS_Account  DFS_Value    Diff        Match
-货币资金            2024-05-31   4,119,178     货币资金     4,119,178    0           ✅ Match
-应收账款            2024-05-31   0             -            -            -           -
-流动资产合计        2024-05-31   9,246,577     -            -            -           -
-投资性房地产        2024-05-31   168,526,613   投资性房地产 168,520,000  6,613       ✅ Immaterial
-管理费用            2024-05-31   -1,234,567    管理费用     1,234,567    0           ✅ Match
+Cash               <date>       <value>       Cash             <value>    0           ✅ Match
+Receivables        <date>       0             -                -          -           -
+Total Assets       <date>       <value>       -                -          -           -
+Investment Prop.   <date>       <value>       Investment Prop. <value>    <diff>      ✅ Immaterial
+Admin Expenses     <date>       -<value>      Admin Expenses   <value>    0           ✅ Match
 ```
 
 **Features**:
@@ -195,21 +222,31 @@ Source_Account      Date         Source_Value  DFS_Account  DFS_Value    Diff   
 
 ## Files Structure
 
-```
+```text
 fdd_utils/
-├── process_databook.py       # Excel extraction + formatting
-├── financial_extraction.py   # BS/IS from single sheet
-├── reconciliation.py          # Data reconciliation
-├── content_generation.py     # 4-agent AI pipeline
-├── ai_helper.py              # AI model interface
-├── mappings.yml              # Account aliases + prompts
-├── prompts.yml               # Agent 2/3/4 prompts
-├── config.yml                # AI parameters
-└── logs/                     # Run outputs
+├── workbook.py                 # Databook extraction, profiling, resolution, reconciliation
+├── ai.py                       # AI config, prompt engine, 4-agent pipeline
+├── pptx.py                     # PPTX payload building and export
+├── ui.py                       # Streamlit UI helpers and processed-view rendering
+├── financial_common.py         # Shared text/date/result/path helpers
+├── financial_display_format.py # Shared dataframe display formatting helpers
+├── financial_json_converter.py # JSON conversion helpers for AI-friendly table payloads
+├── mappings.yml                # Account aliases + prompts
+├── prompts.yml                 # Agent 2/3/4 prompts
+├── config.yml                  # AI parameters
+└── __init__.py                 # Package exports
 
-app.py                        # Streamlit app
+fdd_app.py                      # Streamlit app
 ```
 
 ---
 
-**Start**: `streamlit run app.py` 🚀
+## Methodology Notes
+
+- `README.md` is the quick operational guide for running the app and understanding the main pipeline.
+- `METHODOLOGY_AND_STRUCTURE.md` is the fuller methodology / architecture reference for FDD vs HR alignment, prompt/data flow, and module responsibilities.
+- The current FDD design is already agent-oriented: generator, auditor, refiner, and validator are separated into explicit stages with centralized prompt and config handling.
+
+---
+
+**Start**: `streamlit run fdd_app.py` 🚀

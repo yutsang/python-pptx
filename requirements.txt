@@ -9,3 +9,4 @@ httpx>=0.24.0
 openai>=1.0.0
 ipython>=8.0.0
 pillow>=10.0.0 
+pypinyin>=0.55.0
