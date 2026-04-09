@@ -5,9 +5,7 @@ from __future__ import annotations
 FDD configuration module aligned with the HR config interface.
 """
 
-from typing import List
-
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .financial_common import build_income_statement_period_label, load_required_yaml_file, package_file_path
 
@@ -17,20 +15,25 @@ PROVIDER_REQUIRED_KEYS = {
     "deepseek": ["api_key", "api_base", "chat_model"],
 }
 
-AGENT_ALIASES = {
-    "agent_1": "1_Generator",
-    "agent_2": "2_Auditor",
-    "agent_3": "3_Refiner",
-    "agent_4": "4_Validator",
+SUBAGENT_ALIASES = {
+    "subagent_1": "1_Generator",
+    "subagent_2": "2_Auditor",
+    "subagent_3": "3_Refiner",
+    "subagent_4": "4_Validator",
     "1_Generator": "1_Generator",
     "2_Auditor": "2_Auditor",
     "3_Refiner": "3_Refiner",
     "4_Validator": "4_Validator",
+    # Legacy aliases for backwards compatibility
+    "subagent_1": "1_Generator",
+    "subagent_2": "2_Auditor",
+    "subagent_3": "3_Refiner",
+    "subagent_4": "4_Validator",
 }
 
 
 def resolve_agent_alias(agent_name: str) -> str:
-    return AGENT_ALIASES.get(agent_name, agent_name)
+    return SUBAGENT_ALIASES.get(agent_name, agent_name)
 
 
 DEFAULT_CONFIG_FILENAME = "config.yml"
@@ -193,6 +196,17 @@ class FDDConfig:
             self.get_processing_config().get("data_format_for_ai", DEFAULT_DATA_FORMAT) or DEFAULT_DATA_FORMAT
         ).lower()
         return data_format if data_format in {"markdown", "json"} else DEFAULT_DATA_FORMAT
+
+    def get_debug_mode(self) -> bool:
+        return bool(self.get_processing_config().get("debug_mode", False))
+
+    def get_feedback_loop_config(self) -> Dict[str, Any]:
+        processing = self.get_processing_config()
+        defaults: Dict[str, Any] = {"enabled": False, "max_retries": 2, "unsupported_threshold": 0.3}
+        loop_config = processing.get("feedback_loop") or {}
+        merged = dict(defaults)
+        merged.update(loop_config)
+        return merged
 # --- end ai/config.py ---
 
 # --- begin ai/english.py ---
@@ -355,11 +369,38 @@ def _normalize_clause_review(item: Dict[str, Any]) -> Dict[str, Any]:
         supported = supported_value.strip().lower() in {"true", "yes", "supported", "1"}
     else:
         supported = bool(supported_value)
+    # Parse category: data-backed, reasoning, or hallucination
+    raw_category = str(item.get("category") or "").strip().lower()
+    if raw_category in ("data-backed", "reasoning", "hallucination"):
+        category = raw_category
+    elif supported:
+        category = "data-backed"
+    else:
+        category = "hallucination"
     return {
         "clause": clause,
         "supported": supported,
+        "category": category,
         "reason": reason,
     }
+
+
+def format_validator_feedback_for_reprompt(clause_reviews: List[Dict[str, Any]], language: str) -> str:
+    """Format unsupported clause reasons into concise feedback for the generator reprompt."""
+    unsupported = [r for r in (clause_reviews or []) if isinstance(r, dict) and not r.get("supported")]
+    if not unsupported:
+        return ""
+    if language == "Chi":
+        header = "验证器标记了以下不支持的内容需要修正:\n"
+        template = "- 分句: \"{clause}\" — 问题: {reason}"
+    else:
+        header = "The validator flagged the following unsupported clauses for correction:\n"
+        template = '- Clause: "{clause}" — Issue: {reason}'
+    items = [
+        template.format(clause=str(r.get("clause", ""))[:120], reason=str(r.get("reason", ""))[:200])
+        for r in unsupported[:5]
+    ]
+    return header + "\n".join(items)
 
 
 def parse_validator_response(raw_text: str, fallback_content: str = "") -> Dict[str, Any]:
@@ -495,20 +536,21 @@ def _find_next_clause_index(text: str, clause: str, cursor: int) -> int:
 def build_highlighted_commentary_html(final_content: str, clause_reviews: List[Dict[str, Any]]) -> str:
     """
     Render final commentary HTML with unsupported clauses highlighted.
+    Uses category-specific CSS classes: fdd-hallucination-clause (yellow) and fdd-reasoning-clause (orange).
     """
     text = str(final_content or "")
-    unsupported_reviews = [
+    flagged_reviews = [
         review for review in (clause_reviews or [])
         if isinstance(review, dict) and review.get("clause") and not bool(review.get("supported"))
     ]
 
-    if not unsupported_reviews:
+    if not flagged_reviews:
         return _wrap_commentary_html(text, escape_html=True)
 
     rendered_parts: List[str] = []
     cursor = 0
     unmatched_reviews: List[Dict[str, Any]] = []
-    for review in unsupported_reviews:
+    for review in flagged_reviews:
         clause = str(review.get("clause") or "")
         if not clause:
             continue
@@ -517,10 +559,15 @@ def build_highlighted_commentary_html(final_content: str, clause_reviews: List[D
             unmatched_reviews.append(review)
             continue
         rendered_parts.append(html.escape(text[cursor:start]))
+        category = str(review.get("category") or "hallucination").lower()
         reason = str(review.get("reason") or "This clause may not be fully supported by the provided data.")
+        category_label = "Hallucination" if category == "hallucination" else "Reasoning"
+        tooltip = f"[{category_label}] {reason}"
+        css_class = "fdd-hallucination-clause" if category == "hallucination" else "fdd-reasoning-clause"
         rendered_parts.append(
-            '<span class="fdd-unsupported-clause" title="{title}">{content}</span>'.format(
-                title=html.escape(reason, quote=True),
+            '<span class="{css_class}" title="{title}">{content}</span>'.format(
+                css_class=css_class,
+                title=html.escape(tooltip, quote=True),
                 content=html.escape(text[start:end]),
             )
         )
@@ -533,8 +580,9 @@ def build_highlighted_commentary_html(final_content: str, clause_reviews: List[D
         return rendered_html
 
     note_items = "".join(
-        "<li><strong>{clause}</strong><br>{reason}</li>".format(
+        "<li><strong>{clause}</strong> [{category}]<br>{reason}</li>".format(
             clause=html.escape(str(review.get("clause") or "")),
+            category=html.escape(str(review.get("category") or "hallucination")),
             reason=html.escape(
                 str(review.get("reason") or "This clause may not be fully supported by the provided data.")
             ),
@@ -566,9 +614,10 @@ import yaml
 class PipelineRunLogger:
     """Unified logger for an FDD AI processing run."""
 
-    def __init__(self, log_dir: str = "fdd_utils/logs", output_dir: str = "fdd_utils/output"):
+    def __init__(self, log_dir: str = "fdd_utils/logs", output_dir: str = "fdd_utils/output", debug_mode: bool = False):
         self.log_dir = log_dir
         self.output_dir = output_dir
+        self.debug_mode = debug_mode
         os.makedirs(log_dir, exist_ok=True)
         os.makedirs(output_dir, exist_ok=True)
 
@@ -581,7 +630,7 @@ class PipelineRunLogger:
         self.results_file = os.path.join(self.run_folder, "results.yml")
 
         self.logger = logging.getLogger(f"ContentGeneration_{self.run_id}")
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.DEBUG if debug_mode else logging.INFO)
         self.logger.handlers = []
         self.logger.propagate = False
 
@@ -592,22 +641,40 @@ class PipelineRunLogger:
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
 
+        if debug_mode:
+            self.debug_log_file = os.path.join(self.run_folder, "debug.log")
+            debug_handler = logging.FileHandler(self.debug_log_file, encoding="utf-8")
+            debug_handler.setLevel(logging.DEBUG)
+            debug_handler.setFormatter(formatter)
+            self.logger.addHandler(debug_handler)
+
         self.run_data: Dict[str, Any] = {
             "run_id": self.run_id,
             "start_time": datetime.now().isoformat(),
+            "debug_mode": debug_mode,
             "agents_executed": [],
             "processing_results": {},
         }
-        self.logger.info("=== Started new AI processing run: %s ===", self.run_id)
+        self.logger.info("=== Started new AI processing run: %s (debug_mode=%s) ===", self.run_id, debug_mode)
 
     def _display_name(self, agent_name: str) -> str:
         names = {
-            "agent_1": "Generator",
-            "agent_2": "Auditor",
-            "agent_3": "Refiner",
-            "agent_4": "Validator",
+            "subagent_1": "Generator",
+            "subagent_2": "Auditor",
+            "subagent_3": "Refiner",
+            "subagent_4": "Validator",
         }
         return names.get(agent_name, agent_name)
+
+    def log_debug(self, category: str, mapping_key: str, message: str, data: Any = None) -> None:
+        if not self.debug_mode:
+            return
+        self.logger.debug("[DEBUG][%s] %s: %s", category, mapping_key, message)
+        if data is not None:
+            data_str = str(data)
+            if len(data_str) > 4000:
+                data_str = data_str[:4000] + "... [truncated]"
+            self.logger.debug("[DEBUG][%s] %s: DATA:\n%s", category, mapping_key, data_str)
 
     def log_agent_start(self, agent_name: str, mapping_key: str):
         self.logger.info("[%s] Processing: %s", self._display_name(agent_name), mapping_key)
@@ -939,7 +1006,7 @@ class PromptEngine:
     def get_agent_defaults(self, agent_name: str, language: str) -> Tuple[str, str]:
         agent_key = self.normalize_agent_name(agent_name)
         if agent_key == "1_Generator":
-            generic_prompts = self.mappings_data.get("_default_agent_1", {}).get(language, {})
+            generic_prompts = self.mappings_data.get("_default_subagent_1", {}).get(language, {})
             return generic_prompts.get("system_prompt", ""), generic_prompts.get("user_prompt", "")
 
         prompt_data = self.prompts_data.get(agent_key, {}).get(language, {})
@@ -957,7 +1024,7 @@ class PromptEngine:
                 fallback_section = self._fallback_mapping_section(mapping_key)
                 if fallback_section:
                     account_data = self.mappings_data.get(fallback_section, {})
-            account_prompts = account_data.get("agent_1_prompts", {}).get(language, {})
+            account_prompts = account_data.get("subagent_1_prompts", {}).get(language, {})
             system_prompt = (account_prompts.get("system_prompt") or "").strip() or default_system_prompt
             user_prompt = (account_prompts.get("user_prompt") or "").strip() or default_user_prompt
             return system_prompt, user_prompt
@@ -2098,6 +2165,7 @@ import multiprocessing
 import os
 import re
 import threading
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -2105,11 +2173,11 @@ import pandas as pd
 import yaml
 
 
-AGENT_SEQUENCE = [
-    ("agent_1", "Generator"),
-    ("agent_2", "Auditor"),
-    ("agent_3", "Refiner"),
-    ("agent_4", "Validator"),
+SUBAGENT_SEQUENCE = [
+    ("subagent_1", "Generator"),
+    ("subagent_2", "Auditor"),
+    ("subagent_3", "Refiner"),
+    ("subagent_4", "Validator"),
 ]
 
 def _get_prompt_manager(prompts_file: str, mappings_file: str) -> PromptEngine:
@@ -2211,9 +2279,9 @@ def create_result_shell(mapping_keys: List[str], dfs: Dict[str, pd.DataFrame]) -
 
 
 def _get_agent_stage_context(agent_name: str) -> Tuple[int, str, Optional[str]]:
-    for agent_num, (name, label) in enumerate(AGENT_SEQUENCE, start=1):
+    for agent_num, (name, label) in enumerate(SUBAGENT_SEQUENCE, start=1):
         if name == agent_name:
-            previous_agent = None if agent_num == 1 else AGENT_SEQUENCE[agent_num - 2][0]
+            previous_agent = None if agent_num == 1 else SUBAGENT_SEQUENCE[agent_num - 2][0]
             return agent_num, label, previous_agent
     raise ValueError(f"Unknown agent stage: {agent_name}")
 
@@ -2226,7 +2294,7 @@ def _store_agent_result(
     metadata: Dict[str, Any],
 ) -> None:
     results[mapping_key][agent_name] = content
-    if agent_name == "agent_4":
+    if agent_name == "subagent_4":
         results[mapping_key]["agent_4_validation"] = metadata
         results[mapping_key]["final"] = content
 
@@ -2239,7 +2307,7 @@ def _finalize_agent_content(
     language: str,
 ) -> Tuple[str, Dict[str, Any]]:
     metadata: Dict[str, Any] = {}
-    if agent_name == "agent_4":
+    if agent_name == "subagent_4":
         parsed = parse_validator_response(raw_content, fallback_content=previous_output)
         content = clean_agent_output(parsed["final_content"])
         metadata = {
@@ -2251,7 +2319,7 @@ def _finalize_agent_content(
         content = clean_agent_output(raw_content)
     if language == "Eng":
         content = polish_english_commentary(content)
-        if agent_name == "agent_4" and metadata:
+        if agent_name == "subagent_4" and metadata:
             metadata["final_content"] = content
     return content, metadata
 
@@ -2314,20 +2382,23 @@ def _agent_prompt_kwargs(
     mapping_key: str,
     prompt_manager: PromptEngine,
     previous_output: str,
+    agent_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
-    if agent_name == "agent_1" and str(previous_output or "").strip():
+    if agent_name == "subagent_1" and str(previous_output or "").strip():
         return {"previous_content": previous_output}
-    if agent_name == "agent_2":
+    if agent_name == "subagent_2":
         return {
             "account": prompt_manager.get_mapping_component(mapping_key, component="type") or mapping_key,
             "output": previous_output,
         }
-    if agent_name == "agent_3":
+    if agent_name == "subagent_3":
+        reduction_target = int((agent_config or {}).get("reduction_target_pct", 64))
         return {
             "previous_content": previous_output,
             "original_length": len(previous_output or ""),
+            "reduction_target_pct": str(reduction_target),
         }
-    if agent_name == "agent_4":
+    if agent_name == "subagent_4":
         return {"content": previous_output}
     return {}
 
@@ -2345,6 +2416,7 @@ def process_single_agent_item(
     """Run one account through a single agent stage."""
     try:
         logger.log_agent_start(agent_name, mapping_key)
+        agent_cfg = ai_helper.get_agent_settings(agent_name)
 
         system_prompt, user_prompt = prompt_manager.render_prompt(
             agent_name=agent_name,
@@ -2353,10 +2425,14 @@ def process_single_agent_item(
             df=df,
             data_format=ai_helper.data_format,
             user_comment=user_comment,
-            **_agent_prompt_kwargs(agent_name, mapping_key, prompt_manager, previous_output),
+            **_agent_prompt_kwargs(agent_name, mapping_key, prompt_manager, previous_output, agent_config=agent_cfg),
         )
 
-        if agent_name == "agent_1" and (not system_prompt or not user_prompt):
+        if logger.debug_mode:
+            logger.log_debug("PROMPT_SYSTEM", mapping_key, "Agent=%s len=%s" % (agent_name, len(system_prompt)), system_prompt)
+            logger.log_debug("PROMPT_USER", mapping_key, "Agent=%s len=%s" % (agent_name, len(user_prompt)), user_prompt)
+
+        if agent_name == "subagent_1" and (not system_prompt or not user_prompt):
             placeholder = f"Content generation skipped for {mapping_key}: No prompts available"
             return mapping_key, placeholder, {}
 
@@ -2365,12 +2441,27 @@ def process_single_agent_item(
 
         response = _run_ai_call(ai_helper, user_prompt, system_prompt, agent_name)
         raw_content = response["content"].strip().replace("\n\n", "\n").replace("\n \n", "\n")
+
+        if logger.debug_mode:
+            logger.log_debug("RAW_OUTPUT", mapping_key, "Agent=%s len=%s" % (agent_name, len(raw_content)), raw_content)
+
         content, metadata = _finalize_agent_content(
             agent_name=agent_name,
             raw_content=raw_content,
             previous_output=previous_output,
             language=ai_helper.language,
         )
+
+        if logger.debug_mode and agent_name == "subagent_4" and metadata.get("clause_reviews"):
+            reviews = metadata["clause_reviews"]
+            supported_count = sum(1 for r in reviews if r.get("supported"))
+            unsupported = [r for r in reviews if not r.get("supported")]
+            logger.log_debug("VALIDATION", mapping_key,
+                "Clauses: %s total, %s supported, %s unsupported" % (len(reviews), supported_count, len(unsupported)))
+            for r in unsupported:
+                logger.log_debug("UNSUPPORTED_CLAUSE", mapping_key,
+                    '"%s" -- %s' % (str(r.get("clause", ""))[:80], str(r.get("reason", ""))[:120]))
+
         logger.log_agent_complete(
             agent_name,
             mapping_key,
@@ -2387,7 +2478,7 @@ def process_single_agent_item(
         return mapping_key, content, metadata
     except Exception as exc:
         logger.log_error(agent_name, mapping_key, exc)
-        if agent_name == "agent_1":
+        if agent_name == "subagent_1":
             return mapping_key, f"Content generation failed for {mapping_key}: {str(exc)[:100]}", {}
         if previous_output and str(previous_output).strip():
             return mapping_key, previous_output, {}
@@ -2498,7 +2589,9 @@ def run_ai_pipeline_with_progress(
 ) -> Dict[str, Dict[str, str]]:
     """Run the 4-agent FDD pipeline with optional progress callbacks."""
     total_items = len([key for key in mapping_keys if key in dfs])
-    logger = PipelineRunLogger()
+    fdd_config = FDDConfig(language=language, model_type=model_type)
+    debug_mode = fdd_config.get_debug_mode()
+    logger = PipelineRunLogger(debug_mode=debug_mode)
     prompt_manager = get_prompt_engine()
     ai_helper = AIClient(
         model_type=model_type,
@@ -2516,7 +2609,7 @@ def run_ai_pipeline_with_progress(
         use_multithreading,
     )
 
-    for agent_name, agent_label in AGENT_SEQUENCE:
+    for agent_name, agent_label in SUBAGENT_SEQUENCE:
         logger.logger.info("Running %s stage", agent_label)
         run_agent_stage(
             agent_name=agent_name,
@@ -2533,9 +2626,207 @@ def run_ai_pipeline_with_progress(
             user_comments=user_comments,
         )
 
+    # --- Feedback loop: re-run generator+validator for accounts with too many unsupported clauses ---
+    feedback_config = fdd_config.get_feedback_loop_config()
+    if feedback_config.get("enabled"):
+        logger.logger.info(
+            "Starting feedback loop (max_retries=%s, threshold=%.2f)",
+            feedback_config["max_retries"],
+            feedback_config["unsupported_threshold"],
+        )
+        for key in mapping_keys:
+            if key not in results or key not in dfs:
+                continue
+            retries = _run_feedback_loop_for_key(
+                key=key,
+                dfs=dfs,
+                results=results,
+                ai_helper=ai_helper,
+                prompt_manager=prompt_manager,
+                logger=logger,
+                feedback_config=feedback_config,
+                user_comments=user_comments,
+                progress_callback=progress_callback,
+            )
+            if retries > 0:
+                logger.logger.info("[FeedbackLoop] %s: completed with %s retry(ies)", key, retries)
+
     set_final_fallbacks(results)
+
+    # Generate simplified versions (~48% of detailed) for each account
+    _generate_simplified_versions(
+        results=results,
+        ai_helper=ai_helper,
+        logger=logger,
+        use_multithreading=use_multithreading,
+        max_workers=max_workers,
+        progress_callback=progress_callback,
+        total_items=total_items,
+    )
+
     logger.finalize(results)
     return results
+
+
+def _simplify_single_item(
+    mapping_key: str,
+    detailed_text: str,
+    ai_helper,
+    language: str,
+) -> Tuple[str, str]:
+    """Compress a single detailed commentary to ~48% for the simplified version."""
+    system_prompt = (
+        "You are a financial due diligence writing assistant. "
+        "Compress the given commentary to approximately 48% of its current length. "
+        "Keep the most important trend statement, the latest balance, and one key driver. "
+        "Drop secondary details, minor items, and elaboration. "
+        "Preserve all numbers, currency units, and period references exactly. "
+        "Output only the compressed paragraph, no preamble."
+    )
+    user_prompt = f"Compress this FDD commentary to ~48% length:\n\n{detailed_text}"
+    try:
+        response = _run_ai_call(ai_helper, user_prompt, system_prompt, "subagent_3")
+        content = clean_agent_output(response["content"].strip())
+        if language == "Eng":
+            content = polish_english_commentary(content)
+        return mapping_key, content
+    except Exception:
+        # Fallback: mechanically trim to first 48% of sentences
+        sentences = [s.strip() for s in detailed_text.replace(". ", ".\n").split("\n") if s.strip()]
+        keep = max(1, int(len(sentences) * 0.48))
+        return mapping_key, " ".join(sentences[:keep])
+
+
+def _generate_simplified_versions(
+    results: Dict[str, Dict[str, str]],
+    ai_helper,
+    logger: PipelineRunLogger,
+    use_multithreading: bool = True,
+    max_workers: Optional[int] = None,
+    progress_callback: Optional[Callable[..., None]] = None,
+    total_items: int = 0,
+) -> None:
+    """Generate simplified (~48%) versions of all final commentaries."""
+    eligible = [
+        (key, str(result.get("final", "")).strip())
+        for key, result in results.items()
+        if str(result.get("final", "")).strip()
+    ]
+    if not eligible:
+        return
+
+    logger.logger.info("Generating simplified versions for %s accounts", len(eligible))
+
+    if progress_callback:
+        try:
+            progress_callback(5, "Simplifier", 0, len(eligible), 4 * total_items, "")
+        except Exception:
+            pass
+
+    if use_multithreading and len(eligible) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers or 4) as executor:
+            futures = {
+                executor.submit(_simplify_single_item, key, text, ai_helper, ai_helper.language): key
+                for key, text in eligible
+            }
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    mapping_key, simplified = future.result()
+                    results[mapping_key]["final_simplified"] = simplified
+                except Exception as exc:
+                    key = futures[future]
+                    logger.logger.warning("Simplified version failed for %s: %s", key, exc)
+    else:
+        for key, text in eligible:
+            try:
+                _, simplified = _simplify_single_item(key, text, ai_helper, ai_helper.language)
+                results[key]["final_simplified"] = simplified
+            except Exception as exc:
+                logger.logger.warning("Simplified version failed for %s: %s", key, exc)
+
+    logger.logger.info("Simplified versions complete")
+
+
+def _evaluate_feedback_needed(
+    results: Dict[str, Dict[str, str]],
+    key: str,
+    unsupported_threshold: float,
+) -> tuple[bool, float, List[Dict[str, Any]]]:
+    """Check if a mapping_key's validator result warrants a feedback retry."""
+    validation = (results.get(key) or {}).get("agent_4_validation") or {}
+    clause_reviews = validation.get("clause_reviews") or []
+    if not clause_reviews:
+        return False, 0.0, []
+    unsupported = [r for r in clause_reviews if isinstance(r, dict) and not r.get("supported")]
+    ratio = len(unsupported) / len(clause_reviews)
+    return ratio > unsupported_threshold, ratio, unsupported
+
+
+def _run_feedback_loop_for_key(
+    key: str,
+    dfs: Dict[str, pd.DataFrame],
+    results: Dict[str, Dict[str, str]],
+    ai_helper,
+    prompt_manager: PromptEngine,
+    logger: PipelineRunLogger,
+    feedback_config: Dict[str, Any],
+    user_comments: Optional[Dict[str, str]] = None,
+    progress_callback: Optional[Callable[..., None]] = None,
+) -> int:
+    """Run feedback loop for a single key. Returns number of retries performed."""
+    max_retries = int(feedback_config.get("max_retries", 2))
+    threshold = float(feedback_config.get("unsupported_threshold", 0.3))
+
+    for retry_num in range(1, max_retries + 1):
+        needs_feedback, ratio, unsupported = _evaluate_feedback_needed(results, key, threshold)
+        if not needs_feedback:
+            return retry_num - 1
+
+        logger.logger.info(
+            "[FeedbackLoop] %s: retry %s/%s (unsupported_ratio=%.2f, threshold=%.2f, unsupported_count=%s)",
+            key, retry_num, max_retries, ratio, threshold, len(unsupported),
+        )
+
+        feedback_text = format_validator_feedback_for_reprompt(
+            (results[key].get("agent_4_validation") or {}).get("clause_reviews", []),
+            ai_helper.language,
+        )
+
+        if logger.debug_mode:
+            logger.log_debug("FEEDBACK_LOOP", key,
+                "Retry %s/%s: feedback_text_len=%s" % (retry_num, max_retries, len(feedback_text)),
+                feedback_text)
+
+        previous_output = get_pipeline_result_text(results[key])
+        base_user_comment = (user_comments or {}).get(key, "")
+        combined_comment = ("%s\n\n%s" % (base_user_comment, feedback_text)).strip() if feedback_text else base_user_comment
+
+        # Re-run generator with feedback
+        _key, gen_content, _meta = process_single_agent_item(
+            "subagent_1", key, dfs.get(key), ai_helper, prompt_manager, logger,
+            previous_output=previous_output,
+            user_comment=combined_comment,
+        )
+        results[key]["subagent_1"] = gen_content
+        results[key]["feedback_retry_%s_agent_1" % retry_num] = gen_content
+
+        # Re-run validator on new output
+        _key, val_content, val_metadata = process_single_agent_item(
+            "subagent_4", key, dfs.get(key), ai_helper, prompt_manager, logger,
+            previous_output=gen_content,
+            user_comment=base_user_comment,
+        )
+        _store_agent_result(results, key, "subagent_4", val_content, val_metadata)
+        results[key]["feedback_retry_%s_agent_4" % retry_num] = val_content
+        results[key]["feedback_retries"] = retry_num
+
+        if progress_callback:
+            try:
+                progress_callback(5, "FeedbackLoop-%s" % retry_num, 0, 0, 0, key)
+            except Exception:
+                pass
+
+    return max_retries
 
 
 def run_ai_pipeline(
@@ -2595,14 +2886,14 @@ def run_generator_reprompt(
         existing_result = (existing_results or {}).get(key) or {}
         previous_output = ""
         if isinstance(existing_result, dict):
-            for field in ("final", "agent_4", "agent_3", "agent_2", "agent_1"):
+            for field in ("final", "subagent_4", "subagent_3", "subagent_2", "subagent_1"):
                 candidate = existing_result.get(field)
                 if candidate and str(candidate).strip():
                     previous_output = str(candidate)
                     break
 
         mapping_key, content, _metadata = process_single_agent_item(
-            "agent_1",
+            "subagent_1",
             key,
             dfs.get(key),
             ai_helper,
@@ -2612,10 +2903,10 @@ def run_generator_reprompt(
             user_comment=(user_comments or {}).get(key, ""),
         )
         updated_result = dict(existing_result) if isinstance(existing_result, dict) else {}
-        updated_result["agent_1"] = content
+        updated_result["subagent_1"] = content
 
         _validator_key, validator_content, validator_metadata = process_single_agent_item(
-            "agent_4",
+            "subagent_4",
             key,
             dfs.get(key),
             ai_helper,
@@ -2624,7 +2915,7 @@ def run_generator_reprompt(
             previous_output=content,
             user_comment=(user_comments or {}).get(key, ""),
         )
-        updated_result["agent_4"] = validator_content
+        updated_result["subagent_4"] = validator_content
         updated_result["agent_4_validation"] = validator_metadata
         updated_result["final"] = validator_content
         updated_result["reprompt_mode"] = "generator_reprompt_validated"
@@ -2651,7 +2942,7 @@ def extract_final_contents(results: Dict[str, Dict[str, str]]) -> Dict[str, str]
 
 
 __all__ = [
-    "AGENT_SEQUENCE",
+    "SUBAGENT_SEQUENCE",
     "clean_agent_output",
     "extract_final_contents",
     "load_prompts_and_format",

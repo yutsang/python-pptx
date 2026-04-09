@@ -96,7 +96,7 @@ def extract_result_text_content(value: Any) -> str:
 
 def get_pipeline_result_text(
     result_dict: Any,
-    priority: Sequence[str] = ("final", "agent_4", "agent_3", "agent_2", "agent_1"),
+    priority: Sequence[str] = ("final", "subagent_4", "subagent_3", "subagent_2", "subagent_1"),
 ) -> str:
     if isinstance(result_dict, str):
         return result_dict

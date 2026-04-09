@@ -27,6 +27,7 @@ agents:
     temperature: 0.5
     max_tokens: 2000
     top_p: 0.9
+    reduction_target_pct: 64
   4_Validator:
     temperature: 0.2
     max_tokens: 2000
@@ -34,6 +35,11 @@ agents:
 
 processing:
   data_format_for_ai: "json"
+  debug_mode: false
+  feedback_loop:
+    enabled: true
+    max_retries: 2
+    unsupported_threshold: 0.3
 
 logging:
   suppress_http_logs: true

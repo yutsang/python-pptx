@@ -104,6 +104,9 @@ desktop.ini
 *.log
 *.bak
 clean_cache.py
+txt-to-excel.py
+export_selected_tabs.py
+export_selected_tabs.ipynb
 
 # Documentation (except README.md)
 PORT_MANAGEMENT_GUIDE.md

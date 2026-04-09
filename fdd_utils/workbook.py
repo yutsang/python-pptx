@@ -80,19 +80,30 @@ def find_mapping_key(account_name: str, mappings: Dict[str, Any]) -> str | None:
 def split_accounts_by_type(
     account_names: List[str],
     mappings: Dict[str, Any],
+    dfs: Dict[str, "pd.DataFrame"] | None = None,
 ) -> tuple[List[str], List[str], List[str]]:
-    """Preserve account order while grouping by mapping type."""
+    """Preserve account order while grouping by mapping type.
+
+    Falls back to ``df.attrs["integrity"]["statement_type"]`` when the
+    account cannot be found in *mappings*, so dynamically-resolved
+    accounts are still classified as BS or IS instead of "other".
+    """
     bs_accounts: List[str] = []
     is_accounts: List[str] = []
     other_accounts: List[str] = []
 
     for account_name in account_names:
+        account_type = ""
         mapping_key = find_mapping_key(account_name, mappings)
-        if not mapping_key:
-            other_accounts.append(account_name)
-            continue
+        if mapping_key:
+            account_type = mappings[mapping_key].get("type", "")
 
-        account_type = mappings[mapping_key].get("type", "")
+        # Fallback: read statement_type from the DataFrame attrs
+        if account_type not in ("BS", "IS") and dfs and account_name in dfs:
+            df = dfs[account_name]
+            integrity = getattr(df, "attrs", {}).get("integrity") or {}
+            account_type = integrity.get("statement_type", "")
+
         if account_type == "BS":
             bs_accounts.append(account_name)
         elif account_type == "IS":
@@ -362,7 +373,7 @@ def _normalize_spaces(text: Any) -> str:
 
 def canonical_stage_label(value: Any) -> Optional[str]:
     text = _normalize_spaces(cell_text(value)).lower()
-    if not text:
+    if not text or len(text) > 35:
         return None
     for canonical, variants in CANONICAL_STAGE_LABELS:
         if any(variant in text for variant in variants):
@@ -615,14 +626,12 @@ def profile_workbook(workbook_path: str) -> Dict[str, Dict[str, Any]]:
     profiles: Dict[str, Dict[str, Any]] = {}
     for sheet_name, df in workbook_frames.items():
         profiles[sheet_name] = profile_sheet(df, sheet_name)
-    
-    
-    #logger.info(
-    #    "Workbook profiler scanned %s sheets from %s in %.2fs",
-    #    len(profiles),
-    #    workbook_path,
+    logger.debug(
+        "Workbook profiler scanned %s sheets from %s in %.2fs",
+        len(profiles),
+        workbook_path,
         time.perf_counter() - started,
-    #)
+    )
     return profiles
 # --- end workbook/inspector.py ---
 
@@ -1247,6 +1256,14 @@ def get_table_inspection(workbook_path: str, sheet_name: str) -> Any:
 
 def clear_table_inspection_cache():
     get_table_inspection.cache_clear()
+
+
+def clear_workbook_caches():
+    """Clear all lru_cache entries for workbook profiling and loading."""
+    load_workbook_frames.cache_clear()
+    profile_workbook.cache_clear()
+    _build_workbook_preflight_cached.cache_clear()
+    get_table_inspection.cache_clear()
 # --- end workbook/table_debug.py ---
 
 # --- begin workbook/text_export.py ---
@@ -1439,7 +1456,9 @@ logger = logging.getLogger(__name__)
 def _contains_indicative_marker(text: str) -> bool:
     """Check whether text marks an indicative-adjusted value column."""
     lowered = text.lower()
-    return '示意性调整后' in lowered or '示意性調整後' in lowered or 'indicative adjusted' in lowered
+    # Handle both "Indicative adjusted" (with space) and "Indicativeadjusted" (no space)
+    normalised = lowered.replace(' ', '')
+    return '示意性调整后' in lowered or '示意性調整後' in lowered or 'indicativeadjusted' in normalised
 
 
 def _looks_like_remark_text(text: str) -> bool:
@@ -3731,9 +3750,14 @@ def normalize_financial_schedule(
     projection_df.attrs.update(common_attrs)
     projection_df_original.attrs.update(common_attrs)
     projection_df_annualized.attrs.update(common_attrs)
+    # Exclude prompt_analysis_df from its own attrs to avoid circular reference
+    # (deepcopy during .copy() would recurse infinitely on Python 3.13+)
+    prompt_analysis_attrs = {k: v for k, v in common_attrs.items() if k != "prompt_analysis_df"}
+    prompt_analysis_df.attrs.update(prompt_analysis_attrs)
     projection_df_original.attrs["selected_variant"] = "original"
     projection_df_annualized.attrs["selected_variant"] = "annualized"
     projection_df.attrs["selected_variant"] = "annualized" if annualization.get("annualized") else "original"
+    prompt_analysis_df.attrs["selected_variant"] = "analysis"
 
     return {
         "sheet_name": sheet_name,
@@ -3746,6 +3770,7 @@ def normalize_financial_schedule(
         "projection_df": projection_df,
         "projection_df_original": projection_df_original,
         "projection_df_annualized": projection_df_annualized,
+        "prompt_analysis_df": prompt_analysis_df,
         "integrity": projection_df.attrs["integrity"],
     }
 def _annualization_factor(column_name: str) -> float | None:
@@ -3925,7 +3950,10 @@ def _score_candidate(candidate: str, alias: str) -> float:
         if candidate_tokens and candidate_tokens.issubset(alias_tokens):
             score += 12.0
     if _is_compact_cjk_label(candidate_norm) and _is_compact_cjk_label(alias_norm) and candidate_norm != alias_norm:
-        return min(score, 24.0)
+        if alias_norm in candidate_norm or candidate_norm in alias_norm:
+            score += 40.0
+        else:
+            return min(score, 24.0)
     ratio = SequenceMatcher(None, candidate_norm, alias_norm).ratio()
     if ratio >= 0.70:
         score += ratio * 40.0
@@ -3974,6 +4002,18 @@ def _semantic_alignment_adjustment(candidate_norm: str, alias_norm: str) -> floa
     alias_by_customer = contains(alias_norm, "by customer") or contains(alias_norm, "customer")
     if candidate_by_customer and not alias_by_customer:
         adjustment -= 24.0
+
+    candidate_receivable = bool(re.search(r"\breceivable\b", candidate_norm))
+    alias_receivable = bool(re.search(r"\breceivable\b", alias_norm))
+    if candidate_receivable != alias_receivable:
+        adjustment -= 16.0
+
+    candidate_notes = bool(re.search(r"\bnotes?\b", candidate_norm))
+    alias_notes = bool(re.search(r"\bnotes?\b", alias_norm))
+    if candidate_receivable and alias_receivable and candidate_notes != alias_notes:
+        adjustment -= 20.0
+    elif candidate_notes != alias_notes:
+        adjustment -= 12.0
 
     return adjustment
 
@@ -5092,7 +5132,7 @@ def filter_worksheets_by_mode(worksheets, mode, mapping):
     result = []
     for ws in worksheets:
         for key, value in mapping.items():
-            # Skip non-account entries (e.g., _default_agent_1)
+            # Skip non-account entries (e.g., _default_subagent_1)
             if key.startswith('_') or not isinstance(value, dict):
                 continue
             
@@ -5481,6 +5521,7 @@ def build_dataframe_variants_from_normalized_results(
         "default": "projection_df",
         "original": "projection_df_original",
         "annualized": "projection_df_annualized",
+        "analysis": "prompt_analysis_df",
     }
 
     for sheet in workbook_list:
@@ -5791,15 +5832,25 @@ def find_account_in_dfs(
 
     mapping_key, mapping_config, category = _resolve_mapping_alias(account_name, mappings)
 
-    # STEP 0: Always honor an exact source-account to DFS-key match first.
-    for dfs_key in dfs.keys():
-        if _normalize_account_name(dfs_key) == account_normalized:
+    # Helper: collect the normalised identifiers for a dfs entry (tab key + block_title).
+    def _dfs_names(key: str, df: pd.DataFrame) -> List[str]:
+        names = [_normalize_account_name(key)]
+        block_title = df.attrs.get("block_title") or ""
+        if block_title:
+            norm_bt = _normalize_account_name(block_title)
+            if norm_bt and norm_bt != names[0]:
+                names.append(norm_bt)
+        return names
+
+    # STEP 0: Always honor an exact source-account to DFS-key/block_title match first.
+    for dfs_key, dfs_df_candidate in dfs.items():
+        if account_normalized in _dfs_names(dfs_key, dfs_df_candidate):
             if debug:
                 print(f"    [MATCH]   Step 0: ✅ Exact source-to-tab match '{dfs_key}'")
             if mapping_key:
                 return (
                     dfs_key,
-                    dfs[dfs_key],
+                    dfs_df_candidate,
                     category,
                     mapping_key,
                     'Mapped',
@@ -5807,7 +5858,7 @@ def find_account_in_dfs(
                 )
             return (
                 dfs_key,
-                dfs[dfs_key],
+                dfs_df_candidate,
                 None,
                 None,
                 'Tab-only match',
@@ -5824,14 +5875,14 @@ def find_account_in_dfs(
             print(f"    [MATCH]     Category: '{category}'")
             print(f"    [MATCH]     Aliases: {aliases}")
 
-        # STEP 2b: Fall back to any alias match against DFS keys.
-        for dfs_key in dfs.keys():
-            if _normalize_account_name(dfs_key) in normalized_aliases:
+        # STEP 2b: Fall back to any alias match against DFS keys or block_titles.
+        for dfs_key, dfs_df_candidate in dfs.items():
+            if normalized_aliases & set(_dfs_names(dfs_key, dfs_df_candidate)):
                 if debug:
                     print(f"    [MATCH]   Step 2b: ✅ DFS key '{dfs_key}' matches alias!")
                 return (
                     dfs_key,
-                    dfs[dfs_key],
+                    dfs_df_candidate,
                     category,
                     mapping_key,
                     'Mapped',
@@ -6025,11 +6076,11 @@ def reconcile_financial_statements(
     Returns:
         Tuple of (bs_reconciliation_df, is_reconciliation_df)
         Each DataFrame has columns:
-        - Source_Account: Account name from BS/IS
+        - Financials_Account: Account name from BS/IS
         - Date: Date column (latest only)
-        - Source_Value: Value from BS/IS (expenses converted to positive)
-        - DFS_Account: Actual dfs key name (e.g., '货币资金', not mapping key 'Cash')
-        - DFS_Value: Total value from dfs
+        - Financials_Value: Value from BS/IS (expenses converted to positive)
+        - Tab_Account: Actual workbook tab name (e.g., '货币资金', not mapping key 'Cash')
+        - Tab_Value: Total value from the schedule tab
         - Match: '✅ Match', '❌ Diff: X', '⚠️ Not Found', or '-' (skipped)
     """
     if debug:
@@ -6057,40 +6108,48 @@ def reconcile_financial_statements(
             print(f"[RECON]   Using latest date (last column): {latest_date}")
         
         if latest_date:
+            # Use the 2 most recent columns for the zero-source check:
+            # only skip if both are zero (loosened to keep items with adjacent-period data).
+            recent_dates = date_cols[-2:] if len(date_cols) >= 2 else date_cols
+
             for idx, row in bs_df.iterrows():
                 account_name = row['Description']
                 source_value = row[latest_date]
-                
-                # If source value is 0, skip DFS mapping
-                if source_value == 0:
+
+                # Skip only when ALL of the most-recent columns are zero
+                recent_values = [row[d] for d in recent_dates]
+                if all(v == 0 for v in recent_values):
                     integrity_fields = _integrity_metadata(None)
                     bs_recon_rows.append({
-                        'Source_Account': account_name,
+                        'Financials_Account': account_name,
                         'Date': latest_date,
-                        'Source_Value': source_value,
-                        'DFS_Account': '-',
-                        'DFS_Value': '-',
+                        'Financials_Value': source_value,
+                        'Tab_Account': '-',
+                        'Tab_Value': '-',
                         'Diff': '-',
                         'Match': '-',
                         'Mapping_Key': '-',
                         'Mapping_Status': 'Zero source',
-                        'Mapping_Note': 'Latest source value is 0, so schedule mapping was skipped.',
+                        'Mapping_Note': 'Most recent period values are all 0, so schedule mapping was skipped.',
                         **integrity_fields,
                     })
                     continue
-                
+
+                # Flag: latest period is 0 but an adjacent period has data
+                zero_with_adjacent = source_value == 0 and any(v != 0 for v in recent_values)
+
                 # Find matching account in dfs (ONLY via mappings.yml)
                 dfs_key, dfs_df, category, mapping_key, mapping_status, mapping_note = find_account_in_dfs(account_name, dfs, mappings, debug=debug)
-                
+
                 # Handle skipped accounts (totals/profit lines)
                 if dfs_key == 'SKIP':
                     integrity_fields = _integrity_metadata(None)
                     bs_recon_rows.append({
-                        'Source_Account': account_name,
+                        'Financials_Account': account_name,
                         'Date': latest_date,
-                        'Source_Value': source_value,
-                        'DFS_Account': '-',
-                        'DFS_Value': '-',
+                        'Financials_Value': source_value,
+                        'Tab_Account': '-',
+                        'Tab_Value': '-',
                         'Diff': '-',
                         'Match': '-',
                         'Mapping_Key': '-',
@@ -6099,20 +6158,26 @@ def reconcile_financial_statements(
                         **integrity_fields,
                     })
                     continue
-                
+
                 # Get total value from dfs
                 dfs_value = get_total_from_dfs(dfs_df, latest_date, debug) if dfs_df is not None else None
-                
+
+                # When the tab exists but has no column for this date and the
+                # source is 0 (zero_with_adjacent), treat the missing value as 0
+                # — the schedule simply has no data for that period.
+                if dfs_value is None and zero_with_adjacent and dfs_df is not None:
+                    dfs_value = 0.0
+
                 # Check match
                 if dfs_value is None:
                     match_status = '⚠️ Not Found'
                     difference = None
                 else:
                     difference = abs(source_value - dfs_value)
-                    
+
                     # Check if within absolute tolerance
                     if difference <= tolerance:
-                        match_status = '✅ Match'
+                        match_status = '⚠️ Match' if zero_with_adjacent else '✅ Match'
                     else:
                         # Check if within materiality threshold (percentage)
                         if source_value != 0:
@@ -6123,14 +6188,14 @@ def reconcile_financial_statements(
                                 match_status = '❌ Diff'
                         else:
                             match_status = '❌ Diff'
-                
+
                 integrity_fields = _integrity_metadata(dfs_df)
                 bs_recon_rows.append({
-                    'Source_Account': account_name,
+                    'Financials_Account': account_name,
                     'Date': latest_date,
-                    'Source_Value': source_value,
-                    'DFS_Account': dfs_key or 'Not Found',
-                    'DFS_Value': dfs_value if dfs_value is not None else 0,
+                    'Financials_Value': source_value,
+                    'Tab_Account': dfs_key or 'Not Found',
+                    'Tab_Value': dfs_value if dfs_value is not None else 0,
                     'Diff': difference if difference is not None else '-',
                     'Match': match_status,
                     'Mapping_Key': mapping_key or '-',
@@ -6154,40 +6219,48 @@ def reconcile_financial_statements(
             print(f"[RECON]   Using latest date (last column): {latest_date}")
         
         if latest_date:
+            # Use the 2 most recent columns for the zero-source check:
+            # only skip if both are zero (loosened to keep items with adjacent-period data).
+            recent_dates = date_cols[-2:] if len(date_cols) >= 2 else date_cols
+
             for idx, row in is_df.iterrows():
                 account_name = row['Description']
                 source_value_raw = row[latest_date]
-                
-                # If source value is 0, skip DFS mapping
-                if source_value_raw == 0:
+
+                # Skip only when ALL of the most-recent columns are zero
+                recent_values = [row[d] for d in recent_dates]
+                if all(v == 0 for v in recent_values):
                     integrity_fields = _integrity_metadata(None)
                     is_recon_rows.append({
-                        'Source_Account': account_name,
+                        'Financials_Account': account_name,
                         'Date': latest_date,
-                        'Source_Value': source_value_raw,
-                        'DFS_Account': '-',
-                        'DFS_Value': '-',
+                        'Financials_Value': source_value_raw,
+                        'Tab_Account': '-',
+                        'Tab_Value': '-',
                         'Diff': '-',
                         'Match': '-',
                         'Mapping_Key': '-',
                         'Mapping_Status': 'Zero source',
-                        'Mapping_Note': 'Latest source value is 0, so schedule mapping was skipped.',
+                        'Mapping_Note': 'Most recent period values are all 0, so schedule mapping was skipped.',
                         **integrity_fields,
                     })
                     continue
-                
+
+                # Flag: latest period is 0 but an adjacent period has data
+                zero_with_adjacent = source_value_raw == 0 and any(v != 0 for v in recent_values)
+
                 # Find matching account in dfs (ONLY via mappings.yml)
                 dfs_key, dfs_df, category, mapping_key, mapping_status, mapping_note = find_account_in_dfs(account_name, dfs, mappings, debug=debug)
-                
+
                 # Handle skipped accounts (totals/profit lines)
                 if dfs_key == 'SKIP':
                     integrity_fields = _integrity_metadata(None)
                     is_recon_rows.append({
-                        'Source_Account': account_name,
+                        'Financials_Account': account_name,
                         'Date': latest_date,
-                        'Source_Value': source_value_raw,
-                        'DFS_Account': '-',
-                        'DFS_Value': '-',
+                        'Financials_Value': source_value_raw,
+                        'Tab_Account': '-',
+                        'Tab_Value': '-',
                         'Diff': '-',
                         'Match': '-',
                         'Mapping_Key': '-',
@@ -6196,10 +6269,16 @@ def reconcile_financial_statements(
                         **integrity_fields,
                     })
                     continue
-                
+
                 # Get total value from dfs
                 dfs_value = get_total_from_dfs(dfs_df, latest_date, debug) if dfs_df is not None else None
-                
+
+                # When the tab exists but has no column for this date and the
+                # source is 0 (zero_with_adjacent), treat the missing value as 0
+                # — the schedule simply has no data for that period.
+                if dfs_value is None and zero_with_adjacent and dfs_df is not None:
+                    dfs_value = 0.0
+
                 # For expense/loss-style lines: keep the original sign in display but compare on absolute value.
                 source_for_comparison = source_value_raw
                 dfs_for_comparison = dfs_value
@@ -6212,17 +6291,17 @@ def reconcile_financial_statements(
                             f"    [CONVERT] Compare absolute values: source {source_value_raw:,.0f} → {source_for_comparison:,.0f}; "
                             f"dfs {dfs_value if dfs_value is not None else 'None'} → {dfs_for_comparison if dfs_for_comparison is not None else 'None'}"
                         )
-                
+
                 # Check match
                 if dfs_value is None:
                     match_status = '⚠️ Not Found'
                     difference = None
                 else:
                     difference = abs(source_for_comparison - dfs_for_comparison)
-                    
+
                     # Check if within absolute tolerance
                     if difference <= tolerance:
-                        match_status = '✅ Match'
+                        match_status = '⚠️ Match' if zero_with_adjacent else '✅ Match'
                     else:
                         # Check if within materiality threshold (percentage)
                         if source_for_comparison != 0:
@@ -6236,11 +6315,11 @@ def reconcile_financial_statements(
                 
                 integrity_fields = _integrity_metadata(dfs_df)
                 is_recon_rows.append({
-                    'Source_Account': account_name,
+                    'Financials_Account': account_name,
                     'Date': latest_date,
-                    'Source_Value': source_value_raw,  # Keep original negative value
-                    'DFS_Account': dfs_key or 'Not Found',
-                    'DFS_Value': dfs_value if dfs_value is not None else 0,
+                    'Financials_Value': source_value_raw,  # Keep original negative value
+                    'Tab_Account': dfs_key or 'Not Found',
+                    'Tab_Value': dfs_value if dfs_value is not None else 0,
                     'Diff': difference if difference is not None else '-',
                     'Match': match_status,
                     'Mapping_Key': mapping_key or '-',
@@ -6305,10 +6384,10 @@ def print_reconciliation_report(bs_recon_df: pd.DataFrame, is_recon_df: pd.DataF
         if not df_to_show.empty:
             # Format for display
             df_display = df_to_show.copy()
-            df_display['Source_Value'] = df_display['Source_Value'].apply(
+            df_display['Financials_Value'] = df_display['Financials_Value'].apply(
                 lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
             )
-            df_display['DFS_Value'] = df_display['DFS_Value'].apply(
+            df_display['Tab_Value'] = df_display['Tab_Value'].apply(
                 lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
             )
             df_display['Diff'] = df_display['Diff'].apply(
@@ -6331,10 +6410,10 @@ def print_reconciliation_report(bs_recon_df: pd.DataFrame, is_recon_df: pd.DataF
         if not df_to_show.empty:
             # Format for display
             df_display = df_to_show.copy()
-            df_display['Source_Value'] = df_display['Source_Value'].apply(
+            df_display['Financials_Value'] = df_display['Financials_Value'].apply(
                 lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
             )
-            df_display['DFS_Value'] = df_display['DFS_Value'].apply(
+            df_display['Tab_Value'] = df_display['Tab_Value'].apply(
                 lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x
             )
             df_display['Diff'] = df_display['Diff'].apply(
@@ -6402,6 +6481,8 @@ if __name__ == "__main__":
 # --- end workbook/reconcile.py ---
 
 # --- begin workbook/flow.py ---
+import contextlib
+import io
 import logging
 import os
 import time
@@ -6416,6 +6497,7 @@ def process_workbook_data(
     entity_name: str,
     selected_sheet: str | None,
     mapping_overrides: Dict[str, str] | None = None,
+    debug: bool = False,
 ) -> Dict[str, Any]:
     process_started = time.perf_counter()
     normalized_results, normalized_workbook_list, _, language, resolution = extract_normalized_data_from_excel(
@@ -6442,24 +6524,33 @@ def process_workbook_data(
                 "keep_zero_rows": False,
             }
             for view_name, filter_details in (("display", False), ("detail", True))
-            for variant in ("original", "default")
+            for variant in ("original", "default", "analysis")
         ],
     )
     display_dfs_original = dataframe_variants.get("display_original", {}).get("dfs", {})
     display_workbook_list = dataframe_variants.get("display_original", {}).get("workbook_list", [])
     display_dfs = dataframe_variants.get("display_default", {}).get("dfs", {})
     dfs_original = dataframe_variants.get("detail_original", {}).get("dfs", {})
-    dfs = dataframe_variants.get("detail_default", {}).get("dfs", {})
-    workbook_list = dataframe_variants.get("detail_default", {}).get("workbook_list", [])
+    # Use analysis variant (all Indicative adjusted periods) as primary for AI
+    dfs = dataframe_variants.get("detail_analysis", {}).get("dfs", {})
+    if not dfs:
+        dfs = dataframe_variants.get("detail_default", {}).get("dfs", {})
+    workbook_list = dataframe_variants.get("detail_analysis", {}).get("workbook_list", [])
+    if not workbook_list:
+        workbook_list = dataframe_variants.get("detail_default", {}).get("workbook_list", [])
+
+    debug_buffer = io.StringIO() if debug else None
+    debug_ctx = contextlib.redirect_stdout(debug_buffer) if debug_buffer else contextlib.nullcontext()
 
     bs_is_results = None
     if selected_sheet:
         bs_started = time.perf_counter()
-        bs_is_results = extract_balance_sheet_and_income_statement(
-            workbook_path=temp_path,
-            sheet_name=selected_sheet,
-            debug=False,
-        )
+        with debug_ctx:
+            bs_is_results = extract_balance_sheet_and_income_statement(
+                workbook_path=temp_path,
+                sheet_name=selected_sheet,
+                debug=debug,
+            )
         logger.debug(
             "Extracted financial summary sheet %s in %.2fs",
             selected_sheet,
@@ -6470,14 +6561,15 @@ def process_workbook_data(
     if dfs_original and bs_is_results:
         recon_started = time.perf_counter()
         effective_mappings = get_effective_mappings(load_mappings(), resolution)
-        recon_bs, recon_is = reconcile_financial_statements(
-            bs_is_results=bs_is_results,
-            dfs=dfs_original,
-            mappings=effective_mappings,
-            tolerance=1.0,
-            materiality_threshold=0.005,
-            debug=False,
-        )
+        with debug_ctx:
+            recon_bs, recon_is = reconcile_financial_statements(
+                bs_is_results=bs_is_results,
+                dfs=dfs_original,
+                mappings=effective_mappings,
+                tolerance=1.0,
+                materiality_threshold=0.005,
+                debug=debug,
+            )
         logger.debug(
             "Reconciled %s account tabs in %.2fs",
             len(dfs),
@@ -6510,5 +6602,6 @@ def process_workbook_data(
         "project_name": bs_is_results.get("project_name") if bs_is_results else None,
         "entity_name": entity_name,
         "display_dfs_original": display_dfs_original,
+        "debug_output": debug_buffer.getvalue() if debug_buffer else "",
     }
 # --- end workbook/flow.py ---

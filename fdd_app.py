@@ -7,7 +7,10 @@ Combines extraction, reconciliation, AI generation, and PPTX export
 import streamlit as st
 import logging
 import os
+import re
 import time
+import traceback
+from pathlib import Path
 from typing import Dict, List
 
 # Import modules
@@ -20,6 +23,7 @@ from fdd_utils.ui import (
     render_sidebar_upload,
     should_render_preprocess_controls,
 )
+from fdd_utils.ai import FDDConfig
 from fdd_utils.workbook import (
     process_workbook_data,
     build_workbook_preflight,
@@ -49,6 +53,17 @@ st.markdown("""
 .stTabs [data-baseweb="tab"] {padding: 10px 20px;}
 .main .block-container {max-width: 100%; padding-left: 2rem; padding-right: 2rem;}
 [data-testid="stAppViewContainer"] {max-width: 100%;}
+/* Replace default Streamlit footer */
+footer {visibility: hidden;}
+footer:after {
+    content: 'Made with Yuu, D&A Hub, TRNS, HK';
+    visibility: visible;
+    display: block;
+    text-align: center;
+    padding: 5px;
+    color: rgba(120, 120, 120, 0.6);
+    font-size: 0.8rem;
+}
 .fdd-final-commentary {
     padding: 0.9rem 1rem;
     border-radius: 0.75rem;
@@ -56,12 +71,20 @@ st.markdown("""
     background: rgba(120, 120, 120, 0.06);
     color: inherit;
     line-height: 1.65;
+    max-height: 420px;
+    overflow-y: auto;
 }
 .fdd-final-commentary p {margin: 0 0 0.8rem 0;}
 .fdd-final-commentary p:last-child {margin-bottom: 0;}
-.fdd-unsupported-clause {
+.fdd-hallucination-clause {
     background: rgba(255, 214, 10, 0.38);
     color: #3f2b00;
+    padding: 0 0.16rem;
+    border-radius: 0.22rem;
+}
+.fdd-reasoning-clause {
+    background: rgba(255, 165, 0, 0.25);
+    color: #4a2800;
     padding: 0 0.16rem;
     border-radius: 0.22rem;
 }
@@ -85,32 +108,44 @@ st.markdown("""
         border-color: rgba(255, 255, 255, 0.14);
         background: rgba(255, 255, 255, 0.04);
     }
-    .fdd-unsupported-clause {
+    .fdd-hallucination-clause {
         background: rgba(255, 196, 61, 0.34);
         color: #fff4cc;
+    }
+    .fdd-reasoning-clause {
+        background: rgba(255, 165, 0, 0.28);
+        color: #ffe0b2;
     }
     .fdd-validator-notes {
         border-color: rgba(255, 196, 61, 0.32);
         background: rgba(255, 196, 61, 0.12);
     }
 }
+/* Streamlit-specific dark mode override */
+[data-testid="stApp"][data-theme="dark"] .fdd-hallucination-clause {
+    background: rgba(255, 196, 61, 0.34);
+    color: #fff4cc;
+}
+[data-testid="stApp"][data-theme="dark"] .fdd-reasoning-clause {
+    background: rgba(255, 165, 0, 0.28);
+    color: #ffe0b2;
+}
 </style>
 """, unsafe_allow_html=True)
 
-
-MODEL_DISPLAY = {
-    'local': 'qwen3-chat',
-    'openai': 'gpt-4o-mini',
-    'deepseek': 'deepseek-chat',
-}
 
 logger = logging.getLogger(__name__)
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
 def get_model_display_name(model_type: str) -> str:
-    """Return a user-facing model name."""
-    return MODEL_DISPLAY.get(model_type, str(model_type))
+    """Return the actual chat_model from config.yml for the resolved provider."""
+    try:
+        cfg = FDDConfig(model_type=model_type)
+        provider = cfg.get_model_config()
+        return provider.get("chat_model", "").strip() or cfg.model_type
+    except Exception:
+        return str(model_type)
 
 
 def generate_pptx_presentation():
@@ -199,6 +234,22 @@ def get_financial_sheets(file_path: str) -> List[str]:
         return []
 
 
+_FILENAME_STRIP_WORDS = {
+    "project", "databook", "data", "book", "workbook", "fdd", "template",
+    "final", "draft", "copy", "v1", "v2", "v3", "xlsx", "xls",
+}
+
+
+def _extract_entity_from_filename(filename: str) -> str:
+    """Extract a meaningful entity name from the uploaded filename."""
+    stem = Path(filename).stem
+    # Replace separators with spaces
+    name = re.sub(r"[._-]+", " ", stem)
+    # Remove generic words
+    tokens = [t for t in name.split() if t.lower() not in _FILENAME_STRIP_WORDS]
+    return " ".join(tokens).strip()
+
+
 def render_entity_and_sheet_controls(processed: bool = False):
     """Render entity and summary-sheet controls before and after processing."""
     col_entity, col_sheet = st.columns(2)
@@ -208,6 +259,11 @@ def render_entity_and_sheet_controls(processed: bool = False):
         st.markdown("**🏢 Entity Name**")
         if temp_path and os.path.exists(temp_path):
             entity_options = get_entity_names(temp_path)
+            uploaded_filename = st.session_state.get("uploaded_filename", "")
+            if uploaded_filename:
+                filename_entity = _extract_entity_from_filename(uploaded_filename)
+                if filename_entity and filename_entity not in entity_options:
+                    entity_options = list(entity_options) + [filename_entity]
             selector_model = build_entity_selector_model(
                 entity_options,
                 current_entity_name=st.session_state.get('entity_name') or "",
@@ -314,11 +370,14 @@ if st.session_state.get('process_data_clicked', False):
     if temp_path:
         with st.spinner("Processing..."):
             try:
+                fdd_config = FDDConfig()
+                debug_mode = fdd_config.get_debug_mode()
                 processed_state = process_workbook_data(
                     temp_path=temp_path,
                     entity_name=entity_name,
                     selected_sheet=selected_sheet,
                     mapping_overrides=st.session_state.get("mapping_overrides") or None,
+                    debug=debug_mode,
                 )
                 st.session_state.update(
                     {key: value for key, value in processed_state.items() if key != "display_dfs_original"}
@@ -330,7 +389,6 @@ if st.session_state.get('process_data_clicked', False):
                 
             except Exception as e:
                 st.error(f"❌ Error processing data: {e}")
-                import traceback
                 st.code(traceback.format_exc())
 
 # Main content

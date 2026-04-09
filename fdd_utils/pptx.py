@@ -304,6 +304,7 @@ def build_pptx_structured_payloads(
     mappings,
     bs_is_results=None,
     dfs=None,
+    commentary_modes=None,
 ):
     if not ai_results:
         return {"BS": [], "IS": []}
@@ -329,7 +330,11 @@ def build_pptx_structured_payloads(
         if not _has_significant_balance(financial_data):
             continue
 
-        final_content = _extract_final_content(result)
+        use_simplified = (commentary_modes or {}).get(account_key) == "Simplified"
+        if use_simplified and str(result.get("final_simplified") or "").strip():
+            final_content = str(result["final_simplified"]).strip()
+        else:
+            final_content = _extract_final_content(result)
         commentary_text = (
             str(final_content).strip()
             if final_content and str(final_content).strip()
@@ -371,6 +376,7 @@ def build_pptx_structured_payloads(
 import logging
 import os
 import time
+import traceback
 from typing import Dict, List, Optional
 
 from pptx import Presentation
@@ -399,16 +405,16 @@ class ReportGenerator:
 
     def generate(self):
         logger.info("Starting PPTX generation...")
-        logger.info(f"Template: {self.template_path}")
-        logger.info(f"Markdown: {self.markdown_file}")
-        logger.info(f"Output: {self.output_path}")
-        logger.info(f"Language: {self.language}")
-        logger.info(f"Project: {self.project_name}")
+        logger.info("Template: %s", self.template_path)
+        logger.info("Markdown: %s", self.markdown_file)
+        logger.info("Output: %s", self.output_path)
+        logger.info("Language: %s", self.language)
+        logger.info("Project: %s", self.project_name)
 
         with open(self.markdown_file, "r", encoding="utf-8") as handle:
             md_content = handle.read()
 
-        logger.info(f"Content length: {len(md_content)} characters")
+        logger.info("Content length: %s characters", len(md_content))
         generator = PowerPointGenerator(self.template_path, self.language, self.row_limit)
 
         try:
@@ -416,10 +422,10 @@ class ReportGenerator:
             if self.project_name:
                 generator.update_project_titles(self.project_name, "BS")
         except Exception as exc:
-            logger.error(f"Report generation failed: {exc}")
+            logger.error("Report generation failed: %s", exc)
             raise
 
-        logger.info(f"✅ PPTX generation completed: {self.output_path}")
+        logger.info("PPTX generation completed: %s", self.output_path)
 
 
 def export_pptx(
@@ -427,7 +433,7 @@ def export_pptx(
     markdown_path: str,
     output_path: str,
     project_name: Optional[str] = None,
-    excel_file_path: Optional[str] = None,
+    _excel_file_path: Optional[str] = None,
     language: str = "english",
     statement_type: str = "BS",
     row_limit: int = 20,
@@ -445,11 +451,8 @@ def export_pptx(
         pptx_gen.presentation = temp_presentation
         pptx_gen.update_project_titles(project_name, statement_type)
         temp_presentation.save(output_path)
-        del temp_presentation
-        del pptx_gen
 
-    del excel_file_path
-    logger.info(f"✅ PowerPoint presentation successfully exported to: {output_path}")
+    logger.info("PowerPoint presentation successfully exported to: %s", output_path)
     return output_path
 
 
@@ -469,10 +472,10 @@ def export_pptx_from_structured_data_combined(
     try:
         export_started_at = time.perf_counter()
         logger.info("Starting COMBINED PPTX generation...")
-        logger.info(f"Template: {template_path}")
-        logger.info(f"Output: {output_path}")
-        logger.info(f"Language: {language}")
-        logger.info(f"BS accounts: {len(bs_data)}, IS accounts: {len(is_data)}")
+        logger.info("Template: %s", template_path)
+        logger.info("Output: %s", output_path)
+        logger.info("Language: %s", language)
+        logger.info("BS accounts: %s, IS accounts: %s", len(bs_data), len(is_data))
 
         generator = PowerPointGenerator(template_path, language, row_limit=20, model_type=model_type)
         stage_started_at = time.perf_counter()
@@ -500,9 +503,9 @@ def export_pptx_from_structured_data_combined(
         if hasattr(generator, "_unused_slides_to_remove") and generator._unused_slides_to_remove:
             stage_started_at = time.perf_counter()
             unused_slides_sorted = sorted(set(generator._unused_slides_to_remove), reverse=True)
-            logger.info(f"Removing {len(unused_slides_sorted)} unused slides at the end: {[idx + 1 for idx in unused_slides_sorted]}")
+            logger.info("Removing %s unused slides at the end: %s", len(unused_slides_sorted), [idx + 1 for idx in unused_slides_sorted])
             generator._remove_slides(unused_slides_sorted)
-            logger.info(f"✅ Removed {len(unused_slides_sorted)} unused slides")
+            logger.info("Removed %s unused slides", len(unused_slides_sorted))
             logger.info("PPTX stage remove_unused_slides took %.2fs", time.perf_counter() - stage_started_at)
         if project_name:
             stage_started_at = time.perf_counter()
@@ -513,12 +516,10 @@ def export_pptx_from_structured_data_combined(
         generator.save(output_path)
         logger.info("PPTX stage save_presentation took %.2fs", time.perf_counter() - stage_started_at)
         logger.info("PPTX combined export total took %.2fs", time.perf_counter() - export_started_at)
-        logger.info(f"✅ Combined PPTX generation completed: {output_path}")
+        logger.info("Combined PPTX generation completed: %s", output_path)
         return output_path
     except Exception as exc:
-        logger.error(f"PPTX generation failed: {exc}")
-        import traceback
-
+        logger.error("PPTX generation failed: %s", exc)
         logger.error(traceback.format_exc())
         raise
 
@@ -535,29 +536,29 @@ def export_pptx_from_structured_data(
 ):
     try:
         logger.info("Starting PPTX generation from structured data...")
-        logger.info(f"Template: {template_path}")
-        logger.info(f"Output: {output_path}")
-        logger.info(f"Language: {language}")
-        logger.info(f"Statement type: {statement_type}, Start slide: {start_slide}")
-        logger.info(f"Accounts to process: {len(structured_data)}")
+        logger.info("Template: %s", template_path)
+        logger.info("Output: %s", output_path)
+        logger.info("Language: %s", language)
+        logger.info("Statement type: %s, Start slide: %s", statement_type, start_slide)
+        logger.info("Accounts to process: %s", len(structured_data))
 
         generator = PowerPointGenerator(template_path, language, row_limit=20, model_type=model_type)
         generator.load_template()
         generator.apply_structured_data_to_slides(structured_data, start_slide, project_name, statement_type)
         generator.save(output_path)
 
-        logger.info(f"✅ PPTX generation completed: {output_path}")
+        logger.info("PPTX generation completed: %s", output_path)
         return output_path
     except Exception as exc:
-        logger.error(f"PPTX generation failed: {exc}")
+        logger.error("PPTX generation failed: %s", exc)
         raise
 
 
 def merge_presentations(bs_presentation_path: str, is_presentation_path: str, output_path: str):
     try:
         logger.info("🔄 Starting presentation merge...")
-        logger.info(f"   BS: {bs_presentation_path}")
-        logger.info(f"   IS: {is_presentation_path}")
+        logger.info("   BS: %s", bs_presentation_path)
+        logger.info("   IS: %s", is_presentation_path)
 
         merged_prs = Presentation(bs_presentation_path)
         is_prs = Presentation(is_presentation_path)
@@ -586,7 +587,7 @@ def merge_presentations(bs_presentation_path: str, is_presentation_path: str, ou
                     target_sp_tree.append(deepcopy(shape_element))
 
             except Exception as exc:
-                logger.error(f"Error copying slide {slide_idx}, using fallback method: {exc}")
+                logger.error("Error copying slide %s, using fallback method: %s", slide_idx, exc)
                 slide_layout = slide.slide_layout
                 new_slide = merged_prs.slides.add_slide(slide_layout)
                 for shape in slide.shapes:
@@ -610,7 +611,7 @@ def merge_presentations(bs_presentation_path: str, is_presentation_path: str, ou
         gc.collect()
         logger.info("✅ Presentation merge completed successfully")
     except Exception as exc:
-        logger.error(f"❌ Presentation merge failed: {exc}")
+        logger.error("Presentation merge failed: %s", exc)
         raise
 # --- end pptx/exporters.py ---
 
@@ -660,7 +661,7 @@ class PowerPointGenerator:
             raise FileNotFoundError(f"Template not found: {self.template_path}")
 
         self.presentation = Presentation(self.template_path)
-        logger.info(f"Loaded template: {self.template_path}")
+        logger.info("Loaded template: %s", self.template_path)
 
     def find_shape_by_name(self, shapes, name: str):
         """Find shape by name in slide (case-insensitive), recursive"""
@@ -968,11 +969,9 @@ class PowerPointGenerator:
         for account_data in structured_data or []:
             item = dict(account_data or {})
             commentary = _normalize_slide_commentary_text(item.get("commentary", ""))
-            is_chinese = bool(item.get("is_chinese", False))
-            compact_commentary = self._compact_commentary_for_ppt(commentary, is_chinese)
             if commentary:
                 item["original_commentary"] = commentary
-            item["commentary"] = compact_commentary or commentary
+            item["commentary"] = commentary  # Keep full length; fill optimizer handles fit
             prepared.append(item)
         return prepared
 
@@ -1385,13 +1384,13 @@ class PowerPointGenerator:
             logger.warning("Empty content provided to _process_markdown_content")
             return {}
 
-        logger.info(f"Processing markdown content, length: {len(content)}")
-        logger.debug(f"Content preview (first 500 chars): {content[:500]}")
+        logger.info("Processing markdown content, length: %s", len(content))
+        logger.debug("Content preview (first 500 chars): %s", content[:500])
 
         # Split by headers (## Account Name)
         sections = re.split(r'^##\s+(.+)$', content, flags=re.MULTILINE)
 
-        logger.info(f"Found {len(sections)} sections after splitting")
+        logger.info("Found %s sections after splitting", len(sections))
 
         processed_sections = {}
 
@@ -1401,14 +1400,14 @@ class PowerPointGenerator:
                 account_name = sections[i].strip()
                 account_content = sections[i + 1].strip()
 
-                logger.info(f"Processing section: {account_name}, content length: {len(account_content)}")
+                logger.info("Processing section: %s, content length: %s", account_name, len(account_content))
 
                 processed_sections[account_name] = {
                     'content': account_content,
                     'is_chinese': detect_chinese_text(account_content)
                 }
 
-        logger.info(f"Processed {len(processed_sections)} sections")
+        logger.info("Processed %s sections", len(processed_sections))
         return processed_sections
 
     def _apply_content_to_presentation(self, sections: Dict):
@@ -1417,38 +1416,38 @@ class PowerPointGenerator:
             logger.warning("No presentation loaded")
             return
 
-        logger.info(f"Applying {len(sections)} sections to presentation with {len(self.presentation.slides)} slides")
+        logger.info("Applying %s sections to presentation with %s slides", len(sections), len(self.presentation.slides))
 
         # Find content placeholders and fill them
         slide_idx = 0
         for slide in self.presentation.slides:
             if slide_idx >= len(sections):
-                logger.warning(f"More slides ({len(self.presentation.slides)}) than sections ({len(sections)})")
+                logger.warning("More slides (%s) than sections (%s)", len(self.presentation.slides), len(sections))
                 break
 
             account_name = list(sections.keys())[slide_idx]
             section_data = sections[account_name]
 
-            logger.info(f"Processing slide {slide_idx + 1} for account: {account_name}")
+            logger.info("Processing slide %s for account: %s", slide_idx + 1, account_name)
 
             # Find content shape using flexible name matching
             content_shape = self.find_content_shape(slide.shapes)
             if content_shape:
-                logger.info(f"Found content shape '{content_shape.name}' on slide {slide_idx + 1}")
+                logger.info("Found content shape '%s' on slide %s", content_shape.name, slide_idx + 1)
                 if content_shape.has_text_frame:
                     # Apply content to shape
                     self._fill_content_shape(content_shape, section_data)
-                    logger.info(f"Applied content to slide {slide_idx + 1}")
+                    logger.info("Applied content to slide %s", slide_idx + 1)
                 else:
-                    logger.warning(f"Content shape found but has no text_frame on slide {slide_idx + 1}")
+                    logger.warning("Content shape found but has no text_frame on slide %s", slide_idx + 1)
             else:
-                logger.warning(f"No content shape found on slide {slide_idx + 1}, available shapes: {[s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes]}")
+                logger.warning("No content shape found on slide %s, available shapes: %s", slide_idx + 1, [s.name if hasattr(s, 'name') else 'unnamed' for s in slide.shapes])
                 # Try to use the first available text frame as fallback
                 for shape in slide.shapes:
                     if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
                         shape_name = getattr(shape, 'name', 'unnamed')
                         if 'title' not in shape_name.lower() and 'proj' not in shape_name.lower():
-                            logger.info(f"Using fallback shape '{shape_name}' on slide {slide_idx + 1}")
+                            logger.info("Using fallback shape '%s' on slide %s", shape_name, slide_idx + 1)
                             self._fill_content_shape(shape, section_data)
                             break
 
@@ -1463,7 +1462,7 @@ class PowerPointGenerator:
         content = section_data.get('content', '')
         is_chinese = section_data.get('is_chinese', False)
 
-        logger.info(f"Filling shape with content length: {len(content)}")
+        logger.info("Filling shape with content length: %s", len(content))
 
         # Clear existing content
         shape.text_frame.clear()
@@ -1503,7 +1502,7 @@ class PowerPointGenerator:
             p.space_before = get_space_before_for_text(line, force_chinese_mode=is_chinese)
             p.line_spacing = get_line_spacing_for_text(line, force_chinese_mode=is_chinese)
         
-        logger.info(f"Successfully filled shape with {len([l for l in content_lines if l.strip()])} paragraphs")
+        logger.info("Successfully filled shape with %s paragraphs", len([l for l in content_lines if l.strip()]))
 
     def _calculate_max_lines_for_textbox(
         self,
@@ -1519,7 +1518,8 @@ class PowerPointGenerator:
             return int(packing.get("minimum_slot_lines", 20) or 20)
         shape_height_emu = shape.height
         shape_height_pt = shape_height_emu * 72 / 914400
-        effective_height_pt = shape_height_pt * float(packing.get("shape_height_utilization", 1.02))
+        utilization = min(1.0, float(packing.get("shape_height_utilization", 1.02)))  # cap at 100% to prevent overflow
+        effective_height_pt = shape_height_pt * utilization
         font_size_pt = 10 if is_chinese else 9
         line_spacing = 0.95 if is_chinese else 1.0
         slot_penalty = 1.0 if slot_name == "single" else float(packing.get("split_slot_height_penalty", 1.02) or 1.02)
@@ -1593,15 +1593,15 @@ class PowerPointGenerator:
             else 40
         )
         
-        logger.info(f"\n{'='*80}")
-        logger.info(f"📊 CONTENT DISTRIBUTION STARTING")
-        logger.info(f"{'='*80}")
-        logger.info(f"Total accounts: {len(structured_data)}")
-        logger.info(f"Max lines per textbox: {max_lines_per_textbox}")
+        logger.info("\n%s", '='*80)
+        logger.info("CONTENT DISTRIBUTION STARTING")
+        logger.info("%s", '='*80)
+        logger.info("Total accounts: %s", len(structured_data))
+        logger.info("Max lines per textbox: %s", max_lines_per_textbox)
         if sample_shape:
-            logger.info(f"Sample shape height: {sample_shape.height / 914400:.2f} inches")
-            logger.info(f"Estimated capacity: {max_lines_per_textbox} lines")
-        logger.info(f"{'='*80}\n")
+            logger.info("Sample shape height: %.2f inches", sample_shape.height / 914400)
+            logger.info("Estimated capacity: %s lines", max_lines_per_textbox)
+        logger.info("%s\n", '='*80)
         
         def slot_names_for_actual_slide(actual_slide_idx: int) -> List[str]:
             if 0 <= actual_slide_idx < len(self.presentation.slides):
@@ -1631,7 +1631,7 @@ class PowerPointGenerator:
                 slot_shape = self._resolve_commentary_slot_shape(slide, slot_name)
             slot_shapes[slot_idx] = slot_shape or sample_shape
 
-        logger.info(f"📋 Total slots available: {len(slots)}")
+        logger.info("Total slots available: %s", len(slots))
         
         # Distribution result: [(slide_idx, slot_name, [account_data])]
         distribution = []
@@ -1657,7 +1657,7 @@ class PowerPointGenerator:
         
         for account_idx, account_data in enumerate(structured_data):
             mapping_key_debug = account_data.get('mapping_key', account_data.get('account_name', ''))
-            logger.info(f"\n🔍 Account {account_idx + 1}/{len(structured_data)}: {mapping_key_debug}")
+            logger.info("\nAccount %s/%s: %s", account_idx + 1, len(structured_data), mapping_key_debug)
             if current_slot_idx >= len(slots):
                 dropped_accounts = len(structured_data) - account_idx
                 logger.warning(
@@ -1685,27 +1685,27 @@ class PowerPointGenerator:
                 statement_type=statement_type,
             )
             total_lines = category_lines + content_lines
-            logger.info(f"  Category: '{category}', Lines: cat={category_lines}, content={content_lines}, total={total_lines}")
-            logger.info(f"  Commentary length: {len(commentary)} chars, Language: {'Chinese' if is_chinese_content else 'English'}, Chars/line: {chars_setting}")
+            logger.info("  Category: '%s', Lines: cat=%s, content=%s, total=%s", category, category_lines, content_lines, total_lines)
+            logger.info("  Commentary length: %s chars, Language: %s, Chars/line: %s", len(commentary), 'Chinese' if is_chinese_content else 'English', chars_setting)
 
             adjusted_capacity = slot_capacity_for(current_slot_idx, is_chinese=is_chinese_content, slot_name_override=slot_name_check)
-            logger.info(f"  Current slot {current_slot_idx} ({slot_name_check}): {current_slot_lines}/{adjusted_capacity} lines used")
+            logger.info("  Current slot %s (%s): %s/%s lines used", current_slot_idx, slot_name_check, current_slot_lines, adjusted_capacity)
 
             if current_slot_lines + total_lines <= adjusted_capacity:
                 current_slot_content.append(account_data)
                 current_slot_lines += total_lines
                 previous_category = category
-                logger.info(f"  Slot {current_slot_idx} ({slot_name_check}): Added '{mapping_key}' ({total_lines} lines), now {current_slot_lines}/{adjusted_capacity} lines used")
+                logger.info("  Slot %s (%s): Added '%s' (%s lines), now %s/%s lines used", current_slot_idx, slot_name_check, mapping_key, total_lines, current_slot_lines, adjusted_capacity)
             else:
                 remaining_lines = adjusted_capacity - current_slot_lines
-                logger.info(f"  ❌ Doesn't fit. Remaining: {remaining_lines} lines, Content: {content_lines} lines")
+                logger.info("  Doesn't fit. Remaining: %s lines, Content: %s lines", remaining_lines, content_lines)
 
                 next_slot_idx = current_slot_idx + 1
 
                 split_remaining_min = float(self._packing_settings().get("split_min_remaining_lines", 3))
                 split_content_min = int(self._packing_settings().get("split_min_content_lines", 5))
                 if remaining_lines > split_remaining_min and content_lines > split_content_min:
-                    logger.info(f"  ✂️  Attempting to split content...")
+                    logger.info("  Attempting to split content...")
                     paragraphs = commentary.split('\n\n')
                     if len(paragraphs) == 1:
                         paragraphs = commentary.split('\n')
@@ -1785,7 +1785,7 @@ class PowerPointGenerator:
                             # Save current slot
                             slide_idx, slot_name = slots[current_slot_idx]
                             distribution.append((slide_idx, slot_name, current_slot_content))
-                            logger.info(f"Split '{mapping_key}': Part 1 ({len(part1_commentary)} chars) to slot {current_slot_idx}, Part 2 ({len(part2_commentary)} chars) to next slot")
+                            logger.info("Split '%s': Part 1 (%s chars) to slot %s, Part 2 (%s chars) to next slot", mapping_key, len(part1_commentary), current_slot_idx, len(part2_commentary))
 
                             if current_slot_idx + 1 >= len(slots):
                                 logger.warning(
@@ -1815,12 +1815,12 @@ class PowerPointGenerator:
                             previous_category = None
                             continue
                 else:
-                    logger.info(f"  ⚠️  Not splitting: remaining_lines={remaining_lines}, content_lines={content_lines}")
+                    logger.info("  Not splitting: remaining_lines=%s, content_lines=%s", remaining_lines, content_lines)
 
                 if current_slot_content:
                     slide_idx, slot_name = slots[current_slot_idx]
                     distribution.append((slide_idx, slot_name, current_slot_content))
-                    logger.info(f"  Slot {current_slot_idx} ({slot_name}): FULL with {len(current_slot_content)} accounts, {current_slot_lines} lines used")
+                    logger.info("  Slot %s (%s): FULL with %s accounts, %s lines used", current_slot_idx, slot_name, len(current_slot_content), current_slot_lines)
 
                 current_slot_idx += 1
                 if current_slot_idx >= len(slots):
@@ -1845,17 +1845,17 @@ class PowerPointGenerator:
                 current_slot_content = [moved_account]
                 current_slot_lines = moved_category_lines + moved_lines
                 previous_category = category
-                logger.info(f"  Moving '{mapping_key}' to next slot {current_slot_idx} ({slot_name_new}), {current_slot_lines} lines")
+                logger.info("  Moving '%s' to next slot %s (%s), %s lines", mapping_key, current_slot_idx, slot_name_new, current_slot_lines)
         
         # Save last slot if it has content
         if current_slot_content and current_slot_idx < len(slots):
             slide_idx, slot_name = slots[current_slot_idx]
             distribution.append((slide_idx, slot_name, current_slot_content))
-            logger.info(f"  Slot {current_slot_idx} ({slot_name}): FINAL with {len(current_slot_content)} accounts, {current_slot_lines} lines")
+            logger.info("  Slot %s (%s): FINAL with %s accounts, %s lines", current_slot_idx, slot_name, len(current_slot_content), current_slot_lines)
         
         slot_position_map = {slot: idx for idx, slot in enumerate(slots)}
 
-        logger.info(f"\n✅ Distribution complete: {len(distribution)} slots filled")
+        logger.info("\nDistribution complete: %s slots filled", len(distribution))
         for distribution_idx, (slide_idx, slot_name, accounts) in enumerate(distribution):
             slot_idx = slot_position_map.get((slide_idx, slot_name), distribution_idx)
             account_is_chinese = any(bool(account.get("is_chinese", False)) for account in accounts)
@@ -1885,16 +1885,92 @@ class PowerPointGenerator:
                 fill_ratio,
             )
         
+        # --- Fill optimization pass ---
+        distribution = self._optimize_slot_fill(distribution, statement_type=statement_type)
         return distribution
-    
-    def apply_structured_data_to_slides(self, structured_data: List[Dict], start_slide: int, 
+
+    def _compute_slot_used_lines(
+        self,
+        accounts: List[Dict],
+        slot_name: str,
+        slot_shape=None,
+        statement_type: Optional[str] = None,
+    ) -> int:
+        used = 0
+        prev_cat = None
+        for account in accounts:
+            cat = str(account.get("category", "") or "")
+            if cat and cat != prev_cat:
+                used += 1  # category header line
+            prev_cat = cat
+            is_chinese = bool(account.get("is_chinese", False))
+            used += self._calculate_content_lines(
+                "",
+                account.get("mapping_key", account.get("account_name", "")),
+                account.get("commentary", ""),
+                slot_name=slot_name,
+                shape=slot_shape,
+                is_chinese=is_chinese,
+                statement_type=statement_type,
+            )
+        return used
+
+    def _optimize_slot_fill(
+        self,
+        distribution: List[tuple],
+        statement_type: Optional[str] = None,
+    ) -> List[tuple]:
+        """Second pass: for under-filled slots, try restoring longer original commentary."""
+        packing = self._packing_settings(statement_type)
+        target_min = float(packing.get("target_fill_min_ratio", 0.9))
+
+        for dist_idx, (slide_idx, slot_name, accounts) in enumerate(distribution):
+            if not accounts:
+                continue
+            is_chinese = any(bool(a.get("is_chinese")) for a in accounts)
+            capacity = int(packing.get("minimum_slot_lines", 22))
+            used = self._compute_slot_used_lines(accounts, slot_name, statement_type=statement_type)
+            if capacity <= 0:
+                continue
+            fill = used / capacity
+
+            if fill >= target_min:
+                continue
+
+            # Try restoring original_commentary for each account to improve fill
+            for account in accounts:
+                original = account.get("original_commentary", "")
+                current = account.get("commentary", "")
+                if not original or original == current:
+                    continue
+                saved = account["commentary"]
+                account["commentary"] = original
+                new_used = self._compute_slot_used_lines(accounts, slot_name, statement_type=statement_type)
+                if new_used <= capacity:
+                    new_fill = new_used / capacity
+                    logger.info(
+                        "  Fill optimization: restored original commentary for '%s' (fill %.2f -> %.2f)",
+                        account.get("mapping_key", "?"), fill, new_fill,
+                    )
+                    fill = new_fill
+                    used = new_used
+                else:
+                    account["commentary"] = saved  # revert — doesn't fit
+
+        return distribution
+
+    def apply_structured_data_to_slides(self, structured_data: List[Dict], start_slide: int,
                                        project_name: str, statement_type: str, is_chinese_databook: bool = False):
         """Apply structured data directly to slides (slides 1-4 for BS, 5-8 for IS)"""
         if not self.presentation:
             self.load_template()
 
         stage_started_at = time.perf_counter()
-        logger.info(f"Applying {len(structured_data)} accounts to slides starting at {start_slide}")
+        logger.info("Applying %s accounts to slides starting at %s", len(structured_data), start_slide)
+
+        # Normalize commentary and store originals for fill optimization
+        structured_data = self._prepare_structured_data_for_slides(structured_data)
+
         # Distribute content across textbox slots based on capacity
         max_slides = int(self.pptx_settings.get("max_commentary_slides_per_statement", 4) or 4)
         slot_distribution = self._distribute_content_across_slots(
@@ -1932,7 +2008,7 @@ class PowerPointGenerator:
         for slide_idx in sorted(slides_content.keys()):
             actual_slide_idx = start_slide - 1 + slide_idx  # Convert to 0-based
             if actual_slide_idx >= len(self.presentation.slides):
-                logger.warning(f"Slide index {actual_slide_idx + 1} exceeds available slides")
+                logger.warning("Slide index %s exceeds available slides", actual_slide_idx + 1)
                 continue
             
             used_slide_indices.add(actual_slide_idx)
@@ -1973,7 +2049,7 @@ class PowerPointGenerator:
                     bullets_shape = self._add_commentary_slot_shape(slide, slot_name)
                 
                 if not bullets_shape.has_text_frame:
-                    logger.warning(f"Slide {actual_slide_idx + 1}: Shape for slot '{slot_name}' has no text frame")
+                    logger.warning("Slide %s: Shape for slot '%s' has no text frame", actual_slide_idx + 1, slot_name)
                     continue
                 used_slot_shape_ids.add(id(bullets_shape))
                 
@@ -1984,8 +2060,17 @@ class PowerPointGenerator:
                 from pptx.enum.text import MSO_VERTICAL_ANCHOR
                 tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
                 
-                logger.info(f"Slide {actual_slide_idx + 1}, slot '{slot_name}': Filling with {len(account_data_list)} accounts")
-                
+                # Determine optimal font size to prevent overflow
+                slot_font_size = self._determine_slot_font_size(
+                    account_data_list, bullets_shape, slot_name, statement_type=statement_type,
+                )
+                if slot_font_size < 9:
+                    logger.info("Slide %s, slot '%s': Reducing font to %spt to fit %s accounts",
+                                actual_slide_idx + 1, slot_name, slot_font_size, len(account_data_list))
+                else:
+                    logger.info("Slide %s, slot '%s': Filling with %s accounts at %spt",
+                                actual_slide_idx + 1, slot_name, len(account_data_list), slot_font_size)
+
                 # Fill with accounts, grouped by category
                 # Show category header only once per category group
                 current_category = None
@@ -2017,7 +2102,7 @@ class PowerPointGenerator:
                         category_text = translate_category_to_chinese(category) if is_chinese_databook else category
                         
                         run_category.text = category_text
-                        run_category.font.size = Pt(9)
+                        run_category.font.size = Pt(slot_font_size)
                         run_category.font.name = 'Arial'
                         run_category.font.bold = False
                         try:
@@ -2038,13 +2123,14 @@ class PowerPointGenerator:
                             display_name_with_cont = f"{display_name} (cont'd)"
                         
                         # Log continuation for debugging
-                        logger.info(f"Displaying continuation: {display_name_with_cont}")
+                        logger.info("Displaying continuation: %s", display_name_with_cont)
                     else:
                         display_name_with_cont = display_name
                     
                     self._fill_text_main_bullets_with_category_and_key(
-                        tf, None, display_name_with_cont, commentary, is_chinese, 
-                        is_chinese_databook=is_chinese_databook, needs_continuation=False
+                        tf, None, display_name_with_cont, commentary, is_chinese,
+                        is_chinese_databook=is_chinese_databook, needs_continuation=False,
+                        font_size_pt=slot_font_size,
                     )
             
             page_commentary, page_summary_source = self._build_page_summary_source(all_slide_accounts)
@@ -2063,9 +2149,9 @@ class PowerPointGenerator:
                         "font_is_chinese": all_slide_accounts[0].get('is_chinese', False) if all_slide_accounts else False,
                     })
             else:
-                logger.info(f"Slide {actual_slide_idx + 1}: coSummaryShape not present; skipping page summary")
+                logger.info("Slide %s: coSummaryShape not present; skipping page summary", actual_slide_idx + 1)
             
-            logger.info(f"Filled slide {actual_slide_idx + 1} with {len(all_slide_accounts)} accounts across {len(slot_contents)} slots")
+            logger.info("Filled slide %s with %s accounts across %s slots", actual_slide_idx + 1, len(all_slide_accounts), len(slot_contents))
 
         summary_results = self._generate_slide_summaries(summary_jobs)
         for job in summary_jobs:
@@ -2088,7 +2174,7 @@ class PowerPointGenerator:
             if not hasattr(self, '_unused_slides_to_remove'):
                 self._unused_slides_to_remove = []
             self._unused_slides_to_remove.extend(unused_slides)
-            logger.info(f"Marked {len(unused_slides)} unused slides for {statement_type} for later removal: {[idx + 1 for idx in unused_slides]}")
+            logger.info("Marked %s unused slides for %s for later removal: %s", len(unused_slides), statement_type, [idx + 1 for idx in unused_slides])
         logger.info(
             "PPTX stage apply_structured_data_to_slides[%s] took %.2fs across %s populated slides",
             statement_type,
@@ -2114,12 +2200,11 @@ class PowerPointGenerator:
                         self.presentation.part.drop_rel(rId)
                         # Remove from XML
                         xml_slides.remove(slide_element)
-                        logger.info(f"Removed slide {slide_idx + 1}")
+                        logger.info("Removed slide %s", slide_idx + 1)
                     else:
-                        logger.warning(f"Slide index {slide_idx} out of range (only {len(slides)} slides)")
+                        logger.warning("Slide index %s out of range (only %s slides)", slide_idx, len(slides))
                 except Exception as e:
-                    logger.warning(f"Could not remove slide {slide_idx + 1}: {e}")
-                    import traceback
+                    logger.warning("Could not remove slide %s: %s", slide_idx + 1, e)
                     logger.debug(traceback.format_exc())
     
     def _set_cell_border(self, cell, border_position='top', color_rgb=None, width=Pt(1)):
@@ -2192,14 +2277,14 @@ class PowerPointGenerator:
         """
         try:
             # Debug: Log DataFrame content
-            logger.info(f"Filling table with DF shape: {df.shape}")
+            logger.info("Filling table with DF shape: %s", df.shape)
             if not df.empty:
-                logger.info(f"First row data: {df.iloc[0].to_dict()}")
+                logger.info("First row data: %s", df.iloc[0].to_dict())
                 # Check if any data is non-zero
                 numeric_cols = df.select_dtypes(include=['number']).columns
                 if len(numeric_cols) > 0:
                     non_zero_count = (df[numeric_cols] != 0).sum().sum()
-                    logger.info(f"Non-zero values in DF: {non_zero_count}")
+                    logger.info("Non-zero values in DF: %s", non_zero_count)
             
             # Find parent slide
             slide = None
@@ -2226,7 +2311,7 @@ class PowerPointGenerator:
                 shape.width = bounds["width"]
                 shape.height = bounds["height"]
             except Exception as e:
-                logger.warning(f"Could not adjust table position/width: {e}")
+                logger.warning("Could not adjust table position/width: %s", e)
 
             # Check if shape is a TablePlaceholder (textbox placeholder)
             from pptx.shapes.placeholder import TablePlaceholder
@@ -2243,7 +2328,7 @@ class PowerPointGenerator:
             
             if is_table_placeholder:
                 # It's a table placeholder - insert a table into it
-                logger.info(f"Found TablePlaceholder ({shape.name if hasattr(shape, 'name') else 'unnamed'}), inserting table with {len(df)} rows and {len(df.columns)} columns")
+                logger.info("Found TablePlaceholder (%s), inserting table with %s rows and %s columns", shape.name if hasattr(shape, 'name') else 'unnamed', len(df), len(df.columns))
                 try:
                     left = bounds["left"]
                     top = bounds["top"]
@@ -2268,19 +2353,18 @@ class PowerPointGenerator:
                             height=height
                         )
                         table = table_shape.table
-                        logger.info(f"✅ Inserted new table: {len(table.rows)} rows, {len(table.columns)} columns")
+                        logger.info("Inserted new table: %s rows, %s columns", len(table.rows), len(table.columns))
                 except Exception as e:
-                    logger.error(f"Could not insert table into placeholder: {e}")
-                    import traceback
+                    logger.error("Could not insert table into placeholder: %s", e)
                     logger.debug(traceback.format_exc())
             elif hasattr(shape, 'table'):
                 # Try to access existing table
                 try:
                     table = shape.table
-                    logger.info(f"Found existing table with {len(table.rows)} rows and {len(table.columns)} columns")
+                    logger.info("Found existing table with %s rows and %s columns", len(table.rows), len(table.columns))
                 except ValueError:
                     # Shape doesn't contain a table
-                    logger.warning(f"Shape has table attribute but doesn't contain a table")
+                    logger.warning("Shape has table attribute but doesn't contain a table")
                     table = None
             
             if table:
@@ -2383,7 +2467,7 @@ class PowerPointGenerator:
                             cell.fill.solid()
                             cell.fill.fore_color.rgb = TIFFANY_BLUE
                         
-                        logger.debug(f"Filled header cell {col_idx}: {cell.text}")
+                        logger.debug("Filled header cell %s: %s", col_idx, cell.text)
                 
                 # Fill data rows with formatting - show ALL rows (no limit)
                 # Check if table has enough rows, if not, limit to available rows
@@ -2392,16 +2476,16 @@ class PowerPointGenerator:
                 available_rows = len(table.rows)
                 
                 if available_rows < rows_needed:
-                    logger.warning(f"Table has {available_rows} rows but needs {rows_needed}. Will only fill {available_rows - data_start_row - 1} data rows.")
+                    logger.warning("Table has %s rows but needs %s. Will only fill %s data rows.", available_rows, rows_needed, available_rows - data_start_row - 1)
                     max_rows = min(max_rows, available_rows - data_start_row - 1)
                     if max_rows < 0:
                         max_rows = 0
                 
-                logger.info(f"Table has {available_rows} rows available, will fill {max_rows} data rows")
+                logger.info("Table has %s rows available, will fill %s data rows", available_rows, max_rows)
                 
                 # Now fill all rows with Arial 9 font
                 # Check for title, date, total, and subtotal rows to highlight
-                logger.info(f"Filling {max_rows} data rows, starting at row index {header_row_idx + 1}, table has {len(table.rows)} rows")
+                logger.info("Filling %s data rows, starting at row index %s, table has %s rows", max_rows, header_row_idx + 1, len(table.rows))
                 for row_idx in range(max_rows):
                     if row_idx >= len(df):
                         break
@@ -2429,7 +2513,7 @@ class PowerPointGenerator:
                     # Data row index = header_row_idx + 1 + row_idx
                     data_row_idx = header_row_idx + 1 + row_idx
                     if data_row_idx >= len(table.rows):
-                        logger.warning(f"Data row index {data_row_idx} exceeds table rows {len(table.rows)}, skipping")
+                        logger.warning("Data row index %s exceeds table rows %s, skipping", data_row_idx, len(table.rows))
                         break
                     
                     # Set data row height based on table density
@@ -2440,7 +2524,7 @@ class PowerPointGenerator:
                     
                     # Log first row processing
                     if row_idx == 0:
-                        logger.info(f"Processing first data row: {df_row.values[:3]}")
+                        logger.info("Processing first data row: %s", df_row.values[:3])
 
                     # Determine if we need to divide by 1000
                     # NOTE: We already disabled multiplication in extraction, so values should be in thousands
@@ -2467,7 +2551,7 @@ class PowerPointGenerator:
                         
                         # Log first cell value of first row
                         if row_idx == 0 and col_idx < 2:
-                            logger.info(f"Setting cell ({data_row_idx}, {col_idx}) to: '{text_val}'")
+                            logger.info("Setting cell (%s, %s) to: '%s'", data_row_idx, col_idx, text_val)
                         
                         # Apply formatting: Arial 7pt (reduced from 9pt) for all cells
                         # Note: Always access paragraphs[0] AFTER setting text
@@ -2516,17 +2600,17 @@ class PowerPointGenerator:
                             except:
                                 pass
                     
-                    logger.debug(f"Filled table row {row_idx + 1} (data_row_idx: {data_row_idx}, special: {is_special_row})")
+                    logger.debug("Filled table row %s (data_row_idx: %s, special: %s)", row_idx + 1, data_row_idx, is_special_row)
                 
-                logger.info(f"✅ Updated table with Excel data (formatting preserved)")
+                logger.info("Updated table with Excel data (formatting preserved)")
             else:
                 # If no table, this is an error - table placeholder should be a table shape
                 logger.error("Table Placeholder is not a table shape! Cannot embed financial table.")
-                logger.error(f"Shape type: {type(shape)}, has_table: {hasattr(shape, 'table')}")
-                logger.error(f"Shape name: {shape.name if hasattr(shape, 'name') else 'unnamed'}")
+                logger.error("Shape type: %s, has_table: %s", type(shape), hasattr(shape, 'table'))
+                logger.error("Shape name: %s", shape.name if hasattr(shape, 'name') else 'unnamed')
                 # Check if shape has table attribute but it's None
                 if hasattr(shape, 'table'):
-                    logger.error(f"shape.table is: {shape.table}")
+                    logger.error("shape.table is: %s", shape.table)
                 # Try to create a table representation in text frame as last resort
                 if shape.has_text_frame:
                     shape.text_frame.clear()
@@ -2539,10 +2623,9 @@ class PowerPointGenerator:
                     
                     p = shape.text_frame.paragraphs[0] if shape.text_frame.paragraphs else shape.text_frame.add_paragraph()
                     p.text = text_table
-                    logger.warning(f"Added text table representation with all {len(df)} rows ({len(text_table)} chars) - NOT IDEAL, should be table format")
+                    logger.warning("Added text table representation with all %s rows (%s chars) - NOT IDEAL, should be table format", len(df), len(text_table))
         except Exception as e:
-            logger.error(f"Could not fill table placeholder: {e}")
-            import traceback
+            logger.error("Could not fill table placeholder: %s", e)
             logger.error(traceback.format_exc())
             # Fallback: add text representation - show ALL rows
             if shape.has_text_frame:
@@ -2594,9 +2677,71 @@ class PowerPointGenerator:
         
         return bullet_lines
     
-    def _fill_text_main_bullets_with_category_and_key(self, text_frame, category: str, display_name: str, 
+    def _determine_slot_font_size(
+        self,
+        slot_accounts: List[Dict],
+        shape,
+        slot_name: str,
+        statement_type: Optional[str] = None,
+    ) -> int:
+        """Determine optimal font size (9→8→7) so all accounts fit in the slot."""
+        for candidate_pt in (9, 8, 7):
+            # Re-estimate capacity at this font size
+            packing = self._packing_settings(statement_type)
+            if not shape or not hasattr(shape, "height"):
+                return candidate_pt
+            shape_height_pt = shape.height * 72 / 914400
+            effective_height = shape_height_pt * float(packing.get("shape_height_utilization", 1.02))
+            line_spacing = 0.95 if any(
+                any("\u4e00" <= c <= "\u9fff" for c in str(a.get("commentary", "")))
+                for a in slot_accounts
+            ) else 1.0
+            line_height = (candidate_pt * line_spacing) + float(packing.get("line_height_padding_pt", 1.6))
+            max_lines = int(effective_height / line_height)
+
+            total_lines = 0
+            prev_cat = None
+            for acct in slot_accounts:
+                cat = acct.get("category", "")
+                if cat and cat != prev_cat:
+                    total_lines += 1
+                    prev_cat = cat
+                # Rough estimate: 1 line for header + wrapped commentary
+                commentary = str(acct.get("commentary", ""))
+                is_chi = any("\u4e00" <= c <= "\u9fff" for c in commentary)
+                # Scale chars_per_line inversely with font size
+                base_cpl = self._estimate_chars_per_line(slot_name, is_chi, shape=shape, statement_type=statement_type)
+                scale = 9.0 / candidate_pt  # larger font → fewer chars per line
+                cpl = max(16, int(base_cpl * scale))
+                total_lines += 1  # key line
+                for line in commentary.split("\n"):
+                    if line.strip():
+                        total_lines += max(1, (len(line) + cpl - 1) // cpl)
+
+            if total_lines <= max_lines:
+                return candidate_pt
+        return 7  # minimum
+
+    @staticmethod
+    def _truncate_commentary_to_fit(commentary: str, max_chars: int) -> str:
+        """Hard truncation at sentence boundary, with ellipsis."""
+        if len(commentary) <= max_chars:
+            return commentary
+        truncated = commentary[:max_chars]
+        # Try to cut at sentence boundary
+        for end_char in (". ", "。", "! ", "？"):
+            pos = truncated.rfind(end_char)
+            if pos > max_chars * 0.5:
+                return truncated[: pos + len(end_char)].rstrip()
+        # Fall back to word boundary
+        pos = truncated.rfind(" ", int(max_chars * 0.7))
+        if pos > 0:
+            return truncated[:pos].rstrip() + "..."
+        return truncated.rstrip() + "..."
+
+    def _fill_text_main_bullets_with_category_and_key(self, text_frame, category: str, display_name: str,
                                                       commentary: str, is_chinese: bool, is_chinese_databook: bool = False,
-                                                      needs_continuation: bool = False):
+                                                      needs_continuation: bool = False, font_size_pt: int = 9):
         """
         Fill textMainBullets shape with commentary formatted as:
         - Category as first level (dark blue Arial 9) - only if category is provided
@@ -2623,7 +2768,7 @@ class PowerPointGenerator:
             
             run_category = p_category.add_run()
             run_category.text = category
-            run_category.font.size = Pt(9)  # Arial 9
+            run_category.font.size = Pt(font_size_pt)
             run_category.font.name = 'Arial'
             run_category.font.bold = False
             try:
@@ -2642,35 +2787,35 @@ class PowerPointGenerator:
             p_key.space_after = Pt(6)  # 6pt spacing after
             p_key.line_spacing = 1.0
         except Exception as e:
-            logger.warning(f"Could not set paragraph formatting: {e}")
+            logger.warning("Could not set paragraph formatting: %s", e)
             pass
         
         # Grey char (U+25A0) + space
         run_bullet = p_key.add_run()
         run_bullet.text = '\u25A0 '  # U+25A0 (black square) + space
-        run_bullet.font.size = Pt(9)
+        run_bullet.font.size = Pt(font_size_pt)
         run_bullet.font.name = 'Arial'
         run_bullet.font.bold = False
         try:
             run_bullet.font.color.rgb = RGBColor(128, 128, 128)  # Grey
         except:
             pass
-        
-        # Key name (black bold Arial 9)
+
+        # Key name (black bold)
         run_key = p_key.add_run()
         run_key.text = display_name
-        run_key.font.size = Pt(9)
+        run_key.font.size = Pt(font_size_pt)
         run_key.font.name = 'Arial'
         run_key.font.bold = True
         try:
             run_key.font.color.rgb = RGBColor(0, 0, 0)  # Black
         except:
             pass
-        
+
         # "-" (not bold)
         run_dash = p_key.add_run()
         run_dash.text = " - "
-        run_dash.font.size = Pt(9)
+        run_dash.font.size = Pt(font_size_pt)
         run_dash.font.name = 'Arial'
         run_dash.font.bold = False
         try:
@@ -2707,14 +2852,14 @@ class PowerPointGenerator:
                 run_text.text = line
             
             # Apply formatting to the run
-            run_text.font.size = Pt(9)
+            run_text.font.size = Pt(font_size_pt)
             run_text.font.name = 'Arial'
             run_text.font.bold = False
             try:
                 run_text.font.color.rgb = RGBColor(0, 0, 0)  # Black
             except:
                 pass
-        
+
         # Note: "(continued)" is now added to category header, not here
     
     def _fill_text_main_bullets_with_levels(self, text_frame, commentary: str, is_chinese: bool):
@@ -2963,8 +3108,7 @@ Original content:
             if summary:
                 return self._validate_ai_summary(source_text, summary, is_chinese, ai_helper=ai_helper)
         except Exception as e:
-            logger.warning(f"Could not generate AI summary: {e}")
-            import traceback
+            logger.warning("Could not generate AI summary: %s", e)
             logger.debug(traceback.format_exc())
         
         return None
@@ -3004,11 +3148,11 @@ Original content:
             import pandas as pd
             from fdd_utils.workbook import extract_balance_sheet_and_income_statement
             
-            logger.info(f"Embedding financial tables from {excel_path}, sheet: {sheet_name}")
+            logger.info("Embedding financial tables from %s, sheet: %s", excel_path, sheet_name)
             
             # Validate inputs
             if not excel_path or not sheet_name:
-                logger.warning(f"Missing excel_path ({excel_path}) or sheet_name ({sheet_name}), skipping table embedding")
+                logger.warning("Missing excel_path (%s) or sheet_name (%s), skipping table embedding", excel_path, sheet_name)
                 return
             
             if bs_is_results:
@@ -3066,13 +3210,13 @@ Original content:
             except:
                 pass
             
-            logger.info(f"Extracted BS: {bs_df.shape if bs_df is not None else 'None'}, IS: {is_df.shape if is_df is not None else 'None'}")
-            logger.info(f"Table names - BS: {bs_table_name}, IS: {is_table_name}, Currency: {currency_unit}")
+            logger.info("Extracted BS: %s, IS: %s", bs_df.shape if bs_df is not None else 'None', is_df.shape if is_df is not None else 'None')
+            logger.info("Table names - BS: %s, IS: %s, Currency: %s", bs_table_name, is_table_name, currency_unit)
             
             # Embed BS table to slide 0 (page 1)
             if bs_df is not None and not bs_df.empty and len(self.presentation.slides) > 0:
                 slide_0 = self.presentation.slides[0]
-                logger.info(f"Looking for table shape on slide 1, available shapes: {[s.name if hasattr(s, 'name') else type(s).__name__ for s in slide_0.shapes]}")
+                logger.info("Looking for table shape on slide 1, available shapes: %s", [s.name if hasattr(s, 'name') else type(s).__name__ for s in slide_0.shapes])
                 self._embed_statement_table(
                     slide_0,
                     bs_df,
@@ -3081,7 +3225,7 @@ Original content:
                     currency_unit=currency_unit,
                 )
             else:
-                logger.warning(f"BS DataFrame is None or empty, skipping BS table embedding")
+                logger.warning("BS DataFrame is None or empty, skipping BS table embedding")
             
             # Embed IS table to slide 5 (1-indexed) = slide index 4 (0-indexed)
             # IS slides are 5-8 (1-indexed) = indices 4-7 (0-indexed)
@@ -3089,11 +3233,11 @@ Original content:
             if is_df is not None and not is_df.empty:
                 is_slide_idx = 4  # First IS slide (page 5, 1-indexed)
                 
-                logger.info(f"Looking for IS table on slide {is_slide_idx + 1} (index {is_slide_idx}), total slides: {len(self.presentation.slides)}")
+                logger.info("Looking for IS table on slide %s (index %s), total slides: %s", is_slide_idx + 1, is_slide_idx, len(self.presentation.slides))
                 
                 if len(self.presentation.slides) > is_slide_idx:
                     is_slide = self.presentation.slides[is_slide_idx]
-                    logger.info(f"Slide {is_slide_idx + 1} exists, searching for Table Placeholder...")
+                    logger.info("Slide %s exists, searching for Table Placeholder...", is_slide_idx + 1)
                     self._embed_statement_table(
                         is_slide,
                         is_df,
@@ -3102,12 +3246,11 @@ Original content:
                         currency_unit=currency_unit,
                     )
                 else:
-                    logger.error(f"❌ Slide {is_slide_idx + 1} does not exist for IS table (only {len(self.presentation.slides)} slides)")
-                    logger.error(f"IS data should be on slide 5, but presentation only has {len(self.presentation.slides)} slides")
+                    logger.error("Slide %s does not exist for IS table (only %s slides)", is_slide_idx + 1, len(self.presentation.slides))
+                    logger.error("IS data should be on slide 5, but presentation only has %s slides", len(self.presentation.slides))
                     
         except Exception as e:
-            logger.error(f"Error embedding financial tables: {e}")
-            import traceback
+            logger.error("Error embedding financial tables: %s", e)
             logger.error(traceback.format_exc())
 
     def save(self, output_path: str):
@@ -3119,5 +3262,5 @@ Original content:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         self.presentation.save(output_path)
-        logger.info(f"Presentation saved to: {output_path}")
+        logger.info("Presentation saved to: %s", output_path)
 # --- end pptx/generation.py ---

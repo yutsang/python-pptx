@@ -175,14 +175,14 @@ def _build_rhs_display_dataframe(
     rhs_df["__display_key"] = rhs_df["Description"].apply(
         lambda value: _normalize_display_label(value, display_description_map)
     )
-    visible_descriptions = {
+    visible_display_labels = {
         _normalize_display_label(value)
         for value in display_df.iloc[:, 0].tolist()
         if _normalize_display_label(value)
     }
-    if visible_descriptions:
+    if visible_display_labels:
         rhs_df = rhs_df[
-            rhs_df["__display_key"].astype(str).map(lambda value: value.strip() in visible_descriptions)
+            rhs_df["__display_key"].astype(str).map(lambda value: value.strip() in visible_display_labels)
         ].copy()
         if rhs_df.empty:
             rhs_df = pd.DataFrame(adjacent_detail_rows)
@@ -309,8 +309,8 @@ def build_account_display_dataframe(df: pd.DataFrame | None) -> pd.DataFrame | N
     return display_df
 
 
-def build_processed_display_groups(display_account_keys: List[str], mappings: Dict[str, Any]) -> Dict[str, Any]:
-    bs_accounts, is_accounts, other_accounts = shared_split_accounts_by_type(display_account_keys, mappings)
+def build_processed_display_groups(display_account_keys: List[str], mappings: Dict[str, Any], dfs: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    bs_accounts, is_accounts, other_accounts = shared_split_accounts_by_type(display_account_keys, mappings, dfs=dfs)
     return {
         "tab_names": ["BS Recon", "IS Recon", "BS", "IS", "Schedule Mapping"],
         "bs_accounts": bs_accounts,
@@ -329,18 +329,18 @@ def derive_reconciliation_matched_keys(
     if not reconciliation or not available_key_order:
         return []
 
-    included_statuses = {"✅ Match", "✅ Immaterial"}
+    included_statuses = {"✅ Match", "⚠️ Match", "✅ Immaterial", "❌ Diff"}
     matched_keys: List[str] = []
     seen = set()
 
     for recon_df in reconciliation:
         if recon_df is None or recon_df.empty:
             continue
-        if "Match" not in recon_df.columns or "DFS_Account" not in recon_df.columns:
+        if "Match" not in recon_df.columns or "Tab_Account" not in recon_df.columns:
             continue
 
         filtered = recon_df[recon_df["Match"].isin(included_statuses)]
-        for value in filtered["DFS_Account"].tolist():
+        for value in filtered["Tab_Account"].tolist():
             key = str(value or "").strip()
             if not key or key == "-" or key in seen or key not in available_key_set:
                 continue
@@ -352,11 +352,39 @@ def derive_reconciliation_matched_keys(
             seen.add(dynamic_key)
             matched_keys.append(dynamic_key)
 
+    # Collect ALL Financials_Account names that reconciliation already evaluated
+    # (regardless of match status) so the resolved-map fallback only adds
+    # accounts that are truly absent from the Financials summary.
+    evaluated_accounts: set = set()
+    for recon_df in reconciliation:
+        if recon_df is None or recon_df.empty or "Financials_Account" not in recon_df.columns:
+            continue
+        for fa in recon_df["Financials_Account"].tolist():
+            evaluated_accounts.add(str(fa).strip().lower())
+
+    # Include resolved accounts that have DFS data but are absent from the
+    # Financials summary (and therefore have no reconciliation row at all).
+    resolved_map = (resolution or {}).get("resolved", {})
+    for _mapping_key, resolved_info in resolved_map.items():
+        sheet_name = (resolved_info or {}).get("sheet_name", "")
+        if not sheet_name or sheet_name not in available_key_set or sheet_name in seen:
+            continue
+        # Check if reconciliation already evaluated this account
+        sn_lower = sheet_name.strip().lower()
+        already_evaluated = any(
+            sn_lower in ea or ea in sn_lower for ea in evaluated_accounts
+        )
+        if already_evaluated:
+            continue
+        seen.add(sheet_name)
+        matched_keys.append(sheet_name)
+
     return matched_keys
 # --- end ui/views.py ---
 
 # --- begin ui/ai_panel.py ---
 import time
+import traceback
 from typing import Any, Dict
 
 import pandas as pd
@@ -432,11 +460,11 @@ def has_meaningful_result_text(content: Any) -> bool:
 def hydrate_nested_agent_outputs(result_dict: Dict[str, Any]) -> None:
     if not isinstance(result_dict, dict):
         return
-    for agent_name in ("agent_1", "agent_2", "agent_3", "agent_4"):
+    for agent_name in ("subagent_1", "subagent_2", "subagent_3", "subagent_4"):
         content = extract_result_text(result_dict, agent_name)
         if has_meaningful_result_text(content):
             result_dict[agent_name] = content
-            if agent_name == "agent_4" and not has_meaningful_result_text(result_dict.get("final")):
+            if agent_name == "subagent_4" and not has_meaningful_result_text(result_dict.get("final")):
                 result_dict["final"] = get_pipeline_result_text(result_dict)
 
 
@@ -447,7 +475,7 @@ def effective_mappings_from_session(session_state: Any) -> Dict[str, Any]:
 def _result_has_pipeline_content(result: Dict[str, Any]) -> bool:
     return any(
         has_meaningful_result_text(extract_result_text(result, agent_key))
-        for agent_key in ["final", "agent_4", "agent_3", "agent_2", "agent_1"]
+        for agent_key in ["final", "subagent_4", "subagent_3", "subagent_2", "subagent_1"]
     )
 
 
@@ -481,8 +509,8 @@ def extract_account_remarks_context(df: pd.DataFrame | None, language: str) -> D
     }
 
 
-def render_account_remarks_context(df: pd.DataFrame | None, key: str, language: str, prefix: str) -> None:
-    del prefix
+def render_account_remarks_context(df: pd.DataFrame | None, key: str, language: str, prefix: str = "") -> None:  # noqa: ARG001
+    _ = prefix  # kept for API compatibility
     context = extract_account_remarks_context(df, language)
     if not context:
         return
@@ -545,14 +573,22 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
             )
             has_reconciliation_data = bool(reconciliation and any(recon_df is not None and not recon_df.empty for recon_df in reconciliation))
             if not has_reconciliation_data:
-                status_placeholder.warning("No reconciliation results are available yet, so AI generation cannot determine eligible matched or dynamically resolved schedule accounts.")
-            elif not matched_mapping_keys:
+                matched_mapping_keys = list(selected_pipeline_dfs.keys())
+                if not matched_mapping_keys:
+                    status_placeholder.warning("No reconciliation results and no extracted schedule data available.")
+                else:
+                    status_placeholder.info(f"No reconciliation data; proceeding with all {len(matched_mapping_keys)} extracted schedule account(s).")
+            if has_reconciliation_data and not matched_mapping_keys:
                 status_placeholder.warning("No eligible matched or dynamically resolved schedule accounts were found, so AI generation was skipped.")
             else:
                 total_items = len(matched_mapping_keys)
                 total_steps = 4 * total_items
 
                 def update_progress(agent_num, agent_name, item_num, total_items_in_agent, completed_items, key_name=None):
+                    if agent_num > 4:
+                        key_display = f" | Key: {key_name}" if key_name else ""
+                        status_placeholder.info(f"🔄 Feedback Loop: {agent_name}{key_display} — refining based on validator feedback")
+                        return
                     completed_steps = completed_items
                     progress = min(completed_steps / total_steps, 1.0) if total_steps > 0 else 0.0
                     progress_placeholder.progress(progress)
@@ -564,16 +600,16 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                             remaining_steps = total_steps - completed_steps
                             eta_seconds = avg_time_per_step * remaining_steps
                             status_placeholder.info(
-                                f"🔄 Running Agent {agent_num}/4: {agent_name} | Processing item {item_num}/{total_items_in_agent}{key_display} | Progress: {completed_steps}/{total_steps} steps | ETA: {int(eta_seconds / 60)}m {int(eta_seconds % 60)}s"
+                                f"🔄 Running Subagent {agent_num}/4: {agent_name} | Processing item {item_num}/{total_items_in_agent}{key_display} | Progress: {completed_steps}/{total_steps} steps | ETA: {int(eta_seconds / 60)}m {int(eta_seconds % 60)}s"
                             )
                         else:
                             status_placeholder.info(
-                                f"🔄 Running Agent {agent_num}/4: {agent_name} | Processing item {item_num}/{total_items_in_agent}{key_display} | Progress: {completed_steps}/{total_steps} steps | ETA: Calculating..."
+                                f"🔄 Running Subagent {agent_num}/4: {agent_name} | Processing item {item_num}/{total_items_in_agent}{key_display} | Progress: {completed_steps}/{total_steps} steps | ETA: Calculating..."
                             )
                     else:
                         update_progress.start_time = time.time()
                         status_placeholder.info(
-                            f"🔄 Running Agent {agent_num}/4: {agent_name} | Processing item {item_num}/{total_items_in_agent}{key_display} | Progress: {completed_steps}/{total_steps} steps | ETA: Calculating..."
+                            f"🔄 Running Subagent {agent_num}/4: {agent_name} | Processing item {item_num}/{total_items_in_agent}{key_display} | Progress: {completed_steps}/{total_steps} steps | ETA: Calculating..."
                         )
 
                 start_time = time.time()
@@ -614,8 +650,6 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
         except Exception as exc:
             progress_placeholder.empty()
             status_placeholder.error(f"❌ Error: {exc}")
-            import traceback
-
             st.code(traceback.format_exc())
 
 
@@ -631,7 +665,8 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
             if _result_has_pipeline_content(result):
                 content_keys.append(key)
 
-    bs_keys, is_keys, other_keys = split_accounts_by_type(content_keys, mappings)
+    dfs = session_state.get("dfs") or {}
+    bs_keys, is_keys, other_keys = split_accounts_by_type(content_keys, mappings, dfs=dfs)
     has_content = any(
         isinstance(value, dict) and _result_has_pipeline_content(value)
         for value in session_state.ai_results.values()
@@ -661,9 +696,82 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
     ai_tabs = st.tabs(tab_list)
     tab_idx = 0
 
+    @st.fragment
+    def _render_commentary_fragment(
+        key: str,
+        prefix: str,
+        detailed_content: str,
+        simplified_content: str,
+        has_simplified: bool,
+        clause_reviews: list,
+        final_label: str,
+        selected_df,
+        language: str,
+    ):
+        """Fragment that re-renders only itself when the Detailed/Simplified toggle changes."""
+        commentary_mode_key = f"{prefix}{key}_commentary_mode"
+        if has_simplified:
+            mode = st.radio(
+                "Commentary version",
+                options=["Detailed", "Simplified"],
+                index=0,
+                horizontal=True,
+                key=commentary_mode_key,
+                label_visibility="collapsed",
+            )
+        else:
+            mode = "Detailed"
+        # Store the selection for PPTX export
+        if "commentary_modes" not in session_state:
+            session_state.commentary_modes = {}
+        session_state.commentary_modes[key] = mode
+
+        final_content = simplified_content if mode == "Simplified" else detailed_content
+        render_account_remarks_context(selected_df, key, language, prefix=f"{prefix}generated_")
+        st.markdown(build_highlighted_commentary_html(str(final_content), clause_reviews or [] if mode == "Detailed" else []), unsafe_allow_html=True)
+        if clause_reviews:
+            hallucination_count = sum(
+                1 for r in clause_reviews
+                if isinstance(r, dict) and str(r.get("category", "")).lower() == "hallucination"
+            )
+            reasoning_count = sum(
+                1 for r in clause_reviews
+                if isinstance(r, dict) and str(r.get("category", "")).lower() == "reasoning"
+            )
+            flagged_count = hallucination_count + reasoning_count
+            caption_parts = [f"Validator reviewed {len(clause_reviews)} clause(s)"]
+            if hallucination_count:
+                caption_parts.append(f"{hallucination_count} hallucination(s)")
+            if reasoning_count:
+                caption_parts.append(f"{reasoning_count} reasoning")
+            if not flagged_count:
+                caption_parts.append("all data-backed")
+            st.caption("; ".join(caption_parts) + ".")
+            with st.expander("Validator evidence review", expanded=False):
+                review_rows = [
+                    {
+                        "Clause": str(review.get("clause") or ""),
+                        "Category": str(review.get("category") or "data-backed").replace("-", " ").title(),
+                        "Supported": "Yes" if bool(review.get("supported")) else "No",
+                        "Reason": str(review.get("reason") or ""),
+                    }
+                    for review in clause_reviews
+                    if isinstance(review, dict)
+                ]
+                if review_rows:
+                    st.dataframe(pd.DataFrame(review_rows), use_container_width=True, hide_index=True)
+        with st.expander("Plain text", expanded=False):
+            st.text_area(
+                label="Final content",
+                value=str(final_content),
+                height=min(max(100, int(len(str(final_content)) / 3)), 600),
+                key=f"{prefix}{key}_final_display",
+                label_visibility="collapsed",
+            )
+
     def create_account_agent_tabs(keys, prefix=""):
         account_tabs = st.tabs([f"📄 {key}" for key in keys])
-        agent_map = {"agent_1": "Generator", "agent_2": "Auditor", "agent_3": "Refiner", "agent_4": "Validator", "final": "Final (Validator)"}
+        agent_map = {"subagent_1": "Generator", "subagent_2": "Auditor", "subagent_3": "Refiner", "subagent_4": "Validator", "final": "Final (Validator)"}
         for acc_idx, key in enumerate(keys):
             with account_tabs[acc_idx]:
                 result = session_state.ai_results.get(key, {})
@@ -671,46 +779,27 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                     result = {}
                 hydrate_nested_agent_outputs(result)
                 selected_df = get_account_dataframe(key, account_display_dfs)
-                final_content = extract_result_text(result, "final")
+                detailed_content = extract_result_text(result, "final")
+                simplified_content = str(result.get("final_simplified") or "").strip()
+                has_simplified = bool(simplified_content)
                 validator_metadata = extract_validator_metadata(result)
                 clause_reviews = validator_metadata.get("clause_reviews") if isinstance(validator_metadata, dict) else []
-                has_final = has_meaningful_result_text(final_content)
+                has_final = has_meaningful_result_text(detailed_content)
                 reprompt_mode = str(result.get("reprompt_mode") or "").strip()
                 final_label = "Final (Reprompt + validator)" if reprompt_mode == "generator_reprompt_validated" else ("Final (Generator reprompt)" if reprompt_mode == "generator_only" else "Final (Validator)")
                 if has_final:
                     st.markdown(f"#### ✨ {final_label}")
-                    render_account_remarks_context(selected_df, key, session_state.get("language", "Eng"), prefix=f"{prefix}generated_")
-                    st.markdown(build_highlighted_commentary_html(str(final_content), clause_reviews or []), unsafe_allow_html=True)
-                    if clause_reviews:
-                        unsupported_count = sum(
-                            1
-                            for review in clause_reviews
-                            if isinstance(review, dict) and not bool(review.get("supported"))
-                        )
-                        st.caption(
-                            f"Validator reviewed {len(clause_reviews)} clause(s); {unsupported_count} clause(s) marked unsupported. "
-                            "Yellow highlight appears only when unsupported clauses are found."
-                        )
-                        with st.expander("Validator evidence review", expanded=False):
-                            review_rows = [
-                                {
-                                    "Clause": str(review.get("clause") or ""),
-                                    "Supported": "Yes" if bool(review.get("supported")) else "No",
-                                    "Reason": str(review.get("reason") or ""),
-                                }
-                                for review in clause_reviews
-                                if isinstance(review, dict)
-                            ]
-                            if review_rows:
-                                st.dataframe(pd.DataFrame(review_rows), use_container_width=True, hide_index=True)
-                    with st.expander("Plain text", expanded=False):
-                        st.text_area(
-                            label="Final content",
-                            value=str(final_content),
-                            height=min(max(100, int(len(str(final_content)) / 3)), 600),
-                            key=f"{prefix}{key}_final_display",
-                            label_visibility="collapsed",
-                        )
+                    _render_commentary_fragment(
+                        key=key,
+                        prefix=prefix,
+                        detailed_content=str(detailed_content),
+                        simplified_content=simplified_content,
+                        has_simplified=has_simplified,
+                        clause_reviews=clause_reviews,
+                        final_label=final_label,
+                        selected_df=selected_df,
+                        language=session_state.get("language", "Eng"),
+                    )
                     st.markdown("---")
                 reprompt_comment = st.text_area(
                     label=f"Reprompt guidance for {key}",
@@ -739,7 +828,7 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                 st.markdown("---")
                 agent_contents = []
                 agent_names_list = []
-                for agent_key in ["agent_1", "agent_2", "agent_3", "agent_4"]:
+                for agent_key in ["subagent_1", "subagent_2", "subagent_3", "subagent_4"]:
                     content = extract_result_text(result, agent_key)
                     if has_meaningful_result_text(content):
                         agent_name = agent_map.get(agent_key, agent_key)
@@ -791,7 +880,7 @@ from .workbook import find_mapping_key, load_mappings
 def render_reconciliation_metrics(recon_df: pd.DataFrame):
     col1, col2, col3, col4, col_reports = st.columns([1, 1, 1, 1, 1])
     with col1:
-        st.metric("✅ Matches", (recon_df["Match"] == "✅ Match").sum())
+        st.metric("✅ Matches", recon_df["Match"].isin(["✅ Match", "⚠️ Match"]).sum())
     with col2:
         st.metric("❌ Differences", (recon_df["Match"] == "❌ Diff").sum())
     with col3:
@@ -827,7 +916,7 @@ def filter_reconciliation_display_rows(recon_df: pd.DataFrame | None) -> tuple[p
             filtered_df.loc[warning_mask, "Match"] = short_label
     hidden_columns = {"Mapping_Status", "Mapping_Note", "Integrity_Flag"}
     priority_columns = [
-        "Source_Account",
+        "Financials_Account",
         "Mapping_Key",
         "Mapping_Status",
         "Match",
@@ -909,6 +998,45 @@ def render_schedule_mapping_section(
         st.caption("Zero-value non-BS/IS schedule tab(s): " + ", ".join(hidden_zero_reconciliation_accounts))
 
 
+def _render_resolver_diagnostics(resolution: Dict[str, Any], display_keys: list[str]) -> None:
+    """Show sheet-to-mapping resolution details in a debug expander."""
+    resolved = resolution.get("resolved") or {}
+    unresolved = resolution.get("unresolved_sheets") or []
+    norm_errors = resolution.get("normalization_errors") or {}
+
+    rows = []
+    for mapping_key, info in resolved.items():
+        rows.append({
+            "Mapping Key": mapping_key,
+            "Sheet": info.get("sheet_name", ""),
+            "Method": info.get("resolution_method", ""),
+            "Score": info.get("score", ""),
+            "Alias": info.get("matched_alias", ""),
+            "In DFS": "yes" if info.get("sheet_name", "") in display_keys else "no",
+        })
+    for sheet_name in unresolved:
+        rows.append({
+            "Mapping Key": "-",
+            "Sheet": sheet_name,
+            "Method": "UNRESOLVED",
+            "Score": "",
+            "Alias": "",
+            "In DFS": "yes" if sheet_name in display_keys else "no",
+        })
+    for sheet_name, detail in norm_errors.items():
+        rows.append({
+            "Mapping Key": "-",
+            "Sheet": sheet_name,
+            "Method": "NORM ERROR",
+            "Score": "",
+            "Alias": str(detail),
+            "In DFS": "no",
+        })
+    if rows:
+        with st.expander("Debug: Sheet → Mapping Resolution", expanded=False):
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 def render_processed_view(session_state: Any, generate_pptx_callback, get_model_display_name) -> None:
     account_display_dfs = session_state.get("display_dfs") or session_state.dfs
     account_display_workbook_list = session_state.get("display_workbook_list") or session_state.workbook_list
@@ -922,7 +1050,8 @@ def render_processed_view(session_state: Any, generate_pptx_callback, get_model_
             display_account_keys.append(key)
             seen_accounts.add(key)
 
-    display_groups = build_processed_display_groups(display_account_keys, mappings)
+    dfs = session_state.get("dfs") or {}
+    display_groups = build_processed_display_groups(display_account_keys, mappings, dfs=dfs)
     bs_accounts = display_groups["bs_accounts"]
     is_accounts = display_groups["is_accounts"]
     reconciliation_accounts = list(display_groups["reconciliation_accounts"])
@@ -980,6 +1109,14 @@ def render_processed_view(session_state: Any, generate_pptx_callback, get_model_
                 session_state.mapping_overrides = {}
                 session_state.process_data_clicked = True
                 st.rerun()
+
+    debug_output = session_state.get("debug_output", "")
+    if debug_output:
+        with st.expander("Debug: Extraction & Reconciliation Log", expanded=False):
+            st.code(debug_output, language="text")
+
+        # Show resolver diagnostics alongside debug log
+        _render_resolver_diagnostics(resolution, display_account_keys)
 
     def render_account_panel(key: str):
         mapping_key = find_mapping_key(key, mappings)
@@ -1096,7 +1233,7 @@ from typing import Any, Callable
 
 import streamlit as st
 
-from .workbook import clear_table_inspection_cache
+from .workbook import clear_table_inspection_cache, clear_workbook_caches
 
 
 def _safe_stem(uploaded_name: str) -> str:
@@ -1145,7 +1282,9 @@ def cleanup_stale_uploads(
 
 def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[str], str]) -> str | None:
     with st.sidebar:
-        st.header("⚙️ Configuration")
+        if "model_type" not in session_state:
+            session_state.model_type = "local"
+        st.caption(f"🤖 AI Mode: {get_model_display_name(session_state.model_type)}")
         st.markdown("**📁 Databook File**")
         uploaded_file = st.file_uploader(
             "Upload Excel file",
@@ -1155,6 +1294,7 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
         )
 
         if uploaded_file:
+            session_state["uploaded_filename"] = uploaded_file.name
             temp_path = persist_uploaded_workbook(
                 uploaded_name=uploaded_file.name,
                 uploaded_bytes=uploaded_file.getvalue(),
@@ -1163,7 +1303,7 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
             session_state.upload_cache_cleanup_removed = cleanup_stale_uploads()
             prev_file = session_state.get("prev_uploaded_temp_path", None)
             if prev_file != temp_path:
-                clear_table_inspection_cache()
+                clear_workbook_caches()
                 reset_processing_session_state(session_state, clear_upload_reference=False)
                 session_state.prev_uploaded_temp_path = temp_path
 
@@ -1175,21 +1315,14 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
             if "temp_path" in session_state:
                 del session_state["temp_path"]
 
-        if temp_path:
-            st.markdown("---")
-            st.markdown("**🤖 AI Mode**")
-            if "model_type" not in session_state:
-                session_state.model_type = "local"
-            st.success(f"🤖 AI Mode: {get_model_display_name(session_state.model_type)}")
         return temp_path
 
 
 def render_refresh_control(session_state: Any) -> None:
-    col_spacer, col_refresh = st.columns([12, 1])
-    del col_spacer
+    _col_spacer, col_refresh = st.columns([12, 1])
     with col_refresh:
         if st.button("🔄", help="Refresh page and reset", use_container_width=True, key="refresh_main"):
-            clear_table_inspection_cache()
+            clear_workbook_caches()
             reset_processing_session_state(session_state, clear_upload_reference=True)
             st.rerun()
 # --- end ui/sidebar.py ---
@@ -1253,6 +1386,7 @@ def generate_pptx_presentation(
             mappings=mappings,
             bs_is_results=session_state.bs_is_results,
             dfs=selected_pipeline_dfs,
+            commentary_modes=session_state.get("commentary_modes"),
         )
         bs_data = structured_payloads.get("BS", [])
         is_data = structured_payloads.get("IS", [])

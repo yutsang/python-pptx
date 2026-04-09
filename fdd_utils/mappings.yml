@@ -1,5 +1,5 @@
 # Generic Agent 1 prompts (fallback for accounts without specific prompts)
-_default_agent_1:
+_default_subagent_1:
   Eng:
     system_prompt: |
       Role: Finance Due Diligence Consultant
@@ -8,13 +8,14 @@ _default_agent_1:
       Analyze all indicative-adjusted periods provided in the data, not just the latest period. Start with the cross-period trend, then describe the latest balance, composition, and any material drivers or changes supported by the data. Build the reasoning from data, trend, and supported remarks together for every item. For income-statement items, you may also use broader numeric analysis such as movement, scale, mix, and reasonableness when it is supported by the data. Date format: [Date in dd mmmm yyyy].
       If the data shows a significant movement, explain the direction and scale of change clearly. Keep the writing tight and focus on the most material points. Write one concise paragraph, usually about 6-8 sentences, and keep the discussion centered on the main business points, supported reasoning, and material remark-backed context needed for the conclusion. If listing is necessary, list only items >=10% of total and mention at most 3 significant points; figures below 10% of total do not need to be mentioned unless they are essential to explain the conclusion.
       Use supporting notes, RHS remarks, and user remarks only when they are clearly grounded in the provided data or notes. Do not invent reasons, audit procedures, accounting policies, management assertions, or transaction facts that are not evidenced by the input.
+      If an account has a zero or negligible balance across all reporting periods, state this fact briefly (e.g., "The [account] balance was nil throughout the review periods.") and do not fabricate composition analysis or reasons for a nil balance.
       Write account commentary, not a prewritten template. Avoid canned wording and keep the tone analytical, concise, and report-ready.
       Write figures naturally in plain paragraph text. Avoid putting supplemental amounts, dates, or explanations in brackets or parentheses unless the source wording itself requires them.
       Shared alignment rules:
       - {common_data_rules}
       - {common_formatting}
       - {period_reference_guidance}
-      
+
       **CRITICAL LANGUAGE REQUIREMENT**:
       THIS IS AN ENGLISH DATABOOK. Your output MUST be 100% in ENGLISH.
       {language_instruction}
@@ -43,6 +44,7 @@ _default_agent_1:
       分析数据中提供的所有示意性调整后期间，而不仅是最新一期。先写跨期趋势，再描述最新余额、构成以及由数据支持的重大变动。日期格式: [yyyy年mm月dd日]。
       如数据体现重大变化，应清楚写出变动方向和幅度，整体表达尽量更紧凑、更短。如需列示，仅列出>=总额10%的项目，且最多3个重点；低于总额10%的数字一般无需提及，除非对结论必不可少。
       仅在补充备注、表格右侧备注或用户备注与提供数据/备注一致时才可引用；不得自行臆造原因、审计程序、会计政策、管理层表述或其他未被输入支持的事实。
+      若某科目在所有报告期间余额均为零或可忽略不计，简要说明此事实即可(例如"该科目在审阅期间余额为零")，不要捏造构成分析或零余额的原因。
       撰写的是科目评论，而不是套用固定模板。避免机械化措辞，保持分析性、简洁和报告化表达。
       数字和补充说明应自然写入段落，不要把补充金额、日期或解释放在括号中，除非源数据本身就要求如此表达。
       共享对齐规则:
@@ -69,7 +71,7 @@ _default_agent_1:
       **语言**: 输出必须100%为中文。仅输出最终文本 (无模式名称)。
 
 _general_dynamic_mapping:
-  agent_1_prompts:
+  subagent_1_prompts:
     Eng:
       system_prompt: |
         Role: Finance Due Diligence Consultant
@@ -110,7 +112,7 @@ Cash:
   type: BS
   category: Current assets
   aliases: ["Cash", "Cash and Cash Equivalents", "Cash and cash equivalents", "貨幣資金", "货币资金", "Cash at bank", "Cash at bank and on hand"]
-  agent_1_prompts:
+  subagent_1_prompts:
     Eng:
       system_prompt: |
         Role: Finance Due Diligence Consultant
@@ -152,9 +154,42 @@ Cash:
 AR:
   type: BS
   category: Current assets
-  aliases: ["AR", "Accounts Receivables", "Accounts Receivable", "Accounts receivable", "Accounts receivables", "應收賬款", "应收账款"]
-  system_prompts:
-  user_prompts:
+  aliases: ["AR", "Accounts Receivables", "Accounts Receivable", "Accounts receivable", "Accounts receivables",
+            "Trade Receivables", "Trade receivables", "Trade Receivable", "Trade receivable",
+            "應收賬款", "应收账款", "应收账款净额", "应收账款(净额)"]
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write accounts receivable commentary from the provided data and account context. Use only provided data, keep currency display units exactly as shown, and analyze all indicative-adjusted periods. Lead with the cross-period trend before describing the latest balance or composition. Call out any significant change shown by the data, including the direction and scale of movement. If the schedule shows aging, concentration, or provision movement, comment on those only when supported by the data or remarks. Do not insert unsupported audit procedures, collection assessments, or allowance-policy conclusions. Write one concise paragraph, usually about 6-8 sentences, keeping the most material supported points. If listing is necessary keep only items >=10% of total with at most 3 significant points. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the account context below as guidance, then write the final commentary from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        Use all indicative-adjusted periods for commentary and trend comparison. Start with the trend across periods, then explain the latest balance and composition. If the schedule shows aging, concentration, counterparty breakdown, or provision movement, incorporate those observations when data-backed. Build the reasoning from data, trend, and supported remarks together. Keep the output to one concise paragraph of about 6-8 sentences. If you list contributors, keep only items >=10% of total and list at most 3 points. Do not mention collection procedures, bank confirmations, or provisioning policies unless the provided data or remarks explicitly support them.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        基于提供的数据和科目上下文撰写应收账款评论。仅使用提供的数据，保持金额展示单位不变，并分析所有示意性调整后期间。先写跨期趋势，再描述最新余额或构成。若数据体现重大变动，应写明变动方向和幅度。若附表显示账龄、集中度或减值准备变动，仅在数据或备注支持时予以说明。不要加入未被输入支持的审计程序、回收评估或坏账政策结论。如需列示，仅列出>=总额10%的项目且最多3个重点。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下科目上下文仅作写作提示，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        使用所有示意性调整后期间进行评论和趋势比较。先写趋势，再写最新余额与构成。若附表显示账龄、集中度、交易对手分布或减值准备变动，在有数据支持时予以纳入。整体表达应精炼紧凑。如需列示，仅保留>=总额10%的项目，且最多3个重点。除非数据或备注明确支持，否则不要写催收程序、银行函证或坏账政策等表述。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本, 不包含模式名称。
   patterns:
     Pattern 1: |
       Start with the cross-period trend in accounts receivable, then explain the latest balance as trade receivables due from [customer / customer group / revenue stream] only when supported by the schedule or remarks. If the balance is concentrated in one or a few counterparties, mention that concentration and its driver only when evidenced by the data.
@@ -234,11 +269,36 @@ NCL:
   type: BS
   category: Non-current liabilities
   aliases: ["NCL", "Non-current Liabilities", "Non-current liability", "Non-current liabilities", "Non Current Liabilities",
-            "Non Current Liability", "长期借款", "長期借款"]
+            "Non Current Liability"]
   system_prompts:
   user_prompts:
   patterns:
     Pattern 1: N/A
+
+Long-term loans:
+  type: BS
+  category: Non-current liabilities
+  aliases: ["Long-term loans", "Long-term loan", "Long term loans", "Long term loan",
+            "长期借款", "長期借款", "Bank loans", "Bank borrowings"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      Start with the trend in long-term loans across periods, then explain the latest balance as mainly representing [bank borrowings / secured loans / unsecured loans / other supported debt instruments]. Mention interest rate, maturity, collateral, or repayment schedule only when supported by the data or remarks.
+    Pattern 2: |
+      Describe the latest long-term loan balance and any material drawdowns, repayments, or refinancing across periods only when evidenced by the schedule or remarks.
+
+NCL due within one year:
+  type: BS
+  category: Current liabilities
+  aliases: ["NCL due within one year", "Non-current liabilities due within one year",
+            "Current portion of long-term debt", "Current portion of non-current liabilities",
+            "一年内到期的非流动负债", "一年內到期的非流動負債"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      Start with the trend in non-current liabilities due within one year across periods, then explain the latest balance as mainly representing the current portion of [long-term bank loans / lease liabilities / other supported non-current obligations]. Mention reclassification from long-term debt only when supported by the data or remarks.
  
 Other NCA:
   type: BS
@@ -449,7 +509,18 @@ Selling cost:
   user_prompts:
   patterns:
     Pattern 1: N/A
- 
+
+Other profit:
+  type: IS
+  category: Revenue
+  aliases: ["Other profit", "Other Profit", "其他利润", "其他利潤",
+            "Utility profit", "电费利润", "水费利润"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      Start with the other-profit trend across periods, then explain the latest balance as mainly comprising [utility profit / electricity profit / water profit / other supported items]. Mention only the material components and any significant movement supported by the data.
+
 Cr Loss:
   type: IS
   category: Expenses
@@ -527,3 +598,72 @@ LT DTA:
       Start with the deferred-tax-asset trend across periods, then explain the latest balance as mainly arising from [tax losses / impairment provision / fair value / timing difference / other supported temporary difference] only when supported by the data or remarks.
     Pattern 2: |
       Describe deferred tax assets using only the details evidenced by the schedule or remarks, and mention offsetting deferred tax liabilities or utilization expectations only when clearly supported.
+
+Notes Receivable:
+  type: BS
+  category: Current assets
+  aliases: ["Notes Receivable", "Notes receivable", "Notes receivables", "Bills Receivable", "Bills receivable",
+            "应收票据", "應收票據"]
+  subagent_1_prompts:
+  patterns:
+    Pattern 1: |
+      Start with the trend in notes receivable across periods, then explain the latest balance as mainly representing [bank acceptance bills / commercial acceptance bills / other supported bill type]. Mention counterparty concentration, maturity profile, or endorsement/discounting only when evidenced by the data or remarks.
+
+Notes Payable:
+  type: BS
+  category: Current liabilities
+  aliases: ["Notes Payable", "Notes payable", "Bills Payable", "Bills payable",
+            "应付票据", "應付票據"]
+  subagent_1_prompts:
+  patterns:
+    Pattern 1: |
+      Start with the trend in notes payable across periods, then explain the latest balance as mainly representing [bank acceptance bills / commercial acceptance bills / other supported bill type]. Mention maturity timing or counterparty context only when supported by the data or remarks.
+
+ROU Assets:
+  type: BS
+  category: Non-current assets
+  aliases: ["ROU Assets", "Right-of-use Assets", "Right-of-use assets", "Right of use assets",
+            "Right-of-Use Assets", "使用权资产", "使用權資產"]
+  subagent_1_prompts:
+  patterns:
+    Pattern 1: |
+      Start with the trend in right-of-use assets across periods, then explain the latest balance as mainly representing [leased premises / office space / equipment / other supported leased asset class]. Mention lease terms, depreciation, or additions only when supported by the data or remarks.
+
+Lease Liabilities:
+  type: BS
+  category: Non-current liabilities
+  aliases: ["Lease Liabilities", "Lease liabilities", "Lease Liability", "Lease liability",
+            "租赁负债", "租賃負債"]
+  subagent_1_prompts:
+  patterns:
+    Pattern 1: |
+      Start with the trend in lease liabilities across periods, then explain the latest balance in the context of [lease obligations / payment schedule / current vs non-current split] only when supported by the data or remarks.
+
+Deferred Revenue:
+  type: BS
+  category: Current liabilities
+  aliases: ["Deferred Revenue", "Deferred revenue", "Deferred Income", "Deferred income",
+            "递延收益", "遞延收益"]
+  subagent_1_prompts:
+  patterns:
+    Pattern 1: |
+      Start with the trend in deferred revenue across periods, then explain the latest balance as mainly representing [government grants / subsidies / deferred service income / other supported deferred item]. Mention amortization schedule or grant conditions only when evidenced by the data or remarks.
+
+Goodwill:
+  type: BS
+  category: Non-current assets
+  aliases: ["Goodwill", "商誉", "商譽"]
+  subagent_1_prompts:
+  patterns:
+    Pattern 1: |
+      Start with the trend in goodwill across periods, then explain the latest balance in the context of [acquisition / business combination / subsidiary / other supported origin]. Mention impairment testing or write-down only when supported by the data or remarks.
+
+R&D Expenses:
+  type: IS
+  category: Expenses
+  aliases: ["R&D Expenses", "R&D expenses", "Research and Development", "Research and development expenses",
+            "R&D", "研发费用", "研發費用"]
+  subagent_1_prompts:
+  patterns:
+    Pattern 1: |
+      Start with the R&D expense trend across periods, then explain the latest balance as mainly comprising [staff cost / material cost / testing cost / depreciation / other supported R&D expense line]. Mention capitalization rate or project context only when supported by the data or remarks.

@@ -28,6 +28,7 @@ common:
       3. **IMPORTANT - VALUES ARE PRE-FORMATTED**: All numeric values in the original data are already formatted with units (K, million) and 1 decimal place. DO NOT convert them again. Only verify they match the source data.
       3a. REVIEW all indicative-adjusted periods provided in the source data, not just the latest period, and ensure any trend wording is supported by the full period set.
       3b. ENFORCE trend-first structure: the narrative should lead with the cross-period movement before landing on the latest balance or composition.
+      3c. CROSS-REFERENCE trend wording: if the commentary says an account "increased" or "decreased", verify that the direction is consistent with the numeric values across periods in the source data. Flag and correct any directional mismatch.
       4. VERIFY currency format:
          - K format: XX.XK (1 decimal place, e.g., 78.2K, 123.5K)
          - Million format: XX.XX million (2 decimal places, e.g., 1.23 million, 12.35 million)
@@ -106,6 +107,7 @@ common:
       2. 纠正任何不准确的数字或格式问题。
       3. **重要 - 数值已预先格式化**: 原始数据中的所有数值已经格式化为带单位(万、亿)和1位小数。请勿再次转换。只需验证它们与源数据匹配。
       3a. 审阅源数据中提供的所有示意性调整后期间，而不仅是最新一期，并确认任何趋势描述均由完整期间数据支持。
+      3b. 趋势交叉验证: 若评论称某科目"增加"或"减少"，核实方向是否与源数据各期数值一致。发现方向性不符时须标记并纠正。
       4. **数字验证规则** - 数值应该已经格式化:
          - 万元格式: XX.X万 (1位小数, 例如: 7.8万, 123.5万)
          - 亿元格式: X.XX亿 (2位小数, 例如: 1.23亿, 12.35亿)
@@ -187,7 +189,7 @@ common:
       1. LIMIT listing points to a maximum of 3 items.
       2. FILTER items: only list those with value >= 10% of total.
       3. SIMPLIFY: if only one significant value exists, show total only without listing.
-      4. REDUCE the content to about 70% of the previous output length while preserving important facts, trend, support, and conclusion.
+      4. REDUCE the content to about {reduction_target_pct}% of the previous output length while preserving important facts, trend, support, and conclusion.
       5. ENSURE all dates, amounts, and entity names are preserved exactly.
       6. MAINTAIN professional tone and clarity.
       7. PRESERVE explanatory content and context where it is necessary for the conclusion, especially when remarks, analysis, or validation-backed reasoning materially strengthen the point; remove secondary or repetitive support first.
@@ -208,7 +210,7 @@ common:
       - If only ONE value exists, display as total without listing.
       - Maintain chronological or descending order by value.
       
-      IMPORTANT: The goal is to REFINE and TIGHTEN, not to strip out useful reasoning. The final result should usually be one concise paragraph of about 6-8 sentences. Reduce wording materially while keeping the context, analytical explanation, and remark-backed reasoning needed for a sound due diligence conclusion. For every item, the reasoning should remain visibly grounded in data, trend, and supported remarks together. For income-statement items, broader numeric analysis may also be retained where it strengthens the explanation. Where remarks contain material supported explanations, differences, restrictions, or drivers, bring them into the paragraph explicitly. Remove low-value detail, repeated wording, stacked evidence, and minor figures first.
+      IMPORTANT: The goal is to REFINE and TIGHTEN, not to strip out useful reasoning. The final result should usually be one concise paragraph of about 4-6 sentences. Reduce wording materially while keeping the context, analytical explanation, and remark-backed reasoning needed for a sound due diligence conclusion. For every item, the reasoning should remain visibly grounded in data, trend, and supported remarks together. For income-statement items, broader numeric analysis may also be retained where it strengthens the explanation. Where remarks contain material supported explanations, differences, restrictions, or drivers, bring them into the paragraph explicitly. Remove low-value detail, repeated wording, stacked evidence, and minor figures first.
       
       FORMATTING RULES:
       - DO NOT use bullet points or lists. Use full sentences and paragraphs.
@@ -247,7 +249,7 @@ common:
       1. Are there more than 3 listing points? → Convert to paragraph form
       2. Are all listed items >= 10% of total? → Remove smaller items unless essential
       3. If only 1 significant item, is it shown as total? → Simplify
-      4. Does the content reduce to about 70% of the previous length without dropping important context, support, or useful reasoning? → Enforce
+      4. Does the content reduce to about {reduction_target_pct}% of the previous length without dropping important context, support, or useful reasoning? → Enforce
       5. Are dates, amounts, entities preserved? → Verify
       6. Does the content use all indicative-adjusted periods for trend comparison? → Verify
       6a. Is the paragraph trend-first, introducing the movement before the latest balance? → Enforce
@@ -258,7 +260,7 @@ common:
       7d. Is the reasoning for the item visibly built from data, trend, and supported remarks together, with broader numeric analysis added for income-statement items where useful? → Enforce
       8. Does the writing still sound like finance due diligence commentary rather than a canned template? → Enforce
       9. Are supplemental figures written naturally in sentences instead of brackets or parentheses where possible? → Enforce
-      10. Is the format strictly PARAGRAPHS (no bullets, no bold keys), normally as one concise paragraph of about 6-8 sentences? → Enforce
+      10. Is the format strictly PARAGRAPHS (no bullets, no bold keys), normally as one concise paragraph of about 4-6 sentences? → Enforce
       
       CRITICAL: Output ONLY the refined financial text.
       Do NOT include refinement explanations or meta-commentary.
@@ -282,7 +284,7 @@ common:
       1. 将列表点限制为最多3个项目。
       2. 过滤项目: 仅列出值>=总额10%的项目。
       3. 简化: 如果只有一个重要值存在, 则仅显示总计而不列出。
-      4. 在保留核心内容的前提下将篇幅压缩到上一版本的大约70%，同时保留重要事实、趋势、数据依据和结论。
+      4. 在保留核心内容的前提下将篇幅压缩到上一版本的大约{reduction_target_pct}%，同时保留重要事实、趋势、数据依据和结论。
       5. 确保准确保留所有日期、金额和实体名称。
       6. 保持专业语气和清晰度。
       7. 确保使用总计金额而非明细项目金额。
@@ -343,7 +345,7 @@ common:
       1. 是否有列表点? → 转换为段落形式
       2. 所有列出的项目是否>=总额的10%? → 删除较小的项目，除非对结论必不可少
       3. 如果只有1个重要项目, 是否显示为总计? → 简化
-      4. 内容是否在压缩到上一版本大约70%的前提下，仍保持了背景、趋势和数据依据? → 强制执行
+      4. 内容是否在压缩到上一版本大约{reduction_target_pct}%的前提下，仍保持了背景、趋势和数据依据? → 强制执行
       5. 是否保留了日期、金额、实体? → 验证
       6. 是否使用了所有示意性调整后期间进行趋势比较? → 确认
       7. 是否使用了总计金额而非明细? → 确认
@@ -414,6 +416,22 @@ common:
          - **NO bullet points**
          - **NO bold text**
 
+      E. Data Cross-Verification (Hallucination Detection):
+         For EACH clause in the final paragraph, verify every specific number, amount,
+         percentage, growth rate, and trend claim against the provided Original data.
+         - If a number appears in the clause, find the matching figure in the data.
+         - If a trend claim says "increased" or "decreased", confirm the direction from the data.
+         - If a reason or explanation is given (e.g. "driven by higher sales volume"), check
+           whether the data, notes, or remarks support it. If not, it is a hallucination.
+         - Classify each clause into one of three categories:
+           * "data-backed" — every fact and number is directly verifiable in the data
+           * "reasoning" — a logical inference from the data that is plausible but not directly stated
+           * "hallucination" — contains numbers, facts, or explanations not found in the data
+         - When splitting the paragraph into clauses, treat commas inside numbers as thousand
+           separators (e.g. "1,234,567" or "12,345.6") — do NOT break a clause at these commas.
+           A clause boundary is typically a full stop, semicolon, or a comma followed by a
+           conjunction or new subject, NOT a comma embedded within a formatted number.
+
       OUTPUT FORMAT:
       Return valid JSON only with this structure:
       {{
@@ -422,10 +440,13 @@ common:
           {{
             "clause": "exact clause text from final_content",
             "supported": true,
+            "category": "data-backed",
             "reason": "brief justification; if unsupported, say what data is missing"
           }}
         ]
       }}
+      The `category` field must be one of: "data-backed", "reasoning", or "hallucination".
+      Set `supported` to true for "data-backed", and false for "reasoning" and "hallucination".
       Include every clause from the final content in order. Copy each `clause` exactly from `final_content` rather than paraphrasing it. Unsupported trend or reason clauses must have "supported": false.
       
       **CRITICAL LANGUAGE REQUIREMENT - FINAL CHECK**:
@@ -468,11 +489,13 @@ common:
       12. If remarks contain material supported explanations, differences, restrictions, or drivers, make sure they remain visible in the final paragraph.
       13. Make sure the final reasoning remains visibly grounded in data, trend, and supported remarks together, with broader numeric analysis retained for income-statement items where it strengthens the explanation.
       14. Remove avoidable bracketed figures and keep the numbers in plain sentence form where possible.
-      
+      15. **Hallucination detection**: For every number, amount, percentage, and trend direction in each clause, cross-verify against the Original data provided. If ANY specific figure cannot be traced back to the data, mark the clause category as "hallucination".
+      16. When splitting into clauses, do NOT break on commas inside numbers (e.g. "1,234,567"). A clause is a sentence or meaningful sub-sentence, not a numeric fragment.
+
       Output valid JSON only with:
       - `final_content`
       - `clause_reviews`
-      Each `clause_reviews` item must contain `clause`, `supported`, and `reason`. Copy each `clause` exactly from `final_content`.
+      Each `clause_reviews` item must contain `clause`, `supported`, `category`, and `reason`. The `category` must be "data-backed", "reasoning", or "hallucination". Copy each `clause` exactly from `final_content`.
   
   Chi:
     system_prompt: |
@@ -532,6 +555,18 @@ common:
          - 避免重复
          - 使用清晰简洁的语言
 
+      E. 数据交叉验证（幻觉检测）:
+         对最终段落中的每个分句，验证其中每个具体数字、金额、百分比、增长率和趋势声明是否在提供的原始数据中可找到。
+         - 如果分句中出现某个数字，需在数据中找到对应数据。
+         - 如果趋势声明称"增加"或"减少"，需确认数据中方向一致。
+         - 如果给出原因或解释（如"受销量增长驱动"），需检查数据、备注或说明是否支持。如不支持，则为幻觉。
+         - 将每个分句分为以下三类之一:
+           * "data-backed" — 每个事实和数字都可在数据中直接验证
+           * "reasoning" — 从数据推导出的合理推理，但数据中未直接陈述
+           * "hallucination" — 包含数据中未出现的数字、事实或解释
+         - 拆分段落为分句时，不要在数字中的千分位逗号处断开（如"1,234,567"或"12,345.6"）。
+           分句边界通常是句号、分号，或后跟连词/新主语的逗号，而非格式化数字内的逗号。
+
       输出格式:
       仅返回有效JSON，格式如下:
       {{
@@ -540,10 +575,13 @@ common:
           {{
             "clause": "final_content中的原句/分句",
             "supported": true,
+            "category": "data-backed",
             "reason": "简短说明；若不支持，说明缺少何种数据依据"
           }}
         ]
       }}
+      `category`字段必须为: "data-backed"、"reasoning"或"hallucination"之一。
+      "data-backed"时`supported`为true，"reasoning"和"hallucination"时`supported`为false。
       必须按顺序覆盖final_content中的每个分句，并且`clause`必须逐字复制自final_content，不要改写。若趋势或原因分句无数据支持，则必须将`supported`设为false。
       
       重要: 如果内容已经格式良好且清晰, 请原样输出。
@@ -578,8 +616,10 @@ common:
       9. 行文必须像财务尽调评论，不要保留固定模板、程序化表述或无依据政策措辞。
       10. 尽量去除可避免的括号数字，让数字自然写入句子。
       11. **格式检查**: 确保没有要点、列表或粗体字。只使用段落。
-      
+      12. **幻觉检测**: 对每个分句中的每个数字、金额、百分比和趋势方向，与提供的原始数据交叉验证。如果某个具体数字无法追溯到数据，则将该分句标记为"hallucination"。
+      13. 拆分分句时，不要在数字中的千分位逗号处断开（如"1,234,567"）。
+
       仅输出有效JSON，包含:
       - `final_content`
       - `clause_reviews`
-      每个`clause_reviews`项必须包含`clause`、`supported`和`reason`，且`clause`必须直接复制自`final_content`。
+      每个`clause_reviews`项必须包含`clause`、`supported`、`category`和`reason`。`category`必须为"data-backed"、"reasoning"或"hallucination"。`clause`必须直接复制自`final_content`。
