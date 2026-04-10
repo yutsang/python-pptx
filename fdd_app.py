@@ -78,15 +78,17 @@ footer:after {
 .fdd-final-commentary p:last-child {margin-bottom: 0;}
 .fdd-hallucination-clause {
     background: rgba(255, 214, 10, 0.38);
-    color: #3f2b00;
+    color: #2b1a00 !important;
     padding: 0 0.16rem;
     border-radius: 0.22rem;
+    font-weight: 600;
 }
 .fdd-reasoning-clause {
     background: rgba(255, 165, 0, 0.25);
-    color: #4a2800;
+    color: #2f1a00 !important;
     padding: 0 0.16rem;
     border-radius: 0.22rem;
+    font-weight: 600;
 }
 .fdd-validator-notes {
     margin-top: 0.8rem;
