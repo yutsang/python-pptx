@@ -564,10 +564,13 @@ def build_highlighted_commentary_html(final_content: str, clause_reviews: List[D
         category_label = "Hallucination" if category == "hallucination" else "Reasoning"
         tooltip = f"[{category_label}] {reason}"
         css_class = "fdd-hallucination-clause" if category == "hallucination" else "fdd-reasoning-clause"
+        # Add inline color to resist external/global CSS forcing white text.
+        inline_color = "#111111" if category == "hallucination" else "#111111"
         rendered_parts.append(
-            '<span class="{css_class}" title="{title}">{content}</span>'.format(
+            '<span class="{css_class}" title="{title}" style="color: {inline_color} !important;">{content}</span>'.format(
                 css_class=css_class,
                 title=html.escape(tooltip, quote=True),
+                inline_color=inline_color,
                 content=html.escape(text[start:end]),
             )
         )
