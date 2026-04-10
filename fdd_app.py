@@ -77,16 +77,20 @@ footer:after {
 .fdd-final-commentary p {margin: 0 0 0.8rem 0;}
 .fdd-final-commentary p:last-child {margin-bottom: 0;}
 .fdd-hallucination-clause {
-    background: rgba(255, 214, 10, 0.38);
-    color: #000;
-    padding: 0 0.16rem;
-    border-radius: 0.22rem;
+    background-color: rgba(250, 204, 21, 0.22);
+    color: inherit;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid rgba(250, 204, 21, 0.35);
 }
 .fdd-reasoning-clause {
-    background: rgba(255, 165, 0, 0.25);
-    color: #000;
-    padding: 0 0.16rem;
-    border-radius: 0.22rem;
+    background-color: rgba(248, 113, 113, 0.22);
+    color: inherit;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid rgba(248, 113, 113, 0.38);
 }
 .fdd-validator-notes {
     margin-top: 0.8rem;
@@ -109,12 +113,10 @@ footer:after {
         background: rgba(255, 255, 255, 0.04);
     }
     .fdd-hallucination-clause {
-        background: rgba(255, 196, 61, 0.34);
-        color: #000;
+        background-color: rgba(250, 204, 21, 0.22);
     }
     .fdd-reasoning-clause {
-        background: rgba(255, 165, 0, 0.28);
-        color: #000;
+        background-color: rgba(248, 113, 113, 0.22);
     }
     .fdd-validator-notes {
         border-color: rgba(255, 196, 61, 0.32);
@@ -123,12 +125,10 @@ footer:after {
 }
 /* Streamlit-specific dark mode override */
 [data-testid="stApp"][data-theme="dark"] .fdd-hallucination-clause {
-    background: rgba(255, 196, 61, 0.34);
-    color: #000;
+    background-color: rgba(250, 204, 21, 0.22);
 }
 [data-testid="stApp"][data-theme="dark"] .fdd-reasoning-clause {
-    background: rgba(255, 165, 0, 0.28);
-    color: #000;
+    background-color: rgba(248, 113, 113, 0.22);
 }
 </style>
 """, unsafe_allow_html=True)
