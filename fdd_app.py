@@ -78,13 +78,13 @@ footer:after {
 .fdd-final-commentary p:last-child {margin-bottom: 0;}
 .fdd-hallucination-clause {
     background: rgba(255, 214, 10, 0.38);
-    color: #3f2b00;
+    color: #000;
     padding: 0 0.16rem;
     border-radius: 0.22rem;
 }
 .fdd-reasoning-clause {
     background: rgba(255, 165, 0, 0.25);
-    color: #4a2800;
+    color: #000;
     padding: 0 0.16rem;
     border-radius: 0.22rem;
 }
@@ -110,11 +110,11 @@ footer:after {
     }
     .fdd-hallucination-clause {
         background: rgba(255, 196, 61, 0.34);
-        color: #fff4cc;
+        color: #000;
     }
     .fdd-reasoning-clause {
         background: rgba(255, 165, 0, 0.28);
-        color: #ffe0b2;
+        color: #000;
     }
     .fdd-validator-notes {
         border-color: rgba(255, 196, 61, 0.32);
@@ -124,11 +124,11 @@ footer:after {
 /* Streamlit-specific dark mode override */
 [data-testid="stApp"][data-theme="dark"] .fdd-hallucination-clause {
     background: rgba(255, 196, 61, 0.34);
-    color: #fff4cc;
+    color: #000;
 }
 [data-testid="stApp"][data-theme="dark"] .fdd-reasoning-clause {
     background: rgba(255, 165, 0, 0.28);
-    color: #ffe0b2;
+    color: #000;
 }
 </style>
 """, unsafe_allow_html=True)
