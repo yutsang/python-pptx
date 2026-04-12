@@ -1292,7 +1292,12 @@ class PromptEngine:
 
         if language == "Chi":
             if statement_type == "BS":
-                return f"这是资产负债表科目。描述最新余额时，请使用“截至{effective_date}”之类的时点表述，不要写成期间表述。"
+                return (
+                    f"这是资产负债表科目。重点分析截至{effective_date}的最新余额及其构成（余额分析）："
+                    f"描述余额的主要组成部分、集中度、关键驱动因素及重大变化情况。"
+                    f"跨期变动趋势应简略带过（一至两句即可），仅作为最新余额的背景支撑，而非开篇重点。"
+                    f"请使用时点表述如【截至{effective_date}】，不要写成期间表述。"
+                )
             if statement_type == "IS":
                 period_label = build_income_statement_period_label(
                     effective_date,
@@ -1301,14 +1306,30 @@ class PromptEngine:
                     fiscal_year_end_day=fiscal_year_end_day if isinstance(fiscal_year_end_day, (int, float)) else None,
                     language="Chi",
                 )
+                is_partial = isinstance(annualization_months, (int, float)) and int(annualization_months) < 12
+                if is_partial:
+                    months_int = int(annualization_months)
+                    annualized_label = f"{period_label}（年化）"
+                    return (
+                        f"这是利润表科目。最新期间为截至{effective_date}的{months_int}个月（期间标签：{period_label}），属于不完整年度。"
+                        f"跨期比较时，请优先使用年化后数据（x12/{months_int}，已预计算为【{annualized_label}】列）进行同口径对比，"
+                        f"并在评论中注明该数据已年化。有右侧备注的科目优先讨论。"
+                        f"描述目标期间时，请使用【于{period_label}期间】或【在{period_label}内】等期间表述，"
+                        f"不要写成【截至{effective_date}止】或时点余额表述。"
+                    )
                 return (
-                    f"这是利润表科目。描述目标期间时，请使用“于{period_label}期间”或“在{period_label}内”等期间表述，"
-                    f"不要写成“截至{effective_date}止”或时点余额表述。"
+                    f"这是利润表科目。描述目标期间时，请使用【于{period_label}期间】或【在{period_label}内】等期间表述，"
+                    f"不要写成【截至{effective_date}止】或时点余额表述。"
                 )
             return "请根据科目属性正确区分时点表述与期间表述。"
 
         if statement_type == "BS":
-            return f"This is a balance-sheet item. Refer to the latest amount with point-in-time wording such as 'as at {effective_date}', not period-flow wording."
+            return (
+                f"This is a balance-sheet item. Focus primarily on the latest balance as at {effective_date} and its composition "
+                f"(balance analysis / 余额分析): describe what the balance comprises, any concentration, key drivers, and material changes. "
+                f"Cross-period trend should be kept brief — no more than one or two sentences — and serve as supporting context for the latest "
+                f"position rather than the opening focus. Use point-in-time wording such as 'as at {effective_date}', not period-flow wording."
+            )
         if statement_type == "IS":
             period_label = build_income_statement_period_label(
                 effective_date,
@@ -1317,6 +1338,17 @@ class PromptEngine:
                 fiscal_year_end_day=fiscal_year_end_day if isinstance(fiscal_year_end_day, (int, float)) else None,
                 language="Eng",
             )
+            is_partial = isinstance(annualization_months, (int, float)) and int(annualization_months) < 12
+            if is_partial:
+                months_int = int(annualization_months)
+                annualized_label = f"{period_label} annualised"
+                return (
+                    f"This is an income-statement item. The latest period covers {months_int} months ending {effective_date} "
+                    f"(period label: {period_label}) — this is a partial year. "
+                    f"For cross-year comparisons, use the annualized figures (×12/{months_int}), pre-calculated in the '{annualized_label}' column, "
+                    f"and note the annualization in the commentary. Prioritize line items that have supporting remarks. "
+                    f"Refer to the period with flow wording such as 'during {period_label}', not 'for the period ended {effective_date}'."
+                )
             return (
                 f"This is an income-statement item. Refer to the target period with flow wording such as 'during {period_label}' "
                 f"or 'during the period', not 'for the period ended {effective_date}'. Do not describe it with balance-sheet wording such as 'as at'."
@@ -1462,7 +1494,7 @@ class PromptEngine:
                 (
                     "- Use the target period for the latest balance / latest period statement. For income-statement items, prefer 'during' wording with the preferred narrative period label rather than 'for the period ended'. Use earlier indicative-adjusted periods for trend, comparison, cross-check, and significant movement analysis."
                     if language == "Eng"
-                    else "- 以目标期间作为最新余额/最新期间表述的基础。若为利润表科目，优先使用推荐叙述期间标签并采用“于...期间/在...内”表达，而不是“截至...止期间”。同时使用更早的示意性调整后期间进行趋势、比较、交叉检查及重大变动分析。"
+                    else '- 以目标期间作为最新余额/最新期间表述的基础。若为利润表科目，优先使用推荐叙述期间标签并采用"于...期间/在...内"表达，而不是"截至...止期间"。同时使用更早的示意性调整后期间进行趋势、比较、交叉检查及重大变动分析。'
                 ),
             ]
             rendered = self._append_markdown_section(rendered, focus_label, "\n".join(focus_lines))

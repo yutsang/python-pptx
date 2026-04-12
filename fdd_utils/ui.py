@@ -390,6 +390,15 @@ from typing import Any, Dict
 import pandas as pd
 import streamlit as st
 
+# Compatibility shim: st.fragment landed in Streamlit 1.33. On older builds
+# we fall back to a no-op decorator so the page still renders.
+if not hasattr(st, "fragment"):
+    def _noop_fragment(func=None, **_kwargs):
+        if func is None:
+            return lambda f: f
+        return func
+    st.fragment = _noop_fragment  # type: ignore[attr-defined]
+
 from .ai import (
     build_highlighted_commentary_html,
     get_prompt_engine,

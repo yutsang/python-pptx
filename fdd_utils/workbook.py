@@ -3036,6 +3036,69 @@ def _row_type(description: str) -> str:
     return "detail"
 
 
+def _detect_implicit_breakdowns_from_sum(
+    row_entries: List[Dict[str, Any]],
+    projection_column_key: str,
+    tolerance_ratio: float = 0.005,
+) -> None:
+    """
+    Detect rows that are implicit breakdowns of a parent detail row.
+
+    In some Excel schedules the parent total appears first (without a "total"
+    keyword) followed by its component sub-rows, e.g.:
+
+        Cash at bank:  1,000        ← parent detail row
+          Bank A CNY:    600        ← sub-row (no "其中" / "of which" prefix)
+          Bank B USD:    400        ← sub-row
+
+    When the sum of consecutive following detail rows equals the parent's value
+    within a small tolerance AND every child is strictly smaller than the parent,
+    those following rows are re-classified as "breakdown" so they are filtered
+    out of the AI prompt data and reconciliation totals.
+
+    This only runs when there are NO explicitly-typed total/subtotal rows in the
+    schedule (i.e. when keyword-based detection has already handled the standard
+    case).  Mutates row_entries in-place.
+    """
+    n = len(row_entries)
+    # Only apply when no explicit total/subtotal rows exist
+    if any(r["row_type"] in ("total", "subtotal") for r in row_entries):
+        return
+
+    marked: set[int] = set()
+    for i in range(n - 1):
+        if i in marked:
+            continue
+        parent = row_entries[i]
+        if parent["row_type"] != "detail":
+            continue
+        parent_val = parent["values"].get(projection_column_key)
+        if parent_val is None or abs(parent_val) < 1.0:
+            continue
+
+        running_sum = 0.0
+        child_candidates: List[int] = []
+        for j in range(i + 1, min(i + 20, n)):
+            if j in marked:
+                break
+            child = row_entries[j]
+            if child["row_type"] != "detail":
+                break
+            child_val = child["values"].get(projection_column_key) or 0.0
+            # Each child must be strictly smaller than the parent
+            if abs(child_val) >= abs(parent_val):
+                break
+            running_sum += child_val
+            child_candidates.append(j)
+            if len(child_candidates) >= 2:
+                tolerance = max(1.0, abs(parent_val) * tolerance_ratio)
+                if abs(running_sum - parent_val) <= tolerance:
+                    for idx in child_candidates:
+                        row_entries[idx]["row_type"] = "breakdown"
+                        marked.add(idx)
+                    break
+
+
 def _fallback_description(description: str, title: str, last_label: Optional[str]) -> str:
     if description:
         return description
@@ -3398,6 +3461,8 @@ def _build_prompt_analysis_df(
 
     prompt_rows: List[Dict[str, Any]] = []
     for row in row_entries:
+        if row["row_type"] == "breakdown":
+            continue
         row_values = {
             column["date"]: row["values"].get(column["key"])
             for column in analysis_columns
@@ -3599,6 +3664,9 @@ def normalize_financial_schedule(
         raise ValueError(f"No data rows detected for sheet: {sheet_name}")
 
     projection = _choose_projection(columns, row_entries)
+    # Detect implicit breakdown rows (parent-first structure without total keywords)
+    # Must be called after _choose_projection so we know the projection column key.
+    _detect_implicit_breakdowns_from_sum(row_entries, projection["column"]["key"])
     projection_column = projection["column"]
     analysis_stage = PREFERRED_STAGE if any(column["stage"] == PREFERRED_STAGE for column in columns) else projection["effective_stage"]
     prompt_analysis_df = _build_prompt_analysis_df(
@@ -6006,12 +6074,30 @@ def get_total_from_dfs(dfs_df: pd.DataFrame, date_col: str, debug: bool = False)
                 print(f"      Found total row: '{total_rows.iloc[0][desc_col]}' → value: {total_value:,.0f}")
         return total_value
     
-    # No total row found - return None (no fallback)
+    # Fallback: when no explicit total row exists, the schedule may use a
+    # parent-first structure where the first non-breakdown row IS the total.
+    # Use projection_totals_by_date if available (populated from sum-detected rows
+    # marked as total via _detect_implicit_breakdowns_from_sum), otherwise try
+    # the first row with a non-zero value as the best-effort total.
+    if date_col in dfs_df.columns:
+        desc_col = dfs_df.columns[0]
+        row_types = dfs_df.attrs.get("row_types_by_description") or {}
+        for _, row in dfs_df.iterrows():
+            desc = str(row[desc_col])
+            # Skip rows that are breakdowns or explicitly subtotal/total (already checked above)
+            if row_types.get(desc) in ("breakdown", "subtotal"):
+                continue
+            candidate = row[date_col]
+            if isinstance(candidate, (int, float)) and abs(candidate) > 0:
+                if debug:
+                    print(f"      Using first-row fallback total for '{date_col}': {candidate:,.0f} from '{desc}'")
+                return float(candidate)
+
     if debug:
         desc_col = dfs_df.columns[0]
         print(f"      ❌ No total row found (no '合计', '总计', or 'Total' in descriptions)")
         print(f"      Available descriptions: {dfs_df[desc_col].tolist()}")
-    
+
     return None
 
 

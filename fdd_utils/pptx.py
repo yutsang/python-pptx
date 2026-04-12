@@ -98,6 +98,7 @@ PPTX_DEFAULT_SETTINGS: Dict[str, Any] = {
         "validation_temperature": 0.1,
     },
     "commentary_packing": {
+        "use_pillow_text_fitting": True,
         "shape_height_utilization": 1.08,
         "minimum_slot_lines": 22,
         "split_min_remaining_lines": 3,
@@ -366,7 +367,11 @@ def build_pptx_structured_payloads(
 
     for statement_type in ["BS", "IS"]:
         payloads[statement_type] = [
-            item for _order, _category, _mapping_key, item in sorted(sortable_items[statement_type])
+            item
+            for _order, _category, _mapping_key, item in sorted(
+                sortable_items[statement_type],
+                key=lambda row: (row[0], row[1], row[2]),
+            )
         ]
 
     return payloads
@@ -1504,6 +1509,49 @@ class PowerPointGenerator:
         
         logger.info("Successfully filled shape with %s paragraphs", len([l for l in content_lines if l.strip()]))
 
+    def _pillow_fitting_enabled(self, packing: Dict[str, Any]) -> bool:
+        if os.environ.get("FDD_USE_PILLOW_FITTING") == "1":
+            return True
+        if os.environ.get("FDD_USE_PILLOW_FITTING") == "0":
+            return False
+        return bool(packing.get("use_pillow_text_fitting", False))
+
+    def _pillow_measure(
+        self,
+        shape,
+        text: str,
+        *,
+        is_chinese: bool,
+    ) -> Optional[Tuple[int, int]]:
+        """Returns (used_lines, capacity_lines) using real font metrics, or
+        None on any failure (caller falls back to legacy CPL heuristic)."""
+        if not shape or not hasattr(shape, "height") or not hasattr(shape, "width"):
+            return None
+        try:
+            from fdd_utils.text_metrics import (
+                get_font,
+                line_height_pt as _line_h,
+                lines_that_fit,
+                text_box_from_shape,
+                wrap_text,
+            )
+        except Exception:
+            return None
+        try:
+            font_size_pt = 10 if is_chinese else 9
+            family = "Microsoft YaHei" if is_chinese else "Arial"
+            line_spacing = 0.95 if is_chinese else 1.0
+            font = get_font(family, font_size_pt, is_cjk=is_chinese)
+            box = text_box_from_shape(shape)
+            line_h = _line_h(font, line_spacing=line_spacing)
+            capacity = lines_that_fit(box.height_pt, line_h)
+            if not text:
+                return (0, capacity)
+            lines = wrap_text(text, font, box.width_pt)
+            return (len(lines), capacity)
+        except Exception:
+            return None
+
     def _calculate_max_lines_for_textbox(
         self,
         shape,
@@ -1516,6 +1564,14 @@ class PowerPointGenerator:
         packing = self._packing_settings(statement_type)
         if not shape or not hasattr(shape, 'height'):
             return int(packing.get("minimum_slot_lines", 20) or 20)
+
+        if self._pillow_fitting_enabled(packing):
+            measured = self._pillow_measure(shape, "", is_chinese=is_chinese)
+            if measured is not None:
+                _, capacity = measured
+                if capacity > 0:
+                    return capacity
+
         shape_height_emu = shape.height
         shape_height_pt = shape_height_emu * 72 / 914400
         utilization = min(1.0, float(packing.get("shape_height_utilization", 1.02)))  # cap at 100% to prevent overflow
@@ -1540,11 +1596,31 @@ class PowerPointGenerator:
         statement_type: Optional[str] = None,
     ) -> int:
         """Calculate how many lines a piece of content will take"""
+        is_chinese = any('\u4e00' <= c <= '\u9fff' for c in commentary) if is_chinese is None else is_chinese
+
+        packing = self._packing_settings(statement_type)
+        if shape is not None and self._pillow_fitting_enabled(packing):
+            parts: List[str] = []
+            if category:
+                parts.append(str(category))
+            if mapping_key:
+                parts.append(str(mapping_key))
+            if commentary:
+                parts.append(str(commentary))
+            measured = self._pillow_measure(
+                shape,
+                "\n".join(parts),
+                is_chinese=is_chinese,
+            )
+            if measured is not None:
+                used, _ = measured
+                if used > 0:
+                    return used
+
         lines = 0
         if category:
             lines += 1
         lines += 1
-        is_chinese = any('\u4e00' <= c <= '\u9fff' for c in commentary) if is_chinese is None else is_chinese
         chars_per_line = self._estimate_chars_per_line(
             slot_name,
             is_chinese,
@@ -1885,8 +1961,13 @@ class PowerPointGenerator:
                 fill_ratio,
             )
         
-        # --- Fill optimization pass ---
-        distribution = self._optimize_slot_fill(distribution, statement_type=statement_type)
+        # --- Fill optimization pass: pull accounts forward into under-filled slots ---
+        distribution = self._optimize_slot_fill(
+            distribution,
+            slot_shapes=slot_shapes,
+            slot_meta=slots,
+            statement_type=statement_type,
+        )
         return distribution
 
     def _compute_slot_used_lines(
@@ -1918,46 +1999,193 @@ class PowerPointGenerator:
     def _optimize_slot_fill(
         self,
         distribution: List[tuple],
+        slot_shapes: Optional[Dict[int, Any]] = None,
+        slot_meta: Optional[List[Tuple[int, str]]] = None,
         statement_type: Optional[str] = None,
     ) -> List[tuple]:
-        """Second pass: for under-filled slots, try restoring longer original commentary."""
-        packing = self._packing_settings(statement_type)
-        target_min = float(packing.get("target_fill_min_ratio", 0.9))
+        """Dynamic-programming balanced partition.
 
-        for dist_idx, (slide_idx, slot_name, accounts) in enumerate(distribution):
-            if not accounts:
+        Flattens all accounts into reading order, then partitions them into
+        contiguous groups (one per slot) so that the maximum slot fill ratio
+        is minimised. Line counts come from _compute_slot_used_lines measured
+        against each slot's actual shape, so when Pillow fitting is enabled
+        this uses real font metrics. Preserves reading order; drops trailing
+        empty slots.
+
+        DP: dp[s][i] = min achievable "max fill ratio" when placing
+        accounts[0..i] into slots[0..s]. Transition: slot s takes a suffix
+        accounts[j+1..i]; combine with dp[s-1][j]. O(S * N^2) states, but
+        N ≤ ~20 accounts and S ≤ ~8 slots in practice, so this is trivial.
+        """
+        if not distribution:
+            return distribution
+
+        slot_lookup: Dict[Tuple[int, str], Any] = {}
+        if slot_meta and slot_shapes:
+            for slot_idx, (s_idx, s_name) in enumerate(slot_meta):
+                slot_lookup[(s_idx, s_name)] = slot_shapes.get(slot_idx)
+
+        def _resolve_shape(slide_idx: int, slot_name: str):
+            shape = slot_lookup.get((slide_idx, slot_name))
+            if shape is not None:
+                return shape
+            try:
+                slide = self.presentation.slides[slide_idx]
+            except Exception:
+                return None
+            return self._resolve_commentary_slot_shape(slide, slot_name)
+
+        flat_accounts: List[Dict[str, Any]] = []
+        for _slide_idx, _slot_name, accounts in distribution:
+            flat_accounts.extend(accounts)
+
+        if not flat_accounts:
+            return distribution
+
+        slots: List[Dict[str, Any]] = []
+        is_chinese_any = any(bool(a.get("is_chinese")) for a in flat_accounts)
+        for slide_idx, slot_name, _accounts in distribution:
+            shape = _resolve_shape(slide_idx, slot_name)
+            capacity = self._calculate_max_lines_for_textbox(
+                shape,
+                is_chinese=is_chinese_any,
+                slot_name=slot_name,
+                statement_type=statement_type,
+            )
+            slots.append({
+                "slide_idx": slide_idx,
+                "slot_name": slot_name,
+                "shape": shape,
+                "capacity": max(1, int(capacity or 1)),
+            })
+
+        N = len(flat_accounts)
+        S = len(slots)
+
+        # cost[s][j][i] = lines used placing accounts[j..i] inclusive in slot s.
+        # j > i means "empty". Computed lazily.
+        cost_cache: Dict[Tuple[int, int, int], int] = {}
+
+        def slot_cost(s: int, j: int, i: int) -> int:
+            if j > i:
+                return 0
+            key = (s, j, i)
+            if key in cost_cache:
+                return cost_cache[key]
+            slot = slots[s]
+            lines = self._compute_slot_used_lines(
+                flat_accounts[j : i + 1],
+                slot["slot_name"],
+                slot_shape=slot["shape"],
+                statement_type=statement_type,
+            )
+            cost_cache[key] = lines
+            return lines
+
+        INF = float("inf")
+        # dp[s][i] = min max-fill-ratio packing flat_accounts[0..i] into slots[0..s]
+        dp: List[List[float]] = [[INF] * N for _ in range(S)]
+        # split[s][i] = j such that slot s holds flat_accounts[j+1..i]; j == i
+        # means slot s is empty (carries i through from previous slot).
+        split: List[List[int]] = [[-1] * N for _ in range(S)]
+
+        for i in range(N):
+            lines = slot_cost(0, 0, i)
+            if lines <= slots[0]["capacity"]:
+                dp[0][i] = lines / slots[0]["capacity"]
+            split[0][i] = -1
+
+        for s in range(1, S):
+            cap = slots[s]["capacity"]
+            for i in range(N):
+                # slot s non-empty, holds accounts[j+1..i]
+                for j in range(-1, i):
+                    prev = 0.0 if j < 0 else dp[s - 1][j]
+                    if prev >= INF:
+                        continue
+                    lines = slot_cost(s, j + 1, i)
+                    if lines > cap:
+                        continue
+                    ratio = max(prev, lines / cap)
+                    if ratio < dp[s][i]:
+                        dp[s][i] = ratio
+                        split[s][i] = j
+                # slot s empty: dp[s-1][i] carried forward
+                if dp[s - 1][i] < dp[s][i]:
+                    dp[s][i] = dp[s - 1][i]
+                    split[s][i] = i  # marker: slot s is empty
+
+        # Did we manage to place every account somewhere?
+        if dp[S - 1][N - 1] >= INF:
+            logger.warning(
+                "Balanced partition: no feasible layout for %s accounts into %s slots; "
+                "falling back to greedy forward-fill.",
+                N, S,
+            )
+            return self._greedy_forward_fill(flat_accounts, slots, statement_type)
+
+        # Reconstruct the assignment.
+        assignment: List[List[Dict[str, Any]]] = [[] for _ in range(S)]
+        i = N - 1
+        for s in range(S - 1, -1, -1):
+            j = split[s][i]
+            if j == i:
+                assignment[s] = []
                 continue
-            is_chinese = any(bool(a.get("is_chinese")) for a in accounts)
-            capacity = int(packing.get("minimum_slot_lines", 22))
-            used = self._compute_slot_used_lines(accounts, slot_name, statement_type=statement_type)
-            if capacity <= 0:
-                continue
-            fill = used / capacity
+            assignment[s] = list(flat_accounts[j + 1 : i + 1])
+            i = j
+            if i < 0:
+                break
 
-            if fill >= target_min:
-                continue
+        for s_i, slot in enumerate(slots):
+            lines = slot_cost(s_i, 0, -1) if not assignment[s_i] else self._compute_slot_used_lines(
+                assignment[s_i],
+                slot["slot_name"],
+                slot_shape=slot["shape"],
+                statement_type=statement_type,
+            )
+            logger.info(
+                "  Balanced DP slot %s (%s): %s/%s lines, accts=%s",
+                s_i, slot["slot_name"], lines, slot["capacity"],
+                [a.get("mapping_key", "?") for a in assignment[s_i]],
+            )
 
-            # Try restoring original_commentary for each account to improve fill
-            for account in accounts:
-                original = account.get("original_commentary", "")
-                current = account.get("commentary", "")
-                if not original or original == current:
-                    continue
-                saved = account["commentary"]
-                account["commentary"] = original
-                new_used = self._compute_slot_used_lines(accounts, slot_name, statement_type=statement_type)
-                if new_used <= capacity:
-                    new_fill = new_used / capacity
-                    logger.info(
-                        "  Fill optimization: restored original commentary for '%s' (fill %.2f -> %.2f)",
-                        account.get("mapping_key", "?"), fill, new_fill,
-                    )
-                    fill = new_fill
-                    used = new_used
-                else:
-                    account["commentary"] = saved  # revert — doesn't fit
+        rebuilt = [
+            (slot["slide_idx"], slot["slot_name"], assignment[s_i])
+            for s_i, slot in enumerate(slots)
+            if assignment[s_i]
+        ]
+        return rebuilt
 
-        return distribution
+    def _greedy_forward_fill(
+        self,
+        flat_accounts: List[Dict[str, Any]],
+        slots: List[Dict[str, Any]],
+        statement_type: Optional[str],
+    ) -> List[tuple]:
+        """Fallback: fill each slot to capacity greedily. Used only if DP
+        can't find a feasible partition (e.g. a single account overflows a
+        slot). Matches the old distributor's behaviour."""
+        def measure(accts, slot):
+            return self._compute_slot_used_lines(
+                accts, slot["slot_name"], slot_shape=slot["shape"],
+                statement_type=statement_type,
+            )
+
+        idx = 0
+        assignment: List[List[Dict[str, Any]]] = [[] for _ in slots]
+        for s_i, slot in enumerate(slots):
+            while idx < len(flat_accounts):
+                trial = assignment[s_i] + [flat_accounts[idx]]
+                if measure(trial, slot) > slot["capacity"]:
+                    break
+                assignment[s_i] = trial
+                idx += 1
+        return [
+            (slot["slide_idx"], slot["slot_name"], assignment[s_i])
+            for s_i, slot in enumerate(slots)
+            if assignment[s_i]
+        ]
 
     def apply_structured_data_to_slides(self, structured_data: List[Dict], start_slide: int,
                                        project_name: str, statement_type: str, is_chinese_databook: bool = False):
@@ -2684,18 +2912,64 @@ class PowerPointGenerator:
         slot_name: str,
         statement_type: Optional[str] = None,
     ) -> int:
-        """Determine optimal font size (9→8→7) so all accounts fit in the slot."""
+        """Determine optimal font size (9→8→7) so all accounts fit in the slot.
+
+        When Pillow fitting is enabled and available, measure each candidate
+        size against the real shape with real font metrics. Otherwise fall
+        back to the legacy CPL approximation."""
+        packing = self._packing_settings(statement_type)
+        if not shape or not hasattr(shape, "height"):
+            return 9
+
+        is_chinese_slot = any(
+            any("\u4e00" <= c <= "\u9fff" for c in str(a.get("commentary", "")))
+            for a in slot_accounts
+        )
+
+        pillow_ok = self._pillow_fitting_enabled(packing)
+        if pillow_ok:
+            try:
+                from fdd_utils.text_metrics import (
+                    get_font,
+                    line_height_pt as _line_h,
+                    lines_that_fit,
+                    text_box_from_shape,
+                    wrap_text,
+                )
+                box = text_box_from_shape(shape)
+                family = "Microsoft YaHei" if is_chinese_slot else "Arial"
+                line_spacing = 0.95 if is_chinese_slot else 1.0
+                for candidate_pt in (9, 8, 7):
+                    font = get_font(family, candidate_pt, is_cjk=is_chinese_slot)
+                    line_h = _line_h(font, line_spacing=line_spacing)
+                    capacity = lines_that_fit(box.height_pt, line_h)
+                    total_lines = 0
+                    prev_cat = None
+                    for acct in slot_accounts:
+                        cat = acct.get("category", "")
+                        if cat and cat != prev_cat:
+                            total_lines += 1
+                            prev_cat = cat
+                        parts: List[str] = []
+                        mapping_key = acct.get("mapping_key", acct.get("account_name", ""))
+                        if mapping_key:
+                            parts.append(str(mapping_key))
+                        commentary = str(acct.get("commentary", ""))
+                        if commentary:
+                            parts.append(commentary)
+                        joined = "\n".join(parts)
+                        if joined:
+                            total_lines += len(wrap_text(joined, font, box.width_pt))
+                    if total_lines <= capacity:
+                        return candidate_pt
+                return 7
+            except Exception:
+                pass  # fall through to legacy
+
         for candidate_pt in (9, 8, 7):
-            # Re-estimate capacity at this font size
-            packing = self._packing_settings(statement_type)
-            if not shape or not hasattr(shape, "height"):
-                return candidate_pt
             shape_height_pt = shape.height * 72 / 914400
             effective_height = shape_height_pt * float(packing.get("shape_height_utilization", 1.02))
-            line_spacing = 0.95 if any(
-                any("\u4e00" <= c <= "\u9fff" for c in str(a.get("commentary", "")))
-                for a in slot_accounts
-            ) else 1.0
+            line_spacing = 0.95 if is_chinese_slot else 1.0
             line_height = (candidate_pt * line_spacing) + float(packing.get("line_height_padding_pt", 1.6))
             max_lines = int(effective_height / line_height)
 
@@ -2706,12 +2980,10 @@ class PowerPointGenerator:
                 if cat and cat != prev_cat:
                     total_lines += 1
                     prev_cat = cat
-                # Rough estimate: 1 line for header + wrapped commentary
                 commentary = str(acct.get("commentary", ""))
                 is_chi = any("\u4e00" <= c <= "\u9fff" for c in commentary)
-                # Scale chars_per_line inversely with font size
                 base_cpl = self._estimate_chars_per_line(slot_name, is_chi, shape=shape, statement_type=statement_type)
-                scale = 9.0 / candidate_pt  # larger font → fewer chars per line
+                scale = 9.0 / candidate_pt
                 cpl = max(16, int(base_cpl * scale))
                 total_lines += 1  # key line
                 for line in commentary.split("\n"):
@@ -2720,7 +2992,7 @@ class PowerPointGenerator:
 
             if total_lines <= max_lines:
                 return candidate_pt
-        return 7  # minimum
+        return 7
 
     @staticmethod
     def _truncate_commentary_to_fit(commentary: str, max_chars: int) -> str:

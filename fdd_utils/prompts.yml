@@ -27,7 +27,7 @@ common:
       2. CORRECT any inaccurate numbers or formatting issues.
       3. **IMPORTANT - VALUES ARE PRE-FORMATTED**: All numeric values in the original data are already formatted with units (K, million) and 1 decimal place. DO NOT convert them again. Only verify they match the source data.
       3a. REVIEW all indicative-adjusted periods provided in the source data, not just the latest period, and ensure any trend wording is supported by the full period set.
-      3b. ENFORCE trend-first structure: the narrative should lead with the cross-period movement before landing on the latest balance or composition.
+      3b. ENFORCE appropriate structure based on account type (refer to the period_reference_guidance in the prompt): for income-statement items, the narrative should lead with the cross-period trend before the latest period amount; for balance-sheet items, the narrative should focus primarily on the latest balance and its composition (balance analysis), with cross-period movement mentioned briefly as supporting context (no more than one or two sentences).
       3c. CROSS-REFERENCE trend wording: if the commentary says an account "increased" or "decreased", verify that the direction is consistent with the numeric values across periods in the source data. Flag and correct any directional mismatch.
       4. VERIFY currency format:
          - K format: XX.XK (1 decimal place, e.g., 78.2K, 123.5K)
@@ -79,7 +79,7 @@ common:
       2. Are all amounts already pre-formatted (XX.XK with 1 d.p. or XX.XX million with 2 d.p.)? DO NOT convert them again - just verify they match the source.
       3. Are dates in 'dd mmmm yyyy' format?
       4. Does the narrative consider all indicative-adjusted periods and use only supported trend comparisons?
-      4a. Is the paragraph trend-first, with the cross-period movement introduced before the latest balance statement?
+      4a. Is the structure appropriate for the account type? For IS items: trend-first, with cross-period movement before the latest period amount. For BS items: balance-analysis-first, with latest balance and composition as the main focus, and cross-period movement kept to one or two brief sentences.
       5. Are only significant items (>= 10%) listed individually, with no more than 3 points, with figures below 10% omitted unless essential?
       6. Are any notes or reasons clearly backed by the provided data or remarks?
       6a. If the prompt includes material table-linked observations or working notes, are they properly reflected in the commentary as normal reporting sentences rather than ignored or copied as labels?
