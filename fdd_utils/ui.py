@@ -1410,7 +1410,7 @@ def generate_pptx_presentation(
             )
             return
 
-        with st.spinner("Generating PPTX… this may take up to a minute"):
+        with st.spinner("Generating PPTX…"):
             export_pptx_from_structured_data_combined(
                 template_path,
                 bs_data,
