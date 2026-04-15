@@ -1410,19 +1410,20 @@ def generate_pptx_presentation(
             )
             return
 
-        export_pptx_from_structured_data_combined(
-            template_path,
-            bs_data,
-            is_data,
-            combined_output_path,
-            entity_name,
-            language="chinese" if language == "Chn" else "english",
-            temp_path=session_state.get("temp_path"),
-            selected_sheet=session_state.get("selected_sheet"),
-            is_chinese_databook=(language == "Chn"),
-            bs_is_results=session_state.get("bs_is_results"),
-            model_type=session_state.get("model_type", "local"),
-        )
+        with st.spinner("Generating PPTX… this may take up to a minute"):
+            export_pptx_from_structured_data_combined(
+                template_path,
+                bs_data,
+                is_data,
+                combined_output_path,
+                entity_name,
+                language="chinese" if language == "Chn" else "english",
+                temp_path=session_state.get("temp_path"),
+                selected_sheet=session_state.get("selected_sheet"),
+                is_chinese_databook=(language == "Chn"),
+                bs_is_results=session_state.get("bs_is_results"),
+                model_type=session_state.get("model_type", "local"),
+            )
         if os.path.exists(combined_output_path):
             with open(combined_output_path, "rb") as handle:
                 session_state.pptx_download_data = handle.read()
