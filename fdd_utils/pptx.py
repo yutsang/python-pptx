@@ -1885,6 +1885,18 @@ class PowerPointGenerator:
                     )
                     available_for_commentary = remaining_lines - category_lines - 1
 
+                    # Convert float line-units to visual display lines for the
+                    # paragraph-fitting loop below.  available_for_commentary is
+                    # in "std_lh units" (one unit = line_h + space_after pt),
+                    # but para_lines is computed via chars_per_line and counts
+                    # visual display lines.  Multiply by (std_lh / line_h) so
+                    # both are in the same unit.
+                    #   English: std_lh=9+6=15pt, line_h=9pt  → factor ≈ 1.667
+                    #   Chinese: std_lh=9.5+6=15.5pt, line_h=9.5pt → factor ≈ 1.632
+                    _lh_est = (10 * 0.95) if is_chinese_content else (9 * 1.0)
+                    _std_lh_est = _lh_est + self._PARA_SPACE_AFTER
+                    available_visual = available_for_commentary * (_std_lh_est / _lh_est)
+
                     if available_for_commentary > 0:
                         part1_paragraphs = []
                         part1_lines_used = 0
@@ -1892,7 +1904,7 @@ class PowerPointGenerator:
 
                         for i, para in enumerate(paragraphs):
                             para_lines = max(1, (len(para) + chars_per_line - 1) // chars_per_line)
-                            if part1_lines_used + para_lines <= available_for_commentary:
+                            if part1_lines_used + para_lines <= available_visual:
                                 part1_paragraphs.append(para)
                                 part1_lines_used += para_lines
                                 split_index = i + 1
@@ -1904,7 +1916,7 @@ class PowerPointGenerator:
                             part2_commentary = '\n\n'.join(paragraphs[split_index:]).strip()
                         elif not part1_paragraphs and len(paragraphs) > 0:
                             para = paragraphs[0]
-                            chars_available = int(max(1, available_for_commentary * chars_per_line))
+                            chars_available = int(max(1, available_visual * chars_per_line))
 
                             if len(para) > chars_available:
                                 split_point = chars_available
@@ -2240,7 +2252,10 @@ class PowerPointGenerator:
                     if lines > cap:
                         continue
                     ratio = max(prev, lines / cap)
-                    if ratio < dp[s][i]:
+                    if ratio <= dp[s][i]:
+                        # Use <= so that ties prefer larger j (fewer accounts in
+                        # later slots, more in earlier slots), avoiding the
+                        # "first slots empty, last slot overloaded" pattern.
                         dp[s][i] = ratio
                         split[s][i] = j
                 # slot s empty: dp[s-1][i] carried forward
