@@ -2042,6 +2042,40 @@ class PowerPointGenerator:
         if not flat_accounts:
             return distribution
 
+        # ── Merge continuation pairs before the DP ──
+        # _distribute_content_across_slots may have split a long account into
+        # part1 (is_partial=True) + part2 (is_continuation=True) using the rough
+        # heuristic.  Feed the DP the merged originals so Pillow can measure them
+        # accurately and place them as a whole — the DP will naturally put them
+        # in different slots if they don't fit together.
+        merged: List[Dict[str, Any]] = []
+        skip_next = False
+        for idx, acct in enumerate(flat_accounts):
+            if skip_next:
+                skip_next = False
+                continue
+            next_acct = flat_accounts[idx + 1] if idx + 1 < len(flat_accounts) else None
+            if (
+                acct.get("is_partial")
+                and next_acct is not None
+                and next_acct.get("is_continuation")
+                and next_acct.get("original_key", next_acct.get("mapping_key")) ==
+                    acct.get("mapping_key")
+            ):
+                # Reconstruct the original full account
+                combined = acct.copy()
+                part1 = str(acct.get("commentary", "") or "")
+                part2 = str(next_acct.get("commentary", "") or "")
+                combined["commentary"] = (part1 + "\n\n" + part2).strip()
+                for flag in ("is_partial", "is_continuation", "part_num", "original_key"):
+                    combined.pop(flag, None)
+                merged.append(combined)
+                skip_next = True
+                logger.debug("Merged continuation pair: %s", acct.get("mapping_key"))
+            else:
+                merged.append(acct)
+        flat_accounts = merged
+
         slots: List[Dict[str, Any]] = []
         is_chinese_any = any(bool(a.get("is_chinese")) for a in flat_accounts)
         for slide_idx, slot_name, _accounts in distribution:
@@ -2062,8 +2096,34 @@ class PowerPointGenerator:
         N = len(flat_accounts)
         S = len(slots)
 
+        # ── Pre-compute per-account content lines for each unique slot type ──
+        # Key: (slot_name, shape_width_emu).  Two slots that share the same
+        # name and width get the same measurements, so we only call
+        # _calculate_content_lines (and Pillow when enabled) once per
+        # (account, slot_type) pair — O(N × slot_types) total instead of the
+        # O(S × N²) calls that the old range-based approach produced.
+        _acct_cost: Dict[Tuple[int, str, int], int] = {}
+        seen_slot_types: set = set()
+        for slot in slots:
+            shape = slot["shape"]
+            w_key = int(shape.width) if shape and hasattr(shape, "width") else 0
+            type_key = (slot["slot_name"], w_key)
+            if type_key in seen_slot_types:
+                continue
+            seen_slot_types.add(type_key)
+            for a_i, account in enumerate(flat_accounts):
+                _acct_cost[(a_i, slot["slot_name"], w_key)] = self._calculate_content_lines(
+                    "",
+                    account.get("mapping_key", account.get("account_name", "")),
+                    account.get("commentary", ""),
+                    slot_name=slot["slot_name"],
+                    shape=shape,
+                    is_chinese=bool(account.get("is_chinese", False)),
+                    statement_type=statement_type,
+                )
+
         # cost[s][j][i] = lines used placing accounts[j..i] inclusive in slot s.
-        # j > i means "empty". Computed lazily.
+        # j > i means "empty". Built from pre-computed per-account values.
         cost_cache: Dict[Tuple[int, int, int], int] = {}
 
         def slot_cost(s: int, j: int, i: int) -> int:
@@ -2073,14 +2133,20 @@ class PowerPointGenerator:
             if key in cost_cache:
                 return cost_cache[key]
             slot = slots[s]
-            lines = self._compute_slot_used_lines(
-                flat_accounts[j : i + 1],
-                slot["slot_name"],
-                slot_shape=slot["shape"],
-                statement_type=statement_type,
-            )
-            cost_cache[key] = lines
-            return lines
+            shape = slot["shape"]
+            w_key = int(shape.width) if shape and hasattr(shape, "width") else 0
+            sname = slot["slot_name"]
+            used = 0
+            prev_cat = None
+            for a_i in range(j, i + 1):
+                account = flat_accounts[a_i]
+                cat = str(account.get("category", "") or "")
+                if cat and cat != prev_cat:
+                    used += 1  # category header line
+                prev_cat = cat
+                used += _acct_cost.get((a_i, sname, w_key), 0)
+            cost_cache[key] = used
+            return used
 
         INF = float("inf")
         # dp[s][i] = min max-fill-ratio packing flat_accounts[0..i] into slots[0..s]
@@ -2165,7 +2231,8 @@ class PowerPointGenerator:
     ) -> List[tuple]:
         """Fallback: fill each slot to capacity greedily. Used only if DP
         can't find a feasible partition (e.g. a single account overflows a
-        slot). Matches the old distributor's behaviour."""
+        slot). Always places every account — if an account alone exceeds a
+        slot's capacity it is force-placed rather than dropped."""
         def measure(accts, slot):
             return self._compute_slot_used_lines(
                 accts, slot["slot_name"], slot_shape=slot["shape"],
@@ -2177,10 +2244,20 @@ class PowerPointGenerator:
         for s_i, slot in enumerate(slots):
             while idx < len(flat_accounts):
                 trial = assignment[s_i] + [flat_accounts[idx]]
-                if measure(trial, slot) > slot["capacity"]:
+                if measure(trial, slot) > slot["capacity"] and assignment[s_i]:
+                    # Slot already has content and adding this account overflows — move on
                     break
+                # Place the account: either the slot is empty (force-place to avoid
+                # dropping) or it still fits within capacity.
                 assignment[s_i] = trial
                 idx += 1
+
+        # If any accounts are still unplaced (more accounts than slots can absorb),
+        # append them to the last slot rather than silently dropping them.
+        if idx < len(flat_accounts) and slots:
+            for remaining in flat_accounts[idx:]:
+                assignment[-1].append(remaining)
+
         return [
             (slot["slide_idx"], slot["slot_name"], assignment[s_i])
             for s_i, slot in enumerate(slots)
