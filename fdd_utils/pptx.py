@@ -2042,40 +2042,6 @@ class PowerPointGenerator:
         if not flat_accounts:
             return distribution
 
-        # ── Merge continuation pairs before the DP ──
-        # _distribute_content_across_slots may have split a long account into
-        # part1 (is_partial=True) + part2 (is_continuation=True) using the rough
-        # heuristic.  Feed the DP the merged originals so Pillow can measure them
-        # accurately and place them as a whole — the DP will naturally put them
-        # in different slots if they don't fit together.
-        merged: List[Dict[str, Any]] = []
-        skip_next = False
-        for idx, acct in enumerate(flat_accounts):
-            if skip_next:
-                skip_next = False
-                continue
-            next_acct = flat_accounts[idx + 1] if idx + 1 < len(flat_accounts) else None
-            if (
-                acct.get("is_partial")
-                and next_acct is not None
-                and next_acct.get("is_continuation")
-                and next_acct.get("original_key", next_acct.get("mapping_key")) ==
-                    acct.get("mapping_key")
-            ):
-                # Reconstruct the original full account
-                combined = acct.copy()
-                part1 = str(acct.get("commentary", "") or "")
-                part2 = str(next_acct.get("commentary", "") or "")
-                combined["commentary"] = (part1 + "\n\n" + part2).strip()
-                for flag in ("is_partial", "is_continuation", "part_num", "original_key"):
-                    combined.pop(flag, None)
-                merged.append(combined)
-                skip_next = True
-                logger.debug("Merged continuation pair: %s", acct.get("mapping_key"))
-            else:
-                merged.append(acct)
-        flat_accounts = merged
-
         slots: List[Dict[str, Any]] = []
         is_chinese_any = any(bool(a.get("is_chinese")) for a in flat_accounts)
         for slide_idx, slot_name, _accounts in distribution:
