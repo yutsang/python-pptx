@@ -980,6 +980,15 @@ class PowerPointGenerator:
             prepared.append(item)
         return prepared
 
+    # Average rendered character width (pt) for the fonts we use.
+    # English: Arial 9pt mixed text ≈ 5.0 pt/char (incl. spaces & punctuation).
+    # Chinese: YaHei 10pt CJK characters are square — 1 em ≈ 10 pt/char.
+    # A small word-wrap slack (≈8 %) is subtracted because lines always break
+    # at a word/character boundary, not at the exact pixel edge.
+    _AVG_CHAR_WIDTH_ENG = 5.0
+    _AVG_CHAR_WIDTH_CHI = 10.0
+    _WORD_WRAP_SLACK    = 0.92   # use 92 % of the theoretical line width
+
     def _estimate_chars_per_line(
         self,
         slot_name: str,
@@ -988,6 +997,32 @@ class PowerPointGenerator:
         *,
         statement_type: Optional[str] = None,
     ) -> int:
+        """Return the number of characters that fit on one line.
+
+        When the actual shape is available we measure directly from its width
+        and the text-frame insets, then divide by the known average character
+        width for the font in use.  This removes all dependency on the
+        ``chars_per_line`` config block for shapes that exist in the template.
+
+        Falls back to the config-based estimate only when no shape is supplied.
+        """
+        if shape is not None and hasattr(shape, "width"):
+            width_pt = shape.width * 72 / 914400
+            # Read actual text-frame left/right insets; default is 0.1 in = 7.2 pt.
+            left_pt = right_pt = 7.2
+            try:
+                tf = shape.text_frame
+                if tf.margin_left is not None:
+                    left_pt  = tf.margin_left  * 72 / 914400
+                if tf.margin_right is not None:
+                    right_pt = tf.margin_right * 72 / 914400
+            except Exception:
+                pass
+            effective_pt = max(10.0, width_pt - left_pt - right_pt)
+            avg_char = self._AVG_CHAR_WIDTH_CHI if is_chinese else self._AVG_CHAR_WIDTH_ENG
+            return max(16, int(effective_pt * self._WORD_WRAP_SLACK / avg_char))
+
+        # No shape — fall back to config values.
         packing = self._packing_settings(statement_type)
         chars_per_line = packing.get("chars_per_line") or {}
         slot_key = slot_name if slot_name in {"single", "L", "R"} else "default"
@@ -997,13 +1032,6 @@ class PowerPointGenerator:
             or ((chars_per_line.get("default") or {}).get(language_key))
             or (32 if is_chinese else 60)
         )
-        if shape is not None and hasattr(shape, "width"):
-            width_inches = max(1.0, shape.width / 914400)
-            baseline_width = 8.9 if slot_key == "single" else 4.2
-            min_scale = float(packing.get("width_scale_min", 0.9) or 0.9)
-            max_scale = float(packing.get("width_scale_max", 1.22) or 1.22)
-            scale = max(min_scale, min(max_scale, width_inches / baseline_width))
-            return max(16, int(base_value * scale))
         return int(base_value)
 
     @staticmethod
@@ -1552,6 +1580,10 @@ class PowerPointGenerator:
         except Exception:
             return None
 
+    # Space-after (pt) applied to every paragraph in _fill_text_main_bullets.
+    # Used consistently in both capacity and content-line calculations.
+    _PARA_SPACE_AFTER = 6.0
+
     def _calculate_max_lines_for_textbox(
         self,
         shape,
@@ -1560,28 +1592,56 @@ class PowerPointGenerator:
         slot_name: str = "single",
         statement_type: Optional[str] = None,
     ):
-        """Calculate maximum lines that can fit in textbox"""
+        """Return the number of 'line units' that fit in this text box.
+
+        Measures the effective height directly from the shape and its
+        text-frame insets (top/bottom margins), then divides by the standard
+        line height used by ``_calculate_content_lines``:
+
+            std_line_h = font_size × line_spacing + PARA_SPACE_AFTER
+
+        Both capacity and content are expressed in the same unit so the fill
+        ratios are accurate without any fudge factors.
+        """
         packing = self._packing_settings(statement_type)
-        if not shape or not hasattr(shape, 'height'):
+        if not shape or not hasattr(shape, "height"):
             return int(packing.get("minimum_slot_lines", 20) or 20)
 
-        if self._pillow_fitting_enabled(packing):
-            measured = self._pillow_measure(shape, "", is_chinese=is_chinese)
-            if measured is not None:
-                _, capacity = measured
-                if capacity > 0:
-                    return capacity
-
-        shape_height_emu = shape.height
-        shape_height_pt = shape_height_emu * 72 / 914400
-        utilization = min(1.0, float(packing.get("shape_height_utilization", 1.02)))  # cap at 100% to prevent overflow
-        effective_height_pt = shape_height_pt * utilization
         font_size_pt = 10 if is_chinese else 9
         line_spacing = 0.95 if is_chinese else 1.0
-        slot_penalty = 1.0 if slot_name == "single" else float(packing.get("split_slot_height_penalty", 1.02) or 1.02)
-        line_height_padding = float(packing.get("line_height_padding_pt", 1.6) or 1.6)
-        line_height_pt = (font_size_pt * line_spacing * slot_penalty) + line_height_padding
-        max_rows = int(effective_height_pt / line_height_pt)
+        family       = "Microsoft YaHei" if is_chinese else "Arial"
+
+        # ── Real font metrics via text_metrics ───────────────────────────────────
+        # text_box_from_shape reads bodyPr tIns/bIns directly from shape XML.
+        # line_height_pt uses ascent + descent from the actual font file.
+        try:
+            from fdd_utils.text_metrics import (
+                get_font, line_height_pt as _line_h_fn, text_box_from_shape,
+            )
+            font     = get_font(family, font_size_pt, is_cjk=is_chinese)
+            box      = text_box_from_shape(shape)
+            line_h   = _line_h_fn(font, line_spacing=line_spacing)
+            std_lh   = line_h + self._PARA_SPACE_AFTER
+            max_rows = int(box.height_pt / std_lh)
+            # Trust the real measurement — do NOT apply minimum_slot_lines as a
+            # floor here, because that would allow the DP to pack more content
+            # (max_rows × std_lh pt) than the box can physically hold.
+            return max(1, max_rows)
+        except Exception:
+            pass   # font file missing — fall through to heuristic
+
+        # ── Heuristic fallback ───────────────────────────────────────────────────
+        height_pt    = shape.height * 72 / 914400
+        top_pt = bottom_pt = 3.6          # OOXML default tIns/bIns = 0.05" = 3.6 pt
+        try:
+            tf = shape.text_frame
+            if tf.margin_top    is not None: top_pt    = tf.margin_top    * 72 / 914400
+            if tf.margin_bottom is not None: bottom_pt = tf.margin_bottom * 72 / 914400
+        except Exception:
+            pass
+        effective_pt = max(1.0, height_pt - top_pt - bottom_pt)
+        std_lh       = font_size_pt * line_spacing + self._PARA_SPACE_AFTER
+        max_rows     = int(effective_pt / std_lh)
         return max(int(packing.get("minimum_slot_lines", 20) or 20), max_rows)
 
     def _calculate_content_lines(
@@ -1598,42 +1658,65 @@ class PowerPointGenerator:
         """Calculate how many lines a piece of content will take"""
         is_chinese = any('\u4e00' <= c <= '\u9fff' for c in commentary) if is_chinese is None else is_chinese
 
-        packing = self._packing_settings(statement_type)
-        if shape is not None and self._pillow_fitting_enabled(packing):
-            parts: List[str] = []
-            if category:
-                parts.append(str(category))
-            if mapping_key:
-                parts.append(str(mapping_key))
-            if commentary:
-                parts.append(str(commentary))
-            measured = self._pillow_measure(
-                shape,
-                "\n".join(parts),
-                is_chinese=is_chinese,
-            )
-            if measured is not None:
-                used, _ = measured
-                if used > 0:
-                    return used
+        import math as _math
+        font_size_pt = 10 if is_chinese else 9
+        line_spacing = 0.95 if is_chinese else 1.0
+        family = "Microsoft YaHei" if is_chinese else "Arial"
 
-        lines = 0
+        # ── Real glyph metrics via text_metrics ─────────────────────────────────
+        # Use the actual font file so wrap points are exact — no averaging.
+        # Falls back to the heuristic only when the font file is unavailable.
+        if shape is not None:
+            try:
+                from fdd_utils.text_metrics import (
+                    get_font, line_height_pt as _line_h_fn,
+                    text_box_from_shape, wrap_paragraph,
+                )
+                font     = get_font(family, font_size_pt, is_cjk=is_chinese)
+                box      = text_box_from_shape(shape)
+                line_h   = _line_h_fn(font, line_spacing=line_spacing)
+                std_lh   = line_h + self._PARA_SPACE_AFTER
+
+                total_pt = 0.0
+                if category:
+                    total_pt += line_h          # category header: no space_after
+
+                paras = [p for p in commentary.split('\n') if p.strip()] if commentary else []
+                # First commentary line is on the same paragraph as the key name.
+                key_prefix = f"\u25a0 {mapping_key} - "
+                if paras:
+                    first_wrapped = wrap_paragraph(key_prefix + paras[0], font, box.width_pt)
+                    total_pt += len(first_wrapped) * line_h + self._PARA_SPACE_AFTER
+                    for para in paras[1:]:
+                        wrapped = wrap_paragraph(para, font, box.width_pt)
+                        total_pt += len(wrapped) * line_h + self._PARA_SPACE_AFTER
+                else:
+                    total_pt += line_h + self._PARA_SPACE_AFTER
+
+                return max(1, _math.ceil(total_pt / std_lh))
+            except Exception:
+                pass    # font file missing — fall through to heuristic
+
+        # ── Heuristic fallback (no shape or font unavailable) ───────────────────
+        space_after  = self._PARA_SPACE_AFTER
+        std_lh       = font_size_pt * line_spacing + space_after
+        cpl          = self._estimate_chars_per_line(slot_name, is_chinese, shape=shape,
+                                                     statement_type=statement_type)
+        total_pt     = 0.0
         if category:
-            lines += 1
-        lines += 1
-        chars_per_line = self._estimate_chars_per_line(
-            slot_name,
-            is_chinese,
-            shape=shape,
-            statement_type=statement_type,
-        )
-        commentary_lines = commentary.split('\n')
-        for line in commentary_lines:
-            if not line:
-                continue
-            line_count = max(1, (len(line) + chars_per_line - 1) // chars_per_line)
-            lines += line_count
-        return lines
+            total_pt += font_size_pt * line_spacing
+        paras = [p for p in commentary.split('\n') if p.strip()] if commentary else []
+        key_pfx_len  = len(str(mapping_key)) + 5
+        if paras:
+            first_len    = key_pfx_len + len(paras[0])
+            first_w      = max(1, (first_len + cpl - 1) // cpl)
+            total_pt    += first_w * font_size_pt * line_spacing + space_after
+            for para in paras[1:]:
+                w         = max(1, (len(para) + cpl - 1) // cpl)
+                total_pt += w * font_size_pt * line_spacing + space_after
+        else:
+            total_pt += font_size_pt * line_spacing + space_after
+        return max(1, _math.ceil(total_pt / std_lh))
 
     def _distribute_content_across_slots(
         self,
@@ -1977,24 +2060,31 @@ class PowerPointGenerator:
         slot_shape=None,
         statement_type: Optional[str] = None,
     ) -> int:
+        """Return used line-units for *accounts* in this slot.
+
+        Uses the same accounting as ``slot_cost`` in the DP: each category
+        header costs 1 integer line unit, and each account's commentary costs
+        the value returned by ``_calculate_content_lines``.  Both are in the
+        same unit (std_lh = line_h + PARA_SPACE_AFTER) so fill ratios against
+        ``_calculate_max_lines_for_textbox`` are directly comparable.
+        """
         used = 0
         prev_cat = None
         for account in accounts:
             cat = str(account.get("category", "") or "")
             if cat and cat != prev_cat:
-                used += 1  # category header line
+                used += 1   # category header line (same as slot_cost)
             prev_cat = cat
-            is_chinese = bool(account.get("is_chinese", False))
             used += self._calculate_content_lines(
                 "",
                 account.get("mapping_key", account.get("account_name", "")),
                 account.get("commentary", ""),
                 slot_name=slot_name,
                 shape=slot_shape,
-                is_chinese=is_chinese,
+                is_chinese=bool(account.get("is_chinese", False)),
                 statement_type=statement_type,
             )
-        return used
+        return max(0, used)
 
     def _optimize_slot_fill(
         self,
@@ -2987,11 +3077,26 @@ class PowerPointGenerator:
         slot_name: str,
         statement_type: Optional[str] = None,
     ) -> int:
-        """Determine optimal font size (9→8→7) so all accounts fit in the slot.
+        """Return the fixed base font size for commentary slots.
 
-        When Pillow fitting is enabled and available, measure each candidate
-        size against the real shape with real font metrics. Otherwise fall
-        back to the legacy CPL approximation."""
+        Font size is intentionally kept constant across all slides — 10pt for
+        Chinese content, 9pt for English.  The distribution algorithm is
+        responsible for fitting content within capacity; shrinking the font to
+        compensate produces inconsistent slide-to-slide typography."""
+        is_chinese_slot = any(
+            any("\u4e00" <= c <= "\u9fff" for c in str(a.get("commentary", "")))
+            for a in slot_accounts
+        )
+        return 10 if is_chinese_slot else 9
+
+    def _determine_slot_font_size_UNUSED(
+        self,
+        slot_accounts: List[Dict],
+        shape,
+        slot_name: str,
+        statement_type: Optional[str] = None,
+    ) -> int:
+        """KEPT FOR REFERENCE — old shrink-to-fit logic (9→8→7pt)."""
         packing = self._packing_settings(statement_type)
         if not shape or not hasattr(shape, "height"):
             return 9
