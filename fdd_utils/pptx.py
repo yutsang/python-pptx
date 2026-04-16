@@ -1654,18 +1654,26 @@ class PowerPointGenerator:
         shape=None,
         is_chinese: Optional[bool] = None,
         statement_type: Optional[str] = None,
-    ) -> int:
-        """Calculate how many lines a piece of content will take"""
+    ) -> float:
+        """Return the physical height of this content expressed in std_lh units.
+
+        Returns a *float* (no ceil) so that the DP and greedy fill can track
+        actual physical space consumed.  Using ceil was inflating every
+        multi-line account to the next integer boundary, causing the DP to
+        report 100 % fill when the box was only ~75 % physically used.
+
+        One "unit" = std_lh = line_h + PARA_SPACE_AFTER (17 pt for English).
+        Capacity from _calculate_max_lines_for_textbox is int(box_height/std_lh),
+        so comparing float content against int capacity gives physically accurate
+        fill ratios.
+        """
         is_chinese = any('\u4e00' <= c <= '\u9fff' for c in commentary) if is_chinese is None else is_chinese
 
-        import math as _math
         font_size_pt = 10 if is_chinese else 9
         line_spacing = 0.95 if is_chinese else 1.0
         family = "Microsoft YaHei" if is_chinese else "Arial"
 
         # ── Real glyph metrics via text_metrics ─────────────────────────────────
-        # Use the actual font file so wrap points are exact — no averaging.
-        # Falls back to the heuristic only when the font file is unavailable.
         if shape is not None:
             try:
                 from fdd_utils.text_metrics import (
@@ -1682,7 +1690,6 @@ class PowerPointGenerator:
                     total_pt += line_h          # category header: no space_after
 
                 paras = [p for p in commentary.split('\n') if p.strip()] if commentary else []
-                # First commentary line is on the same paragraph as the key name.
                 key_prefix = f"\u25a0 {mapping_key} - "
                 if paras:
                     first_wrapped = wrap_paragraph(key_prefix + paras[0], font, box.width_pt)
@@ -1693,7 +1700,8 @@ class PowerPointGenerator:
                 else:
                     total_pt += line_h + self._PARA_SPACE_AFTER
 
-                return max(1, _math.ceil(total_pt / std_lh))
+                # Return float — no ceil so actual physical proportion is preserved.
+                return total_pt / std_lh
             except Exception:
                 pass    # font file missing — fall through to heuristic
 
@@ -1716,7 +1724,7 @@ class PowerPointGenerator:
                 total_pt += w * font_size_pt * line_spacing + space_after
         else:
             total_pt += font_size_pt * line_spacing + space_after
-        return max(1, _math.ceil(total_pt / std_lh))
+        return total_pt / std_lh
 
     def _distribute_content_across_slots(
         self,
@@ -2059,21 +2067,21 @@ class PowerPointGenerator:
         slot_name: str,
         slot_shape=None,
         statement_type: Optional[str] = None,
-    ) -> int:
-        """Return used line-units for *accounts* in this slot.
+    ) -> float:
+        """Return used line-units for *accounts* in this slot (float).
 
         Uses the same accounting as ``slot_cost`` in the DP: each category
-        header costs 1 integer line unit, and each account's commentary costs
-        the value returned by ``_calculate_content_lines``.  Both are in the
-        same unit (std_lh = line_h + PARA_SPACE_AFTER) so fill ratios against
-        ``_calculate_max_lines_for_textbox`` are directly comparable.
+        header costs 1 line unit, and each account's commentary costs the
+        float value returned by ``_calculate_content_lines`` (actual pt /
+        std_lh, no ceil).  Comparing against int capacity from
+        ``_calculate_max_lines_for_textbox`` gives accurate fill ratios.
         """
-        used = 0
+        used: float = 0.0
         prev_cat = None
         for account in accounts:
             cat = str(account.get("category", "") or "")
             if cat and cat != prev_cat:
-                used += 1   # category header line (same as slot_cost)
+                used += 1.0   # category header (same as slot_cost)
             prev_cat = cat
             used += self._calculate_content_lines(
                 "",
@@ -2084,7 +2092,7 @@ class PowerPointGenerator:
                 is_chinese=bool(account.get("is_chinese", False)),
                 statement_type=statement_type,
             )
-        return max(0, used)
+        return max(0.0, used)
 
     def _optimize_slot_fill(
         self,
@@ -2158,7 +2166,7 @@ class PowerPointGenerator:
         # _calculate_content_lines (and Pillow when enabled) once per
         # (account, slot_type) pair — O(N × slot_types) total instead of the
         # O(S × N²) calls that the old range-based approach produced.
-        _acct_cost: Dict[Tuple[int, str, int], int] = {}
+        _acct_cost: Dict[Tuple[int, str, int], float] = {}
         seen_slot_types: set = set()
         for slot in slots:
             shape = slot["shape"]
@@ -2180,11 +2188,14 @@ class PowerPointGenerator:
 
         # cost[s][j][i] = lines used placing accounts[j..i] inclusive in slot s.
         # j > i means "empty". Built from pre-computed per-account values.
-        cost_cache: Dict[Tuple[int, int, int], int] = {}
+        cost_cache: Dict[Tuple[int, int, int], float] = {}
 
-        def slot_cost(s: int, j: int, i: int) -> int:
+        def slot_cost(s: int, j: int, i: int) -> float:
+            """Return float line-units for placing flat_accounts[j..i] in slot s.
+            Category headers cost 1.0; account content costs the float from
+            _calculate_content_lines (actual_pt / std_lh, no ceil)."""
             if j > i:
-                return 0
+                return 0.0
             key = (s, j, i)
             if key in cost_cache:
                 return cost_cache[key]
@@ -2192,15 +2203,15 @@ class PowerPointGenerator:
             shape = slot["shape"]
             w_key = int(shape.width) if shape and hasattr(shape, "width") else 0
             sname = slot["slot_name"]
-            used = 0
+            used: float = 0.0
             prev_cat = None
             for a_i in range(j, i + 1):
                 account = flat_accounts[a_i]
                 cat = str(account.get("category", "") or "")
                 if cat and cat != prev_cat:
-                    used += 1  # category header line
+                    used += 1.0  # category header line
                 prev_cat = cat
-                used += _acct_cost.get((a_i, sname, w_key), 0)
+                used += _acct_cost.get((a_i, sname, w_key), 0.0)
             cost_cache[key] = used
             return used
 
