@@ -2183,11 +2183,43 @@ class PowerPointGenerator:
             )
 
         rebuilt = [
-            (slot["slide_idx"], slot["slot_name"], assignment[s_i])
+            (slot["slide_idx"], slot["slot_name"], self._merge_contd_pairs(assignment[s_i]))
             for s_i, slot in enumerate(slots)
             if assignment[s_i]
         ]
         return rebuilt
+
+    @staticmethod
+    def _merge_contd_pairs(accounts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge any consecutive (part1, cont'd-part2) pair that landed in the
+        same slot.  This happens when the DP re-balances: the split was created
+        because the *previous* slot was almost full, but the two halves together
+        fit in the empty slot the DP chose.  Merging removes the spurious
+        (cont'd) label and restores the original single account."""
+        result: List[Dict[str, Any]] = []
+        skip = False
+        for i, acct in enumerate(accounts):
+            if skip:
+                skip = False
+                continue
+            nxt = accounts[i + 1] if i + 1 < len(accounts) else None
+            if (
+                acct.get("is_partial")
+                and nxt is not None
+                and nxt.get("is_continuation")
+                and nxt.get("original_key", nxt.get("mapping_key")) == acct.get("mapping_key")
+            ):
+                combined = acct.copy()
+                p1 = str(acct.get("commentary", "") or "")
+                p2 = str(nxt.get("commentary", "") or "")
+                combined["commentary"] = (p1.rstrip() + " " + p2.lstrip()).strip()
+                for flag in ("is_partial", "is_continuation", "part_num", "original_key"):
+                    combined.pop(flag, None)
+                result.append(combined)
+                skip = True
+            else:
+                result.append(acct)
+        return result
 
     def _greedy_forward_fill(
         self,
@@ -2225,7 +2257,7 @@ class PowerPointGenerator:
                 assignment[-1].append(remaining)
 
         return [
-            (slot["slide_idx"], slot["slot_name"], assignment[s_i])
+            (slot["slide_idx"], slot["slot_name"], self._merge_contd_pairs(assignment[s_i]))
             for s_i, slot in enumerate(slots)
             if assignment[s_i]
         ]
