@@ -1293,9 +1293,10 @@ class PromptEngine:
         if language == "Chi":
             if statement_type == "BS":
                 return (
-                    f"这是资产负债表科目。重点分析截至{effective_date}的最新余额及其构成（余额分析）："
-                    f"描述余额的主要组成部分、集中度、关键驱动因素及重大变化情况。"
-                    f"跨期变动趋势应简略带过（一至两句即可），仅作为最新余额的背景支撑，而非开篇重点。"
+                    f"这是资产负债表科目。首句必须说明截至{effective_date}的期末余额及其构成或主要组成部分——"
+                    "禁止以年度对比句开篇（例如，不得以'X较上年增加/减少'或'X同比上升/下降'作为首句）。"
+                    f"首句之后，再描述余额构成、集中度、关键驱动因素及重大备注说明。"
+                    "年度对比或跨期变动最多只能出现一句，作为构成分析之后的补充背景，不得在首句出现。"
                     f"请使用时点表述如【截至{effective_date}】，不要写成期间表述。"
                 )
             if statement_type == "IS":
@@ -1325,10 +1326,12 @@ class PromptEngine:
 
         if statement_type == "BS":
             return (
-                f"This is a balance-sheet item. Focus primarily on the latest balance as at {effective_date} and its composition "
-                f"(balance analysis / 余额分析): describe what the balance comprises, any concentration, key drivers, and material changes. "
-                f"Cross-period trend should be kept brief — no more than one or two sentences — and serve as supporting context for the latest "
-                f"position rather than the opening focus. Use point-in-time wording such as 'as at {effective_date}', not period-flow wording."
+                f"This is a balance-sheet item. The FIRST sentence must state the period-end balance as at {effective_date} "
+                f"and describe what it comprises or its key composition — do NOT open with a year-over-year movement sentence "
+                f"(e.g., do not begin with 'X increased/decreased from Y to Z' or 'X rose/fell by ...'). "
+                f"After the opening, describe composition, concentration, key drivers, and any material remarks. "
+                f"Year-over-year movement or comparison may appear in at most ONE brief supporting sentence, placed after the composition analysis. "
+                f"Use point-in-time wording such as 'as at {effective_date}', not period-flow wording."
             )
         if statement_type == "IS":
             period_label = build_income_statement_period_label(

@@ -2198,8 +2198,36 @@ class PowerPointGenerator:
                     statement_type=statement_type,
                 )
 
-        # cost[s][j][i] = lines used placing accounts[j..i] inclusive in slot s.
-        # j > i means "empty". Built from pre-computed per-account values.
+        # ── Tight packing: use minimum slots, expand only if infeasible ─────────
+        # The DP objective (min max-fill-ratio) spreads content across ALL
+        # available slots at ~80% fill.  We want ~90-95%.  Fix: compute the
+        # minimum number of slots that can hold all content, try that first;
+        # if infeasible (split accounts can push content above S_min capacity),
+        # expand by one and retry until feasible or S_orig is reached.
+        _slots_all = list(slots)
+        _S_orig = S
+
+        import math as _math
+        _est_sname = slots[0]["slot_name"] if slots else "single"
+        _est_wkey = (
+            int(slots[0]["shape"].width)
+            if slots and slots[0].get("shape") and hasattr(slots[0]["shape"], "width")
+            else 0
+        )
+        _total_est: float = 0.0
+        _prev_cat_e: Optional[str] = None
+        for _a_i, _acct_e in enumerate(flat_accounts):
+            _cat_e = str(_acct_e.get("category", "") or "")
+            if _cat_e and _cat_e != _prev_cat_e:
+                _total_est += 1.0
+            _prev_cat_e = _cat_e
+            _total_est += _acct_cost.get((_a_i, _est_sname, _est_wkey), 2.0)
+        _min_cap = min(slot["capacity"] for slot in slots) if slots else 1
+        S_min = max(1, _math.ceil(_total_est / _min_cap))
+
+        # cost_cache and slot_cost are defined before the retry loop.
+        # slot_cost captures `slots` by reference — updating slots = _slots_all[:S_try]
+        # inside the loop automatically changes what slot_cost sees.
         cost_cache: Dict[Tuple[int, int, int], float] = {}
 
         def slot_cost(s: int, j: int, i: int) -> float:
@@ -2228,49 +2256,69 @@ class PowerPointGenerator:
             return used
 
         INF = float("inf")
+
         # dp[s][i] = min max-fill-ratio packing flat_accounts[0..i] into slots[0..s]
-        dp: List[List[float]] = [[INF] * N for _ in range(S)]
+        dp: List[List[float]] = []
         # split[s][i] = j such that slot s holds flat_accounts[j+1..i]; j == i
         # means slot s is empty (carries i through from previous slot).
-        split: List[List[int]] = [[-1] * N for _ in range(S)]
+        split: List[List[int]] = []
 
-        for i in range(N):
-            lines = slot_cost(0, 0, i)
-            if lines <= slots[0]["capacity"]:
-                dp[0][i] = lines / slots[0]["capacity"]
-            split[0][i] = -1
+        for _S_try in range(min(S_min, _S_orig), _S_orig + 1):
+            S = _S_try
+            slots = _slots_all[:S]   # slot_cost closure sees updated list
+            cost_cache.clear()        # clear since slot count changed
 
-        for s in range(1, S):
-            cap = slots[s]["capacity"]
+            dp = [[INF] * N for _ in range(S)]
+            split = [[-1] * N for _ in range(S)]
+
             for i in range(N):
-                # slot s non-empty, holds accounts[j+1..i]
-                for j in range(-1, i):
-                    prev = 0.0 if j < 0 else dp[s - 1][j]
-                    if prev >= INF:
-                        continue
-                    lines = slot_cost(s, j + 1, i)
-                    if lines > cap:
-                        continue
-                    ratio = max(prev, lines / cap)
-                    if ratio <= dp[s][i]:
-                        # Use <= so that ties prefer larger j (fewer accounts in
-                        # later slots, more in earlier slots), avoiding the
-                        # "first slots empty, last slot overloaded" pattern.
-                        dp[s][i] = ratio
-                        split[s][i] = j
-                # slot s empty: dp[s-1][i] carried forward
-                if dp[s - 1][i] < dp[s][i]:
-                    dp[s][i] = dp[s - 1][i]
-                    split[s][i] = i  # marker: slot s is empty
+                lines = slot_cost(0, 0, i)
+                if lines <= slots[0]["capacity"]:
+                    dp[0][i] = lines / slots[0]["capacity"]
+                split[0][i] = -1
 
-        # Did we manage to place every account somewhere?
-        if dp[S - 1][N - 1] >= INF:
-            logger.warning(
-                "Balanced partition: no feasible layout for %s accounts into %s slots; "
-                "falling back to greedy forward-fill.",
-                N, S,
-            )
-            return self._greedy_forward_fill(flat_accounts, slots, statement_type)
+            for s in range(1, S):
+                cap = slots[s]["capacity"]
+                for i in range(N):
+                    # slot s non-empty, holds accounts[j+1..i]
+                    for j in range(-1, i):
+                        prev = 0.0 if j < 0 else dp[s - 1][j]
+                        if prev >= INF:
+                            continue
+                        lines = slot_cost(s, j + 1, i)
+                        if lines > cap:
+                            continue
+                        ratio = max(prev, lines / cap)
+                        if ratio <= dp[s][i]:
+                            # Use <= so that ties prefer larger j (fewer accounts
+                            # in later slots, more in earlier slots), avoiding the
+                            # "first slots empty, last slot overloaded" pattern.
+                            dp[s][i] = ratio
+                            split[s][i] = j
+                    # slot s empty: dp[s-1][i] carried forward
+                    if dp[s - 1][i] < dp[s][i]:
+                        dp[s][i] = dp[s - 1][i]
+                        split[s][i] = i  # marker: slot s is empty
+
+            if dp[S - 1][N - 1] < INF:
+                # Feasible — use this slot count
+                if S < _S_orig:
+                    logger.info(
+                        "  Tight packing: using %s slots (min=%s, orig=%s), "
+                        "content=%.2f, cap=%.2f",
+                        S, S_min, _S_orig, _total_est, _min_cap,
+                    )
+                break
+
+            if S == _S_orig:
+                logger.warning(
+                    "Balanced partition: no feasible layout for %s accounts into %s slots; "
+                    "falling back to greedy forward-fill.",
+                    N, S,
+                )
+                return self._greedy_forward_fill(flat_accounts, _slots_all, statement_type)
+
+            logger.info("  DP infeasible with %s slots, trying %s", S, S + 1)
 
         # Reconstruct the assignment.
         assignment: List[List[Dict[str, Any]]] = [[] for _ in range(S)]
