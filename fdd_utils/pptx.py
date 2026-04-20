@@ -1869,8 +1869,8 @@ class PowerPointGenerator:
 
                 next_slot_idx = current_slot_idx + 1
 
-                split_remaining_min = float(self._packing_settings().get("split_min_remaining_lines", 3))
-                split_content_min = int(self._packing_settings().get("split_min_content_lines", 5))
+                split_remaining_min = float(self._packing_settings(statement_type).get("split_min_remaining_lines", 3))
+                split_content_min = int(self._packing_settings(statement_type).get("split_min_content_lines", 5))
                 if remaining_lines > split_remaining_min and content_lines > split_content_min:
                     logger.info("  Attempting to split content...")
                     paragraphs = commentary.split('\n\n')
@@ -2020,6 +2020,7 @@ class PowerPointGenerator:
                     slot_name=slot_name_new,
                     shape=slot_shapes.get(current_slot_idx),
                     is_chinese=is_chinese_content,
+                    statement_type=statement_type,
                 )
                 current_slot_content = [moved_account]
                 current_slot_lines = moved_category_lines + moved_lines
@@ -2052,6 +2053,7 @@ class PowerPointGenerator:
                     slot_name=slot_name,
                     shape=slot_shapes.get(slot_idx),
                     is_chinese=account.get("is_chinese", False),
+                    statement_type=statement_type,
                 )
                 previous_category_in_slot = account_category
             fill_ratio = (used_lines / slot_capacity) if slot_capacity else 0.0

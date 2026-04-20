@@ -2427,7 +2427,13 @@ def _agent_prompt_kwargs(
             "output": previous_output,
         }
     if agent_name == "subagent_3":
-        reduction_target = int((agent_config or {}).get("reduction_target_pct", 64))
+        cfg = agent_config or {}
+        default_target = int(cfg.get("reduction_target_pct", 64))
+        statement_type = str(prompt_manager.get_mapping_component(mapping_key, component="type") or "").strip().upper()
+        if statement_type == "BS" and cfg.get("reduction_target_pct_bs") is not None:
+            reduction_target = int(cfg["reduction_target_pct_bs"])
+        else:
+            reduction_target = default_target
         return {
             "previous_content": previous_output,
             "original_length": len(previous_output or ""),
