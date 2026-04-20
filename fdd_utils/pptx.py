@@ -305,7 +305,6 @@ def build_pptx_structured_payloads(
     mappings,
     bs_is_results=None,
     dfs=None,
-    commentary_modes=None,
 ):
     if not ai_results:
         return {"BS": [], "IS": []}
@@ -331,11 +330,7 @@ def build_pptx_structured_payloads(
         if not _has_significant_balance(financial_data):
             continue
 
-        use_simplified = (commentary_modes or {}).get(account_key) == "Simplified"
-        if use_simplified and str(result.get("final_simplified") or "").strip():
-            final_content = str(result["final_simplified"]).strip()
-        else:
-            final_content = _extract_final_content(result)
+        final_content = _extract_final_content(result)
         commentary_text = (
             str(final_content).strip()
             if final_content and str(final_content).strip()
@@ -1204,11 +1199,11 @@ class PowerPointGenerator:
             max_len = max([len(str(col_name))] + [len(val) for val in col_series.head(25).tolist()]) if len(col_series) else len(str(col_name))
             col_name_str = str(col_name).lower()
             if col_idx == 0:
-                weight = max(2.8, min(4.8, max_len / 8))
+                weight = max(2.0, min(3.2, max_len / 10))
             elif any(token in col_name_str for token in ["20", "19", "date", "年", "月"]):
-                weight = max(1.3, min(1.9, max_len / 10))
+                weight = max(1.4, min(2.0, max_len / 10))
             else:
-                weight = max(1.1, min(1.8, max_len / 9))
+                weight = max(1.2, min(1.9, max_len / 9))
             weights.append(weight)
 
         total_weight = sum(weights) or 1
@@ -2847,15 +2842,15 @@ class PowerPointGenerator:
                 self._fit_table_columns(table, df)
 
                 total_visible_rows = len(df) + 1 + (1 if table_name else 0)
-                if total_visible_rows >= 24:
-                    data_font_size = Pt(6)
-                    data_row_height = Inches(0.16)
-                elif total_visible_rows >= 18:
-                    data_font_size = Pt(6.5)
-                    data_row_height = Inches(0.17)
-                else:
+                if total_visible_rows >= 26:
                     data_font_size = Pt(7)
-                    data_row_height = Inches(0.19)
+                    data_row_height = Inches(0.20)
+                elif total_visible_rows >= 20:
+                    data_font_size = Pt(7.5)
+                    data_row_height = Inches(0.22)
+                else:
+                    data_font_size = Pt(8)
+                    data_row_height = Inches(0.24)
                 
                 # Add table name as first row if provided
                 if table_name:
@@ -2932,10 +2927,18 @@ class PowerPointGenerator:
                             run.font.size = Pt(9)
                             run.font.bold = True
                             run.font.color.rgb = WHITE # White font for header
-                            
+
                             cell.fill.solid()
                             cell.fill.fore_color.rgb = TIFFANY_BLUE
-                        
+
+                        try:
+                            cell.margin_left = Inches(0.04)
+                            cell.margin_right = Inches(0.04)
+                            cell.margin_top = Inches(0.02)
+                            cell.margin_bottom = Inches(0.02)
+                        except Exception:
+                            pass
+
                         logger.debug("Filled header cell %s: %s", col_idx, cell.text)
                 
                 # Fill data rows with formatting - show ALL rows (no limit)
@@ -3035,16 +3038,31 @@ class PowerPointGenerator:
                         for run in p.runs:
                             run.text = text_val # Ensure text is set in the run
                             run.font.name = 'Arial'
-                            run.font.size = Pt(6) if is_date_row else data_font_size
-                            
+                            run.font.size = Pt(7) if is_date_row else data_font_size
+
                             # Force Black color for data rows
                             try:
                                 run.font.color.rgb = BLACK
                             except:
                                 pass
-                            
+
                             # Bold for special rows
                             run.font.bold = is_special_row
+
+                        # Give cells a small internal margin so text doesn't hug the border
+                        try:
+                            cell.margin_left = Inches(0.04)
+                            cell.margin_right = Inches(0.04)
+                            cell.margin_top = Inches(0.01)
+                            cell.margin_bottom = Inches(0.01)
+                        except Exception:
+                            pass
+
+                        # First column left-aligned, numeric columns right-aligned
+                        try:
+                            p.alignment = PP_ALIGN.LEFT if col_idx == 0 else PP_ALIGN.RIGHT
+                        except Exception:
+                            pass
                         
                         # Highlight special rows
                         if is_special_row:

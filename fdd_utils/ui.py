@@ -562,6 +562,8 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
     generate_clicked = st.button("▶️ Generate AI Content", type="primary", use_container_width=True, key=ai_key)
     if generate_clicked:
         session_state.button_click_counter += 1
+        session_state.pptx_ready = False
+        session_state.pop("pptx_download_data", None)
 
     progress_container = st.container()
     if not generate_clicked:
@@ -646,8 +648,19 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                     for value in results.values() if isinstance(value, dict)
                     for content in value.values()
                 ):
+                    elapsed_ai = int(time.time() - start_time)
+                    status_placeholder.info(
+                        f"✅ AI content generated ({len(results)} accounts, {elapsed_ai}s). Pre-generating PPTX for instant export…"
+                    )
+                    try:
+                        generate_pptx_presentation(
+                            session_state=session_state,
+                            pptx_available=True,
+                        )
+                    except Exception as exc:
+                        logger.warning("Eager PPTX generation failed (user can retry via Export button): %s", exc)
                     status_placeholder.success(
-                        f"✅ AI content generated successfully! {len(results)} accounts processed in {int(time.time() - start_time)}s."
+                        f"✅ AI content + PPTX ready! {len(results)} accounts processed in {int(time.time() - start_time)}s."
                     )
                 elif results:
                     status_placeholder.warning("⚠️ AI processing completed but no content was generated. This usually means the AI model is not properly configured.")
@@ -710,34 +723,15 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
         key: str,
         prefix: str,
         detailed_content: str,
-        simplified_content: str,
-        has_simplified: bool,
         clause_reviews: list,
         final_label: str,
         selected_df,
         language: str,
     ):
-        """Fragment that re-renders only itself when the Detailed/Simplified toggle changes."""
-        commentary_mode_key = f"{prefix}{key}_commentary_mode"
-        if has_simplified:
-            mode = st.radio(
-                "Commentary version",
-                options=["Detailed", "Simplified"],
-                index=0,
-                horizontal=True,
-                key=commentary_mode_key,
-                label_visibility="collapsed",
-            )
-        else:
-            mode = "Detailed"
-        # Store the selection for PPTX export
-        if "commentary_modes" not in session_state:
-            session_state.commentary_modes = {}
-        session_state.commentary_modes[key] = mode
-
-        final_content = simplified_content if mode == "Simplified" else detailed_content
+        """Render the final commentary for a single account."""
+        final_content = detailed_content
         render_account_remarks_context(selected_df, key, language, prefix=f"{prefix}generated_")
-        st.markdown(build_highlighted_commentary_html(str(final_content), clause_reviews or [] if mode == "Detailed" else []), unsafe_allow_html=True)
+        st.markdown(build_highlighted_commentary_html(str(final_content), clause_reviews or []), unsafe_allow_html=True)
         if clause_reviews:
             hallucination_count = sum(
                 1 for r in clause_reviews
@@ -789,8 +783,6 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                 hydrate_nested_agent_outputs(result)
                 selected_df = get_account_dataframe(key, account_display_dfs)
                 detailed_content = extract_result_text(result, "final")
-                simplified_content = str(result.get("final_simplified") or "").strip()
-                has_simplified = bool(simplified_content)
                 validator_metadata = extract_validator_metadata(result)
                 clause_reviews = validator_metadata.get("clause_reviews") if isinstance(validator_metadata, dict) else []
                 has_final = has_meaningful_result_text(detailed_content)
@@ -802,8 +794,6 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                         key=key,
                         prefix=prefix,
                         detailed_content=str(detailed_content),
-                        simplified_content=simplified_content,
-                        has_simplified=has_simplified,
                         clause_reviews=clause_reviews,
                         final_label=final_label,
                         selected_df=selected_df,
@@ -1211,8 +1201,12 @@ def render_processed_view(session_state: Any, generate_pptx_callback, get_model_
     with col_pptx:
         st.markdown("<br>", unsafe_allow_html=True)
         pptx_key = f"pptx_btn_{session_state.button_click_counter}"
-        if st.button("📄 Generate & Export PPTX", type="secondary", use_container_width=True, disabled=session_state.get("ai_results") is None, key=pptx_key):
+        pptx_cached = bool(session_state.get("pptx_ready")) and bool(session_state.get("pptx_download_data"))
+        pptx_label = "📄 Regenerate PPTX" if pptx_cached else "📄 Generate & Export PPTX"
+        if st.button(pptx_label, type="secondary", use_container_width=True, disabled=session_state.get("ai_results") is None, key=pptx_key):
             session_state.button_click_counter += 1
+            session_state.pptx_ready = False
+            session_state.pop("pptx_download_data", None)
             generate_pptx_callback()
     with col_download:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -1395,7 +1389,6 @@ def generate_pptx_presentation(
             mappings=mappings,
             bs_is_results=session_state.bs_is_results,
             dfs=selected_pipeline_dfs,
-            commentary_modes=session_state.get("commentary_modes"),
         )
         bs_data = structured_payloads.get("BS", [])
         is_data = structured_payloads.get("IS", [])
