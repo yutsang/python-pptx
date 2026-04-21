@@ -2279,14 +2279,16 @@ class PowerPointGenerator:
         # inside the loop automatically changes what slot_cost sees.
         cost_cache: Dict[Tuple[int, int, int], float] = {}
 
-        # The DP measures capacity via _calculate_max_lines_for_textbox which
-        # divides box height by std_lh (line_h + PARA_SPACE_AFTER). Actual
-        # rendering applies shape_height_utilization (~1.15–1.20) because PPT
-        # absorbs small overflows (auto-fit, tighter spacing). Use this factor
-        # as a DP overflow tolerance so the strict-fit check matches reality.
+        # Progressive relax factors for DP feasibility. Start at 1.0 (strict
+        # capacity) and widen until the DP finds a partition. The final
+        # factor (very large) guarantees feasibility, so the DP ALWAYS
+        # returns a balanced result — we never fall through to greedy, which
+        # would force-place oversized accounts and break the slide layout.
+        # shape_height_utilization is the "natural" first relaxation because
+        # PPT auto-fit can absorb that much overflow at render time.
         _packing_relax = self._packing_settings(statement_type)
-        _cap_relax = float(_packing_relax.get("shape_height_utilization", 1.08) or 1.08)
-        _cap_relax = max(1.0, min(1.25, _cap_relax))
+        _shape_util = float(_packing_relax.get("shape_height_utilization", 1.15) or 1.15)
+        _relax_factors: List[float] = [1.0, max(1.05, _shape_util), 1.35, 1.6, 10.0]
 
         def slot_cost(s: int, j: int, i: int) -> float:
             """Return float line-units for placing flat_accounts[j..i] in slot s.
@@ -2321,14 +2323,14 @@ class PowerPointGenerator:
         # means slot s is empty (carries i through from previous slot).
         split: List[List[int]] = []
 
-        # Two-pass loop: strict capacity first, then relaxed (× shape_height_utilization).
-        # Relaxed pass prevents unnecessary greedy fallback when content is a
-        # few percent over the measured limit but the shape can still render it.
+        # Progressive-relax loop. For each relax factor we try tight packing
+        # (S_min → S_orig); the first S that yields a feasible DP wins.
+        # The final relax factor (10×) makes every partition feasible, so the
+        # loop is guaranteed to find a solution and we never need a greedy
+        # fallback.
         _dp_solved = False
-        for _relax_pass in range(2):
-            _cap_mult = 1.0 if _relax_pass == 0 else _cap_relax
-            if _relax_pass == 1 and _cap_mult <= 1.0:
-                break  # no relax available
+        _solved_factor = 1.0
+        for _cap_mult in _relax_factors:
             for _S_try in range(min(S_min, _S_orig), _S_orig + 1):
                 S = _S_try
                 slots = _slots_all[:S]   # slot_cost closure sees updated list
@@ -2371,38 +2373,28 @@ class PowerPointGenerator:
                             split[s][i] = i  # marker: slot s is empty
 
                 if dp[S - 1][N - 1] < INF:
-                    # Feasible — use this slot count
-                    if _relax_pass == 1:
-                        logger.info(
-                            "  DP feasible with relaxed capacity (× %.2f) at %s slots",
-                            _cap_relax, S,
-                        )
-                    elif S < _S_orig:
-                        logger.info(
-                            "  Tight packing: using %s slots (min=%s, orig=%s), "
-                            "content=%.2f, cap=%.2f",
-                            S, S_min, _S_orig, _total_est, _min_cap,
-                        )
                     _dp_solved = True
+                    _solved_factor = _cap_mult
                     break
-
-                if S < _S_orig:
-                    logger.info("  DP infeasible with %s slots, trying %s", S, S + 1)
 
             if _dp_solved:
                 break
             logger.info(
-                "  DP infeasible at strict capacity; retrying with relax factor %.2f",
-                _cap_relax,
+                "  DP infeasible at relax × %.2f; widening tolerance",
+                _cap_mult,
             )
 
-        if not _dp_solved:
-            logger.warning(
-                "Balanced partition: no feasible layout for %s accounts into %s slots "
-                "even with relax %.2f; falling back to greedy forward-fill.",
-                N, _S_orig, _cap_relax,
+        if _solved_factor > 1.0:
+            logger.info(
+                "  DP feasible with relax × %.2f at %s slots (orig=%s)",
+                _solved_factor, S, _S_orig,
             )
-            return self._greedy_forward_fill(flat_accounts, _slots_all, statement_type)
+        elif S < _S_orig:
+            logger.info(
+                "  Tight packing: using %s slots (min=%s, orig=%s), "
+                "content=%.2f, cap=%.2f",
+                S, S_min, _S_orig, _total_est, _min_cap,
+            )
 
         # Reconstruct the assignment.
         assignment: List[List[Dict[str, Any]]] = [[] for _ in range(S)]
@@ -2545,46 +2537,11 @@ class PowerPointGenerator:
             current_slide_count = len(self.presentation.slides)
             
             if needed_slides > current_slide_count:
-                # Add slides and clone the matching template slide's shapes
-                # onto each one. IS pages (5+) need the same projTitle /
-                # coSummaryShape / Commentary label / textMainBullets shapes
-                # that slide 1 carries; without cloning, dynamically added
-                # slides only have the layout's default placeholders and the
-                # table-alignment logic has nothing to anchor to.
-                #
-                # Template mapping:
-                #   new slide #0  ← template slide 1 (single-column, has table)
-                #   new slide #1+ ← template slide 2 (L+R two-column detail)
+                # Add slides if needed
                 if current_slide_count > 0:
-                    from copy import deepcopy
-                    template_single = self.presentation.slides[0]
-                    template_split = (
-                        self.presentation.slides[1]
-                        if current_slide_count >= 2
-                        else template_single
-                    )
-                    layout_single = template_single.slide_layout
-                    layout_split = template_split.slide_layout
-                    for add_idx in range(needed_slides - current_slide_count):
-                        source_slide = template_single if add_idx == 0 else template_split
-                        slide_layout = layout_single if add_idx == 0 else layout_split
-                        source_sp_tree = source_slide._element.get_or_add_spTree()
-                        new_slide = self.presentation.slides.add_slide(slide_layout)
-                        try:
-                            target_sp_tree = new_slide._element.get_or_add_spTree()
-                            for shape in list(new_slide.shapes):
-                                try:
-                                    target_sp_tree.remove(shape._element)
-                                except Exception:
-                                    pass
-                            for shape_element in source_sp_tree:
-                                tag = getattr(shape_element, "tag", "")
-                                if tag.endswith("}nvGrpSpPr") or tag.endswith("}grpSpPr"):
-                                    # Skip group-level metadata to preserve the target slide's identity.
-                                    continue
-                                target_sp_tree.append(deepcopy(shape_element))
-                        except Exception as exc:
-                            logger.warning("Could not clone template shapes onto new slide: %s", exc)
+                    slide_layout = self.presentation.slides[0].slide_layout
+                    for _ in range(needed_slides - current_slide_count):
+                        self.presentation.slides.add_slide(slide_layout)
         
         # Track which slides are used
         used_slide_indices = set()
