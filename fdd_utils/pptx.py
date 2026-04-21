@@ -1164,26 +1164,34 @@ class PowerPointGenerator:
             width = min(slide_width - left - Inches(0.35), int((slide_width - Inches(1.0)) * 0.5))
             height = max(Inches(2.0), earliest_subtitle_top - top - Inches(0.12))
 
-        if body_like_shapes:
-            left = min(left, min(shape.left for shape in body_like_shapes))
-            right_edge = max(shape.left + shape.width for shape in body_like_shapes)
-            earliest_body_top = min(shape.top for shape in body_like_shapes)
+        # Horizontal extent: anchor width/left to body and label shapes so the
+        # table spans the full commentary gutter.
+        horizontal_anchors = list(body_like_shapes) + list(label_shapes)
+        if horizontal_anchors:
+            left = min(left, min(shape.left for shape in horizontal_anchors))
+            right_edge = max(shape.left + shape.width for shape in horizontal_anchors)
             if not generic_is_layout:
                 width = max(width, right_edge - left)
-                # Align the table's top with the textMainBullets (Commentary body)
-                # baseline so the two sit at the same vertical level. Use max,
-                # not min — min was pulling the table UP into the label row.
+
+        # Vertical alignment: anchor the table TOP to the "Commentary" /
+        # "Table" blue label box (TextBox 10/11 in the template). This puts
+        # the navy title row of the table at the exact same visible level as
+        # the Commentary label on the right, replacing the need for a separate
+        # "Table" label above the table.
+        if label_shapes:
+            label_top = min(shape.top for shape in label_shapes)
+            top = max(top, label_top)
+            if not generic_is_layout:
+                height = max(Inches(2.5), slide_height - top - Inches(0.35))
+        elif body_like_shapes:
+            earliest_body_top = min(shape.top for shape in body_like_shapes)
+            if not generic_is_layout:
+                # No label shapes (dynamically added slide): fall back to the
+                # commentary body top as the anchor.
                 top = max(top, earliest_body_top)
                 height = max(Inches(2.5), slide_height - top - Inches(0.35))
             else:
                 height = min(height, max(Inches(2.0), earliest_body_top - top - Inches(0.12)))
-
-        # Fallback anchor: if no body shapes were detected (IS slides added
-        # dynamically), use the bottom of the blue "Commentary"/"Table" labels.
-        if label_shapes and not body_like_shapes:
-            label_bottom = max(shape.top + shape.height for shape in label_shapes)
-            top = max(top, label_bottom + Inches(0.03))
-            height = max(Inches(2.5), slide_height - top - Inches(0.35))
 
         width = min(width, slide_width - left - Inches(0.25))
         height = max(Inches(2.5), min(height, slide_height - top - Inches(0.2)))
@@ -1266,6 +1274,26 @@ class PowerPointGenerator:
             f"Resolved {statement_type} table target on slide using {target_name} "
             f"at left={bounds['left']} top={bounds['top']} width={bounds['width']} height={bounds['height']}"
         )
+
+        # Remove the redundant "Table" label box (TextBox 11 in the template).
+        # The table's navy title row now lives at the same vertical position
+        # as that label, so keeping the label would double-print the header.
+        # Leave the right-side "Commentary" label intact — there's still a
+        # commentary box on this slide that needs its header.
+        for shape in list(slide.shapes):
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            try:
+                label_text = (shape.text_frame.text or "").strip().lower()
+            except Exception:
+                continue
+            if label_text != "table":
+                continue
+            try:
+                sp = shape._element
+                sp.getparent().remove(sp)
+            except Exception as e:
+                logger.debug("Could not remove 'Table' label shape: %s", e)
 
         if target_shape is None:
             table_shape = self._add_table_to_slide(slide, df, bounds, table_name=table_name)
@@ -2517,11 +2545,46 @@ class PowerPointGenerator:
             current_slide_count = len(self.presentation.slides)
             
             if needed_slides > current_slide_count:
-                # Add slides if needed
+                # Add slides and clone the matching template slide's shapes
+                # onto each one. IS pages (5+) need the same projTitle /
+                # coSummaryShape / Commentary label / textMainBullets shapes
+                # that slide 1 carries; without cloning, dynamically added
+                # slides only have the layout's default placeholders and the
+                # table-alignment logic has nothing to anchor to.
+                #
+                # Template mapping:
+                #   new slide #0  ← template slide 1 (single-column, has table)
+                #   new slide #1+ ← template slide 2 (L+R two-column detail)
                 if current_slide_count > 0:
-                    slide_layout = self.presentation.slides[0].slide_layout
-                    for _ in range(needed_slides - current_slide_count):
-                        self.presentation.slides.add_slide(slide_layout)
+                    from copy import deepcopy
+                    template_single = self.presentation.slides[0]
+                    template_split = (
+                        self.presentation.slides[1]
+                        if current_slide_count >= 2
+                        else template_single
+                    )
+                    layout_single = template_single.slide_layout
+                    layout_split = template_split.slide_layout
+                    for add_idx in range(needed_slides - current_slide_count):
+                        source_slide = template_single if add_idx == 0 else template_split
+                        slide_layout = layout_single if add_idx == 0 else layout_split
+                        source_sp_tree = source_slide._element.get_or_add_spTree()
+                        new_slide = self.presentation.slides.add_slide(slide_layout)
+                        try:
+                            target_sp_tree = new_slide._element.get_or_add_spTree()
+                            for shape in list(new_slide.shapes):
+                                try:
+                                    target_sp_tree.remove(shape._element)
+                                except Exception:
+                                    pass
+                            for shape_element in source_sp_tree:
+                                tag = getattr(shape_element, "tag", "")
+                                if tag.endswith("}nvGrpSpPr") or tag.endswith("}grpSpPr"):
+                                    # Skip group-level metadata to preserve the target slide's identity.
+                                    continue
+                                target_sp_tree.append(deepcopy(shape_element))
+                        except Exception as exc:
+                            logger.warning("Could not clone template shapes onto new slide: %s", exc)
         
         # Track which slides are used
         used_slide_indices = set()
@@ -3758,17 +3821,21 @@ Original content:
                 logger.warning("Missing excel_path (%s) or sheet_name (%s), skipping table embedding", excel_path, sheet_name)
                 return
             
-            if bs_is_results:
-                logger.info("Reusing precomputed BS/IS results for table embedding")
-            else:
-                # Use the existing extraction function without forcing verbose debug output.
-                # multiply_values=False to keep original units (thousands) for PPTX table
-                bs_is_results = extract_balance_sheet_and_income_statement(
-                    excel_path,
-                    sheet_name,
-                    debug=False,
-                    multiply_values=False,
-                )
+            # Always re-extract for the PPTX table with multiply_values=False.
+            # Upstream callers (process_workbook_data) default to
+            # multiply_values=True because the AI pipeline wants actual units
+            # (e.g. CNY'000 values × 1000 = CNY). If we reused those for the
+            # table, the cells would be 1000× too large while the header still
+            # says CNY'000, producing a misleading "1,234,000" where source
+            # meant "1,234" thousand. Re-extract raw so the displayed numbers
+            # match the unit label.
+            logger.info("Re-extracting BS/IS in raw units (multiply_values=False) for table")
+            bs_is_results = extract_balance_sheet_and_income_statement(
+                excel_path,
+                sheet_name,
+                debug=False,
+                multiply_values=False,
+            )
             if not bs_is_results:
                 logger.warning("No BS/IS data extracted")
                 return
@@ -3778,35 +3845,25 @@ Original content:
             bs_df = bs_is_results.get('balance_sheet')
             is_df = bs_is_results.get('income_statement')
             
-            # Extract table names and currency units from databook
-            # Try to find table name and currency from the sheet
-            bs_table_name = None
-            is_table_name = None
+            # Table titles follow the standard FDD phrasing regardless of what
+            # the source Excel calls the sheet. Language-aware so Chinese decks
+            # stay consistent with English decks.
+            is_chinese_mode = str(language or "").strip().lower().startswith(("chi", "zh", "cn"))
+            project_suffix = f" - {project_name}" if project_name else ""
+            if is_chinese_mode:
+                bs_table_name = f"示意性调整后资产负债表{project_suffix}"
+                is_table_name = f"示意性调整后利润表{project_suffix}"
+            else:
+                bs_table_name = f"Indicative adjusted balance sheet{project_suffix}"
+                is_table_name = f"Indicative adjusted income statement{project_suffix}"
+
+            # Detect currency unit from the sheet so the header column can
+            # show the correct scale (thousands vs millions).
             currency_unit = None
-            
             try:
-                # Read the Excel file to find table names and currency
                 excel_df = pd.read_excel(excel_path, sheet_name=sheet_name, header=None)
-                # Look for table name patterns (e.g., "示意性调整后资产负债表")
                 for idx, row in excel_df.iterrows():
                     row_text = ' '.join([str(cell) for cell in row if pd.notna(cell)])
-                    if '资产负债表' in row_text or 'Balance Sheet' in row_text:
-                        # Extract table name - remove any entity name suffix if already present
-                        bs_table_name = row_text.strip()
-                        # If it already contains " - " followed by entity name, keep it as is
-                        # Otherwise, it's just the table name without entity
-                        if project_name and project_name not in bs_table_name:
-                            # Only add entity name if it's not already there
-                            bs_table_name = f"{bs_table_name} - {project_name}"
-                    if '利润表' in row_text or 'Income Statement' in row_text:
-                        is_table_name = row_text.strip()
-                        # If it already contains " - " followed by entity name, keep it as is
-                        if project_name and project_name not in is_table_name:
-                            # Only add entity name if it's not already there
-                            is_table_name = f"{is_table_name} - {project_name}"
-                    # Look for currency unit. Values flow through as-is; this
-                    # label goes into the "Description" column header so the
-                    # reader knows the scale (thousands vs millions).
                     # Order matters: check million markers before generic 000
                     # markers to avoid mislabelling (e.g. a table that literally
                     # reads "CNY million" shouldn't be called CNY'000).
@@ -3819,9 +3876,11 @@ Original content:
                             currency_unit = '人民币千元'
                         elif "CNY'000" in row_text or "CNY 000" in row_text:
                             currency_unit = "CNY'000"
-            except:
+                    if currency_unit is not None:
+                        break
+            except Exception:
                 pass
-            
+
             logger.info("Extracted BS: %s, IS: %s", bs_df.shape if bs_df is not None else 'None', is_df.shape if is_df is not None else 'None')
             logger.info("Table names - BS: %s, IS: %s, Currency: %s", bs_table_name, is_table_name, currency_unit)
             
