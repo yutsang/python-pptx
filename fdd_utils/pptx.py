@@ -832,6 +832,45 @@ class PowerPointGenerator:
             raise result_container["error"]
         return result_container["value"]
 
+    def _call_with_timeout_retry(
+        self,
+        func,
+        timeout_seconds: float,
+        max_retries: int,
+        timeout_label: str,
+    ):
+        """Call ``func`` with a per-attempt timeout and retry on TimeoutError
+        or other transient failures. Raises the last exception if all retries
+        fail. Use ``max_retries >= 1`` (1 means "no retry, just run once")."""
+        attempts = max(1, int(max_retries or 1))
+        last_error: Optional[BaseException] = None
+        for attempt in range(1, attempts + 1):
+            label = (
+                timeout_label
+                if attempts == 1
+                else f"{timeout_label} (attempt {attempt}/{attempts})"
+            )
+            try:
+                return self._call_with_timeout(func, timeout_seconds, label)
+            except TimeoutError as te:
+                last_error = te
+                logger.warning(
+                    "%s timed out after %.1fs; %s",
+                    label,
+                    timeout_seconds,
+                    "retrying" if attempt < attempts else "giving up",
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "%s errored (%s); %s",
+                    label,
+                    exc,
+                    "retrying" if attempt < attempts else "giving up",
+                )
+        assert last_error is not None
+        raise last_error
+
     def _generate_slide_summaries(self, summary_jobs: List[Dict[str, Any]]) -> Dict[int, str]:
         if not summary_jobs:
             return {}
@@ -1964,6 +2003,7 @@ class PowerPointGenerator:
                                 break
 
                         if part1_paragraphs and split_index < len(paragraphs):
+                            # Clean paragraph-boundary split — always safe.
                             part1_commentary = '\n\n'.join(part1_paragraphs).strip()
                             part2_commentary = '\n\n'.join(paragraphs[split_index:]).strip()
                         elif not part1_paragraphs and len(paragraphs) > 0:
@@ -1971,34 +2011,40 @@ class PowerPointGenerator:
                             chars_available = int(max(1, available_visual * chars_per_line))
 
                             if len(para) > chars_available:
+                                # Only split at SENTENCE boundaries. The older
+                                # code fell back to commas, word boundaries,
+                                # and hard character cuts — those produced
+                                # ugly "(cont'd)" fragments that ended mid-row
+                                # at ~30% of the line. If no sentence ending
+                                # lands in our window, we refuse to split and
+                                # let the account move whole to the next slot.
                                 split_point = chars_available
                                 best_split = None
-
-                                for end_char in ['. ', '。', '! ', '！', '? ', '？', '。 ', '！ ', '？ ']:
-                                    pos = para.rfind(end_char, max(0, split_point - 200), split_point + 100)
+                                window_back = max(split_point - 300, 0)
+                                window_fwd = min(len(para), split_point + 150)
+                                for end_char in [
+                                    '. ', '。', '! ', '！', '? ', '？',
+                                    '。 ', '！ ', '？ ',
+                                ]:
+                                    pos = para.rfind(end_char, window_back, window_fwd)
                                     if pos > 0:
                                         best_split = pos + len(end_char)
                                         break
 
-                                if not best_split:
-                                    for punct in [', ', '，', '; ', '；']:
-                                        pos = para.rfind(punct, max(0, split_point - 150), split_point + 50)
-                                        if pos > 0:
-                                            best_split = pos + len(punct)
-                                            break
-                                
-                                # If still no good split point, just split at word boundary
-                                if not best_split:
-                                    best_split = para.rfind(' ', max(0, split_point - 50), split_point + 50)
-                                    if best_split == -1:
-                                        best_split = split_point
-
-                                part1_commentary = para[:best_split].strip()
-                                remaining_para = para[best_split:].strip()
-                                if len(paragraphs) > 1:
-                                    part2_commentary = remaining_para + '\n\n' + '\n\n'.join(paragraphs[1:])
+                                if best_split is None:
+                                    # No sentence boundary in window — skip
+                                    # this split attempt; the code below
+                                    # will move the whole account to the
+                                    # next slot.
+                                    part1_commentary = None
+                                    part2_commentary = None
                                 else:
-                                    part2_commentary = remaining_para
+                                    part1_commentary = para[:best_split].strip()
+                                    remaining_para = para[best_split:].strip()
+                                    if len(paragraphs) > 1:
+                                        part2_commentary = remaining_para + '\n\n' + '\n\n'.join(paragraphs[1:])
+                                    else:
+                                        part2_commentary = remaining_para
                             else:
                                 part1_commentary = para
                                 part2_commentary = '\n\n'.join(paragraphs[1:]) if len(paragraphs) > 1 else ""
@@ -3644,7 +3690,8 @@ Draft summary:
                 model_type=model_type,
                 language='Chi' if is_chinese else 'Eng',
             )
-            response = self._call_with_timeout(
+            validation_max_retries = int(summary_settings.get("validation_max_retries", 2) or 2)
+            response = self._call_with_timeout_retry(
                 lambda: ai_helper.get_response(
                     user_prompt=prompt,
                     system_prompt=(
@@ -3655,6 +3702,7 @@ Draft summary:
                     max_tokens=validation_max_tokens,
                 ),
                 timeout_seconds=validation_timeout_seconds,
+                max_retries=validation_max_retries,
                 timeout_label="PPTX summary validation",
             )
             validated_summary = str((response or {}).get("content") or "").strip()
@@ -3719,7 +3767,8 @@ Original content:
                 model_type=model_type,
                 language='Chi' if is_chinese else 'Eng',
             )
-            response = self._call_with_timeout(
+            generation_max_retries = int(summary_settings.get("generation_max_retries", 3) or 3)
+            response = self._call_with_timeout_retry(
                 lambda: ai_helper.get_response(
                     user_prompt=prompt,
                     system_prompt=(
@@ -3730,6 +3779,7 @@ Original content:
                     max_tokens=max_tokens,
                 ),
                 timeout_seconds=generation_timeout_seconds,
+                max_retries=generation_max_retries,
                 timeout_label="PPTX summary generation",
             )
             summary = str((response or {}).get("content") or "").strip()
