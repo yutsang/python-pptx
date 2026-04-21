@@ -1673,7 +1673,10 @@ class PowerPointGenerator:
 
     # Space-after (pt) applied to every paragraph in _fill_text_main_bullets.
     # Used consistently in both capacity and content-line calculations.
-    _PARA_SPACE_AFTER = 6.0
+    # Vertical gap (in pt) between bullet paragraphs. Used in both the
+    # line-cost estimator and the render step so they stay consistent.
+    # Tighter spacing = more accounts fit per slot before overflow.
+    _PARA_SPACE_AFTER = 3.0
 
     def _calculate_max_lines_for_textbox(
         self,
@@ -2691,7 +2694,7 @@ class PowerPointGenerator:
                         try:
                             p_category.left_indent = Inches(0.21)
                             p_category.first_line_indent = Inches(-0.19)
-                            p_category.space_before = Pt(6) if current_category else Pt(0)
+                            p_category.space_before = Pt(3) if current_category else Pt(0)
                             p_category.space_after = Pt(0)
                             p_category.line_spacing = 1.0
                         except:
@@ -3464,7 +3467,7 @@ class PowerPointGenerator:
             p_key.left_indent = Inches(0.15)  # 0.15" indent
             p_key.first_line_indent = Inches(-0.15)  # 0.15" special hanging
             p_key.space_before = Pt(0)
-            p_key.space_after = Pt(6)  # 6pt spacing after
+            p_key.space_after = Pt(3)  # Matches _PARA_SPACE_AFTER (cost estimator)
             p_key.line_spacing = 1.0
         except Exception as e:
             logger.warning("Could not set paragraph formatting: %s", e)
@@ -3524,7 +3527,7 @@ class PowerPointGenerator:
                     p_text.left_indent = Inches(0.15)  # 0.15" indent (same as key text)
                     p_text.first_line_indent = Inches(0)  # No hanging for continuation lines
                     p_text.space_before = Pt(0)
-                    p_text.space_after = Pt(6)
+                    p_text.space_after = Pt(3)
                     p_text.line_spacing = 1.0
                 except:
                     pass
@@ -3839,24 +3842,44 @@ Original content:
                 logger.warning("Missing excel_path (%s) or sheet_name (%s), skipping table embedding", excel_path, sheet_name)
                 return
             
-            # Always re-extract for the PPTX table with multiply_values=False.
-            # Upstream callers (process_workbook_data) default to
-            # multiply_values=True because the AI pipeline wants actual units
-            # (e.g. CNY'000 values × 1000 = CNY). If we reused those for the
-            # table, the cells would be 1000× too large while the header still
-            # says CNY'000, producing a misleading "1,234,000" where source
-            # meant "1,234" thousand. Re-extract raw so the displayed numbers
-            # match the unit label.
-            logger.info("Re-extracting BS/IS in raw units (multiply_values=False) for table")
-            bs_is_results = extract_balance_sheet_and_income_statement(
-                excel_path,
-                sheet_name,
-                debug=False,
-                multiply_values=False,
-            )
-            if not bs_is_results:
-                logger.warning("No BS/IS data extracted")
-                return
+            # Prefer raw (non-multiplied) values for the PPTX table so the
+            # header unit label (CNY'000 / 人民币千元) matches what the cells
+            # display. Upstream (process_workbook_data) extracts with
+            # multiply_values=True for the AI pipeline. Try a fresh raw
+            # extract here; if it fails or returns empty, fall back to the
+            # precomputed results so the BS table still makes it into the
+            # deck — we just have to compensate in the display step.
+            precomputed_bs_is_results = bs_is_results
+            bs_is_results = None
+            try:
+                logger.info("Re-extracting BS/IS in raw units (multiply_values=False) for table")
+                bs_is_results = extract_balance_sheet_and_income_statement(
+                    excel_path,
+                    sheet_name,
+                    debug=False,
+                    multiply_values=False,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Raw BS/IS re-extraction failed (%s); will fall back to precomputed results",
+                    exc,
+                )
+
+            values_pre_multiplied = False
+            if not bs_is_results or (
+                bs_is_results.get("balance_sheet") is None
+                and bs_is_results.get("income_statement") is None
+            ):
+                if precomputed_bs_is_results:
+                    logger.info(
+                        "Falling back to precomputed BS/IS for the PPTX table; "
+                        "values will be rescaled to match the header unit."
+                    )
+                    bs_is_results = precomputed_bs_is_results
+                    values_pre_multiplied = True
+                else:
+                    logger.warning("No BS/IS data extracted")
+                    return
             
             # Extract BS and IS DataFrames from results
             # The structure should have 'balance_sheet' and 'income_statement' keys with DataFrames
@@ -3901,6 +3924,25 @@ Original content:
 
             logger.info("Extracted BS: %s, IS: %s", bs_df.shape if bs_df is not None else 'None', is_df.shape if is_df is not None else 'None')
             logger.info("Table names - BS: %s, IS: %s, Currency: %s", bs_table_name, is_table_name, currency_unit)
+
+            # If the values came from the precomputed (multiply_values=True)
+            # pipeline, rescale to the source unit so the cells match the
+            # header. "CNY'000" / "人民币千元" → divide by 1000,
+            # "CNY'M" / "人民币百万" → divide by 1_000_000.
+            if values_pre_multiplied and currency_unit:
+                rescale = None
+                if "千" in currency_unit or "'000" in currency_unit or "000" in currency_unit:
+                    rescale = 1000.0
+                elif "百万" in currency_unit or "'M" in currency_unit or "million" in currency_unit.lower():
+                    rescale = 1_000_000.0
+                if rescale is not None:
+                    logger.info("Rescaling precomputed values by 1/%s to match unit %s", int(rescale), currency_unit)
+                    for _df in (bs_df, is_df):
+                        if _df is None or _df.empty:
+                            continue
+                        for _col in _df.columns:
+                            if pd.api.types.is_numeric_dtype(_df[_col]):
+                                _df[_col] = _df[_col] / rescale
             
             # Embed BS table to slide 0 (page 1)
             if bs_df is not None and not bs_df.empty and len(self.presentation.slides) > 0:
