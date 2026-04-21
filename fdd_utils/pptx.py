@@ -1250,18 +1250,23 @@ class PowerPointGenerator:
 
     @staticmethod
     def _format_table_value(value, is_numeric_column: bool) -> str:
+        def _fmt_number(n: float) -> str:
+            if n == 0:
+                return "-"
+            # Accounting convention: negatives in parentheses, not with a minus sign.
+            return f"({abs(n):,.0f})" if n < 0 else f"{n:,.0f}"
+
         if pd.isna(value):
             return ""
         if isinstance(value, (int, float)) and is_numeric_column:
-            return "-" if float(value) == 0 else f"{value:,.0f}"
+            return _fmt_number(float(value))
 
         text_val = str(value).strip()
         if is_numeric_column:
             numeric_candidate = text_val.replace(",", "")
             if re.fullmatch(r"-?\d+(\.\d+)?", numeric_candidate):
                 try:
-                    numeric_value = float(numeric_candidate)
-                    return "-" if numeric_value == 0 else f"{numeric_value:,.0f}"
+                    return _fmt_number(float(numeric_candidate))
                 except Exception:
                     return text_val
         return text_val
@@ -2316,84 +2321,90 @@ class PowerPointGenerator:
             return used
 
         INF = float("inf")
-
-        # dp[s][i] = min max-fill-ratio packing flat_accounts[0..i] into slots[0..s]
-        dp: List[List[float]] = []
+        # Lexicographic DP state: (num_nonempty_slots, max_fill_ratio).
+        # Compared as Python tuples, so Python prefers FEWER non-empty slots
+        # first, then LOWER max ratio among ties. That's the "pack tight,
+        # don't spread" behaviour the user wants — a single full slot beats
+        # two half-full slots even though the latter has a lower max ratio.
+        INF_ST = (INF, INF)
+        dp: List[List[Tuple[float, float]]] = []
         # split[s][i] = j such that slot s holds flat_accounts[j+1..i]; j == i
         # means slot s is empty (carries i through from previous slot).
         split: List[List[int]] = []
 
-        # Progressive-relax loop. For each relax factor we try tight packing
-        # (S_min → S_orig); the first S that yields a feasible DP wins.
-        # The final relax factor (10×) makes every partition feasible, so the
-        # loop is guaranteed to find a solution and we never need a greedy
-        # fallback.
+        # Progressive relax loop. For each factor, run the DP at full S_orig
+        # slots — because the DP's own tight-packing objective will already
+        # leave trailing slots empty when the content fits in fewer. The
+        # final 10× factor guarantees feasibility, so we never need to fall
+        # through to greedy.
         _dp_solved = False
         _solved_factor = 1.0
+        S = _S_orig
+        slots = _slots_all[:S]
         for _cap_mult in _relax_factors:
-            for _S_try in range(min(S_min, _S_orig), _S_orig + 1):
-                S = _S_try
-                slots = _slots_all[:S]   # slot_cost closure sees updated list
-                cost_cache.clear()        # clear since slot count changed
+            cost_cache.clear()
 
-                dp = [[INF] * N for _ in range(S)]
-                split = [[-1] * N for _ in range(S)]
+            dp = [[INF_ST] * N for _ in range(S)]
+            split = [[-1] * N for _ in range(S)]
 
-                _cap0 = slots[0]["capacity"] * _cap_mult
+            _cap0 = slots[0]["capacity"] * _cap_mult
+            for i in range(N):
+                lines = slot_cost(0, 0, i)
+                if lines <= _cap0:
+                    # slot 0 is non-empty (holds accounts 0..i). Ratio uses
+                    # true (unrelaxed) capacity so the tie-break reflects
+                    # actual visual fill.
+                    dp[0][i] = (1.0, lines / slots[0]["capacity"])
+                split[0][i] = -1
+
+            for s in range(1, S):
+                cap_true = slots[s]["capacity"]
+                cap_check = cap_true * _cap_mult
                 for i in range(N):
-                    lines = slot_cost(0, 0, i)
-                    if lines <= _cap0:
-                        # Fill-ratio uses the true (unrelaxed) capacity so
-                        # balance optimization isn't distorted by the tolerance.
-                        dp[0][i] = lines / slots[0]["capacity"]
-                    split[0][i] = -1
-
-                for s in range(1, S):
-                    cap_true = slots[s]["capacity"]
-                    cap_check = cap_true * _cap_mult
-                    for i in range(N):
-                        # slot s non-empty, holds accounts[j+1..i]
-                        for j in range(-1, i):
-                            prev = 0.0 if j < 0 else dp[s - 1][j]
-                            if prev >= INF:
+                    # Case A: slot s non-empty, holds accounts[j+1..i]
+                    for j in range(-1, i):
+                        if j < 0:
+                            prev_state: Tuple[float, float] = (0.0, 0.0)
+                        else:
+                            prev_state = dp[s - 1][j]
+                            if prev_state[0] >= INF:
                                 continue
-                            lines = slot_cost(s, j + 1, i)
-                            if lines > cap_check:
-                                continue
-                            ratio = max(prev, lines / cap_true)
-                            if ratio <= dp[s][i]:
-                                # Use <= so that ties prefer larger j (fewer accounts
-                                # in later slots, more in earlier slots), avoiding the
-                                # "first slots empty, last slot overloaded" pattern.
-                                dp[s][i] = ratio
-                                split[s][i] = j
-                        # slot s empty: dp[s-1][i] carried forward
-                        if dp[s - 1][i] < dp[s][i]:
-                            dp[s][i] = dp[s - 1][i]
-                            split[s][i] = i  # marker: slot s is empty
+                        lines = slot_cost(s, j + 1, i)
+                        if lines > cap_check:
+                            continue
+                        curr_state = (
+                            prev_state[0] + 1.0,
+                            max(prev_state[1], lines / cap_true),
+                        )
+                        if curr_state <= dp[s][i]:
+                            dp[s][i] = curr_state
+                            split[s][i] = j
+                    # Case B: slot s empty — carry dp[s-1][i] forward unchanged
+                    if dp[s - 1][i] < dp[s][i]:
+                        dp[s][i] = dp[s - 1][i]
+                        split[s][i] = i  # marker: slot s is empty
 
-                if dp[S - 1][N - 1] < INF:
-                    _dp_solved = True
-                    _solved_factor = _cap_mult
-                    break
-
-            if _dp_solved:
+            if dp[S - 1][N - 1][0] < INF:
+                _dp_solved = True
+                _solved_factor = _cap_mult
                 break
+
             logger.info(
                 "  DP infeasible at relax × %.2f; widening tolerance",
                 _cap_mult,
             )
 
+        _used_slots = int(dp[S - 1][N - 1][0]) if _dp_solved else S
+        _final_ratio = dp[S - 1][N - 1][1] if _dp_solved else INF
         if _solved_factor > 1.0:
             logger.info(
-                "  DP feasible with relax × %.2f at %s slots (orig=%s)",
-                _solved_factor, S, _S_orig,
+                "  DP feasible with relax × %.2f; using %s of %s slots, max ratio %.2f",
+                _solved_factor, _used_slots, _S_orig, _final_ratio,
             )
-        elif S < _S_orig:
+        else:
             logger.info(
-                "  Tight packing: using %s slots (min=%s, orig=%s), "
-                "content=%.2f, cap=%.2f",
-                S, S_min, _S_orig, _total_est, _min_cap,
+                "  DP tight-pack: using %s of %s slots (min=%s), max ratio %.2f",
+                _used_slots, _S_orig, S_min, _final_ratio,
             )
 
         # Reconstruct the assignment.
@@ -2923,13 +2934,13 @@ class PowerPointGenerator:
                 total_visible_rows = len(df) + 1 + (1 if table_name else 0)
                 if total_visible_rows >= 26:
                     data_font_size = Pt(7)
-                    data_row_height = Inches(0.20)
+                    data_row_height = Inches(0.16)
                 elif total_visible_rows >= 20:
                     data_font_size = Pt(7.5)
-                    data_row_height = Inches(0.22)
+                    data_row_height = Inches(0.18)
                 else:
                     data_font_size = Pt(8)
-                    data_row_height = Inches(0.24)
+                    data_row_height = Inches(0.20)
                 
                 # Add table name as first row if provided
                 if table_name:
@@ -2940,7 +2951,7 @@ class PowerPointGenerator:
                             table.rows.add_row()
                             
                         name_row = table.rows[0]  # Use first row for name
-                        name_row.height = Inches(0.3)
+                        name_row.height = Inches(0.25)
                         
                         # Merge all cells in first row for table name
                         if len(table.columns) > 1:
@@ -2980,7 +2991,7 @@ class PowerPointGenerator:
                 
                 # Set header row height slightly taller for readability
                 try:
-                    table.rows[header_row_idx].height = Inches(0.3)
+                    table.rows[header_row_idx].height = Inches(0.25)
                 except:
                     pass
                     
