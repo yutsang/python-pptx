@@ -1106,7 +1106,14 @@ class PowerPointGenerator:
         return None
 
     def _calculate_table_bounds(self, slide, target_shape=None, statement_type: str = "BS") -> Dict[str, int]:
-        """Use target geometry when available, otherwise derive bounds from slide layout."""
+        """Use target geometry when available, otherwise derive bounds from slide layout.
+
+        The table top is aligned with the textMainBullets commentary body so the
+        financial table and the Commentary blue box sit on the same horizontal
+        baseline. The blue "Commentary"/"Table" label boxes (TextBox 10/11 in
+        the template) act as headers above this baseline and are not covered
+        by the table.
+        """
         if target_shape is not None:
             return {
                 "left": target_shape.left,
@@ -1121,10 +1128,15 @@ class PowerPointGenerator:
         title_like_shapes = []
         body_like_shapes = []
         subtitle_shapes = []
+        label_shapes = []  # Blue "Commentary"/"Table" label boxes — used as baseline anchor.
         for shape in slide.shapes:
             if not getattr(shape, "has_text_frame", False):
                 continue
             name = self._shape_name(shape).lower()
+            try:
+                label_text = (shape.text_frame.text or "").strip().lower()
+            except Exception:
+                label_text = ""
             if "subtitle" in name:
                 subtitle_shapes.append(shape)
                 body_like_shapes.append(shape)
@@ -1132,6 +1144,8 @@ class PowerPointGenerator:
                 title_like_shapes.append(shape)
             elif any(token in name for token in ["text-commentary", "textmainbullets", "content"]):
                 body_like_shapes.append(shape)
+            elif label_text in ("commentary", "table"):
+                label_shapes.append(shape)
 
         left = Inches(0.5)
         width = max(Inches(5.5), slide_width - Inches(1.0))
@@ -1156,10 +1170,20 @@ class PowerPointGenerator:
             earliest_body_top = min(shape.top for shape in body_like_shapes)
             if not generic_is_layout:
                 width = max(width, right_edge - left)
-                top = min(top, earliest_body_top)
+                # Align the table's top with the textMainBullets (Commentary body)
+                # baseline so the two sit at the same vertical level. Use max,
+                # not min — min was pulling the table UP into the label row.
+                top = max(top, earliest_body_top)
                 height = max(Inches(2.5), slide_height - top - Inches(0.35))
             else:
                 height = min(height, max(Inches(2.0), earliest_body_top - top - Inches(0.12)))
+
+        # Fallback anchor: if no body shapes were detected (IS slides added
+        # dynamically), use the bottom of the blue "Commentary"/"Table" labels.
+        if label_shapes and not body_like_shapes:
+            label_bottom = max(shape.top + shape.height for shape in label_shapes)
+            top = max(top, label_bottom + Inches(0.03))
+            height = max(Inches(2.5), slide_height - top - Inches(0.35))
 
         width = min(width, slide_width - left - Inches(0.25))
         height = max(Inches(2.5), min(height, slide_height - top - Inches(0.2)))
@@ -2227,6 +2251,15 @@ class PowerPointGenerator:
         # inside the loop automatically changes what slot_cost sees.
         cost_cache: Dict[Tuple[int, int, int], float] = {}
 
+        # The DP measures capacity via _calculate_max_lines_for_textbox which
+        # divides box height by std_lh (line_h + PARA_SPACE_AFTER). Actual
+        # rendering applies shape_height_utilization (~1.15–1.20) because PPT
+        # absorbs small overflows (auto-fit, tighter spacing). Use this factor
+        # as a DP overflow tolerance so the strict-fit check matches reality.
+        _packing_relax = self._packing_settings(statement_type)
+        _cap_relax = float(_packing_relax.get("shape_height_utilization", 1.08) or 1.08)
+        _cap_relax = max(1.0, min(1.25, _cap_relax))
+
         def slot_cost(s: int, j: int, i: int) -> float:
             """Return float line-units for placing flat_accounts[j..i] in slot s.
             Category headers cost 1.0; account content costs the float from
@@ -2260,62 +2293,88 @@ class PowerPointGenerator:
         # means slot s is empty (carries i through from previous slot).
         split: List[List[int]] = []
 
-        for _S_try in range(min(S_min, _S_orig), _S_orig + 1):
-            S = _S_try
-            slots = _slots_all[:S]   # slot_cost closure sees updated list
-            cost_cache.clear()        # clear since slot count changed
+        # Two-pass loop: strict capacity first, then relaxed (× shape_height_utilization).
+        # Relaxed pass prevents unnecessary greedy fallback when content is a
+        # few percent over the measured limit but the shape can still render it.
+        _dp_solved = False
+        for _relax_pass in range(2):
+            _cap_mult = 1.0 if _relax_pass == 0 else _cap_relax
+            if _relax_pass == 1 and _cap_mult <= 1.0:
+                break  # no relax available
+            for _S_try in range(min(S_min, _S_orig), _S_orig + 1):
+                S = _S_try
+                slots = _slots_all[:S]   # slot_cost closure sees updated list
+                cost_cache.clear()        # clear since slot count changed
 
-            dp = [[INF] * N for _ in range(S)]
-            split = [[-1] * N for _ in range(S)]
+                dp = [[INF] * N for _ in range(S)]
+                split = [[-1] * N for _ in range(S)]
 
-            for i in range(N):
-                lines = slot_cost(0, 0, i)
-                if lines <= slots[0]["capacity"]:
-                    dp[0][i] = lines / slots[0]["capacity"]
-                split[0][i] = -1
-
-            for s in range(1, S):
-                cap = slots[s]["capacity"]
+                _cap0 = slots[0]["capacity"] * _cap_mult
                 for i in range(N):
-                    # slot s non-empty, holds accounts[j+1..i]
-                    for j in range(-1, i):
-                        prev = 0.0 if j < 0 else dp[s - 1][j]
-                        if prev >= INF:
-                            continue
-                        lines = slot_cost(s, j + 1, i)
-                        if lines > cap:
-                            continue
-                        ratio = max(prev, lines / cap)
-                        if ratio <= dp[s][i]:
-                            # Use <= so that ties prefer larger j (fewer accounts
-                            # in later slots, more in earlier slots), avoiding the
-                            # "first slots empty, last slot overloaded" pattern.
-                            dp[s][i] = ratio
-                            split[s][i] = j
-                    # slot s empty: dp[s-1][i] carried forward
-                    if dp[s - 1][i] < dp[s][i]:
-                        dp[s][i] = dp[s - 1][i]
-                        split[s][i] = i  # marker: slot s is empty
+                    lines = slot_cost(0, 0, i)
+                    if lines <= _cap0:
+                        # Fill-ratio uses the true (unrelaxed) capacity so
+                        # balance optimization isn't distorted by the tolerance.
+                        dp[0][i] = lines / slots[0]["capacity"]
+                    split[0][i] = -1
 
-            if dp[S - 1][N - 1] < INF:
-                # Feasible — use this slot count
+                for s in range(1, S):
+                    cap_true = slots[s]["capacity"]
+                    cap_check = cap_true * _cap_mult
+                    for i in range(N):
+                        # slot s non-empty, holds accounts[j+1..i]
+                        for j in range(-1, i):
+                            prev = 0.0 if j < 0 else dp[s - 1][j]
+                            if prev >= INF:
+                                continue
+                            lines = slot_cost(s, j + 1, i)
+                            if lines > cap_check:
+                                continue
+                            ratio = max(prev, lines / cap_true)
+                            if ratio <= dp[s][i]:
+                                # Use <= so that ties prefer larger j (fewer accounts
+                                # in later slots, more in earlier slots), avoiding the
+                                # "first slots empty, last slot overloaded" pattern.
+                                dp[s][i] = ratio
+                                split[s][i] = j
+                        # slot s empty: dp[s-1][i] carried forward
+                        if dp[s - 1][i] < dp[s][i]:
+                            dp[s][i] = dp[s - 1][i]
+                            split[s][i] = i  # marker: slot s is empty
+
+                if dp[S - 1][N - 1] < INF:
+                    # Feasible — use this slot count
+                    if _relax_pass == 1:
+                        logger.info(
+                            "  DP feasible with relaxed capacity (× %.2f) at %s slots",
+                            _cap_relax, S,
+                        )
+                    elif S < _S_orig:
+                        logger.info(
+                            "  Tight packing: using %s slots (min=%s, orig=%s), "
+                            "content=%.2f, cap=%.2f",
+                            S, S_min, _S_orig, _total_est, _min_cap,
+                        )
+                    _dp_solved = True
+                    break
+
                 if S < _S_orig:
-                    logger.info(
-                        "  Tight packing: using %s slots (min=%s, orig=%s), "
-                        "content=%.2f, cap=%.2f",
-                        S, S_min, _S_orig, _total_est, _min_cap,
-                    )
+                    logger.info("  DP infeasible with %s slots, trying %s", S, S + 1)
+
+            if _dp_solved:
                 break
+            logger.info(
+                "  DP infeasible at strict capacity; retrying with relax factor %.2f",
+                _cap_relax,
+            )
 
-            if S == _S_orig:
-                logger.warning(
-                    "Balanced partition: no feasible layout for %s accounts into %s slots; "
-                    "falling back to greedy forward-fill.",
-                    N, S,
-                )
-                return self._greedy_forward_fill(flat_accounts, _slots_all, statement_type)
-
-            logger.info("  DP infeasible with %s slots, trying %s", S, S + 1)
+        if not _dp_solved:
+            logger.warning(
+                "Balanced partition: no feasible layout for %s accounts into %s slots "
+                "even with relax %.2f; falling back to greedy forward-fill.",
+                N, _S_orig, _cap_relax,
+            )
+            return self._greedy_forward_fill(flat_accounts, _slots_all, statement_type)
 
         # Reconstruct the assignment.
         assignment: List[List[Dict[str, Any]]] = [[] for _ in range(S)]
@@ -2998,24 +3057,22 @@ class PowerPointGenerator:
                     if row_idx == 0:
                         logger.info("Processing first data row: %s", df_row.values[:3])
 
-                    # Determine if we need to divide by 1000
-                    # NOTE: We already disabled multiplication in extraction, so values should be in thousands
-                    # But if for some reason we still need to handle it (e.g. different source), we check here
-                    # User asked to remove *1000 logic, so we assume values are correct as-is (in thousands)
-                    divide_by_1000 = False 
-                    # if currency_unit and ("千" in currency_unit or "000" in currency_unit):
-                    #     divide_by_1000 = True
-                        
+                    # Unit scaling policy for the financial table:
+                    #   The extractor is called with multiply_values=False
+                    #   (embed_financial_tables), so numeric values flow through
+                    #   in the ORIGINAL source units declared by the workbook
+                    #   header. If the header says CNY'000 / 人民币千元, values
+                    #   already represent thousands and must NOT be multiplied.
+                    #   Same for CNY'M / 人民币百万 (millions). The column
+                    #   header shows the unit so the reader interprets them
+                    #   correctly. Any accidental scaling here would double-count.
                     for col_idx, col_name in enumerate(df.columns[:max_cols]):
                         if col_idx >= len(table.columns):
                             break
                         cell = table.cell(data_row_idx, col_idx)
-                        
+
                         # Get value from DataFrame safely
                         value = df_row[col_name] if col_name in df_row.index else ""
-                        
-                        if divide_by_1000 and isinstance(value, (int, float)) and col_idx > 0:
-                            value = value / 1000
                         text_val = self._format_table_value(value, is_numeric_column=col_idx > 0)
                         
                         # Set text
@@ -3747,9 +3804,18 @@ Original content:
                         if project_name and project_name not in is_table_name:
                             # Only add entity name if it's not already there
                             is_table_name = f"{is_table_name} - {project_name}"
-                    # Look for currency unit
-                    if '人民币千元' in row_text or "CNY'000" in row_text or "CNY 000" in row_text:
-                        if '人民币千元' in row_text:
+                    # Look for currency unit. Values flow through as-is; this
+                    # label goes into the "Description" column header so the
+                    # reader knows the scale (thousands vs millions).
+                    # Order matters: check million markers before generic 000
+                    # markers to avoid mislabelling (e.g. a table that literally
+                    # reads "CNY million" shouldn't be called CNY'000).
+                    if currency_unit is None:
+                        if '人民币百万' in row_text:
+                            currency_unit = '人民币百万'
+                        elif "CNY'M" in row_text or 'CNY million' in row_text or 'CNY mn' in row_text.lower():
+                            currency_unit = "CNY'M"
+                        elif '人民币千元' in row_text:
                             currency_unit = '人民币千元'
                         elif "CNY'000" in row_text or "CNY 000" in row_text:
                             currency_unit = "CNY'000"
