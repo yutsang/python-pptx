@@ -2660,6 +2660,7 @@ class PowerPointGenerator:
                 tf = bullets_shape.text_frame
                 tf.clear()
                 tf.word_wrap = True
+                self._force_no_autofit(tf)  # keep text at 9pt/10pt, never shrink
                 from pptx.enum.text import MSO_VERTICAL_ANCHOR
                 tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
                 
@@ -2742,6 +2743,7 @@ class PowerPointGenerator:
             summary_shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
             if summary_shape and summary_shape.has_text_frame:
                 summary_shape.text_frame.clear()
+                self._force_no_autofit(summary_shape.text_frame)
                 if page_summary_source:
                     summary_jobs.append({
                         "slide_idx": actual_slide_idx,
@@ -3319,6 +3321,29 @@ class PowerPointGenerator:
             for a in slot_accounts
         )
         return 10 if is_chinese_slot else 9
+
+    @staticmethod
+    def _force_no_autofit(text_frame) -> None:
+        """Set the text frame's bodyPr autofit to ``<a:noAutofit/>`` so
+        PowerPoint never shrinks the text to fit the shape. The template
+        ships with ``<a:spAutoFit/>`` (resize shape to fit text), which in
+        some viewers falls back to shrinking the text when the shape can't
+        grow. Forcing ``noAutofit`` keeps the text at the exact point size
+        we set (9pt / 10pt); overflow is simply clipped at the shape edge."""
+        try:
+            from lxml import etree  # noqa: F401
+            from pptx.oxml.ns import qn
+            bodyPr = text_frame._txBody.bodyPr
+            # Remove any existing autofit child (spAutoFit / normAutofit / noAutofit).
+            for tag in ("a:spAutoFit", "a:normAutofit", "a:noAutofit"):
+                for child in bodyPr.findall(qn(tag)):
+                    bodyPr.remove(child)
+            from pptx.oxml import parse_xml
+            bodyPr.append(parse_xml(
+                '<a:noAutofit xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/>'
+            ))
+        except Exception as exc:
+            logger.debug("Could not force noAutofit on text frame: %s", exc)
 
     def _determine_slot_font_size_UNUSED(
         self,
