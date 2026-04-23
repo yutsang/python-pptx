@@ -3867,44 +3867,33 @@ Original content:
                 logger.warning("Missing excel_path (%s) or sheet_name (%s), skipping table embedding", excel_path, sheet_name)
                 return
             
-            # Prefer raw (non-multiplied) values for the PPTX table so the
-            # header unit label (CNY'000 / 人民币千元) matches what the cells
-            # display. Upstream (process_workbook_data) extracts with
-            # multiply_values=True for the AI pipeline. Try a fresh raw
-            # extract here; if it fails or returns empty, fall back to the
-            # precomputed results so the BS table still makes it into the
-            # deck — we just have to compensate in the display step.
-            precomputed_bs_is_results = bs_is_results
-            bs_is_results = None
-            try:
-                logger.info("Re-extracting BS/IS in raw units (multiply_values=False) for table")
-                bs_is_results = extract_balance_sheet_and_income_statement(
-                    excel_path,
-                    sheet_name,
-                    debug=False,
-                    multiply_values=False,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Raw BS/IS re-extraction failed (%s); will fall back to precomputed results",
-                    exc,
-                )
-
-            values_pre_multiplied = False
-            if not bs_is_results or (
-                bs_is_results.get("balance_sheet") is None
-                and bs_is_results.get("income_statement") is None
-            ):
-                if precomputed_bs_is_results:
-                    logger.info(
-                        "Falling back to precomputed BS/IS for the PPTX table; "
-                        "values will be rescaled to match the header unit."
+            # Use the precomputed results when available (they came from the
+            # default extractor, multiply_values=True, so numeric values are
+            # already in actual units). Only extract fresh if nothing was
+            # passed in. Either way, at display time we rescale to the source
+            # unit (CNY'000 / 人民币千元 / CNY'M / 人民币百万) so cells line up
+            # with the header. This avoids the fragility of a second extract
+            # that could silently return empty and lose the table.
+            if bs_is_results is None:
+                try:
+                    logger.info("No precomputed BS/IS; extracting fresh")
+                    bs_is_results = extract_balance_sheet_and_income_statement(
+                        excel_path,
+                        sheet_name,
+                        debug=False,
                     )
-                    bs_is_results = precomputed_bs_is_results
-                    values_pre_multiplied = True
-                else:
-                    logger.warning("No BS/IS data extracted")
+                except Exception as exc:
+                    logger.warning("Fresh BS/IS extraction failed: %s", exc)
                     return
+
+            if not bs_is_results:
+                logger.warning("No BS/IS data available for PPTX tables")
+                return
+
+            # Values as received have been multiplied by 1000 if the source
+            # sheet declared CNY'000 / 人民币千元, and left as-is otherwise.
+            # Rescale once we know the unit label (detected further below).
+            values_pre_multiplied = True
             
             # Extract BS and IS DataFrames from results
             # The structure should have 'balance_sheet' and 'income_statement' keys with DataFrames
@@ -3953,21 +3942,21 @@ Original content:
             # If the values came from the precomputed (multiply_values=True)
             # pipeline, rescale to the source unit so the cells match the
             # header. "CNY'000" / "人民币千元" → divide by 1000,
-            # "CNY'M" / "人民币百万" → divide by 1_000_000.
-            if values_pre_multiplied and currency_unit:
-                rescale = None
-                if "千" in currency_unit or "'000" in currency_unit or "000" in currency_unit:
-                    rescale = 1000.0
-                elif "百万" in currency_unit or "'M" in currency_unit or "million" in currency_unit.lower():
-                    rescale = 1_000_000.0
-                if rescale is not None:
-                    logger.info("Rescaling precomputed values by 1/%s to match unit %s", int(rescale), currency_unit)
-                    for _df in (bs_df, is_df):
-                        if _df is None or _df.empty:
-                            continue
-                        for _col in _df.columns:
-                            if pd.api.types.is_numeric_dtype(_df[_col]):
-                                _df[_col] = _df[_col] / rescale
+            # The workbook extractor multiplies by 1000 ONLY when the source
+            # header is CNY'000 / 人民币千元 (it does not touch millions).
+            # Divide by 1000 here so the displayed cells read as thousands
+            # (matching the "CNY'000" header). For any other unit the
+            # values pass through unchanged.
+            if values_pre_multiplied and currency_unit and (
+                "千" in currency_unit or "'000" in currency_unit or "000" in currency_unit
+            ):
+                logger.info("Rescaling values by 1/1000 to match unit %s", currency_unit)
+                for _df in (bs_df, is_df):
+                    if _df is None or _df.empty:
+                        continue
+                    for _col in _df.columns:
+                        if pd.api.types.is_numeric_dtype(_df[_col]):
+                            _df[_col] = _df[_col] / 1000.0
             
             # Embed BS table to slide 0 (page 1)
             if bs_df is not None and not bs_df.empty and len(self.presentation.slides) > 0:
