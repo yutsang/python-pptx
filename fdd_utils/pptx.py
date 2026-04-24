@@ -32,12 +32,19 @@ def detect_chinese_text(text: str, force_chinese_mode: bool = False) -> bool:
 
 
 def get_font_size_for_text(text: str, base_size: int = 9, force_chinese_mode: bool = False) -> Pt:
-    is_chinese = detect_chinese_text(text, force_chinese_mode)
-    return Pt(base_size + 1) if is_chinese else Pt(base_size)
+    # Deck-wide typography: every commentary run, every slide, every
+    # language renders at a single fixed size. We intentionally ignore the
+    # text, base_size, and force_chinese_mode arguments — any caller that
+    # asked for something else would reintroduce the size-variation bug.
+    return Pt(9)
 
 
 def get_font_name_for_text(text: str, default_font: str = "Arial") -> str:
-    return "Microsoft YaHei" if detect_chinese_text(text) else default_font
+    # Same philosophy: one font for the whole deck. Arial has CJK fallback
+    # glyphs via the system's default font substitution, so Chinese content
+    # still renders correctly without switching to Microsoft YaHei (which
+    # would change glyph width / baseline on some slides).
+    return "Arial"
 
 
 def get_line_spacing_for_text(text: str, force_chinese_mode: bool = False) -> float:
@@ -2664,16 +2671,15 @@ class PowerPointGenerator:
                 from pptx.enum.text import MSO_VERTICAL_ANCHOR
                 tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
                 
-                # Determine optimal font size to prevent overflow
-                slot_font_size = self._determine_slot_font_size(
-                    account_data_list, bullets_shape, slot_name, statement_type=statement_type,
+                # Fixed deck-wide font size — 9pt Arial, no exceptions,
+                # no per-slot / per-language variation. This matches the
+                # hardcoded return from get_font_size_for_text() and
+                # guarantees identical typography on every slide.
+                slot_font_size = 9
+                logger.info(
+                    "Slide %s, slot '%s': Filling with %s accounts at %spt",
+                    actual_slide_idx + 1, slot_name, len(account_data_list), slot_font_size,
                 )
-                if slot_font_size < 9:
-                    logger.info("Slide %s, slot '%s': Reducing font to %spt to fit %s accounts",
-                                actual_slide_idx + 1, slot_name, slot_font_size, len(account_data_list))
-                else:
-                    logger.info("Slide %s, slot '%s': Filling with %s accounts at %spt",
-                                actual_slide_idx + 1, slot_name, len(account_data_list), slot_font_size)
 
                 # Fill with accounts, grouped by category
                 # Show category header only once per category group
@@ -3310,17 +3316,10 @@ class PowerPointGenerator:
         slot_name: str,
         statement_type: Optional[str] = None,
     ) -> int:
-        """Return the fixed base font size for commentary slots.
-
-        Font size is intentionally kept constant across all slides — 10pt for
-        Chinese content, 9pt for English.  The distribution algorithm is
-        responsible for fitting content within capacity; shrinking the font to
-        compensate produces inconsistent slide-to-slide typography."""
-        is_chinese_slot = any(
-            any("\u4e00" <= c <= "\u9fff" for c in str(a.get("commentary", "")))
-            for a in slot_accounts
-        )
-        return 10 if is_chinese_slot else 9
+        """Deck-wide fixed size: 9pt Arial for every slot on every slide,
+        regardless of language or content. Any per-slot adjustment here
+        reintroduces size drift between slides."""
+        return 9
 
     @staticmethod
     def _force_no_autofit(text_frame) -> None:
