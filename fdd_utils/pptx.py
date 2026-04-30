@@ -1886,7 +1886,11 @@ class PowerPointGenerator:
                     return ["L", "R"]
                 if has_single:
                     return ["single"]
-            return ["single"] if actual_slide_idx == 0 else ["L", "R"]
+            # First slide of EACH statement (BS and IS) is single-column
+            # (table on left, one commentary box on right). All other slides
+            # are two-column. `start_slide - 1` is the 0-based index of the
+            # first slide of the current statement.
+            return ["single"] if actual_slide_idx == start_slide - 1 else ["L", "R"]
 
         # Define slot structure: (slide_idx, slot_name)
         slots: List[Tuple[int, str]] = []
@@ -3849,26 +3853,44 @@ Original content:
         return None
     
     def _generate_page_summary(self, commentary: str, is_chinese: bool) -> str:
-        """
-        Generate a per-page summary from commentary text
-        This is a fallback when AI summary is not available
-        Extracts first few complete sentences without hard truncation
+        """Fallback (non-AI) page summary.
+
+        Instead of taking the first N sentences of the concatenated blob
+        (which only covers the first account), pick the opening sentence
+        from each account paragraph so the summary spans the whole page.
         """
         if not commentary or not commentary.strip():
             return ""
         is_chinese_text = is_chinese or detect_chinese_text(commentary)
         summary_settings = self._summary_settings()
-        return _build_compact_summary_text(
-            commentary,
-            is_chinese=is_chinese_text,
-            max_sentences=int(summary_settings.get("max_sentences_chi" if is_chinese_text else "max_sentences_eng", 3)),
-            max_chars=(
-                int(summary_settings.get("target_chars_chi", 120))
-                if is_chinese_text
-                else int(summary_settings.get("target_words_eng", 95)) * 6
-            ),
-            max_numeric_sentences=int(summary_settings.get("max_numeric_sentences", 1)),
-        ).strip()
+        max_sentences = int(summary_settings.get(
+            "max_sentences_chi" if is_chinese_text else "max_sentences_eng", 4
+        ))
+        max_chars = (
+            int(summary_settings.get("target_chars_chi", 130))
+            if is_chinese_text
+            else int(summary_settings.get("target_words_eng", 100)) * 6
+        )
+
+        # Each account block is separated by "\n\n".  Take the first sentence
+        # from each block so the summary spans all accounts on the page.
+        blocks = [b.strip() for b in commentary.split("\n\n") if b.strip()]
+        picked: List[str] = []
+        for block in blocks:
+            first_sentences = _split_text_sentences(block, is_chinese_text)
+            if first_sentences:
+                picked.append(first_sentences[0])
+            if len(picked) >= max_sentences:
+                break
+
+        if not picked:
+            picked = _split_text_sentences(commentary, is_chinese_text)[:1]
+
+        sep = "" if is_chinese_text else " "
+        summary = sep.join(picked).strip()
+        if len(summary) > max_chars:
+            summary = summary[:max_chars].rstrip(" ,;:/-") + "…"
+        return summary.strip()
 
     def embed_financial_tables(
         self,
