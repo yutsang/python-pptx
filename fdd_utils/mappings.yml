@@ -146,11 +146,10 @@ Cash:
         **语言**: 输出必须100%为中文。
         仅输出最终文本, 不包含模式名称。
   patterns:
-    Pattern 1:  |
-      Describe the latest cash balance and its main composition as at the reporting date — e.g., currency breakdown, bank concentration, restricted deposits, or supervised funds — only when supported by the schedule or remarks. Mention the cross-period movement briefly as supporting context.
+    Pattern 1: |
+      the balance as at <DATE> represented <AMT> of cash at bank with no restricted use. We have not obtained the bank statements yet
     Pattern 2: |
-      Comment on whether the balance mainly reflects cash at bank, on-hand cash, deposits, or other cash-equivalent items if supported by the schedule. If there was a material movement during the periods, mention the direction and scale briefly as background context before focusing on the latest position.
-   
+      截至<DATE>，<ENTITY>存款<AMT>。<ENTITY>对账单金额，未发现明显差异。<ENTITY>存款不存在使用受限情况
 AR:
   type: BS
   category: Current assets
@@ -192,10 +191,9 @@ AR:
         仅输出最终文本, 不包含模式名称。
   patterns:
     Pattern 1: |
-      Focus on the latest accounts receivable balance and its composition as at the reporting date, including any counterparty concentration, aging profile, or provision that is supported by the schedule. Mention the cross-period trend briefly as context. [customer / customer group / revenue stream] only when supported by the schedule or remarks. If the balance is concentrated in one or a few counterparties, mention that concentration and its driver only when evidenced by the data.
+      the balance as at <DATE> totalled <AMT>, mainly entailing the receivables of actual rental and property management income with issued fapiao from <ENTITY>, which were in line with the payment terms in the leasing agreements. The balance decreased dramatically due to the change of collection period. No bad debt had been incurred historically
     Pattern 2: |
-      Describe whether accounts receivable mainly represented receivables from [rental / property management / goods / services / other operating source] and comment on any visible aging, concentration, or provision movement only when supported. If an impairment or provision adjustment was recorded, explain the trend and latest position without inserting unsupported accounting-policy conclusions. Where the schedule or remarks explicitly show allowance basis, bad-debt provisioning rate, or straight-line rent / levelling-reclassification context, mention those supported points at a high level only.
- 
+      <DATE>末应收账款余额包括应收租户租金<AMT>、应收物管费<AMT>以及应收水电费<AMT>。管理层表示上述应收租服费的账龄一般都在半年之内，且目前不存在坏账风险
 Prepayments:
   type: BS
   category: Current assets
@@ -204,22 +202,53 @@ Prepayments:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the trend in prepayments across periods, then explain the latest balance as mainly relating to [construction cost / utilities / services / operating advances / other supported purpose]. If the schedule shows a few major prepaid items or counterparties, mention only the material ones and explain the apparent business purpose when supported.
+      the balance as at <DATE> mainly entailed: 1) <AMT> of upfront payments for utility expenses; and 2) <AMT> in upfront payments for the next 1 year insurance fees
     Pattern 2: |
-      Describe whether the prepayments balance mainly represented upfront payments for [project cost / utility expense / service fee / other supported item] and comment on any material increase, reclassification, or release across periods only when visible from the data or remarks.
- 
+      系预付的水电费共<AMT>
 OR:
   type: BS
   category: Current assets
   aliases: ["OR", "Other Receivables", "Other receivables", "Other Receivable", "Other receivables", "其他应收款", "其他應收款"]
-  system_prompts:
-  user_prompts:
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write other receivables commentary. Use only the provided data.
+        The most important element is any related-party loans — state the counterparty, amount, whether interest-free, and whether management said it will be settled prior to the proposed transaction. Also cover deposits and guarantees, utility fee receivables, or other significant balances. Flag impairment risk or missing agreements if the data supports it. Keep to 2-4 sentences. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the patterns as style guidance (not templates), then write from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        Prioritise related-party loans (counterparty, amount, interest terms, pre-deal settlement), then deposits, guarantees, or other items. 2-4 sentences.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        撰写其他应收款评论。仅使用提供的数据。
+        最重要的是关联方往来款：说明交易对手、金额、是否免息、是否在完成交割前结清。此外，注明押金保证金、水电费应收等其他重要余额。如数据支持，提示减值风险或无协议情况。整体约2-4句。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        优先说明关联方往来款（对手方、金额、利息安排、交割前结清），再说明押金、保证金或其他项目。约2-4句。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本，不包含模式名称。
   patterns:
     Pattern 1: |
-      Start with the cross-period movement in other receivables, then explain the latest balance as mainly representing amounts due from [related parties / third parties / staff / deposits / utilities paid on behalf / other supported category]. Highlight any concentration, repayment, provision, or recovery movement only when supported by the schedule or remarks.
+      the balance as at <DATE> mainly entailed <AMT> of loans to the related party, Shanghai Yishang. Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction
     Pattern 2: |
-      Describe whether other receivables mainly represented operating advances, temporary balances, or amounts paid on behalf of [counterparty type] only when supported. If the schedule shows bad-debt provisioning or aging, mention the visible movement and latest position without hardcoding policy assumptions. Where the remarks explicitly indicate recovery-risk assessment, related-party collectability, or allowance basis, include those supported observations at a high level only.
- 
+      系未来可退回的押金及保证金<AMT>
 Inventory:
   type: BS
   category: Current assets
@@ -234,14 +263,60 @@ IP:
   category: Non-current assets
   aliases: ["IP", "Investment Property", "Investment properties", "Investment property", "Investment Properties",
     "投资物业", "投资性房地产", "投資性房地產"]
-  system_prompts:
-  user_prompts:
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write investment property commentary. Use only the provided data.
+        Follow this structure when the data supports it:
+        (a) Opening: total net book value at the reporting date, and its split (land use right vs. warehouses/buildings).
+        (b) Land use right: location, area, permitted use, remaining term, original cost components (land premium + deed tax as % of premium). Depreciation method and useful life.
+        (c) Warehouses / buildings: original cost, depreciation method, useful life, residual value rate.
+        (d) Collateral: whether IPs are mortgaged/pledged and for which lender's loans.
+        (e) Final accounting: whether completed, any differences vs construction costs on-book.
+        (f) CAPEX note (if data supports): recommend the reader confirm future CAPEX plans with management and factor any capital commitments into the valuation model.
+        Omit any sub-point for which no data is provided. Write as flowing sentences or short numbered lists. 3-5 sentences for concise, up to 8 for a complex multi-building portfolio. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the patterns as style guidance (not templates), then write from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        Structure: net book value → land use right details → building/warehouse details → collateral → final accounting → CAPEX flag. Follow the data; omit sub-points that are not supported.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        撰写投资性房地产评论。仅使用提供的数据。
+        在数据支持时，遵循以下结构：
+        (a) 开篇：报告日账面价值总额及其拆分（土地使用权 vs. 仓库/建筑物）。
+        (b) 土地使用权：所在地、面积、用途、剩余年限、原值构成（地价款+契税占地价款比例）。折旧方法与年限。
+        (c) 仓库/建筑物：原值、折旧方法、折旧年限、净残值率。
+        (d) 抵押情况：投资性房地产是否已抵押及对应贷款行。
+        (e) 决算情况：是否已完成决算，决算结果与建造成本的差异是否已入账。
+        (f) 资本性支出提示（如数据支持）：建议读者与管理层确认未来资本性支出计划，并在估值模型中考虑相关资本承诺。
+        不提供数据支持的子项目可省略。整体约3-5句，复杂项目可延长至8句。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        结构：账面价值 → 土地使用权详情 → 仓库/建筑物详情 → 抵押情况 → 决算情况 → 资本支出提示。严格依据数据，缺乏数据支持的子项目可省略。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本，不包含模式名称。
   patterns:
     Pattern 1: |
-      Start with the trend in investment property book value across periods, then explain the latest balance as mainly representing [land / buildings / warehouses / other supported property components]. If the schedule separately shows accumulated depreciation or amortization, explain whether the carrying amount movement mainly reflects periodic depreciation / amortization. If the data or remarks support it, comment on project status, occupancy / leasing status, mortgage status, or whether final accounts / cost settlement remain incomplete.
+      As regards the land use right, the land is located in <ENTITY> for industrial use, with land-use life of 50 years (until <DATE>). The investment properties were fully mortgaged for <ENTITY> bank loans. The original cost also comprised <AMT> of deed tax (<PCT> of the land premium). The land is depreciated using the straight-line method of 50-year useful life with no residual value. The original cost of the warehouses was <AMT>, depreciated using the straight-line method of 20-year useful life with a <PCT> residual rate
     Pattern 2: |
-      Describe the latest investment property composition for [project / asset group] and how the carrying amount moved across periods. Where supported, mention [location / land use / completion timing / depreciation or amortization method / useful life / residual value / collateral status / future capex placeholder] as contextual points, but keep unsupported contract, policy, or valuation details out of the commentary.
- 
+      截至<DATE>末，<ENTITY>账面价值为<AMT>，包括土地成本<AMT>、仓库建造成本和后期改造成本<AMT>。土地使用权相关成本的折旧年限为33年，无残值，仓库建造成本的折旧年限为20年、预计净残值率<PCT>。<ENTITY>已作为公司长期借款的抵押物
 IA:
   type: BS
   category: Non-current assets
@@ -255,16 +330,14 @@ NCA:
   type: BS
   category: Non-current assets
   aliases: ["NCA", "Non-current Assets", "Non-current asset", "Non-current assets", "Non Current Assets", "Non Current Asset",
-            "Fixed Assets", "Fixed Asset", "Fixed assets", "Fixed asset", "FA", "固定資產", "固定资产",
-            "Construction in progress", "在建工程"]
+            "Fixed Assets", "Fixed Asset", "Fixed assets", "Fixed asset", "FA", "固定資產", "固定资产"]
   system_prompts:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the trend in fixed assets / non-current assets across periods, then explain the latest balance as mainly representing [asset classes / construction in progress / equipment / buildings / leasehold improvements / other supported items]. Mention depreciation method, useful life, residual value, or transfer from CIP only when those details are explicitly supported by the data or remarks.
+      the balance as at <DATE> mainly represented the net book values of electronic devices and office equipment, which amounted to <AMT> and <AMT> respectively. Electronic equipment and office equipment were both depreciated using the straight-line method over a 3-year useful life with a <PCT> residual value
     Pattern 2: |
-      Describe whether the latest balance mainly represented [asset type / project asset group] and explain any visible additions, disposals, depreciation, impairment, or capitalization movement across periods only when supported by the schedule or notes.
- 
+      主要包括办公家具以及电子设备账面价值<AMT>。公司的固定资产折旧年限为3年，无净残值
 NCL:
   type: BS
   category: Non-current liabilities
@@ -280,26 +353,92 @@ Long-term loans:
   category: Non-current liabilities
   aliases: ["Long-term loans", "Long-term loan", "Long term loans", "Long term loan",
             "长期借款", "長期借款", "Bank loans", "Bank borrowings"]
-  system_prompts:
-  user_prompts:
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write long-term loans commentary. Use only the provided data.
+        Cover when data supports: total balance, lender name, credit facility size vs. amount drawn, loan purpose, term (start → maturity), interest rate (e.g. LPR + spread or fixed rate), collateral (land use rights, equity pledge, receivables), any guarantors. Mention weighted average interest rate for the period if available. Keep to 2-5 sentences. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the patterns as style guidance (not templates), then write from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        State: balance, lender, term dates, interest rate, collateral. 2-5 sentences.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        撰写长期借款评论。仅使用提供的数据。
+        按顺序说明（有数据支持时）：余额、贷款行名称、授信额度与已提款金额、借款用途、借款期限（起止日期）、利率（LPR+基点或固定利率）、抵押/质押物（土地使用权、股权质押、应收账款质押）、担保人。整体约2-5句。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        说明：余额、贷款行、期限日期、利率、抵押物。约2-5句。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本，不包含模式名称。
   patterns:
     Pattern 1: |
-      Start with the trend in long-term loans across periods, then explain the latest balance as mainly representing [bank borrowings / secured loans / unsecured loans / other supported debt instruments]. Mention interest rate, maturity, collateral, or repayment schedule only when supported by the data or remarks.
+      the balance as at <DATE> represented the loan owed to <ENTITY> amounting to about <AMT> that would be due beyond 1 year. The weighted average interest rate during the Period was about <PCT>
     Pattern 2: |
-      Describe the latest long-term loan balance and any material drawdowns, repayments, or refinancing across periods only when evidenced by the schedule or remarks.
-
+      截至<DATE>末，<ENTITY>借款余额主要包括<AMT>长期借款。该笔借款授信额度合计<AMT>，已提款<AMT>，借款期为<DATE>至<DATE>。该笔借款的抵押物主要包括土地使用权
 NCL due within one year:
   type: BS
   category: Current liabilities
   aliases: ["NCL due within one year", "Non-current liabilities due within one year",
             "Current portion of long-term debt", "Current portion of non-current liabilities",
             "一年内到期的非流动负债", "一年內到期的非流動負債"]
-  system_prompts:
-  user_prompts:
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write NCL-due-within-one-year commentary. Use only the provided data.
+        Cover when data supports: amount, onshore/offshore split, lender name, specific maturity dates, interest rate, collateral. If the DBS or other significant loans are fully maturing soon, note this and suggest the reader consider funding sources and repayment/extension plans. Keep to 2-4 sentences. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the patterns as style guidance (not templates), then write from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        State: amounts, lender(s), maturity, interest rate, collateral. If large loans are maturing, flag the repayment planning point. 2-4 sentences.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        撰写一年内到期的非流动负债评论。仅使用提供的数据。
+        说明：金额（境内/境外分别列示）、贷款行名称、到期日期、利率、抵押物。若有大额贷款即将到期，建议读者关注还款/展期安排。整体约2-4句。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        说明：金额、贷款行、到期日、利率、抵押物，如大额贷款即将到期需提示还款安排。约2-4句。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本，不包含模式名称。
   patterns:
     Pattern 1: |
-      Start with the trend in non-current liabilities due within one year across periods, then explain the latest balance as mainly representing the current portion of [long-term bank loans / lease liabilities / other supported non-current obligations]. Mention reclassification from long-term debt only when supported by the data or remarks.
- 
+      the balance as at <DATE> represented onshore bank loans of <AMT> that would be due within 1 year
+    Pattern 2: |
+      截至<DATE>末，<ENTITY>借款共计<AMT>，借款期为<DATE>至<DATE>。借款利率为基准利率加固定基点。其中<AMT>于一年内到期（已重分类至一年内到期的非流动负债）。该笔借款的抵押物主要包括公司土地使用权及地上建筑物
 Other NCA:
   type: BS
   category: Non-current assets
@@ -310,10 +449,9 @@ Other NCA:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the trend in other non-current assets across periods, then explain the latest balance as mainly representing [long-term deposits / long-term prepayments / deferred items / timing differences / other supported balances]. If the item appears linked to a rent-free period, straight-line revenue recognition / levelling impact, project deposit, or other deferred arrangement, mention that only when evidenced by the data or remarks.
+      the balance as at <DATE> represented the levelling impact of revenue recognition in the rent-free period of <AMT>; it will not be given any value in the NAV calculation
     Pattern 2: |
-      Describe whether other non-current assets mainly represented [deferred operating item / levelling impact / refundable deposit / long-term advance / other supported item] and explain any material increase, release, or reclassification across periods only when supported.
-
+      系待抵扣增值税进项税额<AMT>
 Long-term deferred expenses:
   type: BS
   category: Non-current assets
@@ -321,8 +459,8 @@ Long-term deferred expenses:
   system_prompts:
   user_prompts:
   patterns:
-    Pattern 1: N/A
-       
+    Pattern 1: |
+      主要包括仓库修缮支付的<AMT>费用和租赁佣金<AMT>组成。资本化的仓库修缮支出的摊销期为三年、租赁佣金的摊销期与租赁期一致
 Other CA:
   type: BS
   category: Current assets
@@ -332,10 +470,9 @@ Other CA:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the trend in other current assets across periods, then explain the latest balance as mainly representing [deductible input VAT / deposits / prepaid tax / recoverable balance / other supported current-asset item]. Mention only the material components and any clear movement drivers supported by the schedule or remarks.
+      the balance as at <DATE> mainly represented <AMT> in deductible input VAT, and the balance as at <DATE> mainly represented <AMT> in advance payment of CIT
     Pattern 2: |
-      Describe whether other current assets mainly represented [tax-related balances / operating deposits / temporary operating balances / other supported item] and explain any material increase, utilization, or release across periods only when supported.
- 
+      系直线法<ENTITY>管理费<AMT>
 AP:
   type: BS
   category: Current liabilities
@@ -345,10 +482,7 @@ AP:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the cross-period trend in accounts payable, then explain the latest balance as mainly representing amounts due to [suppliers / contractors / related parties / service providers / other supported counterparty group]. If the balance is concentrated in a few payables or shows reclassifications, mention only the material supported items.
-    Pattern 2: |
-      Describe whether accounts payable mainly reflected payables for [construction / procurement / operating services / related-party operating balances / other supported purpose] and explain any material increase, settlement delay, or reclassification across periods only when evidenced by the data or remarks.
- 
+      截至<DATE>，应付账款余额主要为应付工程尾款共计<AMT>，以及应付<ENTITY>费<AMT>
 Advances:
   type: BS
   category: Current liabilities
@@ -358,8 +492,10 @@ Advances:
   system_prompts:
   user_prompts:
   patterns:
-    Pattern 1: N/A
-
+    Pattern 1: |
+      there was no balance as at <DATE>. The balance as at the end of <DATE> and <DATE> represented prepaid rentals and property management income from tenants
+    Pattern 2: |
+      系预收<ENTITY>的租服费<AMT>
 Employee benefits payable:
   type: BS
   category: Current liabilities
@@ -379,35 +515,110 @@ Tax payable:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the trend in taxes payable across periods, then explain the latest balance as mainly representing [VAT / EIT / land appreciation tax / urban maintenance and construction tax / education surcharge / other supported tax items]. Mention only the material tax categories and any visible settlement timing effects supported by the schedule.
+      the balance decreased during the Period mainly due to the significant decrease in CIT payable (<AMT> at the end of <DATE>) and output VAT payable; the balance as at <DATE> represented <AMT> of SD payable
     Pattern 2: |
-      Describe whether the taxes payable balance mainly consisted of [major tax types] and explain any significant movement across periods in the context of taxable income, revenue, transaction volume, or settlement timing only when supported by the data or remarks.
- 
+      主要系公司应付房产税<AMT>以及土地使用税<AMT>
 OP:
   type: BS
   category: Current liabilities
   aliases: ["OP", "Other Payables", "Other payables", "Other Payable", "Other payables", "Other current liabilities", "其他应付款", "其他應付款"]
-  system_prompts:
-  user_prompts:
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write other payables commentary. Use only the provided data.
+        Opening sentence: state the total balance and reporting date.
+        Then list the main components as a numbered or bulleted set using the style shown in patterns — each component should have an amount and a brief description. Typical components: related-party borrowings (note interest-free and pre-deal settlement), construction payables, interest payables, property management fee payables, accrued expenses. Only include components that appear in the data.
+        Keep under 5-6 components; group minor items if needed. Do not mention unsupported settlement dates or management representations beyond what the data shows. Write about 3-5 sentences total. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the patterns as style guidance (not templates), then write from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        Open with total balance, then list the main sub-components (amount + description). Related-party borrowings are the most important component — always note whether interest-free and whether settlement prior to transaction is mentioned in the data. Keep the output tight: 3-5 sentences.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        撰写其他应付款评论。仅使用提供的数据。
+        开篇陈述报告日余额总额，随后列示主要构成项（金额+简述），典型项目包括：关联方往来款（说明是否免息及是否在交割前结清）、工程款、银行利息、物业管理费、预提费用。仅列示数据中出现的项目，次要项目可合并。整体约3-5句。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        以余额总额开篇，然后分列主要构成（金额+简述）。关联方往来款是最重要的构成项，须注明是否免息、是否在完成交割前结清（如数据支持）。整体约3-5句。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本，不包含模式名称。
   patterns:
     Pattern 1: |
-      Start with the trend in other payables across periods, then explain the latest balance as mainly representing [related-party balances / accrued expenses / deposits / temporary receipts / project-related balances / other supported items]. If the schedule shows a few major components, mention only the material ones and keep smaller items aggregated.
+      the balance as at <DATE> mainly entailed: <AMT> of borrowings from related parties (interest-free, to be settled prior to the proposed transaction); <AMT> of accrued expenses for consulting fees, accounting service fees, and property management fees; <AMT> of interest payables arising from bank loans
     Pattern 2: |
-      Describe whether other payables mainly represented [counterparty / nature of balance] and explain any material increase, settlement delay, or reclassification across periods only when supported by the schedule or remarks.
- 
+      截至<DATE>末，其他应付款余额主要包括应付关联方<ENTITY>的往来款<AMT>、租户押金<AMT>、银行借款利息<AMT>以及预提费用<AMT>
 Capital:
   type: BS
   category: Equity
   aliases: ["Capital", "Share Capital", "Share capital", "Shareholder's Equity", "Shareholders' Equity",
             "Shareholders Equity", "Shareholder Equity", "股东权益", "實收資本", "实收资本", "Paid-in capital"]
-  system_prompts:
-  user_prompts:
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write paid-in capital / registered capital commentary. Use only the provided data.
+        Cover in this order when data supports:
+        (a) Consolidated-level paid-in capital balance (total, and name of the top entity if shown).
+        (b) Registered capital of the main WFOE / onshore entity: amount, currency, whether fully paid-up and verified.
+        (c) Verification source: reference the capital injection documentation or audit report checked, and state whether differences were found.
+        (d) If relevant: consolidation elimination treatment for WFOE capital.
+        Keep to 2-4 sentences. Do not add unsupported commentary about shareholder structure or ownership. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the patterns as style guidance (not templates), then write from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        Cover: (1) consolidated paid-in capital, (2) entity-level registered capital with verification, (3) cross-check result. Keep to 2-4 sentences.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        撰写实收资本/注册资本评论。仅使用提供的数据。
+        按顺序说明（有数据支持时）：
+        (a) 合并层面实收资本余额（金额及境外控股主体名称）。
+        (b) 主要境内实体注册资本：金额、币种、是否足额缴付及经验资。
+        (c) 核查来源：所参考的增资协议或审计报告，以及是否发现差异。
+        (d) 如适用：境内实体资本的抵销处理。
+        整体约2-4句，不要加入未被数据支持的股权结构评论。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        涵盖：①合并层实收资本，②境内实体注册资本及验资情况，③核查结果。整体约2-4句。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本，不包含模式名称。
   patterns:
     Pattern 1: |
-      Describe the paid-in capital or share capital balance as at [date], and state whether it remained stable across periods or changed due to [capital injection / restructuring / other supported equity event] only when shown by the data.
+      the registered capital was <AMT>. All registered capital had been paid up and verified. The balance at the consolidated level as at <DATE> represented <AMT> paid-in capital. We checked the audit report and found no differences in respect of this amount
     Pattern 2: |
-      Explain whether the latest capital balance represented fully paid-in registered capital, issued share capital, or another supported equity base, and mention any visible movements across periods only when evidenced by the schedule or remarks.
- 
+      <ENTITY>的注册资本为<AMT>美元，等值人民币<AMT>。我们了解实收资本系由境外股东出资形成。我们检查了验资报告，未发现差异
 Reserve:
   type: BS
   category: Equity
@@ -416,10 +627,7 @@ Reserve:
   user_prompts:
   patterns:
     Pattern 1: |
-      Describe the reserve balance as at [date], including whether it mainly represented [statutory surplus reserve / discretionary reserve / other supported reserve type], and comment on movements across periods only when they are shown by the data.
-    Pattern 2: |
-      Explain whether the reserve balance changed in line with [profit appropriation / transfer within equity / other supported equity movement] only when such movement is visible from the schedule or remarks.
- 
+      the accumulated reserve fund amounted to <AMT> as at <DATE>
 Capital reserve:
   type: BS
   category: Equity
@@ -441,15 +649,46 @@ R/E:
 OI:
   type: IS
   category: Revenue
-  aliases: ["OI", "Sales", "Sale", "Operating income", "Operating Income", "營業收入", "营业收入"]
-  system_prompts:
-  user_prompts:
+  aliases: ["OI", "Sales", "Sale", "Operating income", "Operating Income", "營業收入", "营业收入",
+            "Revenue", "Revenues", "Total revenue", "Total revenues"]
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write operating income / revenue commentary. Use only the provided data. This is an income-statement item — open with the cross-period revenue trend (growth, decline, or stable), then explain the latest period amount and its key drivers. Cover: total revenue split by type (leasing vs. property management vs. utilities if the ratio is shown), key tenants and their leased share, ADR (average daily rate) trend, and occupancy trend. Mention one-off or ramp-up effects if data supports. Keep to 4-7 sentences. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the patterns as style guidance (not templates), then write from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        Open with revenue trend, then explain latest period: revenue split, key tenant(s), ADR, occupancy. 4-7 sentences.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        撰写营业收入评论。仅使用提供的数据。这是一个利润表科目——以跨期收入趋势开篇（增长、下降或稳定），然后说明最新期间收入及主要驱动因素。涵盖：收入结构（租金/物管费/水电费比例，如数据提供）、主要租户及占比、日租金单价趋势、出租率趋势。如数据支持，说明一次性或爬坡期影响。整体约4-7句。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        以收入趋势开篇，然后说明最新期间：收入结构、主要租户、日租金单价、出租率。约4-7句。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本，不包含模式名称。
   patterns:
     Pattern 1: |
-      Start with the revenue trend across periods, then explain the latest balance as mainly generated from [major revenue streams / projects / customer groups / service lines] only when supported by the schedule or remarks. Mention concentration or seasonality only when evidenced by the data.
+      <ENTITY> mainly generated revenue from leasing income and property management service income with around a 50:50 ratio. Project was <PCT> leased to entities under <ENTITY> since <DATE>. The increase in revenue was mainly driven by the steady annual escalation in both leasing income and property management service income
     Pattern 2: |
-      Describe the latest revenue composition and any significant period-on-period movement using only data-backed sources or remarks, such as [rental income / management income / trading income / service income / other supported stream].
- 
+      主要包括租户租金收入、物管费收入以及水电费收入。<DATE>租金收入、物管费收入以及水电费占比总收入约为<PCT>，<PCT>和<PCT>。营业收入呈增长趋势，主要驱动来自新租户的陆续入驻和单价的稳步上升
 OC:
   type: IS
   category: Expenses
@@ -459,10 +698,9 @@ OC:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the operating cost trend across periods, then explain the latest balance as mainly comprising [major cost buckets / project costs / service costs / procurement costs / other supported components]. Mention cost mix shifts or timing effects only when supported by the schedule or remarks.
+      mainly comprised depreciation and amortisation expenses of <AMT>, property management costs of <AMT>, maintenance fees of <AMT>, and other office expenses incurred for daily operation, which were accounted for on an accrual basis
     Pattern 2: |
-      Describe the latest cost composition and any significant movement using only data-backed details, and if visible, link the movement to the corresponding revenue or operating activity without adding unsupported explanations.
- 
+      主要包括房屋折旧费用、物业管理费、租赁佣金以及水电费成本等。物业管理费按租金收入和营运收益的固定比例收取。租赁佣金主要系支付给第三方介绍租户的佣金费用
 Tax and Surcharges:
   type: IS
   category: Expenses
@@ -472,10 +710,9 @@ Tax and Surcharges:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the tax-and-surcharges trend across periods, then explain the latest balance as mainly comprising [major tax items] only when evidenced by the schedule. Keep smaller tax lines aggregated unless they are material.
+      mainly comprised RET of <AMT>, LUT of <AMT>, and other tax and surcharges of <AMT> incurred during the Period for land and properties owned
     Pattern 2: |
-      Describe the latest tax-and-surcharges composition using only the components evidenced by the data, and relate any material movement to revenue scale or transaction activity only when supported.
- 
+      主要系房产税、土地使用税及印花税
 GA:
   type: IS
   category: Expenses
@@ -484,23 +721,52 @@ GA:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the G&A expense trend across periods, then explain the latest balance as mainly comprising [staff cost / professional fee / office expense / depreciation / other supported expense lines]. Mention only the material cost buckets and supported movement drivers.
+      mainly comprised consulting fees, office expenses incurred for daily operations, accounting for <PCT> and <PCT> of total G&A expenses in <DATE> respectively. Management stated that G&A expenses were all accounted for on accrual basis
     Pattern 2: |
-      Describe the latest G&A expense composition and any notable movement using only data-backed details, keeping smaller categories aggregated unless they are material to the conclusion.
- 
+      主要包括费用化的土地摊销及支付给第三方的咨询费和审计费
 Fin Exp:
   type: IS
   category: Expenses
   aliases: ["Fin Exp", "Finance Expenses", "Finance expenses", "Financial Expenses", "Financial expenses",
             "Financial Expense", "Financial expense", "财务费用", "財務費用"]
-  system_prompts:
-  user_prompts:
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write financial expenses commentary. Use only the provided data. Open with the cross-period trend (increasing/decreasing as loan principal changes). Then state the main components: interest expense from external bank loans (total for the period, and weighted average interest rate if available), interest income, bank charges, and FX gain/loss. Note if the trend in interest expense is driven by loan drawdowns, repayments, or rate changes. Keep to 2-4 sentences. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the patterns as style guidance (not templates), then write from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        Trend → interest expense (with weighted average rate if available) → interest income, bank charges, FX. 2-4 sentences.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        撰写财务费用评论。仅使用提供的数据。以跨期趋势开篇（随借款本金变化而增减）。然后陈述主要构成：银行借款利息支出（期间总额及加权平均利率，如有）、利息收入、银行手续费、汇兑损益。如趋势由借款提款/还款/利率变化驱动，予以说明。整体约2-4句。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        趋势 → 利息支出（含加权平均利率，如有） → 利息收入、手续费、汇兑损益。约2-4句。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本，不包含模式名称。
   patterns:
     Pattern 1: |
-      Start with the finance-expense trend across periods, then explain the latest balance as mainly comprising [interest expense / guarantee fee / bank charge / FX impact / other supported finance items]. Mention debt-related or financing-structure context only when supported by the data or remarks.
+      mainly represented interest expenses arising from external bank loans of <AMT>, as well as interest income, bank charges, and net gain (or loss) on exchange differences incurred during the Period. The weighted average interest rate during the Period was about <PCT>
     Pattern 2: |
-      Describe the latest finance-expense composition and any notable movement using only data-backed details, such as changes in borrowing level, interest-bearing balances, or fee mix where visible.
- 
+      银行借款产生的利息支出。尽调期间内随着借款本金的下降，每年的利息费用呈下降趋势
 Selling cost:
   type: IS
   category: Expenses
@@ -508,8 +774,10 @@ Selling cost:
   system_prompts:
   user_prompts:
   patterns:
-    Pattern 1: N/A
-
+    Pattern 1: |
+      represented leasing commission of <AMT>, <AMT> and <AMT> in <DATE>, <DATE> and <DATE> respectively
+    Pattern 2: |
+      系市场推广费及租赁佣金
 Other profit:
   type: IS
   category: Revenue
@@ -530,10 +798,7 @@ Cr Loss:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the credit-loss trend across periods, then explain the latest charge or balance as mainly relating to [receivables / other receivables / contract assets / other supported exposure]. Mention provisions, reversals, or concentration only when evidenced by the schedule or remarks.
-    Pattern 2: |
-      Describe provisions or reversals for credit losses using only the details evidenced by the schedule or remarks, and keep any discussion of policy, aging, or expected-loss methodology at placeholder level unless expressly supported.
- 
+      尽调期内对应收<ENTITY>的往来款全额计提坏账准备
 Other Income:
   type: IS
   category: Revenue
@@ -543,10 +808,9 @@ Other Income:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the other-income trend across periods, then explain the latest balance as mainly comprising [government grants / tax rebates / compensation / subsidy / other supported non-core income item]. Mention only the material supported components.
+      mainly represented subsidies historically received for Project amounting to <AMT> in <DATE>, which is being amortised over the respective period to align with the land amortisation period
     Pattern 2: |
-      Describe additional income sources using only the details evidenced by the schedule or remarks, and comment on any material one-off or recurring pattern only when supported.
- 
+      系收到的政府扶持发展资金每年摊销金额
 Non-operating Income:
   type: IS
   category: Revenue
@@ -556,10 +820,9 @@ Non-operating Income:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the non-operating-income trend across periods, then explain the latest balance as mainly arising from [asset disposal / compensation / gain on settlement / miscellaneous non-core item / other supported source]. Keep the discussion at a high level unless the schedule clearly supports more detail.
+      mainly represented tax returns during the Period
     Pattern 2: |
-      Describe non-operating income items using only the details evidenced by the schedule or remarks, and indicate whether they appear non-recurring only when that conclusion is supported.
- 
+      主要系租户提前退租产生的违约金
 Non-operating Exp:
   type: IS
   category: Expenses
@@ -569,10 +832,9 @@ Non-operating Exp:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the non-operating-expense trend across periods, then explain the latest balance as mainly arising from [asset write-off / penalty / donation / loss on disposal / miscellaneous non-core item / other supported source]. Mention only the material supported components.
+      the amount in <DATE> mainly represented poverty relief donation
     Pattern 2: |
-      Describe non-operating expense items using only the details evidenced by the schedule or remarks, and comment on whether the charge appears non-recurring only when supported.
- 
+      主要系印花税滞纳金或资产报废产生的处置损失
 Income tax:
   type: IS
   category: Expenses
@@ -582,10 +844,9 @@ Income tax:
   user_prompts:
   patterns:
     Pattern 1: |
-      Start with the income-tax trend across periods, then explain the latest balance in the context of [taxable profit / deferred tax movement / tax adjustment / effective tax rate placeholder] only when supported by the schedule or remarks. Do not insert unsupported tax-policy conclusions.
+      included the current income tax expenses and deferred income tax expenses stemming from the temporary differences between the financial books and tax books
     Pattern 2: |
-      Describe income tax expense using only the details evidenced by the schedule or remarks, and mention current versus deferred tax drivers only when those components are visible.
- 
+      尽调期内所得税费用为当期所得税及因直线法调整产生的递延所得税费用
 LT DTA:
   type: IS
   category: Others
@@ -667,3 +928,196 @@ R&D Expenses:
   patterns:
     Pattern 1: |
       Start with the R&D expense trend across periods, then explain the latest balance as mainly comprising [staff cost / material cost / testing cost / depreciation / other supported R&D expense line]. Mention capitalization rate or project context only when supported by the data or remarks.
+
+CIP:
+  type: BS
+  category: Non-current assets
+  aliases: ["CIP", "Construction in Progress", "Construction-in-progress", "在建工程"]
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write construction-in-progress commentary. Use only the provided data.
+        Cover: total CIP balance, what it represents (project name/phase if shown), accounting policy for cost recognition (construction-progress-based accrual if stated), completion status and expected completion date. Flag if the management has not provided a construction contract log with contract/verified/settlement amounts — in that case note that construction payables and CAPEX commitments may be under-estimated. Keep to 2-4 sentences. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the patterns as style guidance (not templates), then write from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        State: balance, what it represents, completion status/expected date, cost-recognition policy. Flag under-estimation risk if no contract log was provided. 2-4 sentences.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        撰写在建工程评论。仅使用提供的数据。
+        说明：余额、代表内容（项目名称/阶段）、成本确认政策（如按工程进度确认）、完工进度及预计完工日期。若管理层未提供详细施工合同台账（含合同金额、核定金额、结算金额），需提示建造成本应付款及资本支出承诺可能被低估。整体约2-4句。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        说明：余额、内容、完工状态/预计完工日期、成本确认政策；如未提供合同台账，提示低估风险。约2-4句。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本，不包含模式名称。
+  patterns:
+    Pattern 1: |
+      the balance as at <DATE> represented some dynamic compaction work. According to internal accounting policy, construction costs were accounted for based on the construction progress maintained in the system by the engineering department, and the finance department would accrue the construction costs accordingly
+    Pattern 2: |
+      there was no balance as at <DATE> as construction was completed in <DATE>. The balance as at <DATE> represented the construction cost of Phase I and Phase II of the project
+
+DTA:
+  type: BS
+  category: Non-current assets
+  aliases: ["DTA", "Deferred Tax Assets", "Deferred tax assets", "Deferred tax asset", "递延所得税资产", "遞延所得稅資產"]
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write deferred tax assets commentary. Use only the provided data. List the main sources of DTA from the data — common sources in this sector: (1) revenue recognition timing difference from the rent-free period straight-line adjustment, (2) un-utilised tax losses carried forward, (3) accrued-but-not-yet-paid liabilities. State the balance at the reporting date and its main drivers. Keep to 2-3 sentences. Do not speculate on recoverability unless the data supports it. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the patterns as style guidance (not templates), then write from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        State: balance at reporting date, main sources. 2-3 sentences.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        撰写递延所得税资产评论。仅使用提供的数据。列示DTA主要来源：①直线法收入确认时间性差异，②未使用税收亏损，③已计提未支付负债。陈述报告日余额及主要驱动因素。整体约2-3句，不对可回收性作出未被数据支持的判断。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        陈述报告日余额及主要来源。约2-3句。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本，不包含模式名称。
+  patterns:
+    Pattern 1: |
+      the balance as at <DATE> mainly arose from the impact of revenue recognition in the rent-free period, un-utilised tax losses, and liabilities that were accrued but not paid
+    Pattern 2: |
+      the balance as at <DATE> mainly arose from the impact of revenue recognition in the rent-free period and accrued but not-paid liabilities
+
+DTL:
+  type: BS
+  category: Non-current liabilities
+  aliases: ["DTL", "Deferred Tax Liabilities", "Deferred tax liabilities", "Deferred tax liability", "递延所得税负债", "遞延所得稅負債"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      mainly generated from the impact of revenue recognition in the rent-free period
+    Pattern 2: |
+      系按直线法确认租金及物管费收入形成的递延所得税负债
+
+Deferred income:
+  type: BS
+  category: Non-current liabilities
+  aliases: ["Deferred income", "Deferred Income", "Government grants", "Government grant", "递延收益", "政府补贴"]
+  subagent_1_prompts:
+    Eng:
+      system_prompt: |
+        Role: Finance Due Diligence Consultant
+        Write deferred income / government grants commentary. Use only the provided data.
+        Cover: total balance, nature of grant (e.g. government subsidy for industrial development), year received, original amount, amortisation period (typically useful life of the related asset, e.g. 50 years or 20 years), annual amortisation amount. State when the grant was received and the amortisation method. Keep to 2-3 sentences. {period_reference_guidance}
+        **LANGUAGE**: THIS IS AN ENGLISH DATABOOK. Output must be 100% in ENGLISH.
+      user_prompt: |
+        Use the patterns as style guidance (not templates), then write from the actual data.
+        Patterns: {patterns}
+        Data: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        State: balance, grant type, year received, amortisation period and annual amount. 2-3 sentences.
+        **LANGUAGE**: Output must be 100% in ENGLISH.
+        Output only final text without pattern names.
+    Chi:
+      system_prompt: |
+        角色: 财务尽职调查顾问
+        撰写递延收益/政府补贴评论。仅使用提供的数据。
+        说明：余额、补贴性质（如工业发展支持资金）、收到年份、原始金额、摊销期间（通常为相关资产使用寿命，如50年或20年）、每年摊销金额。整体约2-3句。{period_reference_guidance}
+        **语言**: 这是一个中文数据簿。输出必须100%为中文。
+      user_prompt: |
+        以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
+        模式: {patterns}
+        数据: {financial_figure}
+        {rhs_guidance_block}
+        {period_reference_guidance}
+        {remarks_weight_instruction}
+        {user_guidance_instruction}
+        说明：余额、补贴类型、收到年份、摊销期间及年摊销金额。约2-3句。
+        **语言**: 输出必须100%为中文。
+        仅输出最终文本，不包含模式名称。
+  patterns:
+    Pattern 1: |
+      represented property-related government grants, which were initially recorded as long-term payables and then recognised in other income on a straight-line basis over the useful life period of the Targeted properties
+    Pattern 2: |
+      递延收益为<DATE>收到的政府扶持资金<AMT>，其在相关资产使用期限内（即50年）平均分摊
+
+Interest payable:
+  type: BS
+  category: Current liabilities
+  aliases: ["Interest payable", "Interest Payable", "Accrued interest", "应付利息", "應付利息"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      accrued and unpaid interest on bank loans amounting to <AMT>
+    Pattern 2: |
+      系银行借款尚未结清的利息费用<AMT>
+
+Long-term payables:
+  type: BS
+  category: Non-current liabilities
+  aliases: ["Long-term payables", "Long term payables", "Long-term payable", "长期应付款", "長期應付款"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      represented property-related government grants, which were initially recorded as long-term payables and then recognised in other income on a straight-line basis over the useful life period of the Targeted properties. Historically, the entity received government subsidies amounting to <AMT>
+    Pattern 2: |
+      系2013年收到的政府扶持资金<AMT>，其在相关资产使用期限内（即50年）平均分摊
+
+OCI:
+  type: BS
+  category: Equity
+  aliases: ["OCI", "Other Comprehensive Income", "Other comprehensive income", "其他综合收益", "其他綜合收益",
+            "Translation reserve", "Currency translation reserve", "Foreign currency translation reserve"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      the balance represented the translation differences arising from the translation of offshore USD financial statements to CNY
+
+Other NCL:
+  type: BS
+  category: Non-current liabilities
+  aliases: ["Other NCL", "Other non-current liabilities", "Other Non-current Liabilities",
+            "其他非流动负债", "其他非流動負債"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      represented tenant deposits amounting to <AMT>
+    Pattern 2: |
+      the balance of <AMT> represented lease deposit of the subsidiaries under the principal tenant

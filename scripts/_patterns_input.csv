@@ -1,0 +1,62 @@
+Lang,Project,Type,Items,Comments
+EN,,BS,Cash,the balance as at <DATE> represented <AMT> of cash at bank with no restricted use. We have not obtained the bank statements yet
+EN,,BS,AR,"the balance as at <DATE> totalled <AMT>, mainly entailing the receivables of actual rental and property management income with issued fapiao from <ENTITY>, which were in line with the payment terms in the leasing agreements. The balance decreased dramatically due to the change of collection period. No bad debt had been incurred historically"
+EN,,BS,Prepayments,"the balance as at <DATE> mainly entailed: 1) <AMT> of upfront payments for utility expenses; and 2) <AMT> in upfront payments for the next 1 year insurance fees"
+EN,,BS,OR,"the balance as at <DATE> mainly entailed <AMT> of loans to the related party, Shanghai Yishang. Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"
+EN,,BS,Other CA,"the balance as at <DATE> mainly represented <AMT> in deductible input VAT, and the balance as at <DATE> mainly represented <AMT> in advance payment of CIT"
+EN,,BS,IP,"As regards the land use right, the land is located in <ENTITY> for industrial use, with land-use life of 50 years (until <DATE>). The investment properties were fully mortgaged for <ENTITY> bank loans. The original cost also comprised <AMT> of deed tax (<PCT> of the land premium). The land is depreciated using the straight-line method of 50-year useful life with no residual value. The original cost of the warehouses was <AMT>, depreciated using the straight-line method of 20-year useful life with a <PCT> residual rate"
+EN,,BS,NCA,"the balance as at <DATE> mainly represented the net book values of electronic devices and office equipment, which amounted to <AMT> and <AMT> respectively. Electronic equipment and office equipment were both depreciated using the straight-line method over a 3-year useful life with a <PCT> residual value"
+EN,,BS,DTA,"the balance as at <DATE> mainly arose from the impact of revenue recognition in the rent-free period, un-utilised tax losses, and liabilities that were accrued but not paid"
+EN,,BS,Advances,there was no balance as at <DATE>. The balance as at the end of <DATE> and <DATE> represented prepaid rentals and property management income from tenants
+EN,,BS,Tax payable,the balance decreased during the Period mainly due to the significant decrease in CIT payable (<AMT> at the end of <DATE>) and output VAT payable; the balance as at <DATE> represented <AMT> of SD payable
+EN,,BS,OP,"the balance as at <DATE> mainly entailed: <AMT> of borrowings from related parties; <AMT> of accrued expenses for consulting fees, accounting service fees, and property management fees; <AMT> of interest payables arising from bank loans"
+EN,,BS,NCL due within one year,the balance as at <DATE> represented onshore bank loans of <AMT> that would be due within 1 year
+EN,,BS,Long-term loans,the balance as at <DATE> represented the loan owed to <ENTITY> amounting to about <AMT> that would be due beyond 1 year. The weighted average interest rate during the Period was about <PCT>
+EN,,BS,Other NCL,the balance of <AMT> as at <DATE> represented lease deposit
+EN,,BS,Capital,"the registered capital was <AMT>. All registered capital had been paid up and verified. The balance at the consolidated level as at <DATE> represented <AMT> paid-in capital. We checked the audit report and found no differences in respect of this amount"
+EN,,BS,OCI,the balance represented the translation differences arising from the translation of offshore USD financial statements to CNY
+EN,,BS,Reserve,the accumulated reserve fund amounted to <AMT> as at <DATE>
+EN,,BS,CIP,the balance as at <DATE> represented some dynamic compaction work. According to internal accounting policy, construction costs were accounted for based on the construction progress maintained in the system by the engineering department, and the finance department would accrue the construction costs accordingly
+EN,,BS,Other NCA,the balance as at <DATE> represented the levelling impact of revenue recognition in the rent-free period of <AMT>; it will not be given any value in the NAV calculation
+EN,,BS,DTL,mainly generated from the impact of revenue recognition in the rent-free period
+EN,,BS,Long-term payables,"represented property-related government grants, which were initially recorded as long-term payables and then recognised in other income on a straight-line basis over the useful life period of the Targeted properties"
+EN,,IS,OI,"<ENTITY> mainly generated revenue from leasing income and property management service income with around a 50:50 ratio. Project was <PCT> leased to entities under <ENTITY> since <DATE>. The increase in revenue was mainly driven by the steady annual escalation in both leasing income and property management service income"
+EN,,IS,OC,"mainly comprised depreciation and amortisation expenses of <AMT>, property management costs of <AMT>, maintenance fees of <AMT>, and other office expenses incurred for daily operation, which were accounted for on an accrual basis"
+EN,,IS,Tax and Surcharges,"mainly comprised RET of <AMT>, LUT of <AMT>, and other tax and surcharges of <AMT> incurred during the Period for land and properties owned"
+EN,,IS,GA,"mainly comprised consulting fees, office expenses incurred for daily operations, accounting for <PCT> and <PCT> of total G&A expenses in <DATE> respectively. Management stated that G&A expenses were all accounted for on accrual basis"
+EN,,IS,Fin Exp,"mainly represented interest expenses arising from external bank loans of <AMT>, as well as interest income, bank charges, and net gain (or loss) on exchange differences incurred during the Period. The weighted average interest rate during the Period was about <PCT>"
+EN,,IS,Non-operating Income,mainly represented tax returns during the Period
+EN,,IS,Non-operating Exp,the amount in <DATE> mainly represented poverty relief donation
+EN,,IS,Income tax,included the current income tax expenses and deferred income tax expenses stemming from the temporary differences between the financial books and tax books
+EN,,IS,Selling cost,"represented leasing commission of <AMT>, <AMT> and <AMT> in <DATE>, <DATE> and <DATE> respectively"
+EN,,IS,Other Income,"mainly represented subsidies historically received for Project amounting to <AMT> in <DATE>, which is being amortised over the respective period to align with the land amortisation period"
+CN,,BS,Cash,截至<DATE>，<ENTITY>存款<AMT>。<ENTITY>对账单金额，未发现明显差异。<ENTITY>存款不存在使用受限情况
+CN,,BS,AR,<DATE>末应收账款余额包括应收租户租金<AMT>、应收物管费<AMT>以及应收水电费<AMT>。管理层表示上述应收租服费的账龄一般都在半年之内，且目前不存在坏账风险
+CN,,BS,Prepayments,系预付的水电费共<AMT>
+CN,,BS,OR,系未来可退回的押金及保证金<AMT>
+CN,,BS,Other CA,系直线法<ENTITY>管理费<AMT>
+CN,,BS,IP,"截至<DATE>末，<ENTITY>账面价值为<AMT>，包括土地成本<AMT>、仓库建造成本和后期改造成本<AMT>。土地使用权相关成本的折旧年限为33年，无残值，仓库建造成本的折旧年限为20年、预计净残值率<PCT>。<ENTITY>已作为公司长期借款的抵押物"
+CN,,BS,NCA,主要包括办公家具以及电子设备账面价值<AMT>。公司的固定资产折旧年限为3年，无净残值
+CN,,BS,Long-term deferred expenses,主要包括仓库修缮支付的<AMT>费用和租赁佣金<AMT>组成。资本化的仓库修缮支出的摊销期为三年、租赁佣金的摊销期与租赁期一致
+CN,,BS,Other NCA,系待抵扣增值税进项税额<AMT>
+CN,,BS,AP,截至<DATE>，应付账款余额主要为应付工程尾款共计<AMT>，以及应付<ENTITY>费<AMT>
+CN,,BS,Advances,系预收<ENTITY>的租服费<AMT>
+CN,,BS,Tax payable,主要系公司应付房产税<AMT>以及土地使用税<AMT>
+CN,,BS,OP,截至<DATE>末，其他应付款余额主要包括应付关联方<ENTITY>的往来款<AMT>、租户押金<AMT>、银行借款利息<AMT>以及预提费用<AMT>
+CN,,BS,Interest payable,系银行借款尚未结清的利息费用<AMT>
+CN,,BS,NCL due within one year,截至<DATE>末，<ENTITY>借款共计<AMT>，借款期为<DATE>至<DATE>。借款利率为基准利率加固定基点。其中<AMT>于一年内到期（已重分类至一年内到期的非流动负债）。该笔借款的抵押物主要包括公司土地使用权及地上建筑物
+CN,,BS,Long-term loans,截至<DATE>末，<ENTITY>借款余额主要包括<AMT>长期借款。该笔借款授信额度合计<AMT>，已提款<AMT>，借款期为<DATE>至<DATE>。该笔借款的抵押物主要包括土地使用权
+CN,,BS,DTL,系按直线法确认租金及物管费收入形成的递延所得税负债
+CN,,BS,Capital,"<ENTITY>的注册资本为<AMT>美元，等值人民币<AMT>。我们了解实收资本系由境外股东出资形成。我们检查了验资报告，未发现差异"
+CN,,BS,Deferred income,递延收益为<DATE>收到的政府扶持资金<AMT>，其在相关资产使用期限内（即50年）平均分摊
+CN,,IS,OI,"主要包括租户租金收入、物管费收入以及水电费收入。<DATE>租金收入、物管费收入以及水电费占比总收入约为<PCT>，<PCT>和<PCT>。营业收入呈增长趋势，主要驱动来自新租户的陆续入驻和单价的稳步上升"
+CN,,IS,OC,"主要包括房屋折旧费用、物业管理费、租赁佣金以及水电费成本等。物业管理费按租金收入和营运收益的固定比例收取。租赁佣金主要系支付给第三方介绍租户的佣金费用"
+CN,,IS,Tax and Surcharges,主要系房产税、土地使用税及印花税
+CN,,IS,Selling cost,系市场推广费及租赁佣金
+CN,,IS,GA,主要包括费用化的土地摊销及支付给第三方的咨询费和审计费
+CN,,IS,Fin Exp,银行借款产生的利息支出。尽调期间内随着借款本金的下降，每年的利息费用呈下降趋势
+CN,,IS,Non-operating Income,主要系租户提前退租产生的违约金
+CN,,IS,Non-operating Exp,主要系印花税滞纳金或资产报废产生的处置损失
+CN,,IS,Income tax,尽调期内所得税费用为当期所得税及因直线法调整产生的递延所得税费用
+CN,,IS,Cr Loss,尽调期内对应收<ENTITY>的往来款全额计提坏账准备
+CN,,IS,Other Income,系收到的政府扶持发展资金每年摊销金额

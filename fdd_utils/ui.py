@@ -403,6 +403,7 @@ if not hasattr(st, "fragment"):
     st.fragment = _noop_fragment  # type: ignore[attr-defined]
 
 from .ai import (
+    FDDConfig,
     build_highlighted_commentary_html,
     get_prompt_engine,
     parse_validator_response,
@@ -560,6 +561,49 @@ def render_account_remarks_context(df: pd.DataFrame | None, key: str, language: 
             st.dataframe(pd.DataFrame(table_linked_remarks), use_container_width=True)
 
 
+def _run_demo_ai(
+    matched_keys: list,
+    duration_s: int,
+    progress_placeholder,
+    status_placeholder,
+) -> dict:
+    """Simulate AI processing by replaying pre-baked demo_results.json."""
+    import json as _json
+    import math as _math
+    demo_path = Path(__file__).parent / "demo_results.json"
+    try:
+        all_results: dict = _json.loads(demo_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Could not load demo_results.json: %s", exc)
+        all_results = {}
+
+    agents = ["Generator", "Auditor", "Refiner", "Validator"]
+    total_steps = 4 * max(len(matched_keys), 1)
+    tick = max(0.1, duration_s / total_steps)
+    step = 0
+    for agent_idx, agent_name in enumerate(agents):
+        for key_idx, key in enumerate(matched_keys):
+            step += 1
+            progress_placeholder.progress(min(step / total_steps, 1.0))
+            status_placeholder.info(
+                f"🔄 Running Subagent {agent_idx + 1}/4: {agent_name} "
+                f"| Processing item {key_idx + 1}/{len(matched_keys)} "
+                f"| Key: {key} "
+                f"| Progress: {step}/{total_steps} steps"
+            )
+            time.sleep(tick)
+
+    # Build results dict: only keys that exist in demo_results.json.
+    results = {}
+    for key in matched_keys:
+        if key in all_results:
+            results[key] = all_results[key]
+        else:
+            # Fallback stub so the pipeline doesn't drop the account entirely.
+            results[key] = {"final": f"The balance remained stable throughout the review period. Refer to the schedule for detailed composition.", "subagent_4": "", "subagent_1": ""}
+    return results
+
+
 def render_ai_generation_section(session_state: Any, get_model_display_name) -> None:
     ai_key = f"ai_btn_{session_state.button_click_counter}"
     generate_clicked = st.button("▶️ Generate AI Content", type="primary", use_container_width=True, key=ai_key)
@@ -627,18 +671,41 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                         )
 
                 start_time = time.time()
-                update_progress.start_time = start_time
-                status_placeholder.info(f"🚀 Starting AI pipeline for {total_items} accounts... | Progress: 0/{total_steps} steps | ETA: Calculating...")
-                progress_placeholder.progress(0)
-                results = run_ai_pipeline_with_progress(
-                    mapping_keys=matched_mapping_keys,
-                    dfs=selected_pipeline_dfs,
-                    model_type=session_state.get("model_type", "local"),
-                    language=session_state.language,
-                    use_multithreading=True,
-                    progress_callback=update_progress,
-                    user_comments=session_state.get("account_comments", {}),
-                )
+
+                # Demo-mode detection: if the uploaded filename matches the
+                # configured demo file, replay pre-baked results so the whole
+                # pipeline runs offline in a fixed amount of time.
+                _demo_cfg = (FDDConfig().config or {}).get("demo", {})
+                _demo_filename = str(_demo_cfg.get("filename") or "").strip()
+                _demo_duration = int(_demo_cfg.get("progress_duration_seconds") or 25)
+                _uploaded = str(session_state.get("uploaded_filename") or "").strip()
+                _is_demo = bool(_demo_filename and _uploaded == _demo_filename)
+
+                if _is_demo:
+                    status_placeholder.info(
+                        f"🎬 Demo mode — replaying pre-recorded results for {total_items} accounts "
+                        f"({_demo_duration}s simulated run)…"
+                    )
+                    progress_placeholder.progress(0)
+                    results = _run_demo_ai(
+                        matched_mapping_keys,
+                        _demo_duration,
+                        progress_placeholder,
+                        status_placeholder,
+                    )
+                else:
+                    update_progress.start_time = start_time
+                    status_placeholder.info(f"🚀 Starting AI pipeline for {total_items} accounts... | Progress: 0/{total_steps} steps | ETA: Calculating...")
+                    progress_placeholder.progress(0)
+                    results = run_ai_pipeline_with_progress(
+                        mapping_keys=matched_mapping_keys,
+                        dfs=selected_pipeline_dfs,
+                        model_type=session_state.get("model_type", "local"),
+                        language=session_state.language,
+                        use_multithreading=True,
+                        progress_callback=update_progress,
+                        user_comments=session_state.get("account_comments", {}),
+                    )
 
             if results is None:
                 progress_placeholder.empty()
