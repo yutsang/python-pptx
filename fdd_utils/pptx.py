@@ -2021,31 +2021,39 @@ class PowerPointGenerator:
                             chars_available = int(max(1, available_visual * chars_per_line))
 
                             if len(para) > chars_available:
-                                # Only split at SENTENCE boundaries. The older
-                                # code fell back to commas, word boundaries,
-                                # and hard character cuts — those produced
-                                # ugly "(cont'd)" fragments that ended mid-row
-                                # at ~30% of the line. If no sentence ending
-                                # lands in our window, we refuse to split and
-                                # let the account move whole to the next slot.
-                                split_point = chars_available
-                                best_split = None
-                                window_back = max(split_point - 300, 0)
-                                window_fwd = min(len(para), split_point + 150)
-                                for end_char in [
-                                    '. ', '。', '! ', '！', '? ', '？',
-                                    '。 ', '！ ', '？ ',
-                                ]:
-                                    pos = para.rfind(end_char, window_back, window_fwd)
-                                    if pos > 0:
-                                        best_split = pos + len(end_char)
-                                        break
+                                # Only split at SENTENCE boundaries (period,
+                                # Chinese full-stop, "!", "?"). No commas,
+                                # word-breaks, or hard char cuts — those
+                                # produce ugly mid-row fragments.
+                                #
+                                # Strategy: collect EVERY sentence ending up
+                                # to 5 % past chars_available, then pick the
+                                # one closest to chars_available without
+                                # going over it. This packs the current slot
+                                # tight — like a human would — rather than
+                                # grabbing the first boundary found and
+                                # leaving 5–6 rows of empty space below.
+                                hard_cap = min(len(para), int(chars_available * 1.05))
+                                min_fill = max(1, int(chars_available * 0.15))
+                                end_positions: List[int] = []
+                                for end_char in ['. ', '。', '! ', '！', '? ', '？']:
+                                    start = 0
+                                    while True:
+                                        pos = para.find(end_char, start, hard_cap)
+                                        if pos < 0:
+                                            break
+                                        end_positions.append(pos + len(end_char))
+                                        start = pos + 1
+                                # Keep only splits that still leave the slot
+                                # at least 15 % filled — avoids cutting after
+                                # the first tiny opening sentence.
+                                candidates = [p for p in end_positions if p >= min_fill]
+                                best_split = max(candidates) if candidates else None
 
                                 if best_split is None:
-                                    # No sentence boundary in window — skip
-                                    # this split attempt; the code below
-                                    # will move the whole account to the
-                                    # next slot.
+                                    # No sentence boundary fits the remaining
+                                    # space — move the whole account to the
+                                    # next slot rather than cut mid-sentence.
                                     part1_commentary = None
                                     part2_commentary = None
                                 else:

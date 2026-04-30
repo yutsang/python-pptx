@@ -329,7 +329,10 @@ def derive_reconciliation_matched_keys(
     if not reconciliation or not available_key_order:
         return []
 
-    included_statuses = {"✅ Match", "⚠️ Match", "✅ Immaterial", "❌ Diff"}
+    # AI processes matched (✅ / ⚠️) and immaterial accounts only.
+    # ❌ Diff (numerical mismatch) is intentionally excluded — those rows
+    # need human reconciliation before AI commentary can be trusted.
+    included_statuses = {"✅ Match", "⚠️ Match", "✅ Immaterial"}
     matched_keys: List[str] = []
     seen = set()
 

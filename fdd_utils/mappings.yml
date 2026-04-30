@@ -26,7 +26,7 @@ _default_subagent_1:
       - If a name is uncertain, still keep the sentence fully English by using a concise English descriptor supported by the source context rather than leaving mixed-language text.
     user_prompt: |
       Use the account context below as guidance, then write the final commentary from the actual data.
-      Patterns: {patterns}
+      Patterns (writing-style reference ONLY — these are how the project team has phrased similar items in past engagements; they are NOT templates to copy. Match the **style, register, and structure** they show, but base every fact, figure, and conclusion on the actual data below. If a pattern's wording does not fit the real situation, ignore it and write what the data supports): {patterns}
       Data: {financial_figure}
       {rhs_guidance_block}
       **Note**: Amounts in data are already formatted (e.g., 78.2K, 12.3 million). Keep those display units exactly as shown.
