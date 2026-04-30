@@ -350,38 +350,9 @@ def derive_reconciliation_matched_keys(
             seen.add(key)
             matched_keys.append(key)
 
-    for dynamic_key in dedupe_non_empty((resolution or {}).get("dynamic_mappings", {}).keys()):
-        if dynamic_key in available_key_set and dynamic_key not in seen:
-            seen.add(dynamic_key)
-            matched_keys.append(dynamic_key)
-
-    # Collect ALL Financials_Account names that reconciliation already evaluated
-    # (regardless of match status) so the resolved-map fallback only adds
-    # accounts that are truly absent from the Financials summary.
-    evaluated_accounts: set = set()
-    for recon_df in reconciliation:
-        if recon_df is None or recon_df.empty or "Financials_Account" not in recon_df.columns:
-            continue
-        for fa in recon_df["Financials_Account"].tolist():
-            evaluated_accounts.add(str(fa).strip().lower())
-
-    # Include resolved accounts that have DFS data but are absent from the
-    # Financials summary (and therefore have no reconciliation row at all).
-    resolved_map = (resolution or {}).get("resolved", {})
-    for _mapping_key, resolved_info in resolved_map.items():
-        sheet_name = (resolved_info or {}).get("sheet_name", "")
-        if not sheet_name or sheet_name not in available_key_set or sheet_name in seen:
-            continue
-        # Check if reconciliation already evaluated this account
-        sn_lower = sheet_name.strip().lower()
-        already_evaluated = any(
-            sn_lower in ea or ea in sn_lower for ea in evaluated_accounts
-        )
-        if already_evaluated:
-            continue
-        seen.add(sheet_name)
-        matched_keys.append(sheet_name)
-
+    # Only accounts that passed reconciliation with an included status go to AI.
+    # Dynamic-mapping and resolved-map fallbacks are intentionally removed —
+    # they added accounts that were never validated by reconciliation.
     return matched_keys
 # --- end ui/views.py ---
 
