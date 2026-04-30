@@ -1473,6 +1473,12 @@ def generate_pptx_presentation(
             )
             return
 
+        # Demo mode: skip coSummaryShape AI so export is instant.
+        _demo_cfg2 = (FDDConfig().config or {}).get("demo", {})
+        _is_demo_pptx = bool(
+            _demo_cfg2.get("filename") and
+            str(session_state.get("uploaded_filename") or "").strip() == str(_demo_cfg2.get("filename") or "").strip()
+        )
         with st.spinner("Generating PPTX…"):
             export_pptx_from_structured_data_combined(
                 template_path,
@@ -1486,6 +1492,7 @@ def generate_pptx_presentation(
                 is_chinese_databook=(language == "Chn"),
                 bs_is_results=session_state.get("bs_is_results"),
                 model_type=session_state.get("model_type", "local"),
+                skip_summary_ai=_is_demo_pptx,
             )
         if os.path.exists(combined_output_path):
             with open(combined_output_path, "rb") as handle:

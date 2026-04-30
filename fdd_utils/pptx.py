@@ -475,6 +475,7 @@ def export_pptx_from_structured_data_combined(
     is_chinese_databook: bool = False,
     bs_is_results: Optional[Dict[str, Any]] = None,
     model_type: Optional[str] = None,
+    skip_summary_ai: bool = False,
 ):
     try:
         export_started_at = time.perf_counter()
@@ -485,6 +486,10 @@ def export_pptx_from_structured_data_combined(
         logger.info("BS accounts: %s, IS accounts: %s", len(bs_data), len(is_data))
 
         generator = PowerPointGenerator(template_path, language, row_limit=20, model_type=model_type)
+        if skip_summary_ai:
+            # Demo / fast-export mode: patch pptx_settings so AI summary
+            # is disabled and the fallback compact summary is used instantly.
+            generator.pptx_settings.setdefault("executive_summary", {})["enable_ai"] = False
         stage_started_at = time.perf_counter()
         generator.load_template()
         logger.info("PPTX stage load_template took %.2fs", time.perf_counter() - stage_started_at)
@@ -3761,7 +3766,14 @@ Draft summary:
             max_input_chars = int(summary_settings.get("max_input_chars", 1600))
             max_tokens = int(summary_settings.get("max_tokens", 180))
             max_numeric_sentences = int(summary_settings.get("max_numeric_sentences", 1))
-            generation_timeout_seconds = float(summary_settings.get("generation_timeout_seconds", 45) or 45)
+            # Use a shorter timeout for local models — they either answer fast
+            # or they're not running; long waits just block the export.
+            _is_local = str(model_type or "").lower() == "local"
+            generation_timeout_seconds = float(
+                summary_settings.get("local_generation_timeout_seconds", 10)
+                if _is_local else
+                summary_settings.get("generation_timeout_seconds", 20)
+            )
             target_chars_chi = int(summary_settings.get("target_chars_chi", 120))
             target_words_eng = int(summary_settings.get("target_words_eng", 95))
             source_text = str(commentary or summary_source or "").strip()
@@ -3802,7 +3814,11 @@ Original content:
                 model_type=model_type,
                 language='Chi' if is_chinese else 'Eng',
             )
-            generation_max_retries = int(summary_settings.get("generation_max_retries", 3) or 3)
+            generation_max_retries = int(
+                summary_settings.get("local_generation_max_retries", 1)
+                if _is_local else
+                summary_settings.get("generation_max_retries", 1)
+            )
             response = self._call_with_timeout_retry(
                 lambda: ai_helper.get_response(
                     user_prompt=prompt,
