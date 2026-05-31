@@ -50,6 +50,11 @@ RESET_SESSION_KEYS = [
     "pptx_ready",
     "mapping_overrides",
     "account_comments",
+    # Reset the IS-only/BS-only reconciliation-bypass per databook. It still
+    # persists across ordinary reruns (which don't call this reset); only a NEW
+    # file/reprocess clears it — otherwise a partial-databook scope silently
+    # carries over and bypasses reconciliation for the next project.
+    "statement_mode",
 ]
 
 DELETE_SESSION_KEYS = [
@@ -61,6 +66,7 @@ DELETE_SESSION_KEYS = [
     "entity_dropdown",
     "entity_text_input",
     "sheet_select",
+    "statement_scope_selectbox",
 ]
 
 

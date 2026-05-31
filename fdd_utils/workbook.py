@@ -16,6 +16,7 @@ from .keyword_registry import (
     SUBTOTAL_KEYWORDS,
     SUMMARY_ACCOUNT_SKIP_KEYWORDS,
     TABLE_END_KEYWORDS,
+    contains_thousand_unit_marker,
 )
 
 
@@ -1902,7 +1903,7 @@ def _build_financial_result(
     if date_row_idx + 1 < len(df):
         header_texts.append(' '.join(df.iloc[date_row_idx + 1].astype(str).values))
     header_blob = ' '.join(header_texts)
-    multiply_by_1000 = multiply_values and ("CNY'000" in header_blob or "人民币千元" in header_blob)
+    multiply_by_1000 = multiply_values and contains_thousand_unit_marker(header_blob)
 
     data_start_row = date_row_idx + 1
     if data_start_row < len(df):
@@ -2211,8 +2212,8 @@ def extract_financial_table(
     if date_row_idx + 1 < len(df):
         header_texts.append(' '.join(df.iloc[date_row_idx + 1].astype(str).values))
     header_blob = ' '.join(header_texts)
-    multiply_by_1000 = multiply_values and ("CNY'000" in header_blob or "人民币千元" in header_blob)
-    
+    multiply_by_1000 = multiply_values and contains_thousand_unit_marker(header_blob)
+
     if debug and multiply_by_1000:
         print(f"[DEBUG] Will multiply values by 1000 (CNY'000 detected)")
     elif debug and not multiply_values:
@@ -2653,14 +2654,22 @@ def extract_balance_sheet_and_income_statement(
                 # Remove from Income Statement
                 results['income_statement'] = is_df.drop(columns=cols_to_remove)
                 
-                # Remove from Balance Sheet if it exists and has those columns
+                # Remove from Balance Sheet ONLY where the column is ALSO all-zero in
+                # the BS. A period can have a zero Income Statement but real balances
+                # (e.g. no P&L activity yet existing assets/liabilities); dropping such
+                # a BS column silently loses data and shifts the reconciliation date.
                 if results['balance_sheet'] is not None:
                     bs_df = results['balance_sheet']
-                    cols_to_remove_from_bs = [col for col in cols_to_remove if col in bs_df.columns]
+                    cols_to_remove_from_bs = [
+                        col for col in cols_to_remove
+                        if col in bs_df.columns and (bs_df[col] == 0).all()
+                    ]
                     if cols_to_remove_from_bs:
                         results['balance_sheet'] = bs_df.drop(columns=cols_to_remove_from_bs)
                         if debug:
-                            print(f"[DEBUG]   Removed {len(cols_to_remove_from_bs)} columns from Balance Sheet")
+                            print(f"[DEBUG]   Removed {len(cols_to_remove_from_bs)} all-zero columns from Balance Sheet")
+                    elif debug:
+                        print("[DEBUG]   Kept Balance Sheet columns (non-zero in BS even though IS was zero)")
                 
                 if debug:
                     print(f"[DEBUG] ✅ Columns removed successfully")

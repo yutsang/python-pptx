@@ -345,7 +345,7 @@ OR:
         仅输出最终文本，不包含模式名称。
   patterns:
     Pattern 1: |
-      the balance as at <DATE> mainly entailed <AMT> of loans to the related party, Shanghai Yishang. Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction
+      the balance as at <DATE> mainly entailed <AMT> of loans to the related party, <ENTITY>. Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction
     Pattern 2: |
       系未来可退回的押金及保证金<AMT>
 Inventory:

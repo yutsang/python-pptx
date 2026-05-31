@@ -268,7 +268,11 @@ def _looks_like_blocked_ai_content(text: str) -> bool:
 
 
 def _extract_final_content(result_dict):
-    return get_pipeline_result_text(result_dict)
+    # Defence in depth: strip any Qwen3 <think> block that slipped through (e.g.
+    # via run_generator_reprompt, which skips the _ensure pass) before it can
+    # render into a no-autofit text box and overflow / leak reasoning.
+    from fdd_utils.ai import strip_thinking
+    return strip_thinking(get_pipeline_result_text(result_dict))
 
 
 def _build_statement_order(
@@ -2052,6 +2056,8 @@ class PowerPointGenerator:
                     available_visual = available_for_commentary * (_std_lh_est / _lh_est)
 
                     if available_for_commentary > 0:
+                        part1_commentary = None
+                        part2_commentary = None
                         part1_paragraphs = []
                         part1_lines_used = 0
                         split_index = 0
@@ -2129,13 +2135,23 @@ class PowerPointGenerator:
                                         best_split = word_end + 1
                                     elif chars_available < len(para):
                                         best_split = chars_available  # last-resort hard cut
-                                else:
+
+                                # Slice ONCE on the finalised best_split. Previously the
+                                # word-boundary/hard-cut fallback recomputed best_split but
+                                # never sliced, leaving part1/part2 unset → UnboundLocalError
+                                # or stale text from a prior account bleeding onto the slide.
+                                if best_split:
                                     part1_commentary = para[:best_split].strip()
                                     remaining_para = para[best_split:].strip()
                                     if len(paragraphs) > 1:
                                         part2_commentary = remaining_para + '\n\n' + '\n\n'.join(paragraphs[1:])
                                     else:
                                         part2_commentary = remaining_para
+                                else:
+                                    # No boundary and no cut possible — keep the whole
+                                    # paragraph in part1 rather than corrupting the slide.
+                                    part1_commentary = para
+                                    part2_commentary = '\n\n'.join(paragraphs[1:]) if len(paragraphs) > 1 else None
                             else:
                                 part1_commentary = para
                                 part2_commentary = '\n\n'.join(paragraphs[1:]) if len(paragraphs) > 1 else ""
@@ -4119,7 +4135,8 @@ Original content:
                 max_retries=generation_max_retries,
                 timeout_label="PPTX summary generation",
             )
-            summary = str((response or {}).get("content") or "").strip()
+            from fdd_utils.ai import strip_thinking
+            summary = strip_thinking(str((response or {}).get("content") or "")).strip()
             if _looks_like_blocked_ai_content(summary):
                 logger.warning(
                     "PPTX summary generation returned blocked/network HTML content; falling back to compact summary"

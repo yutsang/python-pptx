@@ -177,6 +177,18 @@ KNOWN_TRANSLATIONS = {
     "设备": "equipment",
 }
 
+# Markers indicating amounts are stated in thousands (apply ×1000 to recover the
+# absolute figure). Must cover Simplified AND Traditional Chinese, else traditional
+# databooks skip the multiplier and every reconciliation is off by 1000×.
+UNIT_THOUSAND_MARKERS = ["cny'000", "rmb'000", "人民币千元", "人民幣千元"]
+
+
+def contains_thousand_unit_marker(text: str) -> bool:
+    """True if the header text declares amounts in thousands (EN or zh-Hans/zh-Hant)."""
+    blob = str(text or "").lower()
+    return any(marker in blob for marker in UNIT_THOUSAND_MARKERS)
+
+
 INDICATIVE_KEYWORDS = ["Indicative adjusted", "示意性调整后", "示意性調整後", "CNY'000", "人民币千元"]
 BS_HEADER_KEYWORDS = ["示意性调整后资产负债表", "示意性調整後資產負債表", "Indicative adjusted balance sheet", "Indicative Adjusted Balance Sheet", "Balance sheet"]
 IS_HEADER_KEYWORDS = ["示意性调整后利润表", "Indicative adjusted income statement", "Indicative Adjusted Income Statement"]
@@ -288,5 +300,7 @@ __all__ = [
     "SUBTOTAL_KEYWORDS",
     "SUMMARY_ACCOUNT_SKIP_KEYWORDS",
     "TABLE_END_KEYWORDS",
+    "UNIT_THOUSAND_MARKERS",
+    "contains_thousand_unit_marker",
     "translate_category_to_chinese",
 ]

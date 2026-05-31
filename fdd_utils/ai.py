@@ -16,6 +16,10 @@ PROVIDER_REQUIRED_KEYS = {
 }
 
 SUBAGENT_ALIASES = {
+    # subagent_N (UI/pipeline names) and the canonical N_Name forms both resolve
+    # to the canonical name. NOTE: subagent_3 / 3_Refiner is intentionally retained
+    # here for config/prompt lookups but is NOT in SUBAGENT_SEQUENCE — the Refiner
+    # stage is dormant (active pipeline is Generator -> Auditor -> Validator).
     "subagent_1": "1_Generator",
     "subagent_2": "2_Auditor",
     "subagent_3": "3_Refiner",
@@ -24,11 +28,6 @@ SUBAGENT_ALIASES = {
     "2_Auditor": "2_Auditor",
     "3_Refiner": "3_Refiner",
     "4_Validator": "4_Validator",
-    # Legacy aliases for backwards compatibility
-    "subagent_1": "1_Generator",
-    "subagent_2": "2_Auditor",
-    "subagent_3": "3_Refiner",
-    "subagent_4": "4_Validator",
 }
 
 
@@ -581,6 +580,24 @@ import re
 from typing import Any, Dict, List
 
 
+# Qwen3 (and other reasoning models) emit a <think>...</think> block before the
+# answer. With no reasoning parser on the server it arrives inline in the content
+# and pollutes BOTH the bullet text and any JSON. Strip it everywhere, tolerating a
+# truncated (unclosed) block and a stray leading </think> (enable_thinking=false).
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_TO_END_RE = re.compile(r"<think>.*\Z", flags=re.DOTALL | re.IGNORECASE)
+_THINK_STRAY_CLOSE_RE = re.compile(r"^\s*</think>", flags=re.IGNORECASE)
+
+
+def strip_thinking(text: str) -> str:
+    """Remove <think>...</think> reasoning blocks (balanced, truncated, or stray-close)."""
+    s = str(text or "")
+    s = _THINK_BLOCK_RE.sub("", s)        # well-formed blocks
+    s = _THINK_OPEN_TO_END_RE.sub("", s)  # unclosed block (truncated under max_tokens)
+    s = _THINK_STRAY_CLOSE_RE.sub("", s)  # lone </think> with no opener
+    return s.strip()
+
+
 def _strip_code_fence(text: str) -> str:
     match = re.search(r"```(?:json)?\s*(.*?)```", text or "", flags=re.DOTALL | re.IGNORECASE)
     if match:
@@ -588,22 +605,60 @@ def _strip_code_fence(text: str) -> str:
     return str(text or "").strip()
 
 
-def _extract_json_payload(text: str) -> Dict[str, Any] | None:
-    candidate = _strip_code_fence(text)
-    try:
-        parsed = json.loads(candidate)
-        return parsed if isinstance(parsed, dict) else None
-    except json.JSONDecodeError:
-        pass
+def _balanced_brace_slice(text: str) -> str | None:
+    """Return the first top-level {...} object via depth tracking (string-aware).
 
-    start = candidate.find("{")
-    end = candidate.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            parsed = json.loads(candidate[start : end + 1])
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
-            return None
+    Robust to trailing prose after the object and to stray braces inside any
+    surviving reasoning text, where a naive find('{')..rfind('}') over-captures.
+    """
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _repair_json(text: str) -> str:
+    """Cheap repairs for weak-model JSON: smart quotes and trailing commas."""
+    s = (text
+         .replace("“", '"').replace("”", '"')
+         .replace("‘", "'").replace("’", "'"))
+    s = re.sub(r",\s*([}\]])", r"\1", s)  # trailing comma before } or ]
+    return s
+
+
+def _extract_json_payload(text: str) -> Dict[str, Any] | None:
+    candidate = _strip_code_fence(strip_thinking(text))
+    # Try, in order: strict parse, balanced-brace slice, then cheap repairs on each.
+    attempts = [candidate, _balanced_brace_slice(candidate)]
+    for attempt in attempts:
+        if not attempt:
+            continue
+        for variant in (attempt, _repair_json(attempt)):
+            try:
+                parsed = json.loads(variant)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
     return None
 
 
@@ -652,6 +707,25 @@ def format_validator_feedback_for_reprompt(clause_reviews: List[Dict[str, Any]],
     return header + "\n".join(items)
 
 
+def _fallback_clause_reviews(final_content: str) -> List[Dict[str, Any]]:
+    """Deterministic clause_reviews when the validator JSON can't be parsed.
+
+    Segments the text and marks each clause supported (no inline highlight) so the
+    UI/feedback metric have a non-empty, well-shaped list to work with. Real
+    number-grounding happens in verify_commentary (which has the source df); this
+    is only the no-JSON safety net that keeps the shape valid and stops re-loops.
+    """
+    reviews: List[Dict[str, Any]] = []
+    for _start, _end, clause in segment_clauses(final_content):
+        reviews.append({
+            "clause": clause,
+            "supported": True,
+            "category": "data-backed",
+            "reason": "Auto-segmented (validator JSON unparseable).",
+        })
+    return reviews
+
+
 def parse_validator_response(raw_text: str, fallback_content: str = "") -> Dict[str, Any]:
     """
     Parse structured validator output.
@@ -664,9 +738,15 @@ def parse_validator_response(raw_text: str, fallback_content: str = "") -> Dict[
     """
     parsed = _extract_json_payload(raw_text)
     if not parsed:
+        # JSON unparseable (common on weak local models even after repair). Fall
+        # back to deterministic segmentation rather than returning [] — empty
+        # clause_reviews silently disabled highlighting AND made the account look
+        # "clean" (unsupported ratio 0), so the feedback loop and
+        # _ensure_clause_reviews_on_final kept re-running the same failing call.
+        final = strip_thinking(str(fallback_content or raw_text or "")).strip()
         return {
-            "final_content": str(fallback_content or raw_text or "").strip(),
-            "clause_reviews": [],
+            "final_content": final,
+            "clause_reviews": _fallback_clause_reviews(final),
             "raw_response": str(raw_text or ""),
         }
 
@@ -800,6 +880,257 @@ def _find_next_clause_index(text: str, clause: str, cursor: int) -> int:
     if not clause:
         return -1
     return text.find(clause, cursor)
+
+
+# ---------------------------------------------------------------------------
+# Deterministic clause segmentation + number-grounding (foundation for the
+# hallucination/reasoning verifier and the Qwen3 unparseable-JSON fallback).
+# These let the pipeline classify most clauses in Python — far more reliable on a
+# weak local model than asking it to copy clauses verbatim and do arithmetic.
+# ---------------------------------------------------------------------------
+_CLAUSE_END_CHARS = ".;。；！？!?"
+
+
+def segment_clauses(text: str) -> List[Tuple[int, int, str]]:
+    """Split `text` into 分句-level clauses on sentence-ends and clause commas.
+
+    Returns ordered (start, end, clause) where clause == text[start:end] EXACTLY
+    (so a highlighter can use the offsets directly, never needing a fuzzy
+    re-match). A comma inside a number (1,234,567) is never a boundary.
+    """
+    text = str(text or "")
+    spans: List[Tuple[int, int, str]] = []
+    n = len(text)
+    start = 0
+    for i, ch in enumerate(text):
+        boundary = ch in _CLAUSE_END_CHARS or ch in ",，"
+        if boundary and ch in ".,，":
+            # A '.' or ',' between two digits is a decimal point or thousands
+            # separator (5.8 / 1,234,567), never a clause boundary.
+            prev_c = text[i - 1] if i > 0 else ""
+            next_c = text[i + 1] if i + 1 < n else ""
+            if prev_c.isdigit() and next_c.isdigit():
+                boundary = False
+        if boundary:
+            _append_clause_span(spans, text, start, i + 1)
+            start = i + 1
+    _append_clause_span(spans, text, start, n)
+    return spans
+
+
+def _append_clause_span(spans: List[Tuple[int, int, str]], text: str, start: int, end: int) -> None:
+    chunk = text[start:end]
+    stripped = chunk.strip()
+    if not stripped:
+        return
+    lead = len(chunk) - len(chunk.lstrip())
+    s = start + lead
+    spans.append((s, s + len(stripped), stripped))
+
+
+# Money expressions only — bare integers/years/percentages are intentionally NOT
+# treated as groundable amounts (keeps false-positive hallucination flags low).
+_AMT_MILLION = re.compile(r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)?\s*(\d[\d,]*(?:\.\d+)?)\s*(?:million|mn)\b", re.IGNORECASE)
+_AMT_YI = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*亿")
+_AMT_WAN = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*万")
+_AMT_CUR_PREFIX = re.compile(r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)\s*(\d[\d,]*(?:\.\d+)?)", re.IGNORECASE)
+_AMT_GROUPED = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?)")
+
+
+def _to_float(token: str) -> Optional[float]:
+    try:
+        return float(str(token).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_amounts(clause: str) -> List[float]:
+    """Extract absolute money amounts (scaled to base units) from a clause.
+
+    Scale-bearing forms (million / 万 / 亿) are parsed first and their matched text
+    blanked so a following currency-prefix/grouped pass cannot double-count the
+    same figure (e.g. 'CNY5.8 million' must yield 5.8e6, not also 5.8).
+    """
+    amounts: List[float] = []
+    work = clause
+    # Each pass blanks the span it consumed so a later, looser pass cannot
+    # re-count the same figure (e.g. 'CNY5.8 million' -> 5.8e6 only; 'CNY54,950'
+    # -> 54950 once, not also via the grouped-thousands pass).
+    for rx, scale in ((_AMT_MILLION, 1e6), (_AMT_YI, 1e8), (_AMT_WAN, 1e4),
+                      (_AMT_CUR_PREFIX, 1.0), (_AMT_GROUPED, 1.0)):
+        def _sub(m: "re.Match") -> str:
+            v = _to_float(m.group(1))
+            if v is not None:
+                amounts.append(v * scale)
+            return " " * len(m.group(0))
+        work = rx.sub(_sub, work)
+    return amounts
+
+
+class SourceIndex:
+    """Numeric values present in an account's source data, for grounding amounts."""
+
+    def __init__(self, values: List[float]):
+        self.values = [v for v in values if v is not None]
+
+    @classmethod
+    def from_df(cls, df) -> "SourceIndex":
+        values: List[float] = []
+        if df is not None and hasattr(df, "columns"):
+            for col in df.columns:
+                series = df[col]
+                col_vals: List[float] = []
+                if getattr(series, "dtype", None) is not None and series.dtype.kind in "if":
+                    col_vals = [float(v) for v in series.dropna().tolist()]
+                else:
+                    for cell in series.tolist():
+                        v = _to_float(cell) if isinstance(cell, (int, float, str)) else None
+                        if v is not None:
+                            col_vals.append(v)
+                values += col_vals
+                # Add the column total — commentary frequently cites a total that
+                # isn't a single cell; including it avoids false hallucination flags.
+                if col_vals:
+                    values.append(sum(col_vals))
+        return cls(values)
+
+    def matches(self, target: float) -> bool:
+        """±5% tolerance at >=CNY1m scale (rounding noise), near-exact below."""
+        for v in self.values:
+            if v == 0 and target == 0:
+                return True
+            if abs(v) >= 1_000_000:
+                if abs(target - v) <= 0.05 * abs(v):
+                    return True
+            elif abs(round(target) - round(v)) < 1:
+                return True
+            # also tolerate display-rounded sub-million (e.g. 54,950 vs 54,948)
+            elif v != 0 and abs(target - v) <= max(1.0, 0.01 * abs(v)):
+                return True
+        return False
+
+
+def ground_amounts(clause: str, source: SourceIndex) -> Optional[Dict[str, Any]]:
+    """Deterministic verdict for a clause based on its money amounts.
+
+    Returns None when the clause has no groundable amount (defer to the LLM/soft
+    judgement). Otherwise returns a clause-review dict with a confidence.
+    """
+    amounts = extract_amounts(clause)
+    if not amounts:
+        return None
+    unmatched = [a for a in amounts if not source.matches(a)]
+    if unmatched:
+        return {
+            "supported": False,
+            "category": "hallucination",
+            "conf": 0.9,
+            "reason": f"Amount(s) {', '.join(f'{u:,.0f}' for u in unmatched)} not found in source data within tolerance.",
+        }
+    return {
+        "supported": True,
+        "category": "data-backed",
+        "conf": 1.0,
+        "reason": "All amounts matched source data within tolerance.",
+    }
+
+
+# Causal / inference / projection language that needs a soft (non-numeric)
+# judgement — a clause containing these but no checkable amount is "reasoning"
+# unless the LLM verified it against notes/remarks.
+_CAUSAL_RE = re.compile(
+    r"driven by|attributed to|reflect|due to|owing to|as a result|because|"
+    r"thanks to|annualis|recurring|did not recur|no material|management (?:said|stated|noted)|"
+    r"由于|反映|主要系|主要由于|预计|年化|归因于|得益于",
+    re.IGNORECASE,
+)
+
+
+def _has_causal_language(clause: str) -> bool:
+    return bool(_CAUSAL_RE.search(clause or ""))
+
+
+def _norm_clause_key(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "")).lower().strip(_CLAUSE_BOUNDARY_CHARS)
+
+
+def _lookup_llm_review(clause: str, llm_reviews: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Find the LLM review whose clause best overlaps this segmented clause."""
+    key = _norm_clause_key(clause)
+    if not key:
+        return None
+    best = None
+    best_len = 0
+    for r in llm_reviews or []:
+        rk = _norm_clause_key(r.get("clause", ""))
+        if not rk:
+            continue
+        if rk in key or key in rk:
+            overlap = min(len(rk), len(key))
+            if overlap > best_len:
+                best, best_len = r, overlap
+    return best
+
+
+# Confidence floors per source of verdict.
+_CONF_DET_HALLUCINATION = 0.9
+_CONF_DET_DATA_BACKED = 1.0
+_CONF_LLM_FLAG = 0.7
+_CONF_DEFAULT_REASONING = 0.5
+
+
+def _combine_verdict(clause: str, det: Optional[Dict[str, Any]],
+                     llm: Optional[Dict[str, Any]], highlight_min_conf: float) -> Dict[str, Any]:
+    """Merge deterministic number-grounding with the LLM's soft judgement.
+
+    Precedence: a deterministic unmatched-amount hallucination is authoritative
+    (the model cannot override hard arithmetic). When amounts all match, an LLM
+    *reasoning* flag is preserved (numbers fine, inference unsupported) but an LLM
+    *number-hallucination* claim is dropped (it was a false positive). Clauses with
+    no checkable amount defer to the LLM; absent that, causal language => reasoning.
+    """
+    llm_cat = str((llm or {}).get("category") or "").lower()
+    llm_supported = bool((llm or {}).get("supported")) if llm else True
+
+    if det and det["category"] == "hallucination":
+        category, supported, conf, reason = "hallucination", False, _CONF_DET_HALLUCINATION, det["reason"]
+    elif det and det["category"] == "data-backed":
+        if llm and llm_cat == "reasoning" and not llm_supported:
+            category, supported, conf = "reasoning", False, _CONF_LLM_FLAG
+            reason = (llm or {}).get("reason") or "Numbers verified; inference not directly supported."
+        else:
+            # numbers matched -> drop any LLM 'hallucination' false positive
+            category, supported, conf, reason = "data-backed", True, _CONF_DET_DATA_BACKED, det["reason"]
+    elif llm and llm_cat in ("reasoning", "hallucination") and not llm_supported:
+        category, supported, conf = llm_cat, False, _CONF_LLM_FLAG
+        reason = (llm or {}).get("reason") or "Flagged by validator."
+    elif _has_causal_language(clause):
+        category, supported, conf = "reasoning", False, _CONF_DEFAULT_REASONING
+        reason = "Causal/inference clause with no figure to verify against source."
+    else:
+        category, supported, conf, reason = "data-backed", True, _CONF_DET_DATA_BACKED, "No checkable figure; no causal claim."
+
+    # Confidence gate: low-confidence flags are demoted so they don't highlight
+    # inline (keeps false positives low — the user's stated priority).
+    if not supported and conf < highlight_min_conf:
+        category, supported = "data-backed", True
+    return {"clause": clause, "supported": supported, "category": category, "reason": reason}
+
+
+def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[Dict[str, Any]]] = None,
+                      *, highlight_min_conf: float = 0.6) -> List[Dict[str, Any]]:
+    """Authoritative clause_reviews: deterministic number-grounding layered over the
+    LLM's soft reasoning judgement. Each clause is a verbatim substring of
+    final_content, so highlighting matches by exact offset. Returns the existing
+    clause_reviews shape [{clause, supported, category, reason}]."""
+    source = SourceIndex.from_df(df)
+    llm_reviews = llm_clause_reviews or []
+    out: List[Dict[str, Any]] = []
+    for _s, _e, clause in segment_clauses(final_content):
+        det = ground_amounts(clause, source)
+        llm = _lookup_llm_review(clause, llm_reviews)
+        out.append(_combine_verdict(clause, det, llm, highlight_min_conf))
+    return out
 
 
 def build_highlighted_commentary_html(final_content: str, clause_reviews: List[Dict[str, Any]]) -> str:
@@ -2340,14 +2671,15 @@ class AIClient:
         return "".join(response_buffer)
     
     def get_response(
-        self, 
-        user_prompt: str, 
+        self,
+        user_prompt: str,
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
         frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None
+        presence_penalty: Optional[float] = None,
+        allow_thinking: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Get response from AI model or heuristic.
@@ -2437,10 +2769,28 @@ class AIClient:
                 response = response_method(**params)
                 content = self._extract_response_content(response)
                 usage = getattr(response, 'usage', None)
-                
+
             elif self.model_type == 'local':
                 params['stream'] = True
-                response = response_method(**params)
+                # Qwen3: turn OFF thinking for structured/JSON stages (Auditor,
+                # Validator) — it adds latency and pollutes output with no quality
+                # gain. vLLM/SGLang honour chat_template_kwargs.enable_thinking.
+                # If a different server rejects the field, retry without it
+                # (strip_thinking still cleans any inline <think> as a fallback).
+                if allow_thinking is False:
+                    local_params = dict(params)
+                    local_params['extra_body'] = {'chat_template_kwargs': {'enable_thinking': False}}
+                    try:
+                        response = response_method(**local_params)
+                    except TypeError:
+                        response = response_method(**params)
+                    except Exception as exc:
+                        if 'extra_body' in str(exc) or 'enable_thinking' in str(exc) or 'chat_template' in str(exc):
+                            response = response_method(**params)
+                        else:
+                            raise
+                else:
+                    response = response_method(**params)
 
                 content = self._extract_stream_response_content(response)
                 usage = getattr(response, 'usage', None)
@@ -2567,6 +2917,11 @@ class _StageCircuitBreaker:
 _PIPELINE_BREAKER = _StageCircuitBreaker(threshold=4)
 
 
+# Active pipeline stages, in order. The Refiner (subagent_3 / 3_Refiner) is
+# DORMANT by design — its config/prompts are retained for reference but it is
+# deliberately omitted here, so the runtime is a 3-stage pipeline despite the
+# "4 subagent" naming elsewhere. Add ("subagent_3", "Refiner") between Auditor
+# and Validator to re-enable it.
 SUBAGENT_SEQUENCE = [
     ("subagent_1", "Generator"),
     ("subagent_2", "Auditor"),
@@ -2629,6 +2984,7 @@ def load_prompts_and_format(
 
 def clean_agent_output(content: str) -> str:
     """Remove common meta-commentary from agent outputs."""
+    content = strip_thinking(content)  # drop any Qwen3 <think> block first
     prefixes_to_remove = [
         r"^verified\s+output:\s*",
         r"^corrected\s+output:\s*",
@@ -2753,6 +3109,7 @@ def _run_ai_call(ai_helper, user_prompt: str, system_prompt: str, agent_name: st
                 top_p=agent_cfg.get("top_p"),
                 frequency_penalty=agent_cfg.get("frequency_penalty"),
                 presence_penalty=agent_cfg.get("presence_penalty"),
+                allow_thinking=agent_cfg.get("allow_thinking"),
             )
             result_container["completed"] = True
         except Exception as exc:  # pragma: no cover - defensive
@@ -2866,7 +3223,12 @@ def process_single_agent_item(
             if attempt > 1 and retry_backoffs[attempt - 1] > 0:
                 time.sleep(retry_backoffs[attempt - 1])
             try:
-                call_timeout = int(agent_cfg.get("call_timeout", 30))
+                # Local models (Qwen3-32B etc.) are slow and emit <think> tokens, so the
+                # default must give the SAME headroom to every stage. Previously only the
+                # Validator set call_timeout=90 in config; Generator/Auditor fell to 30s and
+                # timed out on large prompts. Derive a model-aware default so all stages match.
+                _default_timeout = 90 if getattr(ai_helper, "model_type", "") == "local" else 30
+                call_timeout = int(agent_cfg.get("call_timeout", _default_timeout))
                 response = _run_ai_call(ai_helper, user_prompt, system_prompt, agent_name, timeout=call_timeout)
                 last_exc = None
                 _PIPELINE_BREAKER.record_success(agent_name)
@@ -2898,6 +3260,19 @@ def process_single_agent_item(
             previous_output=previous_output,
             language=ai_helper.language,
         )
+
+        # Deterministic hallucination/reasoning verification: layer Python
+        # number-grounding over the validator's soft judgement. This catches
+        # fabricated figures the weak local model misses AND drops its false
+        # positives on figures that actually match the source. Wrapped so a
+        # verifier error never breaks the pipeline (keeps the LLM clause_reviews).
+        if agent_name == "subagent_4" and metadata and df is not None:
+            try:
+                metadata["clause_reviews"] = verify_commentary(
+                    content, df, metadata.get("clause_reviews"),
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.logger.warning("[verify_commentary] %s: %s", mapping_key, exc)
 
         if logger.debug_mode and agent_name == "subagent_4" and metadata.get("clause_reviews"):
             reviews = metadata["clause_reviews"]
@@ -3141,6 +3516,10 @@ def run_ai_pipeline_with_progress(
     # --- Feedback loop: re-run generator+validator for accounts with too many unsupported clauses ---
     feedback_config = fdd_config.get_feedback_loop_config()
     if feedback_config.get("enabled"):
+        # Reset breakers: a stage tripped during the main run would otherwise stay
+        # OPEN and make the feedback loop fail-fast (skip) every account silently.
+        for _stage, _ in SUBAGENT_SEQUENCE:
+            _PIPELINE_BREAKER.reset_stage(_stage)
         logger.logger.info(
             "Starting feedback loop (max_retries=%s, threshold=%.2f)",
             feedback_config["max_retries"],
@@ -3197,6 +3576,9 @@ def run_ai_pipeline_with_progress(
     # didn't produce clause_reviews (timeout, parse failure, etc.), run a
     # one-shot validator pass on the final text. Runs only for accounts that
     # need it, in parallel.
+    # Reset the Validator breaker first so a tripped main-run stage doesn't make
+    # this re-validation pass fail-fast for every account.
+    _PIPELINE_BREAKER.reset_stage("subagent_4")
     _ensure_clause_reviews_on_final(
         results=results,
         dfs=dfs,
