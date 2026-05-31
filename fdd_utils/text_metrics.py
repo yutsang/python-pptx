@@ -66,6 +66,99 @@ DEFAULT_BIns_EMU = 45720   # 0.05"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
 
+# ---------------------------------------------------------------------------
+# Metrics-only measurement (no font binary required)
+# ---------------------------------------------------------------------------
+# When the client's font cannot leave their environment as a file, run
+# dump_font_metrics.py there to emit a JSON advance-width table (TEXT), paste it
+# here, and load it with MetricsTable.from_json(). This reproduces exact
+# line-wrapping/fit from advance widths alone — glyph outlines are not needed.
+class MetricsTable:
+    """Advance-width table reconstructed from dump_font_metrics.py JSON text."""
+
+    def __init__(self, *, family: str, units_per_em: int, ascent: int, descent: int,
+                 line_gap: int, default_advance: int, exceptions: dict,
+                 cjk_full_width: bool = False):
+        self.family = family
+        self.units_per_em = max(1, int(units_per_em))
+        self.ascent = int(ascent)
+        self.descent = int(descent)
+        self.line_gap = int(line_gap)
+        self.default_advance = int(default_advance)
+        self._exceptions = {int(k): int(v) for k, v in (exceptions or {}).items()}
+        self.cjk_full_width = bool(cjk_full_width)
+
+    @classmethod
+    def from_json(cls, text_or_obj) -> "MetricsTable":
+        import json as _json
+        obj = text_or_obj if isinstance(text_or_obj, dict) else _json.loads(text_or_obj)
+        if "fonts" in obj and isinstance(obj["fonts"], list) and obj["fonts"]:
+            obj = obj["fonts"][0]  # first font of a multi-font dump
+        return cls(
+            family=obj.get("family", "embedded"),
+            units_per_em=obj.get("units_per_em", 1000),
+            ascent=obj.get("ascent", 800),
+            descent=obj.get("descent", -200),
+            line_gap=obj.get("line_gap", 0),
+            default_advance=obj.get("default_advance", obj.get("units_per_em", 1000)),
+            exceptions=obj.get("exceptions", {}),
+            cjk_full_width=obj.get("cjk_full_width", False),
+        )
+
+    def char_width_pt(self, ch: str, size_pt: float) -> float:
+        units = self._exceptions.get(ord(ch), self.default_advance)
+        return units / self.units_per_em * size_pt
+
+    def text_width_pt(self, text: str, size_pt: float) -> float:
+        return sum(self.char_width_pt(c, size_pt) for c in str(text or ""))
+
+    def line_height_pt(self, size_pt: float, *, line_spacing: float = 1.0) -> float:
+        # (ascent - descent + line_gap) scaled to point size, then × spacing.
+        raw = (self.ascent - self.descent + self.line_gap) / self.units_per_em * size_pt
+        return raw * line_spacing
+
+
+def wrap_text_with_metrics(text: str, metrics: "MetricsTable", *, size_pt: float,
+                           max_width_pt: float) -> List[str]:
+    """Greedy word-wrap using a MetricsTable's advance widths (no font file).
+
+    Latin text wraps on spaces; CJK (no spaces) wraps per character. Mixed text is
+    handled by treating a CJK char as its own breakable unit.
+    """
+    if max_width_pt <= 0 or not str(text or "").strip():
+        return [text] if text else []
+    lines: List[str] = []
+    cur = ""
+    cur_w = 0.0
+
+    def _flush():
+        nonlocal cur, cur_w
+        lines.append(cur)
+        cur, cur_w = "", 0.0
+
+    # Tokenize into words (Latin runs) and individual CJK chars / spaces.
+    import re as _re
+    tokens = _re.findall(r"[^\s　-鿿＀-￯]+|[　-鿿＀-￯]|\s+", text)
+    for tok in tokens:
+        if tok.isspace():
+            w = metrics.text_width_pt(tok, size_pt)
+            if cur and cur_w + w <= max_width_pt:
+                cur += tok
+                cur_w += w
+            continue
+        w = metrics.text_width_pt(tok, size_pt)
+        if cur and cur_w + w > max_width_pt:
+            _flush()
+            tok_stripped = tok
+            cur, cur_w = tok_stripped, metrics.text_width_pt(tok_stripped, size_pt)
+        else:
+            cur += tok
+            cur_w += w
+    if cur.strip():
+        lines.append(cur)
+    return lines or [text]
+
+
 def emu_to_pt(emu: float) -> float:
     return emu / EMU_PER_POINT
 
