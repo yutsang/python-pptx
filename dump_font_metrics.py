@@ -25,6 +25,43 @@ import zipfile
 from collections import Counter
 
 
+_SFNT_SIGS = (b"\x00\x01\x00\x00", b"OTTO", b"true", b"ttcf")
+
+
+def _unwrap_eot(data: bytes) -> bytes:
+    """Return the raw TTF/OTF inside a PowerPoint .fntdata (EOT) blob.
+
+    EOT layout: [EOTSize u32][FontDataSize u32][Version u32][Flags u32]...[fontdata].
+    Font data sits at the end and may be XOR-masked with 0x50. Returns the input
+    unchanged if it already looks like a plain sfnt; raises if it can't be unwrapped.
+    """
+    import struct
+    if data[:4] in _SFNT_SIGS:
+        return data
+    cands = []
+    if len(data) >= 16:
+        eot_size, fds, _ver, flags = struct.unpack_from("<IIII", data, 0)
+        segs = []
+        if 0 < fds <= len(data):
+            segs.append(data[len(data) - fds:])
+        if 0 < eot_size <= len(data) and 0 < fds <= eot_size:
+            segs.append(data[eot_size - fds: eot_size])
+        for seg in segs:
+            cands.append(seg)
+            if flags & 0x10000000:  # TTEMBED_XORENCRYPTDATA
+                cands.append(bytes(b ^ 0x50 for b in seg))
+        if flags & 0x00000004:  # TTEMBED_TTCOMPRESSED
+            raise ValueError("EOT MicroType-compressed — cannot decode (ask client for the .ttf)")
+    for sig in _SFNT_SIGS:
+        i = data.find(sig)
+        if i > 0:
+            cands.append(data[i:])
+    for c in cands:
+        if c[:4] in _SFNT_SIGS:
+            return c
+    raise ValueError("not a TTF/OTF and not unwrappable (first16=%s)" % data[:16].hex())
+
+
 def _load_embedded_from_pptx(path: str) -> list[tuple[str, bytes]]:
     out: list[tuple[str, bytes]] = []
     with zipfile.ZipFile(path) as zf:
@@ -36,6 +73,7 @@ def _load_embedded_from_pptx(path: str) -> list[tuple[str, bytes]]:
 
 def _metrics_from_bytes(data: bytes, source: str, ascii_only: bool) -> dict:
     from fontTools.ttLib import TTFont
+    data = _unwrap_eot(data)   # PowerPoint embeds fonts as EOT — unwrap to raw sfnt first
     tt = TTFont(io.BytesIO(data), fontNumber=0, lazy=True)
 
     upm = int(tt["head"].unitsPerEm)

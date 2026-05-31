@@ -18,6 +18,7 @@ What it tells you:
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 import zipfile
 from pathlib import Path
@@ -28,6 +29,11 @@ def _localname(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+_SFNT_SIGS = (b"\x00\x01\x00\x00", b"OTTO", b"true", b"ttcf")
+_EOT_XOR = 0x10000000        # TTEMBED_XORENCRYPTDATA  -> font data XOR'd with 0x50
+_EOT_COMPRESSED = 0x00000004  # TTEMBED_TTCOMPRESSED    -> MicroType Express (can't decode here)
+
+
 def _detect_ext(head: bytes) -> str:
     if head[:4] in (b"\x00\x01\x00\x00", b"true", b"ttcf"):
         return ".ttf"
@@ -36,6 +42,54 @@ def _detect_ext(head: bytes) -> str:
     if head[:4] in (b"wOFF", b"wOF2"):
         return ".woff"
     return ".bin"
+
+
+def _candidate_sfnts(data: bytes):
+    """Yield (method, bytes) candidates for the real TTF/OTF inside a .fntdata blob.
+
+    PowerPoint embeds fonts as EOT: [EOTSize u32][FontDataSize u32][Version u32]
+    [Flags u32]...[font data at the END]. The font data may be XOR-masked (0x50).
+    """
+    import struct
+    if data[:4] in _SFNT_SIGS:
+        yield ("raw", data)
+    if len(data) >= 16:
+        eot_size, fds, _ver, flags = struct.unpack_from("<IIII", data, 0)
+        segments = []
+        if 0 < fds <= len(data):
+            segments.append(data[len(data) - fds:])
+        if 0 < eot_size <= len(data) and 0 < fds <= eot_size:
+            segments.append(data[eot_size - fds: eot_size])
+        for seg in segments:
+            yield ("eot", seg)
+            if flags & _EOT_XOR:
+                yield ("eot+xor", bytes(b ^ 0x50 for b in seg))
+        if flags & _EOT_COMPRESSED:
+            yield ("__compressed__", b"")
+    for sig in _SFNT_SIGS:
+        i = data.find(sig)
+        if i > 0:
+            yield (f"scan@{i}", data[i:])
+
+
+def _extract_sfnt(data: bytes):
+    """Return (sfnt_bytes, method) for the first candidate fontTools can open, else (None, reason)."""
+    from fontTools.ttLib import TTFont
+    compressed = False
+    for method, cand in _candidate_sfnts(data):
+        if method == "__compressed__":
+            compressed = True
+            continue
+        if not cand or cand[:4] not in _SFNT_SIGS:
+            continue
+        try:
+            TTFont(io.BytesIO(cand), fontNumber=0, lazy=True)
+            return cand, method
+        except Exception:
+            continue
+    if compressed:
+        return None, "EOT MicroType-compressed (TTCOMPRESSED) — cannot decode without an MTX decompressor"
+    return None, "no decodable TTF/OTF found (first 16 bytes: %s)" % data[:16].hex()
 
 
 def _parse_embedded_font_list(zf: zipfile.ZipFile) -> list[dict]:
@@ -164,14 +218,19 @@ def main() -> int:
         for rid, member in targets.items():
             if member not in names:
                 continue
-            data = zf.read(member)
-            ext = _detect_ext(data[:8])
+            raw = zf.read(member)
             label = rid_label.get(rid, Path(member).stem)
             safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in label)
+            sfnt, method = _extract_sfnt(raw)
+            if sfnt is None:
+                print(f"\n⚠️  {label}: could not unwrap — {method}")
+                print("      (ask the client to send the .ttf directly, or re-embed uncompressed)")
+                continue
+            ext = _detect_ext(sfnt[:8])
             dest = out_dir / f"{safe}{ext}"
-            dest.write_bytes(data)
+            dest.write_bytes(sfnt)
             extracted.append(dest)
-            print(f"\n✅ {label}  →  {dest}  ({len(data):,} bytes, {ext})")
+            print(f"\n✅ {label}  →  {dest}  ({len(sfnt):,} bytes, {ext}, unwrap={method})")
             print(_analyse(dest))
 
         print(f"\nDone. {len(extracted)} font file(s) in {out_dir}/")
