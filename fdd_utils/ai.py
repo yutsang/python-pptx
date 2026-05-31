@@ -36,6 +36,16 @@ def resolve_agent_alias(agent_name: str) -> str:
     return SUBAGENT_ALIASES.get(agent_name, agent_name)
 
 
+# Prompt files (mappings.yml / prompts.yml) key prompts by "Eng" / "Chi", but the
+# UI radio stores the language as "Eng" / "Chn". Every consumer that looks up a
+# prompt or applies language-specific styling MUST see the normalized code, or
+# Chinese runs silently degrade ("No prompts available" / English styling on CN).
+# Normalize once, centrally, at every boundary that stores or looks up a language.
+def normalize_language_code(language: str) -> str:
+    """Map the UI language code 'Chn' to the prompt-file key 'Chi'. Idempotent."""
+    return "Chi" if language == "Chn" else language
+
+
 DEFAULT_CONFIG_FILENAME = "config.yml"
 DEFAULT_DATA_FORMAT = "json"
 DEFAULT_AGENT_CONFIG = {"temperature": 0.7, "max_tokens": 2000, "top_p": 0.9}
@@ -144,7 +154,7 @@ class FDDConfig:
         language: str = "Eng",
         model_type: str = "deepseek",
     ):
-        self.language = language
+        self.language = normalize_language_code(language)
         self.model_type_requested = model_type
         self.config_path = config_path or self._get_default_config_path()
         self.config = self._load_config()
@@ -697,6 +707,11 @@ def _wrap_commentary_html(text: str, *, escape_html: bool) -> str:
     return f'<div class="fdd-final-commentary">{paragraph_html}</div>'
 
 
+# Boundary punctuation stripped when retrying a clause match — both ASCII and the
+# fullwidth marks common in Chinese commentary (，。；：、！？「」『』（）).
+_CLAUSE_BOUNDARY_CHARS = " \t\r\n\"'`.,;:!?，。；：、！？「」『』（）()"
+
+
 def _normalize_match_text(text: str) -> str:
     normalized = re.sub(r"\s+", " ", str(text or "").strip())
     normalized = normalized.strip(" \t\r\n\"'`")
@@ -755,11 +770,26 @@ def _find_clause_span(text: str, clause: str, cursor: int) -> tuple[int, int]:
     normalized_index = normalized_text.find(normalized_clause, normalized_cursor)
     if normalized_index < 0:
         normalized_index = normalized_text.find(normalized_clause)
+
+    match_len = len(normalized_clause)
+    if normalized_index < 0:
+        # Punctuation-tolerant retry. The Validator often returns a clause whose
+        # leading/trailing punctuation differs from the source text — most common
+        # in Chinese, where it may add or drop a fullwidth 。／，／；. Strip those
+        # boundary marks from the clause and search again so the clause still
+        # highlights inline instead of silently falling back to the notes block.
+        stripped_clause = normalized_clause.strip(_CLAUSE_BOUNDARY_CHARS)
+        if stripped_clause and stripped_clause != normalized_clause:
+            normalized_index = normalized_text.find(stripped_clause, normalized_cursor)
+            if normalized_index < 0:
+                normalized_index = normalized_text.find(stripped_clause)
+            if normalized_index >= 0:
+                match_len = len(stripped_clause)
     if normalized_index < 0:
         return (-1, -1)
 
     start = index_map[normalized_index]
-    end_idx = normalized_index + len(normalized_clause) - 1
+    end_idx = normalized_index + match_len - 1
     if end_idx >= len(index_map):
         return (-1, -1)
     end = index_map[end_idx] + 1
@@ -775,7 +805,9 @@ def _find_next_clause_index(text: str, clause: str, cursor: int) -> int:
 def build_highlighted_commentary_html(final_content: str, clause_reviews: List[Dict[str, Any]]) -> str:
     """
     Render final commentary HTML with unsupported clauses highlighted.
-    Uses category-specific CSS classes: fdd-hallucination-clause (yellow) and fdd-reasoning-clause (orange).
+    Uses category-specific CSS classes: fdd-hallucination-clause (red — the more
+    severe, unsupported-by-data class) and fdd-reasoning-clause (orange — milder
+    inference). Colours are defined in fdd_app.py.
     """
     text = str(final_content or "")
     flagged_reviews = [
@@ -798,7 +830,10 @@ def build_highlighted_commentary_html(final_content: str, clause_reviews: List[D
             unmatched_reviews.append(review)
             continue
         rendered_parts.append(html.escape(text[cursor:start]))
-        category = str(review.get("category") or "hallucination").lower()
+        # category is set by _normalize_clause_review (always one of data-backed /
+        # reasoning / hallucination); the "reasoning" fallback only guards a caller
+        # that bypasses normalization, and matches the normalizer's own default.
+        category = str(review.get("category") or "reasoning").lower()
         reason = str(review.get("reason") or "This clause may not be fully supported by the provided data.")
         category_label = "Hallucination" if category == "hallucination" else "Reasoning"
         tooltip = f"[{category_label}] {reason}"
@@ -821,7 +856,7 @@ def build_highlighted_commentary_html(final_content: str, clause_reviews: List[D
     note_items = "".join(
         "<li><strong>{clause}</strong> [{category}]<br>{reason}</li>".format(
             clause=html.escape(str(review.get("clause") or "")),
-            category=html.escape(str(review.get("category") or "hallucination")),
+            category=html.escape(str(review.get("category") or "reasoning")),
             reason=html.escape(
                 str(review.get("reason") or "This clause may not be fully supported by the provided data.")
             ),
@@ -1128,7 +1163,7 @@ class PromptStylePack:
     """Small style pack mirroring the HR separation of prompts and style rules."""
 
     def __init__(self, language: str = "Eng"):
-        self.language = language
+        self.language = normalize_language_code(language)
 
     def language_instruction(self) -> str:
         if self.language == "Chi":
@@ -1255,6 +1290,7 @@ class PromptEngine:
         return None
 
     def get_agent_defaults(self, agent_name: str, language: str) -> Tuple[str, str]:
+        language = normalize_language_code(language)
         agent_key = self.normalize_agent_name(agent_name)
         if agent_key == "1_Generator":
             generic_prompts = self.mappings_data.get("_default_subagent_1", {}).get(language, {})
@@ -1264,6 +1300,7 @@ class PromptEngine:
         return prompt_data.get("system_prompt", ""), prompt_data.get("user_prompt", "")
 
     def get_prompt_pair(self, agent_name: str, language: str, mapping_key: str) -> Tuple[str, str]:
+        language = normalize_language_code(language)
         agent_key = self.normalize_agent_name(agent_name)
         resolved_mapping_key = self.resolve_mapping_key(mapping_key)
 
@@ -2002,9 +2039,13 @@ class AIClient:
         """
         self.model_type_requested = model_type
         self.agent_name = agent_name
+        # Normalize "Chn" -> "Chi" once here: AIClient is built by every pipeline
+        # entry point, so this guarantees prompt lookups and styling get the right
+        # code regardless of which entry point (pipeline, reprompt, validator) ran.
+        language = normalize_language_code(language)
         self.language = language
         self.use_heuristic = use_heuristic
-        
+
         # Load configuration (may resolve e.g. local -> deepseek if local has no api_base/api_key)
         self.config_path = config_path or package_file_path('config.yml')
         self.config_manager = FDDConfig(
@@ -3058,8 +3099,7 @@ def run_ai_pipeline_with_progress(
 ) -> Dict[str, Dict[str, str]]:
     """Run the 4-agent FDD pipeline with optional progress callbacks."""
     # Normalise UI language codes ("Chn" → "Chi") to match prompt-file keys.
-    if language == "Chn":
-        language = "Chi"
+    language = normalize_language_code(language)
     total_items = len([key for key in mapping_keys if key in dfs])
     fdd_config = FDDConfig(language=language, model_type=model_type)
     debug_mode = fdd_config.get_debug_mode()
@@ -3360,6 +3400,9 @@ def run_generator_reprompt(
     user_comments: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Dict[str, str]]:
     """Regenerate selected items, then immediately revalidate the revised output."""
+    # Mirror run_ai_pipeline_with_progress: normalise "Chn" → "Chi" so the Chinese
+    # reprompt path resolves prompts and applies Chinese styling (not English).
+    language = normalize_language_code(language)
     logger = PipelineRunLogger()
     prompt_manager = get_prompt_engine()
     ai_helper = AIClient(

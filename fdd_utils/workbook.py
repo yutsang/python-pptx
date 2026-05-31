@@ -2516,9 +2516,11 @@ def extract_balance_sheet_and_income_statement(
                 break
 
         if bs_start_row is None:
-            relaxed_bs_keywords = ["资产负债表", "資產負債表"]
+            # Mirror the relaxed IS fallback below: lowercase the row so the English
+            # keyword matches any case ("BALANCE SHEET" / "Balance Sheet").
+            relaxed_bs_keywords = ["资产负债表", "資產負債表", "balance sheet"]
             for idx, row in df.iterrows():
-                row_str = ' '.join(row.astype(str).values)
+                row_str = ' '.join(row.astype(str).values).lower()
                 if any(keyword in row_str for keyword in relaxed_bs_keywords):
                     bs_start_row = idx
                     if debug:
