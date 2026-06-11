@@ -397,9 +397,16 @@ if st.session_state.get('process_data_clicked', False):
                     mapping_overrides=st.session_state.get("mapping_overrides") or None,
                     debug=debug_mode,
                 )
+                # Language: auto-match from the databook, but in the UI convention
+                # ("Eng"/"Chn") so every downstream == "Chn" check agrees, and NEVER
+                # overwrite a manual override the project team already set this session.
+                _detected_lang = processed_state.pop("language", "Eng")
+                _detected_ui = "Chn" if str(_detected_lang).strip() in ("Chi", "Chn", "chinese", "Chinese") else "Eng"
                 st.session_state.update(
                     {key: value for key, value in processed_state.items() if key != "display_dfs_original"}
                 )
+                if not st.session_state.get("language_user_set"):
+                    st.session_state.language = _detected_ui
                 if 'model_type' not in st.session_state:
                     st.session_state.model_type = 'local'
                 st.success("✅ Data processed successfully!")

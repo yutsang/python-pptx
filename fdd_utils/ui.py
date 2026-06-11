@@ -13,6 +13,9 @@ DEFAULT_SESSION_STATE = {
     "workbook_list": [],
     "display_workbook_list": [],
     "language": "Eng",
+    # True once the project team manually picks a language in the sidebar, so the
+    # auto-detected language stops overwriting their choice (until a new upload).
+    "language_user_set": False,
     "bs_is_results": None,
     "ai_results": None,
     "reconciliation": None,
@@ -41,6 +44,9 @@ RESET_SESSION_KEYS = [
     "workbook_list",
     "display_workbook_list",
     "language",
+    # Reset the manual-override flag on a new upload so the new databook is
+    # auto-detected afresh; the team can re-override it for that file.
+    "language_user_set",
     "bs_is_results",
     "ai_results",
     "reconciliation",
@@ -1576,7 +1582,14 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
 
         st.markdown("---")
         st.markdown("**🌐 Language**")
+        # Reconcile to the UI convention ("Eng"/"Chn"). Auto-detection may store
+        # "Chi" — normalise it so the radio + all downstream == "Chn" checks agree.
         current_lang = session_state.get("language", "Eng")
+        if current_lang not in ("Eng", "Chn"):
+            current_lang = "Chn" if str(current_lang).strip() in ("Chi", "chinese", "Chinese") else "Eng"
+        # No widget `key`: session_state.language is the single source of truth
+        # (a keyed radio + index fight each other and make the override "stick"
+        # only intermittently). index seeds it; the return value writes it back.
         selected_lang = st.radio(
             "Language",
             options=["Eng", "Chn"],
@@ -1584,10 +1597,10 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
             index=0 if current_lang == "Eng" else 1,
             horizontal=True,
             label_visibility="collapsed",
-            key="sidebar_language_radio",
         )
-        if selected_lang != session_state.get("language"):
+        if selected_lang != current_lang:
             session_state.language = selected_lang
+            session_state.language_user_set = True   # stop auto-detect from overwriting
 
         return temp_path
 

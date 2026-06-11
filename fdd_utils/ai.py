@@ -967,6 +967,43 @@ def extract_amounts(clause: str) -> List[float]:
     return amounts
 
 
+_BARE_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _attr_text_blob(df) -> str:
+    """Concatenate all free-text in df.attrs (supporting_notes, table_linked_remarks,
+    adjacent_detail_rows, rhs context, etc.) so figures cited in the NOTES — not just
+    the numeric table — can ground a clause. Many legitimate figures (registered
+    capital, audit fees, USD amounts) live only in the remarks."""
+    parts: List[str] = []
+    attrs = getattr(df, "attrs", None) or {}
+
+    def walk(v):
+        if isinstance(v, str):
+            parts.append(v)
+        elif isinstance(v, dict):
+            for vv in v.values():
+                walk(vv)
+        elif isinstance(v, (list, tuple)):
+            for vv in v:
+                walk(vv)
+
+    for value in attrs.values():
+        walk(value)
+    return " ".join(parts)
+
+
+def _numbers_in_text(text: str) -> List[float]:
+    """Every number a remark could supply: scale-aware amounts (万/亿/million/comma)
+    PLUS bare integers/decimals (e.g. '191400', '7000', '572')."""
+    out = list(extract_amounts(text))
+    for m in _BARE_NUMBER_RE.finditer(str(text or "")):
+        v = _to_float(m.group(0))
+        if v is not None:
+            out.append(v)
+    return out
+
+
 class SourceIndex:
     """Numeric values present in an account's source data, for grounding amounts."""
 
@@ -992,20 +1029,30 @@ class SourceIndex:
                 # isn't a single cell; including it avoids false hallucination flags.
                 if col_vals:
                     values.append(sum(col_vals))
+            # Also ground against numbers cited in the supporting notes / remarks
+            # (df.attrs), e.g. registered capital "7000万美元" that never appears in
+            # the numeric table. Without this they were false-flagged as hallucinations.
+            values += _numbers_in_text(_attr_text_blob(df))
         return cls(values)
 
     def matches(self, target: float) -> bool:
-        """±5% tolerance at >=CNY1m scale (rounding noise), near-exact below."""
+        """±5% tolerance at >=CNY1m scale (rounding noise), near-exact below.
+
+        Compares MAGNITUDES: extract_amounts() drops the leading sign, so a negative
+        source cell (e.g. retained earnings -70,769,000) must still match a clause
+        amount parsed as +70,769,000."""
+        t = abs(target)
         for v in self.values:
-            if v == 0 and target == 0:
+            a = abs(v)
+            if a == 0 and t == 0:
                 return True
-            if abs(v) >= 1_000_000:
-                if abs(target - v) <= 0.05 * abs(v):
+            if a >= 1_000_000:
+                if abs(t - a) <= 0.05 * a:
                     return True
-            elif abs(round(target) - round(v)) < 1:
+            elif abs(round(t) - round(a)) < 1:
                 return True
             # also tolerate display-rounded sub-million (e.g. 54,950 vs 54,948)
-            elif v != 0 and abs(target - v) <= max(1.0, 0.01 * abs(v)):
+            elif a != 0 and abs(t - a) <= max(1.0, 0.01 * a):
                 return True
         return False
 

@@ -2941,6 +2941,16 @@ class PowerPointGenerator:
                 run.font.size = get_font_size_for_text(final_summary, force_chinese_mode=job["font_is_chinese"])
                 run.font.name = get_font_name_for_text(final_summary)
         
+        # Record the FIRST used commentary slide of this statement as a slide
+        # OBJECT (not an index). embed_financial_tables targets this so the BS/IS
+        # table lands on the correct page even after slides are added/removed.
+        if used_slide_indices:
+            first_used_idx = min(used_slide_indices)
+            if 0 <= first_used_idx < len(self.presentation.slides):
+                if not hasattr(self, "_statement_table_slides"):
+                    self._statement_table_slides = {}
+                self._statement_table_slides[statement_type] = self.presentation.slides[first_used_idx]
+
         # Note: Unused slides will be removed at the end, after all content and tables are embedded
         # Store unused slides for later removal
         statement_slide_range = list(range(start_slide - 1, min(start_slide + 3, len(self.presentation.slides))))
@@ -4299,41 +4309,46 @@ Original content:
                         if pd.api.types.is_numeric_dtype(_df[_col]):
                             _df[_col] = _df[_col] / 1000.0
             
-            # Embed BS table to slide 0 (page 1)
-            if bs_df is not None and not bs_df.empty and len(self.presentation.slides) > 0:
-                slide_0 = self.presentation.slides[0]
-                logger.info("Looking for table shape on slide 1, available shapes: %s", [s.name if hasattr(s, 'name') else type(s).__name__ for s in slide_0.shapes])
+            # Target the ACTUAL first commentary slide of each statement (a slide
+            # object recorded during apply_structured_data_to_slides), not a
+            # hard-coded slides[0]/slides[4]. Commentary adds slides and unused
+            # ones are removed, so fixed indices drift — and the BS table could
+            # land on a slide that no longer corresponds to BS page 1. The slide
+            # OBJECT survives that reshuffle because it is a used (kept) slide.
+            tracked = getattr(self, "_statement_table_slides", {}) or {}
+
+            # Embed BS table on the first BS commentary slide.
+            bs_slide = tracked.get("BS")
+            if bs_slide is None and len(self.presentation.slides) > 0:
+                bs_slide = self.presentation.slides[0]  # fallback
+            if bs_df is not None and not bs_df.empty and bs_slide is not None:
+                logger.info("Embedding BS table on tracked slide (shapes: %s)",
+                            [getattr(s, 'name', '?') for s in bs_slide.shapes])
                 self._embed_statement_table(
-                    slide_0,
-                    bs_df,
-                    "BS",
-                    table_name=bs_table_name,
-                    currency_unit=currency_unit,
+                    bs_slide, bs_df, "BS",
+                    table_name=bs_table_name, currency_unit=currency_unit,
                 )
             else:
-                logger.warning("BS DataFrame is None or empty, skipping BS table embedding")
-            
-            # Embed IS table to slide 5 (1-indexed) = slide index 4 (0-indexed)
-            # IS slides are 5-8 (1-indexed) = indices 4-7 (0-indexed)
-            # Just paste it to slide index 4 (page 5) - unused slides will be removed later
-            if is_df is not None and not is_df.empty:
-                is_slide_idx = 4  # First IS slide (page 5, 1-indexed)
-                
-                logger.info("Looking for IS table on slide %s (index %s), total slides: %s", is_slide_idx + 1, is_slide_idx, len(self.presentation.slides))
-                
-                if len(self.presentation.slides) > is_slide_idx:
-                    is_slide = self.presentation.slides[is_slide_idx]
-                    logger.info("Slide %s exists, searching for Table Placeholder...", is_slide_idx + 1)
-                    self._embed_statement_table(
-                        is_slide,
-                        is_df,
-                        "IS",
-                        table_name=is_table_name,
-                        currency_unit=currency_unit,
-                    )
-                else:
-                    logger.error("Slide %s does not exist for IS table (only %s slides)", is_slide_idx + 1, len(self.presentation.slides))
-                    logger.error("IS data should be on slide 5, but presentation only has %s slides", len(self.presentation.slides))
+                logger.warning(
+                    "Skipping BS table — bs_df empty=%s, target slide=%s. If bs_df is "
+                    "empty but the databook DOES have a balance sheet, the session's "
+                    "bs_is_results is stale: re-run Process Data, then export.",
+                    bs_df is None or getattr(bs_df, 'empty', True), bs_slide is not None,
+                )
+
+            # Embed IS table on the first IS commentary slide.
+            is_slide = tracked.get("IS")
+            if is_slide is None and len(self.presentation.slides) > 4:
+                is_slide = self.presentation.slides[4]  # fallback
+            if is_df is not None and not is_df.empty and is_slide is not None:
+                logger.info("Embedding IS table on tracked slide (shapes: %s)",
+                            [getattr(s, 'name', '?') for s in is_slide.shapes])
+                self._embed_statement_table(
+                    is_slide, is_df, "IS",
+                    table_name=is_table_name, currency_unit=currency_unit,
+                )
+            elif is_df is not None and not is_df.empty:
+                logger.error("No target slide found for IS table (slides=%s)", len(self.presentation.slides))
                     
         except Exception as e:
             logger.error("Error embedding financial tables: %s", e)
