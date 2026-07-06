@@ -1760,6 +1760,19 @@ class PowerPointGenerator:
         key = "font_family_chi" if is_chinese else "font_family_eng"
         return str(packing.get(key) or ("Microsoft YaHei" if is_chinese else "Arial"))
 
+    def _log_measurer_source_once(self, measurer, metrics_path: Optional[str], is_chinese: bool) -> None:
+        """INFO-log the text-measurement source once per language per export, so a
+        server log shows unambiguously whether client-font metrics are active."""
+        key = "CHI" if is_chinese else "ENG"
+        logged = getattr(self, "_measurer_sources_logged", None)
+        if logged is None:
+            logged = self._measurer_sources_logged = set()
+        if key in logged:
+            return
+        logged.add(key)
+        detail = f" ({metrics_path})" if measurer.source == "client-metrics" else ""
+        logger.info("Text measurement [%s]: %s%s", key, measurer.source, detail)
+
     def _pillow_measure(
         self,
         shape,
@@ -1783,11 +1796,13 @@ class PowerPointGenerator:
             packing = self._packing_settings(None)
             font_size_pt = 10 if is_chinese else 9
             line_spacing = 0.95 if is_chinese else 1.0
+            _mpath = self._resolve_font_metrics_path(is_chinese, packing)
             measurer = get_measurer(
                 self._measurer_family(is_chinese, packing), font_size_pt,
                 is_cjk=is_chinese, line_spacing=line_spacing,
-                metrics_path=self._resolve_font_metrics_path(is_chinese, packing),
+                metrics_path=_mpath,
             )
+            self._log_measurer_source_once(measurer, _mpath, is_chinese)
             box = text_box_from_shape(shape)
             capacity = lines_that_fit(box.height_pt, measurer.line_height_pt())
             if not text:
@@ -1837,10 +1852,12 @@ class PowerPointGenerator:
         # reads bodyPr tIns/bIns directly from shape XML.
         try:
             from fdd_utils.text_metrics import get_measurer, text_box_from_shape
+            _mpath   = self._resolve_font_metrics_path(is_chinese, packing)
             measurer = get_measurer(
                 family, font_size_pt, is_cjk=is_chinese, line_spacing=line_spacing,
-                metrics_path=self._resolve_font_metrics_path(is_chinese, packing),
+                metrics_path=_mpath,
             )
+            self._log_measurer_source_once(measurer, _mpath, is_chinese)
             box      = text_box_from_shape(shape)
             std_lh   = measurer.line_height_pt() + self._PARA_SPACE_AFTER
             max_rows = int(box.height_pt / std_lh)

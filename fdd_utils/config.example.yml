@@ -56,11 +56,13 @@ pptx:
   # with: python list_table_styles.py <file>.pptx
   table_style_id: ""
   commentary_packing:
-    # Client-font-aware line fitting. Dump the client's INSTALLED body font on
-    # their machine:  python dump_font_metrics.py <font>.ttf > metrics_eng.json
+    # Client-font-aware line fitting. metrics json files are committed IN the repo
+    # (font_metrics/) so a deployment server needs no fonts installed at all.
+    # Regenerate with: python dump_font_metrics.py <font>.ttf > font_metrics/x.json
     # (find the body font with: python detect_body_font.py template.pptx)
     # Paths are repo-relative or absolute; blank = measure with the system font.
-    font_metrics_path_eng: ""
+    # Verify what's active with: python verify_font_calc.py
+    font_metrics_path_eng: "font_metrics/arial_eng.json"
     font_metrics_path_chi: ""
     font_family_eng: "Arial"          # system-font fallback family (EN)
     font_family_chi: "Microsoft YaHei" # system-font fallback family (CN)
