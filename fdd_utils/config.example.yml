@@ -49,3 +49,18 @@ processing:
 
 logging:
   suppress_http_logs: true
+
+pptx:
+  # Table style GUID for generated BS/IS tables. Blank = auto-detect from any
+  # styled table already in the template (e.g. your UpSlide style). Find GUIDs
+  # with: python list_table_styles.py <file>.pptx
+  table_style_id: ""
+  commentary_packing:
+    # Client-font-aware line fitting. Dump the client's INSTALLED body font on
+    # their machine:  python dump_font_metrics.py <font>.ttf > metrics_eng.json
+    # (find the body font with: python detect_body_font.py template.pptx)
+    # Paths are repo-relative or absolute; blank = measure with the system font.
+    font_metrics_path_eng: ""
+    font_metrics_path_chi: ""
+    font_family_eng: "Arial"          # system-font fallback family (EN)
+    font_family_chi: "Microsoft YaHei" # system-font fallback family (CN)

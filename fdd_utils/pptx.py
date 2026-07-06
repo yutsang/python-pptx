@@ -1281,9 +1281,66 @@ class PowerPointGenerator:
             "height": int(height),
         }
 
+    @staticmethod
+    def _read_table_style_id(tbl_element) -> Optional[str]:
+        """Read <a:tableStyleId> (the style GUID) from a table's XML, or None."""
+        try:
+            from pptx.oxml.ns import qn
+            tblPr = tbl_element.find(qn("a:tblPr"))
+            if tblPr is None:
+                return None
+            el = tblPr.find(qn("a:tableStyleId"))
+            return el.text.strip() if (el is not None and el.text) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _set_table_style_id(tbl_element, style_id: str) -> None:
+        """Set the table's style GUID so PowerPoint renders it with that (e.g.
+        UpSlide) table style instead of the python-pptx default."""
+        from pptx.oxml.ns import qn
+        tblPr = tbl_element.find(qn("a:tblPr"))
+        if tblPr is None:
+            tblPr = tbl_element.makeelement(qn("a:tblPr"), {})
+            tbl_element.insert(0, tblPr)  # tblPr must be the first child of <a:tbl>
+        for el in tblPr.findall(qn("a:tableStyleId")):
+            tblPr.remove(el)
+        style_el = tblPr.makeelement(qn("a:tableStyleId"), {})
+        style_el.text = style_id
+        tblPr.append(style_el)
+
+    def _resolve_table_style_id(self) -> Optional[str]:
+        """The table style GUID to apply to BS/IS tables.
+
+        Priority: explicit config (pptx.table_style_id) > the style GUID of any
+        table already present in the template (i.e. the firm's UpSlide style).
+        Cached after first resolution. Returns None if none found (keep default).
+        """
+        if hasattr(self, "_cached_table_style_id"):
+            return self._cached_table_style_id
+        style_id = None
+        try:
+            style_id = (str(self.pptx_settings.get("table_style_id") or "").strip()) or None
+        except Exception:
+            style_id = None
+        if not style_id and self.presentation is not None:
+            for slide in self.presentation.slides:
+                for shape in slide.shapes:
+                    if getattr(shape, "has_table", False):
+                        sid = self._read_table_style_id(shape.table._tbl)
+                        if sid:
+                            style_id = sid
+                            break
+                if style_id:
+                    break
+        if style_id:
+            logger.info("Applying table style GUID to BS/IS tables: %s", style_id)
+        self._cached_table_style_id = style_id
+        return style_id
+
     def _add_table_to_slide(self, slide, df, bounds: Dict[str, int], table_name: str = None):
         total_rows = len(df) + 2 if table_name else len(df) + 1
-        return slide.shapes.add_table(
+        graphic_frame = slide.shapes.add_table(
             total_rows,
             len(df.columns),
             bounds["left"],
@@ -1291,6 +1348,15 @@ class PowerPointGenerator:
             bounds["width"],
             bounds["height"],
         )
+        # Auto-apply the firm's UpSlide table style (detected from the
+        # template, or set via config) so new tables match existing ones.
+        style_id = self._resolve_table_style_id()
+        if style_id:
+            try:
+                self._set_table_style_id(graphic_frame.table._tbl, style_id)
+            except Exception as exc:
+                logger.debug("Could not apply table style %s: %s", style_id, exc)
+        return graphic_frame
 
     def _fit_table_columns(self, table, df):
         """Allocate width by role and content length for better readability."""
@@ -1675,6 +1741,25 @@ class PowerPointGenerator:
             return False
         return bool(packing.get("use_pillow_text_fitting", False))
 
+    def _resolve_font_metrics_path(self, is_chinese: bool, packing: Dict[str, Any]) -> Optional[str]:
+        """Path to the client-font metrics.json (dumped via dump_font_metrics.py),
+        so line-fitting measures with the font the client's PowerPoint renders.
+        Language-specific key wins; falls back to a single shared path. Relative
+        paths resolve against the repo root."""
+        key = "font_metrics_path_chi" if is_chinese else "font_metrics_path_eng"
+        path = packing.get(key) or packing.get("font_metrics_path")
+        if not path:
+            return None
+        p = str(path)
+        if not os.path.isabs(p):
+            p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), p)
+        return p if os.path.exists(p) else None
+
+    def _measurer_family(self, is_chinese: bool, packing: Dict[str, Any]) -> str:
+        """System-font family for the Pillow fallback (overridable in config)."""
+        key = "font_family_chi" if is_chinese else "font_family_eng"
+        return str(packing.get(key) or ("Microsoft YaHei" if is_chinese else "Arial"))
+
     def _pillow_measure(
         self,
         shape,
@@ -1688,25 +1773,26 @@ class PowerPointGenerator:
             return None
         try:
             from fdd_utils.text_metrics import (
-                get_font,
-                line_height_pt as _line_h,
+                get_measurer,
                 lines_that_fit,
                 text_box_from_shape,
-                wrap_text,
             )
         except Exception:
             return None
         try:
+            packing = self._packing_settings(None)
             font_size_pt = 10 if is_chinese else 9
-            family = "Microsoft YaHei" if is_chinese else "Arial"
             line_spacing = 0.95 if is_chinese else 1.0
-            font = get_font(family, font_size_pt, is_cjk=is_chinese)
+            measurer = get_measurer(
+                self._measurer_family(is_chinese, packing), font_size_pt,
+                is_cjk=is_chinese, line_spacing=line_spacing,
+                metrics_path=self._resolve_font_metrics_path(is_chinese, packing),
+            )
             box = text_box_from_shape(shape)
-            line_h = _line_h(font, line_spacing=line_spacing)
-            capacity = lines_that_fit(box.height_pt, line_h)
+            capacity = lines_that_fit(box.height_pt, measurer.line_height_pt())
             if not text:
                 return (0, capacity)
-            lines = wrap_text(text, font, box.width_pt)
+            lines = measurer.wrap(text, box.width_pt)
             return (len(lines), capacity)
         except Exception:
             return None
@@ -1743,19 +1829,20 @@ class PowerPointGenerator:
 
         font_size_pt = 10 if is_chinese else 9
         line_spacing = 0.95 if is_chinese else 1.0
-        family       = "Microsoft YaHei" if is_chinese else "Arial"
+        family       = self._measurer_family(is_chinese, packing)
 
         # ── Real font metrics via text_metrics ───────────────────────────────────
-        # text_box_from_shape reads bodyPr tIns/bIns directly from shape XML.
-        # line_height_pt uses ascent + descent from the actual font file.
+        # Prefer the client's font (metrics.json) so line height matches what the
+        # client's PowerPoint renders; else the resolved system font. text_box_from_shape
+        # reads bodyPr tIns/bIns directly from shape XML.
         try:
-            from fdd_utils.text_metrics import (
-                get_font, line_height_pt as _line_h_fn, text_box_from_shape,
+            from fdd_utils.text_metrics import get_measurer, text_box_from_shape
+            measurer = get_measurer(
+                family, font_size_pt, is_cjk=is_chinese, line_spacing=line_spacing,
+                metrics_path=self._resolve_font_metrics_path(is_chinese, packing),
             )
-            font     = get_font(family, font_size_pt, is_cjk=is_chinese)
             box      = text_box_from_shape(shape)
-            line_h   = _line_h_fn(font, line_spacing=line_spacing)
-            std_lh   = line_h + self._PARA_SPACE_AFTER
+            std_lh   = measurer.line_height_pt() + self._PARA_SPACE_AFTER
             max_rows = int(box.height_pt / std_lh)
             # Trust the real measurement — do NOT apply minimum_slot_lines as a
             # floor here, because that would allow the DP to pack more content

@@ -517,6 +517,65 @@ def lines_that_fit(height_pt: float, line_h_pt: float) -> int:
     return int(height_pt // line_h_pt)
 
 
+# ---------------------------------------------------------------------------
+# Unified measurer: client-font metrics (metrics.json) OR system Pillow font
+# ---------------------------------------------------------------------------
+@lru_cache(maxsize=8)
+def _load_metrics_table(path: str) -> Optional["MetricsTable"]:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return MetricsTable.from_json(fh.read())
+    except Exception:
+        return None
+
+
+class Measurer:
+    """One text-measurement interface backed by EITHER the client's real font
+    (a MetricsTable loaded from dump_font_metrics.py JSON) OR a Pillow system
+    font. The packer uses this so line counts reflect the font the client's
+    PowerPoint will actually render — not whatever font the dev box happens to
+    have. Falls back transparently when no metrics.json is supplied.
+    """
+
+    def __init__(self, *, size_pt: float, line_spacing: float,
+                 metrics: Optional["MetricsTable"] = None, font=None):
+        self.size_pt = float(size_pt)
+        self.line_spacing = float(line_spacing)
+        self._metrics = metrics
+        self._font = font
+
+    @property
+    def source(self) -> str:
+        return "client-metrics" if self._metrics is not None else "system-font"
+
+    def line_height_pt(self, *, extra_leading_pt: float = 0.0) -> float:
+        if self._metrics is not None:
+            return self._metrics.line_height_pt(self.size_pt, line_spacing=self.line_spacing) + extra_leading_pt
+        return line_height_pt(self._font, line_spacing=self.line_spacing, extra_leading_pt=extra_leading_pt)
+
+    def wrap(self, text: str, max_width_pt: float) -> List[str]:
+        if self._metrics is None:
+            return wrap_text(text, self._font, max_width_pt)
+        out: List[str] = []
+        for para in str(text or "").split("\n"):
+            if para.strip() == "":
+                out.append("")
+            else:
+                out.extend(wrap_text_with_metrics(para, self._metrics, size_pt=self.size_pt, max_width_pt=max_width_pt))
+        return out
+
+
+def get_measurer(family: str, size_pt: float, *, is_cjk: bool,
+                 line_spacing: float = 1.0, metrics_path: Optional[str] = None) -> Measurer:
+    """Prefer the client-font MetricsTable (metrics.json) when a valid path is
+    given; otherwise measure with the resolved system font."""
+    mt = _load_metrics_table(metrics_path) if metrics_path else None
+    if mt is not None:
+        return Measurer(size_pt=size_pt, line_spacing=line_spacing, metrics=mt)
+    return Measurer(size_pt=size_pt, line_spacing=line_spacing,
+                    font=get_font(family, size_pt, is_cjk=is_cjk))
+
+
 @dataclass
 class FitResult:
     font_size_pt: float
