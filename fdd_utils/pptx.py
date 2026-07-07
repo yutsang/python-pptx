@@ -2534,6 +2534,12 @@ class PowerPointGenerator:
         _shape_util = float(_packing_relax.get("shape_height_utilization", 1.15) or 1.15)
         _relax_factors: List[float] = [1.0, max(1.05, _shape_util), 1.35, 1.6, 10.0]
 
+        # Front-loading target: slots before the LAST used one should be packed
+        # to at least this fill ratio. target_fill_min_ratio existed in config
+        # already (default 0.95) but was never read anywhere — this is the
+        # first real consumer of it.
+        _target_min_fill = float(_packing_relax.get("target_fill_min_ratio", 0.95) or 0.95)
+
         def slot_cost(s: int, j: int, i: int) -> float:
             """Return float line-units for placing flat_accounts[j..i] in slot s.
             Category headers cost 1.0; account content costs the float from
@@ -2560,11 +2566,19 @@ class PowerPointGenerator:
             return used
 
         INF = float("inf")
-        # Lexicographic DP state: (num_nonempty_slots, max_fill_ratio).
-        # Compared as Python tuples, so Python prefers FEWER non-empty slots
-        # first, then LOWER max ratio among ties. That's the "pack tight,
-        # don't spread" behaviour the user wants — a single full slot beats
-        # two half-full slots even though the latter has a lower max ratio.
+        # Lexicographic DP state: (num_nonempty_slots, underfill_penalty).
+        #
+        # underfill_penalty is a TEXT-JUSTIFICATION-style cost (like the classic
+        # "optimal paragraph layout" problem), NOT a load-balancing cost. Every
+        # slot except the LAST one in this attempt's range is penalised for
+        # falling short of _target_min_fill; the last slot is exempt (a lighter
+        # final page is normal and expected — a lighter FIRST/MIDDLE page is the
+        # bug this replaces). Compared as Python tuples: fewer non-empty slots
+        # wins first, then lower total penalty. This front-loads content instead
+        # of spreading it evenly — the previous "minimise the single worst slot"
+        # objective was solved by keeping EVERY slot moderately empty (see
+        # commit history: 45%/72% instead of 83%/30%), which is the opposite of
+        # what a reader expects from a paginated document.
         INF_ST = (INF, INF)
         dp: List[List[Tuple[float, float]]] = []
         # split[s][i] = j such that slot s holds flat_accounts[j+1..i]; j == i
@@ -2586,19 +2600,22 @@ class PowerPointGenerator:
             dp = [[INF_ST] * N for _ in range(S)]
             split = [[-1] * N for _ in range(S)]
 
+            # Slot 0 is exempt from the underfill penalty only if it's also the
+            # LAST slot in this attempt (S == 1) — a single-slot statement is
+            # allowed to be light. Otherwise it must justify to the target.
             _cap0 = slots[0]["capacity"] * _cap_mult
             for i in range(N):
                 lines = slot_cost(0, 0, i)
                 if lines <= _cap0:
-                    # slot 0 is non-empty (holds accounts 0..i). Ratio uses
-                    # true (unrelaxed) capacity so the tie-break reflects
-                    # actual visual fill.
-                    dp[0][i] = (1.0, lines / slots[0]["capacity"])
+                    ratio0 = lines / slots[0]["capacity"]
+                    penalty0 = 0.0 if S == 1 else max(0.0, _target_min_fill - ratio0)
+                    dp[0][i] = (1.0, penalty0)
                 split[0][i] = -1
 
             for s in range(1, S):
                 cap_true = slots[s]["capacity"]
                 cap_check = cap_true * _cap_mult
+                is_last_slot = (s == S - 1)
                 for i in range(N):
                     # Case A: slot s non-empty, holds accounts[j+1..i]
                     for j in range(-1, i):
@@ -2611,9 +2628,11 @@ class PowerPointGenerator:
                         lines = slot_cost(s, j + 1, i)
                         if lines > cap_check:
                             continue
+                        ratio = lines / cap_true
+                        penalty = 0.0 if is_last_slot else max(0.0, _target_min_fill - ratio)
                         curr_state = (
                             prev_state[0] + 1.0,
-                            max(prev_state[1], lines / cap_true),
+                            prev_state[1] + penalty,
                         )
                         if curr_state <= dp[s][i]:
                             dp[s][i] = curr_state
@@ -2634,16 +2653,16 @@ class PowerPointGenerator:
             )
 
         _used_slots = int(dp[S - 1][N - 1][0]) if _dp_solved else S
-        _final_ratio = dp[S - 1][N - 1][1] if _dp_solved else INF
+        _final_penalty = dp[S - 1][N - 1][1] if _dp_solved else INF
         if _solved_factor > 1.0:
             logger.info(
-                "  DP feasible with relax × %.2f; using %s of %s slots, max ratio %.2f",
-                _solved_factor, _used_slots, _S_orig, _final_ratio,
+                "  DP feasible with relax × %.2f; using %s of %s slots, underfill penalty %.2f (target_min=%.0f%%)",
+                _solved_factor, _used_slots, _S_orig, _final_penalty, _target_min_fill * 100,
             )
         else:
             logger.info(
-                "  DP tight-pack: using %s of %s slots (min=%s), max ratio %.2f",
-                _used_slots, _S_orig, S_min, _final_ratio,
+                "  DP tight-pack: using %s of %s slots (min=%s), underfill penalty %.2f (target_min=%.0f%%)",
+                _used_slots, _S_orig, S_min, _final_penalty, _target_min_fill * 100,
             )
 
         # Reconstruct the assignment.
