@@ -63,6 +63,6 @@ pptx:
     # Paths are repo-relative or absolute; blank = measure with the system font.
     # Verify what's active with: python verify_font_calc.py
     font_metrics_path_eng: "font_metrics/arial_eng.json"
-    font_metrics_path_chi: ""
+    font_metrics_path_chi: "font_metrics/msyh_chi.json"
     font_family_eng: "Arial"          # system-font fallback family (EN)
     font_family_chi: "Microsoft YaHei" # system-font fallback family (CN)
