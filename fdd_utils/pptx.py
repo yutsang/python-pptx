@@ -495,6 +495,7 @@ def export_pptx_from_structured_data_combined(
     is_chinese_databook: bool = False,
     bs_is_results: Optional[Dict[str, Any]] = None,
     model_type: Optional[str] = None,
+    model_name: Optional[str] = None,
     skip_summary_ai: bool = False,  # AI summary needed for coSummaryShape; parallelized at max_workers=4
     pre_generated_summaries: Optional[Dict[str, str]] = None,  # {"BS": str, "IS": str} — bypass AI in PPTX export
 ):
@@ -508,7 +509,7 @@ def export_pptx_from_structured_data_combined(
 
         _stage_log(f"Starting export | BS={len(bs_data)} IS={len(is_data)} skip_summary_ai={skip_summary_ai}")
 
-        generator = PowerPointGenerator(template_path, language, row_limit=20, model_type=model_type)
+        generator = PowerPointGenerator(template_path, language, row_limit=20, model_type=model_type, model_name=model_name)
         if skip_summary_ai:
             generator.pptx_settings.setdefault("executive_summary", {})["enable_ai"] = False
         stage_started_at = time.perf_counter()
@@ -687,11 +688,13 @@ class PowerPointGenerator:
         language: str = 'english',
         row_limit: int = 20,
         model_type: Optional[str] = None,
+        model_name: Optional[str] = None,
     ):
         self.template_path = template_path
         self.language = language.lower()
         self.row_limit = row_limit
         self.model_type = str(model_type or "").strip() or None
+        self.model_name = str(model_name or "").strip() or None
         self.presentation = None
         self.pptx_settings = _load_pptx_settings()
 
@@ -732,6 +735,69 @@ class PowerPointGenerator:
         )
         return not any(token in shape_name for token in excluded_tokens)
 
+    def _split_single_into_lr(self, slide, source_shape):
+        """Clone a full-width commentary box into two half-width boxes side by
+        side (named textMainBullets_L / textMainBullets_R), replacing the
+        original. Used when a page was assigned two logical slots (L, R) but
+        the underlying template slide only has ONE commentary text box —
+        without this, both slots resolve to the SAME shape (see
+        _resolve_commentary_slot_shape), so L-content and R-content silently
+        collide into one full-width box instead of sitting side by side like
+        the BS pages. Idempotent per slide (cached by slide element id)."""
+        cache = getattr(self, "_split_lr_cache", None)
+        if cache is None:
+            cache = self._split_lr_cache = {}
+        slide_key = id(slide._element)
+        cached = cache.get(slide_key)
+        if cached:
+            return cached
+
+        from copy import deepcopy
+        orig_left = int(source_shape.left)
+        orig_width = int(source_shape.width)
+        gutter = max(0, int(orig_width * 0.03))
+        half_width = max(1, (orig_width - gutter) // 2)
+
+        # Left half = the original shape, resized in place.
+        source_shape.left = orig_left
+        source_shape.width = half_width
+        try:
+            source_shape.name = "textMainBullets_L"
+        except Exception:
+            pass
+
+        # Right half = a deep-copied XML clone, repositioned and renamed. The
+        # clone starts with a copy of the original's text — clear it so the
+        # packer fills it fresh rather than duplicating whatever was there.
+        new_element = deepcopy(source_shape._element)
+        source_shape._element.addnext(new_element)
+        right_shape = None
+        for shape in slide.shapes:
+            if shape._element is new_element:
+                right_shape = shape
+                break
+        if right_shape is None:
+            # Clone insertion failed for some reason — fall back to treating
+            # the (now half-width) original as both slots rather than crashing.
+            cache[slide_key] = (source_shape, source_shape)
+            return cache[slide_key]
+
+        right_shape.left = orig_left + half_width + gutter
+        right_shape.width = half_width
+        try:
+            right_shape.name = "textMainBullets_R"
+        except Exception:
+            pass
+        if getattr(right_shape, "has_text_frame", False):
+            right_shape.text_frame.clear()
+
+        cache[slide_key] = (source_shape, right_shape)
+        logger.info(
+            "Split single full-width commentary box into L/R halves on a slide "
+            "(page was assigned two content slots but the template only had one box)."
+        )
+        return cache[slide_key]
+
     def _resolve_commentary_slot_shape(self, slide, slot_name: str, used_shape_ids=None):
         """Resolve the best text box for a commentary slot on a slide."""
         used_shape_ids = used_shape_ids or set()
@@ -747,7 +813,6 @@ class PowerPointGenerator:
             ],
             "L": [
                 "textMainBullets_L",
-                "textMainBullets",
                 "Text-commentary",
                 "Content",
                 "MainContent",
@@ -755,7 +820,6 @@ class PowerPointGenerator:
             ],
             "R": [
                 "textMainBullets_R",
-                "textMainBullets",
                 "Text-commentary",
                 "Content",
                 "MainContent",
@@ -767,6 +831,17 @@ class PowerPointGenerator:
             shape = self.find_shape_by_name(slide.shapes, name)
             if shape and getattr(shape, "has_text_frame", False) and id(shape) not in used_shape_ids:
                 return shape
+
+        # No dedicated _L/_R box. Only fall back to a single full-width box for
+        # an ACTUAL single-column slot; for "L"/"R" that would make both slots
+        # resolve to the same physical shape (content collision -> renders as
+        # one full-width box instead of two side-by-side columns). Split it
+        # into two half-width boxes instead, mirroring the BS page layout.
+        if slot_name in ("L", "R"):
+            single_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
+            if single_shape and getattr(single_shape, "has_text_frame", False) and id(single_shape) not in used_shape_ids:
+                left_shape, right_shape = self._split_single_into_lr(slide, single_shape)
+                return left_shape if slot_name == "L" else right_shape
 
         generic_candidates = [
             shape for shape in slide.shapes
@@ -4130,6 +4205,7 @@ Draft summary:
             ai_helper = ai_helper or AIClient(
                 model_type=model_type,
                 language='Chi' if is_chinese else 'Eng',
+                model_name=self.model_name,
             )
             validation_max_retries = int(summary_settings.get("validation_max_retries", 2) or 2)
             response = self._call_with_timeout_retry(
@@ -4163,6 +4239,7 @@ Draft summary:
         is_chinese: bool,
         language: str = "english",
         model_type: Optional[str] = None,
+        model_name: Optional[str] = None,
     ) -> Optional[str]:
         """Top-level helper: generate one executive summary from concatenated
         commentary for a BS or IS section. Designed to be called from the UI
@@ -4178,6 +4255,7 @@ Draft summary:
             # ignored (would fire at 10s instead of the configured value).
             generator.pptx_settings = _load_pptx_settings()
             generator.model_type = model_type
+            generator.model_name = model_name
             generator.language = language
             result = generator._generate_ai_summary(commentary, commentary, is_chinese)
             if result is None:
@@ -4248,6 +4326,7 @@ Original content:
             ai_helper = AIClient(
                 model_type=model_type,
                 language='Chi' if is_chinese else 'Eng',
+                model_name=self.model_name,
             )
             generation_max_retries = int(
                 summary_settings.get("local_generation_max_retries", 1)

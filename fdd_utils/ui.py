@@ -21,6 +21,8 @@ DEFAULT_SESSION_STATE = {
     "reconciliation": None,
     "resolution": None,
     "model_type": "local",
+    "model_name": None,          # specific model within the provider, e.g. GPT-5.5's id
+    "model_choice_key": None,    # sidebar dropdown selection key
     "project_name": None,
     "last_run_folder": None,
     "entity_name": None,
@@ -395,8 +397,12 @@ if not hasattr(st, "fragment"):
 
 from .ai import (
     FDDConfig,
+    WORKBENCH_AVAILABLE_MODELS,
     build_highlighted_commentary_html,
+    get_default_config_path,
     get_prompt_engine,
+    is_provider_ready,
+    load_yaml_config,
     parse_validator_response,
     run_ai_pipeline_with_progress,
     run_generator_reprompt,
@@ -799,6 +805,7 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                         mapping_keys=matched_mapping_keys,
                         dfs=selected_pipeline_dfs,
                         model_type=session_state.get("model_type", "local"),
+                        model_name=session_state.get("model_name"),
                         language=session_state.language,
                         use_multithreading=True,
                         progress_callback=update_progress,
@@ -877,6 +884,7 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                                     is_chinese=is_chinese_db,
                                     language=("chinese" if session_state.language == "Chn" else "english"),
                                     model_type=session_state.get("model_type", "local"),
+                                    model_name=session_state.get("model_name"),
                                 )
                                 if summary:
                                     section_summaries[stmt] = summary
@@ -1051,6 +1059,7 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                             dfs={key: selected_pipeline_dfs[key]},
                             existing_results=session_state.ai_results,
                             model_type=session_state.get("model_type", "local"),
+                            model_name=session_state.get("model_name"),
                             language=session_state.language,
                             user_comments={key: reprompt_comment},
                         )
@@ -1545,11 +1554,76 @@ def cleanup_stale_uploads(
     return removed
 
 
+def _build_model_choices() -> list[dict]:
+    """Model choices for the sidebar dropdown, built from config.yml so a new
+    Workbench model added to config (or a renamed local chat_model) shows up
+    without a code change. Each choice: key, model_type, model_name, label, ready.
+    """
+    try:
+        config = load_yaml_config(get_default_config_path())
+    except Exception:
+        config = {}
+
+    choices: list[dict] = []
+    wb_ready = is_provider_ready(config, "workbench")
+    wb_models = ((config.get("workbench") or {}).get("available_models")) or WORKBENCH_AVAILABLE_MODELS
+    for entry in wb_models:
+        model_id = entry.get("id") if isinstance(entry, dict) else str(entry)
+        label = entry.get("label") if isinstance(entry, dict) else str(entry)
+        if not model_id:
+            continue
+        choices.append({
+            "key": f"workbench::{model_id}",
+            "model_type": "workbench",
+            "model_name": model_id,
+            "label": f"{label} (Workbench)",
+            "ready": wb_ready,
+        })
+
+    local_ready = is_provider_ready(config, "local")
+    local_chat_model = (config.get("local") or {}).get("chat_model") or "Qwen3-32B"
+    choices.append({
+        "key": "local::default",
+        "model_type": "local",
+        "model_name": None,
+        "label": f"{local_chat_model} (Local)",
+        "ready": local_ready,
+    })
+    return choices
+
+
 def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[str], str]) -> str | None:
     with st.sidebar:
-        if "model_type" not in session_state:
-            session_state.model_type = "local"
-        st.caption(f"🤖 AI Mode: {get_model_display_name(session_state.model_type)}")
+        model_choices = _build_model_choices()
+        if "model_choice_key" not in session_state:
+            # Default to the first choice (GPT-5.5) per project policy, even if
+            # it isn't configured yet — the warning below tells the user why,
+            # rather than silently switching their default to something else.
+            session_state.model_choice_key = model_choices[0]["key"] if model_choices else None
+        choice_by_key = {c["key"]: c for c in model_choices}
+        current_key = session_state.get("model_choice_key")
+        if current_key not in choice_by_key and model_choices:
+            current_key = model_choices[0]["key"]
+
+        st.markdown("**🤖 AI Model**")
+        selected_key = st.selectbox(
+            "AI Model",
+            options=[c["key"] for c in model_choices],
+            format_func=lambda k: choice_by_key[k]["label"] + ("" if choice_by_key[k]["ready"] else " ⚠️ not configured"),
+            index=[c["key"] for c in model_choices].index(current_key) if current_key in choice_by_key else 0,
+            label_visibility="collapsed",
+        )
+        selected = choice_by_key.get(selected_key, {})
+        session_state.model_choice_key = selected_key
+        session_state.model_type = selected.get("model_type", "local")
+        session_state.model_name = selected.get("model_name")
+        if not selected.get("ready", True):
+            st.caption(
+                f"⚠️ {selected.get('label')} is not configured — set its api_key "
+                f"in fdd_utils/config.yml. Falling back to the first ready provider at run time."
+            )
+        else:
+            st.caption(f"🤖 AI Mode: {selected.get('label', get_model_display_name(session_state.model_type))}")
         st.markdown("**📁 Databook File**")
         uploaded_file = st.file_uploader(
             "Upload Excel file",
@@ -1706,6 +1780,7 @@ def generate_pptx_presentation(
                 is_chinese_databook=(language == "Chn"),
                 bs_is_results=session_state.get("bs_is_results"),
                 model_type=session_state.get("model_type", "local"),
+                model_name=session_state.get("model_name"),
                 skip_summary_ai=False,
                 pre_generated_summaries=session_state.get("section_summaries") or None,
             )

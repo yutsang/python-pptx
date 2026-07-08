@@ -13,7 +13,18 @@ PROVIDER_REQUIRED_KEYS = {
     "openai": ["api_key", "api_base", "chat_model", "api_version_completion"],
     "local": ["api_base", "api_key", "chat_model"],
     "deepseek": ["api_key", "api_base", "chat_model"],
+    # KPMG Workbench gateway (Azure OpenAI-compatible). api_key doubles as the
+    # 'Ocp-Apim-Subscription-Key' header value the gateway requires.
+    "workbench": ["api_key", "api_base", "api_version", "chat_model"],
 }
+
+# Every model the Workbench gateway currently serves, in UI display order.
+# The FIRST entry is the default model when the provider is selected without
+# an explicit override.
+WORKBENCH_AVAILABLE_MODELS = [
+    {"id": "gpt-5-5-2026-04-24-gs-sdc", "label": "GPT-5.5"},
+    {"id": "gpt-5-4-2026-03-05-gs-sdc", "label": "GPT-5.4"},
+]
 
 SUBAGENT_ALIASES = {
     # subagent_N (UI/pipeline names) and the canonical N_Name forms both resolve
@@ -84,7 +95,7 @@ def validate_provider_config(provider: Dict[str, Any], model_type: str) -> None:
 
 
 def is_provider_ready(config: Dict[str, Any], model_type: str) -> bool:
-    if model_type not in ("openai", "local", "deepseek"):
+    if model_type not in ("openai", "local", "deepseek", "workbench"):
         return False
     provider = config.get(model_type)
     if not isinstance(provider, dict):
@@ -104,7 +115,9 @@ def resolve_effective_model_type(config: Dict[str, Any], requested: str) -> str:
     default_pref = (config.get("default") or {}).get("ai_provider")
     if default_pref and isinstance(default_pref, str):
         preference.append(default_pref.strip())
-    for model_type in ("deepseek", "openai", "local"):
+    # workbench first: if the user configured it, an unready *requested*
+    # provider should fall back to Workbench/GPT-5.5 before local/cloud.
+    for model_type in ("workbench", "deepseek", "openai", "local"):
         if model_type not in preference:
             preference.append(model_type)
 
@@ -2398,24 +2411,29 @@ class AIClient:
     _logged_fallbacks = set()
     
     def __init__(
-        self, 
+        self,
         model_type: str = 'deepseek',
         agent_name: str = 'agent_1',
         language: str = 'Eng',
         use_heuristic: bool = False,
-        config_path: Optional[str] = None
+        config_path: Optional[str] = None,
+        model_name: Optional[str] = None,
     ):
         """
         Initialize AIClient with specified model and agent configuration.
-        
+
         Args:
-            model_type: Type of model ('openai', 'local', 'deepseek')
+            model_type: Type of model ('openai', 'local', 'deepseek', 'workbench')
             agent_name: Name of the agent ('agent_1', 'agent_2', 'agent_3', 'agent_4')
             language: Language for prompts ('Eng' or 'Chi')
             use_heuristic: Whether to use heuristic mode instead of AI
             config_path: Path to config file (optional)
+            model_name: Optional specific model id within the provider (e.g. pick
+                GPT-5.4 instead of the provider's configured default GPT-5.5).
+                Overrides config_details['chat_model'] after config load.
         """
         self.model_type_requested = model_type
+        self.model_name_requested = model_name
         self.agent_name = agent_name
         # Normalize "Chn" -> "Chi" once here: AIClient is built by every pipeline
         # entry point, so this guarantees prompt lookups and styling get the right
@@ -2439,6 +2457,13 @@ class AIClient:
             self.config_details = self.full_config.get(self.model_type, {})
         else:
             self.config_details = self.config_manager.get_model_config()
+        if model_name:
+            # Copy before mutating — config_details may be a reference into the
+            # shared, cached config dict; overriding in place would leak this
+            # instance's model choice into every other AIClient using the same
+            # provider (e.g. a concurrent thread on a different agent/account).
+            self.config_details = dict(self.config_details)
+            self.config_details['chat_model'] = model_name
 
         agent_config = self.config_manager.get_agent_config(agent_name)
         self.temperature = agent_config.get('temperature')
@@ -2494,6 +2519,28 @@ class AIClient:
                 base_url=self.config_details['api_base'],
                 api_version=self.config_details['api_version_completion'],
                 http_client=httpx.Client(verify=False, timeout=httpx.Timeout(120.0, connect=10.0))
+            )
+            model = self.config_details['chat_model']
+
+        elif self.model_type == 'workbench':
+            # KPMG Workbench gateway (Azure OpenAI-compatible). The gateway
+            # requires the subscription key duplicated as a header (not just
+            # api_key) plus enterprise billing/routing headers. charge_code and
+            # region_override are configurable per config.yml; defaults match
+            # the values in the reference snippet.
+            subscription_key = self.config_details['api_key']
+            headers = {
+                'Ocp-Apim-Subscription-Key': subscription_key,
+                'x-kpmg-charge-code': str(self.config_details.get('charge_code') or '0000'),
+                'x-kpmg-region-override': str(self.config_details.get('region_override') or 'westeurope'),
+            }
+            self._workbench_headers = headers
+            client = AzureOpenAI(
+                api_key=subscription_key,
+                base_url=self.config_details['api_base'],
+                api_version=self.config_details['api_version'],
+                default_headers=headers,
+                http_client=httpx.Client(verify=False, timeout=httpx.Timeout(180.0, connect=10.0)),
             )
             model = self.config_details['chat_model']
 
@@ -2814,6 +2861,33 @@ class AIClient:
             
             if self.model_type == 'openai':
                 response = response_method(**params)
+                content = self._extract_response_content(response)
+                usage = getattr(response, 'usage', None)
+
+            elif self.model_type == 'workbench':
+                # KPMG's reference snippet sends the auth/billing headers BOTH as
+                # default_headers (set once on the client) and as extra_headers
+                # on every call — keep both, since some gateway configurations
+                # only honour per-call headers. reasoning_effort is a GPT-5-class
+                # param that older/other deployments may reject; retry without it
+                # rather than failing the whole call (same defensive pattern as
+                # the local Qwen3 enable_thinking retry below).
+                wb_params = dict(params)
+                wb_params['extra_headers'] = dict(getattr(self, '_workbench_headers', {}) or {})
+                reasoning_effort = self.config_details.get('reasoning_effort')
+                if reasoning_effort:
+                    wb_params['reasoning_effort'] = reasoning_effort
+                try:
+                    response = response_method(**wb_params)
+                except TypeError:
+                    wb_params.pop('reasoning_effort', None)
+                    response = response_method(**wb_params)
+                except Exception as exc:
+                    if 'reasoning_effort' in str(exc).lower():
+                        wb_params.pop('reasoning_effort', None)
+                        response = response_method(**wb_params)
+                    else:
+                        raise
                 content = self._extract_response_content(response)
                 usage = getattr(response, 'usage', None)
 
@@ -3518,6 +3592,7 @@ def run_ai_pipeline_with_progress(
     max_workers: Optional[int] = None,
     progress_callback: Optional[Callable[..., None]] = None,
     user_comments: Optional[Dict[str, str]] = None,
+    model_name: Optional[str] = None,
 ) -> Dict[str, Dict[str, str]]:
     """Run the 4-agent FDD pipeline with optional progress callbacks."""
     # Normalise UI language codes ("Chn" → "Chi") to match prompt-file keys.
@@ -3532,6 +3607,7 @@ def run_ai_pipeline_with_progress(
         agent_name="content_pipeline",
         language=language,
         use_heuristic=use_heuristic,
+        model_name=model_name,
     )
     results = create_result_shell(mapping_keys, dfs)
 
@@ -3827,6 +3903,7 @@ def run_generator_reprompt(
     language: str = "Eng",
     use_heuristic: bool = False,
     user_comments: Optional[Dict[str, str]] = None,
+    model_name: Optional[str] = None,
 ) -> Dict[str, Dict[str, str]]:
     """Regenerate selected items, then immediately revalidate the revised output."""
     # Mirror run_ai_pipeline_with_progress: normalise "Chn" → "Chi" so the Chinese
@@ -3839,6 +3916,7 @@ def run_generator_reprompt(
         agent_name="content_pipeline",
         language=language,
         use_heuristic=use_heuristic,
+        model_name=model_name,
     )
     results: Dict[str, Dict[str, str]] = {}
 
