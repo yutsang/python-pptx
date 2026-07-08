@@ -22,7 +22,12 @@ Usage:
 
 AI-dependent checks (only with --run-ai; needs a configured provider in
 fdd_utils/config.yml, costs real tokens/time — run once per databook when
-ready to review quality, not on every edit):
+ready to review quality, not on every edit). Only accounts that passed
+reconciliation with an included Match status go to AI — exactly mirroring
+production (fdd_utils/ui.py:derive_reconciliation_matched_keys) — so this
+never wastes tokens on tabs the real pipeline would never send, and the
+timing numbers are directly comparable across databooks/models. A tqdm
+progress bar shows live stage/account progress during the run:
   5. Runs the full AI pipeline once and reports wall-clock time and
      per-agent retry counts (compare qwen local vs GPT-5.5 workbench by
      re-running with --model).
@@ -49,9 +54,10 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+from tqdm import tqdm
 
 from fdd_utils.workbook import (
     _unit_markers,
@@ -62,6 +68,7 @@ from fdd_utils.workbook import (
     load_mappings,
     reconcile_financial_statements,
 )
+from fdd_utils.ui import derive_reconciliation_matched_keys
 
 pd.set_option("display.width", 200)
 
@@ -194,7 +201,7 @@ def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
 
 def check_reconciliation(
     databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], entity_name: str = ""
-) -> None:
+) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     _hr(f"4. RECONCILIATION SUMMARY — sheet: {sheet_name}")
     try:
         bs_is_results = extract_balance_sheet_and_income_statement(
@@ -202,7 +209,7 @@ def check_reconciliation(
         )
     except Exception as exc:
         print(f"❌ Could not extract Financials sheet '{sheet_name}': {exc}")
-        return
+        return None, None
 
     mappings = get_effective_mappings(load_mappings(), None)
     bs_recon, is_recon = reconcile_financial_statements(
@@ -224,6 +231,8 @@ def check_reconciliation(
                 print(f"    - {r['Financials_Account']!r}: {r['Mapping_Status']} | {r['Mapping_Note']}")
             print(f"\n  All tab names actually present in this workbook (for adding to mappings.yml):")
             print(f"    {all_tab_names}")
+
+    return bs_recon, is_recon
 
 
 # ---------------------------------------------------------------------------
@@ -301,19 +310,49 @@ def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str
 def run_ai_checks(
     databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame],
     entity_name: str, model_type: str, model_name: Optional[str], language: str,
+    bs_recon: Optional[pd.DataFrame], is_recon: Optional[pd.DataFrame],
 ) -> None:
     _hr("5-7. AI-DEPENDENT CHECKS (running full pipeline once — this costs real tokens/time)")
     from fdd_utils.ai import run_ai_pipeline_with_progress
 
-    mapping_keys = list(dfs.keys())
-    print(f"Running pipeline for {len(mapping_keys)} accounts, model_type={model_type}, model_name={model_name}...")
+    # Mirror production exactly: only accounts that passed reconciliation with
+    # an included Match status go to AI (fdd_utils/ui.py:derive_reconciliation_matched_keys).
+    # BS excludes ❌ Diff (needs human review first); IS includes it (IS recon
+    # is inherently noisier). Running every dfs tab through the LLM — including
+    # ones the real pipeline would never send — wastes tokens/time and makes
+    # the qwen-vs-GPT-5.5 timing comparison meaningless.
+    mapping_keys = derive_reconciliation_matched_keys((bs_recon, is_recon), dfs.keys(), None)
+    if not mapping_keys:
+        print(
+            "❌ No accounts passed reconciliation with an included Match status "
+            "(✅ Match / ⚠️ Match / ✅ Immaterial, or ❌ Diff for IS) — nothing "
+            "would be sent to AI in production either. Skipping AI-dependent checks."
+        )
+        return
+    print(f"Running pipeline for {len(mapping_keys)} MAPPED accounts (of {len(dfs)} total tabs), "
+          f"model_type={model_type}, model_name={model_name}...")
+
+    total_steps = 4 * len(mapping_keys)  # 4 subagent stages
+    pbar = tqdm(total=total_steps, desc="AI pipeline", unit="step")
+    seen_step = {"n": 0}
+
+    def _tqdm_progress(agent_num, agent_label, completed, total_eligible, overall_step, mapping_key):
+        pbar.set_postfix_str(f"{agent_label}: {mapping_key}"[:60])
+        delta = overall_step - seen_step["n"]
+        if delta > 0:
+            pbar.update(delta)
+            seen_step["n"] = overall_step
+
     start = time.time()
-    results = run_ai_pipeline_with_progress(
-        mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, model_name=model_name,
-        language=language, use_multithreading=True, progress_callback=None,
-    )
+    try:
+        results = run_ai_pipeline_with_progress(
+            mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, model_name=model_name,
+            language=language, use_multithreading=True, progress_callback=_tqdm_progress,
+        )
+    finally:
+        pbar.close()
     elapsed = time.time() - start
-    print(f"\n5. TIMING: full pipeline for {len(mapping_keys)} accounts took {elapsed:.1f}s "
+    print(f"\n5. TIMING: full pipeline for {len(mapping_keys)} mapped accounts took {elapsed:.1f}s "
           f"({elapsed / max(len(mapping_keys), 1):.1f}s/account) on {model_type}"
           f"{'/' + model_name if model_name else ''}")
 
@@ -374,19 +413,30 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                 f"{sheet_names} — running reconciliation against each."
             )
 
+    bs_recon_parts: List[pd.DataFrame] = []
+    is_recon_parts: List[pd.DataFrame] = []
     for sheet_name in sheet_names:
-        check_reconciliation(path, sheet_name, dfs, entity_name=entity_name)
+        bs_recon, is_recon = check_reconciliation(path, sheet_name, dfs, entity_name=entity_name)
+        if bs_recon is not None and not bs_recon.empty:
+            bs_recon_parts.append(bs_recon)
+        if is_recon is not None and not is_recon.empty:
+            is_recon_parts.append(is_recon)
 
     if run_ai:
         language = "Eng"
         try:
             from fdd_utils.workbook import process_workbook_data
             state = process_workbook_data(temp_path=path, entity_name=entity_name,
-                                           selected_sheet=sheet_name, debug=False)
+                                           selected_sheet=sheet_names[0], debug=False)
             language = state.get("language", "Eng")
         except Exception:
             pass
-        run_ai_checks(path, sheet_name, dfs, entity_name, model_type, model_name, language)
+        combined_bs_recon = pd.concat(bs_recon_parts, ignore_index=True) if bs_recon_parts else None
+        combined_is_recon = pd.concat(is_recon_parts, ignore_index=True) if is_recon_parts else None
+        run_ai_checks(
+            path, sheet_names[0], dfs, entity_name, model_type, model_name, language,
+            combined_bs_recon, combined_is_recon,
+        )
 
 
 def main() -> int:
