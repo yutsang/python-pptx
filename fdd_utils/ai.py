@@ -2868,21 +2868,49 @@ class AIClient:
                 # KPMG's reference snippet sends the auth/billing headers BOTH as
                 # default_headers (set once on the client) and as extra_headers
                 # on every call — keep both, since some gateway configurations
-                # only honour per-call headers. reasoning_effort is a GPT-5-class
-                # param that older/other deployments may reject; retry without it
-                # rather than failing the whole call (same defensive pattern as
-                # the local Qwen3 enable_thinking retry below).
+                # only honour per-call headers.
                 wb_params = dict(params)
                 wb_params['extra_headers'] = dict(getattr(self, '_workbench_headers', {}) or {})
-                # GPT-5-class models reject the legacy 'max_tokens' param —
-                # "Unsupported parameter: 'max_tokens' ... Use 'max_completion_tokens'
-                # instead." Translate it up front rather than round-tripping a
-                # guaranteed-to-fail call.
-                if 'max_tokens' in wb_params:
+
+                # Model capability flags — config-driven so a new deployment's
+                # quirks (confirmed against the real gateway, not guessed) can
+                # be tuned in config.yml without a code change. Defaults match
+                # the GPT-5-class models currently behind this gateway.
+                if not bool(self.config_details.get('supports_temperature', False)):
+                    # "Unsupported value: 'temperature' does not support 0 with
+                    # this model. Only the default (1) value is supported."
+                    # Omit the param entirely rather than force 1 — some
+                    # deployments reject temperature being present at all when
+                    # it's not the default.
+                    wb_params.pop('temperature', None)
+                if bool(self.config_details.get('use_max_completion_tokens', True)) and 'max_tokens' in wb_params:
+                    # "Unsupported parameter: 'max_tokens' ... Use
+                    # 'max_completion_tokens' instead."
                     wb_params['max_completion_tokens'] = wb_params.pop('max_tokens')
                 reasoning_effort = self.config_details.get('reasoning_effort')
                 if reasoning_effort:
                     wb_params['reasoning_effort'] = reasoning_effort
+
+                def _retry_without(exc_msg: str) -> bool:
+                    """Drop/rename whichever param the gateway just rejected.
+                    Returns True if something changed (worth retrying)."""
+                    changed = False
+                    if 'temperature' in exc_msg.lower() and 'temperature' in wb_params:
+                        wb_params.pop('temperature', None)
+                        changed = True
+                    if 'reasoning_effort' in exc_msg.lower() and 'reasoning_effort' in wb_params:
+                        wb_params.pop('reasoning_effort', None)
+                        changed = True
+                    if 'max_completion_tokens' in exc_msg and 'max_completion_tokens' in wb_params:
+                        # Some deployments go the OTHER way and still expect the
+                        # legacy name — rare, but cheap to handle.
+                        wb_params['max_tokens'] = wb_params.pop('max_completion_tokens')
+                        changed = True
+                    elif 'max_tokens' in exc_msg and 'max_tokens' in wb_params:
+                        wb_params['max_completion_tokens'] = wb_params.pop('max_tokens')
+                        changed = True
+                    return changed
+
                 try:
                     response = response_method(**wb_params)
                 except TypeError:
@@ -2890,23 +2918,25 @@ class AIClient:
                     # doesn't know reasoning_effort at all) — drop and retry.
                     wb_params.pop('reasoning_effort', None)
                     response = response_method(**wb_params)
-                except Exception as exc:
-                    msg = str(exc)
-                    retried = False
-                    # Gateway-level rejections (400 unsupported_parameter) name the
-                    # bad param in the message; drop/rename it and retry once.
-                    if 'reasoning_effort' in msg.lower() and 'reasoning_effort' in wb_params:
-                        wb_params.pop('reasoning_effort', None)
-                        retried = True
-                    if 'max_completion_tokens' in msg and 'max_completion_tokens' in wb_params:
-                        # Some deployments go the OTHER way and still expect the
-                        # legacy name — rare, but cheap to handle.
-                        wb_params['max_tokens'] = wb_params.pop('max_completion_tokens')
-                        retried = True
-                    if retried:
-                        response = response_method(**wb_params)
-                    else:
-                        raise
+                except Exception as first_exc:
+                    # Gateway-level rejection (400) — retry up to twice in case
+                    # dropping one param surfaces a second unsupported one.
+                    # Uses an explicit while-loop (not for/else + bare raise)
+                    # so the re-raised exception is always the exact object we
+                    # mean, with no reliance on Python's implicit "currently
+                    # handled exception" across the nested try/except below.
+                    last_exc = first_exc
+                    response = None
+                    for _ in range(2):
+                        if not _retry_without(str(last_exc)):
+                            raise last_exc
+                        try:
+                            response = response_method(**wb_params)
+                            break
+                        except Exception as retry_exc:
+                            last_exc = retry_exc
+                    if response is None:
+                        raise last_exc
                 content = self._extract_response_content(response)
                 usage = getattr(response, 'usage', None)
 

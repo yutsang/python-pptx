@@ -15,6 +15,28 @@ deepseek:
   api_base: "https://api.deepseek.com/v1"
   chat_model: "deepseek-chat"
 
+# KPMG Workbench gateway (Azure OpenAI-compatible). api_key doubles as the
+# 'Ocp-Apim-Subscription-Key' header value the gateway requires.
+workbench:
+  api_key: ""
+  api_base: "https://api.workbench.kpmg/genai/azure/openai"
+  api_version: "2024-12-01-preview"
+  chat_model: "gpt-5-5-2026-04-24-gs-sdc"
+  charge_code: "0000"
+  region_override: "westeurope"
+  reasoning_effort: "high"           # "high" | "medium" | "low" | "" to omit
+  # Model capability flags — confirmed against the real gateway. Flip these
+  # if a future model/deployment behaves differently; the client also
+  # self-heals on an unrecognised 400 by retrying with the offending param
+  # adjusted, so these are a fast-path, not the only line of defence.
+  supports_temperature: false        # this model only allows temperature=1 (its default)
+  use_max_completion_tokens: true    # this model rejects legacy 'max_tokens'
+  available_models:
+    - id: "gpt-5-5-2026-04-24-gs-sdc"
+      label: "GPT-5.5"
+    - id: "gpt-5-4-2026-03-05-gs-sdc"
+      label: "GPT-5.4"
+
 agents:
   # allow_thinking: false sends enable_thinking=false to Qwen3 for structured
   # stages (skips <think> for speed + clean JSON). Omit / true keeps thinking on.
