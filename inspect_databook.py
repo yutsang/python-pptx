@@ -16,9 +16,14 @@ any real client file without touching API budgets or the network.
 
 Usage:
     python inspect_databook.py "inputs/SomeClient.databook.xlsx"
-    python inspect_databook.py "inputs/"                    # scans every .xlsx in the folder
+    python inspect_databook.py "inputs/"                    # scans every .xlsx in the folder,
+                                                              # prints a final aggregate summary table
     python inspect_databook.py "inputs/SomeClient.databook.xlsx" --sheet Financials
     python inspect_databook.py "inputs/" --run-ai --model workbench   # adds AI-dependent checks (see below)
+    python inspect_databook.py "inputs/" --run-ai --model workbench --limit 5
+        # fast smoke test: only the first 5 mapped accounts per file go to AI, across
+        # every file in the folder — use this to sanity-check the whole batch before
+        # committing to a full (potentially hours-long) unlimited run
 
 AI-dependent checks (only with --run-ai; needs a configured provider in
 fdd_utils/config.yml, costs real tokens/time — run once per databook when
@@ -319,7 +324,8 @@ def run_ai_checks(
     databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame],
     entity_name: str, model_type: str, model_name: Optional[str], language: str,
     bs_recon: Optional[pd.DataFrame], is_recon: Optional[pd.DataFrame],
-) -> None:
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
     _hr("5-7. AI-DEPENDENT CHECKS (running full pipeline once — this costs real tokens/time)")
     from fdd_utils.ai import run_ai_pipeline_with_progress, SUBAGENT_SEQUENCE
 
@@ -330,13 +336,18 @@ def run_ai_checks(
     # ones the real pipeline would never send — wastes tokens/time and makes
     # the qwen-vs-GPT-5.5 timing comparison meaningless.
     mapping_keys = derive_reconciliation_matched_keys((bs_recon, is_recon), dfs.keys(), None)
+    total_mapped = len(mapping_keys)
     if not mapping_keys:
         print(
             "❌ No accounts passed reconciliation with an included Match status "
             "(✅ Match / ⚠️ Match / ✅ Immaterial, or ❌ Diff for IS) — nothing "
             "would be sent to AI in production either. Skipping AI-dependent checks."
         )
-        return
+        return {"skipped": True, "reason": "no mapped accounts"}
+    if limit and limit > 0 and len(mapping_keys) > limit:
+        print(f"--limit {limit}: sampling {limit} of {total_mapped} mapped accounts "
+              f"(fast smoke-test mode, not a full run).")
+        mapping_keys = mapping_keys[:limit]
     print(f"Running pipeline for {len(mapping_keys)} MAPPED accounts (of {len(dfs)} total tabs), "
           f"model_type={model_type}, model_name={model_name}...")
 
@@ -420,6 +431,15 @@ def run_ai_checks(
     else:
         print("✅ No numbers found that only match ground truth at a non-1x scale factor.")
 
+    return {
+        "skipped": False,
+        "total_mapped": total_mapped,
+        "ran": len(mapping_keys),
+        "elapsed": elapsed,
+        "empty_accounts": empty_accounts,
+        "grounding_warnings": len(all_warnings),
+    }
+
 
 # ---------------------------------------------------------------------------
 
@@ -439,13 +459,16 @@ def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
 
 
 def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
-                 model_type: str, model_name: Optional[str]) -> None:
+                 model_type: str, model_name: Optional[str], limit: Optional[int] = None) -> Dict[str, Any]:
     _hr(f"INSPECTING: {path}")
+    summary: Dict[str, Any] = {"file": Path(path).name, "status": "ok"}
     dfs = check_tab_read_summary(path, entity_name=entity_name)
+    summary["tabs_parsed"] = len(dfs)
     check_unit_markers(path, dfs)
     check_row_structures(dfs)
 
     xl = pd.ExcelFile(path)
+    summary["total_sheets"] = len(xl.sheet_names)
     if sheet:
         sheet_names = [sheet]
     else:
@@ -456,7 +479,8 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                 f"found in {path}. Skipping reconciliation — pass --sheet explicitly.\n"
                 f"   Sheet names in this workbook: {xl.sheet_names}"
             )
-            return
+            summary["status"] = "no Financials sheet"
+            return summary
         if len(sheet_names) > 1:
             print(
                 f"\nℹ️  Multi-entity workbook: found {len(sheet_names)} Financials sheets "
@@ -472,6 +496,13 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         if is_recon is not None and not is_recon.empty:
             is_recon_parts.append(is_recon)
 
+    combined_bs_recon = pd.concat(bs_recon_parts, ignore_index=True) if bs_recon_parts else None
+    combined_is_recon = pd.concat(is_recon_parts, ignore_index=True) if is_recon_parts else None
+    if combined_bs_recon is not None:
+        summary["bs_match"] = combined_bs_recon["Match"].value_counts().to_dict()
+    if combined_is_recon is not None:
+        summary["is_match"] = combined_is_recon["Match"].value_counts().to_dict()
+
     if run_ai:
         language = "Eng"
         try:
@@ -481,12 +512,53 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             language = state.get("language", "Eng")
         except Exception:
             pass
-        combined_bs_recon = pd.concat(bs_recon_parts, ignore_index=True) if bs_recon_parts else None
-        combined_is_recon = pd.concat(is_recon_parts, ignore_index=True) if is_recon_parts else None
-        run_ai_checks(
+        ai_summary = run_ai_checks(
             path, sheet_names[0], dfs, entity_name, model_type, model_name, language,
-            combined_bs_recon, combined_is_recon,
+            combined_bs_recon, combined_is_recon, limit=limit,
         )
+        summary["ai"] = ai_summary
+    return summary
+
+
+def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
+    _hr("FINAL SUMMARY — all files")
+    rows = []
+    for s in summaries:
+        if s.get("status") != "ok":
+            rows.append({
+                "file": s.get("file", "?"), "tabs": "-", "BS": "-", "IS": "-",
+                "AI": s.get("status", "error"),
+            })
+            continue
+        bs_match = s.get("bs_match") or {}
+        is_match = s.get("is_match") or {}
+        bs_str = ", ".join(f"{k}={v}" for k, v in bs_match.items()) or "-"
+        is_str = ", ".join(f"{k}={v}" for k, v in is_match.items()) or "-"
+        ai_str = "-"
+        if run_ai:
+            ai = s.get("ai") or {}
+            if ai.get("skipped"):
+                ai_str = f"skipped ({ai.get('reason', '?')})"
+            elif ai:
+                empty_n = len(ai.get("empty_accounts") or [])
+                ai_str = (
+                    f"{ai.get('ran', 0)}/{ai.get('total_mapped', 0)} ran, "
+                    f"{ai.get('elapsed', 0):.0f}s, "
+                    f"{empty_n} empty, {ai.get('grounding_warnings', 0)} 🔴"
+                )
+        rows.append({
+            "file": s.get("file", "?"),
+            "tabs": f"{s.get('tabs_parsed', '?')}/{s.get('total_sheets', '?')}",
+            "BS": bs_str, "IS": is_str, "AI": ai_str,
+        })
+    df = pd.DataFrame(rows)
+    print(df.to_string(index=False))
+    if run_ai:
+        total_empty = sum(len((s.get("ai") or {}).get("empty_accounts") or []) for s in summaries)
+        total_warnings = sum((s.get("ai") or {}).get("grounding_warnings", 0) for s in summaries)
+        print(f"\nAcross all files: {total_empty} empty account(s) total, {total_warnings} grounding warning(s) total.")
+        if total_empty == 0 and total_warnings == 0:
+            print("✅ Nothing flagged across the whole batch.")
 
 
 def main() -> int:
@@ -497,6 +569,9 @@ def main() -> int:
     ap.add_argument("--run-ai", action="store_true", help="also run checks 5-7 (real AI calls, costs time/tokens)")
     ap.add_argument("--model", default="local", help="model_type for --run-ai: local | workbench | deepseek | openai")
     ap.add_argument("--model-name", default=None, help="specific model id within the provider (e.g. GPT-5.5's id)")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="with --run-ai, cap how many mapped accounts per file go to AI "
+                         "(fast smoke-test across many files; omit for a full run)")
     args = ap.parse_args()
 
     target = Path(args.path)
@@ -507,16 +582,31 @@ def main() -> int:
             print(f"No .xlsx files found in {target}")
             return 1
         print(f"Found {len(files)} databook(s) in {target}: {[f.name for f in files]}")
+        if args.run_ai and not args.limit:
+            print(
+                f"⚠️  --run-ai with no --limit on {len(files)} files will run EVERY mapped "
+                f"account in EVERY file — based on inputs/昆山.xlsx (20 accounts, ~15-20 min\n"
+                f"   on workbench), a full batch across all files could take a long time. "
+                f"Consider --limit 5 for a first pass across everything, then a full,\n"
+                f"   unlimited run on just the file(s) that need a closer look."
+            )
     else:
         files = [target]
 
+    summaries: List[Dict[str, Any]] = []
     for f in files:
         try:
-            inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model, args.model_name)
+            summary = inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model,
+                                   args.model_name, limit=args.limit)
+            summaries.append(summary)
         except Exception as exc:
             print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
             import traceback
             traceback.print_exc()
+            summaries.append({"file": f.name, "status": f"FAILED: {exc}"})
+
+    if len(files) > 1:
+        _print_final_summary(summaries, args.run_ai)
     return 0
 
 
