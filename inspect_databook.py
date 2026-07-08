@@ -241,7 +241,13 @@ def check_reconciliation(
 # ---------------------------------------------------------------------------
 
 _NUMBER_RE = re.compile(
-    r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)?\s*"
+    # Currency prefix is REQUIRED, not optional — the project's enforced
+    # number format (prompts.yml) always prefixes real amounts with
+    # CNY/人民币. Without this, a bare number match also catches date years
+    # ("31 January 2026" -> 2026), footnote refs ("Note 1"), and other
+    # non-monetary digits, which produced false "1000x too small" flags
+    # (e.g. 2026 * 1000 landing within tolerance of an unrelated real balance).
+    r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)\s*"
     r"(\d[\d,]*(?:\.\d+)?)\s*"
     r"(million|mn|万|萬|亿|億|K)?",
     re.IGNORECASE,
