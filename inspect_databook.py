@@ -109,16 +109,21 @@ def check_tab_read_summary(databook_path: str, entity_name: str = "") -> Dict[st
 # 2. Unit-marker sanity check (root cause class of the 1000x bug)
 # ---------------------------------------------------------------------------
 
-def check_unit_markers(databook_path: str) -> None:
+def check_unit_markers(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None:
     _hr("2. UNIT-MARKER SANITY CHECK (CNY'000 / 人民币千元 detection per tab)")
     print(
         "Each tab is scanned independently for a thousands-unit marker in its\n"
         "first 8 rows. If a tab's marker ISN'T found here, its multiplier\n"
         "silently falls back to 1x instead of 1000x — this is the failure mode\n"
         "that produces numbers 1000x too small for THAT tab specifically.\n"
+        "Only tabs that actually parsed into an account (see section 1) are\n"
+        "flagged as missing — navigation/cover/TB/pivot tabs are expected to\n"
+        "have no unit marker and are listed but not counted as a problem.\n"
     )
+    relevant_tabs = {str(k).strip() for k in dfs.keys()}
     xl = pd.ExcelFile(databook_path)
     any_missing = False
+    missing_relevant: List[str] = []
     for sheet in xl.sheet_names:
         try:
             df = xl.parse(sheet, header=None, nrows=12)
@@ -127,21 +132,30 @@ def check_unit_markers(databook_path: str) -> None:
             continue
         markers_8 = _unit_markers(df.head(8))
         markers_12 = _unit_markers(df)
-        status = "✅" if markers_8 else ("⚠️ found beyond row 8" if markers_12 else "❌ NOT FOUND")
-        if not markers_8:
+        is_relevant = sheet.strip() in relevant_tabs or sheet.strip().lower() == "financials"
+        if markers_8:
+            status = "✅"
+        elif markers_12:
+            status = "⚠️ found beyond row 8"
+        elif is_relevant:
+            status = "❌ NOT FOUND"
             any_missing = True
+            missing_relevant.append(sheet)
+        else:
+            status = "·  (not a parsed account tab, skipped)"
         print(f"  {status}  {sheet}: markers(first 8 rows)={markers_8}  markers(first 12 rows)={markers_12}")
     if any_missing:
         print(
-            "\n⚠️  One or more tabs have no unit marker in the scanned window. If the\n"
-            "   databook actually reports in thousands, those tabs' values will be\n"
-            "   under-scaled by 1000x relative to tabs where the marker IS found.\n"
+            f"\n⚠️  {len(missing_relevant)} PARSED account tab(s) have no unit marker in the\n"
+            f"   scanned window: {missing_relevant}\n"
+            "   If the databook actually reports in thousands, those tabs' values will\n"
+            "   be under-scaled by 1000x relative to tabs where the marker IS found.\n"
             "   Fix: either the tab needs its own 'CNY'000' header repeated, or\n"
             "   _unit_markers()'s max_rows=8 scan window needs widening for this\n"
             "   databook's layout (paste this output back for a targeted fix)."
         )
     else:
-        print("\n✅ All tabs declare a unit marker within the scan window.")
+        print("\n✅ All parsed account tabs declare a unit marker within the scan window.")
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +195,7 @@ def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
 def check_reconciliation(
     databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], entity_name: str = ""
 ) -> None:
-    _hr("4. RECONCILIATION SUMMARY")
+    _hr(f"4. RECONCILIATION SUMMARY — sheet: {sheet_name}")
     try:
         bs_is_results = extract_balance_sheet_and_income_statement(
             workbook_path=databook_path, sheet_name=sheet_name, debug=False,
@@ -320,18 +334,48 @@ def run_ai_checks(
 
 # ---------------------------------------------------------------------------
 
+def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
+    """Exact 'Financials' match wins. Otherwise look for a multi-entity
+    pattern like 'Financials - NB' / 'Financials - HN' (no single combined
+    Financials sheet — common when one workbook covers several properties).
+    Falling back to sheet_names[0] (e.g. a 'Briefing'/'Cover' tab) silently
+    reconciles against the wrong sheet and reports an empty/misleading
+    result, so that fallback is deliberately NOT used here.
+    """
+    exact = [s for s in xl.sheet_names if s.strip().lower() == "financials"]
+    if exact:
+        return exact
+    prefixed = [s for s in xl.sheet_names if re.match(r"^financials\s*-", s.strip(), re.IGNORECASE)]
+    return prefixed
+
+
 def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                  model_type: str, model_name: Optional[str]) -> None:
     _hr(f"INSPECTING: {path}")
     dfs = check_tab_read_summary(path, entity_name=entity_name)
-    check_unit_markers(path)
+    check_unit_markers(path, dfs)
     check_row_structures(dfs)
 
-    sheet_name = sheet
-    if not sheet_name:
-        xl = pd.ExcelFile(path)
-        sheet_name = "Financials" if "Financials" in xl.sheet_names else xl.sheet_names[0]
-    check_reconciliation(path, sheet_name, dfs, entity_name=entity_name)
+    xl = pd.ExcelFile(path)
+    if sheet:
+        sheet_names = [sheet]
+    else:
+        sheet_names = _resolve_financials_sheets(xl)
+        if not sheet_names:
+            print(
+                f"\n❌ No sheet named exactly 'Financials' or matching 'Financials - <entity>' "
+                f"found in {path}. Skipping reconciliation — pass --sheet explicitly.\n"
+                f"   Sheet names in this workbook: {xl.sheet_names}"
+            )
+            return
+        if len(sheet_names) > 1:
+            print(
+                f"\nℹ️  Multi-entity workbook: found {len(sheet_names)} Financials sheets "
+                f"{sheet_names} — running reconciliation against each."
+            )
+
+    for sheet_name in sheet_names:
+        check_reconciliation(path, sheet_name, dfs, entity_name=entity_name)
 
     if run_ai:
         language = "Eng"
