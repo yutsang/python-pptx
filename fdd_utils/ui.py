@@ -23,6 +23,7 @@ DEFAULT_SESSION_STATE = {
     "model_type": "local",
     "model_name": None,          # specific model within the provider, e.g. GPT-5.5's id
     "model_choice_key": None,    # sidebar dropdown selection key
+    "use_multithreading": True,  # sidebar toggle; False forces sequential (1-worker) processing
     "project_name": None,
     "last_run_folder": None,
     "entity_name": None,
@@ -807,7 +808,7 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                         model_type=session_state.get("model_type", "local"),
                         model_name=session_state.get("model_name"),
                         language=session_state.language,
-                        use_multithreading=True,
+                        use_multithreading=session_state.get("use_multithreading", True),
                         progress_callback=update_progress,
                         user_comments=session_state.get("account_comments", {}),
                     )
@@ -1624,6 +1625,12 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
             )
         else:
             st.caption(f"🤖 AI Mode: {selected.get('label', get_model_display_name(session_state.model_type))}")
+        session_state.use_multithreading = st.checkbox(
+            "⚡ Parallel processing",
+            value=session_state.get("use_multithreading", True),
+            help="Off = process accounts one at a time (sequential). Slower, but useful "
+                 "to rule out concurrency issues or to stay under a strict rate limit.",
+        )
         st.markdown("**📁 Databook File**")
         uploaded_file = st.file_uploader(
             "Upload Excel file",

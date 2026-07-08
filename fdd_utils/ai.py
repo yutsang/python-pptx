@@ -3349,7 +3349,11 @@ def _agent_prompt_kwargs(
             "reduction_target_pct": str(reduction_target),
         }
     if agent_name == "subagent_4":
-        return {"content": previous_output}
+        cfg = agent_config or {}
+        return {
+            "content": previous_output,
+            "materiality_threshold_pct": str(cfg.get("materiality_threshold_pct", 5)),
+        }
     return {}
 
 

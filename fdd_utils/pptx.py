@@ -4168,15 +4168,17 @@ class PowerPointGenerator:
             validation_timeout_seconds = float(summary_settings.get("validation_timeout_seconds", 25) or 25)
             target_chars_chi = int(summary_settings.get("target_chars_chi", 120))
             target_words_eng = int(summary_settings.get("target_words_eng", 95))
+            max_sentences_chi = int(summary_settings.get("max_sentences_chi", 4))
+            max_sentences_eng = int(summary_settings.get("max_sentences_eng", 4))
 
             if is_chinese:
-                prompt = f"""请校验并压缩以下PPT执行摘要草稿，使其适合作为财务PPT摘要框内容。
+                prompt = f"""请校验以下PPT执行摘要草稿，使其适合作为财务PPT摘要框内容。
 
 要求：
 1. 只保留与原始评论一致的高层结论、趋势和核心驱动。
-2. 控制在3句话以内，长度约{target_chars_chi}字。
+2. 控制在{max_sentences_chi}句话以内，长度约{target_chars_chi}字 —— 若草稿明显短于目标长度，请补充其他高层要点以达到目标，不要仅做压缩。
 3. 最多保留{max_numeric_sentences}个数字或百分比，除非删除后会影响结论准确性。
-4. 删除重复、堆叠金额和逐项罗列，将草稿进一步压缩到当前信息量的大约70%，但不得丢失核心趋势、驱动和结论。
+4. 删除重复、堆叠金额和逐项罗列，但不得为了简短而牺牲目标长度或丢失核心趋势、驱动和结论。
 5. 优先合并重复句、删去铺垫和次要背景，只保留最重要的业务含义。
 6. 只输出最终摘要，不要解释。
 
@@ -4186,15 +4188,17 @@ class PowerPointGenerator:
 摘要草稿：
 {draft_summary}"""
             else:
-                prompt = f"""Validate and tighten the draft executive summary for a financial PPT summary box.
+                prompt = f"""Validate the draft executive summary for a financial PPT summary box.
 
 Requirements:
 1. Keep only source-supported themes, trend, and core driver.
-2. Limit the result to no more than 3 sentences and about {target_words_eng} words.
+2. Limit the result to no more than {max_sentences_eng} sentences and about {target_words_eng} words —
+   if the draft runs noticeably shorter than the target, add other high-level points to reach it
+   rather than just compressing further.
 3. Keep at most {max_numeric_sentences} number or percentage unless removing it would make the summary inaccurate.
-4. Compress the draft to roughly 70% of its current information density without losing the key trend, driver, or conclusion.
-5. Remove repeated phrasing, stacked figures, scene-setting language, and account-by-account detail.
-6. Output only the final validated summary paragraph.
+4. Remove repeated phrasing, stacked figures, scene-setting language, and account-by-account detail,
+   but do not sacrifice the target length or the key trend, driver, or conclusion just to be terse.
+5. Output only the final validated summary paragraph.
 
 Source commentary:
 {source_text[:max_input_chars]}
@@ -4289,6 +4293,8 @@ Draft summary:
             )
             target_chars_chi = int(summary_settings.get("target_chars_chi", 120))
             target_words_eng = int(summary_settings.get("target_words_eng", 95))
+            max_sentences_chi = int(summary_settings.get("max_sentences_chi", 4))
+            max_sentences_eng = int(summary_settings.get("max_sentences_eng", 4))
             source_text = str(commentary or summary_source or "").strip()
             if not source_text:
                 return None
@@ -4296,28 +4302,29 @@ Draft summary:
             if is_chinese:
                 prompt = f"""请将以下财务评论改写成适合PPT摘要框的高层执行摘要。
 
-目标长度：约{target_chars_chi}字，控制在3句话以内。
+目标长度：约{target_chars_chi}字，控制在{max_sentences_chi}句话以内 —— 请写满这个长度，不要明显短于目标。
 
 要求：
-1. 仅保留高层结论、趋势和核心驱动。
+1. 保留高层结论、趋势和核心驱动，可覆盖一个以上要点以达到目标长度。
 2. 除非极其必要，最多保留{max_numeric_sentences}个数字或百分比。
 3. 不要逐项复述账户，不要堆叠金额细节。
-4. 语气要像管理层摘要，压缩成一个紧凑自然的短段落，整体信息量控制在当前评论的大约70%。
-5. 优先删去次要说明、重复铺垫和账户层级细节，只保留最重要的业务结论、驱动和影响。
+4. 语气要像管理层摘要，写成一个紧凑自然的短段落。
+5. 优先删去次要说明、重复铺垫和账户层级细节，只保留最重要的业务结论、驱动和影响，但不要为了简短而牺牲目标长度。
 
 原始内容：
 {source_text[:max_input_chars]}"""
             else:
                 prompt = f"""Write a short executive summary for a PPT summary box based on the following financial commentary.
 
-Target length: about {target_words_eng} words, with no more than 3 sentences.
+Target length: about {target_words_eng} words, with no more than {max_sentences_eng} sentences —
+write to fill this length, do not stop noticeably short of it.
 
 Requirements:
-1. Focus on overall trend, key driver, and business implication.
+1. Cover overall trend, key driver, and business implication — span more than one theme if needed to reach the target length.
 2. Keep it high level and presentation-friendly.
 3. Include at most {max_numeric_sentences} number or percentage unless absolutely necessary.
 4. Do not list account-by-account detail or repeat many figures.
-5. Write one compact management-style paragraph and trim the information load to roughly 70% of the source while preserving the key trend, driver, and implication.
+5. Write one compact management-style paragraph. Remove secondary detail, scene-setting language, and repeated wording, but do not sacrifice the target length just to be terse.
 6. Remove secondary detail, scene-setting language, and repeated wording.
 
 Original content:
@@ -4451,10 +4458,17 @@ Original content:
             # Rescale once we know the unit label (detected further below).
             values_pre_multiplied = True
             
-            # Extract BS and IS DataFrames from results
-            # The structure should have 'balance_sheet' and 'income_statement' keys with DataFrames
+            # Extract BS and IS DataFrames from results. Copy them — the rescale
+            # block below divides numeric columns by 1000 IN PLACE, and
+            # bs_is_results is the same object as session_state.bs_is_results,
+            # which survives across re-exports (only cleared on a new file
+            # upload). Without the copy, a second export in the same session
+            # would divide already-divided values by 1000 again, showing
+            # table figures 1000x too small.
             bs_df = bs_is_results.get('balance_sheet')
             is_df = bs_is_results.get('income_statement')
+            bs_df = bs_df.copy() if bs_df is not None else None
+            is_df = is_df.copy() if is_df is not None else None
             
             # Table titles follow the standard FDD phrasing regardless of what
             # the source Excel calls the sheet. Language-aware so Chinese decks

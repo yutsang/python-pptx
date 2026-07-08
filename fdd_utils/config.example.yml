@@ -62,6 +62,9 @@ agents:
     max_tokens: 2000
     top_p: 0.8
     allow_thinking: false
+    # Below this variance, a clause is immaterial and must NOT be flagged as
+    # reasoning/hallucination — tempers the "when in doubt, flag it" bias.
+    materiality_threshold_pct: 5
 
 processing:
   data_format_for_ai: "json"

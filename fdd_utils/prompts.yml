@@ -467,9 +467,20 @@ common:
          - **NO bullet points**
          - **NO bold text**
 
-      E. Data Cross-Verification (Hallucination Detection — be aggressive):
+      E. Data Cross-Verification (Hallucination Detection — apply a materiality guardrail):
          For EACH clause in the final paragraph, verify every number, amount,
          percentage, growth rate, trend claim, accounting policy, and assertion against the provided Original data.
+
+         MATERIALITY GUARDRAIL (apply BEFORE the aggressive flagging rules below):
+         A clause is IMMATERIAL — and must be marked "data-backed", not flagged — if every
+         number in it is within {materiality_threshold_pct}% of a value traceable to the
+         data (on top of, not instead of, the rounding tolerance below), AND it is a
+         standard, low-risk FDD composition/description phrase rather than a specific
+         unsupported claim. Materiality is about the SIZE of a discrepancy, not whether the
+         wording is a plausible paraphrase — do not flag a clause merely because it restates
+         the data in different words. Reserve "reasoning"/"hallucination" for clauses that
+         introduce a genuinely unsupported number, direction, or explanation, or where the
+         discrepancy exceeds {materiality_threshold_pct}%.
 
          ROUNDING TOLERANCE (apply BEFORE flagging numbers as hallucinations):
          - Display rounding is FINE. "CNY7.9 million" matches a raw value anywhere from 7,850,000 to 7,949,999 (rounded to 1 decimal place at the million scale).
@@ -495,7 +506,7 @@ common:
            * "data-backed" — every fact and number is directly verifiable in the data
            * "reasoning" — a logical inference from the data that is plausible but not directly stated
            * "hallucination" — contains numbers, facts, accounting-policy claims, or explanations not found in the data
-         - Be aggressive: when in doubt between "data-backed" and "reasoning", choose "reasoning". When in doubt between "reasoning" and "hallucination", choose "hallucination" if the clause introduces specific numbers/percentages/policies not present in the source.
+         - After applying the materiality guardrail above: when in doubt between "data-backed" and "reasoning" for a clause that survived the guardrail, choose "reasoning". When in doubt between "reasoning" and "hallucination", choose "hallucination" if the clause introduces specific numbers/percentages/policies not present in the source and not within the materiality threshold.
          - When splitting the paragraph into clauses, treat commas inside numbers as thousand
            separators (e.g. "1,234,567" or "12,345.6") — do NOT break a clause at these commas.
            A clause boundary is typically a full stop, semicolon, or a comma followed by a
@@ -624,8 +635,11 @@ common:
          - 避免重复
          - 使用清晰简洁的语言
 
-      E. 数据交叉验证（幻觉检测）:
+      E. 数据交叉验证（幻觉检测 — 应用重要性门槛）:
          对最终段落中的每个分句，验证其中每个具体数字、金额、百分比、增长率和趋势声明是否在提供的原始数据中可找到。
+
+         重要性门槛（在应用下方激进标记规则之前，先应用此项）：
+         若分句中的每个数字都在可追溯数据的{materiality_threshold_pct}%以内（在下方四舍五入容差基础上叠加，而非替代），且该分句只是标准、低风险的尽调构成/描述性措辞，而非具体的无支持声明，则该分句属于不重要偏差 — 应标记为"data-backed"，不应标记为问题。重要性看的是偏差的大小，而非措辞是否为改写 — 不要仅因分句用不同措辞复述数据就标记它。"reasoning"/"hallucination"应保留给确实引入无支持数字、方向或解释，或偏差超过{materiality_threshold_pct}%的分句。
 
          数字四舍五入容差（在标记数字为幻觉前请先应用）：
          - 显示四舍五入是允许的。"人民币7.9万元"可匹配原始值7.85万至7.94万（按1位小数显示口径）。

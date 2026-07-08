@@ -1,0 +1,380 @@
+"""Databook inspection tool — run this against each real client databook
+(Windows-side "inputs" folder) BEFORE trusting the pipeline's output on it.
+
+Built to answer these specific questions from a real-databook QA pass:
+  1. Are financial + breakdown tabs actually being read correctly?
+  2. Does reconciliation match up — and for anything that doesn't, which
+     tab names actually exist so a mapping can be added?
+  3. Does the databook have indented / total-then-breakdown row structures
+     that a human eye catches but extraction might misread?
+  4. Are '000-style unit markers (CNY'000 / 人民币千元) being detected
+     correctly per tab, or could a tab silently fall back to a 1x
+     multiplier when it should be 1000x?
+
+Everything above is DETERMINISTIC — no AI calls, fast, safe to run against
+any real client file without touching API budgets or the network.
+
+Usage:
+    python inspect_databook.py "inputs/SomeClient.databook.xlsx"
+    python inspect_databook.py "inputs/"                    # scans every .xlsx in the folder
+    python inspect_databook.py "inputs/SomeClient.databook.xlsx" --sheet Financials
+    python inspect_databook.py "inputs/" --run-ai --model workbench   # adds AI-dependent checks (see below)
+
+AI-dependent checks (only with --run-ai; needs a configured provider in
+fdd_utils/config.yml, costs real tokens/time — run once per databook when
+ready to review quality, not on every edit):
+  5. Runs the full AI pipeline once and reports wall-clock time and
+     per-agent retry counts (compare qwen local vs GPT-5.5 workbench by
+     re-running with --model).
+  6. Numeric grounding sweep: extracts every number mentioned in generated
+     commentary and cross-checks it against the ground-truth dfs value at
+     1x, 1000x, 0.001x, 10000x, and 0.0001x. Flags any number that ONLY
+     matches at a non-1x scale — this is the generalized version of the
+     1000x-scaling bug fixed this session (fdd_utils/pptx.py
+     embed_financial_tables mutating bs_is_results in place). If a
+     different databook layout reintroduces a scaling bug anywhere in the
+     pipeline, this check catches it automatically instead of relying on
+     a human noticing a wrong number in a slide.
+  7. Chinese unit-label sanity check: for Chinese output, flags any
+     万元/亿元 amount that doesn't reconcile to the underlying actual-CNY
+     ground truth within tolerance — the 千元→萬元 mislabeling class of bug.
+
+Output is plain text to stdout — copy/paste it back for review; nothing is
+written back to the workbook.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+
+from fdd_utils.workbook import (
+    _unit_markers,
+    extract_data_from_excel,
+    extract_balance_sheet_and_income_statement,
+    find_account_in_dfs,
+    get_effective_mappings,
+    load_mappings,
+    reconcile_financial_statements,
+)
+
+pd.set_option("display.width", 200)
+
+
+def _hr(title: str = "") -> None:
+    print("\n" + "=" * 78)
+    if title:
+        print(f"  {title}")
+        print("=" * 78)
+
+
+# ---------------------------------------------------------------------------
+# 1. Tab read summary
+# ---------------------------------------------------------------------------
+
+def check_tab_read_summary(databook_path: str, entity_name: str = "") -> Dict[str, pd.DataFrame]:
+    _hr("1. TAB READ SUMMARY")
+    xl = pd.ExcelFile(databook_path)
+    print(f"Sheets found in workbook: {xl.sheet_names}")
+
+    dfs, workbook_list, overall_result_type, language, resolution = extract_data_from_excel(
+        databook_path=databook_path, entity_name=entity_name, mode="All",
+        return_resolution=True,
+    )
+    print(f"\nDetected language: {language}")
+    print(f"Tabs successfully parsed into dfs: {len(dfs)} of {len(xl.sheet_names)} sheets")
+    dfs_keys_normalized = {str(k).strip() for k in dfs.keys()}
+    unparsed = [
+        s for s in xl.sheet_names
+        if s.strip() not in dfs_keys_normalized and s.strip().lower() != "financials"
+    ]
+    if unparsed:
+        print(f"⚠️  Sheets NOT parsed into any account tab (check if these should map): {unparsed}")
+
+    for key, df in dfs.items():
+        if df is None or df.empty:
+            print(f"  ⚠️  {key}: EMPTY dataframe")
+            continue
+        date_cols = [c for c in df.columns if not str(c).endswith("_formatted") and not str(c).startswith("__")]
+        print(f"  {key}: {len(df)} rows, columns={date_cols[:8]}{'...' if len(date_cols) > 8 else ''}")
+    return dfs
+
+
+# ---------------------------------------------------------------------------
+# 2. Unit-marker sanity check (root cause class of the 1000x bug)
+# ---------------------------------------------------------------------------
+
+def check_unit_markers(databook_path: str) -> None:
+    _hr("2. UNIT-MARKER SANITY CHECK (CNY'000 / 人民币千元 detection per tab)")
+    print(
+        "Each tab is scanned independently for a thousands-unit marker in its\n"
+        "first 8 rows. If a tab's marker ISN'T found here, its multiplier\n"
+        "silently falls back to 1x instead of 1000x — this is the failure mode\n"
+        "that produces numbers 1000x too small for THAT tab specifically.\n"
+    )
+    xl = pd.ExcelFile(databook_path)
+    any_missing = False
+    for sheet in xl.sheet_names:
+        try:
+            df = xl.parse(sheet, header=None, nrows=12)
+        except Exception as exc:
+            print(f"  ⚠️  {sheet}: could not read ({exc})")
+            continue
+        markers_8 = _unit_markers(df.head(8))
+        markers_12 = _unit_markers(df)
+        status = "✅" if markers_8 else ("⚠️ found beyond row 8" if markers_12 else "❌ NOT FOUND")
+        if not markers_8:
+            any_missing = True
+        print(f"  {status}  {sheet}: markers(first 8 rows)={markers_8}  markers(first 12 rows)={markers_12}")
+    if any_missing:
+        print(
+            "\n⚠️  One or more tabs have no unit marker in the scanned window. If the\n"
+            "   databook actually reports in thousands, those tabs' values will be\n"
+            "   under-scaled by 1000x relative to tabs where the marker IS found.\n"
+            "   Fix: either the tab needs its own 'CNY'000' header repeated, or\n"
+            "   _unit_markers()'s max_rows=8 scan window needs widening for this\n"
+            "   databook's layout (paste this output back for a targeted fix)."
+        )
+    else:
+        print("\n✅ All tabs declare a unit marker within the scan window.")
+
+
+# ---------------------------------------------------------------------------
+# 3. Row-structure sanity check (indentation / total-then-breakdown)
+# ---------------------------------------------------------------------------
+
+def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
+    _hr("3. ROW-STRUCTURE SANITY CHECK (indentation / total-then-breakdown)")
+    print(
+        "Reports how each tab's rows were auto-classified (breakdown / subtotal\n"
+        "/ total / plain). Skim each tab's list against the real Excel layout —\n"
+        "if a row that's visually a breakdown item got classified as a total (or\n"
+        "vice versa), that's exactly the class of layout the auto-detector can\n"
+        "misread. Only tabs with a NON-trivial mix of types are printed in full;\n"
+        "tabs with all-plain rows are summarized in one line.\n"
+    )
+    for key, df in dfs.items():
+        if df is None or df.empty:
+            continue
+        row_types = df.attrs.get("row_types_by_description") or {}
+        desc_col = df.columns[0]
+        descriptions = [str(v) for v in df[desc_col].tolist()]
+        if not row_types or all(row_types.get(d, "plain") == "plain" for d in descriptions):
+            print(f"  {key}: {len(descriptions)} rows, all classified 'plain' (no total/subtotal/breakdown detected)")
+            continue
+        print(f"  {key}:")
+        for desc in descriptions:
+            rtype = row_types.get(desc, "plain")
+            marker = {"total": "Σ TOTAL", "subtotal": "Σ subtotal", "breakdown": "  breakdown"}.get(rtype, "  plain")
+            print(f"      [{marker:12s}] {desc}")
+
+
+# ---------------------------------------------------------------------------
+# 4. Reconciliation summary with actionable tab-name listing
+# ---------------------------------------------------------------------------
+
+def check_reconciliation(
+    databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], entity_name: str = ""
+) -> None:
+    _hr("4. RECONCILIATION SUMMARY")
+    try:
+        bs_is_results = extract_balance_sheet_and_income_statement(
+            workbook_path=databook_path, sheet_name=sheet_name, debug=False,
+        )
+    except Exception as exc:
+        print(f"❌ Could not extract Financials sheet '{sheet_name}': {exc}")
+        return
+
+    mappings = get_effective_mappings(load_mappings(), None)
+    bs_recon, is_recon = reconcile_financial_statements(
+        bs_is_results=bs_is_results, dfs=dfs, mappings=mappings,
+        tolerance=1.0, materiality_threshold=0.005, debug=False,
+    )
+
+    all_tab_names = sorted(dfs.keys())
+    for label, recon in (("Balance Sheet", bs_recon), ("Income Statement", is_recon)):
+        if recon is None or recon.empty:
+            print(f"\n{label}: no rows")
+            continue
+        print(f"\n{label}: {len(recon)} lines")
+        print(recon["Match"].value_counts().to_string())
+        problems = recon[recon["Match"].astype(str).str.contains("Not Found|Diff", na=False)]
+        if not problems.empty:
+            print(f"\n  Unmatched/diff lines for {label} (account -> mapping status):")
+            for _, r in problems.iterrows():
+                print(f"    - {r['Financials_Account']!r}: {r['Mapping_Status']} | {r['Mapping_Note']}")
+            print(f"\n  All tab names actually present in this workbook (for adding to mappings.yml):")
+            print(f"    {all_tab_names}")
+
+
+# ---------------------------------------------------------------------------
+# 5-7. AI-dependent checks
+# ---------------------------------------------------------------------------
+
+_NUMBER_RE = re.compile(
+    r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)?\s*"
+    r"(\d[\d,]*(?:\.\d+)?)\s*"
+    r"(million|mn|万|萬|亿|億|K)?",
+    re.IGNORECASE,
+)
+
+_SCALE_MAP = {
+    None: 1, "": 1, "k": 1_000,
+    "million": 1_000_000, "mn": 1_000_000,
+    "万": 10_000, "萬": 10_000,
+    "亿": 100_000_000, "億": 100_000_000,
+}
+
+
+def _extract_numbers_with_scale(text: str) -> List[float]:
+    values = []
+    for match in _NUMBER_RE.finditer(text or ""):
+        raw, suffix = match.group(1), (match.group(2) or "").lower()
+        if not raw or raw in (",", "."):
+            continue
+        try:
+            base = float(raw.replace(",", ""))
+        except ValueError:
+            continue
+        scale = _SCALE_MAP.get(suffix, 1)
+        values.append(base * scale)
+    return values
+
+
+def _ground_truth_values(dfs: Dict[str, pd.DataFrame]) -> List[float]:
+    truth = []
+    for df in dfs.values():
+        if df is None or df.empty:
+            continue
+        for col in df.columns:
+            if str(col).endswith("_formatted") or str(col).startswith("__"):
+                continue
+            if pd.api.types.is_numeric_dtype(df[col]):
+                truth.extend(float(v) for v in df[col].dropna().tolist() if v != 0)
+    return truth
+
+
+def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str, pd.DataFrame]) -> List[str]:
+    """Returns a list of warning strings for numbers that only match ground
+    truth at a non-1x scale factor (the generalized 1000x-bug detector)."""
+    truth_values = _ground_truth_values(dfs)
+    if not truth_values:
+        return []
+    warnings = []
+    for value in _extract_numbers_with_scale(generated_text):
+        if value == 0:
+            continue
+        matches_1x = any(abs(value - t) / max(abs(t), 1) < 0.06 for t in truth_values)
+        if matches_1x:
+            continue
+        for factor, label in ((1000, "1000x too small"), (0.001, "1000x too large"),
+                               (10000, "10000x too small"), (0.0001, "10000x too large")):
+            scaled = value * factor
+            if any(abs(scaled - t) / max(abs(t), 1) < 0.06 for t in truth_values):
+                warnings.append(
+                    f"  🔴 [{mapping_key}] number {value:,.2f} in generated text only matches "
+                    f"ground truth when scaled — looks {label} (matches {scaled:,.2f})"
+                )
+                break
+    return warnings
+
+
+def run_ai_checks(
+    databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame],
+    entity_name: str, model_type: str, model_name: Optional[str], language: str,
+) -> None:
+    _hr("5-7. AI-DEPENDENT CHECKS (running full pipeline once — this costs real tokens/time)")
+    from fdd_utils.ai import run_ai_pipeline_with_progress
+
+    mapping_keys = list(dfs.keys())
+    print(f"Running pipeline for {len(mapping_keys)} accounts, model_type={model_type}, model_name={model_name}...")
+    start = time.time()
+    results = run_ai_pipeline_with_progress(
+        mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, model_name=model_name,
+        language=language, use_multithreading=True, progress_callback=None,
+    )
+    elapsed = time.time() - start
+    print(f"\n5. TIMING: full pipeline for {len(mapping_keys)} accounts took {elapsed:.1f}s "
+          f"({elapsed / max(len(mapping_keys), 1):.1f}s/account) on {model_type}"
+          f"{'/' + model_name if model_name else ''}")
+
+    _hr("6-7. NUMERIC GROUNDING + UNIT-LABEL SWEEP")
+    all_warnings: List[str] = []
+    for key, content in (results or {}).items():
+        text = content.get("final_content") if isinstance(content, dict) else str(content or "")
+        if not text:
+            continue
+        all_warnings.extend(check_numeric_grounding(key, text, {key: dfs.get(key)} if key in dfs else dfs))
+    if all_warnings:
+        print(f"Found {len(all_warnings)} suspicious number(s):")
+        for w in all_warnings:
+            print(w)
+    else:
+        print("✅ No numbers found that only match ground truth at a non-1x scale factor.")
+
+
+# ---------------------------------------------------------------------------
+
+def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
+                 model_type: str, model_name: Optional[str]) -> None:
+    _hr(f"INSPECTING: {path}")
+    dfs = check_tab_read_summary(path, entity_name=entity_name)
+    check_unit_markers(path)
+    check_row_structures(dfs)
+
+    sheet_name = sheet
+    if not sheet_name:
+        xl = pd.ExcelFile(path)
+        sheet_name = "Financials" if "Financials" in xl.sheet_names else xl.sheet_names[0]
+    check_reconciliation(path, sheet_name, dfs, entity_name=entity_name)
+
+    if run_ai:
+        language = "Eng"
+        try:
+            from fdd_utils.workbook import process_workbook_data
+            state = process_workbook_data(temp_path=path, entity_name=entity_name,
+                                           selected_sheet=sheet_name, debug=False)
+            language = state.get("language", "Eng")
+        except Exception:
+            pass
+        run_ai_checks(path, sheet_name, dfs, entity_name, model_type, model_name, language)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("path", help="databook .xlsx file, or a folder to scan every .xlsx in it")
+    ap.add_argument("--sheet", default=None, help="Financials sheet name (default: auto-detect 'Financials')")
+    ap.add_argument("--entity", default="", help="entity name filter, if the workbook has multiple entities")
+    ap.add_argument("--run-ai", action="store_true", help="also run checks 5-7 (real AI calls, costs time/tokens)")
+    ap.add_argument("--model", default="local", help="model_type for --run-ai: local | workbench | deepseek | openai")
+    ap.add_argument("--model-name", default=None, help="specific model id within the provider (e.g. GPT-5.5's id)")
+    args = ap.parse_args()
+
+    target = Path(args.path)
+    if target.is_dir():
+        files = sorted(target.glob("*.xlsx"))
+        files = [f for f in files if not f.name.startswith("~$")]
+        if not files:
+            print(f"No .xlsx files found in {target}")
+            return 1
+        print(f"Found {len(files)} databook(s) in {target}: {[f.name for f in files]}")
+    else:
+        files = [target]
+
+    for f in files:
+        try:
+            inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model, args.model_name)
+        except Exception as exc:
+            print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
+            import traceback
+            traceback.print_exc()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

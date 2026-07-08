@@ -51,7 +51,9 @@ def _run_one(model_id: str) -> bool:
             user_prompt="hi",
             system_prompt="You are a helpful assistant.",
             temperature=1,
-            max_tokens=64,
+            max_tokens=512,  # reasoning models spend part of this budget on hidden
+                             # reasoning tokens before the visible answer; 64 was too
+                             # tight and produced empty content that looked like a failure
         )
     except Exception as exc:
         print(f"  ❌ get_response raised: {type(exc).__name__}: {exc}")
@@ -60,7 +62,10 @@ def _run_one(model_id: str) -> bool:
 
     content = str(response.get("content") or "").strip()
     if not content:
-        print(f"  ❌ Empty response content after {elapsed:.2f}s. Full payload: {response}")
+        print(f"  ⚠️  Empty response content after {elapsed:.2f}s "
+              f"(completion_tokens={response.get('completion_tokens')}) — likely max_tokens "
+              f"still too small for this model's reasoning overhead, try raising it further.")
+        print(f"     Full payload: {response}")
         return False
 
     print(f"  ✅ OK in {elapsed:.2f}s")

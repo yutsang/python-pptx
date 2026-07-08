@@ -6185,6 +6185,67 @@ def _integrity_metadata(dfs_df: Optional[pd.DataFrame]) -> Dict[str, str]:
     }
 
 
+def _latest_column_is_partial_period(date_cols: List[str], min_full_period_months: float = 10.0) -> bool:
+    """True if the last column spans clearly fewer months than the prior
+    column-to-column cadence — e.g. columns ...-12-31, ...-12-31, ...-01-31,
+    where the final "2026-01-31" is a 1-month interim cut, not a year-end.
+    Used to widen reconciliation to also check the prior (full-period) column
+    rather than relying solely on a partial period that may not tie out the
+    same way a full year does.
+    """
+    if len(date_cols) < 2:
+        return False
+    last_date = _parse_statement_date_label(date_cols[-1])
+    prev_date = _parse_statement_date_label(date_cols[-2])
+    if last_date is None or prev_date is None:
+        return False
+    months_gap = (last_date.year - prev_date.year) * 12 + (last_date.month - prev_date.month)
+    return 0 < months_gap < min_full_period_months
+
+
+def _reconcile_against_prior_period(
+    account_name: str,
+    date_cols: List[str],
+    row: pd.Series,
+    dfs_df: Optional[pd.DataFrame],
+    tolerance: float,
+    materiality_threshold: float,
+    debug: bool = False,
+    use_absolute: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Re-check Financials vs. Tab for the prior (second-to-last) column,
+    used when the latest column is a partial period. Returns None if there's
+    no prior column, no matching tab data, or the prior check itself can't
+    be evaluated. use_absolute mirrors the IS expense-account convention of
+    comparing magnitudes rather than signed values.
+    """
+    if len(date_cols) < 2 or dfs_df is None:
+        return None
+    prior_date = date_cols[-2]
+    if prior_date not in row.index:
+        return None
+    prior_source_value = row[prior_date]
+    prior_dfs_value = get_total_from_dfs(dfs_df, prior_date, debug)
+    if prior_dfs_value is None:
+        return None
+    prior_source_for_comparison = abs(prior_source_value) if use_absolute else prior_source_value
+    prior_dfs_for_comparison = abs(prior_dfs_value) if use_absolute else prior_dfs_value
+    prior_diff = abs(prior_source_for_comparison - prior_dfs_for_comparison)
+    if prior_diff <= tolerance:
+        prior_match = True
+    elif prior_source_for_comparison != 0 and (prior_diff / abs(prior_source_for_comparison)) <= materiality_threshold:
+        prior_match = True
+    else:
+        prior_match = False
+    return {
+        "date": prior_date,
+        "financials_value": prior_source_value,
+        "tab_value": prior_dfs_value,
+        "diff": prior_diff,
+        "match": prior_match,
+    }
+
+
 def reconcile_financial_statements(
     bs_is_results: Dict,
     dfs: Dict[str, pd.DataFrame],
@@ -6324,6 +6385,23 @@ def reconcile_financial_statements(
                         else:
                             match_status = '❌ Diff'
 
+                # The latest column can be an interim/partial-year cut (e.g.
+                # "2026-01-31" after year-end columns) that doesn't tie out the
+                # same way a full period does. If it shows a real diff, also
+                # check the prior (full-period) column — if THAT reconciles,
+                # note it rather than reporting an unexplained mismatch.
+                if match_status == '❌ Diff' and _latest_column_is_partial_period(date_cols):
+                    prior_check = _reconcile_against_prior_period(
+                        account_name, date_cols, row, dfs_df, tolerance, materiality_threshold, debug,
+                    )
+                    if prior_check and prior_check["match"]:
+                        match_status = '⚠️ Interim Diff (prior period matches)'
+                        mapping_note = (
+                            f"{mapping_note} Latest column '{latest_date}' is an interim/partial period and "
+                            f"differs from the tab; prior column '{prior_check['date']}' reconciles "
+                            f"(Financials={prior_check['financials_value']:,.0f}, Tab={prior_check['tab_value']:,.0f})."
+                        ).strip()
+
                 integrity_fields = _integrity_metadata(dfs_df)
                 bs_recon_rows.append({
                     'Financials_Account': account_name,
@@ -6447,7 +6525,24 @@ def reconcile_financial_statements(
                                 match_status = '❌ Diff'
                         else:
                             match_status = '❌ Diff'
-                
+
+                # See the matching BS comment above: the latest column can be
+                # an interim/partial period. If it shows a real diff, also
+                # check the prior (full-period) column before reporting an
+                # unexplained mismatch.
+                if match_status == '❌ Diff' and _latest_column_is_partial_period(date_cols):
+                    prior_check = _reconcile_against_prior_period(
+                        account_name, date_cols, row, dfs_df, tolerance, materiality_threshold, debug,
+                        use_absolute=_should_compare_income_statement_as_absolute(account_name, category),
+                    )
+                    if prior_check and prior_check["match"]:
+                        match_status = '⚠️ Interim Diff (prior period matches)'
+                        mapping_note = (
+                            f"{mapping_note} Latest column '{latest_date}' is an interim/partial period and "
+                            f"differs from the tab; prior column '{prior_check['date']}' reconciles "
+                            f"(Financials={prior_check['financials_value']:,.0f}, Tab={prior_check['tab_value']:,.0f})."
+                        ).strip()
+
                 integrity_fields = _integrity_metadata(dfs_df)
                 is_recon_rows.append({
                     'Financials_Account': account_name,
