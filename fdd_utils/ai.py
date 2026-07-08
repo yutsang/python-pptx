@@ -2913,6 +2913,26 @@ class AIClient:
                 if reasoning_effort:
                     wb_params['reasoning_effort'] = reasoning_effort
 
+                # Reasoning models spend max_completion_tokens on HIDDEN
+                # reasoning tokens before the visible answer — the per-agent
+                # max_tokens values in config.yml (1200-1400) are sized for
+                # local Qwen3, which has no hidden-token cost for structured
+                # stages (allow_thinking=false skips <think> entirely). For
+                # workbench, a complex multi-component account (e.g.
+                # Investment properties, Operating costs) can exhaust that
+                # budget on reasoning alone with reasoning_effort=high,
+                # leaving nothing for the answer — a real 200/no-exception
+                # response with EMPTY content (confirmed via inputs/昆山.xlsx:
+                # 2/20 accounts came back blank). min_max_tokens is a floor,
+                # not a replacement — it only raises the budget when the
+                # agent's own setting is smaller.
+                min_max_tokens = self.config_details.get('min_max_tokens')
+                if min_max_tokens:
+                    current_budget = wb_params.get('max_completion_tokens', wb_params.get('max_tokens', 0)) or 0
+                    if current_budget < int(min_max_tokens):
+                        budget_key = 'max_completion_tokens' if 'max_completion_tokens' in wb_params else 'max_tokens'
+                        wb_params[budget_key] = int(min_max_tokens)
+
                 _MAX_TOKENS_ALIASES = ('max_tokens', 'max_completion_tokens')
 
                 def _drop_rejected_param(exc: Exception) -> bool:

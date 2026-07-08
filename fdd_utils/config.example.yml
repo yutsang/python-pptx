@@ -33,6 +33,11 @@ workbench:
   supports_temperature: false        # this model only allows temperature=1 (its default)
   supports_sampling_params: false    # this model rejects top_p / frequency_penalty / presence_penalty
   use_max_completion_tokens: true    # this model rejects legacy 'max_tokens'
+  # Floor for max_completion_tokens (not a replacement for agents.*.max_tokens
+  # below). Reasoning models spend part of the budget on hidden reasoning
+  # before the visible answer, so a complex account can exhaust a small
+  # per-agent budget and come back empty. 0/blank disables the floor.
+  min_max_tokens: 3000
   available_models:
     - id: "gpt-5-5-2026-04-24-gs-sdc"
       label: "GPT-5.5"
