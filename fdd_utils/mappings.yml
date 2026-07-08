@@ -993,7 +993,7 @@ Fin Exp:
 Selling cost:
   type: IS
   category: Expenses
-  aliases: ["Selling cost", "Selling costs", "销售费用", "Selling and distribution expenses", "Distribution expenses", "销售及分销费用"]
+  aliases: ["Selling cost", "Selling costs", "销售费用", "Selling and distribution expenses", "Distribution expenses", "销售及分销费用", "Selling expense", "Selling expenses"]
   system_prompts:
   user_prompts:
   patterns:

@@ -69,6 +69,7 @@ from fdd_utils.workbook import (
     reconcile_financial_statements,
 )
 from fdd_utils.ui import derive_reconciliation_matched_keys
+from fdd_utils.financial_common import get_pipeline_result_text
 
 pd.set_option("display.width", 200)
 
@@ -358,11 +359,17 @@ def run_ai_checks(
 
     _hr("6-7. NUMERIC GROUNDING + UNIT-LABEL SWEEP")
     all_warnings: List[str] = []
+    checked_count = 0
     for key, content in (results or {}).items():
-        text = content.get("final_content") if isinstance(content, dict) else str(content or "")
+        # "final" is the pipeline's actual output field (fdd_utils/ai.py
+        # get_pipeline_result_text) — NOT "final_content", which only exists
+        # inside the raw agent_4_validation sub-dict, not at this top level.
+        text = get_pipeline_result_text(content)
         if not text:
             continue
+        checked_count += 1
         all_warnings.extend(check_numeric_grounding(key, text, {key: dfs.get(key)} if key in dfs else dfs))
+    print(f"Checked {checked_count} of {len(results or {})} account(s) with non-empty output.")
     if all_warnings:
         print(f"Found {len(all_warnings)} suspicious number(s):")
         for w in all_warnings:
