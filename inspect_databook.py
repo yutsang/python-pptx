@@ -267,8 +267,12 @@ _SCALE_MAP = {
 }
 
 
-def _extract_numbers_with_scale(text: str) -> List[float]:
-    values = []
+def _extract_numbers_with_scale(text: str) -> List[Tuple[float, int, int]]:
+    """Returns (value, match_start, match_end) so callers can pull the
+    surrounding sentence for a flagged number — the isolated number alone
+    ("40,378,000.00") isn't enough to tell whether it's a real hallucinated
+    scale bug or something benign; the actual written clause is."""
+    values: List[Tuple[float, int, int]] = []
     for match in _NUMBER_RE.finditer(text or ""):
         raw, suffix = match.group(1), (match.group(2) or "").lower()
         if not raw or raw in (",", "."):
@@ -278,8 +282,16 @@ def _extract_numbers_with_scale(text: str) -> List[float]:
         except ValueError:
             continue
         scale = _SCALE_MAP.get(suffix, 1)
-        values.append(base * scale)
+        values.append((base * scale, match.start(), match.end()))
     return values
+
+
+def _context_snippet(text: str, start: int, end: int, radius: int = 50) -> str:
+    lo = max(0, start - radius)
+    hi = min(len(text), end + radius)
+    prefix = "…" if lo > 0 else ""
+    suffix = "…" if hi < len(text) else ""
+    return f"{prefix}{text[lo:hi].strip()}{suffix}"
 
 
 def _ground_truth_values(dfs: Dict[str, pd.DataFrame]) -> List[float]:
@@ -302,7 +314,7 @@ def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str
     if not truth_values:
         return []
     warnings = []
-    for value in _extract_numbers_with_scale(generated_text):
+    for value, start, end in _extract_numbers_with_scale(generated_text):
         if value == 0:
             continue
         matches_1x = any(abs(value - t) / max(abs(t), 1) < 0.06 for t in truth_values)
@@ -312,9 +324,11 @@ def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str
                                (10000, "10000x too small"), (0.0001, "10000x too large")):
             scaled = value * factor
             if any(abs(scaled - t) / max(abs(t), 1) < 0.06 for t in truth_values):
+                snippet = _context_snippet(generated_text, start, end)
                 warnings.append(
                     f"  🔴 [{mapping_key}] number {value:,.2f} in generated text only matches "
-                    f"ground truth when scaled — looks {label} (matches {scaled:,.2f})"
+                    f"ground truth when scaled — looks {label} (matches {scaled:,.2f})\n"
+                    f"      context: \"{snippet}\""
                 )
                 break
     return warnings
@@ -324,7 +338,7 @@ def run_ai_checks(
     databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame],
     entity_name: str, model_type: str, model_name: Optional[str], language: str,
     bs_recon: Optional[pd.DataFrame], is_recon: Optional[pd.DataFrame],
-    limit: Optional[int] = None,
+    limit: Optional[int] = None, workers: Optional[int] = None,
 ) -> Dict[str, Any]:
     _hr("5-7. AI-DEPENDENT CHECKS (running full pipeline once — this costs real tokens/time)")
     from fdd_utils.ai import run_ai_pipeline_with_progress, SUBAGENT_SEQUENCE
@@ -348,8 +362,10 @@ def run_ai_checks(
         print(f"--limit {limit}: sampling {limit} of {total_mapped} mapped accounts "
               f"(fast smoke-test mode, not a full run).")
         mapping_keys = mapping_keys[:limit]
+    effective_workers = workers if workers else (4 if model_type == "local" else 2)
     print(f"Running pipeline for {len(mapping_keys)} MAPPED accounts (of {len(dfs)} total tabs), "
-          f"model_type={model_type}, model_name={model_name}...")
+          f"model_type={model_type}, model_name={model_name}, workers={effective_workers}"
+          f"{' (--workers override)' if workers else ' (built-in default)'}...")
 
     # SUBAGENT_SEQUENCE is the ACTUAL active pipeline (Generator, Auditor,
     # Validator — Refiner is dormant, see ai.py:SUBAGENT_ALIASES comment).
@@ -388,7 +404,8 @@ def run_ai_checks(
     try:
         results = run_ai_pipeline_with_progress(
             mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, model_name=model_name,
-            language=language, use_multithreading=True, progress_callback=_tqdm_progress,
+            language=language, use_multithreading=True, max_workers=workers,
+            progress_callback=_tqdm_progress,
         )
     finally:
         stop_refresh.set()
@@ -459,7 +476,8 @@ def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
 
 
 def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
-                 model_type: str, model_name: Optional[str], limit: Optional[int] = None) -> Dict[str, Any]:
+                 model_type: str, model_name: Optional[str], limit: Optional[int] = None,
+                 workers: Optional[int] = None) -> Dict[str, Any]:
     _hr(f"INSPECTING: {path}")
     summary: Dict[str, Any] = {"file": Path(path).name, "status": "ok"}
     dfs = check_tab_read_summary(path, entity_name=entity_name)
@@ -514,7 +532,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             pass
         ai_summary = run_ai_checks(
             path, sheet_names[0], dfs, entity_name, model_type, model_name, language,
-            combined_bs_recon, combined_is_recon, limit=limit,
+            combined_bs_recon, combined_is_recon, limit=limit, workers=workers,
         )
         summary["ai"] = ai_summary
     return summary
@@ -572,6 +590,11 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None,
                     help="with --run-ai, cap how many mapped accounts per file go to AI "
                          "(fast smoke-test across many files; omit for a full run)")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="with --run-ai, concurrent worker threads per pipeline stage. "
+                         "Built-in default is 4 for local, 2 for everything else (rate-limit "
+                         "caution) — override here to test a higher value, e.g. --workers 4 "
+                         "on workbench if you've already validated the gateway handles it.")
     args = ap.parse_args()
 
     target = Path(args.path)
@@ -597,7 +620,7 @@ def main() -> int:
     for f in files:
         try:
             summary = inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model,
-                                   args.model_name, limit=args.limit)
+                                   args.model_name, limit=args.limit, workers=args.workers)
             summaries.append(summary)
         except Exception as exc:
             print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")

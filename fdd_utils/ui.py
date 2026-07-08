@@ -802,6 +802,16 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                     update_progress.start_time = start_time
                     status_placeholder.info(f"🚀 Starting AI pipeline for {total_items} accounts... | Progress: 0/{total_steps} steps | ETA: Calculating...")
                     progress_placeholder.progress(0)
+                    # processing.max_workers in config.yml — null keeps the
+                    # built-in default (4 local / 2 cloud); set a number to
+                    # override for either. Was declared in config.yml but
+                    # never actually read anywhere in the call chain.
+                    try:
+                        _configured_max_workers = (
+                            load_yaml_config(get_default_config_path()).get("processing", {}).get("max_workers")
+                        )
+                    except Exception:
+                        _configured_max_workers = None
                     results = run_ai_pipeline_with_progress(
                         mapping_keys=matched_mapping_keys,
                         dfs=selected_pipeline_dfs,
@@ -809,6 +819,7 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                         model_name=session_state.get("model_name"),
                         language=session_state.language,
                         use_multithreading=session_state.get("use_multithreading", True),
+                        max_workers=_configured_max_workers,
                         progress_callback=update_progress,
                         user_comments=session_state.get("account_comments", {}),
                     )
