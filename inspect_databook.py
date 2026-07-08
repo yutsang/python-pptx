@@ -366,16 +366,28 @@ def run_ai_checks(
     _hr("6-7. NUMERIC GROUNDING + UNIT-LABEL SWEEP")
     all_warnings: List[str] = []
     checked_count = 0
+    empty_accounts: List[str] = []
     for key, content in (results or {}).items():
         # "final" is the pipeline's actual output field (fdd_utils/ai.py
         # get_pipeline_result_text) — NOT "final_content", which only exists
         # inside the raw agent_4_validation sub-dict, not at this top level.
         text = get_pipeline_result_text(content)
         if not text:
+            empty_accounts.append(key)
             continue
         checked_count += 1
         all_warnings.extend(check_numeric_grounding(key, text, {key: dfs.get(key)} if key in dfs else dfs))
     print(f"Checked {checked_count} of {len(results or {})} account(s) with non-empty output.")
+    if empty_accounts:
+        print(
+            f"⚠️  {len(empty_accounts)} account(s) came back with EMPTY final output — this is a\n"
+            f"   real missing-commentary problem, not a test artifact (these would render as\n"
+            f"   blank/missing bullets in the actual PPTX). Likely cause for a reasoning model:\n"
+            f"   the account's max_tokens budget was consumed entirely by hidden reasoning\n"
+            f"   tokens with nothing left for the visible answer (see agents.*.max_tokens and\n"
+            f"   workbench.reasoning_effort in config.yml).\n"
+            f"   Empty accounts: {empty_accounts}"
+        )
     if all_warnings:
         print(f"Found {len(all_warnings)} suspicious number(s):")
         for w in all_warnings:
