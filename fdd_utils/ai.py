@@ -2874,17 +2874,36 @@ class AIClient:
                 # the local Qwen3 enable_thinking retry below).
                 wb_params = dict(params)
                 wb_params['extra_headers'] = dict(getattr(self, '_workbench_headers', {}) or {})
+                # GPT-5-class models reject the legacy 'max_tokens' param —
+                # "Unsupported parameter: 'max_tokens' ... Use 'max_completion_tokens'
+                # instead." Translate it up front rather than round-tripping a
+                # guaranteed-to-fail call.
+                if 'max_tokens' in wb_params:
+                    wb_params['max_completion_tokens'] = wb_params.pop('max_tokens')
                 reasoning_effort = self.config_details.get('reasoning_effort')
                 if reasoning_effort:
                     wb_params['reasoning_effort'] = reasoning_effort
                 try:
                     response = response_method(**wb_params)
                 except TypeError:
+                    # SDK-level rejection of a kwarg (older openai-python that
+                    # doesn't know reasoning_effort at all) — drop and retry.
                     wb_params.pop('reasoning_effort', None)
                     response = response_method(**wb_params)
                 except Exception as exc:
-                    if 'reasoning_effort' in str(exc).lower():
+                    msg = str(exc)
+                    retried = False
+                    # Gateway-level rejections (400 unsupported_parameter) name the
+                    # bad param in the message; drop/rename it and retry once.
+                    if 'reasoning_effort' in msg.lower() and 'reasoning_effort' in wb_params:
                         wb_params.pop('reasoning_effort', None)
+                        retried = True
+                    if 'max_completion_tokens' in msg and 'max_completion_tokens' in wb_params:
+                        # Some deployments go the OTHER way and still expect the
+                        # legacy name — rare, but cheap to handle.
+                        wb_params['max_tokens'] = wb_params.pop('max_completion_tokens')
+                        retried = True
+                    if retried:
                         response = response_method(**wb_params)
                     else:
                         raise
