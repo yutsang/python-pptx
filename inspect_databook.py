@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -320,7 +321,7 @@ def run_ai_checks(
     bs_recon: Optional[pd.DataFrame], is_recon: Optional[pd.DataFrame],
 ) -> None:
     _hr("5-7. AI-DEPENDENT CHECKS (running full pipeline once — this costs real tokens/time)")
-    from fdd_utils.ai import run_ai_pipeline_with_progress
+    from fdd_utils.ai import run_ai_pipeline_with_progress, SUBAGENT_SEQUENCE
 
     # Mirror production exactly: only accounts that passed reconciliation with
     # an included Match status go to AI (fdd_utils/ui.py:derive_reconciliation_matched_keys).
@@ -339,16 +340,38 @@ def run_ai_checks(
     print(f"Running pipeline for {len(mapping_keys)} MAPPED accounts (of {len(dfs)} total tabs), "
           f"model_type={model_type}, model_name={model_name}...")
 
-    total_steps = 4 * len(mapping_keys)  # 4 subagent stages
+    # SUBAGENT_SEQUENCE is the ACTUAL active pipeline (Generator, Auditor,
+    # Validator — Refiner is dormant, see ai.py:SUBAGENT_ALIASES comment).
+    # Hardcoding 4 here made the bar always stall at 75% (60/80) since only
+    # 3 stages ever fire a progress callback.
+    stage_count = len(SUBAGENT_SEQUENCE)
+    total_steps = stage_count * len(mapping_keys)
     pbar = tqdm(total=total_steps, desc="AI pipeline", unit="step")
     seen_step = {"n": 0}
+    progress_lock = threading.Lock()
 
     def _tqdm_progress(agent_num, agent_label, completed, total_eligible, overall_step, mapping_key):
-        pbar.set_postfix_str(f"{agent_label}: {mapping_key}"[:60])
-        delta = overall_step - seen_step["n"]
-        if delta > 0:
-            pbar.update(delta)
-            seen_step["n"] = overall_step
+        with progress_lock:
+            pbar.set_postfix_str(f"{agent_label}: {mapping_key}"[:60])
+            delta = overall_step - seen_step["n"]
+            if delta > 0:
+                pbar.update(delta)
+                seen_step["n"] = overall_step
+
+    # A single account's API call can take 20-60s+ with nothing to report in
+    # between (no discrete progress event fires mid-call), which makes the
+    # bar look frozen even though it's working. Refresh the display every
+    # second regardless — this ticks tqdm's elapsed-time counter so it's
+    # visibly alive, without needing an actual progress-count change.
+    stop_refresh = threading.Event()
+
+    def _tick_refresh():
+        while not stop_refresh.wait(1.0):
+            with progress_lock:
+                pbar.refresh()
+
+    refresh_thread = threading.Thread(target=_tick_refresh, daemon=True)
+    refresh_thread.start()
 
     start = time.time()
     try:
@@ -357,6 +380,8 @@ def run_ai_checks(
             language=language, use_multithreading=True, progress_callback=_tqdm_progress,
         )
     finally:
+        stop_refresh.set()
+        refresh_thread.join(timeout=2.0)
         pbar.close()
     elapsed = time.time() - start
     print(f"\n5. TIMING: full pipeline for {len(mapping_keys)} mapped accounts took {elapsed:.1f}s "
