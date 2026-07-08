@@ -2396,12 +2396,35 @@ class PromptEngine:
 import os
 import time
 import math
+import re as _re_client
 from typing import Dict, List, Optional, Any
 import httpx
 from openai import OpenAI, AzureOpenAI
 import logging
 
 from .financial_common import package_file_path
+
+_REJECTED_PARAM_RE = _re_client.compile(r"'param':\s*'([a-zA-Z_][a-zA-Z0-9_]*)'")
+
+
+def _extract_rejected_param(exc: Exception) -> Optional[str]:
+    """Best-effort extraction of the param name an OpenAI-style 400 rejected.
+
+    Gateways evolve — every new sampling knob this model doesn't support (so
+    far: temperature, max_tokens, top_p) would otherwise need its own
+    hardcoded keyword check. Instead, read the SAME machine-readable 'param'
+    field OpenAI's error body already gives us (checked first on the SDK's
+    parsed .body, falling back to a regex over str(exc) for other raise
+    shapes), so a NEW unsupported param self-heals without a code change.
+    """
+    body = getattr(exc, 'body', None)
+    if isinstance(body, dict):
+        err = body.get('error')
+        if isinstance(err, dict) and err.get('param'):
+            return str(err['param'])
+    match = _REJECTED_PARAM_RE.search(str(exc))
+    return match.group(1) if match else None
+
 
 class AIClient:
     """
@@ -2875,41 +2898,42 @@ class AIClient:
                 # Model capability flags — config-driven so a new deployment's
                 # quirks (confirmed against the real gateway, not guessed) can
                 # be tuned in config.yml without a code change. Defaults match
-                # the GPT-5-class models currently behind this gateway.
+                # the GPT-5-class reasoning models currently behind this
+                # gateway, which reject temperature, top_p, frequency_penalty,
+                # and presence_penalty outright (reasoning models don't expose
+                # traditional sampling controls) and rename max_tokens.
                 if not bool(self.config_details.get('supports_temperature', False)):
-                    # "Unsupported value: 'temperature' does not support 0 with
-                    # this model. Only the default (1) value is supported."
-                    # Omit the param entirely rather than force 1 — some
-                    # deployments reject temperature being present at all when
-                    # it's not the default.
                     wb_params.pop('temperature', None)
+                if not bool(self.config_details.get('supports_sampling_params', False)):
+                    for _p in ('top_p', 'frequency_penalty', 'presence_penalty'):
+                        wb_params.pop(_p, None)
                 if bool(self.config_details.get('use_max_completion_tokens', True)) and 'max_tokens' in wb_params:
-                    # "Unsupported parameter: 'max_tokens' ... Use
-                    # 'max_completion_tokens' instead."
                     wb_params['max_completion_tokens'] = wb_params.pop('max_tokens')
                 reasoning_effort = self.config_details.get('reasoning_effort')
                 if reasoning_effort:
                     wb_params['reasoning_effort'] = reasoning_effort
 
-                def _retry_without(exc_msg: str) -> bool:
-                    """Drop/rename whichever param the gateway just rejected.
-                    Returns True if something changed (worth retrying)."""
-                    changed = False
-                    if 'temperature' in exc_msg.lower() and 'temperature' in wb_params:
-                        wb_params.pop('temperature', None)
-                        changed = True
-                    if 'reasoning_effort' in exc_msg.lower() and 'reasoning_effort' in wb_params:
-                        wb_params.pop('reasoning_effort', None)
-                        changed = True
-                    if 'max_completion_tokens' in exc_msg and 'max_completion_tokens' in wb_params:
-                        # Some deployments go the OTHER way and still expect the
-                        # legacy name — rare, but cheap to handle.
-                        wb_params['max_tokens'] = wb_params.pop('max_completion_tokens')
-                        changed = True
-                    elif 'max_tokens' in exc_msg and 'max_tokens' in wb_params:
-                        wb_params['max_completion_tokens'] = wb_params.pop('max_tokens')
-                        changed = True
-                    return changed
+                _MAX_TOKENS_ALIASES = ('max_tokens', 'max_completion_tokens')
+
+                def _drop_rejected_param(exc: Exception) -> bool:
+                    """Read the 'param' the gateway's 400 named and adjust
+                    wb_params generically — no hardcoded keyword list, so a
+                    param we haven't seen yet (the config flags above only
+                    cover known ones) still self-heals. Returns True if
+                    wb_params changed (worth retrying)."""
+                    param = _extract_rejected_param(exc)
+                    if not param:
+                        return False
+                    if param in _MAX_TOKENS_ALIASES:
+                        other = 'max_completion_tokens' if param == 'max_tokens' else 'max_tokens'
+                        if param in wb_params:
+                            wb_params[other] = wb_params.pop(param)
+                            return True
+                        return False
+                    if param in wb_params:
+                        wb_params.pop(param, None)
+                        return True
+                    return False
 
                 try:
                     response = response_method(**wb_params)
@@ -2919,16 +2943,16 @@ class AIClient:
                     wb_params.pop('reasoning_effort', None)
                     response = response_method(**wb_params)
                 except Exception as first_exc:
-                    # Gateway-level rejection (400) — retry up to twice in case
-                    # dropping one param surfaces a second unsupported one.
-                    # Uses an explicit while-loop (not for/else + bare raise)
-                    # so the re-raised exception is always the exact object we
-                    # mean, with no reliance on Python's implicit "currently
-                    # handled exception" across the nested try/except below.
+                    # Gateway-level rejection (400) — retry a few times in case
+                    # dropping one param surfaces another unsupported one right
+                    # after (seen in practice: temperature, then top_p, then
+                    # frequency_penalty, one at a time). Uses an explicit
+                    # sentinel-based loop (not for/else + bare raise) so the
+                    # re-raised exception is always the exact object we mean.
                     last_exc = first_exc
                     response = None
-                    for _ in range(2):
-                        if not _retry_without(str(last_exc)):
+                    for _ in range(4):
+                        if not _drop_rejected_param(last_exc):
                             raise last_exc
                         try:
                             response = response_method(**wb_params)
