@@ -1318,14 +1318,27 @@ class PowerPointGenerator:
             width = min(slide_width - left - Inches(0.35), int((slide_width - Inches(1.0)) * 0.5))
             height = max(Inches(2.0), earliest_subtitle_top - top - Inches(0.12))
 
-        # Horizontal extent: anchor width/left to body and label shapes so the
-        # table spans the full commentary gutter.
+        # Horizontal extent: widen left to include any body/label shape that
+        # starts further left than the default, but STOP before any such
+        # shape that sits to the right (a commentary column) — never extend
+        # the table's right edge OUT to it. body_like_shapes/label_shapes are
+        # always commentary text or its label, so there's no case where the
+        # table should legitimately render under/over one of them. The old
+        # `right_edge = max(anchor right edges)` did exactly that on a layout
+        # with a single right-positioned commentary box and no left-side
+        # counterpart (e.g. the first BS/IS slide, which has no separate
+        # "Table" label once the table's own title row replaces it) —
+        # right_edge became the commentary box's own right edge, stretching
+        # the table full-width so it rendered on top of the commentary text
+        # instead of stopping at the gutter before it.
         horizontal_anchors = list(body_like_shapes) + list(label_shapes)
         if horizontal_anchors:
             left = min(left, min(shape.left for shape in horizontal_anchors))
-            right_edge = max(shape.left + shape.width for shape in horizontal_anchors)
-            if not generic_is_layout:
-                width = max(width, right_edge - left)
+            anchors_to_the_right = [shape for shape in horizontal_anchors if shape.left > left]
+            if anchors_to_the_right and not generic_is_layout:
+                gutter = Inches(0.15)
+                right_edge = min(shape.left for shape in anchors_to_the_right) - gutter
+                width = min(width, max(Inches(2.0), right_edge - left))
 
         # Vertical alignment: anchor the table TOP to the "Commentary" /
         # "Table" blue label box (TextBox 10/11 in the template). This puts
