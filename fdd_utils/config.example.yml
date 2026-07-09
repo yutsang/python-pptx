@@ -61,6 +61,10 @@ agents:
     max_tokens: 2000
     top_p: 0.8
     allow_thinking: false
+    # workbench only — overrides workbench.reasoning_effort for this stage.
+    # Auditor's job (verification, no creative writing) needs less reasoning
+    # depth than Generator/Validator. Omit to inherit the global setting.
+    reasoning_effort: "low"
   3_Refiner:
     temperature: 0.5
     max_tokens: 2000

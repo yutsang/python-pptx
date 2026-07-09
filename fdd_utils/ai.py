@@ -2797,10 +2797,11 @@ class AIClient:
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
         allow_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Get response from AI model or heuristic.
-        
+
         Args:
             user_prompt: User prompt text
             system_prompt: System prompt (optional, will load from config if not provided)
@@ -2809,18 +2810,23 @@ class AIClient:
             top_p: Nucleus sampling parameter (optional, uses config default)
             frequency_penalty: Frequency penalty (optional, uses config default)
             presence_penalty: Presence penalty (optional, uses config default)
-            
+            reasoning_effort: Per-call override for workbench.reasoning_effort (optional,
+                falls back to the provider-level config default — see agents.*.reasoning_effort)
+
         Returns:
             Dictionary with response data including content, tokens, and duration
         """
         start_time = time.time()
-        
+
         # Use config defaults if not provided
         temperature = temperature if temperature is not None else self.temperature
         max_tokens = max_tokens if max_tokens is not None else self.max_tokens
         top_p = top_p if top_p is not None else self.top_p
         frequency_penalty = frequency_penalty if frequency_penalty is not None else self.frequency_penalty
         presence_penalty = presence_penalty if presence_penalty is not None else self.presence_penalty
+        effective_reasoning_effort = (
+            reasoning_effort if reasoning_effort is not None else self.config_details.get('reasoning_effort')
+        )
         
         # Use heuristic mode if enabled
         if self.use_heuristic:
@@ -2909,9 +2915,8 @@ class AIClient:
                         wb_params.pop(_p, None)
                 if bool(self.config_details.get('use_max_completion_tokens', True)) and 'max_tokens' in wb_params:
                     wb_params['max_completion_tokens'] = wb_params.pop('max_tokens')
-                reasoning_effort = self.config_details.get('reasoning_effort')
-                if reasoning_effort:
-                    wb_params['reasoning_effort'] = reasoning_effort
+                if effective_reasoning_effort:
+                    wb_params['reasoning_effort'] = effective_reasoning_effort
 
                 # Reasoning models spend max_completion_tokens on HIDDEN
                 # reasoning tokens before the visible answer — the per-agent
@@ -3324,6 +3329,7 @@ def _run_ai_call(ai_helper, user_prompt: str, system_prompt: str, agent_name: st
                 frequency_penalty=agent_cfg.get("frequency_penalty"),
                 presence_penalty=agent_cfg.get("presence_penalty"),
                 allow_thinking=agent_cfg.get("allow_thinking"),
+                reasoning_effort=agent_cfg.get("reasoning_effort"),
             )
             result_container["completed"] = True
         except Exception as exc:  # pragma: no cover - defensive

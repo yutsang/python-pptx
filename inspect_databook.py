@@ -377,6 +377,14 @@ def run_ai_checks(
     seen_step = {"n": 0}
     progress_lock = threading.Lock()
 
+    # Per-stage wall-clock breakdown — lets you SEE whether a per-agent
+    # reasoning_effort override (e.g. Auditor set to "low") actually reduced
+    # that stage's time, not just eyeball the total. A stage is "done" the
+    # moment its last account reports completed == total_eligible; the gap
+    # since the previous stage's completion is that stage's duration.
+    stage_timing: Dict[str, float] = {}
+    stage_clock = {"last_boundary": time.time(), "seen_labels": set()}
+
     def _tqdm_progress(agent_num, agent_label, completed, total_eligible, overall_step, mapping_key):
         with progress_lock:
             pbar.set_postfix_str(f"{agent_label}: {mapping_key}"[:60])
@@ -384,6 +392,11 @@ def run_ai_checks(
             if delta > 0:
                 pbar.update(delta)
                 seen_step["n"] = overall_step
+            if agent_label not in stage_clock["seen_labels"] and completed == total_eligible and total_eligible > 0:
+                now = time.time()
+                stage_timing[agent_label] = now - stage_clock["last_boundary"]
+                stage_clock["last_boundary"] = now
+                stage_clock["seen_labels"].add(agent_label)
 
     # A single account's API call can take 20-60s+ with nothing to report in
     # between (no discrete progress event fires mid-call), which makes the
@@ -401,6 +414,7 @@ def run_ai_checks(
     refresh_thread.start()
 
     start = time.time()
+    stage_clock["last_boundary"] = start
     try:
         results = run_ai_pipeline_with_progress(
             mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, model_name=model_name,
@@ -415,6 +429,11 @@ def run_ai_checks(
     print(f"\n5. TIMING: full pipeline for {len(mapping_keys)} mapped accounts took {elapsed:.1f}s "
           f"({elapsed / max(len(mapping_keys), 1):.1f}s/account) on {model_type}"
           f"{'/' + model_name if model_name else ''}")
+    if stage_timing:
+        print("   Per-stage breakdown (wall-clock, all accounts in that stage together):")
+        for stage_label, stage_seconds in stage_timing.items():
+            per_account = stage_seconds / max(len(mapping_keys), 1)
+            print(f"     {stage_label:12s}: {stage_seconds:7.1f}s total, {per_account:6.1f}s/account")
 
     _hr("6-7. NUMERIC GROUNDING + UNIT-LABEL SWEEP")
     all_warnings: List[str] = []
@@ -455,6 +474,7 @@ def run_ai_checks(
         "elapsed": elapsed,
         "empty_accounts": empty_accounts,
         "grounding_warnings": len(all_warnings),
+        "stage_timing": stage_timing,
     }
 
 
@@ -564,10 +584,16 @@ def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
                     f"{ai.get('elapsed', 0):.0f}s, "
                     f"{empty_n} empty, {ai.get('grounding_warnings', 0)} 🔴"
                 )
+        stage_timing = ((s.get("ai") or {}).get("stage_timing")) or {}
+        stage_str = (
+            ", ".join(f"{label}={secs / max((s.get('ai') or {}).get('ran', 1), 1):.1f}s/acct"
+                      for label, secs in stage_timing.items())
+            if stage_timing else "-"
+        )
         rows.append({
             "file": s.get("file", "?"),
             "tabs": f"{s.get('tabs_parsed', '?')}/{s.get('total_sheets', '?')}",
-            "BS": bs_str, "IS": is_str, "AI": ai_str,
+            "BS": bs_str, "IS": is_str, "AI": ai_str, "stage s/acct": stage_str,
         })
     df = pd.DataFrame(rows)
     print(df.to_string(index=False))
