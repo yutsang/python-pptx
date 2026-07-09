@@ -2704,10 +2704,33 @@ class PowerPointGenerator:
                 cap_true = slots[s]["capacity"]
                 cap_check = cap_true * _cap_mult
                 is_last_slot = (s == S - 1)
+                # j == -1 below means "slot s starts fresh, slots 0..s-1
+                # contribute nothing" — it always compares as strictly better
+                # than any real dp[s-1][j] (fewer non-empty slots wins
+                # lexicographically first), so whenever it's available it's
+                # ALWAYS chosen, even when an earlier slot could genuinely
+                # hold content. That skipped a real coSummaryShape+table
+                # slide (slot 0, smaller capacity than a plain L/R breakdown
+                # slide) whenever its first content chunk was too big for
+                # slot 0 alone but fit a bigger slot 1 — the DP then routed
+                # everything through slot 1+, leaving slot 0 with ZERO
+                # accounts. That slide was then dropped as "unused" and the
+                # table-embedding code fell back to the next used slide (an
+                # ordinary breakdown slide with no room for a table),
+                # producing the table-overlaps-commentary bug. Only allow the
+                # free (0,0) bypass when slot s-1's entire row is infeasible
+                # at this relax factor — i.e. skipping ahead is the only way
+                # to make progress, not a free lexicographic win over a slot
+                # that could actually hold something. Real dp[s-1][j]
+                # transitions (j >= 0 below) already cover every case where
+                # an earlier slot legitimately holds some/all prefix content.
+                prev_row_feasible = any(dp[s - 1][x][0] < INF for x in range(N))
                 for i in range(N):
                     # Case A: slot s non-empty, holds accounts[j+1..i]
                     for j in range(-1, i):
                         if j < 0:
+                            if prev_row_feasible:
+                                continue
                             prev_state: Tuple[float, float] = (0.0, 0.0)
                         else:
                             prev_state = dp[s - 1][j]
