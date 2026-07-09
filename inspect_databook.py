@@ -474,6 +474,7 @@ def run_ai_checks(
     entity_name: str, model_type: str, model_name: Optional[str], language: str,
     bs_recon: Optional[pd.DataFrame], is_recon: Optional[pd.DataFrame],
     limit: Optional[int] = None, workers: Optional[int] = None,
+    accounts: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     _hr("5-7. AI-DEPENDENT CHECKS (running full pipeline once — this costs real tokens/time)")
     from fdd_utils.ai import run_ai_pipeline_with_progress, SUBAGENT_SEQUENCE
@@ -493,7 +494,19 @@ def run_ai_checks(
             "would be sent to AI in production either. Skipping AI-dependent checks."
         )
         return {"skipped": True, "reason": "no mapped accounts"}
-    if limit and limit > 0 and len(mapping_keys) > limit:
+    if accounts:
+        wanted = set(accounts)
+        found = [k for k in mapping_keys if k in wanted]
+        missing = wanted - set(found)
+        if missing:
+            print(f"⚠️  --accounts requested {sorted(missing)} but they're not in this file's "
+                  f"mapped/eligible accounts. Available: {mapping_keys}")
+        if not found:
+            print("❌ None of --accounts matched an eligible account in this file. Skipping.")
+            return {"skipped": True, "reason": "no matching --accounts"}
+        mapping_keys = found
+        print(f"--accounts: targeting only {mapping_keys} (cheap re-test, skips --limit slicing).")
+    elif limit and limit > 0 and len(mapping_keys) > limit:
         print(f"--limit {limit}: sampling {limit} of {total_mapped} mapped accounts "
               f"(fast smoke-test mode, not a full run).")
         mapping_keys = mapping_keys[:limit]
@@ -587,7 +600,31 @@ def run_ai_checks(
             per_account = stage_seconds / max(len(mapping_keys), 1)
             print(f"     {stage_label:12s}: {stage_seconds:7.1f}s total, {per_account:6.1f}s/account")
 
-    _hr("6-7. NUMERIC GROUNDING + UNIT-LABEL SWEEP")
+    _hr("5b. VALIDATOR (subagent_4) ACTUAL VERDICT — the real AI's own judgment, not this "
+        "script's regex heuristic below")
+    print(
+        "This is what subagent_4 itself flagged during the real pipeline run — separate\n"
+        "from checks 6-7 below, which are an independent Python-only cross-check this\n"
+        "script performs on top. If a number was 'supported': True here, the Validator\n"
+        "itself judged it grounded; compare that against whether checks 6-7 also flag it\n"
+        "to tell apart a real Validator misjudgment from a false positive in this script.\n"
+    )
+    for key, content in (results or {}).items():
+        reviews = ((content or {}).get("agent_4_validation") or {}).get("clause_reviews") or []
+        if not reviews:
+            print(f"  {key}: no clause_reviews recorded (Validator may not have run / returned unparsed output).")
+            continue
+        unsupported = [r for r in reviews if not r.get("supported", True)]
+        if not unsupported:
+            print(f"  ✅ {key}: Validator reviewed {len(reviews)} clause(s), flagged 0 as unsupported.")
+            continue
+        print(f"  🔶 {key}: Validator flagged {len(unsupported)}/{len(reviews)} clause(s) as unsupported:")
+        for r in unsupported:
+            clause = str(r.get("clause", ""))[:150]
+            print(f"      category={r.get('category', '?')}  reason={r.get('reason', '?')}")
+            print(f"      clause: \"{clause}\"")
+
+    _hr("6-7. NUMERIC GROUNDING + UNIT-LABEL SWEEP (this script's own independent check)")
     all_warnings: List[str] = []
     checked_count = 0
     empty_accounts: List[str] = []
@@ -649,7 +686,8 @@ def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
 
 def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                  model_type: str, model_name: Optional[str], limit: Optional[int] = None,
-                 workers: Optional[int] = None, dump_tab_name: Optional[str] = None) -> Dict[str, Any]:
+                 workers: Optional[int] = None, dump_tab_name: Optional[str] = None,
+                 accounts: Optional[List[str]] = None) -> Dict[str, Any]:
     _hr(f"INSPECTING: {path}")
     summary: Dict[str, Any] = {"file": Path(path).name, "status": "ok"}
     dfs = check_tab_read_summary(path, entity_name=entity_name)
@@ -711,6 +749,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         ai_summary = run_ai_checks(
             path, sheet_names[0], dfs, entity_name, model_type, model_name, language,
             combined_bs_recon, combined_is_recon, limit=limit, workers=workers,
+            accounts=accounts,
         )
         summary["ai"] = ai_summary
     return summary
@@ -785,6 +824,12 @@ def main() -> int:
                          "Built-in default is 4 for local, 2 for everything else (rate-limit "
                          "caution) — override here to test a higher value, e.g. --workers 4 "
                          "on workbench if you've already validated the gateway handles it.")
+    ap.add_argument("--accounts", default=None,
+                    help="with --run-ai, comma-separated mapping-key names to run instead of "
+                         "the first N (--limit) or all accounts — e.g. --accounts "
+                         "固定资产,长期待摊费用 to cheaply re-test specific accounts that a prior "
+                         "run flagged, instead of paying for a full/limit-N run again. "
+                         "Overrides --limit.")
     args = ap.parse_args()
 
     target = Path(args.path)
@@ -810,12 +855,14 @@ def main() -> int:
     else:
         files = [target]
 
+    accounts_filter = [a.strip() for a in args.accounts.split(",") if a.strip()] if args.accounts else None
+
     summaries: List[Dict[str, Any]] = []
     for f in files:
         try:
             summary = inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model,
                                    args.model_name, limit=args.limit, workers=args.workers,
-                                   dump_tab_name=args.dump_tab)
+                                   dump_tab_name=args.dump_tab, accounts=accounts_filter)
             summaries.append(summary)
         except Exception as exc:
             print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
