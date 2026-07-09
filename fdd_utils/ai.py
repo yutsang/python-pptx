@@ -3596,11 +3596,18 @@ def run_agent_stage(
 ):
     """Run all items for a single agent stage."""
     if max_workers is None:
-        # Local models have no rate limits — use more workers to reduce wall
-        # time. Cloud APIs (openai, deepseek) do have rate limits, so keep 2
-        # to avoid hammering the endpoint.
-        _model_type = getattr(ai_helper, "model_type", "")
-        max_workers = 4 if _model_type == "local" else 2
+        # Explicit per-provider override (e.g. workbench.max_workers: 4 in
+        # config.yml) wins — set once a concurrency level has actually been
+        # validated against that gateway (see test_workbench_concurrency.py).
+        # Falls back to the conservative built-in default otherwise: local
+        # models have no rate limits (more workers = less wall time); cloud
+        # APIs do, so keep 2 to avoid hammering an unvalidated endpoint.
+        _configured = (getattr(ai_helper, "config_details", None) or {}).get("max_workers")
+        if _configured:
+            max_workers = int(_configured)
+        else:
+            _model_type = getattr(ai_helper, "model_type", "")
+            max_workers = 4 if _model_type == "local" else 2
 
     # Reset the circuit breaker at the start of each stage so a fresh
     # opportunity is given even if a prior stage tripped it.

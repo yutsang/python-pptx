@@ -802,10 +802,13 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                     update_progress.start_time = start_time
                     status_placeholder.info(f"🚀 Starting AI pipeline for {total_items} accounts... | Progress: 0/{total_steps} steps | ETA: Calculating...")
                     progress_placeholder.progress(0)
-                    # processing.max_workers in config.yml — null keeps the
-                    # built-in default (4 local / 2 cloud); set a number to
-                    # override for either. Was declared in config.yml but
-                    # never actually read anywhere in the call chain.
+                    # processing.max_workers in config.yml is a GLOBAL override
+                    # (applies to any provider) — was declared but never read
+                    # anywhere in the call chain until now. Leave it null to
+                    # fall through to the per-provider default instead: each
+                    # provider's own block (e.g. workbench.max_workers) can
+                    # set a validated concurrency level, or the built-in
+                    # fallback (4 local / 2 cloud) if neither is set.
                     try:
                         _configured_max_workers = (
                             load_yaml_config(get_default_config_path()).get("processing", {}).get("max_workers")

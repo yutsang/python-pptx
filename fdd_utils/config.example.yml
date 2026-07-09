@@ -38,6 +38,10 @@ workbench:
   # before the visible answer, so a complex account can exhaust a small
   # per-agent budget and come back empty. 0/blank disables the floor.
   min_max_tokens: 3000
+  # Concurrent worker threads per pipeline stage for THIS provider. Built-in
+  # default (if omitted) is 2 for any non-local provider — raise it only
+  # after validating the gateway handles it with test_workbench_concurrency.py.
+  max_workers: 4
   available_models:
     - id: "gpt-5-5-2026-04-24-gs-sdc"
       label: "GPT-5.5"
