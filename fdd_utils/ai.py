@@ -1064,27 +1064,46 @@ class SourceIndex:
         return values
 
     @classmethod
-    def from_df(cls, df) -> "SourceIndex":
+    def _values_for_one_df(cls, df) -> List[float]:
         values: List[float] = []
-        if df is not None and hasattr(df, "columns"):
-            values += cls._column_values(df)
-            # df is `projection_df` — a SINGLE latest-period snapshot. Multi-year
-            # trend commentary ("increased from CNY384M as at 2023-12-31 to
-            # CNY709M as at 2024-12-31") is written from df.attrs["prompt_analysis_df"]
-            # (see _build_financial_prompt_payload's "analysis_periods" block, which
-            # the Generator AND Validator both receive) — without indexing it here
-            # too, every correctly-written historical-period number is invisible to
-            # this grounding pool and gets falsely flagged as "hallucination", which
-            # _combine_verdict then treats as authoritative over the LLM's own
-            # (correct) judgement. INTERNAL_ROW_KEY is excluded — it holds raw sheet
-            # row indices, not financial amounts.
-            analysis_df = df.attrs.get("prompt_analysis_df")
-            if analysis_df is not None and hasattr(analysis_df, "columns"):
-                values += cls._column_values(analysis_df, skip_cols=(INTERNAL_ROW_KEY,))
-            # Also ground against numbers cited in the supporting notes / remarks
-            # (df.attrs), e.g. registered capital "7000万美元" that never appears in
-            # the numeric table. Without this they were false-flagged as hallucinations.
-            values += _numbers_in_text(_attr_text_blob(df))
+        if df is None or not hasattr(df, "columns"):
+            return values
+        values += cls._column_values(df)
+        # df is `projection_df` — a SINGLE latest-period snapshot. Multi-year
+        # trend commentary ("increased from CNY384M as at 2023-12-31 to
+        # CNY709M as at 2024-12-31") is written from df.attrs["prompt_analysis_df"]
+        # (see _build_financial_prompt_payload's "analysis_periods" block, which
+        # the Generator AND Validator both receive) — without indexing it here
+        # too, every correctly-written historical-period number is invisible to
+        # this grounding pool and gets falsely flagged as "hallucination", which
+        # _combine_verdict then treats as authoritative over the LLM's own
+        # (correct) judgement. INTERNAL_ROW_KEY is excluded — it holds raw sheet
+        # row indices, not financial amounts.
+        analysis_df = df.attrs.get("prompt_analysis_df")
+        if analysis_df is not None and hasattr(analysis_df, "columns"):
+            values += cls._column_values(analysis_df, skip_cols=(INTERNAL_ROW_KEY,))
+        # Also ground against numbers cited in the supporting notes / remarks
+        # (df.attrs), e.g. registered capital "7000万美元" that never appears in
+        # the numeric table. Without this they were false-flagged as hallucinations.
+        values += _numbers_in_text(_attr_text_blob(df))
+        return values
+
+    @classmethod
+    def from_df(cls, df, sibling_dfs: Optional[List[Any]] = None) -> "SourceIndex":
+        values: List[float] = cls._values_for_one_df(df)
+        # Commentary for one account sometimes legitimately cites a figure that
+        # actually lives on a DIFFERENT tab — e.g. "Other payables" explaining
+        # accrued interest by naming the CNY198.0 million bank loan it relates
+        # to, where the loan balance itself is only in the "Long-term loans"
+        # tab. Restricted to this account's own df, that number is invisible
+        # and a coincidental same-tab match at the wrong scale produces a false
+        # "hallucination" flag — confirmed via a real client databook where the
+        # cited loan balance (198,870,239) was correct and only absent because
+        # it lives on a sibling tab. sibling_dfs is deliberately bounded by the
+        # caller (same statement type, e.g. all BS tabs for a BS account) —
+        # not the whole workbook — to keep the false-negative risk low.
+        for sib in sibling_dfs or []:
+            values += cls._values_for_one_df(sib)
         return cls(values)
 
     def matches(self, target: float) -> bool:
@@ -1231,12 +1250,18 @@ def _combine_verdict(clause: str, det: Optional[Dict[str, Any]],
 
 
 def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[Dict[str, Any]]] = None,
-                      *, highlight_min_conf: float = 0.6) -> List[Dict[str, Any]]:
+                      *, highlight_min_conf: float = 0.6,
+                      sibling_dfs: Optional[List[Any]] = None) -> List[Dict[str, Any]]:
     """Authoritative clause_reviews: deterministic number-grounding layered over the
     LLM's soft reasoning judgement. Each clause is a verbatim substring of
     final_content, so highlighting matches by exact offset. Returns the existing
-    clause_reviews shape [{clause, supported, category, reason}]."""
-    source = SourceIndex.from_df(df)
+    clause_reviews shape [{clause, supported, category, reason}].
+
+    sibling_dfs (optional): other accounts' DataFrames — same statement type as
+    this account, per caller — so a legitimate cross-tab reference (e.g. an
+    "Other payables" note citing the bank loan balance that actually lives on
+    the "Long-term loans" tab) can be grounded instead of false-flagged."""
+    source = SourceIndex.from_df(df, sibling_dfs=sibling_dfs)
     llm_reviews = llm_clause_reviews or []
     out: List[Dict[str, Any]] = []
     for _s, _e, clause in segment_clauses(final_content):
@@ -3445,6 +3470,7 @@ def process_single_agent_item(
     logger: PipelineRunLogger,
     previous_output: str = "",
     user_comment: str = "",
+    dfs: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> Tuple[str, str, Dict[str, Any]]:
     """Run one account through a single agent stage."""
     try:
@@ -3545,8 +3571,18 @@ def process_single_agent_item(
         # verifier error never breaks the pipeline (keeps the LLM clause_reviews).
         if agent_name == "subagent_4" and metadata and df is not None:
             try:
+                sibling_dfs = None
+                if dfs:
+                    statement_type = prompt_manager.get_mapping_component(mapping_key, component="type")
+                    if statement_type:
+                        sibling_dfs = [
+                            other_df for other_key, other_df in dfs.items()
+                            if other_key != mapping_key
+                            and prompt_manager.get_mapping_component(other_key, component="type") == statement_type
+                        ]
                 metadata["clause_reviews"] = verify_commentary(
                     content, df, metadata.get("clause_reviews"),
+                    sibling_dfs=sibling_dfs,
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 logger.logger.warning("[verify_commentary] %s: %s", mapping_key, exc)
@@ -3696,6 +3732,7 @@ def run_agent_stage(
                     logger,
                     results[key].get(previous_agent, "") if previous_agent else "",
                     (user_comments or {}).get(key, ""),
+                    dfs,
                 )
                 futures[future] = key
 
@@ -3725,6 +3762,7 @@ def run_agent_stage(
                 logger,
                 results[key].get(previous_agent, "") if previous_agent else "",
                 (user_comments or {}).get(key, ""),
+                dfs,
             )
             _store_agent_result(results, mapping_key, agent_name, content, metadata)
             completed += 1
@@ -3920,6 +3958,7 @@ def _ensure_clause_reviews_on_final(
                 "subagent_4", key, dfs.get(key), ai_helper, prompt_manager, logger,
                 previous_output=final_text,
                 user_comment=(user_comments or {}).get(key, ""),
+                dfs=dfs,
             )
             if isinstance(metadata, dict) and metadata.get("clause_reviews"):
                 # Keep the original final text (don't overwrite); just attach
@@ -4020,6 +4059,7 @@ def _run_feedback_loop_for_key(
             "subagent_4", key, dfs.get(key), ai_helper, prompt_manager, logger,
             previous_output=audit_content,
             user_comment=base_user_comment,
+            dfs=dfs,
         )
         _store_agent_result(results, key, "subagent_4", val_content, val_metadata)
         results[key]["feedback_retry_%s_agent_4" % retry_num] = val_content
@@ -4124,6 +4164,7 @@ def run_generator_reprompt(
             logger,
             previous_output=content,
             user_comment=(user_comments or {}).get(key, ""),
+            dfs=dfs,
         )
         updated_result["subagent_4"] = validator_content
         updated_result["agent_4_validation"] = validator_metadata
