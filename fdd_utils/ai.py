@@ -1023,25 +1023,46 @@ class SourceIndex:
     def __init__(self, values: List[float]):
         self.values = [v for v in values if v is not None]
 
+    @staticmethod
+    def _column_values(df, skip_cols: tuple = ()) -> List[float]:
+        values: List[float] = []
+        for col in df.columns:
+            if col in skip_cols:
+                continue
+            series = df[col]
+            col_vals: List[float] = []
+            if getattr(series, "dtype", None) is not None and series.dtype.kind in "if":
+                col_vals = [float(v) for v in series.dropna().tolist()]
+            else:
+                for cell in series.tolist():
+                    v = _to_float(cell) if isinstance(cell, (int, float, str)) else None
+                    if v is not None:
+                        col_vals.append(v)
+            values += col_vals
+            # Add the column total — commentary frequently cites a total that
+            # isn't a single cell; including it avoids false hallucination flags.
+            if col_vals:
+                values.append(sum(col_vals))
+        return values
+
     @classmethod
     def from_df(cls, df) -> "SourceIndex":
         values: List[float] = []
         if df is not None and hasattr(df, "columns"):
-            for col in df.columns:
-                series = df[col]
-                col_vals: List[float] = []
-                if getattr(series, "dtype", None) is not None and series.dtype.kind in "if":
-                    col_vals = [float(v) for v in series.dropna().tolist()]
-                else:
-                    for cell in series.tolist():
-                        v = _to_float(cell) if isinstance(cell, (int, float, str)) else None
-                        if v is not None:
-                            col_vals.append(v)
-                values += col_vals
-                # Add the column total — commentary frequently cites a total that
-                # isn't a single cell; including it avoids false hallucination flags.
-                if col_vals:
-                    values.append(sum(col_vals))
+            values += cls._column_values(df)
+            # df is `projection_df` — a SINGLE latest-period snapshot. Multi-year
+            # trend commentary ("increased from CNY384M as at 2023-12-31 to
+            # CNY709M as at 2024-12-31") is written from df.attrs["prompt_analysis_df"]
+            # (see _build_financial_prompt_payload's "analysis_periods" block, which
+            # the Generator AND Validator both receive) — without indexing it here
+            # too, every correctly-written historical-period number is invisible to
+            # this grounding pool and gets falsely flagged as "hallucination", which
+            # _combine_verdict then treats as authoritative over the LLM's own
+            # (correct) judgement. INTERNAL_ROW_KEY is excluded — it holds raw sheet
+            # row indices, not financial amounts.
+            analysis_df = df.attrs.get("prompt_analysis_df")
+            if analysis_df is not None and hasattr(analysis_df, "columns"):
+                values += cls._column_values(analysis_df, skip_cols=(INTERNAL_ROW_KEY,))
             # Also ground against numbers cited in the supporting notes / remarks
             # (df.attrs), e.g. registered capital "7000万美元" that never appears in
             # the numeric table. Without this they were false-flagged as hallucinations.
