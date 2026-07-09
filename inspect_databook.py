@@ -389,6 +389,35 @@ def _extract_numbers_with_scale(text: str) -> List[Tuple[float, int, int]]:
     return values
 
 
+_RATE_CONTEXT_RE = re.compile(
+    r"per\s+(?:square|sq\.?|sqm|sq\s*m)\s*(?:metre|meter|m\b)?"
+    r"|/\s*(?:sq\.?\s*m|sqm)|psm\b",
+    re.IGNORECASE,
+)
+
+
+def _is_rate_context(text: str, end: int, radius: int = 60) -> bool:
+    """A number followed (within the same sentence) by 'per square metre'
+    etc is a computed KPI (revenue / area / days), not a literal figure
+    copied from the sheet — it will never appear in the raw ground-truth
+    pool at any scale, so a coincidental scaled match is noise, not a real
+    hallucination. Searches forward (not anchored) because range clauses
+    ("from CNY0.91 to CNY0.80 per sqm per day") only put the rate phrase
+    next to the LAST number, not each one. Same false-positive class as the
+    broad subset-sum case investigated earlier (statistical coincidence
+    from wide search), which was deliberately left unfixed rather than
+    chased with more matching logic — this guard instead narrows what gets
+    searched in the first place."""
+    window = text[end:end + radius]
+    # A "." not followed by a digit ends the sentence; one that IS followed
+    # by a digit is a decimal point inside the next number (e.g. "CNY0.80"),
+    # not a sentence boundary.
+    sentence_end = re.search(r"\.(?!\d)|[。\n]", window)
+    if sentence_end:
+        window = window[:sentence_end.end()]
+    return bool(_RATE_CONTEXT_RE.search(window))
+
+
 def _context_snippet(text: str, start: int, end: int, radius: int = 50) -> str:
     lo = max(0, start - radius)
     hi = min(len(text), end + radius)
@@ -487,6 +516,8 @@ def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str
     warnings = []
     for value, start, end in _extract_numbers_with_scale(generated_text):
         if value == 0:
+            continue
+        if _is_rate_context(generated_text, end):
             continue
         if _matches_ground_truth(value, truth_values):
             continue
