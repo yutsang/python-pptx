@@ -1024,7 +1024,24 @@ class SourceIndex:
         self.values = [v for v in values if v is not None]
 
     @staticmethod
-    def _column_values(df, skip_cols: tuple = ()) -> List[float]:
+    def _adjacent_window_sums(col_vals: List[float], max_window: int = 4) -> List[float]:
+        """Sums of every run of 2..max_window CONSECUTIVE rows (sheet order, as
+        the column already preserves it) — commentary legitimately groups a
+        handful of neighbouring breakdown lines into one figure (e.g. "CNY322,116
+        of property[-related fees]" = 4 adjacent line items in Other payables
+        that were never a labelled subtotal in the sheet). Bounded to small
+        windows, not a full subset-sum search, to keep this O(n) and keep the
+        false-negative risk (a genuinely wrong number coincidentally matching
+        some arbitrary window) low."""
+        sums: List[float] = []
+        n = len(col_vals)
+        for window in range(2, max_window + 1):
+            for start in range(0, n - window + 1):
+                sums.append(sum(col_vals[start:start + window]))
+        return sums
+
+    @classmethod
+    def _column_values(cls, df, skip_cols: tuple = ()) -> List[float]:
         values: List[float] = []
         for col in df.columns:
             if col in skip_cols:
@@ -1043,6 +1060,7 @@ class SourceIndex:
             # isn't a single cell; including it avoids false hallucination flags.
             if col_vals:
                 values.append(sum(col_vals))
+            values += cls._adjacent_window_sums(col_vals)
         return values
 
     @classmethod
