@@ -397,16 +397,48 @@ def _context_snippet(text: str, start: int, end: int, radius: int = 50) -> str:
     return f"{prefix}{text[lo:hi].strip()}{suffix}"
 
 
+def _numeric_values_from_df(df: pd.DataFrame) -> List[float]:
+    values: List[float] = []
+    for col in df.columns:
+        if str(col).endswith("_formatted") or str(col).startswith("__"):
+            continue
+        if pd.api.types.is_numeric_dtype(df[col]):
+            values.extend(float(v) for v in df[col].dropna().tolist() if v != 0)
+        else:
+            # prompt_analysis_df values are often pre-formatted strings
+            # (e.g. "1,234,567") rather than a numeric dtype column.
+            for v in df[col].dropna().tolist():
+                try:
+                    values.append(float(str(v).replace(",", "")))
+                except (TypeError, ValueError):
+                    continue
+    return values
+
+
 def _ground_truth_values(dfs: Dict[str, pd.DataFrame]) -> List[float]:
+    """Pulls every number the AI could plausibly have grounded its writing
+    in — NOT just dfs[key] itself. dfs[key] is `projection_df`, a
+    SINGLE-latest-period snapshot (e.g. only "2026-03-31"); multi-year
+    trend commentary ("increased from CNY384M as at 2023-12-31 to CNY709M
+    as at 2024-12-31") is generated from df.attrs["prompt_analysis_df"]
+    (see fdd_utils/ai.py _build_financial_prompt_payload / workbook.py
+    _build_prompt_analysis_df), a separate multi-period table the AI's
+    prompt actually includes under "analysis_periods". Without this, every
+    correctly-written historical-period number looks unsupported because
+    it's simply absent from the search pool, and the scale-match fallback
+    then coincidentally latches onto an unrelated same-tab line item —
+    producing a false '1000x too large/small' warning for text that was
+    actually correct. Confirmed against 3 real warnings that all turned
+    out to be exactly this false-positive pattern, not real scale bugs.
+    """
     truth = []
     for df in dfs.values():
         if df is None or df.empty:
             continue
-        for col in df.columns:
-            if str(col).endswith("_formatted") or str(col).startswith("__"):
-                continue
-            if pd.api.types.is_numeric_dtype(df[col]):
-                truth.extend(float(v) for v in df[col].dropna().tolist() if v != 0)
+        truth.extend(_numeric_values_from_df(df))
+        analysis_df = df.attrs.get("prompt_analysis_df")
+        if analysis_df is not None and not analysis_df.empty:
+            truth.extend(_numeric_values_from_df(analysis_df))
     return truth
 
 
