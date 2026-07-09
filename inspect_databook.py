@@ -210,6 +210,20 @@ def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
         return
     print(f"Backing Excel sheet: {sheet_name!r}   stored source_multiplier={stored_multiplier}")
 
+    # Print the REAL production dfs[tab_name] table — this, not the
+    # recomputed raw*multiplier below, is what the AI pipeline actually
+    # receives as ground truth (extract_data_from_excel applies further
+    # steps — projection selection, filter_detail_accounts,
+    # filter_zero_value_rows, annualization — on top of
+    # normalize_financial_schedule's row_entries, so the two CAN diverge).
+    # If a number here doesn't match raw*multiplier below for the same
+    # description/period, that divergence — not the AI's writing — is the
+    # actual bug source.
+    _hr(f"  dfs['{tab_name}'] AS ACTUALLY SEEN BY THE AI PIPELINE")
+    desc_col = df_final.columns[0]
+    numeric_cols = [c for c in df_final.columns if not str(c).endswith("_formatted") and not str(c).startswith("__")]
+    print(df_final[[desc_col] + [c for c in numeric_cols if c != desc_col]].to_string(index=False))
+
     frames = load_workbook_frames(databook_path)
     raw_df = frames.get(sheet_name)
     if raw_df is None:
