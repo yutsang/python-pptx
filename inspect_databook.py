@@ -397,22 +397,58 @@ def _context_snippet(text: str, start: int, end: int, radius: int = 50) -> str:
     return f"{prefix}{text[lo:hi].strip()}{suffix}"
 
 
+def _adjacent_window_sums(col_vals: List[float], max_window: int = 4) -> List[float]:
+    """Mirrors fdd_utils.ai.SourceIndex._adjacent_window_sums — commentary
+    legitimately groups a handful of neighbouring breakdown lines into one
+    figure that was never a labelled subtotal in the sheet. Bounded window,
+    not a full subset-sum search, to keep false-negative risk low."""
+    sums: List[float] = []
+    n = len(col_vals)
+    for window in range(2, max_window + 1):
+        for start in range(0, n - window + 1):
+            sums.append(sum(col_vals[start:start + window]))
+    return sums
+
+
 def _numeric_values_from_df(df: pd.DataFrame) -> List[float]:
     values: List[float] = []
     for col in df.columns:
         if str(col).endswith("_formatted") or str(col).startswith("__"):
             continue
+        col_vals: List[float] = []
         if pd.api.types.is_numeric_dtype(df[col]):
-            values.extend(float(v) for v in df[col].dropna().tolist() if v != 0)
+            col_vals = [float(v) for v in df[col].dropna().tolist() if v != 0]
         else:
             # prompt_analysis_df values are often pre-formatted strings
             # (e.g. "1,234,567") rather than a numeric dtype column.
             for v in df[col].dropna().tolist():
                 try:
-                    values.append(float(str(v).replace(",", "")))
+                    fv = float(str(v).replace(",", ""))
+                    if fv != 0:
+                        col_vals.append(fv)
                 except (TypeError, ValueError):
                     continue
+        values.extend(col_vals)
+        values.extend(_adjacent_window_sums(col_vals))
     return values
+
+
+def _matches_ground_truth(value: float, truth_values: List[float]) -> bool:
+    """Mirrors fdd_utils.ai.SourceIndex.matches() exactly, so this script's
+    independent check and the production Validator agree on what counts as
+    grounded — otherwise this script keeps re-flagging patterns (万-rounding,
+    adjacent-line subtotals) that were already fixed in production, as stale
+    false positives of its own."""
+    t = abs(value)
+    for v in truth_values:
+        a = abs(v)
+        if a == 0:
+            if round(t) == 0:
+                return True
+            continue
+        if abs(t - a) <= max(500.0, 0.05 * a):
+            return True
+    return False
 
 
 def _ground_truth_values(dfs: Dict[str, pd.DataFrame]) -> List[float]:
@@ -452,13 +488,12 @@ def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str
     for value, start, end in _extract_numbers_with_scale(generated_text):
         if value == 0:
             continue
-        matches_1x = any(abs(value - t) / max(abs(t), 1) < 0.06 for t in truth_values)
-        if matches_1x:
+        if _matches_ground_truth(value, truth_values):
             continue
         for factor, label in ((1000, "1000x too small"), (0.001, "1000x too large"),
                                (10000, "10000x too small"), (0.0001, "10000x too large")):
             scaled = value * factor
-            if any(abs(scaled - t) / max(abs(t), 1) < 0.06 for t in truth_values):
+            if _matches_ground_truth(scaled, truth_values):
                 snippet = _context_snippet(generated_text, start, end)
                 warnings.append(
                     f"  🔴 [{mapping_key}] number {value:,.2f} in generated text only matches "
