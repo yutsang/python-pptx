@@ -362,10 +362,27 @@ def run_ai_checks(
         print(f"--limit {limit}: sampling {limit} of {total_mapped} mapped accounts "
               f"(fast smoke-test mode, not a full run).")
         mapping_keys = mapping_keys[:limit]
-    effective_workers = workers if workers else (4 if model_type == "local" else 2)
+    # Mirror run_agent_stage's ACTUAL resolution chain so this print is
+    # trustworthy — it previously ignored config.yml entirely and always
+    # printed "built-in default" even when <provider>.max_workers was set,
+    # which was actively misleading (looked like the config value wasn't
+    # being picked up when it may well have been).
+    if workers:
+        effective_workers, workers_source = workers, "--workers override"
+    else:
+        from fdd_utils.ai import load_yaml_config, get_default_config_path
+        try:
+            _provider_cfg = load_yaml_config(get_default_config_path()).get(model_type, {}) or {}
+        except Exception:
+            _provider_cfg = {}
+        _configured = _provider_cfg.get("max_workers")
+        if _configured:
+            effective_workers, workers_source = int(_configured), f"{model_type}.max_workers in config.yml"
+        else:
+            effective_workers = 4 if model_type == "local" else 2
+            workers_source = "built-in default — no <provider>.max_workers set in config.yml"
     print(f"Running pipeline for {len(mapping_keys)} MAPPED accounts (of {len(dfs)} total tabs), "
-          f"model_type={model_type}, model_name={model_name}, workers={effective_workers}"
-          f"{' (--workers override)' if workers else ' (built-in default)'}...")
+          f"model_type={model_type}, model_name={model_name}, workers={effective_workers} ({workers_source})...")
 
     # SUBAGENT_SEQUENCE is the ACTUAL active pipeline (Generator, Auditor,
     # Validator — Refiner is dormant, see ai.py:SUBAGENT_ALIASES comment).
