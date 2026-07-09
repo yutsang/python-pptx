@@ -1088,23 +1088,37 @@ class SourceIndex:
         return cls(values)
 
     def matches(self, target: float) -> bool:
-        """±5% tolerance at >=CNY1m scale (rounding noise), near-exact below.
+        """±5% tolerance (rounding noise) at every scale; near-exact below that.
 
         Compares MAGNITUDES: extract_amounts() drops the leading sign, so a negative
         source cell (e.g. retained earnings -70,769,000) must still match a clause
-        amount parsed as +70,769,000."""
+        amount parsed as +70,769,000.
+
+        The sub-CNY1m tier used to be a tight max(1, 1%) — meant for minor
+        per-unit display rounding (e.g. 54,950 vs 54,948) — but Chinese
+        commentary routinely displays sub-million amounts rounded to 1
+        decimal of 万 (nearest 1,000), e.g. 11,555 written as "1.2万元"
+        (=12,000, a 445 / 3.9% difference) or 10,335 as "1.0万元" (=10,000,
+        335 / 3.2%). Both are correct, conventional roundings that the tight
+        tier flagged as "hallucination" — and since a deterministic
+        hallucination verdict is authoritative over the LLM's own (correct)
+        judgement (_combine_verdict), that false flag couldn't be overridden.
+        A flat 500 floor covers near-exact small values that used to hit the
+        max(1,...) branch; 5% (matching the >=1m tier) covers 万-rounding at
+        any sub-million magnitude.
+        """
         t = abs(target)
         for v in self.values:
             a = abs(v)
-            if a == 0 and t == 0:
-                return True
-            if a >= 1_000_000:
-                if abs(t - a) <= 0.05 * a:
+            if a == 0:
+                # A genuine zero source cell should only match a target that
+                # ALSO rounds to zero — the 万-rounding tolerance below is
+                # for rounding noise around a real nonzero figure, not for
+                # letting an arbitrary small number match "nothing there".
+                if round(t) == 0:
                     return True
-            elif abs(round(t) - round(a)) < 1:
-                return True
-            # also tolerate display-rounded sub-million (e.g. 54,950 vs 54,948)
-            elif a != 0 and abs(t - a) <= max(1.0, 0.01 * a):
+                continue
+            if abs(t - a) <= max(500.0, 0.05 * a):
                 return True
         return False
 
