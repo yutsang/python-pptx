@@ -24,6 +24,13 @@ Usage:
         # fast smoke test: only the first 5 mapped accounts per file go to AI, across
         # every file in the folder — use this to sanity-check the whole batch before
         # committing to a full (potentially hours-long) unlimited run
+    python inspect_databook.py "inputs/SomeClient.databook.xlsx" --dump-tab 固定资产
+        # DETERMINISTIC, no AI, runs in seconds: prints raw Excel cell values next to
+        # the final (unit-marker-multiplied) dfs values for ONE tab, row by row. Use
+        # this to trace a numeric-grounding 🔴 warning back to its source WITHOUT
+        # re-running the (slow, token-costing) AI pipeline — if the raw cell already
+        # holds an actual-CNY-sized number but still gets multiplied by 1000, that's
+        # the extraction-side 1000x bug (item 9 class), not an AI hallucination.
 
 AI-dependent checks (only with --run-ai; needs a configured provider in
 fdd_utils/config.yml, costs real tokens/time — run once per databook when
@@ -66,12 +73,17 @@ import pandas as pd
 from tqdm import tqdm
 
 from fdd_utils.workbook import (
+    _coerce_numeric,
+    _multiply_factor,
     _unit_markers,
     extract_data_from_excel,
     extract_balance_sheet_and_income_statement,
     find_account_in_dfs,
     get_effective_mappings,
     load_mappings,
+    load_workbook_frames,
+    normalize_financial_schedule,
+    profile_sheet,
     reconcile_financial_statements,
 )
 from fdd_utils.ui import derive_reconciliation_matched_keys
@@ -170,6 +182,83 @@ def check_unit_markers(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None
         )
     else:
         print("\n✅ All parsed account tabs declare a unit marker within the scan window.")
+
+
+# ---------------------------------------------------------------------------
+# 2b. Raw-vs-final dump for ONE tab — pinpoints whether a 1000x scaling bug
+#     (item 9 class) is happening at extraction, for a specific tab in a
+#     specific databook. Fully deterministic, no AI, runs in seconds — use
+#     this INSTEAD of a full --run-ai pass when a numeric grounding warning
+#     needs to be traced back to its source instead of re-running the LLM.
+# ---------------------------------------------------------------------------
+
+def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
+             entity_name: str = "") -> None:
+    _hr(f"DUMP TAB: {tab_name!r} (raw Excel value vs final extracted value)")
+    df_final = dfs.get(tab_name)
+    if df_final is None:
+        close = [k for k in dfs.keys() if tab_name.lower() in str(k).lower()]
+        print(f"❌ {tab_name!r} not found in dfs. Available keys: {sorted(dfs.keys())}")
+        if close:
+            print(f"   Did you mean: {close}")
+        return
+
+    sheet_name = df_final.attrs.get("source_sheet_name")
+    stored_multiplier = df_final.attrs.get("source_multiplier")
+    if not sheet_name:
+        print(f"❌ {tab_name!r} has no recorded source_sheet_name — cannot trace back to raw Excel.")
+        return
+    print(f"Backing Excel sheet: {sheet_name!r}   stored source_multiplier={stored_multiplier}")
+
+    frames = load_workbook_frames(databook_path)
+    raw_df = frames.get(sheet_name)
+    if raw_df is None:
+        print(f"❌ Sheet {sheet_name!r} not found via load_workbook_frames.")
+        return
+
+    profile = profile_sheet(raw_df, sheet_name)
+    computed_multiplier = _multiply_factor(profile)
+    print(f"Detected unit_markers (first 8 rows): {profile.get('unit_markers')}")
+    print(f"Computed multiplier from THIS profile: {computed_multiplier}"
+          + ("  ⚠️ MISMATCH vs stored_multiplier!" if stored_multiplier is not None
+             and computed_multiplier != stored_multiplier else ""))
+
+    try:
+        normalized = normalize_financial_schedule(
+            workbook_path=databook_path, sheet_name=sheet_name,
+            profile=profile, entity_name=entity_name, sheet_df=raw_df,
+        )
+    except Exception as exc:
+        print(f"❌ normalize_financial_schedule failed for {sheet_name!r}: {exc}")
+        return
+
+    columns = normalized["columns"]
+    print(f"\nColumns: {[c['key'] for c in columns]}")
+    print(f"\n{'row_idx':>8} {'description':40s} {'column':22s} {'raw (pre-multiply)':>22s} {'final (post-multiply)':>24s}")
+    for row in normalized["row_entries"]:
+        row_idx = row["row_idx"]
+        desc = row["description"][:40]
+        for col in columns:
+            raw_val = _coerce_numeric(raw_df.iloc[row_idx, col["col_idx"]])
+            final_val = row["values"].get(col["key"])
+            expected = round(raw_val * computed_multiplier, 0) if raw_val is not None else None
+            flag = ""
+            if raw_val is not None and final_val is not None and expected is not None and abs(final_val - expected) > 1:
+                flag = "  ⚠️ does not match raw*multiplier"
+            print(f"{row_idx:>8} {desc:40s} {col['key']:22s} {raw_val!s:>22s} {final_val!s:>24s}{flag}")
+
+    print(
+        f"\nHow to read this: 'raw' is the number exactly as it sits in the Excel cell,\n"
+        f"before ANY scaling. 'final' is raw * {computed_multiplier} (the multiplier this tab\n"
+        f"was detected to use), which is what actually lands in dfs['{tab_name}'] and gets\n"
+        f"sent to the AI as ground truth. If the raw cell value ITSELF already looks like\n"
+        f"an actual-CNY amount (e.g. 384000000) but the sheet's unit marker says '000\n"
+        f"(CNY'000 / 人民币千元), then the multiplier is being applied to a value that was\n"
+        f"NEVER expressed in thousands in the first place — i.e. the marker is real but the\n"
+        f"row itself is not actually in thousands (mixed-unit sheet), OR the raw value is a\n"
+        f"rollup/subtotal computed differently upstream. Compare the 'raw' column above\n"
+        f"against what you see directly in Excel for sheet {sheet_name!r} at the given row_idx."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -514,11 +603,17 @@ def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
 
 def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                  model_type: str, model_name: Optional[str], limit: Optional[int] = None,
-                 workers: Optional[int] = None) -> Dict[str, Any]:
+                 workers: Optional[int] = None, dump_tab_name: Optional[str] = None) -> Dict[str, Any]:
     _hr(f"INSPECTING: {path}")
     summary: Dict[str, Any] = {"file": Path(path).name, "status": "ok"}
     dfs = check_tab_read_summary(path, entity_name=entity_name)
     summary["tabs_parsed"] = len(dfs)
+
+    if dump_tab_name:
+        dump_tab(path, dfs, dump_tab_name, entity_name=entity_name)
+        summary["status"] = "dump-tab only"
+        return summary
+
     check_unit_markers(path, dfs)
     check_row_structures(dfs)
 
@@ -627,6 +722,12 @@ def main() -> int:
     ap.add_argument("path", help="databook .xlsx file, or a folder to scan every .xlsx in it")
     ap.add_argument("--sheet", default=None, help="Financials sheet name (default: auto-detect 'Financials')")
     ap.add_argument("--entity", default="", help="entity name filter, if the workbook has multiple entities")
+    ap.add_argument("--dump-tab", default=None, metavar="TAB_NAME",
+                    help="deterministic, no-AI: print raw Excel cell values vs the final "
+                         "scaled dfs values for ONE tab (e.g. --dump-tab 固定资产), to trace "
+                         "whether a numeric grounding warning is a real 1000x extraction bug "
+                         "for that tab rather than re-running the AI pipeline to check. "
+                         "Only valid when path is a single file.")
     ap.add_argument("--run-ai", action="store_true", help="also run checks 5-7 (real AI calls, costs time/tokens)")
     ap.add_argument("--model", default="local", help="model_type for --run-ai: local | workbench | deepseek | openai")
     ap.add_argument("--model-name", default=None, help="specific model id within the provider (e.g. GPT-5.5's id)")
@@ -641,6 +742,10 @@ def main() -> int:
     args = ap.parse_args()
 
     target = Path(args.path)
+    if args.dump_tab and target.is_dir():
+        print("❌ --dump-tab only works against a single file, not a folder. "
+              "Pass the exact .xlsx path.")
+        return 1
     if target.is_dir():
         files = sorted(target.glob("*.xlsx"))
         files = [f for f in files if not f.name.startswith("~$")]
@@ -663,7 +768,8 @@ def main() -> int:
     for f in files:
         try:
             summary = inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model,
-                                   args.model_name, limit=args.limit, workers=args.workers)
+                                   args.model_name, limit=args.limit, workers=args.workers,
+                                   dump_tab_name=args.dump_tab)
             summaries.append(summary)
         except Exception as exc:
             print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
