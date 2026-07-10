@@ -887,18 +887,38 @@ def analyze_population_fill(
 
     gen = PowerPointGenerator(template_path, "chinese" if language == "Chi" else "english", model_type=model_type)
     gen.load_template()
+    max_slides = int(gen.pptx_settings.get("max_commentary_slides_per_statement", 4) or 4)
 
     _hr("10. POPULATION / FILL DIAGNOSTIC (theoretical ceiling + rigorous boundary check)")
 
+    # start_slide must match apply_structured_data_to_slides' real call sites
+    # (BS=1, IS=5) — using the wrong one would resolve slot shapes against the
+    # OTHER statement's slides. Continuation slides (every slide after the
+    # first of a statement) also need their commentary box expanded to absorb
+    # the coSummaryShape area FIRST, exactly as apply_structured_data_to_slides
+    # does before it calls _distribute_content_across_slots — skipping this
+    # understates capacity on every slide but the first and makes the fill
+    # ratios / gap check below not match what the real export actually did.
+    start_slides = {"BS": 1, "IS": 1 + max_slides}
     report: Dict[str, Any] = {}
     for statement_type in ("BS", "IS"):
         items = payloads.get(statement_type) or []
         if not items:
             continue
+        start_slide = start_slides[statement_type]
+        first_slide_idx = start_slide - 1
+        for offset in range(1, max_slides):
+            cont_idx = first_slide_idx + offset
+            if cont_idx >= len(gen.presentation.slides):
+                break
+            gen._expand_commentary_to_cover_summary(gen.presentation.slides[cont_idx])
+
         target_fill = float(gen._packing_settings(statement_type).get("target_fill_min_ratio", 0.95) or 0.95)
         print(f"\n  [{statement_type}] target_fill_min_ratio = {target_fill:.0%} "
               f"(every slot except the last-used one is scored against this)")
-        dist = gen._distribute_content_across_slots(items, max_slides=4, start_slide=1, statement_type=statement_type)
+        dist = gen._distribute_content_across_slots(
+            items, max_slides=max_slides, start_slide=start_slide, statement_type=statement_type,
+        )
         if not dist:
             print("    (no slots used)")
             continue
@@ -914,7 +934,8 @@ def analyze_population_fill(
                 break
 
         def _shape_for(slide_idx: int, slot_name: str):
-            slide = gen.presentation.slides[slide_idx]
+            actual_slide_idx = start_slide - 1 + slide_idx
+            slide = gen.presentation.slides[actual_slide_idx]
             return gen._resolve_commentary_slot_shape(slide, slot_name) or sample_shape
 
         slot_rows = []
@@ -928,8 +949,8 @@ def analyze_population_fill(
             cap = gen._calculate_max_lines_for_textbox(shape, is_chinese=is_chi_slot, slot_name=slot_name, statement_type=statement_type)
             used = gen._compute_slot_used_lines(accts, slot_name, slot_shape=shape, statement_type=statement_type)
             slot_rows.append({
-                "slide_idx": slide_idx, "slot_name": slot_name, "shape": shape,
-                "accounts": accts, "cap": cap, "used": used, "is_chinese": is_chi_slot,
+                "slide_idx": slide_idx, "actual_slide_num": start_slide + slide_idx, "slot_name": slot_name,
+                "shape": shape, "accounts": accts, "cap": cap, "used": used, "is_chinese": is_chi_slot,
             })
             total_used += used
             total_cap += cap
@@ -942,7 +963,7 @@ def analyze_population_fill(
         for idx, row in enumerate(slot_rows):
             names = [a.get("mapping_key", "?") for a in row["accounts"]]
             fill = row["used"] / row["cap"] if row["cap"] else 0.0
-            print(f"      slot {row['slide_idx']} ({row['slot_name']}): {row['used']:.1f}/{row['cap']} "
+            print(f"      slide {row['actual_slide_num']} ({row['slot_name']}): {row['used']:.1f}/{row['cap']} "
                   f"= {fill:.0%}  accts={names}")
             if idx + 1 >= len(slot_rows):
                 continue

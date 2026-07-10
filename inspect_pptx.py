@@ -39,6 +39,7 @@ from pptx import Presentation
 from pptx.util import Emu
 
 from fdd_utils.financial_common import load_yaml_file
+from fdd_utils.pptx import get_space_after_for_text, get_space_before_for_text
 from fdd_utils.text_metrics import get_measurer, text_box_from_shape
 
 DEFAULT_CONFIG_CANDIDATES = ["fdd_utils/config.yml", "fdd_utils/config.example.yml"]
@@ -53,6 +54,13 @@ FONT_SIZE_ENG = 9.0
 FONT_SIZE_CHI = 9.0
 LINE_SPACING_ENG = 1.0
 LINE_SPACING_CHI = 0.9
+
+# pptx.py's real capacity formula (_calculate_max_lines_for_textbox) divides
+# by line_height + para_gap, not line_height alone — every paragraph carries
+# space_before/space_after in the actual render. Omitting this here made
+# capacity come out ~1.5-2x too generous, understating overflow/under-fill risk.
+PARA_GAP_ENG = get_space_after_for_text("", force_chinese_mode=False).pt + get_space_before_for_text("", force_chinese_mode=False).pt
+PARA_GAP_CHI = get_space_after_for_text("", force_chinese_mode=True).pt + get_space_before_for_text("", force_chinese_mode=True).pt
 MIN_FILL_RATIO_WARN = 0.40  # below this on a non-last slot -> utilisation flag
 
 
@@ -95,6 +103,7 @@ class ShapeInfo:
     n_chars: int
     capacity_lines: int
     wrapped_lines: int
+    content_units: float
     fill_ratio: float
     overflow: bool
 
@@ -154,12 +163,32 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
             slot = _slot_of(shape.name)
             text = shape.text_frame.text
             box = text_box_from_shape(shape)
-            measurer = chi_measurer if _is_chinese_text(text) else eng_measurer
+            is_chi = _is_chinese_text(text)
+            measurer = chi_measurer if is_chi else eng_measurer
             line_h = measurer.line_height_pt()
-            capacity = int(box.height_pt // line_h) if line_h > 0 else 0
+            para_gap = PARA_GAP_CHI if is_chi else PARA_GAP_ENG
+            std_lh = line_h + para_gap
+            capacity = int(box.height_pt // std_lh) if std_lh > 0 else 0
+
+            # Literal wrapped-line count, for display only (chars=/wraps_to=).
             wrapped = measurer.wrap(text, box.width_pt) if text.strip() else []
             n_lines = len(wrapped)
-            fill_ratio = (n_lines / capacity) if capacity > 0 else 0.0
+
+            # Content cost in the SAME std_lh units as capacity: one para_gap
+            # PER PARAGRAPH (not per wrapped physical line), mirroring
+            # fdd_utils/pptx.py's _calculate_content_lines. Comparing a
+            # literal physical-line count against a std_lh-unit capacity
+            # is apples-to-oranges (std_lh bundles a full para_gap into every
+            # "line", so it under-counts how many literal lines actually fit)
+            # and produced false OVERFLOW RISK flags on ordinary multi-line
+            # paragraphs before this was unit-matched.
+            paras = [p for p in text.split("\n") if p.strip()] if text.strip() else []
+            content_pt = sum(
+                len(measurer.wrap(p, box.width_pt)) * line_h + para_gap for p in paras
+            )
+            content_units = (content_pt / std_lh) if std_lh > 0 else 0.0
+
+            fill_ratio = (content_units / capacity) if capacity > 0 else 0.0
             infos.append(ShapeInfo(
                 name=shape.name, slot=slot,
                 left_in=Emu(shape.left).inches if shape.left is not None else -1,
@@ -167,8 +196,8 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
                 width_in=Emu(shape.width).inches if shape.width is not None else -1,
                 height_in=Emu(shape.height).inches if shape.height is not None else -1,
                 text=text, n_chars=len(text), capacity_lines=capacity,
-                wrapped_lines=n_lines, fill_ratio=fill_ratio,
-                overflow=n_lines > capacity,
+                wrapped_lines=n_lines, content_units=content_units, fill_ratio=fill_ratio,
+                overflow=content_units > capacity,
             ))
 
         for i, info in enumerate(infos):
@@ -183,7 +212,8 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
                 total_warnings += 1
                 warning_details.append(f"Slide {slide_idx + 1} [{info.slot}] {info.name}: {', '.join(flags)}")
             _print(f"  [{info.slot:6s}] {info.name:24s} left={info.left_in:5.2f}in width={info.width_in:5.2f}in "
-                   f"chars={info.n_chars:4d} capacity={info.capacity_lines:3d}L wraps_to={info.wrapped_lines:3d}L{flag_str}")
+                   f"chars={info.n_chars:4d} capacity={info.capacity_lines:3d}L used={info.content_units:5.1f}L "
+                   f"(raw wraps_to={info.wrapped_lines:3d}L){flag_str}")
 
         # 1. L/R collision: a page with no table/summary (i.e. NOT the
         # designed single-column table slide) but only a single unsplit slot.
