@@ -2013,18 +2013,30 @@ class PowerPointGenerator:
 
         font_size_pt = 10 if is_chinese else 9
         line_spacing = 0.95 if is_chinese else 1.0
-        family = "Microsoft YaHei" if is_chinese else "Arial"
+        packing = self._packing_settings(statement_type)
+        family = self._measurer_family(is_chinese, packing)
 
-        # ── Real glyph metrics via text_metrics ─────────────────────────────────
+        # -- Real glyph metrics via text_metrics --
+        # Uses get_measurer (client metrics.json when configured, else the
+        # resolved system font) -- the SAME measurer _calculate_max_lines_for_textbox
+        # uses for capacity. Previously this called get_font()/wrap_paragraph()
+        # directly with a hardcoded "Arial"/"Microsoft YaHei" system font,
+        # ignoring font_metrics_path_eng/chi entirely -- capacity and content
+        # were measured with two different rulers whenever a client metrics
+        # file was configured, which is exactly the kind of quiet mismatch
+        # that produces a "few rows off" fill-ratio gap despite already having
+        # real font metrics available.
         if shape is not None:
             try:
-                from fdd_utils.text_metrics import (
-                    get_font, line_height_pt as _line_h_fn,
-                    text_box_from_shape, wrap_paragraph,
+                from fdd_utils.text_metrics import get_measurer, text_box_from_shape
+                _mpath   = self._resolve_font_metrics_path(is_chinese, packing)
+                measurer = get_measurer(
+                    family, font_size_pt, is_cjk=is_chinese, line_spacing=line_spacing,
+                    metrics_path=_mpath,
                 )
-                font     = get_font(family, font_size_pt, is_cjk=is_chinese)
+                self._log_measurer_source_once(measurer, _mpath, is_chinese)
                 box      = text_box_from_shape(shape)
-                line_h   = _line_h_fn(font, line_spacing=line_spacing)
+                line_h   = measurer.line_height_pt()
                 std_lh   = line_h + self._PARA_SPACE_AFTER
 
                 total_pt = 0.0
@@ -2034,20 +2046,20 @@ class PowerPointGenerator:
                 paras = [p for p in commentary.split('\n') if p.strip()] if commentary else []
                 key_prefix = f"\u25a0 {mapping_key} - "
                 if paras:
-                    first_wrapped = wrap_paragraph(key_prefix + paras[0], font, box.width_pt)
+                    first_wrapped = measurer.wrap(key_prefix + paras[0], box.width_pt)
                     total_pt += len(first_wrapped) * line_h + self._PARA_SPACE_AFTER
                     for para in paras[1:]:
-                        wrapped = wrap_paragraph(para, font, box.width_pt)
+                        wrapped = measurer.wrap(para, box.width_pt)
                         total_pt += len(wrapped) * line_h + self._PARA_SPACE_AFTER
                 else:
                     total_pt += line_h + self._PARA_SPACE_AFTER
 
-                # Return float — no ceil so actual physical proportion is preserved.
+                # Return float -- no ceil so actual physical proportion is preserved.
                 result = total_pt / std_lh
                 self._content_lines_cache[cache_key] = result
                 return result
             except Exception:
-                pass    # font file missing — fall through to heuristic
+                pass    # font file missing -- fall through to heuristic
 
         # ── Heuristic fallback (no shape or font unavailable) ───────────────────
         space_after  = self._PARA_SPACE_AFTER
