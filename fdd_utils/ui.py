@@ -988,18 +988,9 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
     tab_idx = 0
 
     @st.fragment
-    def _render_commentary_fragment(
-        key: str,
-        prefix: str,
-        detailed_content: str,
-        clause_reviews: list,
-        final_label: str,
-        selected_df,
-        language: str,
-    ):
-        """Render the final commentary for a single account."""
+    def _render_commentary_fragment(detailed_content: str, clause_reviews: list):
+        """Render the final commentary + validator evidence for a single account."""
         final_content = detailed_content
-        render_account_remarks_context(selected_df, key, language, prefix=f"{prefix}generated_")
         st.markdown(build_highlighted_commentary_html(str(final_content), clause_reviews or []), unsafe_allow_html=True)
         if clause_reviews:
             hallucination_count = sum(
@@ -1032,14 +1023,6 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                 ]
                 if review_rows:
                     st.dataframe(pd.DataFrame(review_rows), use_container_width=True, hide_index=True)
-        with st.expander("Plain text", expanded=False):
-            st.text_area(
-                label="Final content",
-                value=str(final_content),
-                height=min(max(100, int(len(str(final_content)) / 3)), 600),
-                key=f"{prefix}{key}_final_display",
-                label_visibility="collapsed",
-            )
 
     def create_account_agent_tabs(keys, prefix=""):
         account_tabs = st.tabs([f"📄 {key}" for key in keys])
@@ -1059,42 +1042,11 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                 final_label = "Final (Reprompt + validator)" if reprompt_mode == "generator_reprompt_validated" else ("Final (Generator reprompt)" if reprompt_mode == "generator_only" else "Final (Validator)")
                 if has_final:
                     st.markdown(f"#### ✨ {final_label}")
-                    _render_commentary_fragment(
-                        key=key,
-                        prefix=prefix,
-                        detailed_content=str(detailed_content),
-                        clause_reviews=clause_reviews,
-                        final_label=final_label,
-                        selected_df=selected_df,
-                        language=session_state.get("language", "Eng"),
-                    )
-                    st.markdown("---")
-                reprompt_comment = st.text_area(
-                    label=f"Reprompt guidance for {key}",
-                    value=session_state.account_comments.get(key, ""),
-                    placeholder="Add comments to refine this account only, then click reprompt.",
-                    key=f"{prefix}{key}_reprompt_comment",
-                    height=90,
-                )
-                session_state.account_comments[key] = reprompt_comment
-                if st.button(f"Reprompt {key}", key=f"{prefix}{key}_reprompt_button", use_container_width=True):
-                    with st.spinner(f"Regenerating {key}..."):
-                        selected_pipeline_dfs = build_selected_pipeline_dfs(session_state)
-                        updated_results = run_generator_reprompt(
-                            mapping_keys=[key],
-                            dfs={key: selected_pipeline_dfs[key]},
-                            existing_results=session_state.ai_results,
-                            model_type=session_state.get("model_type", "local"),
-                            model_name=session_state.get("model_name"),
-                            language=session_state.language,
-                            user_comments={key: reprompt_comment},
-                        )
-                        merged_results = dict(session_state.ai_results or {})
-                        merged_results.update(updated_results)
-                        session_state.ai_results = merged_results
-                        session_state.pptx_ready = False
-                    st.rerun()
-                st.markdown("---")
+                    _render_commentary_fragment(detailed_content=str(detailed_content), clause_reviews=clause_reviews)
+
+                # Agent Pipeline sits directly with Validator evidence (both are
+                # "how did we get this answer" review artifacts), ahead of the
+                # source-remark background context and the reprompt control.
                 agent_contents = []
                 agent_names_list = []
                 for agent_key in ["subagent_1", "subagent_2", "subagent_3", "subagent_4"]:
@@ -1116,8 +1068,40 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                             )
                             if content_idx < len(agent_contents) - 1:
                                 st.markdown("---")
+
+                if has_final:
+                    render_account_remarks_context(selected_df, key, session_state.get("language", "Eng"), prefix=f"{prefix}generated_")
+
                 if not has_final and not agent_contents:
                     st.warning("No agent outputs available for this account")
+
+                st.markdown("---")
+                with st.expander(f"✏️ Reprompt {key}", expanded=False):
+                    reprompt_comment = st.text_area(
+                        label=f"Reprompt guidance for {key}",
+                        value=session_state.account_comments.get(key, ""),
+                        placeholder="Add comments to refine this account only, then click reprompt.",
+                        key=f"{prefix}{key}_reprompt_comment",
+                        height=90,
+                    )
+                    session_state.account_comments[key] = reprompt_comment
+                    if st.button(f"Reprompt {key}", key=f"{prefix}{key}_reprompt_button", use_container_width=True):
+                        with st.spinner(f"Regenerating {key}..."):
+                            selected_pipeline_dfs = build_selected_pipeline_dfs(session_state)
+                            updated_results = run_generator_reprompt(
+                                mapping_keys=[key],
+                                dfs={key: selected_pipeline_dfs[key]},
+                                existing_results=session_state.ai_results,
+                                model_type=session_state.get("model_type", "local"),
+                                model_name=session_state.get("model_name"),
+                                language=session_state.language,
+                                user_comments={key: reprompt_comment},
+                            )
+                            merged_results = dict(session_state.ai_results or {})
+                            merged_results.update(updated_results)
+                            session_state.ai_results = merged_results
+                            session_state.pptx_ready = False
+                        st.rerun()
 
     if bs_keys:
         with ai_tabs[tab_idx]:
