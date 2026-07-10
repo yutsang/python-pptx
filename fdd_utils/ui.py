@@ -1687,8 +1687,9 @@ def render_language_selector(session_state: Any) -> None:
     """Language radio, factored out of render_sidebar_upload so callers can
     place it next to the Financial Statement Sheet selector (which otherwise
     leaves blank space beside the taller Entity Name column) instead of
-    always in the sidebar."""
-    st.markdown("**🌐 Language**")
+    always in the sidebar. No separate header line — the "🌐" prefix on each
+    option is self-explanatory, so this renders as a single compact row
+    instead of a header line + a radio-options line."""
     # Reconcile to the UI convention ("Eng"/"Chn"). Auto-detection may store
     # "Chi" — normalise it so the radio + all downstream == "Chn" checks agree.
     current_lang = session_state.get("language", "Eng")
@@ -1698,9 +1699,9 @@ def render_language_selector(session_state: Any) -> None:
     # (a keyed radio + index fight each other and make the override "stick"
     # only intermittently). index seeds it; the return value writes it back.
     selected_lang = st.radio(
-        "Language",
+        "🌐 Language",
         options=["Eng", "Chn"],
-        format_func=lambda x: "English" if x == "Eng" else "Chinese",
+        format_func=lambda x: "Eng" if x == "Eng" else "中文",
         index=0 if current_lang == "Eng" else 1,
         horizontal=True,
         label_visibility="collapsed",
