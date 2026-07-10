@@ -846,13 +846,151 @@ def export_and_inspect_pptx(
     pptx_config = _inspect_pptx._load_config(None)
     layout = _inspect_pptx.inspect_pptx(out_path, pptx_config)
 
+    population = analyze_population_fill(
+        payloads=payloads, template_path=template_path, language=language, model_type=model_type,
+    )
+
     return {
         "out_path": out_path,
         "measurement_sources": measurement_sources,
         "export_warnings": warnings_seen,
         "stage_times": stage_times,
         "layout": layout,
+        "population": population,
     }
+
+
+def analyze_population_fill(
+    payloads: Dict[str, List[Dict[str, Any]]], template_path: str, language: str, model_type: str,
+) -> Dict[str, Any]:
+    """Deep population/fill (text-box "utilisation") diagnostic, on top of
+    what section 9's layout check already reports.
+
+    For each statement (BS/IS), computes the THEORETICAL BEST fill ratio —
+    total content-lines needed divided by total capacity across exactly the
+    slots the packer actually used — so a genuinely low ceiling here means
+    the content itself doesn't reach the target regardless of packing
+    quality (not a packing bug). Then, for every slot boundary, checks
+    whether the first account of the NEXT slot would have fit into the
+    PREVIOUS slot's remaining space; if it would, this does NOT stop at
+    that naive local check (which produces false positives — see below) —
+    it replays the DP's own lexicographic penalty formula for both the
+    actual assignment and the alternative (moving that account back), and
+    only reports a genuine gap if the alternative's total penalty is
+    actually LOWER. A naive "would it fit locally" check is necessary but
+    not sufficient: moving an account into an earlier slot can make a
+    LATER slot's fill worse by more than it helps the earlier one, in
+    which case the packer's original choice is already optimal even though
+    it looks like a gap at a glance.
+    """
+    from fdd_utils.pptx import PowerPointGenerator
+
+    gen = PowerPointGenerator(template_path, "chinese" if language == "Chi" else "english", model_type=model_type)
+    gen.load_template()
+
+    _hr("10. POPULATION / FILL DIAGNOSTIC (theoretical ceiling + rigorous boundary check)")
+
+    report: Dict[str, Any] = {}
+    for statement_type in ("BS", "IS"):
+        items = payloads.get(statement_type) or []
+        if not items:
+            continue
+        target_fill = float(gen._packing_settings(statement_type).get("target_fill_min_ratio", 0.95) or 0.95)
+        print(f"\n  [{statement_type}] target_fill_min_ratio = {target_fill:.0%} "
+              f"(every slot except the last-used one is scored against this)")
+        dist = gen._distribute_content_across_slots(items, max_slides=4, start_slide=1, statement_type=statement_type)
+        if not dist:
+            print("    (no slots used)")
+            continue
+
+        sample_shape = None
+        for slide in gen.presentation.slides:
+            for alt_name in ("textMainBullets", "textMainBullets_L", "textMainBullets_R"):
+                shape = gen.find_shape_by_name(slide.shapes, alt_name)
+                if shape:
+                    sample_shape = shape
+                    break
+            if sample_shape:
+                break
+
+        def _shape_for(slide_idx: int, slot_name: str):
+            slide = gen.presentation.slides[slide_idx]
+            return gen._resolve_commentary_slot_shape(slide, slot_name) or sample_shape
+
+        slot_rows = []
+        total_used = 0.0
+        total_cap = 0.0
+        for slide_idx, slot_name, accts in dist:
+            if not accts:
+                continue
+            shape = _shape_for(slide_idx, slot_name)
+            is_chi_slot = any(bool(a.get("is_chinese")) for a in accts)
+            cap = gen._calculate_max_lines_for_textbox(shape, is_chinese=is_chi_slot, slot_name=slot_name, statement_type=statement_type)
+            used = gen._compute_slot_used_lines(accts, slot_name, slot_shape=shape, statement_type=statement_type)
+            slot_rows.append({
+                "slide_idx": slide_idx, "slot_name": slot_name, "shape": shape,
+                "accounts": accts, "cap": cap, "used": used, "is_chinese": is_chi_slot,
+            })
+            total_used += used
+            total_cap += cap
+
+        ceiling = (total_used / total_cap) if total_cap else 0.0
+        print(f"    {len(slot_rows)} slot(s) used, {total_used:.1f}/{total_cap:.0f} total lines "
+              f"-> theoretical best fill if perfectly redistributed: {ceiling:.0%}")
+
+        genuine_gaps = []
+        for idx, row in enumerate(slot_rows):
+            names = [a.get("mapping_key", "?") for a in row["accounts"]]
+            fill = row["used"] / row["cap"] if row["cap"] else 0.0
+            print(f"      slot {row['slide_idx']} ({row['slot_name']}): {row['used']:.1f}/{row['cap']} "
+                  f"= {fill:.0%}  accts={names}")
+            if idx + 1 >= len(slot_rows):
+                continue
+            nxt = slot_rows[idx + 1]
+            if not nxt["accounts"]:
+                continue
+            first_next = nxt["accounts"][0]
+            remaining = row["cap"] - row["used"]
+            cost_here = gen._calculate_content_lines(
+                "", first_next.get("mapping_key", ""), first_next.get("commentary", ""),
+                slot_name=row["slot_name"], shape=row["shape"], is_chinese=row["is_chinese"],
+                statement_type=statement_type,
+            )
+            if cost_here > remaining:
+                continue  # doesn't even fit locally -- not a candidate, gap is real/unavoidable
+
+            # Locally it WOULD fit -- but that alone is a false-positive-prone
+            # check. Replay the DP's own lexicographic penalty for both the
+            # current assignment and the alternative (move first_next back
+            # into this slot, remove its cost from the next slot) to see
+            # which is genuinely better.
+            is_last_cur = (idx == len(slot_rows) - 1)
+            is_last_nxt = (idx + 1 == len(slot_rows) - 1)
+            cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (row["used"] / row["cap"]))
+            nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (nxt["used"] / nxt["cap"]))
+            current_total = cur_penalty + nxt_penalty
+
+            alt_cur_used = row["used"] + cost_here
+            alt_nxt_used = max(0.0, nxt["used"] - cost_here)
+            alt_cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (alt_cur_used / row["cap"]))
+            alt_nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (alt_nxt_used / nxt["cap"]))
+            alt_total = alt_cur_penalty + alt_nxt_penalty
+
+            if alt_total < current_total - 1e-9:
+                genuine_gaps.append((row, nxt, first_next, cost_here, remaining, current_total, alt_total))
+                print(f"        *** GENUINE GAP: '{first_next.get('mapping_key')}' (costs {cost_here:.2f}, "
+                      f"remaining {remaining:.2f}) -- moving it back lowers total penalty "
+                      f"{current_total:.3f} -> {alt_total:.3f} ***")
+
+        report[statement_type] = {
+            "slots": len(slot_rows), "total_used": total_used, "total_cap": total_cap,
+            "ceiling": ceiling, "genuine_gaps": len(genuine_gaps),
+        }
+
+    if not any(v.get("genuine_gaps") for v in report.values()):
+        print("\n  ✅ No genuine packing gaps found — every boundary is either a hard fit "
+              "limit or already at the DP's own optimum.")
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -1009,6 +1147,13 @@ def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
                     f"{layout.get('content_slides', '?')} slides, "
                     f"{layout.get('total_warnings', 0)} layout ⚠️, src={src_str}"
                 )
+                population = pptx.get("population") or {}
+                if population:
+                    row["population"] = ", ".join(
+                        f"{stmt}={info.get('ceiling', 0):.0%} ceiling"
+                        + (f" ({info['genuine_gaps']} gap!)" if info.get("genuine_gaps") else "")
+                        for stmt, info in population.items()
+                    )
         rows.append(row)
     df = pd.DataFrame(rows)
     print(df.to_string(index=False))
@@ -1021,7 +1166,13 @@ def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
         pptx_summaries = [s.get("pptx") for s in summaries if "pptx" in s and "status" not in (s.get("pptx") or {})]
         if pptx_summaries:
             total_layout_warnings = sum((p.get("layout") or {}).get("total_warnings", 0) for p in pptx_summaries)
-            print(f"Across all PPTX exports: {total_layout_warnings} layout warning(s) total.")
+            total_genuine_gaps = sum(
+                info.get("genuine_gaps", 0)
+                for p in pptx_summaries
+                for info in (p.get("population") or {}).values()
+            )
+            print(f"Across all PPTX exports: {total_layout_warnings} layout warning(s), "
+                  f"{total_genuine_gaps} genuine packing gap(s) total.")
 
 
 def main() -> int:
@@ -1056,7 +1207,10 @@ def main() -> int:
                     help="requires --run-ai: also build PPTX payloads from the AI results just "
                          "produced, export a real .pptx, capture its export log, and run the "
                          "L/R-collision + table-overlap + overflow + fill-ratio layout checks "
-                         "against it — the whole process+inspect+log-analysis pipeline in one run.")
+                         "against it, then a population/fill deep diagnostic (per-statement "
+                         "theoretical fill ceiling + rigorous DP-penalty boundary check for "
+                         "genuine packing gaps vs already-optimal assignments) — the whole "
+                         "generation+population+report pipeline in one run.")
     ap.add_argument("--pptx-out", default=None, metavar="DIR",
                     help="with --export-pptx, directory to write <databook>.preview.pptx into "
                          "(default: a pptx_previews/ folder next to the input file).")
