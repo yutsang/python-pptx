@@ -62,10 +62,13 @@ written back to the workbook.
 from __future__ import annotations
 
 import argparse
+import io
+import logging
 import re
 import sys
 import threading
 import time
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -730,6 +733,125 @@ def run_ai_checks(
         "empty_accounts": empty_accounts,
         "grounding_warnings": len(all_warnings),
         "stage_timing": stage_timing,
+        "results": results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8-9. PPTX export + log analysis + layout inspection
+# ---------------------------------------------------------------------------
+
+class _ListLogHandler(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.INFO)
+        self.records: List[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+_MEASUREMENT_RE = re.compile(r"Text measurement \[(ENG|CHI)\]: (client-metrics|system-font)(?: \(([^)]+)\))?")
+_PPTX_STAGE_RE = re.compile(r"\[PPTX\] ([\w_ ]+?): ([\d.]+)s")
+
+
+def export_and_inspect_pptx(
+    databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], ai_results: Dict[str, Any],
+    language: str, model_type: str, out_path: str,
+) -> Dict[str, Any]:
+    """Runs the FULL remaining pipeline (build payloads -> export .pptx),
+    captures every [PPTX] stdout line and fdd_utils.pptx logger record
+    emitted during that export, parses them for the signals that matter
+    (measurement source per language, per-stage timing, any WARNING/ERROR),
+    then runs inspect_pptx.py's own geometry checks against the resulting
+    file — all in one pass, no separate manual export+inspect steps."""
+    _hr("8. PPTX EXPORT (build payloads -> export .pptx, capturing logs)")
+    from fdd_utils.pptx import build_pptx_structured_payloads, export_pptx_from_structured_data_combined
+    import inspect_pptx as _inspect_pptx
+
+    bs_is_results = extract_balance_sheet_and_income_statement(
+        workbook_path=databook_path, sheet_name=sheet_name, debug=False,
+    )
+    mappings = get_effective_mappings(load_mappings(), None)
+    payloads = build_pptx_structured_payloads(ai_results, mappings, bs_is_results=bs_is_results, dfs=dfs)
+    print(f"BS items: {len(payloads['BS'])}, IS items: {len(payloads['IS'])}")
+
+    template_path = str(Path(__file__).parent / "fdd_utils" / "template.pptx")
+    is_chinese = (language == "Chi")
+
+    pptx_logger = logging.getLogger("fdd_utils.pptx")
+    handler = _ListLogHandler()
+    prev_level = pptx_logger.level
+    pptx_logger.addHandler(handler)
+    pptx_logger.setLevel(logging.INFO)
+    stdout_buf = io.StringIO()
+    try:
+        with redirect_stdout(stdout_buf):
+            export_pptx_from_structured_data_combined(
+                template_path=template_path,
+                bs_data=payloads["BS"], is_data=payloads["IS"],
+                output_path=out_path,
+                project_name=Path(databook_path).stem,
+                language="Chinese" if is_chinese else "english",
+                temp_path=databook_path, selected_sheet=sheet_name,
+                is_chinese_databook=is_chinese, bs_is_results=bs_is_results,
+                model_type=model_type,
+            )
+    finally:
+        pptx_logger.removeHandler(handler)
+        pptx_logger.setLevel(prev_level)
+    captured_stdout = stdout_buf.getvalue()
+    print(captured_stdout, end="")
+
+    _hr("8b. EXPORT LOG ANALYSIS")
+    measurement_sources: Dict[str, str] = {}
+    warnings_seen: List[str] = []
+    for rec in handler.records:
+        msg = rec.getMessage()
+        m = _MEASUREMENT_RE.search(msg)
+        if m:
+            measurement_sources[m.group(1)] = m.group(2) + (f" ({m.group(3)})" if m.group(3) else "")
+        if rec.levelno >= logging.WARNING:
+            warnings_seen.append(f"[{rec.levelname}] {msg}")
+
+    stage_times: Dict[str, float] = {}
+    for m in _PPTX_STAGE_RE.finditer(captured_stdout):
+        stage_times[m.group(1).strip()] = float(m.group(2))
+
+    if measurement_sources:
+        for lang, source in measurement_sources.items():
+            marker = "✅" if source.startswith("client-metrics") else "⚠️"
+            print(f"  {marker} {lang} measurement source: {source}")
+        if any(not s.startswith("client-metrics") for s in measurement_sources.values()):
+            print("  ⚠️  At least one language measured with a system-font fallback, not the "
+                  "repo-shipped/client metrics.json — check pptx.commentary_packing."
+                  "font_metrics_path_eng/chi and use_pillow_text_fitting in config.yml.")
+    else:
+        print("  ⚠️  No 'Text measurement [...]' log line captured — either Pillow fitting is "
+              "off (use_pillow_text_fitting: false) so the legacy CPL heuristic was used "
+              "instead, or logging didn't propagate. Check pptx.commentary_packing in config.yml.")
+
+    if stage_times:
+        print("  Export stage timing:")
+        for stage, secs in stage_times.items():
+            print(f"    {stage}: {secs:.2f}s")
+
+    if warnings_seen:
+        print(f"  {len(warnings_seen)} WARNING/ERROR log line(s) during export:")
+        for w in warnings_seen:
+            print(f"    {w}")
+    else:
+        print("  ✅ No WARNING/ERROR log lines during export.")
+
+    _hr("9. PPTX LAYOUT INSPECTION (L/R collision, table overlap, overflow, fill ratio)")
+    pptx_config = _inspect_pptx._load_config(None)
+    layout = _inspect_pptx.inspect_pptx(out_path, pptx_config)
+
+    return {
+        "out_path": out_path,
+        "measurement_sources": measurement_sources,
+        "export_warnings": warnings_seen,
+        "stage_times": stage_times,
+        "layout": layout,
     }
 
 
@@ -753,7 +875,8 @@ def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
 def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                  model_type: str, model_name: Optional[str], limit: Optional[int] = None,
                  workers: Optional[int] = None, dump_tab_name: Optional[str] = None,
-                 accounts: Optional[List[str]] = None) -> Dict[str, Any]:
+                 accounts: Optional[List[str]] = None, export_pptx: bool = False,
+                 pptx_out_dir: Optional[str] = None) -> Dict[str, Any]:
     _hr(f"INSPECTING: {path}")
     summary: Dict[str, Any] = {"file": Path(path).name, "status": "ok"}
     dfs = check_tab_read_summary(path, entity_name=entity_name)
@@ -818,6 +941,22 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             accounts=accounts,
         )
         summary["ai"] = ai_summary
+
+        if export_pptx and not ai_summary.get("skipped") and ai_summary.get("results"):
+            out_dir = Path(pptx_out_dir) if pptx_out_dir else Path(path).parent / "pptx_previews"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = str(out_dir / f"{Path(path).stem}.preview.pptx")
+            try:
+                pptx_summary = export_and_inspect_pptx(
+                    path, sheet_names[0], dfs, ai_summary["results"], language,
+                    model_type, out_path,
+                )
+                summary["pptx"] = pptx_summary
+            except Exception as exc:
+                print(f"\n❌ PPTX export/inspect FAILED: {type(exc).__name__}: {exc}")
+                import traceback
+                traceback.print_exc()
+                summary["pptx"] = {"status": f"FAILED: {exc}"}
     return summary
 
 
@@ -853,11 +992,24 @@ def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
                       for label, secs in stage_timing.items())
             if stage_timing else "-"
         )
-        rows.append({
+        row = {
             "file": s.get("file", "?"),
             "tabs": f"{s.get('tabs_parsed', '?')}/{s.get('total_sheets', '?')}",
             "BS": bs_str, "IS": is_str, "AI": ai_str, "stage s/acct": stage_str,
-        })
+        }
+        if "pptx" in s:
+            pptx = s["pptx"]
+            if "status" in pptx:
+                row["pptx"] = pptx["status"]
+            else:
+                layout = pptx.get("layout") or {}
+                sources = pptx.get("measurement_sources") or {}
+                src_str = ",".join(f"{k}={v}" for k, v in sources.items()) or "?"
+                row["pptx"] = (
+                    f"{layout.get('content_slides', '?')} slides, "
+                    f"{layout.get('total_warnings', 0)} layout ⚠️, src={src_str}"
+                )
+        rows.append(row)
     df = pd.DataFrame(rows)
     print(df.to_string(index=False))
     if run_ai:
@@ -866,6 +1018,10 @@ def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
         print(f"\nAcross all files: {total_empty} empty account(s) total, {total_warnings} grounding warning(s) total.")
         if total_empty == 0 and total_warnings == 0:
             print("✅ Nothing flagged across the whole batch.")
+        pptx_summaries = [s.get("pptx") for s in summaries if "pptx" in s and "status" not in (s.get("pptx") or {})]
+        if pptx_summaries:
+            total_layout_warnings = sum((p.get("layout") or {}).get("total_warnings", 0) for p in pptx_summaries)
+            print(f"Across all PPTX exports: {total_layout_warnings} layout warning(s) total.")
 
 
 def main() -> int:
@@ -896,7 +1052,19 @@ def main() -> int:
                          "固定资产,长期待摊费用 to cheaply re-test specific accounts that a prior "
                          "run flagged, instead of paying for a full/limit-N run again. "
                          "Overrides --limit.")
+    ap.add_argument("--export-pptx", action="store_true",
+                    help="requires --run-ai: also build PPTX payloads from the AI results just "
+                         "produced, export a real .pptx, capture its export log, and run the "
+                         "L/R-collision + table-overlap + overflow + fill-ratio layout checks "
+                         "against it — the whole process+inspect+log-analysis pipeline in one run.")
+    ap.add_argument("--pptx-out", default=None, metavar="DIR",
+                    help="with --export-pptx, directory to write <databook>.preview.pptx into "
+                         "(default: a pptx_previews/ folder next to the input file).")
     args = ap.parse_args()
+
+    if args.export_pptx and not args.run_ai:
+        print("❌ --export-pptx requires --run-ai (it needs AI-generated commentary to build the PPTX payloads).")
+        return 1
 
     target = Path(args.path)
     if args.dump_tab and target.is_dir():
@@ -928,7 +1096,8 @@ def main() -> int:
         try:
             summary = inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model,
                                    args.model_name, limit=args.limit, workers=args.workers,
-                                   dump_tab_name=args.dump_tab, accounts=accounts_filter)
+                                   dump_tab_name=args.dump_tab, accounts=accounts_filter,
+                                   export_pptx=args.export_pptx, pptx_out_dir=args.pptx_out)
             summaries.append(summary)
         except Exception as exc:
             print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
