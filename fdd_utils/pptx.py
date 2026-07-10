@@ -2535,6 +2535,87 @@ class PowerPointGenerator:
             )
         return max(0.0, used)
 
+    def _rebalance_lopsided_lr_pairs(
+        self,
+        assignment: List[List[Dict[str, Any]]],
+        slots: List[Dict[str, Any]],
+        statement_type: Optional[str],
+    ) -> None:
+        """Mutates `assignment` in place. Fixes same-page L/R pairs where the
+        DP left one column completely empty while the other is significantly
+        full.
+
+        Root cause: _optimize_slot_fill's lexicographic objective is
+        (num_nonempty_slots, underfill_penalty). An EMPTY slot contributes
+        NEITHER — it costs the DP nothing — while a non-empty slot under
+        target_fill_min_ratio incurs a real penalty. So whenever a page's
+        total content doesn't reach ~2x a single slot's capacity, "one
+        slot full + one slot empty" scores strictly better than "two slots
+        each moderately full" (e.g. one at 90% + one empty beats two at
+        45% each: 5% penalty vs 50%+50%). That is a reasonable objective
+        for deciding how many PAGES to use, but applied to the two columns
+        of a single page it produces a visually broken half-blank layout a
+        reader would never expect.
+
+        This is a post-pass, not a DP objective change, to keep the fix
+        narrowly scoped: find same-slide (L, R) pairs with exactly one
+        side empty, and if the full side has 2+ accounts, look for the
+        split point whose two halves are most evenly balanced (by the same
+        real line-cost function the DP itself uses) without overflowing
+        either box. If no such split exists, leave the pair as the DP
+        produced it — this never risks introducing an overflow that wasn't
+        there before.
+        """
+        by_slide: Dict[int, Dict[str, int]] = {}
+        for s_i, slot in enumerate(slots):
+            if slot.get("slot_name") in ("L", "R"):
+                by_slide.setdefault(slot["slide_idx"], {})[slot["slot_name"]] = s_i
+
+        for slide_idx, pair in by_slide.items():
+            if "L" not in pair or "R" not in pair:
+                continue
+            l_i, r_i = pair["L"], pair["R"]
+            l_accts, r_accts = assignment[l_i], assignment[r_i]
+            if bool(l_accts) == bool(r_accts):
+                continue  # both empty, or both already non-empty -- nothing to rebalance
+            full_i, empty_i = (l_i, r_i) if l_accts else (r_i, l_i)
+            full_accts = assignment[full_i]
+            if len(full_accts) < 2:
+                continue  # can't split a single account here -- that's the greedy first pass's job
+
+            full_name = slots[full_i]["slot_name"]
+            empty_name = slots[empty_i]["slot_name"]
+            full_cap = slots[full_i]["capacity"]
+            empty_cap = slots[empty_i]["capacity"]
+            full_shape = slots[full_i]["shape"]
+            empty_shape = slots[empty_i]["shape"]
+
+            best_k, best_diff = None, None
+            for k in range(1, len(full_accts)):
+                first, rest = full_accts[:k], full_accts[k:]
+                first_lines = self._compute_slot_used_lines(
+                    first, empty_name, slot_shape=empty_shape, statement_type=statement_type,
+                )
+                rest_lines = self._compute_slot_used_lines(
+                    rest, full_name, slot_shape=full_shape, statement_type=statement_type,
+                )
+                if first_lines > empty_cap or rest_lines > full_cap:
+                    continue
+                diff = abs(first_lines - rest_lines)
+                if best_diff is None or diff < best_diff:
+                    best_diff, best_k = diff, k
+
+            if best_k is None:
+                continue  # no split keeps both sides within capacity -- leave as-is
+
+            assignment[empty_i] = full_accts[:best_k]
+            assignment[full_i] = full_accts[best_k:]
+            logger.info(
+                "  Rebalanced lopsided L/R pair on slide %s: moved %s account(s) from slot %s "
+                "into previously-empty slot %s",
+                slide_idx, best_k, full_i, empty_i,
+            )
+
     def _optimize_slot_fill(
         self,
         distribution: List[tuple],
@@ -2836,6 +2917,8 @@ class PowerPointGenerator:
             i = j
             if i < 0:
                 break
+
+        self._rebalance_lopsided_lr_pairs(assignment, slots, statement_type)
 
         for s_i, slot in enumerate(slots):
             lines = slot_cost(s_i, 0, -1) if not assignment[s_i] else self._compute_slot_used_lines(
