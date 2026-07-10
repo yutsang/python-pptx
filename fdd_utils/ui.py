@@ -937,7 +937,6 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
     if not session_state.ai_results:
         return
 
-    st.markdown("### 📝 Generated Content")
     content_keys = []
     for key, result in session_state.ai_results.items():
         if isinstance(result, dict):
@@ -1207,8 +1206,6 @@ def _render_single_reconciliation_tab(
     warning_row_count = reconciliation_warning_row_count(recon_df)
     label = str(recon_df.columns[1]) if len(recon_df.columns) > 1 else "current period"
     st.caption(describe_statement_period(statement_type, label))
-    if hidden_zero_rows:
-        st.caption(f"Hidden {hidden_zero_rows} zero-value reconciliation row(s).")
     if warning_row_count:
         st.caption(f"{warning_row_count} row(s) have mapping/tab coverage warnings shown inline in `Match`.")
     st.dataframe(format_dataframe_for_display(display_recon_df), use_container_width=True, height=320)
@@ -1470,9 +1467,7 @@ def render_processed_view(session_state: Any, generate_pptx_callback, get_model_
     col_header, col_pptx, col_redo, col_download = st.columns([3, 1, 0.4, 0.3])
     with col_header:
         st.header("🤖 AI Content Generation")
-        if session_state.get("pptx_ready", False) and session_state.get("pptx_download_filename"):
-            st.caption(f"PPTX ready: {session_state.pptx_download_filename}")
-        else:
+        if not (session_state.get("pptx_ready", False) and session_state.get("pptx_download_filename")):
             st.caption("AI runs automatically after processing. Use 🔄 to redo.")
     with col_pptx:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -1711,13 +1706,6 @@ def render_language_selector(session_state: Any) -> None:
         session_state.language_user_set = True   # stop auto-detect from overwriting
 
 
-def render_refresh_control(session_state: Any) -> None:
-    _col_spacer, col_refresh = st.columns([12, 1])
-    with col_refresh:
-        if st.button("🔄", help="Refresh page and reset", use_container_width=True, key="refresh_main"):
-            clear_workbook_caches()
-            reset_processing_session_state(session_state, clear_upload_reference=True)
-            st.rerun()
 # --- end ui/sidebar.py ---
 
 # --- begin ui/pptx_export.py ---

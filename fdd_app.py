@@ -20,7 +20,6 @@ from fdd_utils.ui import (
     initialize_app_state,
     render_language_selector,
     render_processed_view,
-    render_refresh_control,
     render_sidebar_upload,
     should_render_preprocess_controls,
 )
@@ -380,7 +379,6 @@ init_session_state()
 
 # Sidebar - must run first to set temp_path before main content reads it
 temp_path = render_sidebar_upload(st.session_state, get_model_display_name)
-render_refresh_control(st.session_state)
 
 if should_render_preprocess_controls(processed=st.session_state.get('dfs') is not None):
     render_entity_and_sheet_controls(processed=False)
