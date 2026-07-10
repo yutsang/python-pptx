@@ -36,7 +36,6 @@ DEFAULT_SESSION_STATE = {
     "mapping_overrides": {},
     "account_comments": {},
     "upload_cache_cleanup_removed": 0,
-    "statement_mode": "full",   # "full" | "is_only" | "bs_only"
 }
 
 RESET_SESSION_KEYS = [
@@ -59,11 +58,6 @@ RESET_SESSION_KEYS = [
     "pptx_ready",
     "mapping_overrides",
     "account_comments",
-    # Reset the IS-only/BS-only reconciliation-bypass per databook. It still
-    # persists across ordinary reruns (which don't call this reset); only a NEW
-    # file/reprocess clears it — otherwise a partial-databook scope silently
-    # carries over and bypasses reconciliation for the next project.
-    "statement_mode",
 ]
 
 DELETE_SESSION_KEYS = [
@@ -75,7 +69,6 @@ DELETE_SESSION_KEYS = [
     "entity_dropdown",
     "entity_text_input",
     "sheet_select",
-    "statement_scope_selectbox",
 ]
 
 
@@ -333,6 +326,25 @@ def build_processed_display_groups(display_account_keys: List[str], mappings: Di
         "is_accounts": is_accounts,
         "reconciliation_accounts": other_accounts,
     }
+
+
+def detect_statement_mode(reconciliation: tuple[pd.DataFrame | None, pd.DataFrame | None] | None) -> str:
+    """Auto-detect whether this databook has only BS, only IS, or both
+    reconciled statements — replaces the old manual "Statement scope"
+    selectbox. A statement is "absent" when its reconciliation frame is
+    None/empty (e.g. the Financials sheet had no IS section at all), not
+    merely when few of its accounts matched cleanly — that weaker case is
+    already handled by the existing "use all dfs" fallback in the caller."""
+    if not reconciliation:
+        return "full"
+    bs_recon, is_recon = (list(reconciliation) + [None, None])[:2]
+    bs_present = bs_recon is not None and not bs_recon.empty
+    is_present = is_recon is not None and not is_recon.empty
+    if bs_present and not is_present:
+        return "bs_only"
+    if is_present and not bs_present:
+        return "is_only"
+    return "full"
 
 
 def derive_reconciliation_matched_keys(
@@ -703,11 +715,12 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
         try:
             results = None
             selected_pipeline_dfs = build_selected_pipeline_dfs(session_state)
-            statement_mode = session_state.get("statement_mode", "full")
             reconciliation = session_state.get("reconciliation")
+            statement_mode = detect_statement_mode(reconciliation)
 
             if statement_mode in ("is_only", "bs_only"):
-                # Bypass reconciliation filter — user explicitly declared partial databook.
+                # Bypass reconciliation filter — this databook only has one
+                # statement's reconciliation data (auto-detected).
                 target_type = "IS" if statement_mode == "is_only" else "BS"
                 _mappings = effective_mappings_from_session(session_state)
                 matched_mapping_keys = [
@@ -1421,23 +1434,6 @@ def render_processed_view(session_state: Any, generate_pptx_callback, get_model_
         for index, key in enumerate(account_names):
             with item_tabs[index]:
                 render_account_panel(key)
-
-    # Statement-scope control: let users declare a partial databook so the
-    # AI pipeline is not gated by reconciliation for the absent statement.
-    _scope_col, _spacer = st.columns([2, 5])
-    with _scope_col:
-        _mode_labels = {"full": "Full (BS + IS)", "is_only": "IS only", "bs_only": "BS only"}
-        _current_mode = session_state.get("statement_mode", "full")
-        _selected_mode = st.selectbox(
-            "Statement scope",
-            options=list(_mode_labels.keys()),
-            format_func=lambda k: _mode_labels[k],
-            index=list(_mode_labels.keys()).index(_current_mode),
-            key="statement_scope_selectbox",
-            help="Select 'IS only' or 'BS only' if this databook contains schedules for one statement only — the reconciliation filter will be bypassed for the selected scope.",
-        )
-        if _selected_mode != _current_mode:
-            session_state.statement_mode = _selected_mode
 
     data_tabs = st.tabs(display_groups["tab_names"])
     with data_tabs[0]:
