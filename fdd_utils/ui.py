@@ -1155,7 +1155,8 @@ def render_reconciliation_metrics(recon_df: pd.DataFrame):
         with col:
             st.markdown(
                 f"<div style='text-align:center; line-height:1.2'>"
-                f"<span style='font-size:1.6rem; font-weight:700'>{emoji} {count}</span><br>"
+                f"<span style='font-size:0.95rem'>{emoji}</span> "
+                f"<span style='font-size:1.6rem; font-weight:700'>{count}</span><br>"
                 f"<span style='font-size:0.8rem; color:#888'>{label}</span>"
                 f"</div>",
                 unsafe_allow_html=True,

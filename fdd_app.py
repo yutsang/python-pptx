@@ -426,6 +426,14 @@ if st.session_state.get('process_data_clicked', False):
 if st.session_state.get('dfs') is None:
     st.info("👈 Upload a databook, set entity name and sheet, then click 'Process Data' to begin")
 else:
+    # render_entity_and_sheet_controls (with the language selector) only
+    # renders BEFORE processing (should_render_preprocess_controls hides it
+    # once dfs exists) — but detected_language only gets a real value
+    # DURING processing, so the "Detected: ..." reminder could never
+    # actually be seen without also showing the selector here.
+    lang_col, _spacer_col = st.columns([1, 2])
+    with lang_col:
+        render_language_selector(st.session_state)
     render_processed_view(
         session_state=st.session_state,
         generate_pptx_callback=generate_pptx_presentation,
