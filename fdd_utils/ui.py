@@ -23,7 +23,7 @@ DEFAULT_SESSION_STATE = {
     "model_type": "local",
     "model_name": None,          # specific model within the provider, e.g. GPT-5.5's id
     "model_choice_key": None,    # sidebar dropdown selection key
-    "use_multithreading": True,  # sidebar toggle; False forces sequential (1-worker) processing
+    "use_multithreading": True,  # default; render_sidebar_upload resolves the real value from config.yml
     "project_name": None,
     "last_run_folder": None,
     "entity_name": None,
@@ -1639,12 +1639,17 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
             )
         else:
             st.caption(f"🤖 AI Mode: {selected.get('label', get_model_display_name(session_state.model_type))}")
-        session_state.use_multithreading = st.checkbox(
-            "⚡ Parallel processing",
-            value=session_state.get("use_multithreading", True),
-            help="Off = process accounts one at a time (sequential). Slower, but useful "
-                 "to rule out concurrency issues or to stay under a strict rate limit.",
-        )
+        # Parallel processing is on by default for every provider except
+        # "local" (its server serves one request effectively serially, so
+        # concurrency just queues rather than helps) — no UI toggle needed;
+        # override globally via processing.use_multithreading in config.yml
+        # if a specific run needs to be forced sequential (e.g. to rule out
+        # a concurrency issue or stay under a strict rate limit).
+        try:
+            _proc_cfg = load_yaml_config(get_default_config_path()).get("processing", {}) or {}
+        except Exception:
+            _proc_cfg = {}
+        session_state.use_multithreading = bool(_proc_cfg.get("use_multithreading", True))
         st.markdown("**📁 Databook File**")
         uploaded_file = st.file_uploader(
             "Upload Excel file",
@@ -1675,29 +1680,34 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
             if "temp_path" in session_state:
                 del session_state["temp_path"]
 
-        st.markdown("---")
-        st.markdown("**🌐 Language**")
-        # Reconcile to the UI convention ("Eng"/"Chn"). Auto-detection may store
-        # "Chi" — normalise it so the radio + all downstream == "Chn" checks agree.
-        current_lang = session_state.get("language", "Eng")
-        if current_lang not in ("Eng", "Chn"):
-            current_lang = "Chn" if str(current_lang).strip() in ("Chi", "chinese", "Chinese") else "Eng"
-        # No widget `key`: session_state.language is the single source of truth
-        # (a keyed radio + index fight each other and make the override "stick"
-        # only intermittently). index seeds it; the return value writes it back.
-        selected_lang = st.radio(
-            "Language",
-            options=["Eng", "Chn"],
-            format_func=lambda x: "English" if x == "Eng" else "Chinese",
-            index=0 if current_lang == "Eng" else 1,
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-        if selected_lang != current_lang:
-            session_state.language = selected_lang
-            session_state.language_user_set = True   # stop auto-detect from overwriting
-
         return temp_path
+
+
+def render_language_selector(session_state: Any) -> None:
+    """Language radio, factored out of render_sidebar_upload so callers can
+    place it next to the Financial Statement Sheet selector (which otherwise
+    leaves blank space beside the taller Entity Name column) instead of
+    always in the sidebar."""
+    st.markdown("**🌐 Language**")
+    # Reconcile to the UI convention ("Eng"/"Chn"). Auto-detection may store
+    # "Chi" — normalise it so the radio + all downstream == "Chn" checks agree.
+    current_lang = session_state.get("language", "Eng")
+    if current_lang not in ("Eng", "Chn"):
+        current_lang = "Chn" if str(current_lang).strip() in ("Chi", "chinese", "Chinese") else "Eng"
+    # No widget `key`: session_state.language is the single source of truth
+    # (a keyed radio + index fight each other and make the override "stick"
+    # only intermittently). index seeds it; the return value writes it back.
+    selected_lang = st.radio(
+        "Language",
+        options=["Eng", "Chn"],
+        format_func=lambda x: "English" if x == "Eng" else "Chinese",
+        index=0 if current_lang == "Eng" else 1,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    if selected_lang != current_lang:
+        session_state.language = selected_lang
+        session_state.language_user_set = True   # stop auto-detect from overwriting
 
 
 def render_refresh_control(session_state: Any) -> None:

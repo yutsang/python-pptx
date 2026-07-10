@@ -18,6 +18,7 @@ from fdd_utils.ui import (
     build_entity_selector_model,
     generate_pptx_presentation as render_generate_pptx_presentation,
     initialize_app_state,
+    render_language_selector,
     render_processed_view,
     render_refresh_control,
     render_sidebar_upload,
@@ -350,6 +351,12 @@ def render_entity_and_sheet_controls(processed: bool = False):
             else:
                 st.warning("No sheets found")
                 st.session_state.selected_sheet = None
+            # Placed here (not the sidebar) to fill the blank space this
+            # column otherwise has below the sheet dropdown while Entity
+            # Name's column is taller (dropdown/caption + text input) — and
+            # gating it on temp_path keeps both columns balanced before
+            # upload too (both just show the "please upload" prompt then).
+            render_language_selector(st.session_state)
         else:
             st.info("👈 Please upload a databook file first")
             st.session_state.selected_sheet = None

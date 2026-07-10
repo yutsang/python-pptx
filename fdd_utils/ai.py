@@ -3675,6 +3675,26 @@ def _build_deterministic_fallback_bullet(
     )
 
 
+def _resolve_max_workers(ai_helper, max_workers: Optional[int]) -> int:
+    """Single source of truth for worker-count defaults across every thread
+    pool in the pipeline (main stages, feedback loop, ensure-validation
+    re-runs). An explicit caller-supplied value always wins; otherwise the
+    provider's own <provider>.max_workers in config.yml (e.g. workbench: 4,
+    validated against that gateway — see test_workbench_concurrency.py)
+    wins; otherwise "local" (the self-hosted model) defaults to 1 — this
+    project's local server serves one request effectively serially, so
+    concurrent requests just queue rather than reduce wall time — and every
+    other provider defaults to 4 (parallel by default, no UI toggle needed).
+    Both defaults are overridable per-provider via config.yml."""
+    if max_workers is not None:
+        return max_workers
+    _configured = (getattr(ai_helper, "config_details", None) or {}).get("max_workers")
+    if _configured:
+        return int(_configured)
+    _model_type = getattr(ai_helper, "model_type", "")
+    return 1 if _model_type == "local" else 4
+
+
 def run_agent_stage(
     agent_name: str,
     mapping_keys: List[str],
@@ -3690,19 +3710,7 @@ def run_agent_stage(
     user_comments: Optional[Dict[str, str]] = None,
 ):
     """Run all items for a single agent stage."""
-    if max_workers is None:
-        # Explicit per-provider override (e.g. workbench.max_workers: 4 in
-        # config.yml) wins — set once a concurrency level has actually been
-        # validated against that gateway (see test_workbench_concurrency.py).
-        # Falls back to the conservative built-in default otherwise: local
-        # models have no rate limits (more workers = less wall time); cloud
-        # APIs do, so keep 2 to avoid hammering an unvalidated endpoint.
-        _configured = (getattr(ai_helper, "config_details", None) or {}).get("max_workers")
-        if _configured:
-            max_workers = int(_configured)
-        else:
-            _model_type = getattr(ai_helper, "model_type", "")
-            max_workers = 4 if _model_type == "local" else 2
+    max_workers = _resolve_max_workers(ai_helper, max_workers)
 
     # Reset the circuit breaker at the start of each stage so a fresh
     # opportunity is given even if a prior stage tripped it.
@@ -3851,7 +3859,7 @@ def run_ai_pipeline_with_progress(
         )
         eligible_keys = [k for k in mapping_keys if k in results and k in dfs]
         if use_multithreading and len(eligible_keys) > 1:
-            fb_workers = max_workers or 2
+            fb_workers = _resolve_max_workers(ai_helper, max_workers)
             with ThreadPoolExecutor(max_workers=fb_workers) as executor:
                 futures = {
                     executor.submit(
@@ -3972,7 +3980,7 @@ def _ensure_clause_reviews_on_final(
             logger.logger.warning("[EnsureValidation] %s: failed: %s", key, exc)
 
     if use_multithreading and len(needs_validation) > 1:
-        ev_workers = max_workers or 2
+        ev_workers = _resolve_max_workers(ai_helper, max_workers)
         with ThreadPoolExecutor(max_workers=ev_workers) as executor:
             list(executor.map(_run_one, needs_validation))
     else:
