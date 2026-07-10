@@ -125,6 +125,22 @@ def check_tab_read_summary(databook_path: str, entity_name: str = "") -> Dict[st
     if unparsed:
         print(f"⚠️  Sheets NOT parsed into any account tab (check if these should map): {unparsed}")
 
+    normalization_errors = (resolution or {}).get("normalization_errors") or {}
+    if normalization_errors:
+        print(
+            f"\n❌ {len(normalization_errors)} sheet(s) WERE matched to a mapped account name but "
+            "FAILED to extract data (this is distinct from the 'not parsed' list above, which "
+            "includes intentionally-irrelevant nav/cover/TB tabs — these sheets were expected to "
+            "become account tabs and didn't). The most common cause is a stage/column-header "
+            "vocabulary the extractor doesn't recognize (e.g. no 'Indicative adjusted'/'Audited'/"
+            "'Mgt acc' label, or an unusual date-row layout) — see CANONICAL_STAGE_LABELS in "
+            "fdd_utils/workbook.py. These accounts are silently MISSING from the pipeline entirely, "
+            "not just under-filled, so check them first if a client's databook produces fewer "
+            "accounts than expected."
+        )
+        for sheet_name, err in normalization_errors.items():
+            print(f"    - {sheet_name!r}: {err}")
+
     for key, df in dfs.items():
         if df is None or df.empty:
             print(f"  ⚠️  {key}: EMPTY dataframe")
