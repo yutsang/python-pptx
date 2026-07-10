@@ -319,12 +319,11 @@ def build_account_display_dataframe(df: pd.DataFrame | None) -> pd.DataFrame | N
 
 
 def build_processed_display_groups(display_account_keys: List[str], mappings: Dict[str, Any], dfs: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    bs_accounts, is_accounts, other_accounts = shared_split_accounts_by_type(display_account_keys, mappings, dfs=dfs)
+    bs_accounts, is_accounts, _other_accounts = shared_split_accounts_by_type(display_account_keys, mappings, dfs=dfs)
     return {
-        "tab_names": ["BS Recon", "IS Recon", "BS", "IS", "Schedule Mapping"],
+        "tab_names": ["BS", "IS"],
         "bs_accounts": bs_accounts,
         "is_accounts": is_accounts,
-        "reconciliation_accounts": other_accounts,
     }
 
 
@@ -1206,6 +1205,25 @@ def reconciliation_warning_row_count(recon_df: pd.DataFrame | None) -> int:
     return int(recon_df["Mapping_Status"].astype(str).isin(warning_statuses).sum())
 
 
+# Slim, human-facing view of a reconciliation row — drops Tab_Account,
+# Match, Mapping_Status/Note, Projection_Date, Integrity_Flag (still used
+# internally for filtering/metrics, just not shown as table columns).
+_RECON_DISPLAY_COLUMN_MAP = {
+    "Mapping_Key": "Key",
+    "Financials_Account": "Account",
+    "Date": "Date",
+    "Financials_Value": "Value",
+    "Tab_Value": "BKD_value",
+    "Diff": "diff",
+    "Projection_Stage": "projection_stage",
+}
+
+
+def _trim_reconciliation_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    present = [column for column in _RECON_DISPLAY_COLUMN_MAP if column in df.columns]
+    return df.loc[:, present].rename(columns=_RECON_DISPLAY_COLUMN_MAP)
+
+
 def _render_single_reconciliation_tab(
     recon_df: pd.DataFrame | None,
     statement_type: str,
@@ -1220,8 +1238,11 @@ def _render_single_reconciliation_tab(
     label = str(recon_df.columns[1]) if len(recon_df.columns) > 1 else "current period"
     st.caption(describe_statement_period(statement_type, label))
     if warning_row_count:
-        st.caption(f"{warning_row_count} row(s) have mapping/tab coverage warnings shown inline in `Match`.")
-    st.dataframe(format_dataframe_for_display(display_recon_df), use_container_width=True, height=320)
+        st.caption(f"{warning_row_count} row(s) have mapping/tab coverage warnings — see the metrics below.")
+    st.dataframe(
+        format_dataframe_for_display(_trim_reconciliation_columns_for_display(display_recon_df)),
+        use_container_width=True, height=320,
+    )
     render_reconciliation_metrics(display_recon_df)
 
 
@@ -1231,39 +1252,6 @@ def render_reconciliation_section(
     empty_message: str,
 ) -> None:
     _render_single_reconciliation_tab(recon_df, statement_type, empty_message)
-
-
-def render_schedule_mapping_section(
-    reconciliation_accounts: list[str],
-    hidden_zero_reconciliation_accounts: list[str],
-    mappings: Dict[str, Any],
-) -> None:
-    if not reconciliation_accounts and not hidden_zero_reconciliation_accounts:
-        st.info("No schedule mapping coverage exceptions were identified.")
-        return
-
-    st.markdown("**Schedule Mapping Coverage**")
-    if reconciliation_accounts:
-        diagnostics_df = build_account_mapping_diagnostics(reconciliation_accounts, mappings)
-        diagnostics_df = diagnostics_df[diagnostics_df["classification"].astype(str).eq("other")].copy()
-        if not diagnostics_df.empty:
-            diagnostics_df = diagnostics_df.rename(
-                columns={
-                    "account_name": "Schedule_Tab",
-                    "mapping_key": "Mapping_Key",
-                    "account_type": "Account_Type",
-                    "classification": "Classification",
-                    "reason": "Coverage_Note",
-                }
-            )
-            st.caption(
-                "These schedule tabs remain outside the standard BS/IS mapping flow after the "
-                "reconciliation view was flattened."
-            )
-            st.dataframe(format_dataframe_for_display(diagnostics_df), use_container_width=True, hide_index=True)
-
-    if hidden_zero_reconciliation_accounts:
-        st.caption("Zero-value non-BS/IS schedule tab(s): " + ", ".join(hidden_zero_reconciliation_accounts))
 
 
 def _render_resolver_diagnostics(resolution: Dict[str, Any], display_keys: list[str]) -> None:
@@ -1322,12 +1310,6 @@ def render_processed_view(session_state: Any, generate_pptx_callback, get_model_
     display_groups = build_processed_display_groups(display_account_keys, mappings, dfs=dfs)
     bs_accounts = display_groups["bs_accounts"]
     is_accounts = display_groups["is_accounts"]
-    reconciliation_accounts = list(display_groups["reconciliation_accounts"])
-    hidden_zero_reconciliation_accounts = [
-        account_name
-        for account_name in reconciliation_accounts
-        if not account_has_non_zero_values(account_display_dfs.get(account_name))
-    ]
 
     recon_bs = session_state.reconciliation[0] if session_state.reconciliation else None
     recon_is = session_state.reconciliation[1] if session_state.reconciliation else None
@@ -1426,38 +1408,24 @@ def render_processed_view(session_state: Any, generate_pptx_callback, get_model_
             height=90,
         )
 
-    def render_account_tabs(account_names: List[str], group_type: str):
-        if not account_names:
-            st.info(f"No {group_type} items available.")
-            return
-        item_tabs = st.tabs(account_names)
-        for index, key in enumerate(account_names):
+    def render_account_tabs(account_names: List[str], group_type: str, recon_df: pd.DataFrame | None, empty_recon_message: str):
+        # "Reconciliation" is the first sub-tab within the statement's own
+        # tab group (rather than a separate top-level tab) so BS/IS content
+        # and their reconciliation view live together.
+        item_tabs = st.tabs(["Reconciliation", *account_names])
+        with item_tabs[0]:
+            render_reconciliation_section(recon_df=recon_df, statement_type=group_type, empty_message=empty_recon_message)
+            if not account_names:
+                st.info(f"No {group_type} items available.")
+        for index, key in enumerate(account_names, start=1):
             with item_tabs[index]:
                 render_account_panel(key)
 
     data_tabs = st.tabs(display_groups["tab_names"])
     with data_tabs[0]:
-        render_reconciliation_section(
-            recon_df=recon_bs,
-            statement_type="BS",
-            empty_message="No Balance Sheet reconciliation data available.",
-        )
+        render_account_tabs(bs_accounts, "BS", recon_bs, "No Balance Sheet reconciliation data available.")
     with data_tabs[1]:
-        render_reconciliation_section(
-            recon_df=recon_is,
-            statement_type="IS",
-            empty_message="No Income Statement reconciliation data available.",
-        )
-    with data_tabs[2]:
-        render_account_tabs(bs_accounts, "BS")
-    with data_tabs[3]:
-        render_account_tabs(is_accounts, "IS")
-    with data_tabs[4]:
-        render_schedule_mapping_section(
-            reconciliation_accounts=reconciliation_accounts,
-            hidden_zero_reconciliation_accounts=hidden_zero_reconciliation_accounts,
-            mappings=mappings,
-        )
+        render_account_tabs(is_accounts, "IS", recon_is, "No Income Statement reconciliation data available.")
 
     st.markdown("---")
     col_header, col_pptx, col_redo, col_download = st.columns([3, 1, 0.4, 0.3])
