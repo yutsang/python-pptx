@@ -3247,7 +3247,29 @@ class PowerPointGenerator:
                 tf = bullets_shape.text_frame
                 tf.clear()
                 tf.word_wrap = True
-                self._force_no_autofit(tf)  # keep text at 9pt/10pt, never shrink
+
+                # Most slots fit within strict 1.0x capacity and keep the
+                # exact 9pt/10pt size (noAutofit) -- no drift, no surprise
+                # shrink. The DP occasionally packs a slot beyond that
+                # (shape_height_utilization / the looser relax tiers) on
+                # the assumption PowerPoint's autofit absorbs the excess;
+                # noAutofit alone would silently clip that content instead,
+                # so give exactly those slots a bounded normAutofit shrink
+                # (never below _BOUNDED_AUTOFIT_MIN_SCALE) so the overflow
+                # the DP already decided was "worth it" is actually visible.
+                slot_is_chinese = any(bool(a.get('is_chinese')) for a in account_data_list)
+                slot_capacity = self._calculate_max_lines_for_textbox(
+                    bullets_shape, is_chinese=slot_is_chinese, slot_name=slot_name,
+                    statement_type=statement_type,
+                )
+                slot_used = self._compute_slot_used_lines(
+                    account_data_list, slot_name, slot_shape=bullets_shape,
+                    statement_type=statement_type,
+                )
+                if slot_used > slot_capacity > 0:
+                    self._apply_bounded_autofit(tf, slot_capacity / slot_used)
+                else:
+                    self._force_no_autofit(tf)  # keep text at 9pt/10pt, never shrink
                 from pptx.enum.text import MSO_VERTICAL_ANCHOR
                 tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
                 
@@ -3954,6 +3976,46 @@ class PowerPointGenerator:
             ))
         except Exception as exc:
             logger.debug("Could not force noAutofit on text frame: %s", exc)
+
+    # A slot the DP could only pack by relaxing past strict 1.0x capacity
+    # (shape_height_utilization / the later 1.35x, 1.6x tiers) has no room
+    # to actually hold its content at 9pt with noAutofit -- that combination
+    # silently CLIPS the overflow at the shape edge, contradicting the DP's
+    # own relax-factor comment ("PPT auto-fit can absorb that much
+    # overflow"). 0.70 is a floor, not the typical case: the DP's own
+    # relax tiers below its 10.0x always-feasible last resort top out at
+    # 1.6x (needing ~63% scale), so this floor mainly guards against that
+    # last-resort tier producing illegibly small text rather than clipping.
+    _BOUNDED_AUTOFIT_MIN_SCALE = 0.70
+
+    @classmethod
+    def _apply_bounded_autofit(cls, text_frame, font_scale: float) -> None:
+        """Set ``<a:normAutofit fontScale="..." lnSpcReduction="..."/>`` so
+        PowerPoint actually shrinks text to fit instead of clipping it, for
+        a slot the DP intentionally packed beyond strict 1.0x capacity.
+        ``font_scale`` is capacity/used, clamped to
+        ``_BOUNDED_AUTOFIT_MIN_SCALE`` so an extreme overflow (the DP's
+        10.0x always-feasible last-resort tier) still clips rather than
+        rendering illegibly small text -- a bounded, not unlimited, shrink.
+        """
+        scale = max(cls._BOUNDED_AUTOFIT_MIN_SCALE, min(1.0, float(font_scale)))
+        font_pct = int(round(scale * 100000))
+        # PowerPoint reduces line spacing somewhat less aggressively than
+        # font size when auto-fitting -- half the font shrink, floored at 0.
+        line_pct = int(round(max(0.0, (1.0 - scale) * 0.5) * 100000))
+        try:
+            from pptx.oxml.ns import qn
+            from pptx.oxml import parse_xml
+            bodyPr = text_frame._txBody.bodyPr
+            for tag in ("a:spAutoFit", "a:normAutofit", "a:noAutofit"):
+                for child in bodyPr.findall(qn(tag)):
+                    bodyPr.remove(child)
+            bodyPr.append(parse_xml(
+                f'<a:normAutofit xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+                f'fontScale="{font_pct}" lnSpcReduction="{line_pct}"/>'
+            ))
+        except Exception as exc:
+            logger.debug("Could not apply bounded normAutofit on text frame: %s", exc)
 
     def _determine_slot_font_size_UNUSED(
         self,
