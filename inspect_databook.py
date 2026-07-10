@@ -972,12 +972,19 @@ def analyze_population_fill(
                 continue
             first_next = nxt["accounts"][0]
             remaining = row["cap"] - row["used"]
-            cost_here = gen._calculate_content_lines(
-                "", first_next.get("mapping_key", ""), first_next.get("commentary", ""),
-                slot_name=row["slot_name"], shape=row["shape"], is_chinese=row["is_chinese"],
-                statement_type=statement_type,
+            # Recompute the FULL list's used-lines (not a bare single-account
+            # _calculate_content_lines call) so a category-header increment
+            # on first_next is correctly included -- the same accounting
+            # _rebalance_underfilled_boundaries (the active fix in pptx.py)
+            # uses. A naive single-account cost silently under-counts by the
+            # ~1-line header cost whenever first_next starts a new category,
+            # which produced false "genuine gap" positives on tight margins.
+            alt_cur_used = gen._compute_slot_used_lines(
+                row["accounts"] + [first_next], row["slot_name"],
+                slot_shape=row["shape"], statement_type=statement_type,
             )
-            if cost_here > remaining:
+            cost_here = alt_cur_used - row["used"]
+            if alt_cur_used > row["cap"]:
                 continue  # doesn't even fit locally -- not a candidate, gap is real/unavoidable
 
             # Locally it WOULD fit -- but that alone is a false-positive-prone
@@ -991,8 +998,10 @@ def analyze_population_fill(
             nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (nxt["used"] / nxt["cap"]))
             current_total = cur_penalty + nxt_penalty
 
-            alt_cur_used = row["used"] + cost_here
-            alt_nxt_used = max(0.0, nxt["used"] - cost_here)
+            alt_nxt_used = gen._compute_slot_used_lines(
+                nxt["accounts"][1:], nxt["slot_name"],
+                slot_shape=nxt["shape"], statement_type=statement_type,
+            )
             alt_cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (alt_cur_used / row["cap"]))
             alt_nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (alt_nxt_used / nxt["cap"]))
             alt_total = alt_cur_penalty + alt_nxt_penalty
