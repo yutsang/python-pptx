@@ -410,6 +410,7 @@ if st.session_state.get('process_data_clicked', False):
                 st.session_state.update(
                     {key: value for key, value in processed_state.items() if key != "display_dfs_original"}
                 )
+                st.session_state.detected_language = _detected_ui
                 if not st.session_state.get("language_user_set"):
                     st.session_state.language = _detected_ui
                 if 'model_type' not in st.session_state:

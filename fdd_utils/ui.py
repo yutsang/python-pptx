@@ -16,6 +16,9 @@ DEFAULT_SESSION_STATE = {
     # True once the project team manually picks a language in the sidebar, so the
     # auto-detected language stops overwriting their choice (until a new upload).
     "language_user_set": False,
+    # What auto-detection actually found, kept even after a manual override so
+    # the UI can still show a "Detected: ..." reminder.
+    "detected_language": None,
     "bs_is_results": None,
     "ai_results": None,
     "reconciliation": None,
@@ -49,6 +52,7 @@ RESET_SESSION_KEYS = [
     # Reset the manual-override flag on a new upload so the new databook is
     # auto-detected afresh; the team can re-override it for that file.
     "language_user_set",
+    "detected_language",
     "bs_is_results",
     "ai_results",
     "reconciliation",
@@ -1131,17 +1135,18 @@ from .workbook import find_mapping_key, load_mappings
 
 
 def render_reconciliation_metrics(recon_df: pd.DataFrame):
-    col1, col2, col3, col4, col_reports = st.columns([1, 1, 1, 1, 1])
-    with col1:
-        st.metric("✅ Matches", recon_df["Match"].isin(["✅ Match", "⚠️ Match"]).sum())
-    with col2:
-        st.metric("❌ Differences", (recon_df["Match"] == "❌ Diff").sum())
-    with col3:
-        st.metric("⚠️ Not Found", (recon_df["Match"] == "⚠️ Not Found").sum())
-    with col4:
-        st.metric("✅ Immaterial", (recon_df["Match"] == "✅ Immaterial").sum())
-    with col_reports:
-        st.metric("Checked Rows", len(recon_df), help="Total rows checked in this reconciliation view")
+    matches = int(recon_df["Match"].isin(["✅ Match", "⚠️ Match"]).sum())
+    diffs = int((recon_df["Match"] == "❌ Diff").sum())
+    not_found = int((recon_df["Match"] == "⚠️ Not Found").sum())
+    immaterial = int((recon_df["Match"] == "✅ Immaterial").sum())
+    st.markdown(
+        f"✅ **{matches}** Matches&nbsp;&nbsp;&nbsp;"
+        f"❌ **{diffs}** Differences&nbsp;&nbsp;&nbsp;"
+        f"⚠️ **{not_found}** Not Found&nbsp;&nbsp;&nbsp;"
+        f"✅ **{immaterial}** Immaterial&nbsp;&nbsp;&nbsp;"
+        f"·&nbsp;&nbsp;&nbsp;**{len(recon_df)}** Checked Rows",
+        unsafe_allow_html=True,
+    )
 
 
 def account_has_non_zero_values(df: pd.DataFrame | None) -> bool:
@@ -1219,8 +1224,6 @@ def _render_single_reconciliation_tab(
 
     display_recon_df, hidden_zero_rows = filter_reconciliation_display_rows(recon_df)
     warning_row_count = reconciliation_warning_row_count(recon_df)
-    label = str(recon_df.columns[1]) if len(recon_df.columns) > 1 else "current period"
-    st.caption(describe_statement_period(statement_type, label))
     if warning_row_count:
         st.caption(f"{warning_row_count} row(s) have mapping/tab coverage warnings — see the metrics below.")
     st.dataframe(
@@ -1630,28 +1633,35 @@ def render_language_selector(session_state: Any) -> None:
     """Language radio, factored out of render_sidebar_upload so callers can
     place it next to the Financial Statement Sheet selector (which otherwise
     leaves blank space beside the taller Entity Name column) instead of
-    always in the sidebar. No separate header line — the "🌐" prefix on each
-    option is self-explanatory, so this renders as a single compact row
-    instead of a header line + a radio-options line."""
+    always in the sidebar."""
     # Reconcile to the UI convention ("Eng"/"Chn"). Auto-detection may store
     # "Chi" — normalise it so the radio + all downstream == "Chn" checks agree.
     current_lang = session_state.get("language", "Eng")
     if current_lang not in ("Eng", "Chn"):
         current_lang = "Chn" if str(current_lang).strip() in ("Chi", "chinese", "Chinese") else "Eng"
-    # No widget `key`: session_state.language is the single source of truth
-    # (a keyed radio + index fight each other and make the override "stick"
-    # only intermittently). index seeds it; the return value writes it back.
-    selected_lang = st.radio(
-        "🌐 Language",
-        options=["Eng", "Chn"],
-        format_func=lambda x: "Eng" if x == "Eng" else "中文",
-        index=0 if current_lang == "Eng" else 1,
-        horizontal=True,
-        label_visibility="collapsed",
-    )
+    label_col, radio_col = st.columns([1, 2])
+    with label_col:
+        st.markdown("<div style='padding-top: 8px'>🌐 Language</div>", unsafe_allow_html=True)
+    with radio_col:
+        # No widget `key`: session_state.language is the single source of truth
+        # (a keyed radio + index fight each other and make the override "stick"
+        # only intermittently). index seeds it; the return value writes it back.
+        selected_lang = st.radio(
+            "🌐 Language",
+            options=["Eng", "Chn"],
+            format_func=lambda x: "Eng" if x == "Eng" else "中文",
+            index=0 if current_lang == "Eng" else 1,
+            horizontal=True,
+            label_visibility="collapsed",
+        )
     if selected_lang != current_lang:
         session_state.language = selected_lang
         session_state.language_user_set = True   # stop auto-detect from overwriting
+
+    detected = session_state.get("detected_language")
+    if detected:
+        detected_label = "Chinese" if detected == "Chn" else "English"
+        st.success(f"Detected: {detected_label}", icon="✅")
 
 
 # --- end ui/sidebar.py ---
