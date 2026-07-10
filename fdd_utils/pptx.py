@@ -2616,6 +2616,83 @@ class PowerPointGenerator:
                 slide_idx, best_k, full_i, empty_i,
             )
 
+    def _rebalance_underfilled_boundaries(
+        self,
+        assignment: List[List[Dict[str, Any]]],
+        slots: List[Dict[str, Any]],
+        statement_type: Optional[str],
+    ) -> None:
+        """Mutates `assignment` in place. Generalizes
+        _rebalance_lopsided_lr_pairs beyond the "one slot totally empty"
+        case: for every adjacent slot boundary (in packing order,
+        including same-slide L/R pairs), if the next slot's first account
+        would both fit in the current slot's remaining capacity AND
+        strictly lower the DP's own lexicographic underfill penalty summed
+        across the pair, move it back.
+
+        This is the exact same boundary check inspect_databook.py's
+        analyze_population_fill uses to verify (not just guess) that a
+        boundary is a genuine gap rather than already optimal -- turned
+        from a passive diagnostic into an active fix. Runs to a fixed
+        point (bounded by len(assignment) passes) since a move can only
+        ever enable ANOTHER move at the same or a later boundary, never
+        undo one, so a short chain of small imbalances in a row all get
+        resolved, not just the first.
+        """
+        packing = self._packing_settings(statement_type)
+        target_fill = float(packing.get("target_fill_min_ratio", 0.95) or 0.95)
+        n = len(assignment)
+
+        for _pass in range(n):
+            changed = False
+            for i in range(n - 1):
+                nxt_accts = assignment[i + 1]
+                if not nxt_accts:
+                    continue
+                cur_accts = assignment[i]
+                cur_slot, nxt_slot = slots[i], slots[i + 1]
+                cur_cap, nxt_cap = cur_slot["capacity"], nxt_slot["capacity"]
+                cur_shape, nxt_shape = cur_slot["shape"], nxt_slot["shape"]
+                cur_name, nxt_name = cur_slot["slot_name"], nxt_slot["slot_name"]
+
+                cur_used = self._compute_slot_used_lines(
+                    cur_accts, cur_name, slot_shape=cur_shape, statement_type=statement_type,
+                )
+                alt_cur_used = self._compute_slot_used_lines(
+                    cur_accts + [nxt_accts[0]], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+                )
+                if alt_cur_used > cur_cap:
+                    continue  # doesn't fit -- not a candidate, gap is real/unavoidable
+
+                nxt_used = self._compute_slot_used_lines(
+                    nxt_accts, nxt_name, slot_shape=nxt_shape, statement_type=statement_type,
+                )
+                alt_nxt_used = self._compute_slot_used_lines(
+                    nxt_accts[1:], nxt_name, slot_shape=nxt_shape, statement_type=statement_type,
+                )
+
+                is_last_cur = (i == n - 1)
+                is_last_nxt = (i + 1 == n - 1)
+                cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (cur_used / cur_cap if cur_cap else 0.0))
+                nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (nxt_used / nxt_cap if nxt_cap else 0.0))
+                current_total = cur_penalty + nxt_penalty
+
+                alt_cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (alt_cur_used / cur_cap if cur_cap else 0.0))
+                alt_nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (alt_nxt_used / nxt_cap if nxt_cap else 0.0))
+                alt_total = alt_cur_penalty + alt_nxt_penalty
+
+                if alt_total < current_total - 1e-9:
+                    moved = nxt_accts.pop(0)
+                    cur_accts.append(moved)
+                    changed = True
+                    logger.info(
+                        "  Rebalanced underfilled boundary: moved '%s' from slot %s into slot %s "
+                        "(pair penalty %.3f -> %.3f)",
+                        moved.get("mapping_key", "?"), i + 1, i, current_total, alt_total,
+                    )
+            if not changed:
+                break
+
     def _optimize_slot_fill(
         self,
         distribution: List[tuple],
@@ -2919,6 +2996,7 @@ class PowerPointGenerator:
                 break
 
         self._rebalance_lopsided_lr_pairs(assignment, slots, statement_type)
+        self._rebalance_underfilled_boundaries(assignment, slots, statement_type)
 
         for s_i, slot in enumerate(slots):
             lines = slot_cost(s_i, 0, -1) if not assignment[s_i] else self._compute_slot_used_lines(
