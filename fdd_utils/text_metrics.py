@@ -118,6 +118,39 @@ class MetricsTable:
         return raw * line_spacing
 
 
+# Characters that PowerPoint/Word never let start a line (行首禁则/kinsoku):
+# closing brackets/quotes and sentence-ending punctuation get pulled back
+# onto the end of the previous line instead, even if that makes the line
+# slightly exceed the nominal width. Our greedy wrap treats every CJK
+# character (punctuation included) as an independently-breakable atom, so
+# without this a period/comma/closing-bracket can land alone at the start
+# of a line in our line-count PREDICTION — one line more than PowerPoint
+# will actually render, which was making capacity estimates unnecessarily
+# conservative (a real contributor to pages reading as under-filled).
+_KINSOKU_NO_LINE_START = set("。，、；：？！）】》」』〉""''’”…‥,.;:?!)]}%％")
+
+
+def _apply_kinsoku(lines: List[str]) -> List[str]:
+    """Pulls a leading kinsoku-forbidden character back onto the previous
+    line, mirroring PowerPoint/Word's own automatic line-breaking so our
+    predicted line count matches what actually renders."""
+    if len(lines) < 2:
+        return lines
+    result = list(lines)
+    i = 1
+    while i < len(result):
+        line = result[i]
+        if line and result[i - 1] and line[0] in _KINSOKU_NO_LINE_START:
+            result[i - 1] = result[i - 1] + line[0]
+            result[i] = line[1:]
+            if not result[i]:
+                del result[i]
+            continue  # re-check index i again: chained punctuation (e.g. "」。")
+                      # needs every leading char pulled back, one per pass
+        i += 1
+    return result
+
+
 def wrap_text_with_metrics(text: str, metrics: "MetricsTable", *, size_pt: float,
                            max_width_pt: float) -> List[str]:
     """Greedy word-wrap using a MetricsTable's advance widths (no font file).
@@ -156,7 +189,7 @@ def wrap_text_with_metrics(text: str, metrics: "MetricsTable", *, size_pt: float
             cur_w += w
     if cur.strip():
         lines.append(cur)
-    return lines or [text]
+    return _apply_kinsoku(lines) if lines else [text]
 
 
 def emu_to_pt(emu: float) -> float:
@@ -472,7 +505,7 @@ def wrap_paragraph(
     if current:
         lines.append(current)
 
-    return lines or [""]
+    return _apply_kinsoku(lines) if lines else [""]
 
 
 def wrap_text(
