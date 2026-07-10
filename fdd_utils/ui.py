@@ -1139,14 +1139,27 @@ def render_reconciliation_metrics(recon_df: pd.DataFrame):
     diffs = int((recon_df["Match"] == "❌ Diff").sum())
     not_found = int((recon_df["Match"] == "⚠️ Not Found").sum())
     immaterial = int((recon_df["Match"] == "✅ Immaterial").sum())
-    st.markdown(
-        f"✅ **{matches}** Matches&nbsp;&nbsp;&nbsp;"
-        f"❌ **{diffs}** Differences&nbsp;&nbsp;&nbsp;"
-        f"⚠️ **{not_found}** Not Found&nbsp;&nbsp;&nbsp;"
-        f"✅ **{immaterial}** Immaterial&nbsp;&nbsp;&nbsp;"
-        f"·&nbsp;&nbsp;&nbsp;**{len(recon_df)}** Checked Rows",
-        unsafe_allow_html=True,
-    )
+    stats = [
+        ("✅", matches, "Matches"),
+        ("❌", diffs, "Differences"),
+        ("⚠️", not_found, "Not Found"),
+        ("✅", immaterial, "Immaterial"),
+        ("📋", len(recon_df), "Checked Rows"),
+    ]
+    # Compact custom "badge" instead of st.metric() (which has a lot of
+    # vertical padding + an unused delta row) — spread evenly across the
+    # full row width via st.columns, with a large bold number so counts
+    # stay legible at a glance instead of being buried in a single dense line.
+    cols = st.columns(len(stats))
+    for col, (emoji, count, label) in zip(cols, stats):
+        with col:
+            st.markdown(
+                f"<div style='text-align:center; line-height:1.2'>"
+                f"<span style='font-size:1.6rem; font-weight:700'>{emoji} {count}</span><br>"
+                f"<span style='font-size:0.8rem; color:#888'>{label}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
 
 def account_has_non_zero_values(df: pd.DataFrame | None) -> bool:
