@@ -43,13 +43,16 @@ from fdd_utils.text_metrics import get_measurer, text_box_from_shape
 
 DEFAULT_CONFIG_CANDIDATES = ["fdd_utils/config.yml", "fdd_utils/config.example.yml"]
 
-# Mirrors fdd_utils/pptx.py's own packing constants (see get_measurer call
-# sites around line 1885/1934/2014) so this independent check agrees with
-# what the packer itself assumed when it decided how much text to place.
+# Mirrors fdd_utils/pptx.py's own get_font_size_for_text/get_line_spacing_for_text
+# (the functions that actually set the run's real formatting) so this
+# independent check agrees with what really gets rendered. Both are a flat
+# 9pt/1.0 regardless of language for English; Chinese previously assumed
+# 10pt/0.95 here (matching a since-fixed bug in pptx.py's own capacity/content
+# calculators) — real values are 9pt/0.9, same as English's font size.
 FONT_SIZE_ENG = 9.0
-FONT_SIZE_CHI = 10.0
+FONT_SIZE_CHI = 9.0
 LINE_SPACING_ENG = 1.0
-LINE_SPACING_CHI = 0.95
+LINE_SPACING_CHI = 0.9
 MIN_FILL_RATIO_WARN = 0.40  # below this on a non-last slot -> utilisation flag
 
 

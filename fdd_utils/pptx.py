@@ -1902,10 +1902,45 @@ class PowerPointGenerator:
 
     # Space-after (pt) applied to every paragraph in _fill_text_main_bullets.
     # Used consistently in both capacity and content-line calculations.
-    # Vertical gap (in pt) between bullet paragraphs. Used in both the
-    # line-cost estimator and the render step so they stay consistent.
-    # Tighter spacing = more accounts fit per slot before overflow.
+    # Vertical gap (in pt) between bullet paragraphs. Only used by the
+    # no-shape/no-font heuristic fallback below — the primary (real font
+    # metrics) path uses _real_para_gap_pt(), which matches what actually
+    # gets applied to the run (get_space_after_for_text/get_space_before_for_text).
+    # This flat constant used to ALSO be (wrongly) used on the primary path;
+    # it under-counted the real gap by 2x (English: 3pt assumed vs 6pt real
+    # = space_after 4pt + space_before 2pt) to 3x (Chinese: 3pt assumed vs
+    # 9pt real = 6pt + 3pt) — see _real_para_gap_pt for the fix.
     _PARA_SPACE_AFTER = 3.0
+
+    @staticmethod
+    def _real_font_size_pt(is_chinese: bool) -> float:
+        """Font size actually applied to the run (get_font_size_for_text) —
+        a single deck-wide 9pt regardless of language, NOT the 10pt some
+        capacity/content code used to assume for Chinese."""
+        return get_font_size_for_text("", force_chinese_mode=is_chinese).pt
+
+    @staticmethod
+    def _real_line_spacing(is_chinese: bool) -> float:
+        """Line spacing actually applied (get_line_spacing_for_text): 0.9 for
+        Chinese, 1.0 for English — NOT the 0.95 some capacity/content code
+        used to assume for Chinese."""
+        return get_line_spacing_for_text("", force_chinese_mode=is_chinese)
+
+    @staticmethod
+    def _real_para_gap_pt(is_chinese: bool) -> float:
+        """Total vertical gap PowerPoint actually renders between two
+        consecutive bullet paragraphs: the first paragraph's space_after
+        PLUS the next paragraph's space_before (get_space_after_for_text +
+        get_space_before_for_text) — English 4+2=6pt, Chinese 6+3=9pt. The
+        flat _PARA_SPACE_AFTER=3.0 constant this replaces on the primary
+        path under-counted this by 2-3x, which (compounded with the wrong
+        font size/line spacing for Chinese) is a major contributor to
+        capacity and content being calculated against different physical
+        space than what the client's PowerPoint actually renders."""
+        return (
+            get_space_after_for_text("", force_chinese_mode=is_chinese).pt
+            + get_space_before_for_text("", force_chinese_mode=is_chinese).pt
+        )
 
     def _calculate_max_lines_for_textbox(
         self,
@@ -1930,8 +1965,8 @@ class PowerPointGenerator:
         if not shape or not hasattr(shape, "height"):
             return int(packing.get("minimum_slot_lines", 20) or 20)
 
-        font_size_pt = 10 if is_chinese else 9
-        line_spacing = 0.95 if is_chinese else 1.0
+        font_size_pt = self._real_font_size_pt(is_chinese)
+        line_spacing = self._real_line_spacing(is_chinese)
         family       = self._measurer_family(is_chinese, packing)
 
         # ── Real font metrics via text_metrics ───────────────────────────────────
@@ -1947,7 +1982,7 @@ class PowerPointGenerator:
             )
             self._log_measurer_source_once(measurer, _mpath, is_chinese)
             box      = text_box_from_shape(shape)
-            std_lh   = measurer.line_height_pt() + self._PARA_SPACE_AFTER
+            std_lh   = measurer.line_height_pt() + self._real_para_gap_pt(is_chinese)
             max_rows = int(box.height_pt / std_lh)
             # Trust the real measurement — do NOT apply minimum_slot_lines as a
             # floor here, because that would allow the DP to pack more content
@@ -2011,8 +2046,9 @@ class PowerPointGenerator:
         if cached is not None:
             return cached
 
-        font_size_pt = 10 if is_chinese else 9
-        line_spacing = 0.95 if is_chinese else 1.0
+        font_size_pt = self._real_font_size_pt(is_chinese)
+        line_spacing = self._real_line_spacing(is_chinese)
+        para_gap     = self._real_para_gap_pt(is_chinese)
         packing = self._packing_settings(statement_type)
         family = self._measurer_family(is_chinese, packing)
 
@@ -2037,7 +2073,7 @@ class PowerPointGenerator:
                 self._log_measurer_source_once(measurer, _mpath, is_chinese)
                 box      = text_box_from_shape(shape)
                 line_h   = measurer.line_height_pt()
-                std_lh   = line_h + self._PARA_SPACE_AFTER
+                std_lh   = line_h + para_gap
 
                 total_pt = 0.0
                 if category:
@@ -2047,12 +2083,12 @@ class PowerPointGenerator:
                 key_prefix = f"\u25a0 {mapping_key} - "
                 if paras:
                     first_wrapped = measurer.wrap(key_prefix + paras[0], box.width_pt)
-                    total_pt += len(first_wrapped) * line_h + self._PARA_SPACE_AFTER
+                    total_pt += len(first_wrapped) * line_h + para_gap
                     for para in paras[1:]:
                         wrapped = measurer.wrap(para, box.width_pt)
-                        total_pt += len(wrapped) * line_h + self._PARA_SPACE_AFTER
+                        total_pt += len(wrapped) * line_h + para_gap
                 else:
-                    total_pt += line_h + self._PARA_SPACE_AFTER
+                    total_pt += line_h + para_gap
 
                 # Return float -- no ceil so actual physical proportion is preserved.
                 result = total_pt / std_lh
