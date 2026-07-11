@@ -138,8 +138,26 @@ def check_tab_read_summary(databook_path: str, entity_name: str = "") -> Dict[st
             "not just under-filled, so check them first if a client's databook produces fewer "
             "accounts than expected."
         )
+        resolved = (resolution or {}).get("resolved") or {}
+        matched_by_sheet: Dict[str, List[Dict[str, Any]]] = {}
+        for mapping_key, chosen in resolved.items():
+            matched_by_sheet.setdefault(chosen.get("sheet_name", ""), []).append({
+                "mapping_key": mapping_key,
+                "matched_alias": chosen.get("matched_alias", ""),
+                "score": chosen.get("score", ""),
+                "resolution_method": chosen.get("resolution_method", ""),
+            })
         for sheet_name, err in normalization_errors.items():
             print(f"    - {sheet_name!r}: {err}")
+            for match in matched_by_sheet.get(sheet_name, []):
+                print(
+                    f"        -> matched to mapping_key={match['mapping_key']!r} via "
+                    f"alias={match['matched_alias']!r} score={match['score']} "
+                    f"method={match['resolution_method']!r} — if this sheet is actually "
+                    "a nav/cover/JE/support tab (not a real account), the match itself is "
+                    "the bug (fdd_utils/workbook.py's alias-scoring in _score_candidate is "
+                    "too permissive for this alias/sheet-name pair), not the extraction step."
+                )
 
     for key, df in dfs.items():
         if df is None or df.empty:
