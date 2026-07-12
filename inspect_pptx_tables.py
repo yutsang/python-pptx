@@ -265,11 +265,23 @@ def dump_ole_object(slide_idx: int, shape, save_dir: Optional[str]) -> None:
     print()
 
 
-def dump_xlsx_formatting(xlsx_path: str, max_rows: int = 60, max_cols: int = 20) -> None:
+def dump_xlsx_formatting(
+    xlsx_path: str,
+    max_rows: int = 100,
+    max_cols: int = 30,
+    sheet_name: Optional[str] = None,
+) -> None:
     import openpyxl
 
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
-    for ws in wb.worksheets:
+    worksheets = wb.worksheets
+    if sheet_name is not None:
+        if sheet_name not in wb.sheetnames:
+            print(f"  Sheet {sheet_name!r} not found. Available sheets: {wb.sheetnames}")
+            return
+        worksheets = [wb[sheet_name]]
+
+    for ws in worksheets:
         used_rows = min(ws.max_row or 0, max_rows)
         used_cols = min(ws.max_column or 0, max_cols)
         if not used_rows or not used_cols:
@@ -392,10 +404,11 @@ def main() -> int:
     ap.add_argument("--slide", type=int, default=None, help="1-indexed slide number to restrict to")
     ap.add_argument("--save-ole", default=None, help="Directory to save any extracted OLE/Excel blobs into (default: alongside the pptx)")
     ap.add_argument("--xlsx", action="store_true", help="Treat pptx_path as a raw .xlsx file and dump its cell formatting directly (skip pptx parsing)")
+    ap.add_argument("--sheet", default=None, help="With --xlsx, restrict the dump to this worksheet name only")
     args = ap.parse_args()
 
     if args.xlsx:
-        dump_xlsx_formatting(args.pptx_path)
+        dump_xlsx_formatting(args.pptx_path, sheet_name=args.sheet)
         return 0
 
     prs = Presentation(args.pptx_path)
