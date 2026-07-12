@@ -134,7 +134,13 @@ def _cell_fill(cell) -> str:
 
 def _is_total_like(text: str) -> bool:
     lowered = text.lower()
-    return any(kw in lowered or kw in text for kw in ("total", "合计", "总计", "小计", "subtotal"))
+    keywords = (
+        "total", "合计", "总计", "小计", "subtotal", "gross profit", "gross loss",
+        "operating profit", "operating loss", "profit before taxation",
+        "loss before taxation", "net profit", "net loss", "ebitda",
+        "毛利", "营业利润", "利润总额", "净利润", "亏损",
+    )
+    return any(kw in lowered or kw in text for kw in keywords)
 
 
 # --------------------------------------------------------------------------

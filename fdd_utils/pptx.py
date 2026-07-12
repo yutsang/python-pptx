@@ -84,7 +84,11 @@ from .financial_common import (
     load_yaml_file,
     package_file_path,
 )
-from .keyword_registry import STATEMENT_ORDER_SKIP_KEYWORDS, translate_category_to_chinese
+from .keyword_registry import (
+    STATEMENT_ORDER_SKIP_KEYWORDS,
+    SUMMARY_ACCOUNT_SKIP_KEYWORDS,
+    translate_category_to_chinese,
+)
 from .workbook import find_mapping_key
 
 
@@ -3619,10 +3623,12 @@ class PowerPointGenerator:
                     table = None
             
             if table:
-                # Colors
-                DARK_BLUE = RGBColor(0, 51, 102)
-                TIFFANY_BLUE = RGBColor(10, 186, 181)
-                GREY = RGBColor(217, 217, 217)
+                # Colors -- matches the company-format reference (client databook's
+                # own "Financials" summary tab: navy #00338D title/subtotal-border,
+                # blue #1E4CE2 header row, light grey #E5E5E5 grand-total fill only).
+                DARK_BLUE = RGBColor(0x00, 0x33, 0x8D)
+                TIFFANY_BLUE = RGBColor(0x1E, 0x4C, 0xE2)
+                GREY = RGBColor(0xE5, 0xE5, 0xE5)
                 WHITE = RGBColor(255, 255, 255)
                 BLACK = RGBColor(0, 0, 0)
                 
@@ -3655,7 +3661,7 @@ class PowerPointGenerator:
                             name_row.cells[0].merge(name_row.cells[len(table.columns) - 1])
                         name_cell = name_row.cells[0]
                         name_cell.text = table_name
-                        # Format table name: Arial 9, bold, centered, Dark Blue bg, White font
+                        # Format table name: Arial 8, bold, centered, Dark Blue bg, White font
                         if name_cell.text_frame.paragraphs:
                             p = name_cell.text_frame.paragraphs[0]
                             p.alignment = PP_ALIGN.CENTER  # Center alignment
@@ -3664,7 +3670,7 @@ class PowerPointGenerator:
                             else:
                                 run = p.add_run()
                             run.font.name = 'Arial'
-                            run.font.size = Pt(9)
+                            run.font.size = Pt(8)
                             run.font.bold = True
                             run.font.color.rgb = WHITE
                             
@@ -3700,18 +3706,18 @@ class PowerPointGenerator:
                             cell.text = currency_unit
                         else:
                             cell.text = str(col_name)
-                        # Apply header formatting: Arial 9, bold, Tiffany Blue bg, White font
+                        # Apply header formatting: Arial 8, bold, header blue bg, White font
                         if cell.text_frame.paragraphs:
                             p = cell.text_frame.paragraphs[0]
                             p.alignment = PP_ALIGN.CENTER
-                            
+
                             if p.runs:
                                 run = p.runs[0]
                             else:
                                 run = p.add_run()
-                            
+
                             run.font.name = 'Arial'
-                            run.font.size = Pt(9)
+                            run.font.size = Pt(8)
                             run.font.bold = True
                             run.font.color.rgb = WHITE # White font for header
 
@@ -3756,18 +3762,57 @@ class PowerPointGenerator:
                     is_total_row = False
                     is_date_row = False
                     first_col_lower = first_col_value.lower()
-                    total_keywords = ['total', '合计', '总计', '小计', 'subtotal', 'sub-total', 'sub total']
+                    # 'total'/合计 etc. cover BS lines (Total assets, Total
+                    # current assets, ...); IS running-total lines (Gross
+                    # profit, Operating profit, Net profit, ...) don't contain
+                    # the word "total" at all, so pull in the canonical
+                    # SUMMARY_ACCOUNT_SKIP_KEYWORDS list (already used
+                    # elsewhere in the codebase for "is this a statement
+                    # subtotal/total line, not a leaf account" detection)
+                    # rather than hand-rolling a second copy of it here.
+                    total_keywords = list(
+                        {'total', '合计', '总计', '小计', 'subtotal', 'sub-total', 'sub total'}
+                        | set(SUMMARY_ACCOUNT_SKIP_KEYWORDS)
+                    )
                     date_keywords = ['date', '日期', '年', '月']
                     special_keywords = total_keywords + ['title', '标题'] + date_keywords
-                    
+
                     if any(keyword in first_col_lower for keyword in special_keywords):
                         is_special_row = True
-                    
+
                     if any(keyword in first_col_lower for keyword in total_keywords):
                         is_total_row = True
-                    
+
                     if any(keyword in first_col_lower for keyword in date_keywords):
                         is_date_row = True
+
+                    # Statement-terminal lines (grand totals) get the heavier
+                    # two-border/grey-fill treatment; everything else that only
+                    # matches total_keywords (subsection subtotals like "Total
+                    # current assets", or IS running subtotals like "Gross
+                    # profit") gets a thin top border only, matching the
+                    # company-format reference where those two tiers look
+                    # visually distinct.
+                    grand_total_keywords = [
+                        'total assets', 'total liabilities', "total owners", "total owner's",
+                        '总资产', '负债合计', '负债总计', '所有者权益合计',
+                        '股东权益合计', '资产总计', 'net profit', 'net loss', '净利润', '净亏损',
+                        'ebitda',
+                    ]
+                    # "Total equity attributable to owners of the Company" is a
+                    # subtotal, not the statement-level grand total, even though
+                    # it contains "total ... owners" as a substring (same trap
+                    # applies to the Chinese "归属于母公司所有者权益合计" pattern) --
+                    # exclude any label signalling it's scoped to a sub-group.
+                    attributable_signal_keywords = ['attributable', '归属', '母公司']
+                    is_attributable_subtotal = any(
+                        keyword in first_col_lower for keyword in attributable_signal_keywords
+                    )
+                    is_grand_total_row = (
+                        is_total_row
+                        and not is_attributable_subtotal
+                        and any(keyword in first_col_lower for keyword in grand_total_keywords)
+                    )
                     
                     # Data row index = header_row_idx + 1 + row_idx
                     data_row_idx = header_row_idx + 1 + row_idx
@@ -3846,23 +3891,27 @@ class PowerPointGenerator:
                         except Exception:
                             pass
                         
-                        # Only set fill for special (highlighted) rows. Normal
-                        # cells inherit the template's default white fill, so
-                        # explicitly setting WHITE here was ~600 redundant XML
-                        # ops per export with no visual change.
-                        if is_special_row:
+                        # Grey fill is reserved for grand-total rows (Total
+                        # assets, Total liabilities, Net profit, EBITDA, etc.)
+                        # to match the company-format reference -- subsection
+                        # subtotals (Total current assets, Gross profit, ...)
+                        # stay unfilled with just a thin top border.
+                        if is_grand_total_row:
                             try:
                                 cell.fill.solid()
                                 cell.fill.fore_color.rgb = GREY
                             except Exception:
                                 pass
-                                
-                        # Add bold top horizontal line for total/subtotal rows
+
+                        # Thin top border on every total/subtotal row; grand
+                        # totals additionally get a heavier bottom border,
+                        # matching the reference's two-tier total styling.
                         if is_total_row:
                             try:
-                                # Top border in Dark Blue, 2pt width. Pass hex string "003366"
-                                self._set_cell_border(cell, 'top', color_rgb="003366", width=Pt(2))
-                            except:
+                                self._set_cell_border(cell, 'top', color_rgb="00338D", width=Pt(0.75))
+                                if is_grand_total_row:
+                                    self._set_cell_border(cell, 'bottom', color_rgb="00338D", width=Pt(2.25))
+                            except Exception:
                                 pass
                     
                     logger.debug("Filled table row %s (data_row_idx: %s, special: %s)", row_idx + 1, data_row_idx, is_special_row)
