@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import zipfile
 from typing import Any, Iterator, Optional
 
 from pptx import Presentation
@@ -284,24 +285,41 @@ def dump_xlsx_formatting(xlsx_path: str, max_rows: int = 60, max_cols: int = 20)
                 border = cell.border
                 text = str(cell.value)
                 flag = "  *** TOTAL/SUBTOTAL-LIKE ***" if _is_total_like(text) else ""
+
+                def _rgb_str(color) -> Optional[str]:
+                    # openpyxl's Color.rgb can be a real hex string, an indexed/theme
+                    # int, or an internal enum sentinel depending on how the cell was
+                    # styled -- only format it if it's actually an 8-char ARGB hex string.
+                    try:
+                        rgb = color.rgb if color else None
+                    except Exception:
+                        return None
+                    if isinstance(rgb, str) and len(rgb) == 8:
+                        return f"#{rgb}"
+                    return None
+
                 fill_color = None
                 try:
-                    if fill and fill.fgColor and fill.fgColor.rgb and fill.fgColor.rgb != "00000000":
-                        fill_color = f"#{fill.fgColor.rgb}"
+                    if fill and fill.fgColor:
+                        rgb = _rgb_str(fill.fgColor)
+                        if rgb and rgb != "#00000000":
+                            fill_color = rgb
                 except Exception:
                     pass
 
                 def _side(side):
                     if side is None or side.style is None:
                         return "none"
-                    color = f"#{side.color.rgb}" if side.color and side.color.rgb else "?"
-                    return f"{side.style} {color}"
+                    return f"{side.style} {_rgb_str(side.color) or 'inherited'}"
 
+                font_name = font.name or "(inherited)"
+                font_size = f"{font.size}pt" if font.size else "(inherited)"
+                font_color = _rgb_str(font.color) or "inherited"
                 print(f"  {cell.coordinate}: value={text!r}  number_format={cell.number_format!r}{flag}")
                 print(
-                    f"        font={font.name} {font.size}pt "
+                    f"        font={font_name} {font_size} "
                     f"{'B' if font.bold else ''}{'I' if font.italic else ''} "
-                    f"color={f'#{font.color.rgb}' if font.color and font.color.rgb else 'inherited'}  "
+                    f"color={font_color}  "
                     f"fill={fill_color or 'none'}  align={cell.alignment.horizontal}"
                 )
                 print(
@@ -312,15 +330,73 @@ def dump_xlsx_formatting(xlsx_path: str, max_rows: int = 60, max_cols: int = 20)
 
 
 # --------------------------------------------------------------------------
+# source-file breadcrumb scan (UpSlide/Excel links often leave a path
+# reference behind even when the pasted content itself is a flattened
+# picture, e.g. in customXml parts or a picture's alt-text/description)
+# --------------------------------------------------------------------------
+
+def scan_for_source_link_breadcrumbs(pptx_path: str) -> None:
+    print("\n### Scanning for a source-Excel-file breadcrumb (customXml parts, picture alt-text) ###")
+    found_any = False
+    try:
+        with zipfile.ZipFile(pptx_path) as z:
+            candidate_parts = [
+                n for n in z.namelist()
+                if "customxml" in n.lower() or "upslide" in n.lower() or "externallink" in n.lower()
+            ]
+            for name in candidate_parts:
+                if not name.lower().endswith((".xml", ".rels")):
+                    continue
+                data = z.read(name)
+                if len(data) > 4000:
+                    print(f"  {name}: {len(data)} bytes (too large to print in full; open manually if relevant)")
+                    found_any = True
+                    continue
+                text = data.decode("utf-8", errors="replace")
+                if any(hint in text.lower() for hint in (".xlsx", ".xls", "upslide", "target=")):
+                    print(f"  {name}:")
+                    print("    " + text.replace("\n", "\n    "))
+                    found_any = True
+    except Exception as exc:
+        print(f"  Could not scan zip parts: {exc}")
+
+    try:
+        prs = Presentation(pptx_path)
+        for slide_idx, slide in enumerate(prs.slides):
+            for shape in _iter_shapes_recursive(slide.shapes):
+                cNvPr = shape._element.find(f".//{qn('p:cNvPr')}")
+                if cNvPr is None:
+                    continue
+                descr = cNvPr.get("descr")
+                title = cNvPr.get("title")
+                if descr or title:
+                    print(f"  Slide {slide_idx + 1} shape {shape.name!r}: descr={descr!r} title={title!r}")
+                    found_any = True
+    except Exception as exc:
+        print(f"  Could not scan shape metadata: {exc}")
+
+    if not found_any:
+        print("  Nothing found. UpSlide's link-back reference (if any) isn't stored inside this pptx in a "
+              "readable form -- you'll need to locate the source .xlsx directly (e.g. via the UpSlide panel "
+              "in PowerPoint's ribbon, which usually shows 'linked to: <path>' for each pasted object, or "
+              "by asking whoever prepared this deck which workbook it was built from).")
+
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("pptx_path", help="Path to a .pptx file")
+    ap.add_argument("pptx_path", help="Path to a .pptx file, OR (with --xlsx) a raw .xlsx to inspect directly")
     ap.add_argument("--slide", type=int, default=None, help="1-indexed slide number to restrict to")
     ap.add_argument("--save-ole", default=None, help="Directory to save any extracted OLE/Excel blobs into (default: alongside the pptx)")
+    ap.add_argument("--xlsx", action="store_true", help="Treat pptx_path as a raw .xlsx file and dump its cell formatting directly (skip pptx parsing)")
     args = ap.parse_args()
+
+    if args.xlsx:
+        dump_xlsx_formatting(args.pptx_path)
+        return 0
 
     prs = Presentation(args.pptx_path)
     found_table_or_ole = False
@@ -355,6 +431,7 @@ def main() -> int:
             "formatting can't be extracted programmatically; describe it visually instead, or "
             "check if UpSlide kept a linked source .xlsx file you can share directly."
         )
+        scan_for_source_link_breadcrumbs(args.pptx_path)
         return 1
     return 0
 
