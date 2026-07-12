@@ -4125,16 +4125,22 @@ def _sheet_type_bonus(profile: Dict[str, Any], mapping_type: str) -> float:
     return 0.0
 
 
-# Sheets with sheet_kind == "other" have no detectable stage/date row at all,
-# so normalization is guaranteed to fail if they win a mapping_key. Below this
-# score they're almost always an incidental single-word title overlap (nav/
-# cover/ADJ/JE tabs), not a real account tab — empirically 18.0 (single generic
-# token, e.g. "assets") and 42.0 (short alias like "FA"/"CIP" as a token subset)
-# were both confirmed false positives across real client databooks. A real
-# account tab that merely has an unrecognized stage-label vocabulary still
-# tends to score well above this via name/title similarity, so raising the
-# floor here doesn't hide genuine CANONICAL_STAGE_LABELS gaps.
-_UNSTRUCTURED_SHEET_MIN_SCORE = 45.0
+# Below this score, a match is almost always an incidental single-word title
+# overlap (nav/cover/ADJ/JE tabs) or a short-alias token subset, not a real
+# account tab — empirically 18.0 (single generic token, e.g. "assets") and
+# 42.0 (short alias like "FA"/"CIP"/"Cr Loss" as a token subset) were both
+# confirmed false positives across real client databooks, and neither was ever
+# observed as a legitimate match's score (real matches land at 100.0 exact,
+# or well above this via CJK compact-label/SequenceMatcher-ratio bonuses).
+# Originally scoped to sheet_kind == "other" (no detectable stage row at all),
+# but the same 18.0/42.0 false-positive pattern also showed up on a sheet that
+# DID have a detectable stage row (sheet_kind == "financial_schedule") yet
+# still failed later at financial-value-column detection, so the floor now
+# applies to every candidate regardless of sheet_kind. A real account tab with
+# an unrecognized stage-label vocabulary still tends to score well above this
+# via name/title similarity, so raising the floor here doesn't hide genuine
+# CANONICAL_STAGE_LABELS gaps.
+_LOW_CONFIDENCE_MATCH_FLOOR = 45.0
 
 
 def _best_sheet_for_mapping(mapping_key: str, config: Dict[str, Any], profiles: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -4186,7 +4192,7 @@ def _candidate_sheets_for_mapping(mapping_key: str, config: Dict[str, Any], prof
                     matched_alias = alias
         if best_score <= 0:
             continue
-        if profile.get("sheet_kind") == "other" and best_score < _UNSTRUCTURED_SHEET_MIN_SCORE:
+        if best_score < _LOW_CONFIDENCE_MATCH_FLOOR:
             continue
         total_score = best_score + base_score
         if total_score <= 0:
