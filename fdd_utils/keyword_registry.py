@@ -179,8 +179,14 @@ KNOWN_TRANSLATIONS = {
 
 # Markers indicating amounts are stated in thousands (apply ×1000 to recover the
 # absolute figure). Must cover Simplified AND Traditional Chinese, else traditional
-# databooks skip the multiplier and every reconciliation is off by 1000×.
-UNIT_THOUSAND_MARKERS = ["cny'000", "rmb'000", "人民币千元", "人民幣千元"]
+# databooks skip the multiplier and every reconciliation is off by 1000×. Every
+# real client databook seen so far declares a CNY/RMB marker even when individual
+# sub-accounts are USD/HKD-denominated (the client pre-converts to RMB-equivalent
+# before it reaches the sheet), but USD'000/HKD'000 are included here in case a
+# future databook is denominated in a different base currency at the sheet level —
+# without this, such a sheet would silently fall back to a 1x multiplier and every
+# figure on it would be 1000x too small.
+UNIT_THOUSAND_MARKERS = ["cny'000", "rmb'000", "usd'000", "hkd'000", "人民币千元", "人民幣千元"]
 
 
 def contains_thousand_unit_marker(text: str) -> bool:

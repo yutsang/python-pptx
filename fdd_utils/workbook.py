@@ -339,6 +339,8 @@ CANONICAL_STAGE_LABELS = (
 
 _UNIT_PATTERNS = (
     "CNY'000",
+    "USD'000",
+    "HKD'000",
     "人民币千元",
     "人民幣千元",
     "million",
@@ -2783,13 +2785,14 @@ import re
 import pandas as pd
 
 from .financial_common import cell_text, coerce_numeric
+from .keyword_registry import UNIT_THOUSAND_MARKERS
 
 
 PREFERRED_STAGE = "Indicative adjusted"
 INTERNAL_ROW_KEY = "__source_row_idx"
 _TOTAL_KEYWORDS = ("total", "总计", "合计", "總計", "合計")
 _SUBTOTAL_KEYWORDS = ("subtotal", "sub-total", "sub total", "小计", "小計")
-_UNIT_MARKERS = ("cny'000", "人民币千元", "人民幣千元")
+_UNIT_MARKERS = tuple(UNIT_THOUSAND_MARKERS)
 _WORKING_REMARK_KEYWORDS = ("check", "对账单", "對賬單", "对帐单", "差异", "差異", "difference", "diff", "recon")
 _CARRYING_AMOUNT_LABELS = ("carrying amounts", "net book value", "carrying amount", "账面价值", "賬面價值")
 
