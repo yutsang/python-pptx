@@ -554,7 +554,37 @@ def _collect_row_labels(
     return seen
 
 
+# Tab-naming conventions observed identically across every real TS-team databook
+# seen so far (9 files, different clients/projects/years) for navigation dividers,
+# fixed template helper tabs, and tool-generated artifacts -- never a real account,
+# regardless of what score fuzzy matching or stage-row detection gives them (e.g.
+# 'ADJ' sometimes has a detectable stage row since audit adjustments are tracked
+# by period, which let it slip past the sheet_kind=="other" score floor once).
+# Checked ahead of stage_row_idx so these are excluded deterministically rather
+# than relying on the score floor to catch them.
+_TEMPLATE_NAV_EXACT_NAMES = {
+    "overview", "adj", "contract", "tb", "cover", "mapping", "je", "pt",
+    "pivottable", "tb combine", "mgt account", "fill-in choice",
+    "封面", "下拉选项source", "透视表",
+}
+_TEMPLATE_NAV_SUFFIXES = ("-->", " for report")
+_TEMPLATE_NAV_PREFIXES = ("upslide_", "_tm_")
+
+
+def _is_template_nav_sheet(sheet_name: str) -> bool:
+    lowered = sheet_name.strip().lower()
+    if lowered in _TEMPLATE_NAV_EXACT_NAMES:
+        return True
+    if any(lowered.endswith(suffix) for suffix in _TEMPLATE_NAV_SUFFIXES):
+        return True
+    if any(lowered.startswith(prefix) for prefix in _TEMPLATE_NAV_PREFIXES):
+        return True
+    return False
+
+
 def _sheet_kind(sheet_name: str, title: str, df: pd.DataFrame, stage_row_idx: Optional[int]) -> str:
+    if _is_template_nav_sheet(sheet_name):
+        return "template_nav"
     title_lower = title.lower()
     sheet_lower = sheet_name.lower()
     sample = " ".join(_cell_text(value).lower() for value in df.head(min(10, len(df))).fillna("").to_numpy().ravel())
@@ -4119,7 +4149,7 @@ def _semantic_alignment_adjustment(candidate_norm: str, alias_norm: str) -> floa
 
 def _sheet_type_bonus(profile: Dict[str, Any], mapping_type: str) -> float:
     sheet_kind = profile.get("sheet_kind")
-    if sheet_kind == "financial_summary":
+    if sheet_kind in ("financial_summary", "template_nav"):
         return -100.0
     if sheet_kind == "support_schedule":
         return -20.0
