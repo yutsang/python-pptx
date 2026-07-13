@@ -16,6 +16,11 @@ any real client file without touching API budgets or the network.
 
 Usage:
     python inspect_databook.py "inputs/SomeClient.databook.xlsx"
+        # Compact by default: sections 1-4 collapse "everything is fine" detail (every
+        # unit-marker line, full row-by-row structure listing, explanatory paragraphs)
+        # into one-line-per-tab summaries. Findings/flags always print in full either
+        # way. Add --verbose for the full per-tab detail when you need to actually skim
+        # a specific tab's structure against real Excel.
     python inspect_databook.py "inputs/"                    # scans every .xlsx in the folder,
                                                               # prints a final aggregate summary table
     python inspect_databook.py "inputs/SomeClient.databook.xlsx" --sheet Financials
@@ -103,6 +108,16 @@ from fdd_utils.financial_common import get_pipeline_result_text
 
 pd.set_option("display.width", 200)
 
+# Set from --verbose in main(). Module-level (not threaded through every
+# call) since these check functions are also called directly by scratch
+# scripts/other tools without going through argparse -- default stays
+# compact either way. Controls: whether the multi-line "how to read this"
+# explanations print, and whether per-tab detail sections print every row
+# vs. a one-line count summary. Findings (mismatches/flags) always print in
+# full regardless -- this only trims the "everything is fine" noise, which
+# is what makes a multi-file batch run unpasteable.
+VERBOSE = False
+
 
 def _hr(title: str = "") -> None:
     print("\n" + "=" * 78)
@@ -183,19 +198,21 @@ def check_tab_read_summary(databook_path: str, entity_name: str = "") -> Dict[st
 
 def check_unit_markers(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None:
     _hr("2. UNIT-MARKER SANITY CHECK (CNY'000 / 人民币千元 detection per tab)")
-    print(
-        "Each tab is scanned independently for a thousands-unit marker in its\n"
-        "first 8 rows. If a tab's marker ISN'T found here, its multiplier\n"
-        "silently falls back to 1x instead of 1000x — this is the failure mode\n"
-        "that produces numbers 1000x too small for THAT tab specifically.\n"
-        "Only tabs that actually parsed into an account (see section 1) are\n"
-        "flagged as missing — navigation/cover/TB/pivot tabs are expected to\n"
-        "have no unit marker and are listed but not counted as a problem.\n"
-    )
+    if VERBOSE:
+        print(
+            "Each tab is scanned independently for a thousands-unit marker in its\n"
+            "first 8 rows. If a tab's marker ISN'T found here, its multiplier\n"
+            "silently falls back to 1x instead of 1000x — this is the failure mode\n"
+            "that produces numbers 1000x too small for THAT tab specifically.\n"
+            "Only tabs that actually parsed into an account (see section 1) are\n"
+            "flagged as missing — navigation/cover/TB/pivot tabs are expected to\n"
+            "have no unit marker and are listed but not counted as a problem.\n"
+        )
     relevant_tabs = {str(k).strip() for k in dfs.keys()}
     xl = pd.ExcelFile(databook_path)
     any_missing = False
     missing_relevant: List[str] = []
+    ok_count = 0
     for sheet in xl.sheet_names:
         try:
             df = xl.parse(sheet, header=None, nrows=12)
@@ -207,6 +224,7 @@ def check_unit_markers(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None
         is_relevant = sheet.strip() in relevant_tabs or sheet.strip().lower() == "financials"
         if markers_8:
             status = "✅"
+            ok_count += 1
         elif markers_12:
             status = "⚠️ found beyond row 8"
         elif is_relevant:
@@ -215,7 +233,10 @@ def check_unit_markers(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None
             missing_relevant.append(sheet)
         else:
             status = "·  (not a parsed account tab, skipped)"
-        print(f"  {status}  {sheet}: markers(first 8 rows)={markers_8}  markers(first 12 rows)={markers_12}")
+        if VERBOSE or status != "✅":
+            print(f"  {status}  {sheet}: markers(first 8 rows)={markers_8}  markers(first 12 rows)={markers_12}")
+    if not VERBOSE:
+        print(f"  {ok_count}/{len(xl.sheet_names)} sheet(s) ✅ (marker found in first 8 rows) -- not printed individually, use --verbose for the full per-sheet list.")
     if any_missing:
         print(
             f"\n⚠️  {len(missing_relevant)} PARSED account tab(s) have no unit marker in the\n"
@@ -431,14 +452,15 @@ def _compute_tab_mismatches(
 
 def check_all_tabs_scaling(databook_path: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "") -> int:
     _hr("2b. RAW-VS-FINAL SCALING CHECK — every breakdown tab, not just Financials")
-    print(
-        "For every extracted tab, compares each non-empty cell's raw Excel value (before\n"
-        "any unit-multiplier scaling) against the final value that actually lands in dfs\n"
-        "and gets sent to the AI. A tab-level flag here means the CODE's own scaling of\n"
-        "that tab doesn't match what the raw Excel cell says, independent of whether the\n"
-        "AI wrote anything wrong -- this is a breakdown-tab extraction check, not an AI\n"
-        "grounding check (that's covered separately by 6-7 under --run-ai).\n"
-    )
+    if VERBOSE:
+        print(
+            "For every extracted tab, compares each non-empty cell's raw Excel value (before\n"
+            "any unit-multiplier scaling) against the final value that actually lands in dfs\n"
+            "and gets sent to the AI. A tab-level flag here means the CODE's own scaling of\n"
+            "that tab doesn't match what the raw Excel cell says, independent of whether the\n"
+            "AI wrote anything wrong -- this is a breakdown-tab extraction check, not an AI\n"
+            "grounding check (that's covered separately by 6-7 under --run-ai).\n"
+        )
     clean, flagged, skipped, structural = 0, [], [], []
     for tab_name in sorted(dfs.keys()):
         try:
@@ -608,14 +630,17 @@ def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
 
 def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
     _hr("3. ROW-STRUCTURE SANITY CHECK (indentation / total-then-breakdown)")
-    print(
-        "Reports how each tab's rows were auto-classified (breakdown / subtotal\n"
-        "/ total / plain). Skim each tab's list against the real Excel layout —\n"
-        "if a row that's visually a breakdown item got classified as a total (or\n"
-        "vice versa), that's exactly the class of layout the auto-detector can\n"
-        "misread. Only tabs with a NON-trivial mix of types are printed in full;\n"
-        "tabs with all-plain rows are summarized in one line.\n"
-    )
+    if VERBOSE:
+        print(
+            "Reports how each tab's rows were auto-classified (breakdown / subtotal\n"
+            "/ total / plain). Skim each tab's list against the real Excel layout —\n"
+            "if a row that's visually a breakdown item got classified as a total (or\n"
+            "vice versa), that's exactly the class of layout the auto-detector can\n"
+            "misread. Only tabs with a NON-trivial mix of types are printed in full;\n"
+            "tabs with all-plain rows are summarized in one line.\n"
+        )
+    else:
+        print("Per-tab type counts only -- use --verbose for the full row-by-row listing to skim against real Excel.\n")
     for key, df in dfs.items():
         if df is None or df.empty:
             continue
@@ -624,6 +649,14 @@ def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
         descriptions = [str(v) for v in df[desc_col].tolist()]
         if not row_types or all(row_types.get(d, "plain") == "plain" for d in descriptions):
             print(f"  {key}: {len(descriptions)} rows, all classified 'plain' (no total/subtotal/breakdown detected)")
+            continue
+        if not VERBOSE:
+            counts: Dict[str, int] = {}
+            for desc in descriptions:
+                rtype = row_types.get(desc, "plain")
+                counts[rtype] = counts.get(rtype, 0) + 1
+            counts_str = ", ".join(f"{n} {t}" for t, n in sorted(counts.items()))
+            print(f"  {key}: {len(descriptions)} rows ({counts_str})")
             continue
         print(f"  {key}:")
         for desc in descriptions:
@@ -1617,7 +1650,16 @@ def main() -> int:
     ap.add_argument("--pptx-out", default=None, metavar="DIR",
                     help="with --export-pptx, directory to write <databook>.preview.pptx into "
                          "(default: a pptx_previews/ folder next to the input file).")
+    ap.add_argument("--verbose", "-v", action="store_true",
+                    help="print the full per-tab detail (row-by-row structure listing, every "
+                         "unit-marker line, explanatory paragraphs) that compact mode (the "
+                         "default) collapses into one-line summaries. Findings/flags always "
+                         "print in full either way -- this only controls the 'everything is "
+                         "fine' noise, which is what makes a multi-file batch run unpasteable.")
     args = ap.parse_args()
+
+    global VERBOSE
+    VERBOSE = args.verbose
 
     if args.export_pptx and not args.run_ai:
         print("❌ --export-pptx requires --run-ai (it needs AI-generated commentary to build the PPTX payloads).")
