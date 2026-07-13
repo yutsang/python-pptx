@@ -244,6 +244,7 @@ CATEGORY_TRANSLATIONS_ZH = {
     "Non-Current Liabilities": "非流动负债",
     "Non current liabilities": "非流动负债",
     "Liabilities": "负债",
+    "Expenses": "费用",
     "Equity": "所有者权益",
     "Owner's equity": "所有者权益",
     "Owners' equity": "所有者权益",
