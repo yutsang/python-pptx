@@ -2987,6 +2987,22 @@ class PowerPointGenerator:
                         changed = True
                     continue  # whole move doesn't fit -- partial split (if any) already handled
 
+                # A same-slide L/R pair with nxt down to its LAST account is exactly
+                # what _rebalance_lopsided_lr_pairs exists to prevent (a visibly empty
+                # column next to a full one, exposing the template's raw placeholder
+                # text) -- but when nxt is also the statement's last slot overall, its
+                # penalty is unconditionally exempt (0.0 below regardless of fill), so
+                # this whole-move would look like a free win and drain nxt right back
+                # to empty, silently undoing that earlier fix. Refuse this specific
+                # move; every other boundary (including L/R pairs with 2+ accounts
+                # left in nxt) is untouched.
+                same_slide_lr_pair = (
+                    cur_slot["slide_idx"] == nxt_slot["slide_idx"]
+                    and {cur_name, nxt_name} == {"L", "R"}
+                )
+                if same_slide_lr_pair and len(nxt_accts) == 1:
+                    continue
+
                 nxt_used = self._compute_slot_used_lines(
                     nxt_accts, nxt_name, slot_shape=nxt_shape, statement_type=statement_type,
                 )
