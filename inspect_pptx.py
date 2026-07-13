@@ -264,15 +264,63 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
     }
 
 
+def _dump_text_and_check_duplicates(result: dict) -> int:
+    """Prints every commentary shape's full text (not just the char-count
+    summary line inspect_pptx() already prints), and scans every '■ '-led
+    bullet across the WHOLE file for duplicates -- i.e. the same account's
+    commentary appearing on more than one slide/slot. Returns the number of
+    duplicate bullets found (0 = clean)."""
+    print("\n" + "=" * 78)
+    print("  FULL TEXT DUMP (per slide/shape)")
+    print("=" * 78)
+    bullet_locations: dict[str, list[str]] = {}
+    for slide_report in result["slide_reports"]:
+        slide_no = slide_report["slide"]
+        for shape in slide_report["shapes"]:
+            text = shape.get("text") or ""
+            if not text.strip():
+                continue
+            print(f"\n--- Slide {slide_no} [{shape['name']}] ---")
+            print(text)
+            for line in text.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("■"):
+                    # Key on the label + first ~40 chars of body -- enough to
+                    # catch a genuine full-bullet repeat without false-flagging
+                    # two different bullets that happen to share a label.
+                    key = stripped[:60]
+                    bullet_locations.setdefault(key, []).append(f"slide {slide_no} [{shape['name']}]")
+
+    print("\n" + "=" * 78)
+    print("  DUPLICATE-BULLET SCAN (same bullet text appearing on >1 slide/slot)")
+    print("=" * 78)
+    duplicates = {k: v for k, v in bullet_locations.items() if len(v) > 1}
+    if not duplicates:
+        print("✅ No duplicate bullets found -- every account's commentary appears exactly once.")
+    else:
+        for key, locations in duplicates.items():
+            print(f"  ❌ DUPLICATE: {key!r}...")
+            for loc in locations:
+                print(f"      - {loc}")
+    return len(duplicates)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pptx_path", help="Path to an already-exported .pptx file")
     ap.add_argument("--config", default=None, help="Path to config.yml (default: tries fdd_utils/config.yml then config.example.yml)")
+    ap.add_argument("--dump-text", action="store_true",
+                     help="Also print every commentary shape's full text and scan for duplicate "
+                          "bullets across the whole file (same account's commentary appearing on "
+                          "more than one slide/slot).")
     args = ap.parse_args()
 
     config = _load_config(args.config)
     result = inspect_pptx(args.pptx_path, config)
-    return 1 if result["total_warnings"] else 0
+    duplicate_count = 0
+    if args.dump_text:
+        duplicate_count = _dump_text_and_check_duplicates(result)
+    return 1 if (result["total_warnings"] or duplicate_count) else 0
 
 
 if __name__ == "__main__":
