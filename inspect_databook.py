@@ -79,7 +79,11 @@ from fdd_utils.workbook import (
     _cell_text,
     _coerce_numeric,
     _date_row_index,
+    _find_description_column,
+    _forward_fill_stage_row,
+    _is_numeric_enough,
     _multiply_factor,
+    _select_entity_block,
     _stage_row_index,
     _unit_markers,
     canonical_stage_label,
@@ -294,13 +298,58 @@ def _diagnose_sheet_headers(databook_path: str, sheet_name: str) -> None:
         print("\n  ✅ normalize_financial_schedule succeeded from this raw profile.")
     except Exception as exc:
         print(f"\n  ❌ normalize_financial_schedule failed: {exc}")
-        print(
-            "  Stage row WAS found (see above) but no single column satisfied "
-            "stage+date+numeric all together. Check whether the distinct stage "
-            "values above include 'Indicative adjusted' specifically (not just "
-            "'Indicative adjustment' or another stage) at a column that also has a "
-            "parseable date and real numeric data beneath it."
-        )
+        if "No financial value columns" in str(exc):
+            _diagnose_column_selection(raw_df, sheet_name, stage_row_idx)
+        else:
+            print(
+                "  Stage row WAS found (see above) but no single column satisfied "
+                "stage+date+numeric all together."
+            )
+
+
+def _diagnose_column_selection(raw_df: pd.DataFrame, sheet_name: str, stage_row_idx: int) -> None:
+    """Replicates normalize_financial_schedule's exact per-column stage+date+numeric
+    selection loop and prints why EVERY column was rejected, so a 'No financial value
+    columns detected' failure can be root-caused without guessing (desc_col_idx
+    misdetection, entity-block misselection, forward-fill gaps, or a genuine missing
+    numeric-data column all look identical from the outside otherwise)."""
+    desc_col_idx = _find_description_column(raw_df)
+    print(f"\n  desc_col_idx = {desc_col_idx} (column loop starts at {desc_col_idx + 1 if desc_col_idx is not None else '?'})")
+    if desc_col_idx is None:
+        print("  ❌ No description column detected at all — this is the root cause.")
+        return
+
+    selected_block = _select_entity_block(raw_df, sheet_name, stage_row_idx, None)
+    block_stage_row_idx = selected_block["stage_row_idx"]
+    block_date_row_idx = selected_block["date_row_idx"]
+    if block_stage_row_idx != stage_row_idx:
+        print(f"  ⚠️  _select_entity_block picked a DIFFERENT stage_row_idx ({block_stage_row_idx}) than the "
+              f"top-level detector ({stage_row_idx}) — this is likely the root cause.")
+    print(f"  block stage_row_idx = {block_stage_row_idx}   block date_row_idx = {block_date_row_idx}")
+
+    stage_map = _forward_fill_stage_row(raw_df.iloc[block_stage_row_idx])
+    data_start_row = max(block_stage_row_idx, block_date_row_idx) + 1
+
+    print(f"\n  per-column breakdown (col_idx: stage | raw_date_cell -> parsed_date | numeric_enough):")
+    any_stage_date_match = False
+    for col_idx in range(desc_col_idx + 1, len(raw_df.columns)):
+        stage = stage_map.get(col_idx)
+        raw_date_cell = raw_df.iloc[block_date_row_idx, col_idx]
+        parsed_date = parse_date(raw_date_cell)
+        if not stage and not parsed_date:
+            continue
+        numeric_ok = _is_numeric_enough(raw_df, col_idx, data_start_row) if (stage and parsed_date) else None
+        if stage and parsed_date:
+            any_stage_date_match = True
+        print(f"    col {col_idx:>3}: {stage!r:22s} | {_cell_text(raw_date_cell)!r:15s} -> {parsed_date} | numeric_enough={numeric_ok}")
+
+    if not any_stage_date_match:
+        print("\n  ❌ Root cause: no column ever has BOTH a resolved stage label AND a parseable date "
+              "at the same column index. Compare the stage row's forward-fill span above against where "
+              "the date row actually places its date text — they don't line up.")
+    else:
+        print("\n  ⚠️  Some columns had stage+date but still got excluded — check numeric_enough=False above; "
+              "that means the entire column (from data_start_row down) coerced to no numeric values.")
 
 
 def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
