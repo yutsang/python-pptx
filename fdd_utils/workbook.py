@@ -2738,6 +2738,191 @@ def extract_balance_sheet_and_income_statement(
     return results
 
 
+_SYNTHETIC_BS_CATEGORY_ORDER = [
+    "Current assets", "Non-current assets", "Current liabilities", "Non-current liabilities", "Equity",
+]
+_SYNTHETIC_BS_GRAND_TOTAL_GROUPS = [
+    ("Total assets", ["Current assets", "Non-current assets"]),
+    ("Total liabilities", ["Current liabilities", "Non-current liabilities"]),
+    ("Total owners' equity", ["Equity"]),
+]
+_SYNTHETIC_IS_CATEGORY_ORDER = ["Revenue", "Expenses"]
+
+
+def _synthetic_account_total_row(df: pd.DataFrame) -> Optional[Dict[str, Optional[float]]]:
+    """Pulls a single schedule tab's own Total/合计 row values out, keyed by
+    its date-string columns -- the building block for
+    synthesize_balance_sheet_and_income_statement."""
+    if df is None or df.empty:
+        return None
+    desc_col = df.columns[0]
+    date_cols = [
+        c for c in df.columns
+        if c != desc_col and not str(c).endswith("_formatted") and not str(c).startswith("__")
+    ]
+    if not date_cols:
+        return None
+    row_types = df.attrs.get("row_types_by_description") or {}
+    total_idx = None
+    for idx, desc in df[desc_col].items():
+        if row_types.get(str(desc)) == "total":
+            total_idx = idx
+    if total_idx is None:
+        total_idx = df.index[-1]  # convention: the Total/合计 row is always last
+    row = df.loc[total_idx]
+    values: Dict[str, Optional[float]] = {}
+    for col in date_cols:
+        val = row[col]
+        values[col] = None if val is None or (isinstance(val, float) and pd.isna(val)) else float(val)
+    return values
+
+
+def _synthesize_statement(
+    dfs: Dict[str, pd.DataFrame],
+    mappings: Dict[str, Any],
+    statement_type: str,
+    category_order: List[str],
+    grand_total_groups: List[Tuple[str, List[str]]],
+) -> Optional[pd.DataFrame]:
+    # dfs is keyed by each account's resolved DISPLAY name (e.g. "COGS",
+    # "Paid-in capital"), which is NOT always the same string as
+    # mappings.yml's own top-level key (e.g. "OC", "Capital") -- resolve via
+    # find_mapping_key (alias lookup), same as split_accounts_by_type does,
+    # instead of checking `mapping_key in dfs` directly (which silently
+    # dropped almost every account with a non-identical display name).
+    dfs_key_by_mapping_key: Dict[str, str] = {}
+    for dfs_key in dfs:
+        mapping_key = find_mapping_key(dfs_key, mappings)
+        if mapping_key:
+            dfs_key_by_mapping_key[mapping_key] = dfs_key
+
+    per_account_values: List[Tuple[str, Dict[str, Any], Dict[str, Optional[float]]]] = []
+    for mapping_key, meta in mappings.items():
+        if not isinstance(meta, dict) or meta.get("type") != statement_type:
+            continue
+        dfs_key = dfs_key_by_mapping_key.get(mapping_key)
+        if not dfs_key:
+            continue
+        values = _synthetic_account_total_row(dfs[dfs_key])
+        if values:
+            per_account_values.append((dfs_key, meta, values))
+    if not per_account_values:
+        return None
+
+    # A Balance Sheet/Income Statement is a snapshot as of ONE date -- but
+    # each schedule tab's own "latest available" column can legitimately
+    # differ (e.g. one tab genuinely hasn't been updated past an earlier
+    # period). Pick whichever date the MOST accounts actually have data for
+    # ("as of" date the databook is mostly current to) and only use that
+    # column, rather than unioning every column across every account (which
+    # would silently sum mismatched-period figures into a meaningless total).
+    date_vote: Dict[str, int] = {}
+    for _, _, values in per_account_values:
+        for col, val in values.items():
+            if val is not None:
+                date_vote[col] = date_vote.get(col, 0) + 1
+    if not date_vote:
+        return None
+    target_date = max(date_vote.items(), key=lambda kv: (kv[1], parse_date(kv[0]) or kv[0]))[0]
+
+    category_rows: Dict[str, List[Dict[str, Any]]] = {cat: [] for cat in category_order}
+    other_rows: List[Dict[str, Any]] = []
+    for dfs_key, meta, values in per_account_values:
+        if target_date not in values or values[target_date] is None:
+            continue
+        row = {"Description": dfs_key, target_date: values[target_date]}
+        if meta.get("category") in category_rows:
+            category_rows[meta["category"]].append(row)
+        else:
+            other_rows.append(row)
+
+    def _zero_row(label: str) -> Dict[str, Any]:
+        return {"Description": label, target_date: 0.0}
+
+    def _sum_rows(label: str, group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        total = _zero_row(label)
+        for r in group_rows:
+            total[target_date] += r.get(target_date) or 0.0
+        return total
+
+    rows: List[Dict[str, Any]] = []
+    category_subtotals: Dict[str, Dict[str, Any]] = {}
+    sole_member_categories = {
+        cats[0] for _, cats in grand_total_groups if len(cats) == 1
+    }
+    for category in category_order:
+        group = category_rows.get(category) or []
+        if not group:
+            continue
+        rows.extend(group)
+        label = f"Total {category[0].lower()}{category[1:]}"
+        subtotal = _sum_rows(label, group)
+        category_subtotals[category] = subtotal
+        # Skip the redundant per-category subtotal when this category is the
+        # SOLE member of a grand-total group below (e.g. Equity) -- the grand
+        # total row would just duplicate it under a different label.
+        if category not in sole_member_categories:
+            rows.append(subtotal)
+    if other_rows:
+        rows.extend(other_rows)
+
+    for grand_label, member_categories in grand_total_groups:
+        members = [category_subtotals[c] for c in member_categories if c in category_subtotals]
+        if not members:
+            continue
+        rows.append(_sum_rows(grand_label, members))
+
+    if not rows:
+        return None
+    return pd.DataFrame(rows)[["Description", target_date]]
+
+
+def synthesize_balance_sheet_and_income_statement(
+    dfs: Dict[str, pd.DataFrame],
+    mappings: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Builds a BS/IS summary purely from already-extracted schedule tabs
+    (dfs), for workbooks with no literal "Financials"-style sheet to read
+    one from. Each account's own Total/合计 row becomes its BS/IS line,
+    grouped by mappings.yml's `category` field with category subtotals and
+    a grand total appended -- matching
+    extract_balance_sheet_and_income_statement's output shape
+    ({'balance_sheet', 'income_statement', 'project_name'}) so downstream
+    consumers (pptx.py's embed_financial_tables, cover-page account
+    ordering) need no changes.
+
+    Deliberately NOT wired into reconcile_financial_statements -- comparing
+    each schedule tab's own total against itself would be a trivial
+    self-match, not a real cross-check. This is purely to give the PPTX
+    embedded BS/IS summary table something to render when no source
+    Financials sheet exists.
+
+    IS is intentionally coarse (Total revenue - Total expenses = Net
+    profit only, no Gross profit/Operating profit tiers) since
+    mappings.yml's IS accounts only carry Revenue/Expenses/Others
+    categories, not finer COGS/SG&A/non-operating groupings.
+    """
+    balance_sheet = _synthesize_statement(
+        dfs, mappings, "BS", _SYNTHETIC_BS_CATEGORY_ORDER, _SYNTHETIC_BS_GRAND_TOTAL_GROUPS,
+    )
+    income_statement = _synthesize_statement(
+        dfs, mappings, "IS", _SYNTHETIC_IS_CATEGORY_ORDER, [],
+    )
+    if income_statement is not None:
+        date_cols = [c for c in income_statement.columns if c != "Description"]
+        rev = income_statement[income_statement["Description"] == "Total revenue"]
+        exp = income_statement[income_statement["Description"] == "Total expenses"]
+        if not rev.empty and not exp.empty:
+            net_profit = {"Description": "Net profit"}
+            for c in date_cols:
+                net_profit[c] = float(rev.iloc[0][c] or 0.0) - float(exp.iloc[0][c] or 0.0)
+            income_statement = pd.concat([income_statement, pd.DataFrame([net_profit])], ignore_index=True)
+
+    return {
+        "balance_sheet": balance_sheet,
+        "income_statement": income_statement,
+        "project_name": None,
+    }
 
 
 # Example usage and testing
@@ -6872,6 +7057,21 @@ def process_workbook_data(
             len(dfs),
             time.perf_counter() - recon_started,
         )
+
+    # No literal "Financials"-style sheet found (bs_is_results stayed None
+    # above) -- synthesize a BS/IS summary purely from the schedule tabs that
+    # DID get mapped, so the PPTX embedded BS/IS summary table still has
+    # something to render instead of silently skipping it. Deliberately built
+    # AFTER the reconciliation block above (using the real bs_is_results,
+    # which is still None here) rather than feeding this synthetic version
+    # into reconcile_financial_statements -- comparing each schedule tab's
+    # own total against itself would be a trivial self-match, not a real
+    # cross-check.
+    if bs_is_results is None and dfs_original:
+        effective_mappings = get_effective_mappings(load_mappings(), resolution)
+        synthesized = synthesize_balance_sheet_and_income_statement(dfs_original, effective_mappings)
+        if synthesized.get("balance_sheet") is not None or synthesized.get("income_statement") is not None:
+            bs_is_results = synthesized
 
     logger.debug(
         "Finished Process Data for %s in %.2fs",

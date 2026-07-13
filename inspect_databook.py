@@ -966,7 +966,7 @@ _PPTX_STAGE_RE = re.compile(r"\[PPTX\] ([\w_ ]+?): ([\d.]+)s")
 
 
 def export_and_inspect_pptx(
-    databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], ai_results: Dict[str, Any],
+    databook_path: str, sheet_name: Optional[str], dfs: Dict[str, pd.DataFrame], ai_results: Dict[str, Any],
     language: str, model_type: str, out_path: str,
 ) -> Dict[str, Any]:
     """Runs the FULL remaining pipeline (build payloads -> export .pptx),
@@ -977,12 +977,20 @@ def export_and_inspect_pptx(
     file — all in one pass, no separate manual export+inspect steps."""
     _hr("8. PPTX EXPORT (build payloads -> export .pptx, capturing logs)")
     from fdd_utils.pptx import build_pptx_structured_payloads, export_pptx_from_structured_data_combined
+    from fdd_utils.workbook import synthesize_balance_sheet_and_income_statement
     import inspect_pptx as _inspect_pptx
 
-    bs_is_results = extract_balance_sheet_and_income_statement(
-        workbook_path=databook_path, sheet_name=sheet_name, debug=False,
-    )
     mappings = get_effective_mappings(load_mappings(), None)
+    if sheet_name:
+        bs_is_results = extract_balance_sheet_and_income_statement(
+            workbook_path=databook_path, sheet_name=sheet_name, debug=False,
+        )
+    else:
+        # Mirrors process_workbook_data's fallback (fdd_utils/workbook.py) --
+        # no literal Financials sheet, so build the BS/IS summary purely
+        # from the mapped schedule tabs instead of skipping the embed.
+        bs_is_results = synthesize_balance_sheet_and_income_statement(dfs, mappings)
+        print("ℹ️  No Financials sheet — using a synthesized BS/IS built from the mapped schedule tabs.")
     payloads = build_pptx_structured_payloads(ai_results, mappings, bs_is_results=bs_is_results, dfs=dfs)
     print(f"BS items: {len(payloads['BS'])}, IS items: {len(payloads['IS'])}")
 
@@ -1339,17 +1347,13 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         )
         summary["ai"] = ai_summary
 
-        if export_pptx and not selected_sheet_for_ai:
-            print("\nℹ️  PPTX export skipped: no Financials-like sheet available, and this "
-                  "diagnostic tool's export path (unlike production) needs one to build the "
-                  "embedded BS/IS summary table. Pass --sheet to enable PPTX export here too.")
-        elif export_pptx and not ai_summary.get("skipped") and ai_summary.get("results"):
+        if export_pptx and not ai_summary.get("skipped") and ai_summary.get("results"):
             out_dir = Path(pptx_out_dir) if pptx_out_dir else Path(path).parent / "pptx_previews"
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = str(out_dir / f"{Path(path).stem}.preview.pptx")
             try:
                 pptx_summary = export_and_inspect_pptx(
-                    path, sheet_names[0], dfs, ai_summary["results"], language,
+                    path, selected_sheet_for_ai, dfs, ai_summary["results"], language,
                     model_type, out_path,
                 )
                 summary["pptx"] = pptx_summary
