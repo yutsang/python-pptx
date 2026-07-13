@@ -698,7 +698,20 @@ def check_reconciliation(
         if not problems.empty:
             print(f"\n  Unmatched/diff lines for {label} (account -> mapping status):")
             for _, r in problems.iterrows():
-                print(f"    - {r['Financials_Account']!r}: {r['Mapping_Status']} | {r['Mapping_Note']}")
+                # "Diff" rows found a value on BOTH sides but they don't agree --
+                # show the actual numbers (Financials summary tab vs the
+                # breakdown tab's own total), not just the mapping status, since
+                # that's the concrete evidence needed to tell a genuine
+                # extraction bug apart from a real business-reason difference.
+                if "Diff" in str(r["Match"]) and r.get("Diff") not in (None, "-"):
+                    fin_val = r.get("Financials_Value")
+                    tab_val = r.get("Tab_Value")
+                    diff_val = r.get("Diff")
+                    print(f"    - {r['Financials_Account']!r}: {r['Match']} -- "
+                          f"Financials={fin_val:,.0f}  Tab({r.get('Tab_Account', '?')})={tab_val:,.0f}  "
+                          f"diff={diff_val:,.0f} | {r['Mapping_Note']}")
+                else:
+                    print(f"    - {r['Financials_Account']!r}: {r['Mapping_Status']} | {r['Mapping_Note']}")
             print(f"\n  All tab names actually present in this workbook (for adding to mappings.yml):")
             print(f"    {all_tab_names}")
 
