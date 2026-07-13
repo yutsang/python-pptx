@@ -730,7 +730,7 @@ def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str
 
 
 def run_ai_checks(
-    databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame],
+    databook_path: str, sheet_name: Optional[str], dfs: Dict[str, pd.DataFrame],
     entity_name: str, model_type: str, model_name: Optional[str], language: str,
     bs_recon: Optional[pd.DataFrame], is_recon: Optional[pd.DataFrame],
     limit: Optional[int] = None, workers: Optional[int] = None,
@@ -745,15 +745,35 @@ def run_ai_checks(
     # is inherently noisier). Running every dfs tab through the LLM — including
     # ones the real pipeline would never send — wastes tokens/time and makes
     # the qwen-vs-GPT-5.5 timing comparison meaningless.
-    mapping_keys = derive_reconciliation_matched_keys((bs_recon, is_recon), dfs.keys(), None)
+    #
+    # BUT: when there's no reconciliation data at all (e.g. no literal
+    # "Financials" sheet to reconcile against), production does NOT skip AI --
+    # fdd_utils/ui.py:746-751 explicitly falls back to ALL extracted schedule
+    # accounts. derive_reconciliation_matched_keys alone can't express that
+    # (it just returns [] when both recon frames are None/empty), so replicate
+    # the fallback here too, or every no-Financials-sheet file would silently
+    # report "no accounts passed reconciliation" even though production would
+    # happily generate commentary for all of them.
+    has_reconciliation_data = bool(
+        (bs_recon is not None and not bs_recon.empty) or (is_recon is not None and not is_recon.empty)
+    )
+    if has_reconciliation_data:
+        mapping_keys = derive_reconciliation_matched_keys((bs_recon, is_recon), dfs.keys(), None)
+        if not mapping_keys:
+            print(
+                "❌ No accounts passed reconciliation with an included Match status "
+                "(✅ Match / ⚠️ Match / ✅ Immaterial, or ❌ Diff for IS) — nothing "
+                "would be sent to AI in production either. Skipping AI-dependent checks."
+            )
+            return {"skipped": True, "reason": "no mapped accounts"}
+    else:
+        mapping_keys = list(dfs.keys())
+        if not mapping_keys:
+            print("❌ No extracted schedule accounts at all — nothing to send to AI.")
+            return {"skipped": True, "reason": "no extracted accounts"}
+        print(f"ℹ️  No reconciliation data; proceeding with all {len(mapping_keys)} extracted "
+              f"schedule account(s), mirroring production's fallback (fdd_utils/ui.py:746-751).")
     total_mapped = len(mapping_keys)
-    if not mapping_keys:
-        print(
-            "❌ No accounts passed reconciliation with an included Match status "
-            "(✅ Match / ⚠️ Match / ✅ Immaterial, or ❌ Diff for IS) — nothing "
-            "would be sent to AI in production either. Skipping AI-dependent checks."
-        )
-        return {"skipped": True, "reason": "no mapped accounts"}
     if accounts:
         wanted = set(accounts)
         found = [k for k in mapping_keys if k in wanted]
@@ -1256,14 +1276,27 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
     else:
         sheet_names = _resolve_financials_sheets(xl)
         if not sheet_names:
+            # Previously this bailed out of inspect_one() entirely, meaning
+            # --run-ai/--export-pptx could never even be tried on a file with
+            # no literal "Financials" sheet -- even though production
+            # (fdd_utils/ui.py:746-751) explicitly falls back to using ALL
+            # extracted schedule accounts when there's no reconciliation data,
+            # rather than refusing to generate anything. Mirror that here:
+            # skip reconciliation only, and keep going if AI/PPTX was requested.
             print(
-                f"\n❌ No sheet named exactly 'Financials' or matching 'Financials - <entity>' "
-                f"found in {path}. Skipping reconciliation — pass --sheet explicitly.\n"
-                f"   Sheet names in this workbook: {xl.sheet_names}"
+                f"\nℹ️  No sheet named exactly 'Financials' or matching 'Financials - <entity>' "
+                f"found in {path} — reconciliation will be skipped."
+                + (" AI/PPTX will still run against ALL extracted schedule accounts, mirroring "
+                   "production's 'no reconciliation data' fallback."
+                   if (run_ai or export_pptx) else
+                   " Pass --sheet explicitly to reconcile against a differently-named summary "
+                   "tab, or pass --run-ai to still exercise the AI pipeline without reconciliation.")
+                + f"\n   Sheet names in this workbook: {xl.sheet_names}"
             )
-            summary["status"] = "no Financials sheet"
-            return summary
-        if len(sheet_names) > 1:
+            if not (run_ai or export_pptx):
+                summary["status"] = "no Financials sheet"
+                return summary
+        elif len(sheet_names) > 1:
             print(
                 f"\nℹ️  Multi-entity workbook: found {len(sheet_names)} Financials sheets "
                 f"{sheet_names} — running reconciliation against each."
@@ -1286,22 +1319,31 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         summary["is_match"] = combined_is_recon["Match"].value_counts().to_dict()
 
     if run_ai:
+        # sheet_names is legitimately [] here when no Financials-like sheet was
+        # found (see above) -- process_workbook_data's selected_sheet and
+        # run_ai_checks's sheet_name (which it never actually uses -- see
+        # run_ai_checks's signature) both tolerate None just fine.
+        selected_sheet_for_ai = sheet_names[0] if sheet_names else None
         language = "Eng"
         try:
             from fdd_utils.workbook import process_workbook_data
             state = process_workbook_data(temp_path=path, entity_name=entity_name,
-                                           selected_sheet=sheet_names[0], debug=False)
+                                           selected_sheet=selected_sheet_for_ai, debug=False)
             language = state.get("language", "Eng")
         except Exception:
             pass
         ai_summary = run_ai_checks(
-            path, sheet_names[0], dfs, entity_name, model_type, model_name, language,
+            path, selected_sheet_for_ai, dfs, entity_name, model_type, model_name, language,
             combined_bs_recon, combined_is_recon, limit=limit, workers=workers,
             accounts=accounts,
         )
         summary["ai"] = ai_summary
 
-        if export_pptx and not ai_summary.get("skipped") and ai_summary.get("results"):
+        if export_pptx and not selected_sheet_for_ai:
+            print("\nℹ️  PPTX export skipped: no Financials-like sheet available, and this "
+                  "diagnostic tool's export path (unlike production) needs one to build the "
+                  "embedded BS/IS summary table. Pass --sheet to enable PPTX export here too.")
+        elif export_pptx and not ai_summary.get("skipped") and ai_summary.get("results"):
             out_dir = Path(pptx_out_dir) if pptx_out_dir else Path(path).parent / "pptx_previews"
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = str(out_dir / f"{Path(path).stem}.preview.pptx")
