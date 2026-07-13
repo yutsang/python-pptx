@@ -76,9 +76,13 @@ import pandas as pd
 from tqdm import tqdm
 
 from fdd_utils.workbook import (
+    _cell_text,
     _coerce_numeric,
+    _date_row_index,
     _multiply_factor,
+    _stage_row_index,
     _unit_markers,
+    canonical_stage_label,
     extract_data_from_excel,
     extract_balance_sheet_and_income_statement,
     find_account_in_dfs,
@@ -86,6 +90,7 @@ from fdd_utils.workbook import (
     load_mappings,
     load_workbook_frames,
     normalize_financial_schedule,
+    parse_date,
     profile_sheet,
     reconcile_financial_statements,
 )
@@ -229,9 +234,84 @@ def check_unit_markers(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None
 #     needs to be traced back to its source instead of re-running the LLM.
 # ---------------------------------------------------------------------------
 
+def _diagnose_sheet_headers(databook_path: str, sheet_name: str) -> None:
+    """Compact, always-works diagnostic for WHY a sheet's stage/date-row
+    detection succeeded or failed — works even when the sheet never made it
+    into dfs (extraction failure), unlike the dfs-dependent dump below.
+    Prints only the header rows' resolved meaning (~10-30 lines), not a full
+    per-cell raw-vs-final table, so it's short enough to paste."""
+    frames = load_workbook_frames(databook_path)
+    raw_df = frames.get(sheet_name)
+    if raw_df is None:
+        close = [k for k in frames.keys() if sheet_name.lower() in str(k).lower()]
+        print(f"❌ Sheet {sheet_name!r} not found in workbook. Available sheets: {sorted(frames.keys())}")
+        if close:
+            print(f"   Did you mean: {close}")
+        return
+
+    stage_row_idx = _stage_row_index(raw_df)
+    date_row_idx = _date_row_index(raw_df, stage_row_idx)
+    print(f"stage_row_idx = {stage_row_idx}   date_row_idx = {date_row_idx}")
+
+    def _row_summary(row_idx, detector, label):
+        if row_idx is None:
+            print(f"  {label} row: NOT FOUND")
+            return
+        print(f"  {label} row {row_idx} (distinct cell values only):")
+        seen = set()
+        for col_idx, value in enumerate(raw_df.iloc[row_idx].tolist()):
+            text = _cell_text(value).strip()
+            if not text:
+                continue
+            result = detector(text)
+            key = (text, result)
+            if key in seen:
+                continue
+            seen.add(key)
+            print(f"    col {col_idx:>3}: {text!r:30s} -> {result}")
+
+    _row_summary(stage_row_idx, canonical_stage_label, "stage")
+    _row_summary(
+        date_row_idx,
+        lambda v: (parse_date(v).strftime("%Y-%m-%d") if parse_date(v) else None),
+        "date",
+    )
+
+    if stage_row_idx is None:
+        print(
+            "\n  No stage row detected at all in the first 12 rows -- no cell matched any "
+            "CANONICAL_STAGE_LABELS variant (fdd_utils/workbook.py). Check the raw text above "
+            "against that list."
+        )
+        return
+
+    try:
+        profile = profile_sheet(raw_df, sheet_name)
+        normalize_financial_schedule(
+            workbook_path=databook_path, sheet_name=sheet_name,
+            profile=profile, sheet_df=raw_df,
+        )
+        print("\n  ✅ normalize_financial_schedule succeeded from this raw profile.")
+    except Exception as exc:
+        print(f"\n  ❌ normalize_financial_schedule failed: {exc}")
+        print(
+            "  Stage row WAS found (see above) but no single column satisfied "
+            "stage+date+numeric all together. Check whether the distinct stage "
+            "values above include 'Indicative adjusted' specifically (not just "
+            "'Indicative adjustment' or another stage) at a column that also has a "
+            "parseable date and real numeric data beneath it."
+        )
+
+
 def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
              entity_name: str = "") -> None:
     _hr(f"DUMP TAB: {tab_name!r} (raw Excel value vs final extracted value)")
+
+    if tab_name not in dfs:
+        print(f"⚠️  {tab_name!r} is not in dfs (extraction did not succeed for this tab) — "
+              f"falling back to a raw header-row diagnosis instead of the raw-vs-final table below.\n")
+        _diagnose_sheet_headers(databook_path, tab_name)
+        return
     df_final = dfs.get(tab_name)
     if df_final is None:
         close = [k for k in dfs.keys() if tab_name.lower() in str(k).lower()]
@@ -285,7 +365,13 @@ def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
 
     columns = normalized["columns"]
     print(f"\nColumns: {[c['key'] for c in columns]}")
-    print(f"\n{'row_idx':>8} {'description':40s} {'column':22s} {'raw (pre-multiply)':>22s} {'final (post-multiply)':>24s}")
+
+    # Compact by default: only print (row, column) pairs where final doesn't
+    # match raw*multiplier — that mismatch is the only thing this check exists
+    # to catch. When everything lines up (the common case), this collapses to
+    # one confirming line instead of a row_idx x column-sized table.
+    checked = 0
+    mismatches = []
     for row in normalized["row_entries"]:
         row_idx = row["row_idx"]
         desc = row["description"][:40]
@@ -293,10 +379,18 @@ def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
             raw_val = _coerce_numeric(raw_df.iloc[row_idx, col["col_idx"]])
             final_val = row["values"].get(col["key"])
             expected = round(raw_val * computed_multiplier, 0) if raw_val is not None else None
-            flag = ""
+            checked += 1
             if raw_val is not None and final_val is not None and expected is not None and abs(final_val - expected) > 1:
-                flag = "  ⚠️ does not match raw*multiplier"
-            print(f"{row_idx:>8} {desc:40s} {col['key']:22s} {raw_val!s:>22s} {final_val!s:>24s}{flag}")
+                mismatches.append((row_idx, desc, col["key"], raw_val, final_val))
+
+    print(f"\nChecked {checked} (row, column) pairs across {len(normalized['row_entries'])} rows.")
+    if not mismatches:
+        print("✅ Every non-empty cell matches raw * computed_multiplier exactly — no scaling bug here.")
+    else:
+        print(f"⚠️  {len(mismatches)} mismatch(es) where final != raw * {computed_multiplier}:")
+        print(f"{'row_idx':>8} {'description':40s} {'column':22s} {'raw':>18s} {'final':>18s}")
+        for row_idx, desc, col_key, raw_val, final_val in mismatches:
+            print(f"{row_idx:>8} {desc:40s} {col_key:22s} {raw_val!s:>18s} {final_val!s:>18s}")
 
     print(
         f"\nHow to read this: 'raw' is the number exactly as it sits in the Excel cell,\n"
