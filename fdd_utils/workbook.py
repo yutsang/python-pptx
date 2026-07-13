@@ -330,7 +330,16 @@ from .financial_common import cell_text
 logger = logging.getLogger(__name__)
 
 CANONICAL_STAGE_LABELS = (
-    ("Indicative adjusted", ("indicative adjusted", "indivative adjusted", "示意性调整后", "示意性調整後")),
+    # "示意性调整数" ("indicative adjustment FIGURE") is a client-specific way of
+    # writing "示意性调整后" ("after indicative adjustment") -- the "数" suffix
+    # here mirrors "审定数" (audited FIGURE, i.e. the final audited value, not
+    # the audit delta) rather than meaning "the adjustment amount itself".
+    # Listed here (checked before "Indicative adjustment" below) so it doesn't
+    # fall through to matching the shorter "示意性调整" substring as the delta
+    # stage instead of the final-balance stage the pipeline actually wants
+    # (PREFERRED_STAGE = "Indicative adjusted").
+    ("Indicative adjusted", ("indicative adjusted", "indivative adjusted", "示意性调整后", "示意性調整後",
+                              "示意性调整数", "示意性調整數")),
     ("Indicative adjustment", ("indicative adjustment", "indivative adjustment", "示意性调整", "示意性調整")),
     ("Audited", ("audited", "审定数", "審定數")),
     ("Audit adjustment", ("audit adjustment", "审计调整", "審計調整")),
