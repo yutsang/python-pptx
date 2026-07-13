@@ -1655,12 +1655,29 @@ def render_language_selector(session_state: Any) -> None:
     place it next to the Financial Statement Sheet selector (which otherwise
     leaves blank space beside the taller Entity Name column) instead of
     always in the sidebar."""
-    # Reconcile to the UI convention ("Eng"/"Chn"). Auto-detection may store
-    # "Chi" — normalise it so the radio + all downstream == "Chn" checks agree.
-    current_lang = session_state.get("language", "Eng")
-    if current_lang not in ("Eng", "Chn"):
-        current_lang = "Chn" if str(current_lang).strip() in ("Chi", "chinese", "Chinese") else "Eng"
-    label_col, radio_col = st.columns([1, 2])
+    # Prefer the authoritative post-Process detection; fall back to the cheap
+    # pre-Process preview so this is visible even before the user clicks
+    # Process -- that's the whole point (so an override is an informed
+    # choice, not a guess about what the databook actually is). Auto-detection
+    # may store "Chi" -- normalise to the UI convention ("Eng"/"Chn") so the
+    # radio + all downstream == "Chn" checks agree.
+    detected = session_state.get("detected_language") or session_state.get("detected_language_preview")
+    detected_norm = None
+    if detected:
+        detected_norm = "Chn" if str(detected).strip() in ("Chi", "Chn", "chinese", "Chinese") else "Eng"
+
+    if not session_state.get("language_user_set") and detected_norm:
+        # No manual override yet -- the detected value IS the default
+        # selection, not just a side note next to a radio that still
+        # defaults to English regardless of what was detected.
+        current_lang = detected_norm
+        session_state.language = detected_norm
+    else:
+        current_lang = session_state.get("language", "Eng")
+        if current_lang not in ("Eng", "Chn"):
+            current_lang = "Chn" if str(current_lang).strip() in ("Chi", "chinese", "Chinese") else "Eng"
+
+    label_col, radio_col, status_col = st.columns([1, 2, 2])
     with label_col:
         st.markdown("<div style='padding-top: 8px'>🌐 Language</div>", unsafe_allow_html=True)
     with radio_col:
@@ -1679,14 +1696,10 @@ def render_language_selector(session_state: Any) -> None:
         session_state.language = selected_lang
         session_state.language_user_set = True   # stop auto-detect from overwriting
 
-    # Prefer the authoritative post-Process detection; fall back to the cheap
-    # pre-Process preview so this reminder is visible even before the user
-    # clicks Process -- that's the whole point (so an override is an
-    # informed choice, not a guess about what the databook actually is).
-    detected = session_state.get("detected_language") or session_state.get("detected_language_preview")
-    if detected:
-        detected_label = "Chinese" if detected == "Chn" else "English"
-        st.success(f"Detected: {detected_label}", icon="✅")
+    with status_col:
+        if detected:
+            detected_label = "Chinese" if detected_norm == "Chn" else "English"
+            st.success(f"Detected: {detected_label}", icon="✅")
 
 
 # --- end ui/sidebar.py ---
