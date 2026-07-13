@@ -308,6 +308,87 @@ def _build_statement_order(
     return financial_statement_order, statement_display_names
 
 
+# Common Traditional -> Simplified character pairs that show up in
+# mappings.yml's own Chinese aliases (e.g. "貨幣資金" vs "货币资金"). Not a
+# general S/T converter -- just enough of this narrow FDD-account-name
+# vocabulary to (a) normalize a Traditional alias to its Simplified spelling
+# for detecting "these two aliases are the same concept, just different
+# script" and (b) prefer Simplified for the final label, matching the
+# convention CATEGORY_TRANSLATIONS_ZH already uses for section headers
+# (fdd_utils/keyword_registry.py).
+_TRADITIONAL_TO_SIMPLIFIED_PAIRS = {
+    "貨": "货", "應": "应", "產": "产", "負": "负", "稅": "税", "資": "资",
+    "積": "积", "準": "准", "幣": "币", "讓": "让", "長": "长", "遞": "递",
+    "認": "认", "賬": "账", "債": "债", "現": "现", "後": "后", "裡": "里",
+    "歸": "归", "屬": "属", "歷": "历", "業": "业", "當": "当", "項": "项",
+    "餘": "余", "繳": "缴", "會": "会", "計": "计", "師": "师", "貴": "贵",
+    "賣": "卖", "買": "买", "須": "须", "廠": "厂", "聯": "联", "繫": "系",
+    "務": "务", "單": "单", "帳": "帐", "報": "报",
+    # Audited (extracted directly from mappings.yml's own alias vocabulary,
+    # see: "python3 -c 'grep aliases + CJK char diff'" in this commit's history)
+    "內": "内", "動": "动", "發": "发", "實": "实", "損": "损", "據": "据",
+    "攤": "摊", "權": "权", "減": "减", "潤": "润", "無": "无", "營": "营",
+    "綜": "综", "職": "职", "譽": "誉", "財": "财", "費": "费", "賃": "赁",
+    "預": "预",
+}
+_TRADITIONAL_TO_SIMPLIFIED = str.maketrans(_TRADITIONAL_TO_SIMPLIFIED_PAIRS)
+
+
+def _find_chinese_display_name(mapping_key: str, fallback: str, mappings: Dict[str, Any]) -> str:
+    """display_name (built in _build_statement_order) is whatever literal
+    text sits in that account's row in the Financials-summary sheet -- for
+    an English-labelled source databook (e.g. Kunshan's "Cash at bank and
+    on hand"), that stays English even when the REPORT is being generated
+    in Chinese, since nothing translates it. mappings.yml already carries a
+    Chinese alias for essentially every account (used for matching Chinese
+    source sheets) -- reuse one of those as the Chinese-report label instead
+    of leaving the English source text in an otherwise fully-translated
+    Chinese bullet.
+
+    A single mapping_key's aliases list often mixes a precise term with
+    broader catch-all synonyms for MATCHING purposes (e.g. Capital's aliases
+    include both "实收资本"/paid-in capital AND "股东权益"/shareholders'
+    equity -- correct for fuzzy-matching a client's sheet name, but "股东权益"
+    would be a semantically WRONG display label for a paid-in-capital
+    account). Picking "any CJK alias" isn't safe.
+
+    Approach: group the CJK aliases by their Simplified-normalized spelling
+    (so a Traditional/Simplified pair like "實收資本"/"实收资本" is treated as
+    ONE concept, not two competing candidates), rank the resulting concepts
+    by how close any of their members sit to where `fallback` itself
+    appears in the alias list (aliases are typically authored in loosely
+    paired EN/CN blocks, e.g. "...实收资本", "Paid-in capital" sit adjacent),
+    and return the Simplified spelling of the winning concept."""
+    config = mappings.get(mapping_key) if isinstance(mappings, dict) else None
+    aliases = config.get("aliases") if isinstance(config, dict) else None
+    if not isinstance(aliases, list) or not aliases:
+        return fallback
+    aliases = [str(a).strip() for a in aliases]
+    chinese_indices = [i for i, a in enumerate(aliases) if contains_chinese_text(a)]
+    if not chinese_indices:
+        return fallback
+
+    normalized_fallback = str(fallback or "").strip().lower()
+    fallback_idx = next(
+        (i for i, a in enumerate(aliases) if a.lower() == normalized_fallback),
+        len(aliases) // 2,  # unknown position -- fall back to the list midpoint
+    )
+
+    concepts: Dict[str, Dict[str, Any]] = {}
+    for i in chinese_indices:
+        simplified = aliases[i].translate(_TRADITIONAL_TO_SIMPLIFIED)
+        entry = concepts.setdefault(simplified, {"best_distance": None, "simplified_form": None})
+        distance = abs(i - fallback_idx)
+        if entry["best_distance"] is None or distance < entry["best_distance"]:
+            entry["best_distance"] = distance
+        if aliases[i] == simplified:
+            entry["simplified_form"] = aliases[i]
+
+    best_concept = min(concepts.items(), key=lambda kv: kv[1]["best_distance"])
+    simplified_key, entry = best_concept
+    return entry["simplified_form"] or simplified_key
+
+
 def _has_significant_balance(financial_data: Optional[pd.DataFrame]) -> bool:
     if financial_data is None or financial_data.empty:
         return True
@@ -381,6 +462,7 @@ def build_pptx_structured_payloads(
                     "account_name": account_key,
                     "mapping_key": mapping_key,
                     "display_name": display_name,
+                    "display_name_zh": _find_chinese_display_name(mapping_key, display_name, mappings),
                     "category": mappings[mapping_key].get("category", ""),
                     "financial_data": financial_data,
                     "commentary": commentary_text,
@@ -3293,7 +3375,17 @@ class PowerPointGenerator:
                 for account_idx, account_data in enumerate(account_data_list):
                     category = account_data.get('category', '')
                     mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
-                    display_name = account_data.get('display_name', mapping_key)
+                    # display_name is whatever text sat in the source Financials
+                    # sheet's row (often English even for a Chinese-language
+                    # report, e.g. Kunshan's own sheets are English-labelled) --
+                    # use the pre-resolved Chinese alias for a Chinese report
+                    # instead of leaving that English label in an otherwise
+                    # fully-translated bullet.
+                    display_name = (
+                        account_data.get('display_name_zh') or account_data.get('display_name', mapping_key)
+                        if is_chinese_databook
+                        else account_data.get('display_name', mapping_key)
+                    )
                     commentary = account_data.get('commentary', '')
                     clause_reviews = account_data.get('clause_reviews', [])
                     is_chinese = account_data.get('is_chinese', False)
