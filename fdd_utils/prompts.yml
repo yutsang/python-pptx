@@ -42,10 +42,11 @@ common:
          - Multi-component BS accounts (OP, OR, IP, Tax payable): preserve / impose multi-line "mainly entailed:" structure with each sub-component on its own line.
       4. ENFORCE NUMBER FORMAT:
          - "CNY<X> million" with 1 decimal place for amounts >= CNY1 million (e.g. "CNY59.3 million", "CNY1.6 million").
-         - "CNY<XX,XXX>" comma-separated integer for sub-million amounts (e.g. "CNY54,950", "CNY78,428").
+         - For amounts from CNY10,000 up to just under CNY1 million: ROUND TO THE NEAREST THOUSAND, comma-separated integer (e.g. "CNY55,000", NOT "CNY54,950") — matches the Chinese report's own 万-unit (nearest-thousand) precision, so an English bullet is never more granular than its Chinese counterpart for the same figure.
+         - Amounts under CNY10,000 may stay exact (e.g. "CNY5,930").
          - NO space between "CNY" and the digit. REWRITE "CNY 7.90 million" → "CNY7.9 million".
          - NO 2-decimal-place million amounts. REWRITE "CNY 7.90 million" → "CNY7.9 million".
-         - NO "K" suffix. REWRITE "CNY 78.2K" → "CNY78,200" (or, if the raw amount rounds cleanly, "CNY0.1 million").
+         - NO "K" suffix. REWRITE "CNY 78.2K" → "CNY78,000" (or, if the raw amount rounds cleanly, "CNY0.1 million").
       5. ENFORCE dates as 'dd mmmm yyyy' (e.g. 30 September 2022).
       6. ENFORCE listing limits: max 3 sub-points per bullet; only items >= 10% of total. If only one significant value exists, show as total only.
       7. ENFORCE LENGTH CAPS (these are HARD ceilings — usually shorter is correct):
@@ -60,7 +61,7 @@ common:
          - Verbose cross-check phrasing: "has been cross-checked with the bank statements and no material discrepancies were identified" — REPLACE with terse "We have not obtained the bank statements yet" when the data implies statements are unreviewed.
          - Invented drivers: "attributed to market competition", "reflecting steady occupancy", "due to ramp-up", "driven by cash inflows" — DELETE unless data/remarks explicitly state them.
          - Bracketed supplemental figures or parenthetical numeric inserts — INLINE them.
-         - Mention of zero balances or nil items — DELETE.
+         - A sub-stream/component that is zero in EVERY reporting period — DELETE it from composition lists entirely (do not mention it at all). This is DIFFERENT from a single zero PERIOD within an otherwise multi-period trend for an account that has real activity in other periods — that period must stay in the sentence and read as "nil" (see ENFORCE NUMBER FORMAT below), never be silently dropped.
          - Annualisation projections ("annualised at CNY 6.80 million") — DELETE; just state the actual period figure.
       9. PRESERVE consultant voice:
          - Use stock factual FDD phrases when supported: "Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"; "We have not obtained the bank statements yet"; "We checked the audit report for [year] and found no differences in respect of this amount"; "no bad debt had been incurred historically"; "in line with the payment terms in the leasing agreements".
@@ -82,8 +83,8 @@ common:
       - Do not use pinyin, Chinese characters, or mixed-language name fragments in English output unless the source gives no workable English rendering at all.
       - If a name or term is uncertain, keep the output fully English by using a concise English descriptor supported by the source context rather than leaving Chinese text or hybrid wording.
       - Do NOT produce hybrid tokens that mix Chinese characters mid-word with English. For redundant bilingual pairs, keep the English term only.
-      - Do NOT mention any balance, component, or amount that is zero (0 CNY, 0%, nil balance, etc.). Remove such references entirely from the output.
-      
+      - A zero component/sub-stream that never has any activity across ALL periods should be omitted from composition lists. A zero PERIOD within an otherwise-active multi-period trend must NOT be silently dropped — state it as "nil" (see ENFORCE NUMBER FORMAT).
+
       CRITICAL OUTPUT REQUIREMENT:
       Output ONLY the corrected financial content text itself.
       Do NOT include any explanations, summaries, or commentary about what was checked or changed.
@@ -104,7 +105,7 @@ common:
 
       ENFORCEMENT CHECKLIST:
       1. Numbers match source data (do NOT recalculate).
-      2. CNY format: "CNY59.3 million" (no space, 1dp) for >= CNY1m; "CNY54,950" comma-int for sub-million. STRIP every "K" suffix and every "CNY <number>" with space; STRIP every "X.XX million" with 2dp.
+      2. CNY format: "CNY59.3 million" (no space, 1dp) for >= CNY1m; for CNY10,000 up to just under CNY1m, ROUND TO NEAREST THOUSAND comma-int (e.g. "CNY55,000", not "CNY54,950" — matches the Chinese report's own 万-unit precision); under CNY10,000 may stay exact. STRIP every "K" suffix and every "CNY <number>" with space; STRIP every "X.XX million" with 2dp.
       3. Dates in 'dd mmmm yyyy'.
       4. BS opening: lowercase "the balance as at <DATE>...", single period, composition. NO "The balance" capitalisation. NO multi-period dump. NO movement-first opening.
       5. IS opening: composition-first ("mainly comprised...", "mainly generated revenue from..."). Multi-year inline amounts are ONLY for OI and OC — NOT for T&S, G&A, Fin Exp, Income tax, or Non-operating items (current-period figures only for those).
@@ -120,7 +121,7 @@ common:
          - Verbose cross-checks: "has been cross-checked... no material discrepancies were identified" → "We have not obtained the bank statements yet" (when supported).
          - Invented drivers: "attributed to market competition", "reflecting steady occupancy", "due to ramp-up", "driven by cash inflows".
          - Bracketed supplemental figures.
-         - Zero / nil mentions.
+         - A sub-stream/component that is zero in EVERY period (not a single zero period within an active multi-period trend — that must stay and read as "nil", never be silently dropped).
          - Annualisation math ("annualised at CNY...").
       8. Preserve stock factual FDD phrases when supported by data: "Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"; "We have not obtained the bank statements yet"; "no bad debt had been incurred historically"; "in line with the payment terms in the leasing agreements"; "We checked the audit report for [year] and found no differences in respect of this amount". STRIP every "You should..." advisory — bullets are factual reporting only.
       9. Multi-component BS (OP/OR/IP/Tax payable) → multi-line "mainly entailed:" structure with each sub-component on its own line.
@@ -168,7 +169,14 @@ common:
          - 在保留事实、数字、有支持的推理及BS/IS结构（资产负债表单期开篇；利润表构成开篇并保留每一重要构成项的多期金额）的前提下，明显压缩篇幅。
          - 列表点最多3项，且仅列示>=总额10%的项目；若仅有一个重要值，直接以总额展示，不列示。
          - 输出仅使用段落 - 禁止要点、禁止粗体/Markdown、禁止"**关键词**：内容"格式。使用连接词串联观点。
-         - 最终篇幅一般为一个简洁段落（BS：3-5句；IS：4-7句），除非数据明确需要更长。优先删除低价值细节、重复表述及小额数字；但不得删除有备注支持的关键推理。
+         - 篇幅上限按科目类型分级（硬性上限——通常越短越好，但不要为压缩而丢失有支持的构成明细）：
+           * 货币资金、应收账款、预付款项、其他综合收益、盈余公积、递延所得税资产、一年内到期非流动负债：2-3句，约40-90字。
+           * 其他应收款、实收资本、长期借款、递延收益、在建工程：3-4句，约70-150字。
+           * 投资性房地产、其他应付款（多构成项科目）：4-7句，约150-280字；允许多行"主要包括："结构，每个子项独立成行。
+           * 营业收入、营业成本：3-5句，约100-180字（须保留每一重要构成项的多期金额，不可省略为单期）。
+           * 财务费用、税金及附加、管理费用、销售费用、所得税费用：2-3句，约60-130字。
+           * 未列出的科目：参照结构最相近的类别，禁止不论科目复杂度一律套用同一篇幅。
+         - 优先删除低价值细节、重复表述及小额数字；但不得删除有备注支持的关键推理，也不得为凑短把投资性房地产/其他应付款等多构成项科目压缩到与货币资金/应收账款相同的篇幅。
          - 利润表科目：精炼时不得将每一构成项的多期金额合并为单期金额。
       13. 应用共享对齐规则:
          - {common_data_rules}
@@ -211,7 +219,7 @@ common:
       8. 是否过滤掉了详细子账户名称?
       9. 行文是否像财务尽调评论，而不是固定模板?
       10. 补充数字是否自然写在段落中，而不是额外放在括号里?
-      11. 最终篇幅是否已收紧（BS：3-5句；IS：4-7句）？是否已删除低价值细节、重复表述及<10%的小额数字？
+      11. 最终篇幅是否符合该科目类型的分级上限（简单科目如货币资金/应收账款约40-90字；多构成项科目如投资性房地产/其他应付款约150-280字，不可压缩到与简单科目相同篇幅）？是否已删除低价值细节、重复表述及<10%的小额数字？
       12. 输出是否严格为段落（无要点、无粗体、无Markdown），用连接词串联？
       13. 利润表科目：每一构成项的多期金额是否保留（未被合并为单期金额）？
 
