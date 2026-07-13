@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass
 from typing import List, Optional
@@ -305,22 +306,107 @@ def _dump_text_and_check_duplicates(result: dict) -> int:
     return len(duplicates)
 
 
+# English "CNY<comma-grouped integer>" -- requires at least one comma group,
+# which only ever appears on the exact-integer form ("CNY238,366"), never on
+# the "CNY<X> million/thousand" decimal form ("CNY7.9 million" has no comma
+# at all, so it can never match here regardless of its own decimal digit).
+_ENG_CNY_INT_RE = re.compile(r"CNY\s?(\d{1,3}(?:,\d{3})+)\b")
+
+# Currency-amount tokens, captured as a plain (possibly decimal) number so the
+# VALUE can be checked for zero in Python rather than pattern-matching "0" as
+# text -- matching text like "0" would also match the trailing ".0" inside an
+# ordinary non-zero number such as "457.0万元" or "CNY570.0 million".
+_NUMBER_WITH_UNIT_RES = [
+    re.compile(r"CNY\s?(\d+(?:\.\d+)?)\s?(?:million|thousand)?"),
+    re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)万元"),
+    re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)亿元"),
+    re.compile(r"人民币\s?(\d+(?:\.\d+)?)元(?!\S)"),
+]
+
+
+def _find_zero_currency_mentions(text: str) -> List[str]:
+    hits: List[str] = []
+    for pattern in _NUMBER_WITH_UNIT_RES:
+        for m in pattern.finditer(text):
+            try:
+                if float(m.group(1)) == 0:
+                    hits.append(m.group(0))
+            except ValueError:
+                continue
+    return hits
+
+
+def _check_number_formatting_and_zero_wording(result: dict) -> int:
+    """Scans every '■ '-led bullet for two classes of issue flagged from real
+    reports: (1) English sub-million CNY amounts more precise than the
+    intended nearest-thousand rounding (e.g. 'CNY238,366' instead of
+    'CNY238,000') -- these read as excessive, inconsistent-with-Chinese
+    detail; (2) a literal zero-value currency mention that should have been
+    reworded as 'nil'/'未发生' instead (e.g. 'CNY0', '人民币0.0万元').
+    Returns the total number of flagged bullets (0 = clean)."""
+    print("\n" + "=" * 78)
+    print("  NUMBER-FORMATTING / ZERO-WORDING SCAN")
+    print("=" * 78)
+    print(
+        "Flags two things per bullet: (a) English sub-million CNY amounts that\n"
+        "aren't rounded to the nearest thousand (over-precise vs the Chinese\n"
+        "report's own 万-unit rounding for the same figure), (b) a literal zero\n"
+        "currency mention that should read as 'nil'/'未发生' instead. Neither is\n"
+        "necessarily wrong on its own -- a genuinely sub-CNY10,000 amount is\n"
+        "correctly exact, and a materiality-threshold '0%' isn't a currency\n"
+        "mention -- so treat this as a worklist to skim, not an automatic fail.\n"
+    )
+    flagged = 0
+    for slide_report in result["slide_reports"]:
+        slide_no = slide_report["slide"]
+        for shape in slide_report["shapes"]:
+            text = shape.get("text") or ""
+            for line in text.split("\n"):
+                stripped = line.strip()
+                if not stripped.startswith("■"):
+                    continue
+                label = stripped[:60]
+                issues: List[str] = []
+
+                for m in _ENG_CNY_INT_RE.finditer(stripped):
+                    value = int(m.group(1).replace(",", ""))
+                    if 10_000 <= value < 1_000_000 and value % 1000 != 0:
+                        issues.append(f"over-precise amount {m.group(0)!r} (not rounded to nearest thousand)")
+
+                for hit in _find_zero_currency_mentions(stripped):
+                    issues.append(f"literal zero mention {hit!r} (should read as 'nil'/'未发生')")
+
+                if issues:
+                    flagged += 1
+                    print(f"  Slide {slide_no} [{shape['name']}] {label!r}...")
+                    for issue in issues:
+                        print(f"      - {issue}")
+
+    if not flagged:
+        print("✅ No over-precise amounts or literal zero mentions found.")
+    return flagged
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pptx_path", help="Path to an already-exported .pptx file")
     ap.add_argument("--config", default=None, help="Path to config.yml (default: tries fdd_utils/config.yml then config.example.yml)")
     ap.add_argument("--dump-text", action="store_true",
-                     help="Also print every commentary shape's full text and scan for duplicate "
+                     help="Also print every commentary shape's full text and scan for (1) duplicate "
                           "bullets across the whole file (same account's commentary appearing on "
-                          "more than one slide/slot).")
+                          "more than one slide/slot), (2) over-precise English sub-million CNY amounts "
+                          "(not rounded to the nearest thousand), (3) literal zero-value currency "
+                          "mentions that should read as 'nil'/'未发生' instead.")
     args = ap.parse_args()
 
     config = _load_config(args.config)
     result = inspect_pptx(args.pptx_path, config)
     duplicate_count = 0
+    wording_flag_count = 0
     if args.dump_text:
         duplicate_count = _dump_text_and_check_duplicates(result)
-    return 1 if (result["total_warnings"] or duplicate_count) else 0
+        wording_flag_count = _check_number_formatting_and_zero_wording(result)
+    return 1 if (result["total_warnings"] or duplicate_count or wording_flag_count) else 0
 
 
 if __name__ == "__main__":
