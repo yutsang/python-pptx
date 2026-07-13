@@ -2977,7 +2977,12 @@ def _select_entity_block(
 
 
 def _local_date_row_index(df: pd.DataFrame, stage_row_idx: int) -> int:
-    return date_row_index(df, stage_row_idx, parse_date, max_distance=2) or stage_row_idx
+    # `or stage_row_idx` would incorrectly discard a legitimate result of row 0
+    # (falsy in Python) and fall back to the stage row itself -- explicit None
+    # check needed since 0 is a valid date-row index (e.g. sheets with no title
+    # row above the header, where the date row is the very first row).
+    result = date_row_index(df, stage_row_idx, parse_date, max_distance=2)
+    return result if result is not None else stage_row_idx
 
 
 def _rollforward_header_row_index(df: pd.DataFrame, desc_col_idx: int) -> Optional[int]:
