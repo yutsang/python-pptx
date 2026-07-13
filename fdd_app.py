@@ -27,6 +27,7 @@ from fdd_utils.ai import FDDConfig
 from fdd_utils.workbook import (
     process_workbook_data,
     build_workbook_preflight,
+    detect_databook_language,
     extract_entity_names_from_preflight,
     get_financial_sheet_options,
 )
@@ -350,6 +351,19 @@ def render_entity_and_sheet_controls(processed: bool = False):
             else:
                 st.warning("No sheets found")
                 st.session_state.selected_sheet = None
+            # Cheap pre-Process detection (sheet profiles only) so the
+            # "Detected: ..." reminder in render_language_selector is
+            # visible BEFORE the user commits to Process Data, not just
+            # after -- otherwise an override happens blind to what the
+            # databook actually is. Cached per temp_path so it only runs
+            # once per upload, not on every Streamlit rerun.
+            if st.session_state.get("_lang_preview_path") != temp_path:
+                _raw_detected = detect_databook_language(temp_path)
+                st.session_state.detected_language_preview = (
+                    "Chn" if str(_raw_detected or "").strip() in ("Chi", "Chn", "chinese", "Chinese")
+                    else "Eng" if _raw_detected else None
+                )
+                st.session_state._lang_preview_path = temp_path
             # Placed here (not the sidebar) to fill the blank space this
             # column otherwise has below the sheet dropdown while Entity
             # Name's column is taller (dropdown/caption + text input) — and

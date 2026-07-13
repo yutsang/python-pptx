@@ -19,6 +19,11 @@ DEFAULT_SESSION_STATE = {
     # What auto-detection actually found, kept even after a manual override so
     # the UI can still show a "Detected: ..." reminder.
     "detected_language": None,
+    # Cheap pre-Process detection (sheet profiles only, no mapping resolution)
+    # so the "Detected: ..." reminder is visible BEFORE the user commits to a
+    # full Process click, not just after -- see render_language_selector.
+    "detected_language_preview": None,
+    "_lang_preview_path": None,
     "bs_is_results": None,
     "ai_results": None,
     "reconciliation": None,
@@ -53,6 +58,8 @@ RESET_SESSION_KEYS = [
     # auto-detected afresh; the team can re-override it for that file.
     "language_user_set",
     "detected_language",
+    "detected_language_preview",
+    "_lang_preview_path",
     "bs_is_results",
     "ai_results",
     "reconciliation",
@@ -1672,7 +1679,11 @@ def render_language_selector(session_state: Any) -> None:
         session_state.language = selected_lang
         session_state.language_user_set = True   # stop auto-detect from overwriting
 
-    detected = session_state.get("detected_language")
+    # Prefer the authoritative post-Process detection; fall back to the cheap
+    # pre-Process preview so this reminder is visible even before the user
+    # clicks Process -- that's the whole point (so an override is an
+    # informed choice, not a guess about what the databook actually is).
+    detected = session_state.get("detected_language") or session_state.get("detected_language_preview")
     if detected:
         detected_label = "Chinese" if detected == "Chn" else "English"
         st.success(f"Detected: {detected_label}", icon="✅")

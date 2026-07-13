@@ -5810,6 +5810,21 @@ def _detect_report_language_from_profiles(profiles):
     return 'Eng' if english_count >= chinese_count else 'Chi'
 
 
+def detect_databook_language(databook_path: str) -> Optional[str]:
+    """Cheap, deterministic language detection ('Eng'/'Chi') from sheet
+    profiles alone -- the same signal extract_normalized_data_from_excel
+    uses internally (see resolver_language above), but skips mapping
+    resolution and row normalization so it's fast enough to run as soon as
+    a file is selected, before the user commits to a full Process click.
+    Returns None if profiling fails or no sheet has any title/stage-label
+    text to go on."""
+    try:
+        profiles = profile_workbook(databook_path)
+    except Exception:
+        return None
+    return _detect_report_language_from_profiles(profiles)
+
+
 def build_dataframes_from_normalized_results(
     normalized_results,
     workbook_list,
