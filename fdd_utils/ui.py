@@ -40,6 +40,11 @@ DEFAULT_SESSION_STATE = {
     "pptx_ready": False,
     "temp_path": None,
     "selected_sheet": None,
+    # Optional sibling roll-up ("主表") workbook + its entity-specific sheet
+    # name, used to source the Financials summary when this entity's own
+    # databook has no Financials-pattern sheet of its own.
+    "rollup_temp_path": None,
+    "rollup_sheet": None,
     "prev_entity_dropdown": "",
     "mapping_overrides": {},
     "account_comments": {},
@@ -69,6 +74,8 @@ RESET_SESSION_KEYS = [
     "pptx_ready",
     "mapping_overrides",
     "account_comments",
+    "rollup_temp_path",
+    "rollup_sheet",
 ]
 
 DELETE_SESSION_KEYS = [
@@ -1503,6 +1510,7 @@ def persist_uploaded_workbook(
     uploaded_bytes: bytes,
     session_state,
     cache_dir: str | None = None,
+    state_key: str = "temp_path",
 ) -> str:
     digest = hashlib.sha256(uploaded_bytes).hexdigest()[:16]
     target_dir = Path(cache_dir or tempfile.gettempdir()) / "python-pptx-uploads"
@@ -1512,8 +1520,12 @@ def persist_uploaded_workbook(
     if not target_path.exists():
         target_path.write_bytes(uploaded_bytes)
 
-    session_state["temp_path"] = str(target_path)
-    session_state["uploaded_workbook_digest"] = digest
+    session_state[state_key] = str(target_path)
+    # uploaded_workbook_digest drives the PRIMARY upload's cache-invalidation
+    # logic elsewhere -- only set it for the primary upload, not a secondary
+    # file (e.g. a roll-up workbook) persisted under a different state_key.
+    if state_key == "temp_path":
+        session_state["uploaded_workbook_digest"] = digest
     return str(target_path)
 
 

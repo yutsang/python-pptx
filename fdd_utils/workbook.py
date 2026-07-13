@@ -6995,6 +6995,8 @@ def process_workbook_data(
     selected_sheet: str | None,
     mapping_overrides: Dict[str, str] | None = None,
     debug: bool = False,
+    financials_from: str | None = None,
+    financials_sheet: str | None = None,
 ) -> Dict[str, Any]:
     process_started = time.perf_counter()
     normalized_results, normalized_workbook_list, _, language, resolution = extract_normalized_data_from_excel(
@@ -7039,18 +7041,28 @@ def process_workbook_data(
     debug_buffer = io.StringIO() if debug else None
     debug_ctx = contextlib.redirect_stdout(debug_buffer) if debug_buffer else contextlib.nullcontext()
 
+    # Some portfolios keep each sub-entity's own databook free of any
+    # Financials-pattern sheet at all -- the real summary for that entity
+    # instead lives inside a sibling roll-up ("主表") workbook, one sheet per
+    # entity. financials_from/financials_sheet let the caller point the BS/IS
+    # extraction at that sibling file's named sheet instead, while dfs (the
+    # breakdown tabs above) still come from temp_path as normal either way.
+    _financials_workbook_path = financials_from or temp_path
+    _financials_sheet_name = financials_sheet if financials_from else selected_sheet
+
     bs_is_results = None
-    if selected_sheet:
+    if _financials_sheet_name:
         bs_started = time.perf_counter()
         with debug_ctx:
             bs_is_results = extract_balance_sheet_and_income_statement(
-                workbook_path=temp_path,
-                sheet_name=selected_sheet,
+                workbook_path=_financials_workbook_path,
+                sheet_name=_financials_sheet_name,
                 debug=debug,
             )
         logger.debug(
-            "Extracted financial summary sheet %s in %.2fs",
-            selected_sheet,
+            "Extracted financial summary sheet %s (from %s) in %.2fs",
+            _financials_sheet_name,
+            os.path.basename(_financials_workbook_path),
             time.perf_counter() - bs_started,
         )
 

@@ -18,6 +18,7 @@ from fdd_utils.ui import (
     build_entity_selector_model,
     generate_pptx_presentation as render_generate_pptx_presentation,
     initialize_app_state,
+    persist_uploaded_workbook,
     render_language_selector,
     render_processed_view,
     render_sidebar_upload,
@@ -374,15 +375,78 @@ def render_entity_and_sheet_controls(processed: bool = False):
             st.info("👈 Please upload a databook file first")
             st.session_state.selected_sheet = None
 
+    if temp_path and os.path.exists(temp_path):
+        # Some portfolios keep each sub-entity's own databook free of any
+        # Financials-pattern sheet at all -- the real summary for that entity
+        # instead lives inside a sibling roll-up ("主表") workbook, one sheet
+        # per entity. Optional and collapsed by default since most databooks
+        # have their own Financials sheet and never need this. Placed BEFORE
+        # the Process button, same principle as the language reminder: must
+        # be known/set before processing, not discovered after.
+        with st.expander("📎 進階：主表 / Roll-up file（如果呢個databook本身冇Financials tab）"):
+            st.caption(
+                "有啲portfolio入面，個別sub-entity嘅databook本身冇任何Financials tab —— "
+                "真正嘅summary喺一個共用嘅主表/roll-up檔案入面，每個entity一個sheet。"
+                "喺呢度上傳嗰個主表檔案，並手動揀返呢個entity專屬嘅Financials sheet。"
+            )
+            rollup_file = st.file_uploader(
+                "Upload roll-up / 主表 file (optional)",
+                type=["xlsx", "xls"],
+                key="rollup_file_uploader",
+            )
+            if rollup_file is not None:
+                rollup_temp_path = persist_uploaded_workbook(
+                    uploaded_name=rollup_file.name,
+                    uploaded_bytes=rollup_file.getvalue(),
+                    session_state=st.session_state,
+                    state_key="rollup_temp_path",
+                )
+                rollup_sheet_options = get_financial_sheets(rollup_temp_path)
+                if rollup_sheet_options:
+                    current_rollup_sheet = st.session_state.get("rollup_sheet")
+                    default_index = (
+                        rollup_sheet_options.index(current_rollup_sheet) + 1
+                        if current_rollup_sheet in rollup_sheet_options else 0
+                    )
+                    selected_rollup_sheet = st.selectbox(
+                        label="Select the Financials sheet for THIS entity in the roll-up file",
+                        options=[""] + rollup_sheet_options,
+                        index=default_index,
+                        help="No auto-matching by entity name -- pick the exact sheet for this entity "
+                             "(e.g. '南通通海Financials').",
+                        key="rollup_sheet_select",
+                    )
+                    st.session_state.rollup_sheet = selected_rollup_sheet or None
+                else:
+                    st.warning("No sheets found in the roll-up file")
+                    st.session_state.rollup_sheet = None
+                if st.session_state.get("rollup_sheet"):
+                    st.caption(f"✅ Will use {st.session_state['rollup_sheet']!r} from {rollup_file.name!r} "
+                               "for reconciliation instead of this entity's own databook.")
+            else:
+                st.session_state.rollup_temp_path = None
+                st.session_state.rollup_sheet = None
+    else:
+        st.session_state.rollup_temp_path = None
+        st.session_state.rollup_sheet = None
+
     button_label = "🚀 Process Data" if not processed else "🔁 Reprocess Data"
     button_key = "process_data_main" if not processed else "reprocess_data_main"
     if st.button(button_label, type="primary", use_container_width=True, key=button_key):
+        # A financials sheet can come from either this databook itself, or
+        # (when this entity's own file has none) from an uploaded roll-up
+        # file's named sheet -- either one satisfies "there is a Financials
+        # source", it doesn't have to be selected_sheet specifically.
+        has_financials_source = bool(st.session_state.get('selected_sheet')) or (
+            bool(st.session_state.get('rollup_temp_path')) and bool(st.session_state.get('rollup_sheet'))
+        )
         if not temp_path:
             st.error("⚠️ Please upload a file first")
         elif not st.session_state.get('entity_name'):
             st.warning("⚠️ Please enter an entity name")
-        elif not st.session_state.get('selected_sheet'):
-            st.warning("⚠️ Please select a financial statement sheet")
+        elif not has_financials_source:
+            st.warning("⚠️ Please select a financial statement sheet (from this databook, or from an "
+                       "uploaded roll-up file under '進階：主表 / Roll-up file' above)")
         else:
             st.session_state.process_data_clicked = True
             st.rerun()
@@ -415,6 +479,8 @@ if st.session_state.get('process_data_clicked', False):
                     selected_sheet=selected_sheet,
                     mapping_overrides=st.session_state.get("mapping_overrides") or None,
                     debug=debug_mode,
+                    financials_from=st.session_state.get("rollup_temp_path"),
+                    financials_sheet=st.session_state.get("rollup_sheet"),
                 )
                 # Language: auto-match from the databook, but in the UI convention
                 # ("Eng"/"Chn") so every downstream == "Chn" check agrees, and NEVER
