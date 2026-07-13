@@ -36,6 +36,14 @@ Usage:
         # re-running the (slow, token-costing) AI pipeline — if the raw cell already
         # holds an actual-CNY-sized number but still gets multiplied by 1000, that's
         # the extraction-side 1000x bug (item 9 class), not an AI hallucination.
+    python inspect_databook.py "databooks/南通通海.xlsx" \
+        --financials-from "databooks/Portfolio I.databook. 主表.xlsx" --financials-sheet 南通通海Financials
+        # Some portfolios keep each sub-entity's own file free of any Financials-pattern
+        # sheet at all -- the real summary lives inside a sibling roll-up ("主表")
+        # workbook instead, one sheet per entity. This sources the Financials summary
+        # from that second file for reconciliation while breakdown tabs (dfs) still
+        # come from the entity's own file as normal. Requires both flags together --
+        # no auto-matching by entity name, you name the exact sheet.
 
 AI-dependent checks (only with --run-ai; needs a configured provider in
 fdd_utils/config.yml, costs real tokens/time — run once per databook when
@@ -670,15 +678,24 @@ def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
 # ---------------------------------------------------------------------------
 
 def check_reconciliation(
-    databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], entity_name: str = ""
+    databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "",
+    financials_from: Optional[str] = None,
 ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
-    _hr(f"4. RECONCILIATION SUMMARY — sheet: {sheet_name}")
+    # financials_from: some portfolios keep each sub-entity's OWN databook
+    # free of any Financials-pattern sheet entirely -- the real summary for
+    # that entity instead lives inside a sibling "主表" (roll-up) workbook,
+    # one sheet per entity (e.g. "南通通海Financials"). dfs (the breakdown
+    # tabs) still come from `databook_path` as normal; only the Financials
+    # summary itself is sourced from a different file when this is set.
+    financials_path = financials_from or databook_path
+    _hr(f"4. RECONCILIATION SUMMARY — sheet: {sheet_name}"
+        + (f"  (from {Path(financials_path).name})" if financials_from else ""))
     try:
         bs_is_results = extract_balance_sheet_and_income_statement(
-            workbook_path=databook_path, sheet_name=sheet_name, debug=False,
+            workbook_path=financials_path, sheet_name=sheet_name, debug=False,
         )
     except Exception as exc:
-        print(f"❌ Could not extract Financials sheet '{sheet_name}': {exc}")
+        print(f"❌ Could not extract Financials sheet '{sheet_name}' from {financials_path!r}: {exc}")
         return None, None
 
     mappings = get_effective_mappings(load_mappings(), None)
@@ -1442,7 +1459,8 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                  model_type: str, model_name: Optional[str], limit: Optional[int] = None,
                  workers: Optional[int] = None, dump_tab_name: Optional[str] = None,
                  accounts: Optional[List[str]] = None, export_pptx: bool = False,
-                 pptx_out_dir: Optional[str] = None) -> Dict[str, Any]:
+                 pptx_out_dir: Optional[str] = None, financials_from: Optional[str] = None,
+                 financials_sheet: Optional[str] = None) -> Dict[str, Any]:
     _hr(f"INSPECTING: {path}")
     summary: Dict[str, Any] = {"file": Path(path).name, "status": "ok"}
     dfs = check_tab_read_summary(path, entity_name=entity_name)
@@ -1459,7 +1477,13 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
 
     xl = pd.ExcelFile(path)
     summary["total_sheets"] = len(xl.sheet_names)
-    if sheet:
+    if financials_from:
+        # This entity's own file has no Financials-pattern sheet at all --
+        # the real summary lives in a sibling roll-up ("主表") workbook, one
+        # sheet per entity. Skip the normal in-file auto-detection entirely;
+        # the user names the exact sheet, no guessing which one is "theirs".
+        sheet_names = [financials_sheet]
+    elif sheet:
         sheet_names = [sheet]
     else:
         sheet_names = _resolve_financials_sheets(xl)
@@ -1493,7 +1517,9 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
     bs_recon_parts: List[pd.DataFrame] = []
     is_recon_parts: List[pd.DataFrame] = []
     for sheet_name in sheet_names:
-        bs_recon, is_recon = check_reconciliation(path, sheet_name, dfs, entity_name=entity_name)
+        bs_recon, is_recon = check_reconciliation(
+            path, sheet_name, dfs, entity_name=entity_name, financials_from=financials_from,
+        )
         if bs_recon is not None and not bs_recon.empty:
             bs_recon_parts.append(bs_recon)
         if is_recon is not None and not is_recon.empty:
@@ -1629,6 +1655,19 @@ def main() -> int:
     ap.add_argument("path", help="databook .xlsx file, or a folder to scan every .xlsx in it")
     ap.add_argument("--sheet", default=None, help="Financials sheet name (default: auto-detect 'Financials')")
     ap.add_argument("--entity", default="", help="entity name filter, if the workbook has multiple entities")
+    ap.add_argument("--financials-from", default=None, metavar="FILE",
+                    help="some portfolios keep each sub-entity's own databook free of any "
+                         "Financials-pattern sheet -- the real summary for that entity instead "
+                         "lives inside a sibling roll-up ('主表') workbook, one sheet per entity "
+                         "(e.g. '南通通海Financials'). Point this at that roll-up file to source "
+                         "the Financials summary from there while breakdown tabs (dfs) still come "
+                         "from `path` as normal. Requires --financials-sheet. Only valid when "
+                         "`path` is a single file.")
+    ap.add_argument("--financials-sheet", default=None, metavar="SHEET_NAME",
+                    help="sheet name within --financials-from to use as the Financials summary "
+                         "(e.g. '南通通海Financials'). No auto-matching by entity name -- named "
+                         "explicitly so there's no risk of silently picking the wrong entity's "
+                         "sheet out of a roll-up file that has one per entity.")
     ap.add_argument("--dump-tab", default=None, metavar="TAB_NAME",
                     help="deterministic, no-AI: print raw Excel cell values vs the final "
                          "scaled dfs values for ONE tab (e.g. --dump-tab 固定资产), to trace "
@@ -1678,9 +1717,18 @@ def main() -> int:
         print("❌ --export-pptx requires --run-ai (it needs AI-generated commentary to build the PPTX payloads).")
         return 1
 
+    if bool(args.financials_from) != bool(args.financials_sheet):
+        print("❌ --financials-from and --financials-sheet must be given together "
+              "(no auto-matching -- name the exact sheet in the roll-up file).")
+        return 1
+
     target = Path(args.path)
     if args.dump_tab and target.is_dir():
         print("❌ --dump-tab only works against a single file, not a folder. "
+              "Pass the exact .xlsx path.")
+        return 1
+    if args.financials_from and target.is_dir():
+        print("❌ --financials-from only works against a single file, not a folder. "
               "Pass the exact .xlsx path.")
         return 1
     if target.is_dir():
@@ -1709,7 +1757,9 @@ def main() -> int:
             summary = inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model,
                                    args.model_name, limit=args.limit, workers=args.workers,
                                    dump_tab_name=args.dump_tab, accounts=accounts_filter,
-                                   export_pptx=args.export_pptx, pptx_out_dir=args.pptx_out)
+                                   export_pptx=args.export_pptx, pptx_out_dir=args.pptx_out,
+                                   financials_from=args.financials_from,
+                                   financials_sheet=args.financials_sheet)
             summaries.append(summary)
         except Exception as exc:
             print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
