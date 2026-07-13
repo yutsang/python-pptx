@@ -390,6 +390,20 @@ def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
     numeric_cols = [c for c in df_final.columns if not str(c).endswith("_formatted") and not str(c).startswith("__")]
     print(df_final[[desc_col] + [c for c in numeric_cols if c != desc_col]].to_string(index=False))
 
+    supporting_notes = df_final.attrs.get("supporting_notes") or []
+    if supporting_notes:
+        table_descriptions = set(str(v).strip() for v in df_final[desc_col].tolist())
+        print(f"\n⚠️  {len(supporting_notes)} supporting_notes entries (text shown to the AI as remarks, separate "
+              f"from the structured table above). Each is labelled below as EXCLUDED (its own description also "
+              f"matched a remark keyword like 'check'/'diff'/'差异'/'对账单'/'recon' in fdd_utils/workbook.py:2835, "
+              f"so this row's numeric values were pulled OUT of the table entirely and this note IS its only "
+              f"trace) vs present-too (the row's description is ALSO a normal row in the table above — this note "
+              f"is just supplementary all-period context, not a data loss):")
+        for note in supporting_notes:
+            label = str(note).split(" | ", 1)[0].strip()
+            tag = "EXCLUDED from table" if label not in table_descriptions else "present-too (not a loss)"
+            print(f"    - [{tag}] {note}")
+
     frames = load_workbook_frames(databook_path)
     raw_df = frames.get(sheet_name)
     if raw_df is None:
