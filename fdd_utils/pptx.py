@@ -2702,6 +2702,230 @@ class PowerPointGenerator:
                 slide_idx, best_k, full_i, empty_i,
             )
 
+    def _split_commentary_at_boundary(
+        self,
+        commentary: str,
+        available_std_lh_units: float,
+        *,
+        slot_name: str,
+        is_chinese: bool,
+        shape=None,
+        statement_type: Optional[str] = None,
+        min_fill_ratio: float = 0.5,
+    ) -> Optional[Tuple[str, str]]:
+        """Find a clean split point (paragraph boundary, else sentence
+        boundary, else word boundary) so the head of `commentary` fits
+        within `available_std_lh_units` std_lh-units. Pure/side-effect
+        free version of the paragraph-fit + sentence-boundary logic the
+        initial forward-fill pass uses for its one-time split, so a
+        boundary rebalance can invoke it repeatedly -- the same account's
+        remainder may need splitting again at a later pass, which is how
+        a single account ends up spread across more than two slots.
+
+        Returns None if nothing usable can be carved off (already fits
+        whole, or every candidate split leaves a sliver below
+        `min_fill_ratio` of the available space).
+        """
+        commentary = str(commentary or "")
+        if not commentary.strip():
+            return None
+
+        chars_per_line = self._estimate_chars_per_line(
+            slot_name, is_chinese, shape=shape, statement_type=statement_type,
+        )
+        _lh_est = (10 * 0.95) if is_chinese else (9 * 1.0)
+        _std_lh_est = _lh_est + self._PARA_SPACE_AFTER
+        available_visual = max(0.0, available_std_lh_units) * (_std_lh_est / _lh_est)
+        if available_visual < 1.0:
+            return None
+
+        paragraphs = commentary.split('\n\n')
+        if len(paragraphs) == 1:
+            paragraphs = commentary.split('\n')
+
+        part1_paragraphs: List[str] = []
+        part1_lines_used = 0
+        split_index = 0
+        for para in paragraphs:
+            para_lines = max(1, (len(para) + chars_per_line - 1) // chars_per_line)
+            if part1_lines_used + para_lines <= available_visual:
+                part1_paragraphs.append(para)
+                part1_lines_used += para_lines
+                split_index += 1
+            else:
+                break
+
+        if part1_paragraphs and split_index == len(paragraphs):
+            return None  # whole thing already fits -- caller shouldn't be splitting
+
+        if part1_paragraphs:
+            part1 = '\n\n'.join(part1_paragraphs).strip()
+            part2 = '\n\n'.join(paragraphs[split_index:]).strip()
+            if part1 and part2 and part1_lines_used >= available_visual * min_fill_ratio:
+                return part1, part2
+            return None
+
+        # No whole paragraph fits by the coarse ceil-per-line estimate above --
+        # try a sentence boundary within paragraph 0 using a finer character
+        # budget instead. The two estimates can disagree (ceil-per-line rounds
+        # up to a whole line even for a small fractional overage) -- that's
+        # expected, not an error, so don't bail out just because this looser
+        # measure says the paragraph would fit; let the boundary search below
+        # decide, and downstream capacity re-validation is the real safety net.
+        para = paragraphs[0]
+        chars_available = int(max(1, available_visual * chars_per_line))
+        hard_cap = min(len(para), int(chars_available * 1.05))
+        min_fill = max(1, int(chars_available * min_fill_ratio))
+        end_positions: List[int] = []
+        for end_char in ['. ', '。', '! ', '！', '? ', '？']:
+            start = 0
+            while True:
+                pos = para.find(end_char, start, hard_cap)
+                if pos < 0:
+                    break
+                end_positions.append(pos + len(end_char))
+                start = pos + 1
+        # Exclude a candidate sitting at (or past) the paragraph's own end --
+        # when the finer char-budget is generous enough to reach the last
+        # sentence in the paragraph, picking it would leave nothing for the
+        # tail, i.e. no real split at all.
+        candidates = [p for p in end_positions if min_fill <= p < len(para)]
+        best_split = max(candidates) if candidates else None
+
+        if best_split is None:
+            word_end = para.rfind(' ', 0, min(hard_cap, len(para) - 1))
+            if word_end > 0 and word_end >= min_fill:
+                best_split = word_end + 1
+
+        if not best_split:
+            return None
+
+        head = para[:best_split].strip()
+        tail_rest = para[best_split:].strip()
+        tail = (tail_rest + '\n\n' + '\n\n'.join(paragraphs[1:])).strip() if len(paragraphs) > 1 else tail_rest
+        if not head or not tail:
+            return None
+        return head, tail
+
+    def _try_partial_split_into_gap(
+        self,
+        cur_accts: List[Dict[str, Any]],
+        nxt_accts: List[Dict[str, Any]],
+        cur_used: float,
+        cur_cap: int,
+        cur_name: str,
+        cur_shape,
+        nxt_cap: int,
+        nxt_name: str,
+        nxt_shape,
+        is_last_cur: bool,
+        is_last_nxt: bool,
+        target_fill: float,
+        statement_type: Optional[str],
+    ) -> bool:
+        """Mutates `cur_accts`/`nxt_accts` in place if it commits. Attempts
+        to move the FRONT part of nxt_accts[0]'s commentary back into
+        cur_accts' remaining capacity, leaving the rest as a continuation
+        at the front of nxt_accts. Generalizes the initial forward-fill
+        pass's one-time split into a repeatable operation any boundary can
+        trigger -- so a single account can end up split across more than
+        two slots when that's what it takes to close a gap, instead of
+        being force-moved whole (leaving the gap unfilled) whenever it
+        doesn't fit. Only commits when it strictly lowers the pair's
+        summed underfill penalty and both fragments clear a minimum-fill
+        safeguard -- never overflows a box, never drops text.
+        """
+        gap = cur_cap - cur_used
+        if gap < 1.5:
+            return False
+
+        head_acct = nxt_accts[0]
+        cur_last_cat = str(cur_accts[-1].get("category", "") or "") if cur_accts else ""
+        head_cat = str(head_acct.get("category", "") or "")
+        category_gap_cost = 1.0 if (head_cat and head_cat != cur_last_cat) else 0.0
+        text_budget = gap - category_gap_cost
+        if text_budget < 1.0:
+            return False
+
+        is_chinese = bool(head_acct.get("is_chinese", False))
+        # The split-point estimate (char-count based) and the real measurement
+        # (_compute_slot_used_lines, font-metric based) don't perfectly agree --
+        # shrink the requested budget and retry a few times if the chosen head
+        # measures slightly over cur_cap, rather than giving up on the first
+        # miss. Each retry backs off by the exact measured overage (plus a
+        # small margin), so this converges in 1-2 extra tries in practice.
+        part1 = None
+        trial_cur_used = None
+        remaining_budget = text_budget
+        for _attempt in range(4):
+            split_result = self._split_commentary_at_boundary(
+                str(head_acct.get("commentary", "") or ""),
+                remaining_budget,
+                slot_name=cur_name,
+                is_chinese=is_chinese,
+                shape=cur_shape,
+                statement_type=statement_type,
+            )
+            if not split_result:
+                return False
+            head_text, tail_text = split_result
+
+            candidate = head_acct.copy()
+            candidate["commentary"] = head_text
+            candidate["is_partial"] = True
+            candidate["part_num"] = int(head_acct.get("part_num") or 1)
+            candidate["original_key"] = head_acct.get("original_key", head_acct.get("mapping_key"))
+
+            candidate_used = self._compute_slot_used_lines(
+                cur_accts + [candidate], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+            )
+            if candidate_used <= cur_cap:
+                part1, trial_cur_used = candidate, candidate_used
+                break
+            overage = candidate_used - cur_cap
+            remaining_budget -= overage + 0.25
+            if remaining_budget < 1.0:
+                return False
+
+        if part1 is None:
+            return False  # estimate/actual mismatch never converged -- bail out safely
+
+        part2 = head_acct.copy()
+        part2["commentary"] = tail_text
+        part2["is_continuation"] = True
+        part2["part_num"] = int(head_acct.get("part_num") or 1) + 1
+        part2["original_key"] = head_acct.get("original_key", head_acct.get("mapping_key"))
+
+        trial_nxt_accts = [part2] + nxt_accts[1:]
+        trial_nxt_used = self._compute_slot_used_lines(
+            trial_nxt_accts, nxt_name, slot_shape=nxt_shape, statement_type=statement_type,
+        )
+        if trial_nxt_used > nxt_cap:
+            return False
+
+        orig_nxt_used = self._compute_slot_used_lines(
+            nxt_accts, nxt_name, slot_shape=nxt_shape, statement_type=statement_type,
+        )
+        cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (cur_used / cur_cap if cur_cap else 0.0))
+        nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (orig_nxt_used / nxt_cap if nxt_cap else 0.0))
+        current_total = cur_penalty + nxt_penalty
+
+        alt_cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (trial_cur_used / cur_cap if cur_cap else 0.0))
+        alt_nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (trial_nxt_used / nxt_cap if nxt_cap else 0.0))
+        alt_total = alt_cur_penalty + alt_nxt_penalty
+
+        if alt_total >= current_total - 1e-9:
+            return False
+
+        cur_accts.append(part1)
+        nxt_accts[0] = part2
+        logger.info(
+            "  Split '%s' across boundary: moved a fragment into slot %s, continuation stays in slot %s "
+            "(pair penalty %.3f -> %.3f)",
+            head_acct.get("mapping_key", "?"), cur_name, nxt_name, current_total, alt_total,
+        )
+        return True
+
     def _rebalance_underfilled_boundaries(
         self,
         assignment: List[List[Dict[str, Any]]],
@@ -2714,7 +2938,11 @@ class PowerPointGenerator:
         including same-slide L/R pairs), if the next slot's first account
         would both fit in the current slot's remaining capacity AND
         strictly lower the DP's own lexicographic underfill penalty summed
-        across the pair, move it back.
+        across the pair, move it back. If the whole account doesn't fit,
+        falls back to _try_partial_split_into_gap to move just enough of
+        its commentary to close the gap, leaving the rest as a
+        continuation -- so a single account can be split across more than
+        two slots when that's what filling every boundary takes.
 
         This is the exact same boundary check inspect_databook.py's
         analyze_population_fill uses to verify (not just guess) that a
@@ -2747,8 +2975,17 @@ class PowerPointGenerator:
                 alt_cur_used = self._compute_slot_used_lines(
                     cur_accts + [nxt_accts[0]], cur_name, slot_shape=cur_shape, statement_type=statement_type,
                 )
+                is_last_cur = (i == n - 1)
+                is_last_nxt = (i + 1 == n - 1)
+
                 if alt_cur_used > cur_cap:
-                    continue  # doesn't fit -- not a candidate, gap is real/unavoidable
+                    if self._try_partial_split_into_gap(
+                        cur_accts, nxt_accts, cur_used, cur_cap, cur_name, cur_shape,
+                        nxt_cap, nxt_name, nxt_shape, is_last_cur, is_last_nxt,
+                        target_fill, statement_type,
+                    ):
+                        changed = True
+                    continue  # whole move doesn't fit -- partial split (if any) already handled
 
                 nxt_used = self._compute_slot_used_lines(
                     nxt_accts, nxt_name, slot_shape=nxt_shape, statement_type=statement_type,
@@ -2757,8 +2994,6 @@ class PowerPointGenerator:
                     nxt_accts[1:], nxt_name, slot_shape=nxt_shape, statement_type=statement_type,
                 )
 
-                is_last_cur = (i == n - 1)
-                is_last_nxt = (i + 1 == n - 1)
                 cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (cur_used / cur_cap if cur_cap else 0.0))
                 nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (nxt_used / nxt_cap if nxt_cap else 0.0))
                 current_total = cur_penalty + nxt_penalty
