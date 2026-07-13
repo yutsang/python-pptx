@@ -3623,6 +3623,21 @@ class PowerPointGenerator:
                     table = None
             
             if table:
+                # Every cell's fill/font/border is set explicitly below, but a
+                # freshly-created/template table shape defaults to
+                # first_row=True, horz_banding=True -- PowerPoint's built-in
+                # table-style theme then auto-applies its own "first row" and
+                # alternating row-banding colors on top of (or in place of,
+                # for rows this code doesn't explicitly touch) the direct
+                # formatting, which is exactly the kind of stray theme
+                # colour/stripe the plain reference table doesn't have.
+                # Disable both so only the explicit per-cell styling renders.
+                try:
+                    table.first_row = False
+                    table.horz_banding = False
+                except Exception:
+                    pass
+
                 # Colors -- matches the company-format reference (client databook's
                 # own "Financials" summary tab: navy #00338D title/subtotal-border,
                 # blue #1E4CE2 header row, light grey #E5E5E5 grand-total fill only).
