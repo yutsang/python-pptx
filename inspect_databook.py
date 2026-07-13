@@ -352,6 +352,139 @@ def _diagnose_column_selection(raw_df: pd.DataFrame, sheet_name: str, stage_row_
               "that means the entire column (from data_start_row down) coerced to no numeric values.")
 
 
+def _compute_tab_mismatches(
+    databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str, entity_name: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Core of the raw-Excel-vs-final-dfs-value comparison, without any
+    printing -- shared by the single-tab deep-dive (dump_tab) and the
+    all-tabs batch scan (check_all_tabs_scaling) so both use the literal
+    same accounting instead of two implementations drifting apart.
+
+    Returns None if this tab can't be checked at all (not in dfs, no
+    recorded source sheet, or normalize_financial_schedule itself raised).
+    Otherwise a dict with keys: sheet_name, computed_multiplier,
+    stored_multiplier, checked (pair count), unverifiable (cells whose
+    col_idx/row_idx didn't resolve against raw_df's actual shape -- a
+    structural row/column-resolution mismatch, distinct from a scaling
+    mismatch, and worth surfacing on its own), mismatches (list of
+    (row_idx, desc, col_key, raw_val, final_val)).
+    """
+    df_final = dfs.get(tab_name)
+    if df_final is None:
+        return None
+
+    sheet_name = df_final.attrs.get("source_sheet_name")
+    stored_multiplier = df_final.attrs.get("source_multiplier")
+    if not sheet_name:
+        return None
+
+    frames = load_workbook_frames(databook_path)
+    raw_df = frames.get(sheet_name)
+    if raw_df is None:
+        return None
+
+    profile = profile_sheet(raw_df, sheet_name)
+    computed_multiplier = _multiply_factor(profile)
+
+    try:
+        normalized = normalize_financial_schedule(
+            workbook_path=databook_path, sheet_name=sheet_name,
+            profile=profile, entity_name=entity_name, sheet_df=raw_df,
+        )
+    except Exception:
+        return None
+
+    checked = 0
+    unverifiable = 0
+    mismatches: List[Tuple[int, str, str, Any, Any]] = []
+    for row in normalized["row_entries"]:
+        row_idx = row["row_idx"]
+        desc = row["description"][:40]
+        for col in normalized["columns"]:
+            # row_idx/col_idx come from normalize_financial_schedule, which for
+            # multi-entity sheets may resolve them against an entity-scoped
+            # block rather than raw_df's own full shape (raw_df here is always
+            # the FULL sheet, unfiltered by entity) -- an out-of-bounds access
+            # is a real, distinct signal (entity/column resolution drifted from
+            # the raw sheet), not a tool bug to silently swallow, but it must
+            # not abort the whole batch scan over one tab's structural quirk.
+            try:
+                raw_val = _coerce_numeric(raw_df.iloc[row_idx, col["col_idx"]])
+            except (IndexError, KeyError):
+                unverifiable += 1
+                continue
+            final_val = row["values"].get(col["key"])
+            expected = round(raw_val * computed_multiplier, 0) if raw_val is not None else None
+            checked += 1
+            if raw_val is not None and final_val is not None and expected is not None and abs(final_val - expected) > 1:
+                mismatches.append((row_idx, desc, col["key"], raw_val, final_val))
+
+    return {
+        "sheet_name": sheet_name,
+        "computed_multiplier": computed_multiplier,
+        "stored_multiplier": stored_multiplier,
+        "checked": checked,
+        "unverifiable": unverifiable,
+        "mismatches": mismatches,
+    }
+
+
+def check_all_tabs_scaling(databook_path: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "") -> int:
+    _hr("2b. RAW-VS-FINAL SCALING CHECK — every breakdown tab, not just Financials")
+    print(
+        "For every extracted tab, compares each non-empty cell's raw Excel value (before\n"
+        "any unit-multiplier scaling) against the final value that actually lands in dfs\n"
+        "and gets sent to the AI. A tab-level flag here means the CODE's own scaling of\n"
+        "that tab doesn't match what the raw Excel cell says, independent of whether the\n"
+        "AI wrote anything wrong -- this is a breakdown-tab extraction check, not an AI\n"
+        "grounding check (that's covered separately by 6-7 under --run-ai).\n"
+    )
+    clean, flagged, skipped, structural = 0, [], [], []
+    for tab_name in sorted(dfs.keys()):
+        try:
+            result = _compute_tab_mismatches(databook_path, dfs, tab_name, entity_name=entity_name)
+        except Exception as exc:
+            # One tab's structural quirk (e.g. a multi-entity sheet whose
+            # resolved row/col indices don't line up with the raw sheet's own
+            # shape) must never abort the whole batch scan.
+            structural.append((tab_name, f"{type(exc).__name__}: {exc}"))
+            continue
+        if result is None:
+            skipped.append(tab_name)
+            continue
+        if result.get("unverifiable"):
+            structural.append((tab_name, f"{result['unverifiable']} cell(s) had a row/col index "
+                                          f"that doesn't resolve against the raw sheet's own shape"))
+        if result["mismatches"]:
+            flagged.append((tab_name, result))
+        else:
+            clean += 1
+
+    print(f"{clean} tab(s) clean, {len(flagged)} tab(s) with a raw-vs-final mismatch, "
+          f"{len(skipped)} tab(s) skipped (no recorded source sheet -- can't trace back).")
+    if skipped:
+        print(f"  Skipped: {skipped}")
+    if structural:
+        print(f"\n⚠️  {len(structural)} tab(s) with a structural row/col resolution mismatch "
+              f"(distinct from a scaling mismatch -- likely an entity-block/raw-sheet indexing "
+              f"drift, worth its own look):")
+        for tab_name, note in structural:
+            print(f"    - {tab_name}: {note}")
+    if not flagged:
+        print("✅ No breakdown-tab scaling mismatches found.")
+        return 0
+    print(f"\n⚠️  {len(flagged)} tab(s) with mismatches (use --dump-tab '<name>' for the full row-by-row trace):")
+    for tab_name, result in flagged:
+        mismatches = result["mismatches"]
+        print(f"\n  '{tab_name}' (sheet {result['sheet_name']!r}, multiplier={result['computed_multiplier']}): "
+              f"{len(mismatches)}/{result['checked']} pair(s) mismatched")
+        for row_idx, desc, col_key, raw_val, final_val in mismatches[:3]:
+            print(f"      row {row_idx:>4}  {desc:40s} {col_key:22s} raw={raw_val!s:>16s} final={final_val!s:>16s}")
+        if len(mismatches) > 3:
+            print(f"      ... and {len(mismatches) - 3} more")
+    return len(flagged)
+
+
 def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
              entity_name: str = "") -> None:
     _hr(f"DUMP TAB: {tab_name!r} (raw Excel value vs final extracted value)")
@@ -1275,6 +1408,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         return summary
 
     check_unit_markers(path, dfs)
+    summary["scaling_mismatch_tabs"] = check_all_tabs_scaling(path, dfs, entity_name=entity_name)
     check_row_structures(dfs)
 
     xl = pd.ExcelFile(path)
@@ -1397,9 +1531,11 @@ def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
                       for label, secs in stage_timing.items())
             if stage_timing else "-"
         )
+        scaling_n = s.get("scaling_mismatch_tabs", 0)
         row = {
             "file": s.get("file", "?"),
             "tabs": f"{s.get('tabs_parsed', '?')}/{s.get('total_sheets', '?')}",
+            "scaling": f"{scaling_n} tab(s) ⚠️" if scaling_n else "-",
             "BS": bs_str, "IS": is_str, "AI": ai_str, "stage s/acct": stage_str,
         }
         if "pptx" in s:
