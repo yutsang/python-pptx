@@ -117,7 +117,7 @@ def reset_processing_session_state(session_state: Any, clear_upload_reference: b
 
 # --- begin ui/views.py ---
 from datetime import datetime
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 
@@ -134,25 +134,42 @@ from .workbook import (
 )
 
 
-def build_entity_selector_model(entity_options: List[str], current_entity_name: str) -> Dict[str, Any]:
+def build_entity_selector_model(
+    entity_options: List[str],
+    current_entity_name: str,
+    preferred_language: Optional[str] = None,
+) -> Dict[str, Any]:
     # A candidate that mixes CJK and English (e.g. "南通通海 Nantong Tonghai")
     # previously only ever offered as that one combined string -- add the
     # Chinese-only and English-only halves as their own selectable options
     # right next to it, so the user can pick whichever the report actually
     # needs without having to hand-edit the combined text.
     expanded_options: List[str] = []
+    # If the report's language is already known (e.g. detected/selected as
+    # Chinese) and nothing has been manually picked yet, default straight to
+    # the language-matching half instead of the combined "中文 English"
+    # string -- picking the wrong-language half by default would look like
+    # the suggester doesn't know what report it's building.
+    language_preferred_default: Optional[str] = None
     for option in entity_options:
         expanded_options.append(option)
         chinese_only, english_only = split_bilingual_entity_name(option)
         if chinese_only and chinese_only != option:
             expanded_options.append(chinese_only)
+            if preferred_language == "Chn" and language_preferred_default is None:
+                language_preferred_default = chinese_only
         if english_only and english_only != option:
             expanded_options.append(english_only)
+            if preferred_language == "Eng" and language_preferred_default is None:
+                language_preferred_default = english_only
 
     dropdown_options = dedupe_non_empty(expanded_options)
     text_value = str(current_entity_name or "").strip()
-    if not text_value and len(dropdown_options) == 1:
-        text_value = dropdown_options[0]
+    if not text_value:
+        if language_preferred_default:
+            text_value = language_preferred_default
+        elif len(dropdown_options) == 1:
+            text_value = dropdown_options[0]
 
     return {
         "dropdown_options": dropdown_options,
@@ -2017,5 +2034,39 @@ def batch_process_entity(
     result["bs_count"] = len(bs_data)
     result["is_count"] = len(is_data)
     result["accounts_processed"] = len(matched_mapping_keys)
+
+    with open(output_path, "rb") as handle:
+        pptx_bytes = handle.read()
+
+    # Full session_state-shaped bundle so a caller (the batch UI) can swap
+    # this entity's results into st.session_state and reuse the single-file
+    # render_processed_view/generate_pptx_presentation UI UNCHANGED, instead
+    # of only ever seeing this thin status dict.
+    result["state"] = {
+        "dfs": state.get("dfs"),
+        "display_dfs": state.get("display_dfs"),
+        "dfs_variants": state.get("dfs_variants"),
+        "display_df_variants": state.get("display_df_variants"),
+        "workbook_list": state.get("workbook_list"),
+        "display_workbook_list": state.get("display_workbook_list"),
+        "language": effective_language,
+        "detected_language": effective_language,
+        "bs_is_results": state.get("bs_is_results"),
+        "reconciliation": reconciliation,
+        "resolution": resolution,
+        "project_name": state.get("project_name"),
+        "entity_name": entity_name,
+        "temp_path": temp_path,
+        "selected_sheet": selected_sheet,
+        "mapping_overrides": mapping_overrides,
+        "ai_results": ai_results,
+        "model_type": model_type,
+        "model_name": model_name,
+        "use_multithreading": use_multithreading,
+        "pptx_ready": True,
+        "pptx_download_data": pptx_bytes,
+        "pptx_download_filename": os.path.basename(output_path),
+        "pptx_download_mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
     return result
 # --- end ui/pptx_export.py ---

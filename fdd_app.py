@@ -289,6 +289,7 @@ def render_entity_and_sheet_controls(processed: bool = False):
             selector_model = build_entity_selector_model(
                 entity_options,
                 current_entity_name=st.session_state.get('entity_name') or "",
+                preferred_language=st.session_state.get('language'),
             )
 
             if 'entity_text_input' not in st.session_state:
@@ -482,145 +483,216 @@ def _reactive_selectbox_default(widget_key: str, options: list, desired_default:
 
 def render_batch_processing_section():
     """Batch mode: process several entities/databooks in one pass, each
-    producing its own standalone PPTX. Headless per-entity, driven by
-    batch_process_entity() (fdd_utils/ui.py) rather than the interactive
-    single-file session_state flow above -- batch entities don't get the
-    per-account AI-result editing UI, only a straight process->AI->export
-    run per slot.
+    producing its own standalone PPTX.
 
     Upload model: ONE shared optional roll-up file, and ONE multi-file
     uploader for every entity's own databook -- entities are derived
-    directly from whatever the multi-uploader currently holds (adding a
-    file adds an entity, removing it via the uploader's own "x" removes
-    one), rather than a separate manually-managed +/- slot list. This
-    matches how the batch upload is actually used: pick every databook for
-    this run in one dialog, not one at a time.
+    directly from whatever the multi-uploader currently holds.
+
+    Processing model: a single blocking loop (driven by
+    batch_process_entity(), fdd_utils/ui.py) with ONE shared progress
+    display across all entities. Each entity's FULL result bundle (dfs,
+    reconciliation, ai_results, etc. -- everything the single-file flow's
+    session_state normally holds after Process+AI) gets cached once that
+    entity finishes.
+
+    Review model: once processing completes, the setup section collapses
+    and an entity switcher appears. Selecting an entity swaps its cached
+    bundle into the live st.session_state and re-renders the EXISTING
+    single-file render_processed_view UI (tables, reconciliation, AI
+    output, PPTX export) UNCHANGED -- a plain st.radio switcher is used
+    instead of st.tabs() specifically because st.tabs() executes every
+    tab's content on every rerun (just hides the inactive ones visually),
+    which would instantiate render_processed_view's non-entity-scoped
+    widget keys more than once per run and crash with duplicate-key
+    errors; a radio-gated `if active == entity` only ever renders one
+    entity's tree per run.
     """
     st.markdown("## 📦 Batch Processing")
-    st.caption(f"Upload a shared roll-up file (optional) and every entity's databook at once -- "
-               f"each databook becomes its own entity, producing its own PPTX. Maximum {MAX_BATCH_ENTITIES}.")
 
-    with st.expander("📎 Shared roll-up file (if these databooks have no Financials tab)"):
-        st.caption(
-            "If the databooks in this batch have no Financials tab, the real summary can come from a "
-            "shared roll-up file (one sheet per entity). Upload it once here -- each entity below can "
-            "then select its own sheet (auto-suggested by entity name, but you can override it)."
-        )
-        rollup_file = st.file_uploader(
-            "Upload shared roll-up file (optional)",
-            type=["xlsx", "xls"],
-            key="batch_rollup_file_uploader",
-        )
-        if rollup_file is not None:
-            persist_uploaded_workbook(
-                uploaded_name=rollup_file.name,
-                uploaded_bytes=rollup_file.getvalue(),
-                session_state=st.session_state,
-                state_key="batch_rollup_temp_path",
-            )
-            st.caption(f"✅ Shared roll-up file: {rollup_file.name}")
-        else:
-            st.session_state.batch_rollup_temp_path = None
+    in_progress = bool(st.session_state.get("batch_processing_in_progress"))
+    done = bool(st.session_state.get("batch_processing_done"))
+    setup_expanded = not in_progress and not done
 
-    rollup_temp_path = st.session_state.get("batch_rollup_temp_path")
-    rollup_sheet_options = get_financial_sheets(rollup_temp_path) if rollup_temp_path else []
+    with st.expander("⚙️ Setup", expanded=setup_expanded):
+        st.caption(f"Upload a shared roll-up file (optional) and every entity's databook at once -- "
+                   f"each databook becomes its own entity, producing its own PPTX. Maximum {MAX_BATCH_ENTITIES}.")
 
-    st.divider()
-
-    uploaded_files = st.file_uploader(
-        "Upload databooks (select or drag multiple files)",
-        type=["xlsx", "xls"],
-        accept_multiple_files=True,
-        key="batch_files_uploader",
-    )
-
-    if uploaded_files and len(uploaded_files) > MAX_BATCH_ENTITIES:
-        st.warning(f"Only the first {MAX_BATCH_ENTITIES} files will be processed (maximum {MAX_BATCH_ENTITIES} entities per batch).")
-        uploaded_files = uploaded_files[:MAX_BATCH_ENTITIES]
-
-    st.divider()
-
-    ready_slots = []
-    for idx, uploaded_file in enumerate(uploaded_files or []):
-        # Stable per-file identity (name+size, sanitized) so entity name /
-        # sheet choices persist across reruns for the SAME uploaded file --
-        # a re-upload of a differently-sized file under the same name still
-        # gets its own fresh state instead of reusing stale choices.
-        slot_id = re.sub(r"[^\w\-]", "_", f"{uploaded_file.name}_{uploaded_file.size}")
-        own_temp_path = persist_uploaded_workbook(
-            uploaded_name=uploaded_file.name,
-            uploaded_bytes=uploaded_file.getvalue(),
-            session_state=st.session_state,
-            state_key=f"batch_temp_path_{slot_id}",
-        )
+        # Shared across the whole batch -- all entities in one run are
+        # generated in the same language, same as picking it once up front
+        # for a single-file run.
+        render_language_selector(st.session_state)
 
         with st.container():
-            st.markdown("---")
-            st.markdown(f"**Entity #{idx + 1}** — `{uploaded_file.name}`")
-
-            entity_key = f"batch_entity_{slot_id}"
-            if entity_key not in st.session_state:
-                st.session_state[entity_key] = _extract_entity_from_filename(uploaded_file.name) or ""
-            entity_col, _spacer = st.columns([2, 3])
-            with entity_col:
-                entity_name = st.text_input("Entity name", key=entity_key, placeholder="Entity name")
-
-            own_sheet = ""
-            rollup_sheet_choice = ""
-            sheet_col1, sheet_col2 = st.columns(2)
-            with sheet_col1:
-                own_sheet_options = get_financial_sheets(own_temp_path)
-                own_choices = [""] + own_sheet_options
-                # Blank by default whenever a shared roll-up file is present
-                # (ambiguous which source should win); auto-pick the first
-                # ranked sheet only when there's no roll-up alternative at
-                # all, matching single-file mode's own behaviour exactly.
-                default_own = "" if rollup_temp_path else (own_sheet_options[0] if own_sheet_options else "")
-                own_sheet_key = f"batch_own_sheet_{slot_id}"
-                _reactive_selectbox_default(own_sheet_key, own_choices, default_own)
-                own_sheet = st.selectbox(
-                    "This file's own Financials sheet",
-                    options=own_choices,
-                    key=own_sheet_key,
+            st.markdown("**📎 Shared roll-up file** (if these databooks have no Financials tab)")
+            st.caption(
+                "If the databooks in this batch have no Financials tab, the real summary can come from a "
+                "shared roll-up file (one sheet per entity). Upload it once here -- each entity below can "
+                "then select its own sheet (auto-suggested by entity name, but you can override it)."
+            )
+            rollup_file = st.file_uploader(
+                "Upload shared roll-up file (optional)",
+                type=["xlsx", "xls"],
+                key="batch_rollup_file_uploader",
+            )
+            if rollup_file is not None:
+                persist_uploaded_workbook(
+                    uploaded_name=rollup_file.name,
+                    uploaded_bytes=rollup_file.getvalue(),
+                    session_state=st.session_state,
+                    state_key="batch_rollup_temp_path",
                 )
-            with sheet_col2:
-                if rollup_temp_path and rollup_sheet_options:
-                    suggested = suggest_rollup_sheet_for_entity(entity_name, rollup_sheet_options) if entity_name else None
-                    rollup_choices = [""] + rollup_sheet_options
-                    rollup_sheet_key = f"batch_rollup_sheet_{slot_id}"
-                    _reactive_selectbox_default(rollup_sheet_key, rollup_choices, suggested or "")
-                    rollup_sheet_choice = st.selectbox(
-                        "This entity's sheet in the roll-up file (auto-suggested, editable)",
-                        options=rollup_choices,
-                        key=rollup_sheet_key,
+                st.caption(f"✅ Shared roll-up file: {rollup_file.name}")
+            else:
+                st.session_state.batch_rollup_temp_path = None
+
+        rollup_temp_path = st.session_state.get("batch_rollup_temp_path")
+        rollup_sheet_options = get_financial_sheets(rollup_temp_path) if rollup_temp_path else []
+
+        st.divider()
+
+        uploaded_files = st.file_uploader(
+            "Upload databooks (select or drag multiple files)",
+            type=["xlsx", "xls"],
+            accept_multiple_files=True,
+            key="batch_files_uploader",
+        )
+
+        if uploaded_files and len(uploaded_files) > MAX_BATCH_ENTITIES:
+            st.warning(f"Only the first {MAX_BATCH_ENTITIES} files will be processed (maximum {MAX_BATCH_ENTITIES} entities per batch).")
+            uploaded_files = uploaded_files[:MAX_BATCH_ENTITIES]
+
+        st.divider()
+
+        ready_slots = []
+        for idx, uploaded_file in enumerate(uploaded_files or []):
+            # Stable per-file identity (name+size, sanitized) so entity name /
+            # sheet choices persist across reruns for the SAME uploaded file --
+            # a re-upload of a differently-sized file under the same name still
+            # gets its own fresh state instead of reusing stale choices.
+            slot_id = re.sub(r"[^\w\-]", "_", f"{uploaded_file.name}_{uploaded_file.size}")
+            own_temp_path = persist_uploaded_workbook(
+                uploaded_name=uploaded_file.name,
+                uploaded_bytes=uploaded_file.getvalue(),
+                session_state=st.session_state,
+                state_key=f"batch_temp_path_{slot_id}",
+            )
+
+            with st.container():
+                st.markdown("---")
+                st.markdown(f"**Entity #{idx + 1}** — `{uploaded_file.name}`")
+
+                entity_key = f"batch_entity_{slot_id}"
+                entity_options = get_entity_names(own_temp_path)
+                filename_entity = _extract_entity_from_filename(uploaded_file.name)
+                if filename_entity and filename_entity not in entity_options:
+                    entity_options = list(entity_options) + [filename_entity]
+                selector_model = build_entity_selector_model(
+                    entity_options,
+                    current_entity_name=st.session_state.get(entity_key, ""),
+                    preferred_language=st.session_state.get("language"),
+                )
+                if entity_key not in st.session_state:
+                    st.session_state[entity_key] = selector_model["text_value"]
+
+                name_col1, name_col2 = st.columns(2)
+                with name_col1:
+                    if selector_model["show_dropdown"]:
+                        dropdown_key = f"batch_entity_dd_{slot_id}"
+                        dd_options = [""] + selector_model["dropdown_options"]
+                        _reactive_selectbox_default(dropdown_key, dd_options, selector_model["text_value"])
+                        picked = st.selectbox(
+                            "Entity name suggestions", options=dd_options, key=dropdown_key,
+                            help="Auto-detected from the databook -- pick one, or type a custom name on the right.",
+                        )
+                        prev_picked_key = f"_prev_{dropdown_key}"
+                        if picked and picked != st.session_state.get(prev_picked_key, ""):
+                            st.session_state[entity_key] = picked
+                            st.session_state[prev_picked_key] = picked
+                    else:
+                        st.caption("No entity names detected -- enter one manually.")
+                with name_col2:
+                    entity_name = st.text_input("Entity name", key=entity_key, placeholder="Entity name")
+
+                own_sheet = ""
+                rollup_sheet_choice = ""
+                sheet_col1, sheet_col2 = st.columns(2)
+                with sheet_col1:
+                    own_sheet_options = get_financial_sheets(own_temp_path)
+                    own_choices = [""] + own_sheet_options
+                    # Blank by default whenever a shared roll-up file is present
+                    # (ambiguous which source should win); auto-pick the first
+                    # ranked sheet only when there's no roll-up alternative at
+                    # all, matching single-file mode's own behaviour exactly.
+                    default_own = "" if rollup_temp_path else (own_sheet_options[0] if own_sheet_options else "")
+                    own_sheet_key = f"batch_own_sheet_{slot_id}"
+                    _reactive_selectbox_default(own_sheet_key, own_choices, default_own)
+                    own_sheet = st.selectbox(
+                        "This file's own Financials sheet",
+                        options=own_choices,
+                        key=own_sheet_key,
                     )
+                with sheet_col2:
+                    if rollup_temp_path and rollup_sheet_options:
+                        suggested = suggest_rollup_sheet_for_entity(entity_name, rollup_sheet_options) if entity_name else None
+                        rollup_choices = [""] + rollup_sheet_options
+                        rollup_sheet_key = f"batch_rollup_sheet_{slot_id}"
+                        _reactive_selectbox_default(rollup_sheet_key, rollup_choices, suggested or "")
+                        rollup_sheet_choice = st.selectbox(
+                            "This entity's sheet in the roll-up file (auto-suggested, editable)",
+                            options=rollup_choices,
+                            key=rollup_sheet_key,
+                        )
 
-        resolved = {
-            "temp_path": own_temp_path,
-            "entity_name": entity_name.strip() if entity_name else "",
-            "own_sheet": own_sheet or None,
-            "rollup_sheet": rollup_sheet_choice or None,
-        }
-        if resolved["temp_path"] and resolved["entity_name"] and (
-            resolved["own_sheet"] or (rollup_temp_path and resolved["rollup_sheet"])
+            resolved = {
+                "temp_path": own_temp_path,
+                "entity_name": entity_name.strip() if entity_name else "",
+                "own_sheet": own_sheet or None,
+                "rollup_sheet": rollup_sheet_choice or None,
+            }
+            if resolved["temp_path"] and resolved["entity_name"] and (
+                resolved["own_sheet"] or (rollup_temp_path and resolved["rollup_sheet"])
+            ):
+                ready_slots.append(resolved)
+
+        st.divider()
+        st.caption(f"{len(ready_slots)} / {len(uploaded_files or [])} entities ready to process.")
+
+        if st.button(
+            f"🚀 Start Batch Processing ({len(ready_slots)})",
+            type="primary",
+            use_container_width=True,
+            disabled=not ready_slots or in_progress,
+            key="batch_start",
         ):
-            ready_slots.append(resolved)
+            st.session_state.batch_ready_slots = ready_slots
+            st.session_state.batch_rollup_temp_path_snapshot = rollup_temp_path
+            st.session_state.batch_processing_in_progress = True
+            st.session_state.batch_processing_done = False
+            st.session_state.batch_entity_cache = {}
+            st.session_state.batch_processed_entity_order = []
+            st.session_state.batch_failed_entities = []
+            st.rerun()
 
-    st.divider()
-    st.caption(f"{len(ready_slots)} / {len(uploaded_files or [])} entities ready to process.")
-
-    if st.button(
-        f"🚀 Process All ({len(ready_slots)})",
-        type="primary",
-        use_container_width=True,
-        disabled=not ready_slots,
-        key="batch_process_all",
-    ):
-        results = []
+    # --- Processing loop: one shared progress display across all entities ---
+    if st.session_state.get("batch_processing_in_progress"):
+        ready_slots = st.session_state.get("batch_ready_slots") or []
+        rollup_temp_path = st.session_state.get("batch_rollup_temp_path_snapshot")
+        batch_language = st.session_state.get("language", "Eng")
+        total = len(ready_slots)
         progress_bar = st.progress(0.0)
         status = st.empty()
+
         for i, slot in enumerate(ready_slots):
-            status.info(f"⏳ Processing {slot['entity_name']} ({i + 1}/{len(ready_slots)})…")
+            def _progress_cb(agent_num, agent_name, item_num, total_items_in_agent, completed_items,
+                              key_name=None, _i=i, _total=total, _entity=slot["entity_name"]):
+                key_display = f" | Key: {key_name}" if key_name else ""
+                status.info(
+                    f"⏳ Entity {_i + 1}/{_total}: {_entity} — Stage {agent_num}: {agent_name} "
+                    f"| Item {item_num}/{total_items_in_agent}{key_display}"
+                )
+
+            status.info(f"⏳ Entity {i + 1}/{total}: {slot['entity_name']} — extracting data...")
             try:
                 outcome = batch_process_entity(
                     temp_path=slot["temp_path"],
@@ -628,40 +700,50 @@ def render_batch_processing_section():
                     selected_sheet=slot["own_sheet"],
                     financials_from=rollup_temp_path if not slot["own_sheet"] else None,
                     financials_sheet=slot["rollup_sheet"] if not slot["own_sheet"] else None,
+                    language=batch_language,
                     model_type=st.session_state.get("model_type", "local"),
                     model_name=st.session_state.get("model_name"),
                     use_multithreading=st.session_state.get("use_multithreading", True),
+                    progress_callback=_progress_cb,
                 )
             except Exception as exc:
                 outcome = {"entity_name": slot["entity_name"], "status": "failed", "error": str(exc)}
-            results.append(outcome)
-            progress_bar.progress((i + 1) / len(ready_slots))
+
+            if outcome.get("status") == "ok" and outcome.get("state"):
+                st.session_state.batch_entity_cache[outcome["entity_name"]] = outcome["state"]
+                st.session_state.batch_processed_entity_order.append(outcome["entity_name"])
+            else:
+                st.session_state.batch_failed_entities.append(
+                    {"entity_name": slot["entity_name"], "error": outcome.get("error", "unknown error")}
+                )
+            progress_bar.progress((i + 1) / total if total else 1.0)
+
         status.empty()
-        st.session_state.batch_results = results
+        progress_bar.empty()
+        st.session_state.batch_processing_in_progress = False
+        st.session_state.batch_processing_done = True
         st.rerun()
 
-    batch_results = st.session_state.get("batch_results")
-    if batch_results:
-        st.markdown("### Results")
-        for outcome in batch_results:
-            entity_label = outcome.get("entity_name", "?")
-            if outcome.get("status") == "ok":
-                output_path = outcome.get("output_path")
-                st.success(
-                    f"✅ {entity_label}: BS={outcome.get('bs_count', 0)} IS={outcome.get('is_count', 0)} "
-                    f"accounts={outcome.get('accounts_processed', 0)}"
-                )
-                if output_path and os.path.exists(output_path):
-                    with open(output_path, "rb") as handle:
-                        st.download_button(
-                            label=f"⬇️ Download {os.path.basename(output_path)}",
-                            data=handle.read(),
-                            file_name=os.path.basename(output_path),
-                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                            key=f"batch_download_{entity_label}_{output_path}",
-                        )
-            else:
-                st.error(f"❌ {entity_label}: {outcome.get('error', 'unknown error')}")
+    failed_entities = st.session_state.get("batch_failed_entities")
+    if failed_entities:
+        for failure in failed_entities:
+            st.error(f"❌ {failure['entity_name']}: {failure['error']}")
+
+    # --- Review: entity switcher reusing the single-file UI unchanged ---
+    processed_order = st.session_state.get("batch_processed_entity_order") or []
+    if processed_order:
+        st.divider()
+        active_entity = st.radio(
+            "Entity", options=processed_order, horizontal=True, key="batch_active_entity",
+        )
+        bundle = (st.session_state.get("batch_entity_cache") or {}).get(active_entity)
+        if bundle:
+            st.session_state.update(bundle)
+            render_processed_view(
+                session_state=st.session_state,
+                generate_pptx_callback=generate_pptx_presentation,
+                get_model_display_name=get_model_display_name,
+            )
 
 
 # Initialize
