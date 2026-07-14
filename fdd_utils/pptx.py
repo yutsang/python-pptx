@@ -3971,14 +3971,19 @@ class PowerPointGenerator:
             from pptx.shapes.placeholder import TablePlaceholder
             
             table = None
-            # Check if it's a TablePlaceholder (textbox placeholder named "Table Placeholder")
-            is_table_placeholder = False
-            try:
-                is_table_placeholder = isinstance(shape, TablePlaceholder)
-            except:
-                # Check by name
-                if hasattr(shape, 'name') and 'Table' in shape.name and 'Placeholder' in shape.name:
-                    is_table_placeholder = True
+            # Check if it's a TablePlaceholder (either a real pptx placeholder
+            # of that type, OR a plain textbox/autoshape named "Table
+            # Placeholder" used as a template bounds marker). isinstance()
+            # returning False is NOT an exception -- the previous try/except
+            # here never actually reached the name-based fallback, since
+            # isinstance() simply returns False for a non-match rather than
+            # raising, so a plain-shape placeholder (e.g. added directly via
+            # python-pptx, not through the placeholder XML machinery) was
+            # silently treated as "not a table placeholder" and fell through
+            # to the broken "insert as plain text" error path below.
+            is_table_placeholder = isinstance(shape, TablePlaceholder) or (
+                'Table' in getattr(shape, 'name', '') and 'Placeholder' in getattr(shape, 'name', '')
+            )
             
             if is_table_placeholder:
                 # It's a table placeholder - insert a table into it
