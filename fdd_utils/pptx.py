@@ -4160,11 +4160,18 @@ class PowerPointGenerator:
 
                         # Only the LAST column is highlighted light blue
                         # (matches the company-format reference's "adjusted
-                        # figures" column) -- every other column stays
-                        # unfilled white.
-                        if col_idx == max_cols - 1:
-                            cell.fill.solid()
-                            cell.fill.fore_color.rgb = LIGHT_BLUE_HIGHLIGHT
+                        # figures" column) -- every other column is
+                        # EXPLICITLY set to solid white, not left unset.
+                        # Leaving fill untouched makes the cell "inherit"
+                        # from the table's built-in style GUID (still
+                        # referenced even with first_row/horz_banding
+                        # disabled), which can be a themed/tinted colour --
+                        # confirmed via inspect_pptx_tables.py showing
+                        # fill=inherited on every un-highlighted cell.
+                        cell.fill.solid()
+                        cell.fill.fore_color.rgb = (
+                            LIGHT_BLUE_HIGHLIGHT if col_idx == max_cols - 1 else WHITE
+                        )
 
                         # Company-format reference is a fully ruled grid
                         # (every cell bordered on all 4 sides), not the
@@ -4357,15 +4364,20 @@ class PowerPointGenerator:
                             self._set_cell_border(cell, _side, color_rgb="000000", width=Pt(0.5))
 
                         # Only the LAST column is highlighted light blue, on
-                        # EVERY row including totals -- every other cell stays
-                        # unfilled white. Total/grand-total rows are called
-                        # out with border weight only (below), not a fill.
-                        if col_idx == max_cols - 1:
-                            try:
-                                cell.fill.solid()
-                                cell.fill.fore_color.rgb = LIGHT_BLUE_HIGHLIGHT
-                            except Exception:
-                                pass
+                        # EVERY row including totals -- every other cell is
+                        # EXPLICITLY set to solid white (not left unset --
+                        # an untouched cell.fill inherits the table's built-in
+                        # style GUID, which can render as a themed/tinted
+                        # colour even with first_row/horz_banding disabled).
+                        # Total/grand-total rows are called out with border
+                        # weight only (below), not a fill.
+                        try:
+                            cell.fill.solid()
+                            cell.fill.fore_color.rgb = (
+                                LIGHT_BLUE_HIGHLIGHT if col_idx == max_cols - 1 else WHITE
+                            )
+                        except Exception:
+                            pass
 
                         # Thin top border on every total/subtotal row; grand
                         # totals additionally get a heavier bottom border,
