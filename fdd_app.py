@@ -457,22 +457,48 @@ def render_entity_and_sheet_controls(processed: bool = False):
 MAX_BATCH_ENTITIES = 8
 
 
+def _reactive_selectbox_default(widget_key: str, options: list, desired_default: str) -> None:
+    """Pre-seed st.session_state[widget_key] with desired_default before the
+    widget is instantiated. A keyed st.selectbox only honours its `index`
+    argument on the very FIRST render -- every rerun after that reads
+    straight from session_state and ignores `index` entirely, so a
+    recommendation that changes across reruns (e.g. the roll-up sheet
+    fuzzy-match once the entity name is typed in) would otherwise never
+    actually reach the widget. Only overwrites when the widget has no value
+    yet, its stored value fell out of `options` (stale, e.g. roll-up file
+    swapped), or its current value still matches whatever we last
+    auto-set -- a manual user choice always wins and is never clobbered.
+    """
+    auto_key = f"_{widget_key}_auto"
+    last_auto = st.session_state.get(auto_key)
+    current = st.session_state.get(widget_key)
+    if widget_key not in st.session_state or current not in options:
+        st.session_state[widget_key] = desired_default
+        st.session_state[auto_key] = desired_default
+    elif desired_default != last_auto and current == last_auto:
+        st.session_state[widget_key] = desired_default
+        st.session_state[auto_key] = desired_default
+
+
 def render_batch_processing_section():
     """Batch mode: process several entities/databooks in one pass, each
     producing its own standalone PPTX. Headless per-entity, driven by
     batch_process_entity() (fdd_utils/ui.py) rather than the interactive
     single-file session_state flow above -- batch entities don't get the
     per-account AI-result editing UI, only a straight process->AI->export
-    run per slot, matching what the user asked for (dynamic +/- slots, one
-    shared optional roll-up/主表 file with fuzzy-suggested-but-overridable
-    per-entity sheet, one PPTX per entity)."""
-    st.markdown("## 📦 Batch Processing")
-    st.caption(f"Process multiple entities in one pass -- each entity produces its own PPTX. Maximum {MAX_BATCH_ENTITIES}.")
+    run per slot.
 
-    if "batch_slot_ids" not in st.session_state:
-        st.session_state.batch_slot_ids = [0]
-    if "batch_next_id" not in st.session_state:
-        st.session_state.batch_next_id = 1
+    Upload model: ONE shared optional roll-up file, and ONE multi-file
+    uploader for every entity's own databook -- entities are derived
+    directly from whatever the multi-uploader currently holds (adding a
+    file adds an entity, removing it via the uploader's own "x" removes
+    one), rather than a separate manually-managed +/- slot list. This
+    matches how the batch upload is actually used: pick every databook for
+    this run in one dialog, not one at a time.
+    """
+    st.markdown("## 📦 Batch Processing")
+    st.caption(f"Upload a shared roll-up file (optional) and every entity's databook at once -- "
+               f"each databook becomes its own entity, producing its own PPTX. Maximum {MAX_BATCH_ENTITIES}.")
 
     with st.expander("📎 Shared roll-up file (if these databooks have no Financials tab)"):
         st.caption(
@@ -501,98 +527,87 @@ def render_batch_processing_section():
 
     st.divider()
 
-    slot_ids = list(st.session_state.batch_slot_ids)
-    for idx, slot_id in enumerate(slot_ids):
+    uploaded_files = st.file_uploader(
+        "Upload databooks (select or drag multiple files)",
+        type=["xlsx", "xls"],
+        accept_multiple_files=True,
+        key="batch_files_uploader",
+    )
+
+    if uploaded_files and len(uploaded_files) > MAX_BATCH_ENTITIES:
+        st.warning(f"Only the first {MAX_BATCH_ENTITIES} files will be processed (maximum {MAX_BATCH_ENTITIES} entities per batch).")
+        uploaded_files = uploaded_files[:MAX_BATCH_ENTITIES]
+
+    st.divider()
+
+    ready_slots = []
+    for idx, uploaded_file in enumerate(uploaded_files or []):
+        # Stable per-file identity (name+size, sanitized) so entity name /
+        # sheet choices persist across reruns for the SAME uploaded file --
+        # a re-upload of a differently-sized file under the same name still
+        # gets its own fresh state instead of reusing stale choices.
+        slot_id = re.sub(r"[^\w\-]", "_", f"{uploaded_file.name}_{uploaded_file.size}")
+        own_temp_path = persist_uploaded_workbook(
+            uploaded_name=uploaded_file.name,
+            uploaded_bytes=uploaded_file.getvalue(),
+            session_state=st.session_state,
+            state_key=f"batch_temp_path_{slot_id}",
+        )
+
         with st.container():
             st.markdown("---")
-            header_col, remove_col = st.columns([6, 1])
-            with header_col:
-                st.markdown(f"**Entity #{idx + 1}**")
-            with remove_col:
-                if len(slot_ids) > 1 and st.button("🗑️", key=f"batch_remove_{slot_id}", help="Remove this entity"):
-                    st.session_state.batch_slot_ids = [s for s in slot_ids if s != slot_id]
-                    for prefix in ("batch_file", "batch_entity", "batch_own_sheet", "batch_rollup_sheet", "batch_temp_path", "_batch_resolved"):
-                        st.session_state.pop(f"{prefix}_{slot_id}", None)
-                    st.rerun()
+            st.markdown(f"**Entity #{idx + 1}** — `{uploaded_file.name}`")
 
-            file_col, entity_col = st.columns(2)
-            with file_col:
-                own_file = st.file_uploader("Databook", type=["xlsx", "xls"], key=f"batch_file_{slot_id}")
-                own_temp_path = None
-                if own_file is not None:
-                    own_temp_path = persist_uploaded_workbook(
-                        uploaded_name=own_file.name,
-                        uploaded_bytes=own_file.getvalue(),
-                        session_state=st.session_state,
-                        state_key=f"batch_temp_path_{slot_id}",
-                    )
+            entity_key = f"batch_entity_{slot_id}"
+            if entity_key not in st.session_state:
+                st.session_state[entity_key] = _extract_entity_from_filename(uploaded_file.name) or ""
+            entity_col, _spacer = st.columns([2, 3])
             with entity_col:
-                entity_key = f"batch_entity_{slot_id}"
-                if entity_key not in st.session_state and own_file is not None:
-                    default_entity = _extract_entity_from_filename(own_file.name)
-                    if default_entity:
-                        st.session_state[entity_key] = default_entity
                 entity_name = st.text_input("Entity name", key=entity_key, placeholder="Entity name")
 
             own_sheet = ""
             rollup_sheet_choice = ""
             sheet_col1, sheet_col2 = st.columns(2)
             with sheet_col1:
-                if own_temp_path:
-                    own_sheet_options = get_financial_sheets(own_temp_path)
-                    own_choices = [""] + own_sheet_options
-                    # Blank by default whenever a shared roll-up file is present
-                    # (ambiguous which source should win); auto-pick the first
-                    # ranked sheet only when there's no roll-up alternative at
-                    # all, matching single-file mode's own behaviour exactly.
-                    default_own = "" if rollup_temp_path else (own_sheet_options[0] if own_sheet_options else "")
-                    own_sheet = st.selectbox(
-                        "This file's own Financials sheet",
-                        options=own_choices,
-                        index=own_choices.index(default_own) if default_own in own_choices else 0,
-                        key=f"batch_own_sheet_{slot_id}",
-                    )
+                own_sheet_options = get_financial_sheets(own_temp_path)
+                own_choices = [""] + own_sheet_options
+                # Blank by default whenever a shared roll-up file is present
+                # (ambiguous which source should win); auto-pick the first
+                # ranked sheet only when there's no roll-up alternative at
+                # all, matching single-file mode's own behaviour exactly.
+                default_own = "" if rollup_temp_path else (own_sheet_options[0] if own_sheet_options else "")
+                own_sheet_key = f"batch_own_sheet_{slot_id}"
+                _reactive_selectbox_default(own_sheet_key, own_choices, default_own)
+                own_sheet = st.selectbox(
+                    "This file's own Financials sheet",
+                    options=own_choices,
+                    key=own_sheet_key,
+                )
             with sheet_col2:
                 if rollup_temp_path and rollup_sheet_options:
                     suggested = suggest_rollup_sheet_for_entity(entity_name, rollup_sheet_options) if entity_name else None
                     rollup_choices = [""] + rollup_sheet_options
-                    default_rollup = suggested or ""
+                    rollup_sheet_key = f"batch_rollup_sheet_{slot_id}"
+                    _reactive_selectbox_default(rollup_sheet_key, rollup_choices, suggested or "")
                     rollup_sheet_choice = st.selectbox(
                         "This entity's sheet in the roll-up file (auto-suggested, editable)",
                         options=rollup_choices,
-                        index=rollup_choices.index(default_rollup) if default_rollup in rollup_choices else 0,
-                        key=f"batch_rollup_sheet_{slot_id}",
+                        key=rollup_sheet_key,
                     )
 
-            st.session_state[f"_batch_resolved_{slot_id}"] = {
-                "temp_path": own_temp_path,
-                "entity_name": entity_name.strip() if entity_name else "",
-                "own_sheet": own_sheet or None,
-                "rollup_sheet": rollup_sheet_choice or None,
-            }
-
-    add_col, _spacer = st.columns([1, 5])
-    with add_col:
-        if len(slot_ids) < MAX_BATCH_ENTITIES:
-            if st.button("➕ Add entity", key="batch_add_slot"):
-                new_id = st.session_state.batch_next_id
-                st.session_state.batch_next_id += 1
-                st.session_state.batch_slot_ids.append(new_id)
-                st.rerun()
-        else:
-            st.caption(f"Maximum of {MAX_BATCH_ENTITIES} entities reached")
-
-    st.divider()
-
-    ready_slots = []
-    for slot_id in slot_ids:
-        resolved = st.session_state.get(f"_batch_resolved_{slot_id}") or {}
-        if resolved.get("temp_path") and resolved.get("entity_name") and (
-            resolved.get("own_sheet") or (rollup_temp_path and resolved.get("rollup_sheet"))
+        resolved = {
+            "temp_path": own_temp_path,
+            "entity_name": entity_name.strip() if entity_name else "",
+            "own_sheet": own_sheet or None,
+            "rollup_sheet": rollup_sheet_choice or None,
+        }
+        if resolved["temp_path"] and resolved["entity_name"] and (
+            resolved["own_sheet"] or (rollup_temp_path and resolved["rollup_sheet"])
         ):
             ready_slots.append(resolved)
 
-    st.caption(f"{len(ready_slots)} / {len(slot_ids)} entities ready to process.")
+    st.divider()
+    st.caption(f"{len(ready_slots)} / {len(uploaded_files or [])} entities ready to process.")
 
     if st.button(
         f"🚀 Process All ({len(ready_slots)})",
