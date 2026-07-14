@@ -4044,11 +4044,11 @@ class PowerPointGenerator:
 
                 # Colors -- matches the company-format reference (real KPMG
                 # deliverable page): navy #00338D fills the title band and
-                # accents total-row borders; the date/header row and data
-                # rows stay unfilled (white bg, dark text); light grey
-                # #E5E5E5 marks the grand-total fill only.
+                # accents total-row borders; only the LAST column is
+                # highlighted light blue (every row, header+data+totals);
+                # every other cell stays unfilled (white bg, dark text) --
+                # total rows are called out with border weight only, no fill.
                 DARK_BLUE = RGBColor(0x00, 0x33, 0x8D)
-                GREY = RGBColor(0xE5, 0xE5, 0xE5)
                 WHITE = RGBColor(255, 255, 255)
                 BLACK = RGBColor(0, 0, 0)
                 
@@ -4122,6 +4122,8 @@ class PowerPointGenerator:
                 except:
                     pass
                     
+                LIGHT_BLUE_HIGHLIGHT = RGBColor(0xDC, 0xE6, 0xF1)
+
                 for col_idx, col_name in enumerate(df.columns[:max_cols]):
                     if col_idx < len(table.columns):
                         cell = table.cell(header_row_idx, col_idx)
@@ -4133,10 +4135,13 @@ class PowerPointGenerator:
                         # Company-format reference: the date/header row sits
                         # directly under the navy title band with NO fill of
                         # its own (white bg, dark bold text) -- only the title
-                        # row above it is filled navy.
+                        # row above it is filled navy. The first column's own
+                        # header ("Description"/currency unit) is left-aligned
+                        # like a row label; the date/period columns stay
+                        # centered above their right-aligned numeric data.
                         if cell.text_frame.paragraphs:
                             p = cell.text_frame.paragraphs[0]
-                            p.alignment = PP_ALIGN.CENTER
+                            p.alignment = PP_ALIGN.LEFT if col_idx == 0 else PP_ALIGN.CENTER
 
                             if p.runs:
                                 run = p.runs[0]
@@ -4147,6 +4152,14 @@ class PowerPointGenerator:
                             run.font.size = Pt(8)
                             run.font.bold = True
                             run.font.color.rgb = BLACK
+
+                        # Only the LAST column is highlighted light blue
+                        # (matches the company-format reference's "adjusted
+                        # figures" column) -- every other column stays
+                        # unfilled white.
+                        if col_idx == max_cols - 1:
+                            cell.fill.solid()
+                            cell.fill.fore_color.rgb = LIGHT_BLUE_HIGHLIGHT
 
                         # Company-format reference is a fully ruled grid
                         # (every cell bordered on all 4 sides), not the
@@ -4338,15 +4351,14 @@ class PowerPointGenerator:
                         for _side in ("top", "bottom", "left", "right"):
                             self._set_cell_border(cell, _side, color_rgb="000000", width=Pt(0.5))
 
-                        # Grey fill is reserved for grand-total rows (Total
-                        # assets, Total liabilities, Net profit, EBITDA, etc.)
-                        # to match the company-format reference -- subsection
-                        # subtotals (Total current assets, Gross profit, ...)
-                        # stay unfilled with just a thin top border.
-                        if is_grand_total_row:
+                        # Only the LAST column is highlighted light blue, on
+                        # EVERY row including totals -- every other cell stays
+                        # unfilled white. Total/grand-total rows are called
+                        # out with border weight only (below), not a fill.
+                        if col_idx == max_cols - 1:
                             try:
                                 cell.fill.solid()
-                                cell.fill.fore_color.rgb = GREY
+                                cell.fill.fore_color.rgb = LIGHT_BLUE_HIGHLIGHT
                             except Exception:
                                 pass
 
