@@ -1915,6 +1915,7 @@ def batch_process_entity(
     template_path: Optional[str] = None,
     output_dir: str = "fdd_utils/output",
     progress_callback: Optional[Callable[..., None]] = None,
+    on_data_ready: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """Headless, session_state-free equivalent of the single-file
     process -> reconcile -> AI -> export flow (render_ai_generation_section +
@@ -1929,6 +1930,14 @@ def batch_process_entity(
     roll-up ("主表") workbook's named sheet when this entity's own file has
     no Financials-pattern sheet of its own — same mechanism
     process_workbook_data already exposes for the single-file flow.
+
+    on_data_ready, if given, fires once (right after data extraction +
+    reconciliation complete, before AI generation starts) with a summary
+    dict ({"entity_name", "accounts_total", "accounts_matched",
+    "bs_match_counts", "is_match_counts"}) — lets a batch UI show what was
+    extracted/reconciled for this entity while its own AI generation (and
+    any later entities' processing) is still running, rather than only
+    ever surfacing data once the entire entity is fully done.
     """
     from .ai import run_ai_pipeline_with_progress
     from .pptx import export_pptx_from_structured_data_combined
@@ -1991,6 +2000,19 @@ def batch_process_entity(
         result["status"] = "failed"
         result["error"] = "No eligible accounts after reconciliation filtering."
         return result
+
+    if on_data_ready:
+        bs_recon, is_recon = (list(reconciliation) + [None, None])[:2] if reconciliation else (None, None)
+        try:
+            on_data_ready({
+                "entity_name": entity_name,
+                "accounts_total": len(dfs),
+                "accounts_matched": len(matched_mapping_keys),
+                "bs_match_counts": bs_recon["Match"].value_counts().to_dict() if bs_recon is not None and not bs_recon.empty else {},
+                "is_match_counts": is_recon["Match"].value_counts().to_dict() if is_recon is not None and not is_recon.empty else {},
+            })
+        except Exception:
+            pass  # a UI-side display glitch should never abort the pipeline
 
     ai_results = run_ai_pipeline_with_progress(
         mapping_keys=matched_mapping_keys,

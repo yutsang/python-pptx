@@ -732,9 +732,27 @@ def render_batch_processing_section():
         total = len(ready_slots)
         progress_bar = st.progress(0.0)
         status = st.empty()
+        data_log = st.container()
         batch_start_time = time.time()
 
         for i, slot in enumerate(ready_slots):
+            def _data_ready_cb(summary, _data_log=data_log):
+                # Fires once data extraction + reconciliation finish for
+                # this entity, BEFORE its own AI generation starts -- gives
+                # visibility into what was extracted while AI is still
+                # running (for this entity, and any entities still queued
+                # after it), instead of only ever showing results once the
+                # WHOLE entity (data + AI + export) is done.
+                bs_summary = ", ".join(f"{k}={v}" for k, v in summary["bs_match_counts"].items()) or "-"
+                is_summary = ", ".join(f"{k}={v}" for k, v in summary["is_match_counts"].items()) or "-"
+                with _data_log:
+                    st.caption(
+                        f"📄 {summary['entity_name']}: data extracted -- "
+                        f"{summary['accounts_matched']}/{summary['accounts_total']} accounts eligible for AI "
+                        f"| BS recon: {bs_summary} | IS recon: {is_summary}"
+                    )
+
+
             def _progress_cb(agent_num, agent_name, item_num, total_items_in_agent, completed_items,
                               key_name=None, _i=i, _entity=slot["entity_name"]):
                 # completed_items is this entity's own cumulative step count
@@ -774,6 +792,7 @@ def render_batch_processing_section():
                     model_name=st.session_state.get("model_name"),
                     use_multithreading=st.session_state.get("use_multithreading", True),
                     progress_callback=_progress_cb,
+                    on_data_ready=_data_ready_cb,
                 )
             except Exception as exc:
                 outcome = {"entity_name": slot["entity_name"], "status": "failed", "error": str(exc)}
