@@ -88,6 +88,7 @@ from .keyword_registry import (
     STATEMENT_ORDER_SKIP_KEYWORDS,
     SUMMARY_ACCOUNT_SKIP_KEYWORDS,
     translate_category_to_chinese,
+    translate_statement_line_to_chinese,
 )
 from .workbook import find_mapping_key
 
@@ -389,6 +390,38 @@ def _find_chinese_display_name(mapping_key: str, fallback: str, mappings: Dict[s
     return entry["simplified_form"] or simplified_key
 
 
+def _translate_statement_row_label(label: str, mappings: Optional[Dict[str, Any]]) -> str:
+    """Translates ONE row label from the embedded BS/IS summary table
+    (embed_financial_tables) to Chinese, for a Chinese-language report.
+
+    Unlike commentary bullets (which carry their own resolved mapping_key
+    via build_pptx_structured_payloads), these rows come straight from
+    extract_balance_sheet_and_income_statement's own parse of the raw
+    Financials-sheet text -- there was previously NO translation path for
+    them at all, so a Chinese report's embedded table stayed 100% English
+    even though the title/commentary around it were fully translated.
+
+    Two label classes need two different lookups: (1) individual account
+    rows (e.g. "Cash at bank and on hand") resolve via the same
+    mappings.yml alias machinery _find_chinese_display_name already uses
+    for commentary, by first recovering the mapping_key with
+    find_mapping_key; (2) statement-structure total/subtotal rows (e.g.
+    "Total current assets") aren't mapping_key accounts at all, so they
+    fall back to the small fixed STATEMENT_TOTAL_LINE_TRANSLATIONS_ZH
+    table. Returns `label` unchanged if neither resolves (e.g. an
+    already-Chinese source label, or a genuinely unmapped line) --
+    partial coverage beats a blank or crashed cell.
+    """
+    label = str(label or "")
+    if not label.strip() or contains_chinese_text(label):
+        return label
+    if mappings:
+        mapping_key = find_mapping_key(label, mappings)
+        if mapping_key:
+            return _find_chinese_display_name(mapping_key, label, mappings)
+    return translate_statement_line_to_chinese(label) or label
+
+
 def _has_significant_balance(financial_data: Optional[pd.DataFrame]) -> bool:
     if financial_data is None or financial_data.empty:
         return True
@@ -584,6 +617,7 @@ def export_pptx_from_structured_data_combined(
     model_name: Optional[str] = None,
     skip_summary_ai: bool = False,  # AI summary needed for coSummaryShape; parallelized at max_workers=4
     pre_generated_summaries: Optional[Dict[str, str]] = None,  # {"BS": str, "IS": str} — bypass AI in PPTX export
+    mappings: Optional[Dict[str, Any]] = None,  # for translating the embedded BS/IS table's row labels when Chinese
 ):
     try:
         export_started_at = time.perf_counter()
@@ -627,6 +661,7 @@ def export_pptx_from_structured_data_combined(
                 project_name,
                 language,
                 bs_is_results=bs_is_results,
+                mappings=mappings,
             )
             _stage_log(f"embed_financial_tables: {time.perf_counter() - stage_started_at:.2f}s")
         if hasattr(generator, "_unused_slides_to_remove") and generator._unused_slides_to_remove:
@@ -1590,7 +1625,10 @@ class PowerPointGenerator:
                     return text_val
         return text_val
 
-    def _embed_statement_table(self, slide, df, statement_type: str, table_name: str = None, currency_unit: str = None):
+    def _embed_statement_table(
+        self, slide, df, statement_type: str, table_name: str = None, currency_unit: str = None,
+        mappings: Optional[Dict[str, Any]] = None, is_chinese_mode: bool = False,
+    ):
         target_shape = self._resolve_table_target_shape(slide, statement_type)
         bounds = self._calculate_table_bounds(slide, target_shape=target_shape, statement_type=statement_type)
         target_name = self._shape_name(target_shape) if target_shape is not None else "(new table)"
@@ -1627,6 +1665,8 @@ class PowerPointGenerator:
                 table_name=table_name,
                 currency_unit=currency_unit,
                 bounds=bounds,
+                mappings=mappings,
+                is_chinese_mode=is_chinese_mode,
             )
             return
 
@@ -1636,6 +1676,8 @@ class PowerPointGenerator:
             table_name=table_name,
             currency_unit=currency_unit,
             bounds=bounds,
+            mappings=mappings,
+            is_chinese_mode=is_chinese_mode,
         )
     
     def find_content_shape(self, shapes):
@@ -3865,7 +3907,10 @@ class PowerPointGenerator:
             tailEnd.set('len', 'med')
             ln.append(tailEnd)
 
-    def _fill_table_placeholder(self, shape, df, table_name: str = None, currency_unit: str = None, bounds: Dict[str, int] = None):
+    def _fill_table_placeholder(
+        self, shape, df, table_name: str = None, currency_unit: str = None, bounds: Dict[str, int] = None,
+        mappings: Optional[Dict[str, Any]] = None, is_chinese_mode: bool = False,
+    ):
         """Fill table placeholder with DataFrame data, preserving original formatting
         Args:
             shape: Table shape or placeholder
@@ -4205,7 +4250,15 @@ class PowerPointGenerator:
                         # Get value from DataFrame safely
                         value = df_row[col_name] if col_name in df_row.index else ""
                         text_val = self._format_table_value(value, is_numeric_column=col_idx > 0)
-                        
+
+                        # Description column only -- the source Financials
+                        # sheet's own row labels (e.g. "Cash at bank and on
+                        # hand") stay whatever language that sheet was
+                        # authored in, even when the REPORT is Chinese, since
+                        # nothing upstream of this table translates them.
+                        if col_idx == 0 and is_chinese_mode:
+                            text_val = _translate_statement_row_label(text_val, mappings)
+
                         # Set text
                         cell.text = text_val
                         
@@ -5131,6 +5184,7 @@ Original content:
         project_name: str,
         language: str,
         bs_is_results: Optional[Dict[str, Any]] = None,
+        mappings: Optional[Dict[str, Any]] = None,
     ):
         """Embed financial tables: BS to page 1, IS to page 5"""
         try:
@@ -5217,6 +5271,17 @@ Original content:
             except Exception:
                 pass
 
+            # An English-labelled source databook (e.g. Kunshan) will only
+            # ever have "CNY'000"/"CNY'M" markers to detect, even when the
+            # REPORT is being generated in Chinese -- normalise the unit
+            # label itself to match the report language, same as the table
+            # title above, so a Chinese table never shows an English header.
+            if is_chinese_mode:
+                if currency_unit == "CNY'000":
+                    currency_unit = "人民币千元"
+                elif currency_unit == "CNY'M":
+                    currency_unit = "人民币百万"
+
             logger.info("Extracted BS: %s, IS: %s", bs_df.shape if bs_df is not None else 'None', is_df.shape if is_df is not None else 'None')
             logger.info("Table names - BS: %s, IS: %s, Currency: %s", bs_table_name, is_table_name, currency_unit)
 
@@ -5257,6 +5322,7 @@ Original content:
                 self._embed_statement_table(
                     bs_slide, bs_df, "BS",
                     table_name=bs_table_name, currency_unit=currency_unit,
+                    mappings=mappings, is_chinese_mode=is_chinese_mode,
                 )
             else:
                 logger.warning(
@@ -5276,6 +5342,7 @@ Original content:
                 self._embed_statement_table(
                     is_slide, is_df, "IS",
                     table_name=is_table_name, currency_unit=currency_unit,
+                    mappings=mappings, is_chinese_mode=is_chinese_mode,
                 )
             elif is_df is not None and not is_df.empty:
                 logger.error("No target slide found for IS table (slides=%s)", len(self.presentation.slides))

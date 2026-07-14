@@ -1210,6 +1210,7 @@ def export_and_inspect_pptx(
                 temp_path=databook_path, selected_sheet=sheet_name,
                 is_chinese_databook=is_chinese, bs_is_results=bs_is_results,
                 model_type=model_type,
+                mappings=mappings,
             )
     finally:
         pptx_logger.removeHandler(handler)

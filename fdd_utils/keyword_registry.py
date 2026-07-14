@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 SUMMARY_ACCOUNT_SKIP_KEYWORDS = (
     "subtotal",
     "sub-total",
@@ -287,6 +289,56 @@ _CATEGORY_TRANSLATIONS_ZH_CASEFOLD = {
     key.lower(): value for key, value in CATEGORY_TRANSLATIONS_ZH.items()
 }
 
+# BS/IS statement-structure total/subtotal LINE labels -- distinct from
+# CATEGORY_TRANSLATIONS_ZH above (bare category names like "Current assets")
+# since these always carry a "Total ..." prefix and are pulled straight from
+# extract_balance_sheet_and_income_statement's own row labels (raw Financials
+# sheet text), not resolved through mappings.yml the way individual account
+# rows are -- embed_financial_tables' embedded BS/IS table has no other
+# translation path for these rows at all.
+STATEMENT_TOTAL_LINE_TRANSLATIONS_ZH = {
+    "Total current assets": "流动资产合计",
+    "Total non-current assets": "非流动资产合计",
+    "Total non current assets": "非流动资产合计",
+    "Total assets": "资产总计",
+    "Total current liabilities": "流动负债合计",
+    "Total non-current liabilities": "非流动负债合计",
+    "Total non current liabilities": "非流动负债合计",
+    "Total liabilities": "负债合计",
+    "Total owners' equity": "所有者权益合计",
+    "Total owner's equity": "所有者权益合计",
+    "Total equity": "所有者权益合计",
+    "Total equity attributable to owners of the Company": "归属于母公司所有者权益合计",
+    "Total liabilities and owners' equity": "负债及所有者权益总计",
+    "Total liabilities and owner's equity": "负债及所有者权益总计",
+    "Gross profit/(loss)": "毛利/(毛损)",
+    "Operating profit/(loss)": "营业利润/(亏损)",
+    "Profit before taxation": "利润总额",
+    "Profit/(loss) before taxation": "利润总额",
+    "Loss before taxation": "利润总额",
+    "Net profit/(loss)": "净利润/(净亏损)",
+    "Net loss": "净亏损",
+}
+
+_STATEMENT_TOTAL_LINE_TRANSLATIONS_ZH_CASEFOLD = {
+    key.lower(): value for key, value in STATEMENT_TOTAL_LINE_TRANSLATIONS_ZH.items()
+}
+
+
+def translate_statement_line_to_chinese(label: str) -> Optional[str]:
+    """Returns the Chinese translation of a BS/IS total/subtotal LINE label
+    (e.g. 'Total current assets' -> '流动资产合计'), or None if `label` isn't
+    one of the known statement-structure lines -- callers should fall back
+    to their own per-account translation (mappings.yml aliases) first, since
+    this only covers total/subtotal rows, not individual accounts."""
+    if label in STATEMENT_TOTAL_LINE_TRANSLATIONS_ZH:
+        return STATEMENT_TOTAL_LINE_TRANSLATIONS_ZH[label]
+    # Source sheets are inconsistent about straight (') vs curly/smart (’)
+    # apostrophes in labels like "Total owners' equity" -- normalize both to
+    # straight before the casefold lookup so the dict only needs one spelling.
+    normalized = str(label).strip().lower().replace("’", "'")
+    return _STATEMENT_TOTAL_LINE_TRANSLATIONS_ZH_CASEFOLD.get(normalized)
+
 
 def translate_category_to_chinese(category: str) -> str:
     if category in CATEGORY_TRANSLATIONS_ZH:
@@ -304,10 +356,12 @@ __all__ = [
     "KNOWN_TRANSLATIONS",
     "REMARK_KEYWORDS",
     "STATEMENT_ORDER_SKIP_KEYWORDS",
+    "STATEMENT_TOTAL_LINE_TRANSLATIONS_ZH",
     "SUBTOTAL_KEYWORDS",
     "SUMMARY_ACCOUNT_SKIP_KEYWORDS",
     "TABLE_END_KEYWORDS",
     "UNIT_THOUSAND_MARKERS",
     "contains_thousand_unit_marker",
     "translate_category_to_chinese",
+    "translate_statement_line_to_chinese",
 ]

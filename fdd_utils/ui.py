@@ -1811,6 +1811,7 @@ def generate_pptx_presentation(
                 model_name=session_state.get("model_name"),
                 skip_summary_ai=False,
                 pre_generated_summaries=session_state.get("section_summaries") or None,
+                mappings=mappings,
             )
         if os.path.exists(combined_output_path):
             with open(combined_output_path, "rb") as handle:
