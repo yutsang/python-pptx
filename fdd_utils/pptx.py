@@ -655,7 +655,13 @@ def export_pptx_from_structured_data_combined(
                 pre_generated_summary=pre_summaries.get("IS"),
             )
             _stage_log(f"apply_is_slides: {time.perf_counter() - stage_started_at:.2f}s")
-        if temp_path and selected_sheet:
+        # bs_is_results being already-computed is sufficient on its own --
+        # requiring selected_sheet too silently skipped the embedded table
+        # whenever the caller had no sheet name to give (roll-up-sourced
+        # financials with a blank own-file sheet, or a synthesized BS/IS
+        # built purely from schedule tabs with no Financials sheet at all)
+        # even though there was real BS/IS data ready to embed.
+        if temp_path and (selected_sheet or bs_is_results):
             stage_started_at = time.perf_counter()
             generator.embed_financial_tables(
                 temp_path,
@@ -5349,10 +5355,14 @@ Original content:
             from fdd_utils.workbook import extract_balance_sheet_and_income_statement
             
             logger.info("Embedding financial tables from %s, sheet: %s", excel_path, sheet_name)
-            
-            # Validate inputs
-            if not excel_path or not sheet_name:
-                logger.warning("Missing excel_path (%s) or sheet_name (%s), skipping table embedding", excel_path, sheet_name)
+
+            # Only bail here if there's NEITHER a precomputed bs_is_results
+            # NOR enough to extract one fresh -- excel_path/sheet_name being
+            # blank is fine on its own when the caller already did the
+            # extraction (e.g. from a roll-up workbook, or a synthesized
+            # BS/IS with no literal Financials sheet at all).
+            if bs_is_results is None and (not excel_path or not sheet_name):
+                logger.warning("Missing excel_path (%s) or sheet_name (%s), and no precomputed BS/IS results -- skipping table embedding", excel_path, sheet_name)
                 return
             
             # Use the precomputed results when available (they came from the

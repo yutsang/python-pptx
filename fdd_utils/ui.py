@@ -1846,6 +1846,19 @@ def generate_pptx_presentation(
             _demo_cfg2.get("filename") and
             str(session_state.get("uploaded_filename") or "").strip() == str(_demo_cfg2.get("filename") or "").strip()
         )
+        # embed_financial_tables reads (temp_path, selected_sheet) for its
+        # currency-unit-label detection and as a fresh-extraction fallback --
+        # when this entity's financials came from an uploaded roll-up
+        # workbook (the "進階：主表" expander), that source -- not this
+        # entity's own file/selected_sheet -- is the one that actually holds
+        # them. Mirrors process_workbook_data's own precedence (financials_from
+        # or temp_path).
+        _rollup_temp_path = session_state.get("rollup_temp_path")
+        _financials_workbook_path = _rollup_temp_path or session_state.get("temp_path")
+        _financials_sheet_name = (
+            session_state.get("rollup_sheet") if _rollup_temp_path else session_state.get("selected_sheet")
+        )
+
         with st.spinner("Generating PPTX…"):
             export_pptx_from_structured_data_combined(
                 template_path,
@@ -1854,8 +1867,8 @@ def generate_pptx_presentation(
                 combined_output_path,
                 entity_name,
                 language="chinese" if language == "Chn" else "english",
-                temp_path=session_state.get("temp_path"),
-                selected_sheet=session_state.get("selected_sheet"),
+                temp_path=_financials_workbook_path,
+                selected_sheet=_financials_sheet_name,
                 is_chinese_databook=(language == "Chn"),
                 bs_is_results=session_state.get("bs_is_results"),
                 model_type=session_state.get("model_type", "local"),
@@ -2013,6 +2026,15 @@ def batch_process_entity(
     sanitized_entity = re.sub(r"[^\w\-_]", "_", str(entity_name)).strip("_") or "Entity"
     output_path = os.path.join(output_dir, f"{sanitized_entity}_{timestamp}.pptx")
 
+    # embed_financial_tables reads (temp_path, selected_sheet) for its
+    # currency-unit-label detection and as a fresh-extraction fallback --
+    # when financials came from a roll-up workbook, that source (not this
+    # entity's own file/blank sheet) is the one that actually holds them.
+    # Mirrors process_workbook_data's own precedence (financials_from or
+    # temp_path).
+    financials_workbook_path = financials_from or temp_path
+    financials_sheet_name = financials_sheet if financials_from else selected_sheet
+
     export_pptx_from_structured_data_combined(
         resolved_template_path,
         bs_data,
@@ -2020,8 +2042,8 @@ def batch_process_entity(
         output_path,
         entity_name,
         language="chinese" if effective_language == "Chn" else "english",
-        temp_path=temp_path,
-        selected_sheet=selected_sheet,
+        temp_path=financials_workbook_path,
+        selected_sheet=financials_sheet_name,
         is_chinese_databook=(effective_language == "Chn"),
         bs_is_results=state.get("bs_is_results"),
         model_type=model_type,
@@ -2056,8 +2078,14 @@ def batch_process_entity(
         "resolution": resolution,
         "project_name": state.get("project_name"),
         "entity_name": entity_name,
-        "temp_path": temp_path,
-        "selected_sheet": selected_sheet,
+        # The financials source (not necessarily this entity's own file --
+        # see financials_workbook_path/financials_sheet_name above), so a
+        # later "Regenerate PPTX" click from within the reused single-file
+        # UI still finds the right sheet for the embedded table instead of
+        # re-hitting the same blank-selected_sheet bug this export call
+        # just worked around.
+        "temp_path": financials_workbook_path,
+        "selected_sheet": financials_sheet_name,
         "mapping_overrides": mapping_overrides,
         "ai_results": ai_results,
         "model_type": model_type,
