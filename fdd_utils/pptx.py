@@ -519,6 +519,7 @@ def build_pptx_structured_payloads(
 # --- end pptx/payloads.py ---
 
 # --- begin pptx/exporters.py ---
+import copy
 import logging
 import os
 import time
@@ -526,6 +527,7 @@ import traceback
 from typing import Dict, List, Optional
 
 from pptx import Presentation
+from pptx.oxml.ns import qn
 
 logger = logging.getLogger(__name__)
 
@@ -775,6 +777,96 @@ def merge_presentations(bs_presentation_path: str, is_presentation_path: str, ou
     except Exception as exc:
         logger.error("Presentation merge failed: %s", exc)
         raise
+
+
+def _copy_slide_into(dest_prs: "Presentation", source_slide) -> None:
+    """Deep-copy one slide from a DIFFERENT Presentation (built from the
+    same template.pptx) onto the end of dest_prs, preserving every shape
+    INCLUDING images, native tables, and embedded OLE objects.
+
+    python-pptx has no built-in "append an existing slide" API, so this
+    clones the slide's shape-tree XML directly -- the same technique
+    merge_presentations() above uses. The one thing that technique is
+    missing (and why it's not reused as-is here): the copied XML still
+    references relationship IDs (r:embed / r:id / r:link, used by
+    pictures, OLE objects, and hyperlinks) that only exist in the SOURCE
+    file's part. Left unmapped, those would point at nothing in the
+    destination part -- copied images/OLE objects would come through as
+    silently broken/missing rather than raising an error. Every
+    non-slideLayout relationship the source slide owns is re-created on
+    the destination slide's own part first, and every r:embed/r:id/r:link
+    attribute in the copied XML is rewritten to the new relationship id.
+    """
+    layout_name = source_slide.slide_layout.name
+    dest_layout = next(
+        (layout for layout in dest_prs.slide_layouts if layout.name == layout_name),
+        dest_prs.slide_layouts[0],
+    )
+    dest_slide = dest_prs.slides.add_slide(dest_layout)
+
+    # The layout auto-populates placeholder shapes -- clear them, the
+    # source slide's own shape tree (copied below) already carries
+    # everything that should be on the page.
+    for shape in list(dest_slide.shapes):
+        shape._element.getparent().remove(shape._element)
+
+    rel_id_map: Dict[str, str] = {}
+    for rel_id, rel in source_slide.part.rels.items():
+        if rel.reltype.endswith("/slideLayout"):
+            continue  # every slide keeps its own layout relationship, not copied
+        if rel.is_external:
+            new_rel_id = dest_slide.part.relate_to(rel.target_ref, rel.reltype, is_external=True)
+        else:
+            new_rel_id = dest_slide.part.relate_to(rel.target_part, rel.reltype)
+        rel_id_map[rel_id] = new_rel_id
+
+    r_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    for shape_elm in list(source_slide.shapes._spTree):
+        if shape_elm.tag in (qn("p:nvGrpSpPr"), qn("p:grpSpPr")):
+            continue  # spTree's two fixed non-shape children, not content
+        new_elm = copy.deepcopy(shape_elm)
+        for el in new_elm.iter():
+            for attr_name in ("embed", "link", "id"):
+                old_rid = el.get(f"{r_ns}{attr_name}")
+                if old_rid and old_rid in rel_id_map:
+                    el.set(f"{r_ns}{attr_name}", rel_id_map[old_rid])
+        dest_slide.shapes._spTree.append(new_elm)
+
+
+def combine_presentations(pptx_sources: List, output_path) -> "str | None":
+    """Combine several already-exported .pptx decks (e.g. one per batch
+    entity, all built from the same template.pptx) into a single deck --
+    every slide from every source, in order, via _copy_slide_into().
+
+    pptx_sources: file paths (str) and/or file-like objects (e.g.
+    io.BytesIO of already-in-memory PPTX bytes -- python-pptx's own
+    Presentation() constructor accepts either, so no temp files are needed
+    when combining straight from a batch run's cached pptx_download_data).
+    output_path: a path (str) to save to, OR a file-like object (e.g.
+    io.BytesIO) to write into instead of touching disk -- returns the path
+    string in the former case, None in the latter (caller already holds
+    the buffer it passed in).
+
+    Deliberately NOT a general-purpose "merge any two PPTX files" utility:
+    it assumes every input shares the same template (true for every batch
+    entity, since they all come from export_pptx_from_structured_data_combined
+    with the same template_path), which is what makes layout-name matching
+    a safe way to pick the destination layout for each copied slide.
+    """
+    if not pptx_sources:
+        raise ValueError("combine_presentations requires at least one input source")
+
+    combined_prs = Presentation(pptx_sources[0])
+    for source in pptx_sources[1:]:
+        source_prs = Presentation(source)
+        for source_slide in source_prs.slides:
+            _copy_slide_into(combined_prs, source_slide)
+
+    combined_prs.save(output_path)
+    logger.info("Combined %s presentation(s)", len(pptx_sources))
+    if isinstance(output_path, str):
+        return output_path
+    return None
 # --- end pptx/exporters.py ---
 
 # --- begin pptx/generation.py ---

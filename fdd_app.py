@@ -767,14 +767,42 @@ def render_batch_processing_section():
                 pptx_filename = bundle.get("pptx_download_filename")
                 if pptx_bytes and pptx_filename:
                     zip_file.writestr(pptx_filename, pptx_bytes)
-        st.download_button(
-            label=f"⬇️ Download All ({len(processed_order)}) as ZIP",
-            data=zip_buffer.getvalue(),
-            file_name="batch_pptx_export.zip",
-            mime="application/zip",
-            use_container_width=True,
-            key="batch_download_zip",
-        )
+
+        download_col1, download_col2 = st.columns(2)
+        with download_col1:
+            st.download_button(
+                label=f"⬇️ Download All ({len(processed_order)}) as ZIP",
+                data=zip_buffer.getvalue(),
+                file_name="batch_pptx_export.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="batch_download_zip",
+            )
+        with download_col2:
+            if st.button("📎 Combine into One PPTX", use_container_width=True, key="batch_combine_button"):
+                from fdd_utils.pptx import combine_presentations
+                sources = []
+                for entity_name in processed_order:
+                    pptx_bytes = (entity_cache.get(entity_name) or {}).get("pptx_download_data")
+                    if pptx_bytes:
+                        sources.append(io.BytesIO(pptx_bytes))
+                if sources:
+                    combined_buffer = io.BytesIO()
+                    try:
+                        combine_presentations(sources, combined_buffer)
+                        st.session_state.batch_combined_pptx = combined_buffer.getvalue()
+                    except Exception as exc:
+                        st.error(f"❌ Combine failed: {exc}")
+                        st.session_state.batch_combined_pptx = None
+            if st.session_state.get("batch_combined_pptx"):
+                st.download_button(
+                    label="⬇️ Download Combined PPTX",
+                    data=st.session_state.batch_combined_pptx,
+                    file_name="batch_combined.pptx",
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    use_container_width=True,
+                    key="batch_download_combined",
+                )
 
         active_entity = st.radio(
             "Entity", options=processed_order, horizontal=True, key="batch_active_entity",
