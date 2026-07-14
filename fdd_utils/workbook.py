@@ -957,6 +957,35 @@ def extract_entity_names_from_preflight(preflight: Dict[str, Any]) -> List[str]:
     return sorted(name for name in entity_names if name and name.strip())
 
 
+_CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff]+")
+
+
+def split_bilingual_entity_name(name: str) -> tuple[Optional[str], Optional[str]]:
+    """A single extracted candidate is sometimes a mixed CJK+English string
+    (e.g. "南通通海 Nantong Tonghai" or "无锡项目 (Wuxi Project)") -- the entity
+    name selector previously only ever offered that combined form, with no
+    way to pick just the Chinese or just the English half. Returns
+    (chinese_only, english_only), each None if the name isn't genuinely
+    bilingual (pure-CJK or pure-Latin names have nothing to split) or if
+    either half would come out empty.
+    """
+    text = str(name or "").strip()
+    if not text:
+        return None, None
+    has_cjk = bool(_CJK_RUN_RE.search(text))
+    has_latin = bool(re.search(r"[A-Za-z]", text))
+    if not (has_cjk and has_latin):
+        return None, None
+
+    chinese_only = "".join(_CJK_RUN_RE.findall(text)).strip()
+    english_only = _CJK_RUN_RE.sub(" ", text)
+    english_only = re.sub(r"[()\[\]（）【】\-–—,，·.]", " ", english_only)
+    english_only = re.sub(r"\s+", " ", english_only).strip()
+    if not chinese_only or not english_only:
+        return None, None
+    return chinese_only, english_only
+
+
 def get_financial_sheet_options(preflight: Dict[str, Any]) -> List[str]:
     def sheet_score(sheet: Dict[str, Any]) -> tuple[int, str]:
         lowered = str(sheet.get("name", "")).lower()

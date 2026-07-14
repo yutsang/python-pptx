@@ -127,11 +127,29 @@ from .financial_common import (
     dedupe_non_empty,
     visible_descriptions,
 )
-from .workbook import INTERNAL_ROW_KEY, split_accounts_by_type as shared_split_accounts_by_type
+from .workbook import (
+    INTERNAL_ROW_KEY,
+    split_accounts_by_type as shared_split_accounts_by_type,
+    split_bilingual_entity_name,
+)
 
 
 def build_entity_selector_model(entity_options: List[str], current_entity_name: str) -> Dict[str, Any]:
-    dropdown_options = dedupe_non_empty(entity_options)
+    # A candidate that mixes CJK and English (e.g. "南通通海 Nantong Tonghai")
+    # previously only ever offered as that one combined string -- add the
+    # Chinese-only and English-only halves as their own selectable options
+    # right next to it, so the user can pick whichever the report actually
+    # needs without having to hand-edit the combined text.
+    expanded_options: List[str] = []
+    for option in entity_options:
+        expanded_options.append(option)
+        chinese_only, english_only = split_bilingual_entity_name(option)
+        if chinese_only and chinese_only != option:
+            expanded_options.append(chinese_only)
+        if english_only and english_only != option:
+            expanded_options.append(english_only)
+
+    dropdown_options = dedupe_non_empty(expanded_options)
     text_value = str(current_entity_name or "").strip()
     if not text_value and len(dropdown_options) == 1:
         text_value = dropdown_options[0]

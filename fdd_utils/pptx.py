@@ -4122,7 +4122,12 @@ class PowerPointGenerator:
                 except:
                     pass
                     
-                LIGHT_BLUE_HIGHLIGHT = RGBColor(0xDC, 0xE6, 0xF1)
+                # A touch more saturated than a bare tint (#DCE6F1) so the
+                # highlighted column is unmistakable at a glance, not just
+                # visible on close inspection -- a user photo of a fresh
+                # export still read as "hasn't taken effect" at the lighter
+                # shade.
+                LIGHT_BLUE_HIGHLIGHT = RGBColor(0xBD, 0xD7, 0xEE)
 
                 for col_idx, col_name in enumerate(df.columns[:max_cols]):
                     if col_idx < len(table.columns):
