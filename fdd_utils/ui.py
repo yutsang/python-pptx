@@ -117,7 +117,7 @@ def reset_processing_session_state(session_state: Any, clear_upload_reference: b
 
 # --- begin ui/views.py ---
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import pandas as pd
 
@@ -1343,7 +1343,12 @@ def _render_resolver_diagnostics(resolution: Dict[str, Any], display_keys: list[
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
-def render_processed_view(session_state: Any, generate_pptx_callback, get_model_display_name) -> None:
+def render_processed_view(
+    session_state: Any,
+    generate_pptx_callback,
+    get_model_display_name,
+    before_ai_section: Optional[Callable[[], None]] = None,
+) -> None:
     account_display_dfs = session_state.get("display_dfs") or session_state.dfs
     account_display_workbook_list = session_state.get("display_workbook_list") or session_state.workbook_list
     mappings = effective_mappings_from_session(session_state)
@@ -1516,6 +1521,8 @@ def render_processed_view(session_state: Any, generate_pptx_callback, get_model_
                 use_container_width=True,
             )
 
+    if before_ai_section:
+        before_ai_section()
     render_ai_generation_section(session_state, get_model_display_name)
     render_generated_content(session_state, account_display_dfs, mappings, get_model_display_name)
 # --- end ui/processed.py ---

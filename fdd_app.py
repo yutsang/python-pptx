@@ -483,6 +483,51 @@ def _reactive_selectbox_default(widget_key: str, options: list, desired_default:
         st.session_state[auto_key] = desired_default
 
 
+_BATCH_SWITCHER_KEYS = ("batch_active_entity_top", "batch_active_entity_bottom")
+
+
+def _resolve_active_entity(processed_order: list) -> str:
+    """Resolves the shared active entity ONCE, up front, by peeking at both
+    switcher widgets' raw stored values (no rendering yet) -- deliberately
+    NOT folded into the render step below. render_processed_view's tables/
+    AI content is decided using this value long before the SECOND switcher
+    instance (buried inside render_processed_view, just above its AI
+    section) ever gets a chance to render; resolving both widgets first
+    means a click on that lower instance still updates what's shown THIS
+    run, instead of only taking effect after one extra rerun.
+
+    A widget's stored value counts as "just clicked" when it differs from
+    whatever canonical value it last agreed with (tracked per-widget as
+    "_{key}_prev_canonical") -- not just "differs from current canonical",
+    since the non-clicked widget also legitimately differs from a NEW
+    canonical until it's re-synced.
+    """
+    canonical = st.session_state.get("batch_active_entity")
+    if canonical not in processed_order:
+        canonical = processed_order[0]
+
+    for widget_key in _BATCH_SWITCHER_KEYS:
+        stored = st.session_state.get(widget_key)
+        prev_canonical = st.session_state.get(f"_{widget_key}_prev_canonical")
+        if stored in processed_order and stored != prev_canonical:
+            canonical = stored
+
+    st.session_state["batch_active_entity"] = canonical
+    return canonical
+
+
+def _render_entity_switcher(processed_order: list, widget_key: str, active_entity: str) -> None:
+    """Renders one instance of the entity switcher, forced to already-
+    resolved active_entity (see _resolve_active_entity) -- always safe to
+    pre-seed unconditionally here since resolution already happened."""
+    st.session_state[widget_key] = active_entity
+    st.radio(
+        "Entity", options=processed_order, horizontal=True, key=widget_key,
+        label_visibility="collapsed",
+    )
+    st.session_state[f"_{widget_key}_prev_canonical"] = active_entity
+
+
 def render_batch_processing_section():
     """Batch mode: process several entities/databooks in one pass, each
     producing its own standalone PPTX.
@@ -742,6 +787,43 @@ def render_batch_processing_section():
                 )
             progress_bar.progress((i + 1) / total if total else 1.0)
 
+        # Build the ZIP and combined PPTX right away, once, while everything
+        # is already in memory -- so the download buttons in the review
+        # section below are real one-click downloads instead of requiring
+        # an extra "build" click first.
+        processed_order = st.session_state.batch_processed_entity_order
+        entity_cache = st.session_state.batch_entity_cache
+        batch_timestamp = time.strftime("%Y%m%d_%H%M%S")
+        st.session_state.batch_export_timestamp = batch_timestamp
+        if processed_order:
+            status.info("📦 Packaging outputs...")
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                for entity_name in processed_order:
+                    bundle = entity_cache.get(entity_name) or {}
+                    pptx_bytes = bundle.get("pptx_download_data")
+                    pptx_filename = bundle.get("pptx_download_filename")
+                    if pptx_bytes and pptx_filename:
+                        zip_file.writestr(pptx_filename, pptx_bytes)
+            st.session_state.batch_zip_data = zip_buffer.getvalue()
+
+            if len(processed_order) > 1:
+                from fdd_utils.pptx import combine_presentations
+                sources = [
+                    io.BytesIO(entity_cache[name]["pptx_download_data"])
+                    for name in processed_order
+                    if entity_cache.get(name, {}).get("pptx_download_data")
+                ]
+                try:
+                    combined_buffer = io.BytesIO()
+                    combine_presentations(sources, combined_buffer)
+                    st.session_state.batch_combined_pptx = combined_buffer.getvalue()
+                except Exception as exc:
+                    logger.warning("Batch combine failed: %s", exc)
+                    st.session_state.batch_combined_pptx = None
+            else:
+                st.session_state.batch_combined_pptx = None
+
         status.empty()
         progress_bar.empty()
         st.session_state.batch_processing_in_progress = False
@@ -758,55 +840,36 @@ def render_batch_processing_section():
     if processed_order:
         st.divider()
 
-        entity_cache = st.session_state.get("batch_entity_cache") or {}
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            for entity_name in processed_order:
-                bundle = entity_cache.get(entity_name) or {}
-                pptx_bytes = bundle.get("pptx_download_data")
-                pptx_filename = bundle.get("pptx_download_filename")
-                if pptx_bytes and pptx_filename:
-                    zip_file.writestr(pptx_filename, pptx_bytes)
+        batch_timestamp = st.session_state.get("batch_export_timestamp") or time.strftime("%Y%m%d_%H%M%S")
+        zip_data = st.session_state.get("batch_zip_data")
+        combined_data = st.session_state.get("batch_combined_pptx")
 
         download_col1, download_col2 = st.columns(2)
         with download_col1:
             st.download_button(
                 label=f"⬇️ Download All ({len(processed_order)}) as ZIP",
-                data=zip_buffer.getvalue(),
-                file_name="batch_pptx_export.zip",
+                data=zip_data or b"",
+                file_name=f"batch_export_{batch_timestamp}.zip",
                 mime="application/zip",
                 use_container_width=True,
+                disabled=not zip_data,
                 key="batch_download_zip",
             )
         with download_col2:
-            if st.button("📎 Combine into One PPTX", use_container_width=True, key="batch_combine_button"):
-                from fdd_utils.pptx import combine_presentations
-                sources = []
-                for entity_name in processed_order:
-                    pptx_bytes = (entity_cache.get(entity_name) or {}).get("pptx_download_data")
-                    if pptx_bytes:
-                        sources.append(io.BytesIO(pptx_bytes))
-                if sources:
-                    combined_buffer = io.BytesIO()
-                    try:
-                        combine_presentations(sources, combined_buffer)
-                        st.session_state.batch_combined_pptx = combined_buffer.getvalue()
-                    except Exception as exc:
-                        st.error(f"❌ Combine failed: {exc}")
-                        st.session_state.batch_combined_pptx = None
-            if st.session_state.get("batch_combined_pptx"):
+            if combined_data:
                 st.download_button(
-                    label="⬇️ Download Combined PPTX",
-                    data=st.session_state.batch_combined_pptx,
-                    file_name="batch_combined.pptx",
+                    label=f"⬇️ Download Combined PPTX ({len(processed_order)} entities)",
+                    data=combined_data,
+                    file_name=f"batch_combined_{batch_timestamp}.pptx",
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                     use_container_width=True,
                     key="batch_download_combined",
                 )
+            else:
+                st.caption("Combined PPTX needs 2+ entities.")
 
-        active_entity = st.radio(
-            "Entity", options=processed_order, horizontal=True, key="batch_active_entity",
-        )
+        active_entity = _resolve_active_entity(processed_order)
+        _render_entity_switcher(processed_order, "batch_active_entity_top", active_entity)
         bundle = (st.session_state.get("batch_entity_cache") or {}).get(active_entity)
         if bundle:
             st.session_state.update(bundle)
@@ -814,6 +877,9 @@ def render_batch_processing_section():
                 session_state=st.session_state,
                 generate_pptx_callback=generate_pptx_presentation,
                 get_model_display_name=get_model_display_name,
+                before_ai_section=lambda: _render_entity_switcher(
+                    processed_order, "batch_active_entity_bottom", active_entity
+                ),
             )
 
 
