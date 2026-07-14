@@ -5,11 +5,13 @@ Combines extraction, reconciliation, AI generation, and PPTX export
 """
 
 import streamlit as st
+import io
 import logging
 import os
 import re
 import time
 import traceback
+import zipfile
 from pathlib import Path
 from typing import Dict, List
 
@@ -676,20 +678,42 @@ def render_batch_processing_section():
 
     # --- Processing loop: one shared progress display across all entities ---
     if st.session_state.get("batch_processing_in_progress"):
+        from fdd_utils.ai import SUBAGENT_SEQUENCE
+        n_stages = len(SUBAGENT_SEQUENCE)
+
         ready_slots = st.session_state.get("batch_ready_slots") or []
         rollup_temp_path = st.session_state.get("batch_rollup_temp_path_snapshot")
         batch_language = st.session_state.get("language", "Eng")
         total = len(ready_slots)
         progress_bar = st.progress(0.0)
         status = st.empty()
+        batch_start_time = time.time()
 
         for i, slot in enumerate(ready_slots):
             def _progress_cb(agent_num, agent_name, item_num, total_items_in_agent, completed_items,
-                              key_name=None, _i=i, _total=total, _entity=slot["entity_name"]):
+                              key_name=None, _i=i, _entity=slot["entity_name"]):
+                # completed_items is this entity's own cumulative step count
+                # across all AI stages -- combine with how many WHOLE entities
+                # are already done for a smoothly-advancing overall fraction,
+                # then apply the same elapsed/fraction ETA formula the
+                # single-file flow's own progress callback uses.
+                entity_total_steps = max(1, n_stages * total_items_in_agent)
+                entity_fraction = min(completed_items / entity_total_steps, 1.0)
+                overall_fraction = min((_i + entity_fraction) / total, 1.0) if total else 1.0
+                progress_bar.progress(overall_fraction)
+
+                elapsed = time.time() - batch_start_time
+                if overall_fraction > 0.02:
+                    eta_seconds = elapsed / overall_fraction * (1 - overall_fraction)
+                    eta_display = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
+                else:
+                    eta_display = "Calculating..."
+
                 key_display = f" | Key: {key_name}" if key_name else ""
                 status.info(
-                    f"⏳ Entity {_i + 1}/{_total}: {_entity} — Stage {agent_num}: {agent_name} "
-                    f"| Item {item_num}/{total_items_in_agent}{key_display}"
+                    f"⏳ {overall_fraction:.0%} overall | Entity {_i + 1}/{total}: {_entity} "
+                    f"— Stage {agent_num}/{n_stages}: {agent_name} | Item {item_num}/{total_items_in_agent}"
+                    f"{key_display} | ETA: {eta_display}"
                 )
 
             status.info(f"⏳ Entity {i + 1}/{total}: {slot['entity_name']} — extracting data...")
@@ -733,6 +757,25 @@ def render_batch_processing_section():
     processed_order = st.session_state.get("batch_processed_entity_order") or []
     if processed_order:
         st.divider()
+
+        entity_cache = st.session_state.get("batch_entity_cache") or {}
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for entity_name in processed_order:
+                bundle = entity_cache.get(entity_name) or {}
+                pptx_bytes = bundle.get("pptx_download_data")
+                pptx_filename = bundle.get("pptx_download_filename")
+                if pptx_bytes and pptx_filename:
+                    zip_file.writestr(pptx_filename, pptx_bytes)
+        st.download_button(
+            label=f"⬇️ Download All ({len(processed_order)}) as ZIP",
+            data=zip_buffer.getvalue(),
+            file_name="batch_pptx_export.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="batch_download_zip",
+        )
+
         active_entity = st.radio(
             "Entity", options=processed_order, horizontal=True, key="batch_active_entity",
         )
