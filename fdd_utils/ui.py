@@ -1588,6 +1588,16 @@ def _build_model_choices() -> list[dict]:
 
 def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[str], str]) -> str | None:
     with st.sidebar:
+        st.markdown("**⚙️ Mode**")
+        batch_mode = st.checkbox(
+            "📦 批量處理 Batch mode（多個entity一次過處理）",
+            value=session_state.get("batch_mode", False),
+            help="處理多個entity/databook，每個entity會產生自己嘅PPTX。"
+                 "開啟之後，下面呢個單一檔案嘅上傳掣會停用 — 改用主頁面嘅batch區域上傳。",
+            key="batch_mode_checkbox",
+        )
+        session_state.batch_mode = batch_mode
+
         model_choices = _build_model_choices()
         if "model_choice_key" not in session_state:
             # Default to the first choice (GPT-5.5) per project policy, even if
@@ -1629,6 +1639,11 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
         except Exception:
             _proc_cfg = {}
         session_state.use_multithreading = bool(_proc_cfg.get("use_multithreading", True))
+
+        if batch_mode:
+            st.caption("📦 Batch mode 已開啟 — 喺主頁面嘅batch區域上傳多個檔案。")
+            return None
+
         st.markdown("**📁 Databook File**")
         uploaded_file = st.file_uploader(
             "Upload Excel file",
@@ -1722,12 +1737,12 @@ import logging
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Callable, Dict, Optional
 
 import streamlit as st
 
 from .pptx import build_pptx_structured_payloads
-from .workbook import get_effective_mappings, load_mappings
+from .workbook import find_mapping_key, get_effective_mappings, load_mappings
 
 logger = logging.getLogger(__name__)
 
@@ -1825,4 +1840,163 @@ def generate_pptx_presentation(
         import traceback
 
         st.code(traceback.format_exc())
+
+
+def batch_process_entity(
+    *,
+    temp_path: str,
+    entity_name: str,
+    selected_sheet: Optional[str] = None,
+    financials_from: Optional[str] = None,
+    financials_sheet: Optional[str] = None,
+    mapping_overrides: Optional[Dict[str, str]] = None,
+    model_type: str = "local",
+    model_name: Optional[str] = None,
+    language: Optional[str] = None,
+    use_multithreading: bool = True,
+    max_workers: Optional[int] = None,
+    user_comments: Optional[Dict[str, str]] = None,
+    template_path: Optional[str] = None,
+    output_dir: str = "fdd_utils/output",
+    progress_callback: Optional[Callable[..., None]] = None,
+) -> Dict[str, Any]:
+    """Headless, session_state-free equivalent of the single-file
+    process -> reconcile -> AI -> export flow (render_ai_generation_section +
+    generate_pptx_presentation above), for driving multiple entities in a
+    batch loop. Takes explicit parameters instead of Streamlit session_state
+    so it has no per-request UI-widget state to collide across entities, and
+    reuses the exact same production functions so a batch run behaves
+    identically to running each file through the UI one at a time. Mirrors
+    inspect_databook.py's inspect_one() headless pattern.
+
+    financials_from/financials_sheet point BS/IS extraction at a sibling
+    roll-up ("主表") workbook's named sheet when this entity's own file has
+    no Financials-pattern sheet of its own — same mechanism
+    process_workbook_data already exposes for the single-file flow.
+    """
+    from .ai import run_ai_pipeline_with_progress
+    from .pptx import export_pptx_from_structured_data_combined
+    from .workbook import process_workbook_data
+
+    result: Dict[str, Any] = {"entity_name": entity_name, "status": "ok"}
+
+    try:
+        state = process_workbook_data(
+            temp_path=temp_path,
+            entity_name=entity_name,
+            selected_sheet=selected_sheet,
+            mapping_overrides=mapping_overrides,
+            financials_from=financials_from,
+            financials_sheet=financials_sheet,
+        )
+    except Exception as exc:
+        result["status"] = "failed"
+        result["error"] = f"Processing failed: {exc}"
+        return result
+
+    dfs = state.get("dfs") or {}
+    if not dfs:
+        result["status"] = "failed"
+        result["error"] = "No schedule tabs could be extracted from this databook."
+        return result
+
+    reconciliation = state.get("reconciliation")
+    resolution = state.get("resolution")
+    mappings = get_effective_mappings(load_mappings(), resolution)
+
+    # Raw process_workbook_data language is "Eng"/"Chi" (workbook.py's own
+    # detection convention); normalise to the UI's "Eng"/"Chn" convention so
+    # this matches every == "Chn" check generate_pptx_presentation makes,
+    # unless the caller already passed an explicit override in that form.
+    if language:
+        effective_language = language
+    else:
+        raw_language = str(state.get("language") or "Eng").strip()
+        effective_language = "Chn" if raw_language in ("Chi", "Chn", "chinese", "Chinese") else "Eng"
+
+    statement_mode = detect_statement_mode(reconciliation)
+    if statement_mode in ("is_only", "bs_only"):
+        target_type = "IS" if statement_mode == "is_only" else "BS"
+        matched_mapping_keys = [
+            k for k in dfs
+            if mappings.get(find_mapping_key(k, mappings) or k, {}).get("type") == target_type
+        ]
+        if not matched_mapping_keys:
+            matched_mapping_keys = list(dfs.keys())
+    else:
+        matched_mapping_keys = derive_reconciliation_matched_keys(reconciliation, dfs.keys(), resolution)
+        has_reconciliation_data = bool(
+            reconciliation and any(recon_df is not None and not recon_df.empty for recon_df in reconciliation)
+        )
+        if not has_reconciliation_data:
+            matched_mapping_keys = list(dfs.keys())
+
+    if not matched_mapping_keys:
+        result["status"] = "failed"
+        result["error"] = "No eligible accounts after reconciliation filtering."
+        return result
+
+    ai_results = run_ai_pipeline_with_progress(
+        mapping_keys=matched_mapping_keys,
+        dfs=dfs,
+        model_type=model_type,
+        model_name=model_name,
+        language=effective_language,
+        use_multithreading=use_multithreading,
+        max_workers=max_workers,
+        progress_callback=progress_callback,
+        user_comments=user_comments or {},
+    )
+
+    structured_payloads = build_pptx_structured_payloads(
+        ai_results=ai_results,
+        mappings=mappings,
+        bs_is_results=state.get("bs_is_results"),
+        dfs=dfs,
+    )
+    bs_data = structured_payloads.get("BS", [])
+    is_data = structured_payloads.get("IS", [])
+    if not bs_data and not is_data:
+        result["status"] = "failed"
+        result["error"] = "No content generated for PPTX (empty BS and IS payloads)."
+        return result
+
+    resolved_template_path = template_path
+    if not resolved_template_path:
+        for candidate in ["fdd_utils/template.pptx", "template.pptx"]:
+            if os.path.exists(candidate):
+                resolved_template_path = candidate
+                break
+    if not resolved_template_path:
+        result["status"] = "failed"
+        result["error"] = "PowerPoint template not found (fdd_utils/template.pptx)."
+        return result
+
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = dt_module.datetime.now().strftime("%Y%m%d_%H%M%S")
+    sanitized_entity = re.sub(r"[^\w\-_]", "_", str(entity_name)).strip("_") or "Entity"
+    output_path = os.path.join(output_dir, f"{sanitized_entity}_{timestamp}.pptx")
+
+    export_pptx_from_structured_data_combined(
+        resolved_template_path,
+        bs_data,
+        is_data,
+        output_path,
+        entity_name,
+        language="chinese" if effective_language == "Chn" else "english",
+        temp_path=temp_path,
+        selected_sheet=selected_sheet,
+        is_chinese_databook=(effective_language == "Chn"),
+        bs_is_results=state.get("bs_is_results"),
+        model_type=model_type,
+        model_name=model_name,
+        skip_summary_ai=False,
+        mappings=mappings,
+    )
+
+    result["output_path"] = output_path
+    result["bs_count"] = len(bs_data)
+    result["is_count"] = len(is_data)
+    result["accounts_processed"] = len(matched_mapping_keys)
+    return result
 # --- end ui/pptx_export.py ---

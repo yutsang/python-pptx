@@ -15,6 +15,7 @@ from typing import Dict, List
 
 # Import modules
 from fdd_utils.ui import (
+    batch_process_entity,
     build_entity_selector_model,
     generate_pptx_presentation as render_generate_pptx_presentation,
     initialize_app_state,
@@ -31,6 +32,7 @@ from fdd_utils.workbook import (
     detect_databook_language,
     extract_entity_names_from_preflight,
     get_financial_sheet_options,
+    suggest_rollup_sheet_for_entity,
 )
 
 # Import PPTX generation
@@ -452,73 +454,271 @@ def render_entity_and_sheet_controls(processed: bool = False):
             st.rerun()
 
 
+MAX_BATCH_ENTITIES = 8
+
+
+def render_batch_processing_section():
+    """Batch mode: process several entities/databooks in one pass, each
+    producing its own standalone PPTX. Headless per-entity, driven by
+    batch_process_entity() (fdd_utils/ui.py) rather than the interactive
+    single-file session_state flow above -- batch entities don't get the
+    per-account AI-result editing UI, only a straight process->AI->export
+    run per slot, matching what the user asked for (dynamic +/- slots, one
+    shared optional roll-up/主表 file with fuzzy-suggested-but-overridable
+    per-entity sheet, one PPTX per entity)."""
+    st.markdown("## 📦 批量處理 Batch Processing")
+    st.caption(f"一次過處理多個entity，每個entity會產生自己嘅PPTX。最多 {MAX_BATCH_ENTITIES} 個。")
+
+    if "batch_slot_ids" not in st.session_state:
+        st.session_state.batch_slot_ids = [0]
+    if "batch_next_id" not in st.session_state:
+        st.session_state.batch_next_id = 1
+
+    with st.expander("📎 共用主表 / Shared roll-up file（如果啲databook本身冇Financials tab）"):
+        st.caption(
+            "如果呢個batch入面嘅databook本身冇Financials tab，真正嘅summary可以嚟自一個"
+            "共用嘅主表/roll-up檔案（每個entity一個sheet）。喺呢度上傳一次，"
+            "下面每個entity可以各自揀返屬於自己嘅sheet（會根據entity name自動建議，但你可以自己改）。"
+        )
+        rollup_file = st.file_uploader(
+            "Upload shared roll-up / 主表 file (optional)",
+            type=["xlsx", "xls"],
+            key="batch_rollup_file_uploader",
+        )
+        if rollup_file is not None:
+            persist_uploaded_workbook(
+                uploaded_name=rollup_file.name,
+                uploaded_bytes=rollup_file.getvalue(),
+                session_state=st.session_state,
+                state_key="batch_rollup_temp_path",
+            )
+            st.caption(f"✅ 共用主表: {rollup_file.name}")
+        else:
+            st.session_state.batch_rollup_temp_path = None
+
+    rollup_temp_path = st.session_state.get("batch_rollup_temp_path")
+    rollup_sheet_options = get_financial_sheets(rollup_temp_path) if rollup_temp_path else []
+
+    st.divider()
+
+    slot_ids = list(st.session_state.batch_slot_ids)
+    for idx, slot_id in enumerate(slot_ids):
+        with st.container():
+            st.markdown("---")
+            header_col, remove_col = st.columns([6, 1])
+            with header_col:
+                st.markdown(f"**Entity #{idx + 1}**")
+            with remove_col:
+                if len(slot_ids) > 1 and st.button("🗑️", key=f"batch_remove_{slot_id}", help="移除呢個entity"):
+                    st.session_state.batch_slot_ids = [s for s in slot_ids if s != slot_id]
+                    for prefix in ("batch_file", "batch_entity", "batch_own_sheet", "batch_rollup_sheet", "batch_temp_path", "_batch_resolved"):
+                        st.session_state.pop(f"{prefix}_{slot_id}", None)
+                    st.rerun()
+
+            file_col, entity_col = st.columns(2)
+            with file_col:
+                own_file = st.file_uploader("Databook", type=["xlsx", "xls"], key=f"batch_file_{slot_id}")
+                own_temp_path = None
+                if own_file is not None:
+                    own_temp_path = persist_uploaded_workbook(
+                        uploaded_name=own_file.name,
+                        uploaded_bytes=own_file.getvalue(),
+                        session_state=st.session_state,
+                        state_key=f"batch_temp_path_{slot_id}",
+                    )
+            with entity_col:
+                entity_key = f"batch_entity_{slot_id}"
+                if entity_key not in st.session_state and own_file is not None:
+                    default_entity = _extract_entity_from_filename(own_file.name)
+                    if default_entity:
+                        st.session_state[entity_key] = default_entity
+                entity_name = st.text_input("Entity name", key=entity_key, placeholder="Entity name")
+
+            own_sheet = ""
+            rollup_sheet_choice = ""
+            sheet_col1, sheet_col2 = st.columns(2)
+            with sheet_col1:
+                if own_temp_path:
+                    own_sheet_options = get_financial_sheets(own_temp_path)
+                    own_choices = [""] + own_sheet_options
+                    # Blank by default whenever a shared roll-up file is present
+                    # (ambiguous which source should win); auto-pick the first
+                    # ranked sheet only when there's no roll-up alternative at
+                    # all, matching single-file mode's own behaviour exactly.
+                    default_own = "" if rollup_temp_path else (own_sheet_options[0] if own_sheet_options else "")
+                    own_sheet = st.selectbox(
+                        "呢個檔案自己嘅 Financials sheet",
+                        options=own_choices,
+                        index=own_choices.index(default_own) if default_own in own_choices else 0,
+                        key=f"batch_own_sheet_{slot_id}",
+                    )
+            with sheet_col2:
+                if rollup_temp_path and rollup_sheet_options:
+                    suggested = suggest_rollup_sheet_for_entity(entity_name, rollup_sheet_options) if entity_name else None
+                    rollup_choices = [""] + rollup_sheet_options
+                    default_rollup = suggested or ""
+                    rollup_sheet_choice = st.selectbox(
+                        "主表入面屬於呢個entity嘅sheet（自動建議，可自己改）",
+                        options=rollup_choices,
+                        index=rollup_choices.index(default_rollup) if default_rollup in rollup_choices else 0,
+                        key=f"batch_rollup_sheet_{slot_id}",
+                    )
+
+            st.session_state[f"_batch_resolved_{slot_id}"] = {
+                "temp_path": own_temp_path,
+                "entity_name": entity_name.strip() if entity_name else "",
+                "own_sheet": own_sheet or None,
+                "rollup_sheet": rollup_sheet_choice or None,
+            }
+
+    add_col, _spacer = st.columns([1, 5])
+    with add_col:
+        if len(slot_ids) < MAX_BATCH_ENTITIES:
+            if st.button("➕ 新增entity", key="batch_add_slot"):
+                new_id = st.session_state.batch_next_id
+                st.session_state.batch_next_id += 1
+                st.session_state.batch_slot_ids.append(new_id)
+                st.rerun()
+        else:
+            st.caption(f"已達上限 {MAX_BATCH_ENTITIES} 個entity")
+
+    st.divider()
+
+    ready_slots = []
+    for slot_id in slot_ids:
+        resolved = st.session_state.get(f"_batch_resolved_{slot_id}") or {}
+        if resolved.get("temp_path") and resolved.get("entity_name") and (
+            resolved.get("own_sheet") or (rollup_temp_path and resolved.get("rollup_sheet"))
+        ):
+            ready_slots.append(resolved)
+
+    st.caption(f"{len(ready_slots)} / {len(slot_ids)} entity 已填妥可以處理。")
+
+    if st.button(
+        f"🚀 Process All ({len(ready_slots)})",
+        type="primary",
+        use_container_width=True,
+        disabled=not ready_slots,
+        key="batch_process_all",
+    ):
+        results = []
+        progress_bar = st.progress(0.0)
+        status = st.empty()
+        for i, slot in enumerate(ready_slots):
+            status.info(f"⏳ Processing {slot['entity_name']} ({i + 1}/{len(ready_slots)})…")
+            try:
+                outcome = batch_process_entity(
+                    temp_path=slot["temp_path"],
+                    entity_name=slot["entity_name"],
+                    selected_sheet=slot["own_sheet"],
+                    financials_from=rollup_temp_path if not slot["own_sheet"] else None,
+                    financials_sheet=slot["rollup_sheet"] if not slot["own_sheet"] else None,
+                    model_type=st.session_state.get("model_type", "local"),
+                    model_name=st.session_state.get("model_name"),
+                    use_multithreading=st.session_state.get("use_multithreading", True),
+                )
+            except Exception as exc:
+                outcome = {"entity_name": slot["entity_name"], "status": "failed", "error": str(exc)}
+            results.append(outcome)
+            progress_bar.progress((i + 1) / len(ready_slots))
+        status.empty()
+        st.session_state.batch_results = results
+        st.rerun()
+
+    batch_results = st.session_state.get("batch_results")
+    if batch_results:
+        st.markdown("### 結果 Results")
+        for outcome in batch_results:
+            entity_label = outcome.get("entity_name", "?")
+            if outcome.get("status") == "ok":
+                output_path = outcome.get("output_path")
+                st.success(
+                    f"✅ {entity_label}: BS={outcome.get('bs_count', 0)} IS={outcome.get('is_count', 0)} "
+                    f"accounts={outcome.get('accounts_processed', 0)}"
+                )
+                if output_path and os.path.exists(output_path):
+                    with open(output_path, "rb") as handle:
+                        st.download_button(
+                            label=f"⬇️ Download {os.path.basename(output_path)}",
+                            data=handle.read(),
+                            file_name=os.path.basename(output_path),
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            key=f"batch_download_{entity_label}_{output_path}",
+                        )
+            else:
+                st.error(f"❌ {entity_label}: {outcome.get('error', 'unknown error')}")
+
+
 # Initialize
 init_session_state()
 
 # Sidebar - must run first to set temp_path before main content reads it
 temp_path = render_sidebar_upload(st.session_state, get_model_display_name)
 
-if should_render_preprocess_controls(processed=st.session_state.get('dfs') is not None):
-    render_entity_and_sheet_controls(processed=False)
-
-# Process data if button was clicked
-if st.session_state.get('process_data_clicked', False):
-    st.session_state.process_data_clicked = False
-    temp_path = st.session_state.get('temp_path', None)
-    entity_name = st.session_state.get('entity_name', '')
-    selected_sheet = st.session_state.get('selected_sheet', None)
-    
-    if temp_path:
-        with st.spinner("Processing..."):
-            try:
-                fdd_config = FDDConfig()
-                debug_mode = fdd_config.get_debug_mode()
-                processed_state = process_workbook_data(
-                    temp_path=temp_path,
-                    entity_name=entity_name,
-                    selected_sheet=selected_sheet,
-                    mapping_overrides=st.session_state.get("mapping_overrides") or None,
-                    debug=debug_mode,
-                    financials_from=st.session_state.get("rollup_temp_path"),
-                    financials_sheet=st.session_state.get("rollup_sheet"),
-                )
-                # Language: auto-match from the databook, but in the UI convention
-                # ("Eng"/"Chn") so every downstream == "Chn" check agrees, and NEVER
-                # overwrite a manual override the project team already set this session.
-                _detected_lang = processed_state.pop("language", "Eng")
-                _detected_ui = "Chn" if str(_detected_lang).strip() in ("Chi", "Chn", "chinese", "Chinese") else "Eng"
-                st.session_state.update(
-                    {key: value for key, value in processed_state.items() if key != "display_dfs_original"}
-                )
-                st.session_state.detected_language = _detected_ui
-                if not st.session_state.get("language_user_set"):
-                    st.session_state.language = _detected_ui
-                if 'model_type' not in st.session_state:
-                    st.session_state.model_type = 'local'
-                st.success("✅ Data processed successfully!")
-                st.rerun()
-                
-            except Exception as e:
-                st.error(f"❌ Error processing data: {e}")
-                st.code(traceback.format_exc())
-
-# Main content
-if st.session_state.get('dfs') is None:
-    st.info("👈 Upload a databook, set entity name and sheet, then click 'Process Data' to begin")
+if st.session_state.get("batch_mode"):
+    render_batch_processing_section()
 else:
-    # render_entity_and_sheet_controls (with the language selector) only
-    # renders BEFORE processing (should_render_preprocess_controls hides it
-    # once dfs exists) — but detected_language only gets a real value
-    # DURING processing, so the "Detected: ..." reminder could never
-    # actually be seen without also showing the selector here.
-    lang_col, _spacer_col = st.columns([1, 2])
-    with lang_col:
-        render_language_selector(st.session_state)
-    render_processed_view(
-        session_state=st.session_state,
-        generate_pptx_callback=generate_pptx_presentation,
-        get_model_display_name=get_model_display_name,
-    )
+    if should_render_preprocess_controls(processed=st.session_state.get('dfs') is not None):
+        render_entity_and_sheet_controls(processed=False)
+
+    # Process data if button was clicked
+    if st.session_state.get('process_data_clicked', False):
+        st.session_state.process_data_clicked = False
+        temp_path = st.session_state.get('temp_path', None)
+        entity_name = st.session_state.get('entity_name', '')
+        selected_sheet = st.session_state.get('selected_sheet', None)
+
+        if temp_path:
+            with st.spinner("Processing..."):
+                try:
+                    fdd_config = FDDConfig()
+                    debug_mode = fdd_config.get_debug_mode()
+                    processed_state = process_workbook_data(
+                        temp_path=temp_path,
+                        entity_name=entity_name,
+                        selected_sheet=selected_sheet,
+                        mapping_overrides=st.session_state.get("mapping_overrides") or None,
+                        debug=debug_mode,
+                        financials_from=st.session_state.get("rollup_temp_path"),
+                        financials_sheet=st.session_state.get("rollup_sheet"),
+                    )
+                    # Language: auto-match from the databook, but in the UI convention
+                    # ("Eng"/"Chn") so every downstream == "Chn" check agrees, and NEVER
+                    # overwrite a manual override the project team already set this session.
+                    _detected_lang = processed_state.pop("language", "Eng")
+                    _detected_ui = "Chn" if str(_detected_lang).strip() in ("Chi", "Chn", "chinese", "Chinese") else "Eng"
+                    st.session_state.update(
+                        {key: value for key, value in processed_state.items() if key != "display_dfs_original"}
+                    )
+                    st.session_state.detected_language = _detected_ui
+                    if not st.session_state.get("language_user_set"):
+                        st.session_state.language = _detected_ui
+                    if 'model_type' not in st.session_state:
+                        st.session_state.model_type = 'local'
+                    st.success("✅ Data processed successfully!")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"❌ Error processing data: {e}")
+                    st.code(traceback.format_exc())
+
+    # Main content
+    if st.session_state.get('dfs') is None:
+        st.info("👈 Upload a databook, set entity name and sheet, then click 'Process Data' to begin")
+    else:
+        # render_entity_and_sheet_controls (with the language selector) only
+        # renders BEFORE processing (should_render_preprocess_controls hides it
+        # once dfs exists) — but detected_language only gets a real value
+        # DURING processing, so the "Detected: ..." reminder could never
+        # actually be seen without also showing the selector here.
+        lang_col, _spacer_col = st.columns([1, 2])
+        with lang_col:
+            render_language_selector(st.session_state)
+        render_processed_view(
+            session_state=st.session_state,
+            generate_pptx_callback=generate_pptx_presentation,
+            get_model_display_name=get_model_display_name,
+        )
 
 
 

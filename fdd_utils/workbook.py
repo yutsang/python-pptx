@@ -678,6 +678,7 @@ def profile_workbook(workbook_path: str) -> Dict[str, Dict[str, Any]]:
 # --- end workbook/inspector.py ---
 
 # --- begin workbook/preflight.py ---
+import difflib
 from functools import lru_cache
 import logging
 import os
@@ -982,6 +983,50 @@ def get_financial_sheet_options(preflight: Dict[str, Any]) -> List[str]:
 
     visible_sheets = _visible_non_blank_sheets(preflight)
     return [sheet["name"] for sheet in sorted(visible_sheets, key=sheet_score)]
+
+
+def _normalize_for_sheet_match(text: str) -> str:
+    return re.sub(r"[\s\-_·．.()（）]+", "", str(text or "")).strip().lower()
+
+
+def suggest_rollup_sheet_for_entity(entity_name: str, sheet_names: List[str]) -> Optional[str]:
+    """Fuzzy-suggest which sheet in an uploaded roll-up ("主表") workbook
+    belongs to a given entity, for the batch-processing flow's per-entity
+    roll-up-sheet dropdown default (still overridable by the user — see the
+    batch UI in fdd_app.py). Unlike get_financial_sheet_options above (which
+    ranks sheets purely by how "Financials-like" the sheet NAME looks, with
+    no entity context at all), this scores each sheet against the entity's
+    own name: substring containment first (handles CJK entity names like
+    "南通通海" appearing inside "南通通海Financials" with no separator
+    between them), falling back to a fuzzy ratio for near-miss spellings,
+    with a small tie-breaking bonus for sheet names ending in "Financials"
+    (the roll-up file's own naming convention, per the single-file roll-up
+    picker's own docstring example). Returns None (no default) when nothing
+    clears a hand-picked confidence floor — silently picking the wrong
+    entity's sheet is worse than leaving the dropdown unset for the user to
+    pick manually.
+    """
+    entity_norm = _normalize_for_sheet_match(entity_name)
+    if not entity_norm or not sheet_names:
+        return None
+
+    best_sheet: Optional[str] = None
+    best_score = 0.0
+    for sheet in sheet_names:
+        sheet_norm = _normalize_for_sheet_match(sheet)
+        if not sheet_norm:
+            continue
+        if entity_norm in sheet_norm or sheet_norm in entity_norm:
+            score = 0.9
+        else:
+            score = difflib.SequenceMatcher(None, entity_norm, sheet_norm).ratio()
+        if str(sheet).strip().lower().endswith("financials"):
+            score += 0.05
+        if score > best_score:
+            best_score = score
+            best_sheet = sheet
+
+    return best_sheet if best_score >= 0.45 else None
 # --- end workbook/preflight.py ---
 
 # --- begin workbook/table_debug.py ---
