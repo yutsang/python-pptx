@@ -1608,10 +1608,11 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
     with st.sidebar:
         st.markdown("**⚙️ Mode**")
         batch_mode = st.checkbox(
-            "📦 批量處理 Batch mode（多個entity一次過處理）",
+            "📦 Batch mode",
             value=session_state.get("batch_mode", False),
-            help="處理多個entity/databook，每個entity會產生自己嘅PPTX。"
-                 "開啟之後，下面呢個單一檔案嘅上傳掣會停用 — 改用主頁面嘅batch區域上傳。",
+            help="Process multiple entities/databooks in one pass, each producing its own PPTX. "
+                 "When enabled, the single-file uploader below is disabled -- upload files in the "
+                 "batch section on the main page instead.",
             key="batch_mode_checkbox",
         )
         session_state.batch_mode = batch_mode
@@ -1659,7 +1660,7 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
         session_state.use_multithreading = bool(_proc_cfg.get("use_multithreading", True))
 
         if batch_mode:
-            st.caption("📦 Batch mode 已開啟 — 喺主頁面嘅batch區域上傳多個檔案。")
+            st.caption("📦 Batch mode is on -- upload files in the batch section on the main page.")
             return None
 
         st.markdown("**📁 Databook File**")

@@ -385,14 +385,14 @@ def render_entity_and_sheet_controls(processed: bool = False):
         # have their own Financials sheet and never need this. Placed BEFORE
         # the Process button, same principle as the language reminder: must
         # be known/set before processing, not discovered after.
-        with st.expander("📎 進階：主表 / Roll-up file（如果呢個databook本身冇Financials tab）"):
+        with st.expander("📎 Advanced: Roll-up file (if this databook has no Financials tab)"):
             st.caption(
-                "有啲portfolio入面，個別sub-entity嘅databook本身冇任何Financials tab —— "
-                "真正嘅summary喺一個共用嘅主表/roll-up檔案入面，每個entity一個sheet。"
-                "喺呢度上傳嗰個主表檔案，並手動揀返呢個entity專屬嘅Financials sheet。"
+                "Some portfolios keep each sub-entity's own databook free of any Financials tab -- "
+                "the real summary instead lives in a shared roll-up file, one sheet per entity. "
+                "Upload that roll-up file here, and manually select the Financials sheet for this entity."
             )
             rollup_file = st.file_uploader(
-                "Upload roll-up / 主表 file (optional)",
+                "Upload roll-up file (optional)",
                 type=["xlsx", "xls"],
                 key="rollup_file_uploader",
             )
@@ -448,7 +448,7 @@ def render_entity_and_sheet_controls(processed: bool = False):
             st.warning("⚠️ Please enter an entity name")
         elif not has_financials_source:
             st.warning("⚠️ Please select a financial statement sheet (from this databook, or from an "
-                       "uploaded roll-up file under '進階：主表 / Roll-up file' above)")
+                       "uploaded roll-up file under 'Advanced: Roll-up file' above)")
         else:
             st.session_state.process_data_clicked = True
             st.rerun()
@@ -466,22 +466,22 @@ def render_batch_processing_section():
     run per slot, matching what the user asked for (dynamic +/- slots, one
     shared optional roll-up/主表 file with fuzzy-suggested-but-overridable
     per-entity sheet, one PPTX per entity)."""
-    st.markdown("## 📦 批量處理 Batch Processing")
-    st.caption(f"一次過處理多個entity，每個entity會產生自己嘅PPTX。最多 {MAX_BATCH_ENTITIES} 個。")
+    st.markdown("## 📦 Batch Processing")
+    st.caption(f"Process multiple entities in one pass -- each entity produces its own PPTX. Maximum {MAX_BATCH_ENTITIES}.")
 
     if "batch_slot_ids" not in st.session_state:
         st.session_state.batch_slot_ids = [0]
     if "batch_next_id" not in st.session_state:
         st.session_state.batch_next_id = 1
 
-    with st.expander("📎 共用主表 / Shared roll-up file（如果啲databook本身冇Financials tab）"):
+    with st.expander("📎 Shared roll-up file (if these databooks have no Financials tab)"):
         st.caption(
-            "如果呢個batch入面嘅databook本身冇Financials tab，真正嘅summary可以嚟自一個"
-            "共用嘅主表/roll-up檔案（每個entity一個sheet）。喺呢度上傳一次，"
-            "下面每個entity可以各自揀返屬於自己嘅sheet（會根據entity name自動建議，但你可以自己改）。"
+            "If the databooks in this batch have no Financials tab, the real summary can come from a "
+            "shared roll-up file (one sheet per entity). Upload it once here -- each entity below can "
+            "then select its own sheet (auto-suggested by entity name, but you can override it)."
         )
         rollup_file = st.file_uploader(
-            "Upload shared roll-up / 主表 file (optional)",
+            "Upload shared roll-up file (optional)",
             type=["xlsx", "xls"],
             key="batch_rollup_file_uploader",
         )
@@ -492,7 +492,7 @@ def render_batch_processing_section():
                 session_state=st.session_state,
                 state_key="batch_rollup_temp_path",
             )
-            st.caption(f"✅ 共用主表: {rollup_file.name}")
+            st.caption(f"✅ Shared roll-up file: {rollup_file.name}")
         else:
             st.session_state.batch_rollup_temp_path = None
 
@@ -509,7 +509,7 @@ def render_batch_processing_section():
             with header_col:
                 st.markdown(f"**Entity #{idx + 1}**")
             with remove_col:
-                if len(slot_ids) > 1 and st.button("🗑️", key=f"batch_remove_{slot_id}", help="移除呢個entity"):
+                if len(slot_ids) > 1 and st.button("🗑️", key=f"batch_remove_{slot_id}", help="Remove this entity"):
                     st.session_state.batch_slot_ids = [s for s in slot_ids if s != slot_id]
                     for prefix in ("batch_file", "batch_entity", "batch_own_sheet", "batch_rollup_sheet", "batch_temp_path", "_batch_resolved"):
                         st.session_state.pop(f"{prefix}_{slot_id}", None)
@@ -547,7 +547,7 @@ def render_batch_processing_section():
                     # all, matching single-file mode's own behaviour exactly.
                     default_own = "" if rollup_temp_path else (own_sheet_options[0] if own_sheet_options else "")
                     own_sheet = st.selectbox(
-                        "呢個檔案自己嘅 Financials sheet",
+                        "This file's own Financials sheet",
                         options=own_choices,
                         index=own_choices.index(default_own) if default_own in own_choices else 0,
                         key=f"batch_own_sheet_{slot_id}",
@@ -558,7 +558,7 @@ def render_batch_processing_section():
                     rollup_choices = [""] + rollup_sheet_options
                     default_rollup = suggested or ""
                     rollup_sheet_choice = st.selectbox(
-                        "主表入面屬於呢個entity嘅sheet（自動建議，可自己改）",
+                        "This entity's sheet in the roll-up file (auto-suggested, editable)",
                         options=rollup_choices,
                         index=rollup_choices.index(default_rollup) if default_rollup in rollup_choices else 0,
                         key=f"batch_rollup_sheet_{slot_id}",
@@ -574,13 +574,13 @@ def render_batch_processing_section():
     add_col, _spacer = st.columns([1, 5])
     with add_col:
         if len(slot_ids) < MAX_BATCH_ENTITIES:
-            if st.button("➕ 新增entity", key="batch_add_slot"):
+            if st.button("➕ Add entity", key="batch_add_slot"):
                 new_id = st.session_state.batch_next_id
                 st.session_state.batch_next_id += 1
                 st.session_state.batch_slot_ids.append(new_id)
                 st.rerun()
         else:
-            st.caption(f"已達上限 {MAX_BATCH_ENTITIES} 個entity")
+            st.caption(f"Maximum of {MAX_BATCH_ENTITIES} entities reached")
 
     st.divider()
 
@@ -592,7 +592,7 @@ def render_batch_processing_section():
         ):
             ready_slots.append(resolved)
 
-    st.caption(f"{len(ready_slots)} / {len(slot_ids)} entity 已填妥可以處理。")
+    st.caption(f"{len(ready_slots)} / {len(slot_ids)} entities ready to process.")
 
     if st.button(
         f"🚀 Process All ({len(ready_slots)})",
@@ -627,7 +627,7 @@ def render_batch_processing_section():
 
     batch_results = st.session_state.get("batch_results")
     if batch_results:
-        st.markdown("### 結果 Results")
+        st.markdown("### Results")
         for outcome in batch_results:
             entity_label = outcome.get("entity_name", "?")
             if outcome.get("status") == "ok":
