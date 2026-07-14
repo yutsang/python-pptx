@@ -3871,7 +3871,18 @@ class PowerPointGenerator:
         ln.set('cap', 'flat')
         ln.set('cmpd', 'sng')
         ln.set('algn', 'ctr')
-        
+
+        # Calling this twice on the same side (e.g. a full-grid pass, then a
+        # heavier total-row override) previously left BOTH the old and new
+        # <a:solidFill>/<a:prstDash>/<a:round>/<a:headEnd>/<a:tailEnd>
+        # children on `ln` -- append() never replaces, so the element ended
+        # up with duplicates and PowerPoint's rendering of that is
+        # undefined (in practice, whichever child renderers pick up first).
+        # Clear any existing children before appending the new ones so a
+        # second call genuinely overrides the first, not just adds to it.
+        for child in list(ln):
+            ln.remove(child)
+
         # Set color
         if color_rgb:
             solidFill = OxmlElement('a:solidFill')
@@ -4064,10 +4075,16 @@ class PowerPointGenerator:
                             name_row.cells[0].merge(name_row.cells[len(table.columns) - 1])
                         name_cell = name_row.cells[0]
                         name_cell.text = table_name
-                        # Format table name: Arial 8, bold, centered, Dark Blue bg, White font
+                        # Company-format reference (real KPMG deliverable
+                        # page, not the client databook's own schedule-tab
+                        # styling): the statement title sits in plain black
+                        # text with NO fill, left-aligned like a heading --
+                        # not a navy-filled band. Previously matched the
+                        # databook's OWN internal schedule-tab convention
+                        # (white-on-navy), which is a different page type.
                         if name_cell.text_frame.paragraphs:
                             p = name_cell.text_frame.paragraphs[0]
-                            p.alignment = PP_ALIGN.CENTER  # Center alignment
+                            p.alignment = PP_ALIGN.LEFT
                             if p.runs:
                                 run = p.runs[0]
                             else:
@@ -4075,11 +4092,8 @@ class PowerPointGenerator:
                             run.font.name = 'Arial'
                             run.font.size = Pt(8)
                             run.font.bold = True
-                            run.font.color.rgb = WHITE
-                            
-                            name_cell.fill.solid()
-                            name_cell.fill.fore_color.rgb = DARK_BLUE
-                            
+                            run.font.color.rgb = BLACK
+
                         # Shift data down - we'll use rows starting from index 1
                         data_start_row = 1
                     except:
@@ -4126,6 +4140,13 @@ class PowerPointGenerator:
 
                             cell.fill.solid()
                             cell.fill.fore_color.rgb = TIFFANY_BLUE
+
+                        # Company-format reference is a fully ruled grid
+                        # (every cell bordered on all 4 sides), not the
+                        # mostly-borderless-except-totals look this table
+                        # previously had -- thin black lines throughout.
+                        for _side in ("top", "bottom", "left", "right"):
+                            self._set_cell_border(cell, _side, color_rgb="000000", width=Pt(0.5))
 
                         try:
                             cell.margin_left = Inches(0.04)
@@ -4301,7 +4322,15 @@ class PowerPointGenerator:
                             p.alignment = PP_ALIGN.LEFT if col_idx == 0 else PP_ALIGN.RIGHT
                         except Exception:
                             pass
-                        
+
+                        # Company-format reference is a fully ruled grid --
+                        # thin black borders on every cell, every side. The
+                        # heavier navy total/subtotal borders below are
+                        # applied AFTER this and override the same side where
+                        # they apply (top/bottom on total rows).
+                        for _side in ("top", "bottom", "left", "right"):
+                            self._set_cell_border(cell, _side, color_rgb="000000", width=Pt(0.5))
+
                         # Grey fill is reserved for grand-total rows (Total
                         # assets, Total liabilities, Net profit, EBITDA, etc.)
                         # to match the company-format reference -- subsection
