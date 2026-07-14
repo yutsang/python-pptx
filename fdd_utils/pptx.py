@@ -4042,11 +4042,12 @@ class PowerPointGenerator:
                 except Exception:
                     pass
 
-                # Colors -- matches the company-format reference (client databook's
-                # own "Financials" summary tab: navy #00338D title/subtotal-border,
-                # blue #1E4CE2 header row, light grey #E5E5E5 grand-total fill only).
+                # Colors -- matches the company-format reference (real KPMG
+                # deliverable page): navy #00338D fills the title band and
+                # accents total-row borders; the date/header row and data
+                # rows stay unfilled (white bg, dark text); light grey
+                # #E5E5E5 marks the grand-total fill only.
                 DARK_BLUE = RGBColor(0x00, 0x33, 0x8D)
-                TIFFANY_BLUE = RGBColor(0x1E, 0x4C, 0xE2)
                 GREY = RGBColor(0xE5, 0xE5, 0xE5)
                 WHITE = RGBColor(255, 255, 255)
                 BLACK = RGBColor(0, 0, 0)
@@ -4080,13 +4081,11 @@ class PowerPointGenerator:
                             name_row.cells[0].merge(name_row.cells[len(table.columns) - 1])
                         name_cell = name_row.cells[0]
                         name_cell.text = table_name
-                        # Company-format reference (real KPMG deliverable
-                        # page, not the client databook's own schedule-tab
-                        # styling): the statement title sits in plain black
-                        # text with NO fill, left-aligned like a heading --
-                        # not a navy-filled band. Previously matched the
-                        # databook's OWN internal schedule-tab convention
-                        # (white-on-navy), which is a different page type.
+                        # Company-format reference (real KPMG deliverable page):
+                        # the statement title sits in a navy-filled band spanning
+                        # the full table width, white bold text, left-aligned --
+                        # the date/header row directly beneath it is the one
+                        # left unfilled (white bg, dark text), not the title.
                         if name_cell.text_frame.paragraphs:
                             p = name_cell.text_frame.paragraphs[0]
                             p.alignment = PP_ALIGN.LEFT
@@ -4097,7 +4096,10 @@ class PowerPointGenerator:
                             run.font.name = 'Arial'
                             run.font.size = Pt(8)
                             run.font.bold = True
-                            run.font.color.rgb = BLACK
+                            run.font.color.rgb = WHITE
+
+                            name_cell.fill.solid()
+                            name_cell.fill.fore_color.rgb = DARK_BLUE
 
                         # Shift data down - we'll use rows starting from index 1
                         data_start_row = 1
@@ -4128,7 +4130,10 @@ class PowerPointGenerator:
                             cell.text = currency_unit
                         else:
                             cell.text = str(col_name)
-                        # Apply header formatting: Arial 8, bold, header blue bg, White font
+                        # Company-format reference: the date/header row sits
+                        # directly under the navy title band with NO fill of
+                        # its own (white bg, dark bold text) -- only the title
+                        # row above it is filled navy.
                         if cell.text_frame.paragraphs:
                             p = cell.text_frame.paragraphs[0]
                             p.alignment = PP_ALIGN.CENTER
@@ -4141,10 +4146,7 @@ class PowerPointGenerator:
                             run.font.name = 'Arial'
                             run.font.size = Pt(8)
                             run.font.bold = True
-                            run.font.color.rgb = WHITE # White font for header
-
-                            cell.fill.solid()
-                            cell.fill.fore_color.rgb = TIFFANY_BLUE
+                            run.font.color.rgb = BLACK
 
                         # Company-format reference is a fully ruled grid
                         # (every cell bordered on all 4 sides), not the
