@@ -2916,6 +2916,70 @@ class PowerPointGenerator:
                 slide_idx, best_k, full_i, empty_i,
             )
 
+    def _consolidate_tiny_stub_lr_pairs(
+        self,
+        assignment: List[List[Dict[str, Any]]],
+        slots: List[Dict[str, Any]],
+        statement_type: Optional[str],
+    ) -> None:
+        """Mutates `assignment` in place. Front-loading -- filling L to
+        near-capacity before spilling anything into R -- is the intended
+        packing philosophy here (minimises total page count), not a bug to
+        fix. But confirmed against real production decks: it regularly
+        leaves R holding a single orphaned fragment at ~5-20% fill next to
+        an L column in the 90s% -- not what a human preparing the same
+        page would produce (they'd either use both columns for real or
+        fold a leftover sliver into the fuller one, never leave a
+        near-blank second column standing next to a full one).
+
+        This only ever fires on a same-slide (L, R) pair where R is
+        NON-empty (bool(r_accts) is True, so _rebalance_lopsided_lr_pairs'
+        "one side fully empty" case never overlaps with this one) but its
+        fill ratio reads as an orphaned stub rather than real content, AND
+        R's entire content fits into L's own remaining capacity whole --
+        folds it in and leaves R properly, cleanly empty (a genuinely
+        blank box now correctly renders that way -- see the
+        "if not account_data_list" shape-clearing fix alongside this).
+        Never attempts a partial move here: trading one awkward stub for a
+        smaller one doesn't serve the "look like a human made this" goal.
+        """
+        STUB_FILL_THRESHOLD = 0.20  # below this, a slot reads as leftover, not real content
+
+        by_slide: Dict[int, Dict[str, int]] = {}
+        for s_i, slot in enumerate(slots):
+            if slot.get("slot_name") in ("L", "R"):
+                by_slide.setdefault(slot["slide_idx"], {})[slot["slot_name"]] = s_i
+
+        for slide_idx, pair in by_slide.items():
+            if "L" not in pair or "R" not in pair:
+                continue
+            l_i, r_i = pair["L"], pair["R"]
+            l_accts, r_accts = assignment[l_i], assignment[r_i]
+            if not l_accts or not r_accts:
+                continue  # nothing to fold, or _rebalance_lopsided_lr_pairs's job
+
+            l_slot, r_slot = slots[l_i], slots[r_i]
+            r_used = self._compute_slot_used_lines(
+                r_accts, r_slot["slot_name"], slot_shape=r_slot["shape"], statement_type=statement_type,
+            )
+            r_cap = r_slot["capacity"]
+            if r_cap <= 0 or (r_used / r_cap) >= STUB_FILL_THRESHOLD:
+                continue  # R holds real content, not just a leftover stub -- leave it alone
+
+            combined_used = self._compute_slot_used_lines(
+                l_accts + r_accts, l_slot["slot_name"], slot_shape=l_slot["shape"], statement_type=statement_type,
+            )
+            if combined_used > l_slot["capacity"]:
+                continue  # doesn't fit whole -- a partial move would just trade one stub for another
+
+            assignment[l_i] = l_accts + r_accts
+            assignment[r_i] = []
+            logger.info(
+                "  Consolidated tiny stub on slide %s: folded R (%.0f%% fill) into L -- "
+                "avoids an orphaned near-empty trailing column",
+                slide_idx, r_used / r_cap * 100,
+            )
+
     def _split_commentary_at_boundary(
         self,
         commentary: str,
@@ -3717,6 +3781,7 @@ class PowerPointGenerator:
                 break
 
         self._rebalance_lopsided_lr_pairs(assignment, slots, statement_type)
+        self._consolidate_tiny_stub_lr_pairs(assignment, slots, statement_type)
         self._rebalance_underfilled_boundaries(assignment, slots, statement_type)
         self._rebalance_overflowing_boundaries(assignment, slots, statement_type)
 
@@ -3939,8 +4004,24 @@ class PowerPointGenerator:
             # Fill each slot (single, L, or R) on this slide
             for slot_name, account_data_list in slot_contents.items():
                 if not account_data_list:
+                    # An INTENTIONALLY empty slot (e.g.
+                    # _consolidate_tiny_stub_lr_pairs folded its one tiny
+                    # fragment into the earlier slot rather than leave an
+                    # orphaned near-empty column) must still have its
+                    # shape's text actively cleared -- otherwise the shape
+                    # keeps whatever raw template placeholder sample text
+                    # it shipped with (e.g. a visible "Placeholder –
+                    # placeholder"), which reads as broken output, not as
+                    # the clean blank box an intentionally-unused slot
+                    # should be.
+                    empty_shape = self._resolve_commentary_slot_shape(
+                        slide, slot_name, used_shape_ids=used_slot_shape_ids,
+                    )
+                    if empty_shape is not None and empty_shape.has_text_frame:
+                        empty_shape.text_frame.clear()
+                        used_slot_shape_ids.add(id(empty_shape))
                     continue
-                
+
                 # Find the appropriate shape based on slot_name
                 bullets_shape = self._resolve_commentary_slot_shape(
                     slide,
