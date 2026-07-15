@@ -613,6 +613,24 @@ def render_batch_processing_section():
         rollup_temp_path = st.session_state.get("batch_rollup_temp_path")
         rollup_sheet_options = get_financial_sheets(rollup_temp_path) if rollup_temp_path else []
 
+        # Separate from each entity's own per-file "Output filename" below --
+        # this one names the single merged deck the "Combine into One PPTX"
+        # download produces when 2+ entities are processed. Suggested from
+        # the roll-up file's own name when one's uploaded (closest thing to
+        # a name for "the whole batch"), since there's no single entity name
+        # to fall back to the way each per-entity field does.
+        default_combined_name = "Batch_Combined"
+        if rollup_file is not None:
+            default_combined_name = re.sub(
+                r"[^\w\-]", "_", os.path.splitext(rollup_file.name)[0]
+            ).strip("_") or default_combined_name
+        combined_filename_key = "batch_combined_filename"
+        _reactive_text_input_default(combined_filename_key, default_combined_name)
+        combined_output_filename = st.text_input(
+            "Combined PPTX filename (no extension -- names the single merged deck when 2+ entities are combined)",
+            key=combined_filename_key,
+        )
+
         st.divider()
 
         # Databooks themselves are uploaded once in the sidebar (2+ files
@@ -944,10 +962,13 @@ def render_batch_processing_section():
                 )
             with download_col2:
                 if combined_data:
+                    combined_name = re.sub(
+                        r"[^\w\-]", "_", str(st.session_state.get("batch_combined_filename") or "")
+                    ).strip("_") or "Batch_Combined"
                     st.download_button(
                         label=f"⬇️ Download Combined PPTX ({len(processed_order)} entities)",
                         data=combined_data,
-                        file_name=f"batch_combined_{batch_timestamp}.pptx",
+                        file_name=f"{combined_name}_{batch_timestamp}.pptx",
                         mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                         use_container_width=True,
                         key="batch_download_combined",
