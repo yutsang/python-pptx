@@ -3798,10 +3798,27 @@ class PowerPointGenerator:
                 [a.get("mapping_key", "?") for a in assignment[s_i]],
             )
 
+        # A slot with no accounts is normally dropped entirely -- e.g. an
+        # unused TRAILING slide the DP decided wasn't needed at all. But an
+        # L/R pair where ONE side is intentionally empty (e.g.
+        # _consolidate_tiny_stub_lr_pairs folding a tiny stub into its
+        # sibling) is NOT that case: the slide itself is genuinely in use
+        # (its other slot has real content), so the empty slot must still
+        # be included here -- otherwise slides_content never gets an entry
+        # for it at all, the per-slot render loop's "if not
+        # account_data_list: clear the shape" code never even runs (there's
+        # nothing in the dict to iterate over), and the shape is left
+        # showing whatever raw template placeholder text it shipped with
+        # (confirmed via a real export: a literal "Placeholder –
+        # placeholder" on the untouched R box). Dropping is still correct
+        # for a slide where EVERY slot is empty (truly unused).
+        slide_has_content = {
+            slot["slide_idx"] for s_i, slot in enumerate(slots) if assignment[s_i]
+        }
         rebuilt = [
             (slot["slide_idx"], slot["slot_name"], self._merge_contd_pairs(assignment[s_i]))
             for s_i, slot in enumerate(slots)
-            if assignment[s_i]
+            if assignment[s_i] or slot["slide_idx"] in slide_has_content
         ]
         return rebuilt
 
