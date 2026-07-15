@@ -1343,12 +1343,16 @@ def _render_resolver_diagnostics(resolution: Dict[str, Any], display_keys: list[
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
-def render_processed_view(
-    session_state: Any,
-    generate_pptx_callback,
-    get_model_display_name,
-    before_ai_section: Optional[Callable[[], None]] = None,
-) -> None:
+def render_data_tables_section(session_state: Any) -> None:
+    """Renders the BS/IS tab group -- each with a "Reconciliation" sub-tab
+    plus one sub-tab per extracted account showing its full breakdown
+    table (the same view render_account_panel always showed inside
+    render_processed_view). Factored out so a caller that only has DATA
+    (no AI results yet -- e.g. a batch entity still mid-pipeline) can show
+    this same rich view without also pulling in the AI-generation section,
+    which auto-triggers a real AI run the moment it sees ai_results is
+    None.
+    """
     account_display_dfs = session_state.get("display_dfs") or session_state.dfs
     account_display_workbook_list = session_state.get("display_workbook_list") or session_state.workbook_list
     mappings = effective_mappings_from_session(session_state)
@@ -1368,60 +1372,6 @@ def render_processed_view(
 
     recon_bs = session_state.reconciliation[0] if session_state.reconciliation else None
     recon_is = session_state.reconciliation[1] if session_state.reconciliation else None
-    resolution = session_state.get("resolution") or {}
-    profile_map = resolution.get("profiles") or {}
-    manual_sheet_options = [sheet_name for sheet_name, profile in profile_map.items() if profile.get("sheet_kind") == "financial_schedule"]
-    manual_target_options = sorted(
-        {
-            *get_financial_account_options(session_state.get("bs_is_results")),
-            *[key for key in mappings.keys() if not str(key).startswith("_")],
-            *list((session_state.get("mapping_overrides") or {}).keys()),
-        }
-    )
-
-    with st.expander("Manual Mapping Overrides", expanded=bool(session_state.get("mapping_overrides"))):
-        st.caption("Use this when automatic resolution is not acceptable. Manual overrides win over fuzzy, figure, and AI matching on the next reprocess.")
-        if resolution.get("override_issues"):
-            st.warning("Some overrides could not be applied in the latest run.")
-            st.dataframe(pd.DataFrame(resolution.get("override_issues") or []), use_container_width=True)
-        current_overrides = session_state.get("mapping_overrides") or {}
-        if current_overrides:
-            st.markdown("**Current overrides**")
-            st.dataframe(
-                pd.DataFrame([{"target": key, "sheet_name": value} for key, value in current_overrides.items()]),
-                use_container_width=True,
-                hide_index=True,
-            )
-        override_target = st.selectbox("Financials account or mapping target", options=manual_target_options or [""], index=0, key="manual_override_target")
-        override_sheet = st.selectbox("Workbook tab", options=manual_sheet_options or [""], index=0, key="manual_override_sheet")
-        add_col, remove_col, clear_col = st.columns(3)
-        with add_col:
-            if st.button("Apply Override", use_container_width=True, key="apply_manual_override"):
-                if not override_target or not override_sheet:
-                    st.warning("Select both a target account and a workbook tab.")
-                else:
-                    session_state.mapping_overrides[override_target] = override_sheet
-                    session_state.process_data_clicked = True
-                    st.rerun()
-        with remove_col:
-            if st.button("Remove Selected", use_container_width=True, key="remove_manual_override"):
-                if override_target in session_state.mapping_overrides:
-                    del session_state.mapping_overrides[override_target]
-                    session_state.process_data_clicked = True
-                    st.rerun()
-        with clear_col:
-            if st.button("Clear All Overrides", use_container_width=True, key="clear_manual_overrides"):
-                session_state.mapping_overrides = {}
-                session_state.process_data_clicked = True
-                st.rerun()
-
-    debug_output = session_state.get("debug_output", "")
-    if debug_output:
-        with st.expander("Debug: Extraction & Reconciliation Log", expanded=False):
-            st.code(debug_output, language="text")
-
-        # Show resolver diagnostics alongside debug log
-        _render_resolver_diagnostics(resolution, display_account_keys)
 
     def render_account_panel(key: str):
         mapping_key = find_mapping_key(key, mappings)
@@ -1481,6 +1431,80 @@ def render_processed_view(
         render_account_tabs(bs_accounts, "BS", recon_bs, "No Balance Sheet reconciliation data available.")
     with data_tabs[1]:
         render_account_tabs(is_accounts, "IS", recon_is, "No Income Statement reconciliation data available.")
+
+
+def render_processed_view(
+    session_state: Any,
+    generate_pptx_callback,
+    get_model_display_name,
+    before_ai_section: Optional[Callable[[], None]] = None,
+) -> None:
+    mappings = effective_mappings_from_session(session_state)
+    account_display_dfs = session_state.get("display_dfs") or session_state.dfs
+    resolution = session_state.get("resolution") or {}
+    display_account_keys = []
+    seen_accounts = set()
+    account_display_workbook_list = session_state.get("display_workbook_list") or session_state.workbook_list
+    source_account_keys = account_display_workbook_list or list(account_display_dfs.keys())
+    for key in source_account_keys:
+        if key in account_display_dfs and key not in seen_accounts:
+            display_account_keys.append(key)
+            seen_accounts.add(key)
+    profile_map = resolution.get("profiles") or {}
+    manual_sheet_options = [sheet_name for sheet_name, profile in profile_map.items() if profile.get("sheet_kind") == "financial_schedule"]
+    manual_target_options = sorted(
+        {
+            *get_financial_account_options(session_state.get("bs_is_results")),
+            *[key for key in mappings.keys() if not str(key).startswith("_")],
+            *list((session_state.get("mapping_overrides") or {}).keys()),
+        }
+    )
+
+    with st.expander("Manual Mapping Overrides", expanded=bool(session_state.get("mapping_overrides"))):
+        st.caption("Use this when automatic resolution is not acceptable. Manual overrides win over fuzzy, figure, and AI matching on the next reprocess.")
+        if resolution.get("override_issues"):
+            st.warning("Some overrides could not be applied in the latest run.")
+            st.dataframe(pd.DataFrame(resolution.get("override_issues") or []), use_container_width=True)
+        current_overrides = session_state.get("mapping_overrides") or {}
+        if current_overrides:
+            st.markdown("**Current overrides**")
+            st.dataframe(
+                pd.DataFrame([{"target": key, "sheet_name": value} for key, value in current_overrides.items()]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        override_target = st.selectbox("Financials account or mapping target", options=manual_target_options or [""], index=0, key="manual_override_target")
+        override_sheet = st.selectbox("Workbook tab", options=manual_sheet_options or [""], index=0, key="manual_override_sheet")
+        add_col, remove_col, clear_col = st.columns(3)
+        with add_col:
+            if st.button("Apply Override", use_container_width=True, key="apply_manual_override"):
+                if not override_target or not override_sheet:
+                    st.warning("Select both a target account and a workbook tab.")
+                else:
+                    session_state.mapping_overrides[override_target] = override_sheet
+                    session_state.process_data_clicked = True
+                    st.rerun()
+        with remove_col:
+            if st.button("Remove Selected", use_container_width=True, key="remove_manual_override"):
+                if override_target in session_state.mapping_overrides:
+                    del session_state.mapping_overrides[override_target]
+                    session_state.process_data_clicked = True
+                    st.rerun()
+        with clear_col:
+            if st.button("Clear All Overrides", use_container_width=True, key="clear_manual_overrides"):
+                session_state.mapping_overrides = {}
+                session_state.process_data_clicked = True
+                st.rerun()
+
+    debug_output = session_state.get("debug_output", "")
+    if debug_output:
+        with st.expander("Debug: Extraction & Reconciliation Log", expanded=False):
+            st.code(debug_output, language="text")
+
+        # Show resolver diagnostics alongside debug log
+        _render_resolver_diagnostics(resolution, display_account_keys)
+
+    render_data_tables_section(session_state)
 
     st.markdown("---")
     col_header, col_pptx, col_redo, col_download = st.columns([3, 1, 0.4, 0.3])
@@ -2018,6 +2042,23 @@ def batch_process_entity(
                 # later entities) are still running.
                 "bs_recon_df": bs_recon,
                 "is_recon_df": is_recon,
+                # Full session_state-shaped (minus ai_results/pptx) partial
+                # bundle -- lets a caller swap this into st.session_state
+                # and call render_data_tables_section() for the complete
+                # per-account breakdown view (cash, investment properties,
+                # etc., not just reconciliation), the same rich view a
+                # fully-finished entity gets, while AI is still running.
+                "state": {
+                    "dfs": dfs,
+                    "display_dfs": state.get("display_dfs"),
+                    "workbook_list": state.get("workbook_list"),
+                    "display_workbook_list": state.get("display_workbook_list"),
+                    "language": effective_language,
+                    "bs_is_results": state.get("bs_is_results"),
+                    "reconciliation": reconciliation,
+                    "resolution": resolution,
+                    "entity_name": entity_name,
+                },
             })
         except Exception:
             pass  # a UI-side display glitch should never abort the pipeline

@@ -22,9 +22,9 @@ from fdd_utils.ui import (
     generate_pptx_presentation as render_generate_pptx_presentation,
     initialize_app_state,
     persist_uploaded_workbook,
+    render_data_tables_section,
     render_language_selector,
     render_processed_view,
-    render_reconciliation_section,
     render_sidebar_upload,
     should_render_preprocess_controls,
 )
@@ -717,12 +717,27 @@ def render_batch_processing_section():
             st.session_state.batch_rollup_temp_path_snapshot = rollup_temp_path
             st.session_state.batch_processing_in_progress = True
             st.session_state.batch_processing_done = False
+            st.session_state.batch_current_index = 0
+            st.session_state.batch_start_time = time.time()
             st.session_state.batch_entity_cache = {}
+            st.session_state.batch_entity_order = []
             st.session_state.batch_processed_entity_order = []
             st.session_state.batch_failed_entities = []
+            st.session_state.batch_zip_data = None
+            st.session_state.batch_combined_pptx = None
             st.rerun()
 
-    # --- Processing loop: one shared progress display across all entities ---
+    # --- Processing: ONE entity per script run, not one big blocking loop.
+    # Every entity's own AI generation can take a real minute-plus, so
+    # doing all of them in a single continuous run means the entity
+    # switcher below never gets a chance to actually render+become
+    # clickable until the ENTIRE batch finishes (Streamlit only processes
+    # a NEW interaction between complete script runs, not mid-script).
+    # Checkpointing "batch_current_index" and calling st.rerun() after each
+    # entity means the switcher DOES render (and stays interactive) between
+    # entities -- already-finished entities become genuinely browsable
+    # while later ones are still processing, not just visible after
+    # everything is done. ---
     if st.session_state.get("batch_processing_in_progress"):
         from fdd_utils.ai import SUBAGENT_SEQUENCE
         n_stages = len(SUBAGENT_SEQUENCE)
@@ -731,52 +746,31 @@ def render_batch_processing_section():
         rollup_temp_path = st.session_state.get("batch_rollup_temp_path_snapshot")
         batch_language = st.session_state.get("language", "Eng")
         total = len(ready_slots)
-        progress_bar = st.progress(0.0)
-        status = st.empty()
-        data_log = st.container()
-        batch_start_time = time.time()
+        idx = st.session_state.get("batch_current_index", 0)
+        batch_start_time = st.session_state.get("batch_start_time") or time.time()
 
-        for i, slot in enumerate(ready_slots):
-            def _data_ready_cb(summary, _data_log=data_log):
-                # Fires once data extraction + reconciliation finish for
-                # this entity, BEFORE its own AI generation starts -- gives
-                # visibility into what was extracted while AI is still
-                # running (for this entity, and any entities still queued
-                # after it), instead of only ever showing results once the
-                # WHOLE entity (data + AI + export) is done. Reuses the
-                # exact same account-by-account reconciliation table
-                # render_reconciliation_section shows in the interactive
-                # single-file flow, not just a match-status count summary.
-                bs_summary = ", ".join(f"{k}={v}" for k, v in summary["bs_match_counts"].items()) or "-"
-                is_summary = ", ".join(f"{k}={v}" for k, v in summary["is_match_counts"].items()) or "-"
-                with _data_log:
-                    with st.expander(
-                        f"📄 {summary['entity_name']}: data extracted -- "
-                        f"{summary['accounts_matched']}/{summary['accounts_total']} accounts eligible for AI "
-                        f"| BS recon: {bs_summary} | IS recon: {is_summary}",
-                        expanded=False,
-                    ):
-                        recon_bs_tab, recon_is_tab = st.tabs(["BS Reconciliation", "IS Reconciliation"])
-                        with recon_bs_tab:
-                            render_reconciliation_section(
-                                summary.get("bs_recon_df"), "BS", "No Balance Sheet reconciliation data available.",
-                            )
-                        with recon_is_tab:
-                            render_reconciliation_section(
-                                summary.get("is_recon_df"), "IS", "No Income Statement reconciliation data available.",
-                            )
+        progress_bar = st.progress(min(idx / total, 1.0) if total else 1.0)
 
+        if idx < total:
+            slot = ready_slots[idx]
+            status = st.empty()
+            status.info(f"⏳ Entity {idx + 1}/{total}: {slot['entity_name']} — extracting data...")
+
+            def _data_ready_cb(summary):
+                # Cache a data-only (no ai_results yet) bundle immediately,
+                # so this entity is ALREADY selectable in the switcher below
+                # this same run -- render_data_tables_section shows its full
+                # breakdown (recon + every account, not just recon counts)
+                # while its own AI generation (below) is still running.
+                st.session_state.batch_entity_cache[summary["entity_name"]] = summary["state"]
+                if summary["entity_name"] not in st.session_state.batch_entity_order:
+                    st.session_state.batch_entity_order.append(summary["entity_name"])
 
             def _progress_cb(agent_num, agent_name, item_num, total_items_in_agent, completed_items,
-                              key_name=None, _i=i, _entity=slot["entity_name"]):
-                # completed_items is this entity's own cumulative step count
-                # across all AI stages -- combine with how many WHOLE entities
-                # are already done for a smoothly-advancing overall fraction,
-                # then apply the same elapsed/fraction ETA formula the
-                # single-file flow's own progress callback uses.
+                              key_name=None, _idx=idx, _entity=slot["entity_name"]):
                 entity_total_steps = max(1, n_stages * total_items_in_agent)
                 entity_fraction = min(completed_items / entity_total_steps, 1.0)
-                overall_fraction = min((_i + entity_fraction) / total, 1.0) if total else 1.0
+                overall_fraction = min((_idx + entity_fraction) / total, 1.0) if total else 1.0
                 progress_bar.progress(overall_fraction)
 
                 elapsed = time.time() - batch_start_time
@@ -788,12 +782,11 @@ def render_batch_processing_section():
 
                 key_display = f" | Key: {key_name}" if key_name else ""
                 status.info(
-                    f"⏳ {overall_fraction:.0%} overall | Entity {_i + 1}/{total}: {_entity} "
+                    f"⏳ {overall_fraction:.0%} overall | Entity {_idx + 1}/{total}: {_entity} "
                     f"— Stage {agent_num}/{n_stages}: {agent_name} | Item {item_num}/{total_items_in_agent}"
                     f"{key_display} | ETA: {eta_display}"
                 )
 
-            status.info(f"⏳ Entity {i + 1}/{total}: {slot['entity_name']} — extracting data...")
             try:
                 outcome = batch_process_entity(
                     temp_path=slot["temp_path"],
@@ -812,108 +805,124 @@ def render_batch_processing_section():
                 outcome = {"entity_name": slot["entity_name"], "status": "failed", "error": str(exc)}
 
             if outcome.get("status") == "ok" and outcome.get("state"):
+                # Overwrites the data-only bundle _data_ready_cb cached above
+                # with the full one (now including ai_results) for this same
+                # entity_name -- the switcher already had it selectable, this
+                # just upgrades what gets shown for it.
                 st.session_state.batch_entity_cache[outcome["entity_name"]] = outcome["state"]
+                if outcome["entity_name"] not in st.session_state.batch_entity_order:
+                    st.session_state.batch_entity_order.append(outcome["entity_name"])
                 st.session_state.batch_processed_entity_order.append(outcome["entity_name"])
             else:
                 st.session_state.batch_failed_entities.append(
                     {"entity_name": slot["entity_name"], "error": outcome.get("error", "unknown error")}
                 )
-            progress_bar.progress((i + 1) / total if total else 1.0)
 
-        # Build the ZIP and combined PPTX right away, once, while everything
-        # is already in memory -- so the download buttons in the review
-        # section below are real one-click downloads instead of requiring
-        # an extra "build" click first.
-        processed_order = st.session_state.batch_processed_entity_order
-        entity_cache = st.session_state.batch_entity_cache
-        batch_timestamp = time.strftime("%Y%m%d_%H%M%S")
-        st.session_state.batch_export_timestamp = batch_timestamp
-        if processed_order:
-            status.info("📦 Packaging outputs...")
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                for entity_name in processed_order:
-                    bundle = entity_cache.get(entity_name) or {}
-                    pptx_bytes = bundle.get("pptx_download_data")
-                    pptx_filename = bundle.get("pptx_download_filename")
-                    if pptx_bytes and pptx_filename:
-                        zip_file.writestr(pptx_filename, pptx_bytes)
-            st.session_state.batch_zip_data = zip_buffer.getvalue()
+            st.session_state.batch_start_time = batch_start_time
+            st.session_state.batch_current_index = idx + 1
+            st.rerun()
+        else:
+            # Every entity attempted -- build the ZIP and combined PPTX once,
+            # while everything's already in memory, so the download buttons
+            # below are real one-click downloads, not a "build" step first.
+            processed_order = st.session_state.batch_processed_entity_order
+            entity_cache = st.session_state.batch_entity_cache
+            batch_timestamp = time.strftime("%Y%m%d_%H%M%S")
+            st.session_state.batch_export_timestamp = batch_timestamp
+            if processed_order:
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                    for entity_name in processed_order:
+                        bundle = entity_cache.get(entity_name) or {}
+                        pptx_bytes = bundle.get("pptx_download_data")
+                        pptx_filename = bundle.get("pptx_download_filename")
+                        if pptx_bytes and pptx_filename:
+                            zip_file.writestr(pptx_filename, pptx_bytes)
+                st.session_state.batch_zip_data = zip_buffer.getvalue()
 
-            if len(processed_order) > 1:
-                from fdd_utils.pptx import combine_presentations
-                sources = [
-                    io.BytesIO(entity_cache[name]["pptx_download_data"])
-                    for name in processed_order
-                    if entity_cache.get(name, {}).get("pptx_download_data")
-                ]
-                try:
-                    combined_buffer = io.BytesIO()
-                    combine_presentations(sources, combined_buffer)
-                    st.session_state.batch_combined_pptx = combined_buffer.getvalue()
-                except Exception as exc:
-                    logger.warning("Batch combine failed: %s", exc)
+                if len(processed_order) > 1:
+                    from fdd_utils.pptx import combine_presentations
+                    sources = [
+                        io.BytesIO(entity_cache[name]["pptx_download_data"])
+                        for name in processed_order
+                        if entity_cache.get(name, {}).get("pptx_download_data")
+                    ]
+                    try:
+                        combined_buffer = io.BytesIO()
+                        combine_presentations(sources, combined_buffer)
+                        st.session_state.batch_combined_pptx = combined_buffer.getvalue()
+                    except Exception as exc:
+                        logger.warning("Batch combine failed: %s", exc)
+                        st.session_state.batch_combined_pptx = None
+                else:
                     st.session_state.batch_combined_pptx = None
-            else:
-                st.session_state.batch_combined_pptx = None
 
-        status.empty()
-        progress_bar.empty()
-        st.session_state.batch_processing_in_progress = False
-        st.session_state.batch_processing_done = True
-        st.rerun()
+            progress_bar.empty()
+            st.session_state.batch_processing_in_progress = False
+            st.session_state.batch_processing_done = True
+            st.rerun()
 
     failed_entities = st.session_state.get("batch_failed_entities")
     if failed_entities:
         for failure in failed_entities:
             st.error(f"❌ {failure['entity_name']}: {failure['error']}")
 
-    # --- Review: entity switcher reusing the single-file UI unchanged ---
-    processed_order = st.session_state.get("batch_processed_entity_order") or []
-    if processed_order:
+    # --- Review: entity switcher reusing the single-file UI -- browsable as
+    # soon as ANY entity has at least reached the data-extraction stage,
+    # growing as more finish, not gated on the whole batch completing. ---
+    entity_order = st.session_state.get("batch_entity_order") or []
+    if entity_order:
         st.divider()
 
-        batch_timestamp = st.session_state.get("batch_export_timestamp") or time.strftime("%Y%m%d_%H%M%S")
-        zip_data = st.session_state.get("batch_zip_data")
-        combined_data = st.session_state.get("batch_combined_pptx")
+        processed_order = st.session_state.get("batch_processed_entity_order") or []
+        if st.session_state.get("batch_processing_done") and processed_order:
+            batch_timestamp = st.session_state.get("batch_export_timestamp") or time.strftime("%Y%m%d_%H%M%S")
+            zip_data = st.session_state.get("batch_zip_data")
+            combined_data = st.session_state.get("batch_combined_pptx")
 
-        download_col1, download_col2 = st.columns(2)
-        with download_col1:
-            st.download_button(
-                label=f"⬇️ Download All ({len(processed_order)}) as ZIP",
-                data=zip_data or b"",
-                file_name=f"batch_export_{batch_timestamp}.zip",
-                mime="application/zip",
-                use_container_width=True,
-                disabled=not zip_data,
-                key="batch_download_zip",
-            )
-        with download_col2:
-            if combined_data:
+            download_col1, download_col2 = st.columns(2)
+            with download_col1:
                 st.download_button(
-                    label=f"⬇️ Download Combined PPTX ({len(processed_order)} entities)",
-                    data=combined_data,
-                    file_name=f"batch_combined_{batch_timestamp}.pptx",
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    label=f"⬇️ Download All ({len(processed_order)}) as ZIP",
+                    data=zip_data or b"",
+                    file_name=f"batch_export_{batch_timestamp}.zip",
+                    mime="application/zip",
                     use_container_width=True,
-                    key="batch_download_combined",
+                    disabled=not zip_data,
+                    key="batch_download_zip",
                 )
-            else:
-                st.caption("Combined PPTX needs 2+ entities.")
+            with download_col2:
+                if combined_data:
+                    st.download_button(
+                        label=f"⬇️ Download Combined PPTX ({len(processed_order)} entities)",
+                        data=combined_data,
+                        file_name=f"batch_combined_{batch_timestamp}.pptx",
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        use_container_width=True,
+                        key="batch_download_combined",
+                    )
+                else:
+                    st.caption("Combined PPTX needs 2+ entities.")
+        elif st.session_state.get("batch_processing_in_progress"):
+            st.caption("⬇️ Downloads become available once the whole batch finishes.")
 
-        active_entity = _resolve_active_entity(processed_order)
-        _render_entity_switcher(processed_order, "batch_active_entity_top", active_entity)
+        active_entity = _resolve_active_entity(entity_order)
+        _render_entity_switcher(entity_order, "batch_active_entity_top", active_entity)
         bundle = (st.session_state.get("batch_entity_cache") or {}).get(active_entity)
         if bundle:
             st.session_state.update(bundle)
-            render_processed_view(
-                session_state=st.session_state,
-                generate_pptx_callback=generate_pptx_presentation,
-                get_model_display_name=get_model_display_name,
-                before_ai_section=lambda: _render_entity_switcher(
-                    processed_order, "batch_active_entity_bottom", active_entity
-                ),
-            )
+            if bundle.get("ai_results"):
+                render_processed_view(
+                    session_state=st.session_state,
+                    generate_pptx_callback=generate_pptx_presentation,
+                    get_model_display_name=get_model_display_name,
+                    before_ai_section=lambda: _render_entity_switcher(
+                        entity_order, "batch_active_entity_bottom", active_entity
+                    ),
+                )
+            else:
+                st.info(f"⏳ AI generation for **{active_entity}** hasn't finished yet -- showing extracted data only.")
+                render_data_tables_section(st.session_state)
 
 
 # Initialize
