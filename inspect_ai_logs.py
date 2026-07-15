@@ -19,6 +19,7 @@ A directory argument is searched recursively for every processing.log /
 run_*/processing.log it contains, and each is reported separately plus
 an overall combined total across all of them.
 """
+import glob
 import re
 import sys
 from collections import defaultdict
@@ -41,6 +42,15 @@ LINE_RE = re.compile(
 
 
 def find_log_files(paths):
+    """Resolve CLI args to actual processing.log files.
+
+    Windows cmd.exe (unlike bash/zsh) never expands "*" wildcards itself --
+    it hands the literal string "run_*/processing.log" to this script, so a
+    plain Path(p).is_file() check on that string always fails. glob.glob()
+    does the expansion ourselves instead, which works the same on every
+    shell. A plain directory argument (no wildcard) is still the simplest
+    option -- it's searched recursively for every processing.log under it.
+    """
     files = []
     for p in paths:
         path = Path(p)
@@ -49,7 +59,11 @@ def find_log_files(paths):
         elif path.is_dir():
             files.extend(sorted(path.rglob("processing.log")))
         else:
-            print(f"! Not found: {p}")
+            matches = sorted(glob.glob(p, recursive=True))
+            if matches:
+                files.extend(Path(m) for m in matches if Path(m).is_file())
+            else:
+                print(f"! Not found: {p}")
     return files
 
 
