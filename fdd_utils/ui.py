@@ -1820,7 +1820,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import streamlit as st
 
@@ -2139,6 +2139,62 @@ def batch_run_ai_for_entity(
         user_comments=user_comments or {},
     )
 
+    # Executive summary (coSummaryShape) generation -- mirrors what
+    # render_ai_generation_section does for the single-file flow right
+    # after its own per-account AI pass, which this batch path never had
+    # an equivalent of. Without it, export_pptx_from_structured_data_
+    # combined's own in-export summary call is SKIPPED ENTIRELY (a
+    # deliberate choice there, not a bug -- an in-export LLM call was
+    # reported to hang 10+ minutes when the API was flaky), leaving
+    # coSummaryShape genuinely blank on every entity's first BS/IS slide.
+    # Confirmed via a real batch export's --dump-text output: a literal
+    # empty coSummaryShape text frame on both statements.
+    from .pptx import PowerPointGenerator
+    is_chinese_db = effective_language == "Chn"
+    section_summaries: Dict[str, str] = {}
+    try:
+        bs_blob: List[str] = []
+        is_blob: List[str] = []
+        for account_key, ai_result in ai_results.items():
+            mapping_key = find_mapping_key(account_key, mappings)
+            if not mapping_key or mapping_key not in mappings:
+                continue
+            atype = mappings[mapping_key].get("type")
+            text = extract_result_text_content(
+                (ai_result or {}).get("final")
+                or (ai_result or {}).get("subagent_4")
+                or (ai_result or {}).get("subagent_2")
+                or (ai_result or {}).get("subagent_1")
+                or ""
+            )
+            if not text.strip():
+                continue
+            if atype == "BS":
+                bs_blob.append(text)
+            elif atype == "IS":
+                is_blob.append(text)
+        for stmt, blob in (("BS", bs_blob), ("IS", is_blob)):
+            if not blob:
+                continue
+            try:
+                from .ai import _PIPELINE_BREAKER
+                if any(_PIPELINE_BREAKER.is_open(stage) for stage in ("subagent_1", "subagent_2")):
+                    continue
+            except Exception:
+                pass
+            summary = PowerPointGenerator.generate_section_summary(
+                "\n\n".join(blob),
+                is_chinese=is_chinese_db,
+                language=("chinese" if is_chinese_db else "english"),
+                model_type=model_type,
+                model_name=model_name,
+            )
+            if summary:
+                section_summaries[stmt] = summary
+    except Exception as exc:
+        logger.warning("Batch section summary generation failed for %s (PPTX summary will be blank): %s", entity_name, exc)
+        section_summaries = {}
+
     structured_payloads = build_pptx_structured_payloads(
         ai_results=ai_results,
         mappings=mappings,
@@ -2191,6 +2247,7 @@ def batch_run_ai_for_entity(
         model_type=model_type,
         model_name=model_name,
         skip_summary_ai=False,
+        pre_generated_summaries=section_summaries or None,
         mappings=mappings,
     )
 
@@ -2230,6 +2287,11 @@ def batch_run_ai_for_entity(
         "selected_sheet": financials_sheet_name,
         "mapping_overrides": mapping_overrides,
         "ai_results": ai_results,
+        # So a later "Regenerate PPTX" click from within the reused
+        # single-file UI (generate_pptx_presentation, which reads
+        # session_state.section_summaries) reuses these instead of
+        # falling back to the in-export summary skip.
+        "section_summaries": section_summaries,
         "model_type": model_type,
         "model_name": model_name,
         "use_multithreading": use_multithreading,
