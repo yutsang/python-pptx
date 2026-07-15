@@ -788,21 +788,35 @@ def merge_presentations(bs_presentation_path: str, is_presentation_path: str, ou
 def _copy_slide_into(dest_prs: "Presentation", source_slide) -> None:
     """Deep-copy one slide from a DIFFERENT Presentation (built from the
     same template.pptx) onto the end of dest_prs, preserving every shape
-    INCLUDING images, native tables, and embedded OLE objects.
+    including images and native tables.
 
     python-pptx has no built-in "append an existing slide" API, so this
     clones the slide's shape-tree XML directly -- the same technique
     merge_presentations() above uses. The one thing that technique is
     missing (and why it's not reused as-is here): the copied XML still
     references relationship IDs (r:embed / r:id / r:link, used by
-    pictures, OLE objects, and hyperlinks) that only exist in the SOURCE
-    file's part. Left unmapped, those would point at nothing in the
-    destination part -- copied images/OLE objects would come through as
-    silently broken/missing rather than raising an error. Every
-    non-slideLayout relationship the source slide owns is re-created on
-    the destination slide's own part first, and every r:embed/r:id/r:link
-    attribute in the copied XML is rewritten to the new relationship id.
+    pictures and hyperlinks) that only exist in the SOURCE file's part.
+    Left unmapped, those would point at nothing in the destination part --
+    copied images would come through as silently broken/missing rather
+    than raising an error. Every non-slideLayout relationship the source
+    slide owns is re-created on the destination slide's own part first,
+    and every r:embed/r:id/r:link attribute in the copied XML is
+    rewritten to the new relationship id.
+
+    Embedded/linked OLE objects (MSO_SHAPE_TYPE.EMBEDDED_OLE_OBJECT /
+    LINKED_OLE_OBJECT -- e.g. a "TCLayout.ActiveDocument.1" marker some
+    add-ins like ThinkCell/UpSlide leave on every slide) are deliberately
+    SKIPPED entirely, not copied or relationship-remapped: a real batch
+    combine produced blank/whited-out pages specifically where these
+    existed, and this codebase has no template with such an object to
+    debug the exact OLE relationship mechanics against locally. These
+    markers are consistently 0.001in x 0.001in (invisible, carry no
+    reader-facing content) in every template seen so far, so dropping them
+    trades an add-in bookkeeping artifact for guaranteed-correct visible
+    content -- the safer side of that tradeoff.
     """
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
     layout_name = source_slide.slide_layout.name
     dest_layout = next(
         (layout for layout in dest_prs.slide_layouts if layout.name == layout_name),
@@ -816,20 +830,37 @@ def _copy_slide_into(dest_prs: "Presentation", source_slide) -> None:
     for shape in list(dest_slide.shapes):
         shape._element.getparent().remove(shape._element)
 
+    r_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    ole_shape_elements = set()
+    ole_rel_ids = set()
+    for shape in source_slide.shapes:
+        try:
+            is_ole = shape.shape_type in (MSO_SHAPE_TYPE.EMBEDDED_OLE_OBJECT, MSO_SHAPE_TYPE.LINKED_OLE_OBJECT)
+        except (ValueError, NotImplementedError):
+            is_ole = False
+        if is_ole:
+            ole_shape_elements.add(shape._element)
+            for el in shape._element.iter():
+                for attr_name in ("embed", "link", "id"):
+                    rid = el.get(f"{r_ns}{attr_name}")
+                    if rid:
+                        ole_rel_ids.add(rid)
+
     rel_id_map: Dict[str, str] = {}
     for rel_id, rel in source_slide.part.rels.items():
-        if rel.reltype.endswith("/slideLayout"):
-            continue  # every slide keeps its own layout relationship, not copied
+        if rel.reltype.endswith("/slideLayout") or rel_id in ole_rel_ids:
+            continue  # layout relationship isn't copied; OLE ones are deliberately dropped
         if rel.is_external:
             new_rel_id = dest_slide.part.relate_to(rel.target_ref, rel.reltype, is_external=True)
         else:
             new_rel_id = dest_slide.part.relate_to(rel.target_part, rel.reltype)
         rel_id_map[rel_id] = new_rel_id
 
-    r_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
     for shape_elm in list(source_slide.shapes._spTree):
         if shape_elm.tag in (qn("p:nvGrpSpPr"), qn("p:grpSpPr")):
             continue  # spTree's two fixed non-shape children, not content
+        if shape_elm in ole_shape_elements:
+            continue
         new_elm = copy.deepcopy(shape_elm)
         for el in new_elm.iter():
             for attr_name in ("embed", "link", "id"):
