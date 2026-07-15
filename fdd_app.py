@@ -754,7 +754,7 @@ def render_batch_processing_section():
                 ready_slots.append(resolved)
 
         st.divider()
-        st.caption(f"{len(ready_slots)} / {len(uploaded_files or [])} entities ready to process.")
+        st.caption(f"{len(ready_slots)} / {len(uploaded_files_meta)} entities ready to process.")
 
         if st.button(
             f"🚀 Start Batch Processing ({len(ready_slots)})",
