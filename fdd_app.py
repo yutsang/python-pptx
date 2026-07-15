@@ -615,40 +615,36 @@ def render_batch_processing_section():
 
         st.divider()
 
-        uploaded_files = st.file_uploader(
-            "Upload databooks (select or drag multiple files)",
-            type=["xlsx", "xls"],
-            accept_multiple_files=True,
-            key="batch_files_uploader",
-        )
-
-        if uploaded_files and len(uploaded_files) > MAX_BATCH_ENTITIES:
+        # Databooks themselves are uploaded once in the sidebar (2+ files
+        # there is what puts batch mode into effect at all -- see
+        # render_sidebar_upload) and already persisted to stable temp paths
+        # by the time this section renders; no separate uploader here.
+        uploaded_files_meta = st.session_state.get("batch_uploaded_files_meta") or []
+        if len(uploaded_files_meta) > MAX_BATCH_ENTITIES:
             st.warning(f"Only the first {MAX_BATCH_ENTITIES} files will be processed (maximum {MAX_BATCH_ENTITIES} entities per batch).")
-            uploaded_files = uploaded_files[:MAX_BATCH_ENTITIES]
+            uploaded_files_meta = uploaded_files_meta[:MAX_BATCH_ENTITIES]
 
         st.divider()
 
         ready_slots = []
-        for idx, uploaded_file in enumerate(uploaded_files or []):
+        for idx, file_meta in enumerate(uploaded_files_meta):
             # Stable per-file identity (name+size, sanitized) so entity name /
             # sheet choices persist across reruns for the SAME uploaded file --
             # a re-upload of a differently-sized file under the same name still
-            # gets its own fresh state instead of reusing stale choices.
-            slot_id = re.sub(r"[^\w\-]", "_", f"{uploaded_file.name}_{uploaded_file.size}")
-            own_temp_path = persist_uploaded_workbook(
-                uploaded_name=uploaded_file.name,
-                uploaded_bytes=uploaded_file.getvalue(),
-                session_state=st.session_state,
-                state_key=f"batch_temp_path_{slot_id}",
-            )
+            # gets its own fresh state instead of reusing stale choices. Must
+            # match the slot_id formula render_sidebar_upload used when it
+            # persisted this same file, since that's the state_key this
+            # temp_path was stored under.
+            slot_id = re.sub(r"[^\w\-]", "_", f"{file_meta['name']}_{file_meta['size']}")
+            own_temp_path = file_meta["temp_path"]
 
             with st.container():
                 st.markdown("---")
-                st.markdown(f"**Entity #{idx + 1}** — `{uploaded_file.name}`")
+                st.markdown(f"**Entity #{idx + 1}** — `{file_meta['name']}`")
 
                 entity_key = f"batch_entity_{slot_id}"
                 entity_options = get_entity_names(own_temp_path)
-                filename_entity = _extract_entity_from_filename(uploaded_file.name)
+                filename_entity = _extract_entity_from_filename(file_meta['name'])
                 if filename_entity and filename_entity not in entity_options:
                     entity_options = list(entity_options) + [filename_entity]
                 selector_model = build_entity_selector_model(

@@ -1654,17 +1654,6 @@ def _build_model_choices() -> list[dict]:
 
 def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[str], str]) -> str | None:
     with st.sidebar:
-        st.markdown("**⚙️ Mode**")
-        batch_mode = st.checkbox(
-            "📦 Batch mode",
-            value=session_state.get("batch_mode", False),
-            help="Process multiple entities/databooks in one pass, each producing its own PPTX. "
-                 "When enabled, the single-file uploader below is disabled -- upload files in the "
-                 "batch section on the main page instead.",
-            key="batch_mode_checkbox",
-        )
-        session_state.batch_mode = batch_mode
-
         model_choices = _build_model_choices()
         if "model_choice_key" not in session_state:
             # Default to the first choice (GPT-5.5) per project policy, even if
@@ -1707,17 +1696,44 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
             _proc_cfg = {}
         session_state.use_multithreading = bool(_proc_cfg.get("use_multithreading", True))
 
-        if batch_mode:
-            st.caption("📦 Batch mode is on -- upload files in the batch section on the main page.")
-            return None
-
-        st.markdown("**📁 Databook File**")
-        uploaded_file = st.file_uploader(
-            "Upload Excel file",
+        st.markdown("**📁 Databook File(s)**")
+        uploaded_files = st.file_uploader(
+            "Upload Excel file(s)",
             type=["xlsx", "xls"],
-            help="Upload your financial databook",
+            accept_multiple_files=True,
+            help="Upload one databook for a single-entity report, or several at once to "
+                 "batch-process them (one PPTX per entity, no extra mode toggle needed).",
             key="file_uploader",
         )
+        uploaded_files = uploaded_files or []
+
+        if len(uploaded_files) > 1:
+            # Batch mode is now purely a function of "how many files did you
+            # upload" -- no separate checkbox to remember to flip. Every
+            # file is persisted here (not left as a live UploadedFile
+            # object) so render_batch_processing_section can read stable
+            # temp paths back out of session_state across reruns, the same
+            # pattern persist_uploaded_workbook already establishes for the
+            # single-file path and the batch section's own roll-up upload.
+            session_state.batch_mode = True
+            persisted_slots = []
+            for f in uploaded_files:
+                slot_id = re.sub(r"[^\w\-]", "_", f"{f.name}_{f.size}")
+                slot_temp_path = persist_uploaded_workbook(
+                    uploaded_name=f.name,
+                    uploaded_bytes=f.getvalue(),
+                    session_state=session_state,
+                    state_key=f"batch_temp_path_{slot_id}",
+                )
+                persisted_slots.append({"name": f.name, "size": f.size, "temp_path": slot_temp_path})
+            session_state.batch_uploaded_files_meta = persisted_slots
+            st.caption(f"📦 {len(uploaded_files)} files uploaded -- batch mode active (configure below on the main page).")
+            return None
+
+        session_state.batch_mode = False
+        session_state.batch_uploaded_files_meta = []
+
+        uploaded_file = uploaded_files[0] if uploaded_files else None
 
         if uploaded_file:
             session_state["uploaded_filename"] = uploaded_file.name
