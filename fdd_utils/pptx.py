@@ -3244,6 +3244,176 @@ class PowerPointGenerator:
             if not changed:
                 break
 
+    def _try_partial_split_overflow_forward(
+        self,
+        cur_accts: List[Dict[str, Any]],
+        nxt_accts: List[Dict[str, Any]],
+        cur_cap: int,
+        cur_name: str,
+        cur_shape,
+        nxt_cap: int,
+        nxt_name: str,
+        nxt_shape,
+        statement_type: Optional[str],
+    ) -> bool:
+        """Mutates `cur_accts`/`nxt_accts` in place if it commits. Mirrors
+        _try_partial_split_into_gap but for the opposite direction: cur is
+        already overflowing, so shrink its LAST account down to whatever
+        genuinely fits within cur's own capacity and push the trimmed-off
+        tail forward as a continuation at the FRONT of nxt. Only commits
+        when the split fits both sides — never leaves cur still over
+        capacity, never pushes nxt over its own.
+        """
+        tail_acct = cur_accts[-1]
+        other_used = self._compute_slot_used_lines(
+            cur_accts[:-1], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+        )
+        available_for_tail = cur_cap - other_used
+        if available_for_tail < 1.0:
+            return False
+
+        is_chinese = bool(tail_acct.get("is_chinese", False))
+        part1 = None
+        head_text = tail_text = ""
+        remaining_budget = available_for_tail
+        for _attempt in range(4):
+            split_result = self._split_commentary_at_boundary(
+                str(tail_acct.get("commentary", "") or ""),
+                remaining_budget,
+                slot_name=cur_name,
+                is_chinese=is_chinese,
+                shape=cur_shape,
+                statement_type=statement_type,
+                min_fill_ratio=0.3,
+            )
+            if not split_result:
+                return False
+            head_text, tail_text = split_result
+
+            candidate = tail_acct.copy()
+            candidate["commentary"] = head_text
+            candidate["is_partial"] = True
+            candidate["part_num"] = int(tail_acct.get("part_num") or 1)
+            candidate["original_key"] = tail_acct.get("original_key", tail_acct.get("mapping_key"))
+
+            candidate_used = self._compute_slot_used_lines(
+                cur_accts[:-1] + [candidate], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+            )
+            if candidate_used <= cur_cap:
+                part1 = candidate
+                break
+            overage = candidate_used - cur_cap
+            remaining_budget -= overage + 0.25
+            if remaining_budget < 1.0:
+                return False
+
+        if part1 is None:
+            return False  # estimate/actual mismatch never converged -- bail out safely
+
+        part2 = tail_acct.copy()
+        part2["commentary"] = tail_text
+        part2["is_continuation"] = True
+        part2["part_num"] = int(tail_acct.get("part_num") or 1) + 1
+        part2["original_key"] = tail_acct.get("original_key", tail_acct.get("mapping_key"))
+
+        trial_nxt_accts = [part2] + nxt_accts
+        trial_nxt_used = self._compute_slot_used_lines(
+            trial_nxt_accts, nxt_name, slot_shape=nxt_shape, statement_type=statement_type,
+        )
+        if trial_nxt_used > nxt_cap:
+            return False
+
+        cur_accts[-1] = part1
+        nxt_accts.insert(0, part2)
+        logger.info(
+            "  Split overflowing '%s' forward across boundary: head stays in current slot, "
+            "continuation moves into next slot",
+            tail_acct.get("mapping_key", "?"),
+        )
+        return True
+
+    def _rebalance_overflowing_boundaries(
+        self,
+        assignment: List[List[Dict[str, Any]]],
+        slots: List[Dict[str, Any]],
+        statement_type: Optional[str],
+    ) -> None:
+        """Mutates `assignment` in place. Complements
+        _rebalance_underfilled_boundaries, which only ever pulls a
+        FOLLOWING slot's content BACKWARD into a preceding slot's positive
+        gap — it never pushes content FORWARD out of an already-
+        overflowing slot into a following slot with spare room, because
+        the DP's own lexicographic penalty formula caps an overflowing
+        slot's penalty at 0.0 (identical to a perfectly-filled slot), so
+        overflow never registers as something worth fixing to either of
+        the existing passes (confirmed via a real GPT-5.5/workbench IS
+        export: one column measured 103%/OVERFLOW RISK while its same-
+        slide sibling sat at 34% underfilled, and the population
+        diagnostic's own genuine-gap check — which reuses that same
+        penalty formula — reported no fixable gap at all).
+
+        This pass looks at raw used-vs-capacity instead of the penalty
+        formula specifically to catch that blind spot: for every adjacent
+        boundary where the current slot's real content exceeds its
+        capacity and the next slot has spare room, tries moving the
+        current slot's LAST account forward whole; if that doesn't fit
+        (or cur only has one account to begin with), falls back to
+        _try_partial_split_overflow_forward. Never commits a move that
+        would newly overflow the next slot.
+        """
+        n = len(assignment)
+        for _pass in range(n):
+            changed = False
+            for i in range(n - 1):
+                cur_accts = assignment[i]
+                if not cur_accts:
+                    continue
+                nxt_accts = assignment[i + 1]
+                cur_slot, nxt_slot = slots[i], slots[i + 1]
+                cur_cap, nxt_cap = cur_slot["capacity"], nxt_slot["capacity"]
+                cur_shape, nxt_shape = cur_slot["shape"], nxt_slot["shape"]
+                cur_name, nxt_name = cur_slot["slot_name"], nxt_slot["slot_name"]
+
+                cur_used = self._compute_slot_used_lines(
+                    cur_accts, cur_name, slot_shape=cur_shape, statement_type=statement_type,
+                )
+                if cur_used <= cur_cap:
+                    continue  # not overflowing -- nothing for this pass to do at this boundary
+
+                nxt_used = self._compute_slot_used_lines(
+                    nxt_accts, nxt_name, slot_shape=nxt_shape, statement_type=statement_type,
+                ) if nxt_accts else 0.0
+                if nxt_used >= nxt_cap:
+                    continue  # next slot has no spare room either -- can't help here
+
+                tail_acct = cur_accts[-1]
+                if len(cur_accts) >= 2:
+                    rest_used = self._compute_slot_used_lines(
+                        cur_accts[:-1], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+                    )
+                    trial_nxt_accts = [tail_acct] + nxt_accts
+                    trial_nxt_used = self._compute_slot_used_lines(
+                        trial_nxt_accts, nxt_name, slot_shape=nxt_shape, statement_type=statement_type,
+                    )
+                    if rest_used <= cur_cap and trial_nxt_used <= nxt_cap:
+                        cur_accts.pop()
+                        nxt_accts.insert(0, tail_acct)
+                        changed = True
+                        logger.info(
+                            "  Rebalanced overflowing boundary: moved whole '%s' forward from slot %s "
+                            "(was %.1f/%s) into slot %s",
+                            tail_acct.get("mapping_key", "?"), i, cur_used, cur_cap, i + 1,
+                        )
+                        continue
+
+                if self._try_partial_split_overflow_forward(
+                    cur_accts, nxt_accts, cur_cap, cur_name, cur_shape,
+                    nxt_cap, nxt_name, nxt_shape, statement_type,
+                ):
+                    changed = True
+            if not changed:
+                break
+
     def _optimize_slot_fill(
         self,
         distribution: List[tuple],
@@ -3548,6 +3718,7 @@ class PowerPointGenerator:
 
         self._rebalance_lopsided_lr_pairs(assignment, slots, statement_type)
         self._rebalance_underfilled_boundaries(assignment, slots, statement_type)
+        self._rebalance_overflowing_boundaries(assignment, slots, statement_type)
 
         for s_i, slot in enumerate(slots):
             lines = slot_cost(s_i, 0, -1) if not assignment[s_i] else self._compute_slot_used_lines(
