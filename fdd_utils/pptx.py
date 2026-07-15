@@ -522,6 +522,7 @@ def build_pptx_structured_payloads(
 import copy
 import logging
 import os
+import posixpath
 import time
 import traceback
 from typing import Dict, List, Optional
@@ -785,7 +786,45 @@ def merge_presentations(bs_presentation_path: str, is_presentation_path: str, ou
         raise
 
 
-def _copy_slide_into(dest_prs: "Presentation", source_slide) -> None:
+def _dedupe_part_name(dest_prs: "Presentation", target_part, renamed_part_ids: set) -> None:
+    """Rename `target_part` in-place if its partname collides with a part
+    already present in dest_prs's package.
+
+    python-pptx's Package.save() writes every part reachable from the
+    package's own relationship graph using each Part object's OWN
+    `.partname` -- it never re-derives a name. When _copy_slide_into()
+    relates a destination slide directly to a Part object still owned by a
+    DIFFERENT source Presentation (e.g. a picture's blipFill target), that
+    part keeps the partname it was assigned in ITS OWN package (e.g.
+    "/ppt/media/image3.png"). Since every batch entity's deck is built by
+    the same export code, two different source decks landing on the same
+    numbered partname is common, not a corner case -- and when that
+    happens, the combined package ends up with two different parts both
+    claiming "/ppt/media/image3.png", which produces a zip with a
+    duplicate member name: invalid OPC, which is exactly what makes
+    PowerPoint prompt "repair this presentation" (the media is
+    unrecoverable/misattributed, not merely cosmetically wrong).
+    Renaming the incoming part to a partname that's actually free in the
+    destination package's namespace (via next_partname, the same
+    mechanism python-pptx itself uses when adding new parts) avoids the
+    collision. Only checked once per distinct source Part object
+    (tracked by id() in `renamed_part_ids`, shared across an entire
+    combine_presentations() call) -- once resolved, a part's identity/
+    partname pairing is stable for the rest of the run.
+    """
+    if id(target_part) in renamed_part_ids:
+        return
+    renamed_part_ids.add(id(target_part))
+    existing_partnames = {p.partname for p in dest_prs.part.package.iter_parts()}
+    if target_part.partname not in existing_partnames:
+        return
+    partname = target_part.partname
+    name_part = re.sub(r"\d+$", "", posixpath.splitext(partname.filename)[0]) or "part"
+    tmpl = posixpath.join(partname.baseURI, f"{name_part}%d.{partname.ext}") if partname.ext else posixpath.join(partname.baseURI, f"{name_part}%d")
+    target_part.partname = dest_prs.part.package.next_partname(tmpl)
+
+
+def _copy_slide_into(dest_prs: "Presentation", source_slide, renamed_part_ids: Optional[set] = None) -> None:
     """Deep-copy one slide from a DIFFERENT Presentation (built from the
     same template.pptx) onto the end of dest_prs, preserving every shape
     including images and native tables.
@@ -816,6 +855,8 @@ def _copy_slide_into(dest_prs: "Presentation", source_slide) -> None:
     content -- the safer side of that tradeoff.
     """
     from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    renamed_part_ids = renamed_part_ids if renamed_part_ids is not None else set()
 
     layout_name = source_slide.slide_layout.name
     dest_layout = next(
@@ -853,6 +894,7 @@ def _copy_slide_into(dest_prs: "Presentation", source_slide) -> None:
         if rel.is_external:
             new_rel_id = dest_slide.part.relate_to(rel.target_ref, rel.reltype, is_external=True)
         else:
+            _dedupe_part_name(dest_prs, rel.target_part, renamed_part_ids)
             new_rel_id = dest_slide.part.relate_to(rel.target_part, rel.reltype)
         rel_id_map[rel_id] = new_rel_id
 
@@ -894,10 +936,11 @@ def combine_presentations(pptx_sources: List, output_path) -> "str | None":
         raise ValueError("combine_presentations requires at least one input source")
 
     combined_prs = Presentation(pptx_sources[0])
+    renamed_part_ids: set = set()
     for source in pptx_sources[1:]:
         source_prs = Presentation(source)
         for source_slide in source_prs.slides:
-            _copy_slide_into(combined_prs, source_slide)
+            _copy_slide_into(combined_prs, source_slide, renamed_part_ids)
 
     combined_prs.save(output_path)
     logger.info("Combined %s presentation(s)", len(pptx_sources))
