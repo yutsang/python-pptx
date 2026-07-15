@@ -27,6 +27,7 @@ so that step becomes a spot-check instead of a full manual read-through.
 Usage:
     python inspect_pptx.py path/to/exported.pptx
     python inspect_pptx.py path/to/exported.pptx --config fdd_utils/config.yml
+    python inspect_pptx.py path/to/a/folder/          # loops every .pptx in it, prints a summary
 """
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ import argparse
 import re
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 from pptx import Presentation
@@ -389,7 +391,8 @@ def _check_number_formatting_and_zero_wording(result: dict) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("pptx_path", help="Path to an already-exported .pptx file")
+    ap.add_argument("pptx_path", help="Path to an already-exported .pptx file, or a directory to scan "
+                                       "for every .pptx in it (e.g. a folder of batch-exported decks)")
     ap.add_argument("--config", default=None, help="Path to config.yml (default: tries fdd_utils/config.yml then config.example.yml)")
     ap.add_argument("--dump-text", action="store_true",
                      help="Also print every commentary shape's full text and scan for (1) duplicate "
@@ -400,13 +403,48 @@ def main() -> int:
     args = ap.parse_args()
 
     config = _load_config(args.config)
-    result = inspect_pptx(args.pptx_path, config)
-    duplicate_count = 0
-    wording_flag_count = 0
-    if args.dump_text:
-        duplicate_count = _dump_text_and_check_duplicates(result)
-        wording_flag_count = _check_number_formatting_and_zero_wording(result)
-    return 1 if (result["total_warnings"] or duplicate_count or wording_flag_count) else 0
+
+    input_path = Path(args.pptx_path)
+    if input_path.is_dir():
+        pptx_files = sorted(input_path.glob("*.pptx"))
+        if not pptx_files:
+            print(f"No .pptx files found in {input_path}")
+            return 1
+    else:
+        pptx_files = [input_path]
+
+    total_warnings = 0
+    total_duplicates = 0
+    total_wording_flags = 0
+    per_file_summary: List[tuple] = []
+    for pptx_file in pptx_files:
+        if len(pptx_files) > 1:
+            print(f"\n{'=' * 90}\n{pptx_file.name}\n{'=' * 90}")
+        result = inspect_pptx(str(pptx_file), config)
+        duplicate_count = 0
+        wording_flag_count = 0
+        if args.dump_text:
+            duplicate_count = _dump_text_and_check_duplicates(result)
+            wording_flag_count = _check_number_formatting_and_zero_wording(result)
+        total_warnings += result["total_warnings"]
+        total_duplicates += duplicate_count
+        total_wording_flags += wording_flag_count
+        per_file_summary.append((pptx_file.name, result["total_warnings"], duplicate_count, wording_flag_count))
+
+    if len(pptx_files) > 1:
+        print(f"\n{'=' * 90}\nSUMMARY ({len(pptx_files)} file(s))\n{'=' * 90}")
+        for name, warnings, duplicates, wording_flags in per_file_summary:
+            flags = []
+            if warnings:
+                flags.append(f"{warnings} layout warning(s)")
+            if duplicates:
+                flags.append(f"{duplicates} duplicate bullet(s)")
+            if wording_flags:
+                flags.append(f"{wording_flags} wording flag(s)")
+            status = "⚠️ " + ", ".join(flags) if flags else "✅ clean"
+            print(f"  {name}: {status}")
+
+    return 1 if (total_warnings or total_duplicates or total_wording_flags) else 0
 
 
 if __name__ == "__main__":
