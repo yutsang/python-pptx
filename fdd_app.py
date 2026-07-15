@@ -643,17 +643,35 @@ def render_batch_processing_section():
                 st.markdown(f"**Entity #{idx + 1}** — `{file_meta['name']}`")
 
                 entity_key = f"batch_entity_{slot_id}"
+                entity_auto_key = f"_{entity_key}_auto"
                 entity_options = get_entity_names(own_temp_path)
                 filename_entity = _extract_entity_from_filename(file_meta['name'])
                 if filename_entity and filename_entity not in entity_options:
                     entity_options = list(entity_options) + [filename_entity]
+
+                # A stored entity name only counts as "manually decided" (and
+                # so exempt from re-suggestion) if it differs from whatever
+                # THIS logic itself last auto-set -- otherwise, once the
+                # very first render seeds e.g. the English half by default,
+                # toggling the language selector to Chinese afterward could
+                # never re-trigger the Chinese-preferring suggestion, since
+                # build_entity_selector_model would always see a non-empty
+                # "already decided" value. Same manual-choice-wins pattern
+                # _reactive_selectbox_default uses, adapted here because the
+                # "decided" value also depends on entity_options/preferred_
+                # language, not just a fixed options list.
+                stored_entity_name = st.session_state.get(entity_key, "")
+                is_still_auto = stored_entity_name == st.session_state.get(entity_auto_key, "")
+                effective_current = "" if (not stored_entity_name or is_still_auto) else stored_entity_name
+
                 selector_model = build_entity_selector_model(
                     entity_options,
-                    current_entity_name=st.session_state.get(entity_key, ""),
+                    current_entity_name=effective_current,
                     preferred_language=st.session_state.get("language"),
                 )
-                if entity_key not in st.session_state:
+                if not stored_entity_name or is_still_auto:
                     st.session_state[entity_key] = selector_model["text_value"]
+                    st.session_state[entity_auto_key] = selector_model["text_value"]
 
                 name_col1, name_col2 = st.columns(2)
                 with name_col1:
@@ -667,6 +685,10 @@ def render_batch_processing_section():
                         )
                         prev_picked_key = f"_prev_{dropdown_key}"
                         if picked and picked != st.session_state.get(prev_picked_key, ""):
+                            # An explicit dropdown pick IS a manual decision --
+                            # deliberately does NOT update entity_auto_key, so
+                            # is_still_auto correctly reads False from here on
+                            # and a later language toggle won't clobber it.
                             st.session_state[entity_key] = picked
                             st.session_state[prev_picked_key] = picked
                     else:
