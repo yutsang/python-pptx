@@ -37,7 +37,8 @@ LINE_RE = re.compile(
     r"Total tokens: (?P<total_tokens>\d+) \| "
     r"Estimated prompt tokens: (?P<est_prompt_tokens>\d+) \| "
     r"Estimated output tokens: (?P<est_output_tokens>\d+) \| "
-    r"Expected max output tokens: (?P<expected_max>\d+)"
+    r"Expected max output tokens: (?P<expected_max>\d+) \| "
+    r"Token source: (?P<token_source>\S+)"
 )
 
 
@@ -82,6 +83,7 @@ def parse_file(path: Path):
                     "output_chars": int(d["output_chars"]),
                     "completion_tokens": int(d["completion_tokens"]),
                     "expected_max": int(d["expected_max"]),
+                    "token_source": d["token_source"],
                 })
     return rows
 
@@ -105,11 +107,24 @@ def report(rows, label):
         avg_util = sum(utils) / n
         empty = [i for i in items if i["output_chars"] == 0]
         near_cap = [i for i, u in zip(items, utils) if u >= 0.95]
+        over_cap = [i for i, u in zip(items, utils) if u > 1.0]
+        sources = defaultdict(int)
+        for i in items:
+            sources[i["token_source"]] += 1
         print(f"  [{stage}] {n} items | total {total_duration:.1f}s | avg {total_duration / n:.2f}s/item "
               f"| avg utilization {avg_util:.0%} (completion_tokens / expected_max_output_tokens)")
+        if len(sources) > 1 or "provider_usage" not in sources:
+            print(f"    ! TOKEN SOURCE NOT PURELY provider_usage: {dict(sources)} "
+                  f"-- non-provider_usage entries use an ESTIMATED completion_tokens (chars/4 heuristic), "
+                  f"not the real API-reported figure, which can make utilization/near-cap numbers meaningless")
         if empty:
             print(f"    ! EMPTY OUTPUT (0 chars): {len(empty)} item(s) -> {', '.join(i['account'] for i in empty)}")
-        if near_cap:
+        if over_cap:
+            over_cap_labels = [f"{i['account']}({i['token_source']})" for i in over_cap]
+            print(f"    ! OVER 100% (completion_tokens > expected_max_output_tokens -- should be architecturally "
+                  f"impossible if token_source=provider_usage; check the token_source flag above): "
+                  f"{len(over_cap)} item(s) -> {', '.join(over_cap_labels)}")
+        elif near_cap:
             print(f"    ! NEAR TOKEN CAP (>=95% utilization, risk of truncation): {len(near_cap)} item(s) -> "
                   f"{', '.join(i['account'] for i in near_cap)}")
 
