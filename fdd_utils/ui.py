@@ -1954,7 +1954,6 @@ def batch_process_entity(
     user_comments: Optional[Dict[str, str]] = None,
     template_path: Optional[str] = None,
     output_dir: str = "fdd_utils/output",
-    output_filename: Optional[str] = None,
     progress_callback: Optional[Callable[..., None]] = None,
     on_data_ready: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
@@ -1979,11 +1978,6 @@ def batch_process_entity(
     extracted/reconciled for this entity while its own AI generation (and
     any later entities' processing) is still running, rather than only
     ever surfacing data once the entire entity is fully done.
-
-    output_filename, if given, overrides the sanitized entity_name as the
-    output PPTX's base filename (still timestamped) — lets a batch UI
-    offer a per-entity filename field (e.g. suggested from the roll-up
-    sheet name) distinct from the entity_name baked into the report text.
     """
     from .ai import run_ai_pipeline_with_progress
     from .pptx import export_pptx_from_structured_data_combined
@@ -2123,7 +2117,7 @@ def batch_process_entity(
 
     os.makedirs(output_dir, exist_ok=True)
     timestamp = dt_module.datetime.now().strftime("%Y%m%d_%H%M%S")
-    sanitized_entity = re.sub(r"[^\w\-_]", "_", str(output_filename or entity_name)).strip("_") or "Entity"
+    sanitized_entity = re.sub(r"[^\w\-_]", "_", str(entity_name)).strip("_") or "Entity"
     output_path = os.path.join(output_dir, f"{sanitized_entity}_{timestamp}.pptx")
 
     # embed_financial_tables reads (temp_path, selected_sheet) for its

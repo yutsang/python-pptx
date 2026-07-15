@@ -626,7 +626,7 @@ def render_batch_processing_section():
             ).strip("_") or default_combined_name
         combined_filename_key = "batch_combined_filename"
         _reactive_text_input_default(combined_filename_key, default_combined_name)
-        combined_output_filename = st.text_input(
+        st.text_input(
             "Combined PPTX filename (no extension -- names the single merged deck when 2+ entities are combined)",
             key=combined_filename_key,
         )
@@ -744,24 +744,8 @@ def render_batch_processing_section():
                             key=rollup_sheet_key,
                         )
 
-                # Suggested from whichever identity is most specific: the
-                # roll-up sheet name (closest to the client's own naming for
-                # this entity in the master file) if one's selected, else the
-                # entity name -- but always freely editable, since the output
-                # filename doesn't have to match either.
-                suggested_filename = re.sub(
-                    r"[^\w\-]", "_", (rollup_sheet_choice or entity_name or f"Entity_{idx + 1}")
-                ).strip("_") or f"Entity_{idx + 1}"
-                filename_key = f"batch_output_filename_{slot_id}"
-                _reactive_text_input_default(filename_key, suggested_filename)
-                output_filename = st.text_input(
-                    "Output filename (no extension -- suggested from roll-up sheet / entity name, edit freely)",
-                    key=filename_key,
-                )
-
             resolved = {
                 "temp_path": own_temp_path,
-                "output_filename": output_filename.strip() if output_filename else "",
                 "entity_name": entity_name.strip() if entity_name else "",
                 "own_sheet": own_sheet or None,
                 "rollup_sheet": rollup_sheet_choice or None,
@@ -862,7 +846,6 @@ def render_batch_processing_section():
                     selected_sheet=slot["own_sheet"],
                     financials_from=rollup_temp_path if not slot["own_sheet"] else None,
                     financials_sheet=slot["rollup_sheet"] if not slot["own_sheet"] else None,
-                    output_filename=slot.get("output_filename") or None,
                     language=batch_language,
                     model_type=st.session_state.get("model_type", "local"),
                     model_name=st.session_state.get("model_name"),
