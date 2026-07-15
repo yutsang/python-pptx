@@ -2010,6 +2010,14 @@ def batch_process_entity(
                 "accounts_matched": len(matched_mapping_keys),
                 "bs_match_counts": bs_recon["Match"].value_counts().to_dict() if bs_recon is not None and not bs_recon.empty else {},
                 "is_match_counts": is_recon["Match"].value_counts().to_dict() if is_recon is not None and not is_recon.empty else {},
+                # Raw per-account reconciliation breakdowns (same DataFrames
+                # render_reconciliation_section uses in the interactive
+                # single-file flow) -- so a caller can show the actual
+                # account-by-account table, not just the match-status
+                # counts, while this entity's own AI generation (and any
+                # later entities) are still running.
+                "bs_recon_df": bs_recon,
+                "is_recon_df": is_recon,
             })
         except Exception:
             pass  # a UI-side display glitch should never abort the pipeline

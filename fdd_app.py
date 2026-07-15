@@ -24,6 +24,7 @@ from fdd_utils.ui import (
     persist_uploaded_workbook,
     render_language_selector,
     render_processed_view,
+    render_reconciliation_section,
     render_sidebar_upload,
     should_render_preprocess_controls,
 )
@@ -742,15 +743,28 @@ def render_batch_processing_section():
                 # visibility into what was extracted while AI is still
                 # running (for this entity, and any entities still queued
                 # after it), instead of only ever showing results once the
-                # WHOLE entity (data + AI + export) is done.
+                # WHOLE entity (data + AI + export) is done. Reuses the
+                # exact same account-by-account reconciliation table
+                # render_reconciliation_section shows in the interactive
+                # single-file flow, not just a match-status count summary.
                 bs_summary = ", ".join(f"{k}={v}" for k, v in summary["bs_match_counts"].items()) or "-"
                 is_summary = ", ".join(f"{k}={v}" for k, v in summary["is_match_counts"].items()) or "-"
                 with _data_log:
-                    st.caption(
+                    with st.expander(
                         f"📄 {summary['entity_name']}: data extracted -- "
                         f"{summary['accounts_matched']}/{summary['accounts_total']} accounts eligible for AI "
-                        f"| BS recon: {bs_summary} | IS recon: {is_summary}"
-                    )
+                        f"| BS recon: {bs_summary} | IS recon: {is_summary}",
+                        expanded=False,
+                    ):
+                        recon_bs_tab, recon_is_tab = st.tabs(["BS Reconciliation", "IS Reconciliation"])
+                        with recon_bs_tab:
+                            render_reconciliation_section(
+                                summary.get("bs_recon_df"), "BS", "No Balance Sheet reconciliation data available.",
+                            )
+                        with recon_is_tab:
+                            render_reconciliation_section(
+                                summary.get("is_recon_df"), "IS", "No Income Statement reconciliation data available.",
+                            )
 
 
             def _progress_cb(agent_num, agent_name, item_num, total_items_in_agent, completed_items,
