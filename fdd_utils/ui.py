@@ -1938,7 +1938,7 @@ def generate_pptx_presentation(
         st.code(traceback.format_exc())
 
 
-def batch_process_entity(
+def batch_extract_entity_data(
     *,
     temp_path: str,
     entity_name: str,
@@ -1946,41 +1946,34 @@ def batch_process_entity(
     financials_from: Optional[str] = None,
     financials_sheet: Optional[str] = None,
     mapping_overrides: Optional[Dict[str, str]] = None,
-    model_type: str = "local",
-    model_name: Optional[str] = None,
     language: Optional[str] = None,
-    use_multithreading: bool = True,
-    max_workers: Optional[int] = None,
-    user_comments: Optional[Dict[str, str]] = None,
-    template_path: Optional[str] = None,
-    output_dir: str = "fdd_utils/output",
-    progress_callback: Optional[Callable[..., None]] = None,
-    on_data_ready: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
-    """Headless, session_state-free equivalent of the single-file
-    process -> reconcile -> AI -> export flow (render_ai_generation_section +
-    generate_pptx_presentation above), for driving multiple entities in a
-    batch loop. Takes explicit parameters instead of Streamlit session_state
-    so it has no per-request UI-widget state to collide across entities, and
-    reuses the exact same production functions so a batch run behaves
-    identically to running each file through the UI one at a time. Mirrors
-    inspect_databook.py's inspect_one() headless pattern.
+    """Phase 1 of the batch entity pipeline (process + reconcile -- fast).
+
+    Split out from what used to be one single batch_process_entity() call
+    so a checkpoint-based batch UI can st.rerun() BETWEEN this and
+    batch_run_ai_for_entity() (phase 2, slow). Streamlit only paints the
+    browser once a script run returns control to it: an on_data_ready-style
+    callback fired midway through one long blocking call can update
+    session_state all it wants, but the switcher/data-view code living
+    later in that SAME script run still can't actually render anything
+    until the whole call returns -- and it doesn't return until AI
+    generation is ALSO done, defeating the entire point of showing data
+    before AI finishes. Only an actual rerun between two separately
+    checkpointed phases makes the browser paint an intermediate state.
 
     financials_from/financials_sheet point BS/IS extraction at a sibling
     roll-up ("主表") workbook's named sheet when this entity's own file has
     no Financials-pattern sheet of its own — same mechanism
     process_workbook_data already exposes for the single-file flow.
 
-    on_data_ready, if given, fires once (right after data extraction +
-    reconciliation complete, before AI generation starts) with a summary
-    dict ({"entity_name", "accounts_total", "accounts_matched",
-    "bs_match_counts", "is_match_counts"}) — lets a batch UI show what was
-    extracted/reconciled for this entity while its own AI generation (and
-    any later entities' processing) is still running, rather than only
-    ever surfacing data once the entire entity is fully done.
+    Returns {"status": "failed", "entity_name", "error"} on failure, or on
+    success {"status": "ok", "entity_name", "data_summary": {the same
+    "state"-shaped partial bundle a caller can swap into st.session_state
+    and pass to render_data_tables_section for the full recon+breakdown
+    view, plus match-count summaries}, "_internal": {everything
+    batch_run_ai_for_entity needs to continue without re-deriving it}}.
     """
-    from .ai import run_ai_pipeline_with_progress
-    from .pptx import export_pptx_from_structured_data_combined
     from .workbook import process_workbook_data
 
     result: Dict[str, Any] = {"entity_name": entity_name, "status": "ok"}
@@ -2041,43 +2034,98 @@ def batch_process_entity(
         result["error"] = "No eligible accounts after reconciliation filtering."
         return result
 
-    if on_data_ready:
-        bs_recon, is_recon = (list(reconciliation) + [None, None])[:2] if reconciliation else (None, None)
-        try:
-            on_data_ready({
-                "entity_name": entity_name,
-                "accounts_total": len(dfs),
-                "accounts_matched": len(matched_mapping_keys),
-                "bs_match_counts": bs_recon["Match"].value_counts().to_dict() if bs_recon is not None and not bs_recon.empty else {},
-                "is_match_counts": is_recon["Match"].value_counts().to_dict() if is_recon is not None and not is_recon.empty else {},
-                # Raw per-account reconciliation breakdowns (same DataFrames
-                # render_reconciliation_section uses in the interactive
-                # single-file flow) -- so a caller can show the actual
-                # account-by-account table, not just the match-status
-                # counts, while this entity's own AI generation (and any
-                # later entities) are still running.
-                "bs_recon_df": bs_recon,
-                "is_recon_df": is_recon,
-                # Full session_state-shaped (minus ai_results/pptx) partial
-                # bundle -- lets a caller swap this into st.session_state
-                # and call render_data_tables_section() for the complete
-                # per-account breakdown view (cash, investment properties,
-                # etc., not just reconciliation), the same rich view a
-                # fully-finished entity gets, while AI is still running.
-                "state": {
-                    "dfs": dfs,
-                    "display_dfs": state.get("display_dfs"),
-                    "workbook_list": state.get("workbook_list"),
-                    "display_workbook_list": state.get("display_workbook_list"),
-                    "language": effective_language,
-                    "bs_is_results": state.get("bs_is_results"),
-                    "reconciliation": reconciliation,
-                    "resolution": resolution,
-                    "entity_name": entity_name,
-                },
-            })
-        except Exception:
-            pass  # a UI-side display glitch should never abort the pipeline
+    bs_recon, is_recon = (list(reconciliation) + [None, None])[:2] if reconciliation else (None, None)
+    result["data_summary"] = {
+        "entity_name": entity_name,
+        "accounts_total": len(dfs),
+        "accounts_matched": len(matched_mapping_keys),
+        "bs_match_counts": bs_recon["Match"].value_counts().to_dict() if bs_recon is not None and not bs_recon.empty else {},
+        "is_match_counts": is_recon["Match"].value_counts().to_dict() if is_recon is not None and not is_recon.empty else {},
+        # Raw per-account reconciliation breakdowns (same DataFrames
+        # render_reconciliation_section uses in the interactive single-file
+        # flow) -- so a caller can show the actual account-by-account
+        # table, not just the match-status counts.
+        "bs_recon_df": bs_recon,
+        "is_recon_df": is_recon,
+        # Full session_state-shaped (minus ai_results/pptx) partial bundle
+        # -- lets a caller swap this into st.session_state and call
+        # render_data_tables_section() for the complete per-account
+        # breakdown view (cash, investment properties, etc., not just
+        # reconciliation), the same rich view a fully-finished entity
+        # gets, while AI is still running (or hasn't started yet).
+        "state": {
+            "dfs": dfs,
+            "display_dfs": state.get("display_dfs"),
+            "workbook_list": state.get("workbook_list"),
+            "display_workbook_list": state.get("display_workbook_list"),
+            "language": effective_language,
+            "bs_is_results": state.get("bs_is_results"),
+            "reconciliation": reconciliation,
+            "resolution": resolution,
+            "entity_name": entity_name,
+        },
+    }
+    result["_internal"] = {
+        "raw_state": state,
+        "dfs": dfs,
+        "reconciliation": reconciliation,
+        "resolution": resolution,
+        "mappings": mappings,
+        "matched_mapping_keys": matched_mapping_keys,
+        "effective_language": effective_language,
+        "entity_name": entity_name,
+        "temp_path": temp_path,
+        "selected_sheet": selected_sheet,
+        "financials_from": financials_from,
+        "financials_sheet": financials_sheet,
+        "mapping_overrides": mapping_overrides,
+    }
+    return result
+
+
+def batch_run_ai_for_entity(
+    *,
+    extracted: Dict[str, Any],
+    model_type: str = "local",
+    model_name: Optional[str] = None,
+    use_multithreading: bool = True,
+    max_workers: Optional[int] = None,
+    user_comments: Optional[Dict[str, str]] = None,
+    template_path: Optional[str] = None,
+    output_dir: str = "fdd_utils/output",
+    progress_callback: Optional[Callable[..., None]] = None,
+) -> Dict[str, Any]:
+    """Phase 2 of the batch entity pipeline (AI generation + PPTX export --
+    slow). Takes the successful result dict batch_extract_entity_data()
+    returned (via its "_internal" bundle) and picks up where extraction
+    left off, without re-deriving anything.
+
+    Returns the same shape batch_process_entity's single-call version
+    always did: {"status", "output_path", "bs_count", "is_count",
+    "accounts_processed", "state": {full session_state-shaped bundle
+    including ai_results/pptx_download_data, for swapping into
+    st.session_state and reusing render_processed_view unchanged}} on
+    success, {"status": "failed", "entity_name", "error"} on failure.
+    """
+    from .ai import run_ai_pipeline_with_progress
+    from .pptx import export_pptx_from_structured_data_combined
+
+    internal = extracted["_internal"]
+    entity_name = internal["entity_name"]
+    dfs = internal["dfs"]
+    state = internal["raw_state"]
+    reconciliation = internal["reconciliation"]
+    resolution = internal["resolution"]
+    mappings = internal["mappings"]
+    matched_mapping_keys = internal["matched_mapping_keys"]
+    effective_language = internal["effective_language"]
+    temp_path = internal["temp_path"]
+    selected_sheet = internal["selected_sheet"]
+    financials_from = internal["financials_from"]
+    financials_sheet = internal["financials_sheet"]
+    mapping_overrides = internal["mapping_overrides"]
+
+    result: Dict[str, Any] = {"entity_name": entity_name, "status": "ok"}
 
     ai_results = run_ai_pipeline_with_progress(
         mapping_keys=matched_mapping_keys,
@@ -2191,4 +2239,72 @@ def batch_process_entity(
         "pptx_download_mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     }
     return result
+
+
+def batch_process_entity(
+    *,
+    temp_path: str,
+    entity_name: str,
+    selected_sheet: Optional[str] = None,
+    financials_from: Optional[str] = None,
+    financials_sheet: Optional[str] = None,
+    mapping_overrides: Optional[Dict[str, str]] = None,
+    model_type: str = "local",
+    model_name: Optional[str] = None,
+    language: Optional[str] = None,
+    use_multithreading: bool = True,
+    max_workers: Optional[int] = None,
+    user_comments: Optional[Dict[str, str]] = None,
+    template_path: Optional[str] = None,
+    output_dir: str = "fdd_utils/output",
+    progress_callback: Optional[Callable[..., None]] = None,
+    on_data_ready: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    """Headless, session_state-free equivalent of the single-file
+    process -> reconcile -> AI -> export flow, for driving one entity in
+    a single blocking call -- a thin composition of
+    batch_extract_entity_data() then batch_run_ai_for_entity(), kept for
+    callers that want one-shot headless behavior (e.g. inspect_databook.py
+    -style scripts). Mirrors inspect_databook.py's inspect_one() pattern.
+
+    A checkpoint-based batch UI that wants the browser to actually paint
+    an intermediate "data ready, AI still pending" state should call the
+    two phases separately across two st.rerun()s instead -- see
+    fdd_app.py's render_batch_processing_section, and the phase functions'
+    own docstrings for why a callback fired midway through this single
+    call can't achieve that on its own.
+
+    on_data_ready, if given, fires once (right after data extraction +
+    reconciliation complete, before AI generation starts) with the
+    extraction phase's "data_summary" dict.
+    """
+    extracted = batch_extract_entity_data(
+        temp_path=temp_path,
+        entity_name=entity_name,
+        selected_sheet=selected_sheet,
+        financials_from=financials_from,
+        financials_sheet=financials_sheet,
+        mapping_overrides=mapping_overrides,
+        language=language,
+    )
+    if extracted.get("status") != "ok":
+        return extracted
+
+    if on_data_ready:
+        try:
+            on_data_ready(extracted["data_summary"])
+        except Exception:
+            pass  # a UI-side display glitch should never abort the pipeline
+
+    return batch_run_ai_for_entity(
+        extracted=extracted,
+        model_type=model_type,
+        model_name=model_name,
+        use_multithreading=use_multithreading,
+        max_workers=max_workers,
+        user_comments=user_comments,
+        template_path=template_path,
+        output_dir=output_dir,
+        progress_callback=progress_callback,
+    )
 # --- end ui/pptx_export.py ---

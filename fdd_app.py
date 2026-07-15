@@ -17,7 +17,8 @@ from typing import Dict, List
 
 # Import modules
 from fdd_utils.ui import (
-    batch_process_entity,
+    batch_extract_entity_data,
+    batch_run_ai_for_entity,
     build_entity_selector_model,
     generate_pptx_presentation as render_generate_pptx_presentation,
     initialize_app_state,
@@ -549,22 +550,30 @@ def render_batch_processing_section():
     """Batch mode: process several entities/databooks in one pass, each
     producing its own standalone PPTX.
 
-    Upload model: ONE shared optional roll-up file, and ONE multi-file
-    uploader for every entity's own databook -- entities are derived
-    directly from whatever the multi-uploader currently holds.
+    Upload model: databooks are uploaded once in the sidebar (2+ files
+    there is what puts batch mode into effect at all, no separate toggle
+    -- see render_sidebar_upload); a shared optional roll-up file plus
+    each entity's own name/sheet choices are configured here in the
+    "Setup" expander.
 
-    Processing model: a single blocking loop (driven by
-    batch_process_entity(), fdd_utils/ui.py) with ONE shared progress
-    display across all entities. Each entity's FULL result bundle (dfs,
-    reconciliation, ai_results, etc. -- everything the single-file flow's
-    session_state normally holds after Process+AI) gets cached once that
-    entity finishes.
+    Processing model: TWO checkpointed phases per entity (batch_current_
+    phase = "extract" then "ai", fdd_utils/ui.py's batch_extract_entity_
+    data / batch_run_ai_for_entity), not one call per entity. Streamlit
+    only paints the browser once a script run returns control to it, so
+    the extract phase caches its data-only bundle and reruns BEFORE the
+    AI phase even starts -- that's what actually lets an entity render
+    as selectable with its full data breakdown while its own AI
+    generation is still running, which a callback fired midway through a
+    single blocking call could never achieve on its own (see the two
+    phase functions' own docstrings for why). Each entity's bundle gets
+    upgraded in place once its AI phase finishes.
 
-    Review model: once processing completes, the setup section collapses
-    and an entity switcher appears. Selecting an entity swaps its cached
-    bundle into the live st.session_state and re-renders the EXISTING
-    single-file render_processed_view UI (tables, reconciliation, AI
-    output, PPTX export) UNCHANGED -- a plain st.radio switcher is used
+    Review model: entities become browsable as soon as ANY of them has
+    reached the data-extraction checkpoint, growing as more finish, not
+    gated on the whole batch completing. Selecting an entity swaps its
+    cached bundle into the live st.session_state and re-renders the
+    EXISTING single-file render_processed_view UI (tables, reconciliation,
+    AI output, PPTX export) UNCHANGED -- a plain st.radio switcher is used
     instead of st.tabs() specifically because st.tabs() executes every
     tab's content on every rerun (just hides the inactive ones visually),
     which would instantiate render_processed_view's non-entity-scoped
@@ -770,6 +779,8 @@ def render_batch_processing_section():
             st.session_state.batch_processing_in_progress = True
             st.session_state.batch_processing_done = False
             st.session_state.batch_current_index = 0
+            st.session_state.batch_current_phase = "extract"
+            st.session_state.batch_pending_extracted = None
             st.session_state.batch_start_time = time.time()
             st.session_state.batch_entity_cache = {}
             st.session_state.batch_entity_order = []
@@ -779,17 +790,20 @@ def render_batch_processing_section():
             st.session_state.batch_combined_pptx = None
             st.rerun()
 
-    # --- Processing: ONE entity per script run, not one big blocking loop.
-    # Every entity's own AI generation can take a real minute-plus, so
-    # doing all of them in a single continuous run means the entity
-    # switcher below never gets a chance to actually render+become
-    # clickable until the ENTIRE batch finishes (Streamlit only processes
-    # a NEW interaction between complete script runs, not mid-script).
-    # Checkpointing "batch_current_index" and calling st.rerun() after each
-    # entity means the switcher DOES render (and stays interactive) between
-    # entities -- already-finished entities become genuinely browsable
-    # while later ones are still processing, not just visible after
-    # everything is done. ---
+    # --- Processing: TWO checkpointed phases per entity (extract, then
+    # AI+export), not one big blocking loop and not even one blocking call
+    # per entity. Streamlit only paints the browser once a script run
+    # returns control to it -- an on_data_ready-style callback fired
+    # MIDWAY through a single long batch_process_entity() call can update
+    # session_state all it wants, but the switcher/data-view code later in
+    # the SAME script run still can't actually render until that whole
+    # call returns, and it doesn't return until AI is ALSO done. So a
+    # callback alone can never make the browser show "data ready, AI still
+    # running" -- only an actual st.rerun() between the two phases can.
+    # batch_extract_entity_data() (fast) runs, caches its data-only bundle,
+    # reruns; THEN batch_run_ai_for_entity() (slow) runs for that same
+    # entity using what extraction already produced, reruns again before
+    # moving to the next entity. ---
     if st.session_state.get("batch_processing_in_progress"):
         from fdd_utils.ai import SUBAGENT_SEQUENCE
         n_stages = len(SUBAGENT_SEQUENCE)
@@ -799,6 +813,7 @@ def render_batch_processing_section():
         batch_language = st.session_state.get("language", "Eng")
         total = len(ready_slots)
         idx = st.session_state.get("batch_current_index", 0)
+        phase = st.session_state.get("batch_current_phase", "extract")
         batch_start_time = st.session_state.get("batch_start_time") or time.time()
 
         progress_bar = st.progress(min(idx / total, 1.0) if total else 1.0)
@@ -806,73 +821,96 @@ def render_batch_processing_section():
         if idx < total:
             slot = ready_slots[idx]
             status = st.empty()
-            status.info(f"⏳ Entity {idx + 1}/{total}: {slot['entity_name']} — extracting data...")
 
-            def _data_ready_cb(summary):
-                # Cache a data-only (no ai_results yet) bundle immediately,
-                # so this entity is ALREADY selectable in the switcher below
-                # this same run -- render_data_tables_section shows its full
-                # breakdown (recon + every account, not just recon counts)
-                # while its own AI generation (below) is still running.
-                st.session_state.batch_entity_cache[summary["entity_name"]] = summary["state"]
-                if summary["entity_name"] not in st.session_state.batch_entity_order:
-                    st.session_state.batch_entity_order.append(summary["entity_name"])
+            if phase == "extract":
+                status.info(f"⏳ Entity {idx + 1}/{total}: {slot['entity_name']} — extracting data...")
+                try:
+                    extracted = batch_extract_entity_data(
+                        temp_path=slot["temp_path"],
+                        entity_name=slot["entity_name"],
+                        selected_sheet=slot["own_sheet"],
+                        financials_from=rollup_temp_path if not slot["own_sheet"] else None,
+                        financials_sheet=slot["rollup_sheet"] if not slot["own_sheet"] else None,
+                        language=batch_language,
+                    )
+                except Exception as exc:
+                    extracted = {"entity_name": slot["entity_name"], "status": "failed", "error": str(exc)}
 
-            def _progress_cb(agent_num, agent_name, item_num, total_items_in_agent, completed_items,
-                              key_name=None, _idx=idx, _entity=slot["entity_name"]):
-                entity_total_steps = max(1, n_stages * total_items_in_agent)
-                entity_fraction = min(completed_items / entity_total_steps, 1.0)
-                overall_fraction = min((_idx + entity_fraction) / total, 1.0) if total else 1.0
-                progress_bar.progress(overall_fraction)
-
-                elapsed = time.time() - batch_start_time
-                if overall_fraction > 0.02:
-                    eta_seconds = elapsed / overall_fraction * (1 - overall_fraction)
-                    eta_display = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
+                if extracted.get("status") == "ok":
+                    # Cached and rerun HERE (not after AI too) is what
+                    # actually lets this entity render as selectable with
+                    # its full data breakdown while its own AI generation
+                    # (next phase, next rerun) hasn't started yet.
+                    st.session_state.batch_entity_cache[extracted["entity_name"]] = extracted["data_summary"]["state"]
+                    if extracted["entity_name"] not in st.session_state.batch_entity_order:
+                        st.session_state.batch_entity_order.append(extracted["entity_name"])
+                    st.session_state.batch_pending_extracted = extracted
+                    st.session_state.batch_current_phase = "ai"
                 else:
-                    eta_display = "Calculating..."
+                    st.session_state.batch_failed_entities.append(
+                        {"entity_name": slot["entity_name"], "error": extracted.get("error", "unknown error")}
+                    )
+                    st.session_state.batch_current_index = idx + 1
+                    st.session_state.batch_current_phase = "extract"
+                    st.session_state.batch_pending_extracted = None
+                st.session_state.batch_start_time = batch_start_time
+                st.rerun()
 
-                key_display = f" | Key: {key_name}" if key_name else ""
-                status.info(
-                    f"⏳ {overall_fraction:.0%} overall | Entity {_idx + 1}/{total}: {_entity} "
-                    f"— Stage {agent_num}/{n_stages}: {agent_name} | Item {item_num}/{total_items_in_agent}"
-                    f"{key_display} | ETA: {eta_display}"
-                )
+            else:  # phase == "ai"
+                extracted = st.session_state.get("batch_pending_extracted")
 
-            try:
-                outcome = batch_process_entity(
-                    temp_path=slot["temp_path"],
-                    entity_name=slot["entity_name"],
-                    selected_sheet=slot["own_sheet"],
-                    financials_from=rollup_temp_path if not slot["own_sheet"] else None,
-                    financials_sheet=slot["rollup_sheet"] if not slot["own_sheet"] else None,
-                    language=batch_language,
-                    model_type=st.session_state.get("model_type", "local"),
-                    model_name=st.session_state.get("model_name"),
-                    use_multithreading=st.session_state.get("use_multithreading", True),
-                    progress_callback=_progress_cb,
-                    on_data_ready=_data_ready_cb,
-                )
-            except Exception as exc:
-                outcome = {"entity_name": slot["entity_name"], "status": "failed", "error": str(exc)}
+                def _progress_cb(agent_num, agent_name, item_num, total_items_in_agent, completed_items,
+                                  key_name=None, _idx=idx, _entity=slot["entity_name"]):
+                    entity_total_steps = max(1, n_stages * total_items_in_agent)
+                    entity_fraction = min(completed_items / entity_total_steps, 1.0)
+                    overall_fraction = min((_idx + entity_fraction) / total, 1.0) if total else 1.0
+                    progress_bar.progress(overall_fraction)
 
-            if outcome.get("status") == "ok" and outcome.get("state"):
-                # Overwrites the data-only bundle _data_ready_cb cached above
-                # with the full one (now including ai_results) for this same
-                # entity_name -- the switcher already had it selectable, this
-                # just upgrades what gets shown for it.
-                st.session_state.batch_entity_cache[outcome["entity_name"]] = outcome["state"]
-                if outcome["entity_name"] not in st.session_state.batch_entity_order:
-                    st.session_state.batch_entity_order.append(outcome["entity_name"])
-                st.session_state.batch_processed_entity_order.append(outcome["entity_name"])
-            else:
-                st.session_state.batch_failed_entities.append(
-                    {"entity_name": slot["entity_name"], "error": outcome.get("error", "unknown error")}
-                )
+                    elapsed = time.time() - batch_start_time
+                    if overall_fraction > 0.02:
+                        eta_seconds = elapsed / overall_fraction * (1 - overall_fraction)
+                        eta_display = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
+                    else:
+                        eta_display = "Calculating..."
 
-            st.session_state.batch_start_time = batch_start_time
-            st.session_state.batch_current_index = idx + 1
-            st.rerun()
+                    key_display = f" | Key: {key_name}" if key_name else ""
+                    status.info(
+                        f"⏳ {overall_fraction:.0%} overall | Entity {_idx + 1}/{total}: {_entity} "
+                        f"— Stage {agent_num}/{n_stages}: {agent_name} | Item {item_num}/{total_items_in_agent}"
+                        f"{key_display} | ETA: {eta_display}"
+                    )
+
+                status.info(f"⏳ Entity {idx + 1}/{total}: {slot['entity_name']} — running AI generation...")
+                try:
+                    outcome = batch_run_ai_for_entity(
+                        extracted=extracted,
+                        model_type=st.session_state.get("model_type", "local"),
+                        model_name=st.session_state.get("model_name"),
+                        use_multithreading=st.session_state.get("use_multithreading", True),
+                        progress_callback=_progress_cb,
+                    )
+                except Exception as exc:
+                    outcome = {"entity_name": slot["entity_name"], "status": "failed", "error": str(exc)}
+
+                if outcome.get("status") == "ok" and outcome.get("state"):
+                    # Overwrites the data-only bundle the extract phase
+                    # cached with the full one (now including ai_results)
+                    # for this same entity_name -- the switcher already had
+                    # it selectable, this just upgrades what gets shown.
+                    st.session_state.batch_entity_cache[outcome["entity_name"]] = outcome["state"]
+                    if outcome["entity_name"] not in st.session_state.batch_entity_order:
+                        st.session_state.batch_entity_order.append(outcome["entity_name"])
+                    st.session_state.batch_processed_entity_order.append(outcome["entity_name"])
+                else:
+                    st.session_state.batch_failed_entities.append(
+                        {"entity_name": slot["entity_name"], "error": outcome.get("error", "unknown error")}
+                    )
+
+                st.session_state.batch_pending_extracted = None
+                st.session_state.batch_start_time = batch_start_time
+                st.session_state.batch_current_index = idx + 1
+                st.session_state.batch_current_phase = "extract"
+                st.rerun()
         else:
             # Every entity attempted -- build the ZIP and combined PPTX once,
             # while everything's already in memory, so the download buttons
