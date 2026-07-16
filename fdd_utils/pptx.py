@@ -111,11 +111,19 @@ PPTX_DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "commentary_packing": {
         "use_pillow_text_fitting": True,
-        # 1.25 lets the DP pack content noticeably above nominal box height
-        # (PPT autofit absorbs overflow). Each bump (1.08 → 1.15 → 1.25) was
-        # in response to the user reporting page fill plateauing too low;
-        # 1.25 is aggressive but PPT autofit at 9pt has plenty of headroom.
-        "shape_height_utilization": 1.25,
+        # Repeatedly bumped up (1.08 -> 1.15 -> 1.25, and the BS override
+        # further to 1.13 -> 1.47) in response to page fill plateauing too
+        # low -- but the real cause turned out to be _real_para_gap_pt/
+        # _real_line_spacing assuming a 6-9pt inter-paragraph gap and 0.9
+        # Chinese line spacing that _fill_text_main_bullets_with_category_
+        # and_key never actually applies (it hardcodes a flat 3pt gap and
+        # 1.0 spacing for every paragraph, any language) plus a capacity
+        # formula that floored away up to a full extra line on every box.
+        # Once those are fixed at the source (real capacity ~40-50% higher
+        # than before), this relax tier goes back to being a small genuine
+        # second-chance buffer instead of a compensating hack for an
+        # undersized first tier.
+        "shape_height_utilization": 1.05,
         "minimum_slot_lines": 22,
         "split_min_remaining_lines": 3,
         "split_min_content_lines": 5,
@@ -146,7 +154,7 @@ PPTX_DEFAULT_SETTINGS: Dict[str, Any] = {
         },
         "statement_overrides": {
             "BS": {
-                "shape_height_utilization": 1.13,
+                "shape_height_utilization": 1.05,
                 "line_height_padding_pt": 1.3,
                 "chars_per_line": {
                     "single": {"eng": 106},
@@ -2296,15 +2304,14 @@ class PowerPointGenerator:
             return None
 
     # Space-after (pt) applied to every paragraph in _fill_text_main_bullets.
-    # Used consistently in both capacity and content-line calculations.
-    # Vertical gap (in pt) between bullet paragraphs. Only used by the
-    # no-shape/no-font heuristic fallback below — the primary (real font
-    # metrics) path uses _real_para_gap_pt(), which matches what actually
-    # gets applied to the run (get_space_after_for_text/get_space_before_for_text).
-    # This flat constant used to ALSO be (wrongly) used on the primary path;
-    # it under-counted the real gap by 2x (English: 3pt assumed vs 6pt real
-    # = space_after 4pt + space_before 2pt) to 3x (Chinese: 3pt assumed vs
-    # 9pt real = 6pt + 3pt) — see _real_para_gap_pt for the fix.
+    # Matches _fill_text_main_bullets_with_category_and_key's own hardcoded
+    # p_key.space_after = Pt(3) (see the "Matches _PARA_SPACE_AFTER (cost
+    # estimator)" comment right there in that function) -- the ACTUAL,
+    # currently-live commentary-bullet renderer, unlike get_space_after_for_
+    # text/get_space_before_for_text below, which belong to a different,
+    # legacy code path (_fill_content_shape, reached only from the unused
+    # markdown generate() flow) and were never actually applied to a
+    # textMainBullets run.
     _PARA_SPACE_AFTER = 3.0
 
     @staticmethod
@@ -2316,26 +2323,38 @@ class PowerPointGenerator:
 
     @staticmethod
     def _real_line_spacing(is_chinese: bool) -> float:
-        """Line spacing actually applied (get_line_spacing_for_text): 0.9 for
-        Chinese, 1.0 for English — NOT the 0.95 some capacity/content code
-        used to assume for Chinese."""
-        return get_line_spacing_for_text("", force_chinese_mode=is_chinese)
+        """Line spacing actually applied to a commentary bullet run.
+
+        _fill_text_main_bullets_with_category_and_key hardcodes
+        line_spacing = 1.0 on every paragraph it creates (category header,
+        key line, and continuation lines alike) -- unconditionally, not
+        gated on is_chinese at all. get_line_spacing_for_text's 0.9-for-
+        Chinese value belongs to the separate, legacy _fill_content_shape
+        path (markdown generate() flow) and was never actually the value
+        applied to a live textMainBullets paragraph. A user-supplied real-
+        client-metrics capacity check (inspect_single_slot.py against a
+        real Windows export) directly caught this: assuming 0.9 line
+        spacing + a 6-9pt inter-paragraph gap that never actually renders
+        made the computed capacity roughly 30% smaller than the box's true
+        capacity -- "the tool says 94% full" against a box the user could
+        still visibly type 5-7 more lines into.
+        """
+        return 1.0
 
     @staticmethod
     def _real_para_gap_pt(is_chinese: bool) -> float:
         """Total vertical gap PowerPoint actually renders between two
-        consecutive bullet paragraphs: the first paragraph's space_after
-        PLUS the next paragraph's space_before (get_space_after_for_text +
-        get_space_before_for_text) — English 4+2=6pt, Chinese 6+3=9pt. The
-        flat _PARA_SPACE_AFTER=3.0 constant this replaces on the primary
-        path under-counted this by 2-3x, which (compounded with the wrong
-        font size/line spacing for Chinese) is a major contributor to
-        capacity and content being calculated against different physical
-        space than what the client's PowerPoint actually renders."""
-        return (
-            get_space_after_for_text("", force_chinese_mode=is_chinese).pt
-            + get_space_before_for_text("", force_chinese_mode=is_chinese).pt
-        )
+        consecutive bullet paragraphs.
+
+        _fill_text_main_bullets_with_category_and_key hardcodes
+        space_before = Pt(0) and space_after = Pt(3) on every paragraph
+        (category header, key line, continuation line) -- 3pt total,
+        REGARDLESS of language. It never calls get_space_after_for_text /
+        get_space_before_for_text at all; those getters' 4-9pt values
+        belong to the separate legacy _fill_content_shape path. See
+        _real_line_spacing's docstring for how this was actually caught.
+        """
+        return 3.0
 
     def _calculate_max_lines_for_textbox(
         self,

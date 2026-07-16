@@ -14,7 +14,6 @@ from pptx import Presentation
 from pptx.util import Emu
 
 from fdd_utils.financial_common import load_yaml_file
-from fdd_utils.pptx import get_space_after_for_text, get_space_before_for_text
 from fdd_utils.text_metrics import get_measurer, text_box_from_shape
 
 DEFAULT_CONFIG_CANDIDATES = ["fdd_utils/config.yml", "fdd_utils/config.example.yml"]
@@ -50,8 +49,16 @@ def main() -> int:
     family_eng = packing_cfg.get("font_family_eng") or "Arial"
     family_chi = packing_cfg.get("font_family_chi") or "Microsoft YaHei"
 
+    # line_spacing=1.0 for BOTH languages, and a flat 3pt inter-paragraph gap
+    # below -- matches _fill_text_main_bullets_with_category_and_key, the
+    # function that ACTUALLY sets a textMainBullets run's formatting
+    # (hardcodes space_before=Pt(0)/space_after=Pt(3)/line_spacing=1.0
+    # unconditionally). get_line_spacing_for_text/get_space_after_for_text/
+    # get_space_before_for_text's language-dependent values belong to a
+    # separate, legacy code path never reached by the live commentary
+    # renderer -- assuming those inflated "capacity used" by roughly 30%.
     eng_measurer = get_measurer(family_eng, 9.0, is_cjk=False, line_spacing=1.0, metrics_path=metrics_eng)
-    chi_measurer = get_measurer(family_chi, 9.0, is_cjk=True, line_spacing=0.9, metrics_path=metrics_chi)
+    chi_measurer = get_measurer(family_chi, 9.0, is_cjk=True, line_spacing=1.0, metrics_path=metrics_chi)
     print(f"Measurement source: ENG={eng_measurer.source}  CHI={chi_measurer.source}")
 
     prs = Presentation(args.pptx_path)
@@ -85,10 +92,7 @@ def main() -> int:
 
     box = text_box_from_shape(shape)
     line_h = measurer.line_height_pt()
-    para_gap = (
-        get_space_after_for_text("", force_chinese_mode=is_chi).pt
-        + get_space_before_for_text("", force_chinese_mode=is_chi).pt
-    )
+    para_gap = 3.0
     std_lh = line_h + para_gap
     # Float, not int(...) floored -- matches fdd_utils/pptx.py's
     # _calculate_max_lines_for_textbox (fixed in 5bbec43). This diagnostic
@@ -112,10 +116,7 @@ def main() -> int:
         p_is_chi = _is_chinese_text(text)
         p_measurer = chi_measurer if p_is_chi else eng_measurer
         p_line_h = p_measurer.line_height_pt()
-        p_para_gap = (
-            get_space_after_for_text("", force_chinese_mode=p_is_chi).pt
-            + get_space_before_for_text("", force_chinese_mode=p_is_chi).pt
-        )
+        p_para_gap = 3.0
         wrapped = p_measurer.wrap(text, box.width_pt)
         p_pt = len(wrapped) * p_line_h + p_para_gap
         units = p_pt / std_lh

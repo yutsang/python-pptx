@@ -42,28 +42,27 @@ from pptx import Presentation
 from pptx.util import Emu
 
 from fdd_utils.financial_common import load_yaml_file
-from fdd_utils.pptx import get_space_after_for_text, get_space_before_for_text
 from fdd_utils.text_metrics import get_measurer, text_box_from_shape
 
 DEFAULT_CONFIG_CANDIDATES = ["fdd_utils/config.yml", "fdd_utils/config.example.yml"]
 
-# Mirrors fdd_utils/pptx.py's own get_font_size_for_text/get_line_spacing_for_text
-# (the functions that actually set the run's real formatting) so this
-# independent check agrees with what really gets rendered. Both are a flat
-# 9pt/1.0 regardless of language for English; Chinese previously assumed
-# 10pt/0.95 here (matching a since-fixed bug in pptx.py's own capacity/content
-# calculators) — real values are 9pt/0.9, same as English's font size.
+# Mirrors _fill_text_main_bullets_with_category_and_key -- the function that
+# ACTUALLY sets a textMainBullets run's formatting -- not get_font_size_for_
+# text/get_line_spacing_for_text/get_space_after_for_text/get_space_before_
+# for_text, which belong to a separate, legacy code path (_fill_content_shape,
+# only reached from the unused markdown generate() flow) and were never the
+# values really applied to a live commentary bullet. Caught via a real
+# Windows client-metrics export + inspect_single_slot.py: assuming a 9pt
+# inter-paragraph gap (this file's old PARA_GAP_CHI, itself copied from a
+# since-fixed pptx.py bug) against a real hardcoded 3pt gap inflated "capacity
+# used" by roughly 30% -- a box the user could still type 5-7 more lines into
+# was already being reported as 94% full.
 FONT_SIZE_ENG = 9.0
 FONT_SIZE_CHI = 9.0
 LINE_SPACING_ENG = 1.0
-LINE_SPACING_CHI = 0.9
-
-# pptx.py's real capacity formula (_calculate_max_lines_for_textbox) divides
-# by line_height + para_gap, not line_height alone — every paragraph carries
-# space_before/space_after in the actual render. Omitting this here made
-# capacity come out ~1.5-2x too generous, understating overflow/under-fill risk.
-PARA_GAP_ENG = get_space_after_for_text("", force_chinese_mode=False).pt + get_space_before_for_text("", force_chinese_mode=False).pt
-PARA_GAP_CHI = get_space_after_for_text("", force_chinese_mode=True).pt + get_space_before_for_text("", force_chinese_mode=True).pt
+LINE_SPACING_CHI = 1.0
+PARA_GAP_ENG = 3.0
+PARA_GAP_CHI = 3.0
 MIN_FILL_RATIO_WARN = 0.40  # below this on a non-last slot -> utilisation flag
 
 
