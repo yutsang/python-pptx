@@ -4759,7 +4759,30 @@ class PowerPointGenerator:
                 # Smaller/tighter than before across the board -- reference
                 # format (IMG_0035) reads noticeably more compact than this
                 # table previously rendered at.
-                total_visible_rows = len(df) + 1 + (1 if table_name else 0)
+                #
+                # Category header rows (_insert_category_header_rows --
+                # "Revenue"/"Expenses"/"Current assets"/etc.) don't count
+                # toward this tier threshold: they're a single short label
+                # with no figures, not a real data row, and letting them
+                # count at full weight was dragging the WHOLE table (every
+                # real data row too) down to a smaller font/row-height tier
+                # than the actual data alone would need -- e.g. the IS
+                # table's 16 real rows sit comfortably under the 20-row
+                # threshold on their own, but 16 rows + 6 "Revenue"/
+                # "Expenses" header rows = 22 pushed it into the tighter
+                # tier for no real reason.
+                _tier_keywords = list(
+                    {'total', '合计', '总计', '小计', 'subtotal', 'sub-total', 'sub total'}
+                    | set(SUMMARY_ACCOUNT_SKIP_KEYWORDS)
+                )
+                _category_header_row_count = 0
+                for _, _tier_row in df.iterrows():
+                    _tier_label = str(_tier_row.iloc[0]).strip()
+                    if not _tier_label or any(kw in _tier_label.lower() for kw in _tier_keywords):
+                        continue
+                    if all(pd.isna(v) or (isinstance(v, str) and not v.strip()) for v in _tier_row.iloc[1:]):
+                        _category_header_row_count += 1
+                total_visible_rows = (len(df) - _category_header_row_count) + 1 + (1 if table_name else 0)
                 if total_visible_rows >= 26:
                     data_font_size = Pt(6)
                     data_row_height = Inches(0.13)
