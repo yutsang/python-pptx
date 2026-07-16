@@ -2800,6 +2800,33 @@ class PowerPointGenerator:
             slot_meta=slots,
             statement_type=statement_type,
         )
+
+        # A slide that ends up with real content in one slot (e.g. L) but
+        # never had ANY entry at all for one of its OTHER slots (e.g. R) --
+        # not drained to empty by a rebalance pass, just never touched by
+        # the greedy first pass above, which only appends a distribution
+        # entry "if current_slot_content" (line ~2776) and so silently
+        # skips a slot that ran out of content before reaching it -- needs
+        # that other slot represented too, even with zero accounts.
+        # _optimize_slot_fill can't fix this on its own: it only ever
+        # builds its internal slot list FROM the `distribution` it's given
+        # (see its "for slide_idx, slot_name, _accounts in distribution"
+        # loop), so a slot that was never in `distribution` to begin with
+        # never reaches it as input, let alone its output -- unlike the
+        # "consolidated to empty" case _optimize_slot_fill's own output
+        # filter already handles (5da5d38), this one is invisible to it
+        # entirely. Confirmed via a real export: the resulting shape is
+        # left holding whatever raw template placeholder text it shipped
+        # with (a literal "Placeholder – placeholder"), because the
+        # render loop's per-slot fill AND its "clear if empty" fallback
+        # both key off `slot_contents.items()` -- a slot name that's
+        # simply not a key in that dict is never visited by either branch.
+        slides_with_content = {slide_idx for slide_idx, _slot_name, accounts in distribution if accounts}
+        present_pairs = {(slide_idx, slot_name) for slide_idx, slot_name, _accounts in distribution}
+        for slide_idx, slot_name in slots:
+            if slide_idx in slides_with_content and (slide_idx, slot_name) not in present_pairs:
+                distribution.append((slide_idx, slot_name, []))
+
         return distribution
 
     def _compute_slot_used_lines(
