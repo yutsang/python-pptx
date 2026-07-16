@@ -67,8 +67,17 @@ PARA_GAP_CHI = get_space_after_for_text("", force_chinese_mode=True).pt + get_sp
 MIN_FILL_RATIO_WARN = 0.40  # below this on a non-last slot -> utilisation flag
 
 
-def _is_chinese_text(text: str) -> bool:
-    return any("一" <= ch <= "鿿" for ch in text)
+def _is_chinese_text(text: str, threshold: float = 0.3) -> bool:
+    # Predominantly-Chinese (mirrors fdd_utils.financial_common's
+    # contains_predominantly_chinese_text / pptx.py's account-level
+    # is_chinese flag), not "contains any CJK character" -- an English
+    # commentary box that merely names a Chinese counterparty/person
+    # still wraps as Latin-script prose in the real render, and measuring
+    # it with CJK metrics here would misreport its true fill.
+    if not text:
+        return False
+    chinese_chars = sum(1 for ch in text if "一" <= ch <= "鿿")
+    return (chinese_chars / len(text)) > threshold
 
 
 def _slot_of(shape_name: str) -> str:

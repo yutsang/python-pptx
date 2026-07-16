@@ -501,7 +501,19 @@ def build_pptx_structured_payloads(
                     "commentary": commentary_text,
                     "clause_reviews": clause_reviews,
                     "summary": _extract_summary(final_content) if final_content else "",
-                    "is_chinese": contains_chinese_text(commentary_text),
+                    # Predominantly-Chinese (>30%), not "contains any CJK
+                    # character" -- this flag drives CJK-vs-Latin text
+                    # WRAPPING/measurement throughout the packing pipeline
+                    # (_calculate_content_lines, _calculate_max_lines_for_
+                    # textbox's whole-statement is_chinese_any). An English
+                    # commentary that merely names a Chinese counterparty/
+                    # person (e.g. "...payable to the related party 维彧")
+                    # is still fundamentally Latin-script prose; measuring
+                    # it (and, via is_chinese_any, EVERY slot's capacity in
+                    # the whole statement) with CJK line-height/spacing/
+                    # wrap rules instead of Arial's produced a systematic
+                    # believed-vs-actually-rendered fill gap.
+                    "is_chinese": contains_predominantly_chinese_text(commentary_text),
                 },
             )
         )
@@ -4297,6 +4309,19 @@ class PowerPointGenerator:
                 tf = bullets_shape.text_frame
                 tf.clear()
                 tf.word_wrap = True
+                # TextFrame.clear() always leaves exactly one (now-empty)
+                # paragraph behind; every real line below is added via
+                # add_paragraph() rather than reusing it, so it survives as a
+                # permanent blank leading line PowerPoint actually renders
+                # (~1 line-height of capacity silently lost on every slot in
+                # the deck) even though it contributes zero to this file's
+                # own content-line accounting (empty paragraphs are filtered
+                # out by both the DP/packing math and inspect_pptx.py's
+                # measurement) -- a real vs. believed capacity mismatch that
+                # was part of why slots read as "stuck" under their true
+                # capacity. Removed once real content exists, right before
+                # moving to the next slot.
+                _leading_empty_p = tf.paragraphs[0]._p
 
                 # Most slots fit within strict 1.0x capacity and keep the
                 # exact 9pt/10pt size (noAutofit) -- no drift, no surprise
@@ -4406,7 +4431,10 @@ class PowerPointGenerator:
                         font_size_pt=slot_font_size,
                         clause_reviews=clause_reviews,
                     )
-            
+
+                if _leading_empty_p.getparent() is not None and not (_leading_empty_p.text or "").strip():
+                    _leading_empty_p.getparent().remove(_leading_empty_p)
+
             page_commentary, page_summary_source = self._build_page_summary_source(all_slide_accounts)
 
             # Collect coSummaryShape jobs and fill after summaries are generated.
