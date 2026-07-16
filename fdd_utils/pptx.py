@@ -2715,9 +2715,12 @@ class PowerPointGenerator:
                     # but para_lines is computed via chars_per_line and counts
                     # visual display lines.  Multiply by (std_lh / line_h) so
                     # both are in the same unit.
-                    #   English: std_lh=9+6=15pt, line_h=9pt  → factor ≈ 1.667
-                    #   Chinese: std_lh=9.5+6=15.5pt, line_h=9.5pt → factor ≈ 1.632
-                    _lh_est = (10 * 0.95) if is_chinese_content else (9 * 1.0)
+                    #   Both languages: std_lh=9+3=12pt, line_h=9pt → factor ≈ 1.333
+                    #   (matches _real_font_size_pt/_real_line_spacing/_PARA_SPACE_AFTER
+                    #   -- _fill_text_main_bullets_with_category_and_key hardcodes
+                    #   Pt(3) space_after / line_spacing=1.0 for every paragraph,
+                    #   any language; there's no separate Chinese 10pt/0.95 value.)
+                    _lh_est = 9.0
                     _std_lh_est = _lh_est + self._PARA_SPACE_AFTER
                     available_visual = available_for_commentary * (_std_lh_est / _lh_est)
 
@@ -3181,7 +3184,11 @@ class PowerPointGenerator:
         chars_per_line = self._estimate_chars_per_line(
             slot_name, is_chinese, shape=shape, statement_type=statement_type,
         )
-        _lh_est = (10 * 0.95) if is_chinese else (9 * 1.0)
+        # Both languages: matches _real_font_size_pt/_real_line_spacing (see
+        # the sibling occurrence in _distribute_content_across_slots for the
+        # full explanation) -- no separate Chinese 10pt/0.95 value actually
+        # gets applied to a rendered paragraph.
+        _lh_est = 9.0
         _std_lh_est = _lh_est + self._PARA_SPACE_AFTER
         available_visual = max(0.0, available_std_lh_units) * (_std_lh_est / _lh_est)
         if available_visual < 1.0:
@@ -3244,6 +3251,28 @@ class PowerPointGenerator:
             word_end = para.rfind(' ', 0, min(hard_cap, len(para) - 1))
             if word_end > 0 and word_end >= min_fill:
                 best_split = word_end + 1
+
+        if best_split is None and is_chinese:
+            # Chinese has no spaces between words, so the Latin word-boundary
+            # fallback above always misses on CJK text -- a long single
+            # sentence with no "." within budget (e.g. one continuous
+            # amount-heavy clause well past 72 chars before its first "。")
+            # had NO fallback at all here and always returned None, silently
+            # giving up on pulling any of it forward even with real budget
+            # to spare. Comma is the natural next-best CJK clause boundary;
+            # if even that isn't present in range, a hard character cut is
+            # fine for CJK (unlike Latin text, cutting between two Chinese
+            # characters doesn't break a "word").
+            comma_end = max(
+                para.rfind('，', 0, min(hard_cap, len(para) - 1)),
+                para.rfind(',', 0, min(hard_cap, len(para) - 1)),
+            )
+            if comma_end > 0 and comma_end >= min_fill:
+                best_split = comma_end + 1
+            else:
+                hard_end = min(hard_cap, len(para) - 1)
+                if hard_end >= min_fill:
+                    best_split = hard_end
 
         if not best_split:
             return None
@@ -3716,7 +3745,17 @@ class PowerPointGenerator:
                 part1 = None
                 head_text = tail_text = ""
                 remaining_budget = text_budget
-                for _attempt in range(4):
+                # 8 attempts, and each failed candidate shrinks the budget by
+                # 1.5x its overage (not 1x) -- _split_commentary_at_boundary's
+                # own split-point search is a coarse chars_per_line estimate,
+                # not the accurate Pillow/client-metrics measurer this loop's
+                # own candidate_used check uses, so the two can disagree by a
+                # small, fairly consistent margin. A 1x reduction often lands
+                # on the exact same sentence/comma boundary again (nothing
+                # between the old and new budget crossed a punctuation mark),
+                # burning attempts without changing the answer; overshooting
+                # the reduction converges in fewer tries.
+                for _attempt in range(8):
                     split_result = self._split_commentary_at_boundary(
                         str(head_acct.get("commentary", "") or ""),
                         remaining_budget,
@@ -3746,7 +3785,7 @@ class PowerPointGenerator:
                         part1 = candidate
                         break
                     overage = candidate_used - cur_cap
-                    remaining_budget -= overage + 0.25
+                    remaining_budget -= (overage * 1.5) + 0.25
                     if remaining_budget < 1.0:
                         break
 
