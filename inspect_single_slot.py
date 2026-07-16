@@ -90,10 +90,15 @@ def main() -> int:
         + get_space_before_for_text("", force_chinese_mode=is_chi).pt
     )
     std_lh = line_h + para_gap
-    capacity = int(box.height_pt / std_lh)
+    # Float, not int(...) floored -- matches fdd_utils/pptx.py's
+    # _calculate_max_lines_for_textbox (fixed in 5bbec43). This diagnostic
+    # script had its own standalone copy of the old int()-floored formula
+    # that never got updated alongside that fix, so it kept reporting the
+    # pre-fix capacity/percentages even against freshly re-exported files.
+    capacity = box.height_pt / std_lh
     print(f"\n  box.width_pt={box.width_pt:.2f} box.height_pt={box.height_pt:.2f}")
     print(f"  line_h={line_h:.2f}pt para_gap={para_gap:.2f}pt std_lh={std_lh:.2f}pt")
-    print(f"  capacity = int({box.height_pt:.2f} / {std_lh:.2f}) = {capacity} lines")
+    print(f"  capacity = {box.height_pt:.2f} / {std_lh:.2f} = {capacity:.2f} lines")
     print(f"  capacity in inches = {capacity * std_lh / 72:.3f}in  (box height = {box.height_pt/72:.3f}in)")
 
     print("\n  Per-paragraph breakdown:")
@@ -118,7 +123,7 @@ def main() -> int:
         total_pt += p_pt
         print(f"    para[{i}]: {len(wrapped)} wrapped lines, {p_pt:.1f}pt -> {units:.2f} units | {text[:50]!r}")
 
-    print(f"\n  TOTAL: {total_units:.2f} units / {capacity} capacity = {100*total_units/capacity:.1f}% (line-unit basis)")
+    print(f"\n  TOTAL: {total_units:.2f} units / {capacity:.2f} capacity = {100*total_units/capacity:.1f}% (line-unit basis)")
     print(f"  TOTAL: {total_pt:.1f}pt / {box.height_pt:.1f}pt box = {100*total_pt/box.height_pt:.1f}% (raw-height basis)")
     print("\n  If these two percentages differ noticeably, the capacity formula's")
     print("  std_lh unit conversion doesn't track raw physical height 1:1 --")
