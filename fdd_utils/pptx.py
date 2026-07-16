@@ -1797,6 +1797,32 @@ class PowerPointGenerator:
                     return text_val
         return text_val
 
+    @staticmethod
+    def _set_paragraph_left_indent(paragraph, left_indent_emu: int) -> None:
+        """Set a table-cell paragraph's left indent (marL) directly on its
+        <a:pPr> XML, with indent (first-line offset) pinned to 0.
+
+        _Paragraph has NO left_indent property in this python-pptx version
+        (only alignment/level/line_spacing/font are exposed) -- `paragraph.
+        left_indent = Inches(...)` doesn't raise, but that's because plain
+        Python objects accept arbitrary ad-hoc attribute assignment; it
+        silently creates a throwaway instance attribute with ZERO effect on
+        the underlying XML, discarded the moment the object is garbage
+        collected. Confirmed by round-tripping through a real save+reload:
+        the "set" value reads back fine within the SAME Python session (the
+        fake attribute is still sitting right there), but a freshly loaded
+        Presentation() from that same saved file raises AttributeError on
+        the same read -- proof nothing was ever written. marL/indent are
+        real OOXML attributes on <a:pPr> (ECMA-376 CT_TextParagraphProperties)
+        that python-pptx just doesn't wrap with a friendly property; setting
+        them via the raw element (same get_or_add_pPr() pattern python-pptx's
+        own oxml layer uses internally) is the only way that actually
+        persists.
+        """
+        pPr = paragraph._p.get_or_add_pPr()
+        pPr.set('marL', str(int(left_indent_emu)))
+        pPr.set('indent', '0')
+
     def _embed_statement_table(
         self, slide, df, statement_type: str, table_name: str = None, currency_unit: str = None,
         mappings: Optional[Dict[str, Any]] = None, is_chinese_mode: bool = False,
@@ -4519,19 +4545,25 @@ class PowerPointGenerator:
                 DARK_BLUE = RGBColor(0x00, 0x33, 0x8D)
                 WHITE = RGBColor(255, 255, 255)
                 BLACK = RGBColor(0, 0, 0)
-                
+                # Reference format (IMG_0035) calls out only the four
+                # statement-level grand totals with a solid grey fill.
+                GREY_TOTAL_FILL = RGBColor(0xD9, 0xD9, 0xD9)
+
                 self._fit_table_columns(table, df)
 
+                # Smaller/tighter than before across the board -- reference
+                # format (IMG_0035) reads noticeably more compact than this
+                # table previously rendered at.
                 total_visible_rows = len(df) + 1 + (1 if table_name else 0)
                 if total_visible_rows >= 26:
-                    data_font_size = Pt(7)
-                    data_row_height = Inches(0.16)
+                    data_font_size = Pt(6)
+                    data_row_height = Inches(0.13)
                 elif total_visible_rows >= 20:
-                    data_font_size = Pt(7.5)
-                    data_row_height = Inches(0.18)
+                    data_font_size = Pt(6.5)
+                    data_row_height = Inches(0.15)
                 else:
-                    data_font_size = Pt(8)
-                    data_row_height = Inches(0.20)
+                    data_font_size = Pt(7)
+                    data_row_height = Inches(0.17)
                 
                 # Add table name as first row if provided
                 if table_name:
@@ -4622,9 +4654,10 @@ class PowerPointGenerator:
                                 run = p.add_run()
 
                             run.font.name = 'Arial'
-                            run.font.size = Pt(8)
+                            run.font.size = Pt(7)
                             run.font.bold = True
                             run.font.color.rgb = BLACK
+                            p.line_spacing = 1.0
 
                         # Only the LAST column is highlighted light blue
                         # (matches the company-format reference's "adjusted
@@ -4680,7 +4713,20 @@ class PowerPointGenerator:
                         break
                     df_row = df.iloc[row_idx]
                     first_col_value = str(df_row.iloc[0]) if len(df_row) > 0 else ""
-                    
+
+                    # A section header ("流动资产" / "非流动负债" / etc.) is a
+                    # row the source Financials sheet gives a label but no
+                    # figures at all -- pd.isna() on every numeric column,
+                    # not just a zero (a genuine zero renders as "-" via
+                    # _format_table_value, so it's distinguishable from a
+                    # truly blank/missing value). Reference format (real
+                    # company deliverable, IMG_0035): these sit flush left
+                    # with no indent, everything else between one and the
+                    # next header/total is indented under it.
+                    is_category_header_row = bool(first_col_value.strip()) and all(
+                        pd.isna(df_row[col]) for col in df.columns[1:max_cols] if col in df_row.index
+                    )
+
                     # Check if this is a title, date, total, or subtotal row
                     is_special_row = False
                     is_total_row = False
@@ -4706,6 +4752,16 @@ class PowerPointGenerator:
 
                     if any(keyword in first_col_lower for keyword in total_keywords):
                         is_total_row = True
+
+                    # A blank-values row that ALSO matches a total keyword is
+                    # a total row that simply has no figures yet (e.g. a
+                    # subtotal for a section with no populated accounts),
+                    # not a section header -- keep those two mutually
+                    # exclusive so the total-row border/fill logic below
+                    # still applies to it.
+                    is_category_header_row = is_category_header_row and not is_total_row
+                    if is_category_header_row:
+                        is_special_row = True
 
                     if any(keyword in first_col_lower for keyword in date_keywords):
                         is_date_row = True
@@ -4807,6 +4863,10 @@ class PowerPointGenerator:
                             except Exception:
                                 pass
                             run.font.bold = is_special_row
+                        try:
+                            p.line_spacing = 1.0
+                        except Exception:
+                            pass
 
                         # Give cells a small internal margin so text doesn't hug the border
                         try:
@@ -4817,9 +4877,20 @@ class PowerPointGenerator:
                         except Exception:
                             pass
 
-                        # First column left-aligned, numeric columns right-aligned
+                        # First column left-aligned, numeric columns right-aligned.
+                        # Within the label column, a leaf line item (neither a
+                        # section header nor a total/subtotal) is indented
+                        # under whichever header it follows -- headers and
+                        # every tier of total stay flush with the left margin
+                        # (reference format, IMG_0035). Set via raw XML
+                        # (_set_paragraph_left_indent) -- see that method's
+                        # docstring for why paragraph.left_indent itself is a
+                        # no-op in this python-pptx version.
                         try:
                             p.alignment = PP_ALIGN.LEFT if col_idx == 0 else PP_ALIGN.RIGHT
+                            if col_idx == 0:
+                                should_indent = not is_category_header_row and not is_total_row
+                                self._set_paragraph_left_indent(p, int(Inches(0.12)) if should_indent else 0)
                         except Exception:
                             pass
 
@@ -4837,13 +4908,20 @@ class PowerPointGenerator:
                         # an untouched cell.fill inherits the table's built-in
                         # style GUID, which can render as a themed/tinted
                         # colour even with first_row/horz_banding disabled).
-                        # Total/grand-total rows are called out with border
-                        # weight only (below), not a fill.
+                        # The four statement-level grand totals (total
+                        # assets/liabilities/equity, and liabilities+equity)
+                        # are the one exception -- reference format (IMG_0035)
+                        # calls those out with a solid grey fill across the
+                        # whole row; every other total/subtotal tier stays
+                        # white, called out by border weight only (below).
                         try:
                             cell.fill.solid()
-                            cell.fill.fore_color.rgb = (
-                                LIGHT_BLUE_HIGHLIGHT if col_idx == max_cols - 1 else WHITE
-                            )
+                            if is_grand_total_row:
+                                cell.fill.fore_color.rgb = GREY_TOTAL_FILL
+                            else:
+                                cell.fill.fore_color.rgb = (
+                                    LIGHT_BLUE_HIGHLIGHT if col_idx == max_cols - 1 else WHITE
+                                )
                         except Exception:
                             pass
 
