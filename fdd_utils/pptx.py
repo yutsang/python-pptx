@@ -2943,9 +2943,26 @@ class PowerPointGenerator:
         prev_cat = None
         for account in accounts:
             cat = str(account.get("category", "") or "")
-            if cat and cat != prev_cat:
+            # A continuation account never gets its own category-header
+            # paragraph rendered (the fill loop explicitly skips it via
+            # "not is_continuation" -- a "(cont'd)" fragment belongs to
+            # whatever category its first part already introduced, not a
+            # second one) -- so it must not be charged the 1.0-line cost
+            # for one here either. A continuation is very often the FIRST
+            # account placed in a slot (that's how it got split off), so
+            # skipping this made every such slot's "used" belief exactly
+            # 1.0 line higher than what actually gets rendered -- a
+            # believed-vs-actual gap that compounds with the DP's own
+            # front-loading and was a real contributor to slots reading as
+            # under-filled despite the packing math saying they were full.
+            # prev_cat only advances on an actually-rendered header (mirrors
+            # the render loop's own current_category, which likewise never
+            # moves off a skipped continuation) -- otherwise a later account
+            # sharing the continuation's category would wrongly believe its
+            # own header was already shown further up.
+            if cat and cat != prev_cat and not account.get("is_continuation"):
                 used += 1.0   # category header (same as slot_cost)
-            prev_cat = cat
+                prev_cat = cat
             used += self._calculate_content_lines(
                 "",
                 account.get("mapping_key", account.get("account_name", "")),
