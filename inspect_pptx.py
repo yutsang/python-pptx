@@ -154,12 +154,25 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
             if "textmainbullets" in (getattr(s, "name", "") or "").lower() and s.has_text_frame
         ]
         table_shapes = [s for s in slide.shapes if getattr(s, "has_table", False)]
-        has_summary = any("summary" in (getattr(s, "name", "") or "").lower() for s in slide.shapes)
+        summary_shapes = [
+            s for s in slide.shapes
+            if "summary" in (getattr(s, "name", "") or "").lower() and s.has_text_frame
+        ]
+        has_summary = bool(summary_shapes)
 
         if not commentary_shapes:
             continue
 
         _print(f"=== Slide {slide_idx + 1} ===  (table={bool(table_shapes)}  coSummaryShape={has_summary})")
+        for s_shape in summary_shapes:
+            s_text = s_shape.text_frame.text.strip()
+            if s_text:
+                preview = s_text[:120] + ("..." if len(s_text) > 120 else "")
+                _print(f"  [{s_shape.name}] executive summary ({len(s_text)} chars): {preview!r}")
+            else:
+                _print(f"  ⚠️  [{s_shape.name}] executive summary shape is EMPTY (0 chars)")
+                total_warnings += 1
+                warning_details.append(f"Slide {slide_idx + 1}: executive summary ({s_shape.name}) is empty")
 
         infos: List[ShapeInfo] = []
         for shape in commentary_shapes:
