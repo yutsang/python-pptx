@@ -2378,11 +2378,23 @@ class PowerPointGenerator:
             self._log_measurer_source_once(measurer, _mpath, is_chinese)
             box      = text_box_from_shape(shape)
             std_lh   = measurer.line_height_pt() + self._real_para_gap_pt(is_chinese)
-            max_rows = int(box.height_pt / std_lh)
-            # Trust the real measurement — do NOT apply minimum_slot_lines as a
-            # floor here, because that would allow the DP to pack more content
-            # (max_rows × std_lh pt) than the box can physically hold.
-            return max(1, max_rows)
+            # Float, not int(...) floored -- content cost (_calculate_content_
+            # lines / _compute_slot_used_lines) is ALSO measured in these same
+            # std_lh units and never rounds, so "N lines fit" and "the content
+            # that's been packed in totals N.xx units" are already compared as
+            # floats everywhere except here. Flooring only this side throws
+            # away up to a full std_lh unit (line + its trailing gap) of real,
+            # physically-there box height on every single slot -- verified via
+            # a real Windows client-metrics export: a box the DP stopped
+            # filling at "believed" 95.2% (15.23 / floor(16.77)=16) was
+            # actually only 90.8% full relative to its own true height
+            # (15.23 / 16.77) once the discarded 0.77-line margin is counted.
+            # This value is exactly self-consistent with the box's real pt
+            # height by construction (capacity_float * std_lh == box.height_pt),
+            # so packing right up to it can never overflow the box -- the
+            # floor was never a safety margin, just an unnecessary display-
+            # style rounding that leaked into the fit-decision math.
+            return max(1.0, box.height_pt / std_lh)
         except Exception:
             pass   # font file missing — fall through to heuristic
 
@@ -3796,7 +3808,10 @@ class PowerPointGenerator:
                 "slide_idx": slide_idx,
                 "slot_name": slot_name,
                 "shape": shape,
-                "capacity": max(1, int(capacity or 1)),
+                # Float, not int(...) -- see _calculate_max_lines_for_textbox;
+                # re-flooring its already-precise return value here threw the
+                # same up-to-one-line margin away a second time.
+                "capacity": max(1.0, float(capacity or 1)),
             })
 
         N = len(flat_accounts)
