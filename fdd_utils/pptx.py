@@ -4716,15 +4716,28 @@ class PowerPointGenerator:
 
                     # A section header ("流动资产" / "非流动负债" / etc.) is a
                     # row the source Financials sheet gives a label but no
-                    # figures at all -- pd.isna() on every numeric column,
-                    # not just a zero (a genuine zero renders as "-" via
+                    # figures at all -- blank on every numeric column, not
+                    # just a zero (a genuine zero renders as "-" via
                     # _format_table_value, so it's distinguishable from a
-                    # truly blank/missing value). Reference format (real
+                    # truly blank/missing value). "Blank" covers both
+                    # pd.isna() (None/NaN) AND an empty/whitespace-only
+                    # string -- a real extracted sheet's blank cell isn't
+                    # guaranteed to come through as NaN specifically (could
+                    # already be "" depending on how the extractor read it),
+                    # and pd.isna("") is False, so a NaN-only check silently
+                    # never fires on that variant. Reference format (real
                     # company deliverable, IMG_0035): these sit flush left
                     # with no indent, everything else between one and the
                     # next header/total is indented under it.
+                    def _is_blank_cell(v) -> bool:
+                        if pd.isna(v):
+                            return True
+                        if isinstance(v, str) and not v.strip():
+                            return True
+                        return False
+
                     is_category_header_row = bool(first_col_value.strip()) and all(
-                        pd.isna(df_row[col]) for col in df.columns[1:max_cols] if col in df_row.index
+                        _is_blank_cell(df_row[col]) for col in df.columns[1:max_cols] if col in df_row.index
                     )
 
                     # Check if this is a title, date, total, or subtotal row
