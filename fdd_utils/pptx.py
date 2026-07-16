@@ -3531,6 +3531,120 @@ class PowerPointGenerator:
             if not changed:
                 break
 
+    def _maximize_forward_fill(
+        self,
+        assignment: List[List[Dict[str, Any]]],
+        slots: List[Dict[str, Any]],
+        statement_type: Optional[str],
+    ) -> None:
+        """Mutates `assignment` in place. User-confirmed requirement:
+        given a FIXED amount of content, pack it the way a person would --
+        fill the first slot as close to its own capacity as possible,
+        THEN move on to the next slot with whatever's left, and so on.
+        This is a plain greedy maximal-fill-in-reading-order pass,
+        deliberately NOT balance-seeking (an empty or lightly-filled
+        TRAILING slot is fine and expected once content genuinely runs
+        out -- that's a separate, not-yet-requested question of whether
+        to use fewer total slides). It directly supersedes _optimize_
+        slot_fill's own DP objective ("minimise the MAXIMUM fill ratio
+        across slots"), which spreads content for evenness rather than
+        maximising each slot in turn -- runs LAST, after every other
+        rebalance pass, since it's the final word on "is slot i as full
+        as slot i's own capacity allows" and nothing after it should
+        undo that.
+
+        For each boundary in order: repeatedly pull the next slot's
+        first account into the current slot, whole if it fits; if it
+        doesn't fit whole, split it (same paragraph/sentence/word
+        boundary search _try_partial_split_into_gap uses) to use up
+        whatever room remains, leaving the rest as a continuation at the
+        front of the next slot. Keeps going until the current slot has
+        no meaningful room left (<0.5 lines) or the next slot is empty,
+        then moves on to the next boundary.
+        """
+        n = len(assignment)
+        for i in range(n - 1):
+            cur_slot, nxt_slot = slots[i], slots[i + 1]
+            cur_name = cur_slot["slot_name"]
+            cur_shape = cur_slot["shape"]
+            cur_cap = cur_slot["capacity"]
+
+            while assignment[i + 1]:
+                cur_accts = assignment[i]
+                nxt_accts = assignment[i + 1]
+                cur_used = self._compute_slot_used_lines(
+                    cur_accts, cur_name, slot_shape=cur_shape, statement_type=statement_type,
+                )
+                gap = cur_cap - cur_used
+                if gap < 0.5:
+                    break
+
+                head_acct = nxt_accts[0]
+                whole_used = self._compute_slot_used_lines(
+                    cur_accts + [head_acct], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+                )
+                if whole_used <= cur_cap:
+                    cur_accts.append(nxt_accts.pop(0))
+                    continue
+
+                # Doesn't fit whole -- split it to use up exactly what room remains.
+                cur_last_cat = str(cur_accts[-1].get("category", "") or "") if cur_accts else ""
+                head_cat = str(head_acct.get("category", "") or "")
+                category_gap_cost = 1.0 if (head_cat and head_cat != cur_last_cat) else 0.0
+                text_budget = gap - category_gap_cost
+                if text_budget < 1.0:
+                    break
+
+                is_chinese = bool(head_acct.get("is_chinese", False))
+                part1 = None
+                head_text = tail_text = ""
+                remaining_budget = text_budget
+                for _attempt in range(4):
+                    split_result = self._split_commentary_at_boundary(
+                        str(head_acct.get("commentary", "") or ""),
+                        remaining_budget,
+                        slot_name=cur_name,
+                        is_chinese=is_chinese,
+                        shape=cur_shape,
+                        statement_type=statement_type,
+                        min_fill_ratio=0.3,
+                    )
+                    if not split_result:
+                        break
+                    head_text, tail_text = split_result
+                    candidate = head_acct.copy()
+                    candidate["commentary"] = head_text
+                    candidate["is_partial"] = True
+                    candidate["part_num"] = int(head_acct.get("part_num") or 1)
+                    candidate["original_key"] = head_acct.get("original_key", head_acct.get("mapping_key"))
+                    candidate_used = self._compute_slot_used_lines(
+                        cur_accts + [candidate], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+                    )
+                    if candidate_used <= cur_cap:
+                        part1 = candidate
+                        break
+                    overage = candidate_used - cur_cap
+                    remaining_budget -= overage + 0.25
+                    if remaining_budget < 1.0:
+                        break
+
+                if part1 is None:
+                    break  # can't split to fit either -- nothing more fits in this slot
+
+                part2 = head_acct.copy()
+                part2["commentary"] = tail_text
+                part2["is_continuation"] = True
+                part2["part_num"] = int(head_acct.get("part_num") or 1) + 1
+                part2["original_key"] = head_acct.get("original_key", head_acct.get("mapping_key"))
+
+                cur_accts.append(part1)
+                nxt_accts[0] = part2
+                logger.info(
+                    "  Maximized forward fill: split '%s' to top up slot %s (gap was %.1f)",
+                    head_acct.get("mapping_key", "?"), i, gap,
+                )
+                continue
+
     def _optimize_slot_fill(
         self,
         distribution: List[tuple],
@@ -3837,6 +3951,7 @@ class PowerPointGenerator:
         self._consolidate_tiny_stub_lr_pairs(assignment, slots, statement_type)
         self._rebalance_underfilled_boundaries(assignment, slots, statement_type)
         self._rebalance_overflowing_boundaries(assignment, slots, statement_type)
+        self._maximize_forward_fill(assignment, slots, statement_type)
 
         for s_i, slot in enumerate(slots):
             lines = slot_cost(s_i, 0, -1) if not assignment[s_i] else self._compute_slot_used_lines(
