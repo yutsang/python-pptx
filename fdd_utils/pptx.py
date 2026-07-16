@@ -1823,10 +1823,67 @@ class PowerPointGenerator:
         pPr.set('marL', str(int(left_indent_emu)))
         pPr.set('indent', '0')
 
+    @staticmethod
+    def _insert_category_header_rows(df, mappings: Optional[Dict[str, Any]], is_chinese_mode: bool):
+        """Insert a blank-figures header row ("流动资产" / "Current assets"
+        / etc.) into `df` whenever a leaf line item's mapped category
+        (mappings.yml -- the SAME per-account "category" field the
+        commentary bullets already group by) changes from the previous
+        one. Total/subtotal rows (same keyword detection the later styling
+        pass uses) never update the running category tracker and never
+        trigger an insertion themselves -- a subtotal belongs to whatever
+        category the items above it were in, not a category of its own.
+
+        A real Financials-sheet check this session (inspect_financials_
+        structure.py against the Kunshan databook) confirmed the RAW
+        extracted sheet has no such header rows at all -- straight from a
+        leaf item to "Total current assets" -- so this is what actually
+        produces the reference format's ("IMG_0035") header rows, since
+        nothing upstream of this table provides them on its own.
+
+        Returns `df` unchanged if there's no mappings to categorise
+        against (never silently drops rows in that case).
+        """
+        if not mappings or df is None or df.empty:
+            return df
+
+        total_keywords = list(
+            {'total', '合计', '总计', '小计', 'subtotal', 'sub-total', 'sub total'}
+            | set(SUMMARY_ACCOUNT_SKIP_KEYWORDS)
+        )
+
+        new_rows = []
+        current_category = None
+        for _, row in df.iterrows():
+            label = str(row.iloc[0]).strip()
+            label_lower = label.lower()
+            is_total = any(kw in label_lower for kw in total_keywords)
+
+            if not is_total and label:
+                mapping_key = find_mapping_key(label, mappings)
+                category = str((mappings.get(mapping_key) or {}).get('category', '') or '') if mapping_key else ''
+                if category and category != current_category:
+                    header_label = translate_category_to_chinese(category) if is_chinese_mode else category
+                    header_row = {col: (header_label if i == 0 else pd.NA) for i, col in enumerate(df.columns)}
+                    new_rows.append(header_row)
+                    current_category = category
+
+            new_rows.append(row.to_dict())
+
+        return pd.DataFrame(new_rows, columns=df.columns)
+
     def _embed_statement_table(
         self, slide, df, statement_type: str, table_name: str = None, currency_unit: str = None,
         mappings: Optional[Dict[str, Any]] = None, is_chinese_mode: bool = False,
     ):
+        # Insert category-header rows BEFORE anything below sizes the table
+        # off len(df) -- the table's own row count (_add_table_to_slide /
+        # the TablePlaceholder branch) is derived directly from len(df), so
+        # doing this here means the extra rows are already accounted for by
+        # the time the table shape itself gets created, not squeezed in
+        # after the fact.
+        df = self._insert_category_header_rows(df, mappings, is_chinese_mode)
+
         target_shape = self._resolve_table_target_shape(slide, statement_type)
         bounds = self._calculate_table_bounds(slide, target_shape=target_shape, statement_type=statement_type)
         target_name = self._shape_name(target_shape) if target_shape is not None else "(new table)"
@@ -3607,7 +3664,12 @@ class PowerPointGenerator:
                         is_chinese=is_chinese,
                         shape=cur_shape,
                         statement_type=statement_type,
-                        min_fill_ratio=0.3,
+                        # Lower than the other split passes' 0.3 -- this
+                        # pass's whole point is "use up as much of the
+                        # remaining gap as possible," so a smaller carved-
+                        # off fragment is still worth taking here even
+                        # where it wouldn't be for a balance-oriented move.
+                        min_fill_ratio=0.15,
                     )
                     if not split_result:
                         break
