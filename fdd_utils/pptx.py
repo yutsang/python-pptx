@@ -2805,6 +2805,21 @@ class PowerPointGenerator:
                                     elif chars_available < len(para):
                                         best_split = chars_available  # last-resort hard cut
 
+                                # Never split inside a number -- this is a
+                                # SEPARATE, independent split implementation
+                                # from _split_commentary_at_boundary (this is
+                                # the FIRST-ever split an account gets, during
+                                # the initial greedy distribution, before any
+                                # rebalance pass runs) and _snap_split_before_
+                                # number's fix there never touched this one --
+                                # confirmed as the real source of a production
+                                # case reading "...室外工程人民币2," at the
+                                # bottom of one slide and "818.7万元..."
+                                # continuing the next, AFTER that other fix
+                                # already shipped.
+                                if best_split:
+                                    best_split = self._snap_split_before_number(para, best_split)
+
                                 # Slice ONCE on the finalised best_split. Previously the
                                 # word-boundary/hard-cut fallback recomputed best_split but
                                 # never sliced, leaving part1/part2 unset → UnboundLocalError
@@ -3398,13 +3413,21 @@ class PowerPointGenerator:
             return None
         return head, tail
 
-    @staticmethod
-    def _snap_split_before_number(text: str, pos: int) -> int:
+    # Currency markers that read as visually broken when stranded at the end
+    # of a slide with their amount on the next one (real production case:
+    # "...bad debt losses of CNY" / "484,000 in FY25..." -- the number itself
+    # was intact, only the currency prefix got separated from it).
+    _CURRENCY_MARKERS = ('CNY', 'RMB', 'USD', 'HKD', '人民币', '¥', '$', '£', '€')
+
+    @classmethod
+    def _snap_split_before_number(cls, text: str, pos: int) -> int:
         """If `pos` sits inside a numeric literal (digits, thousands commas,
         decimal point), back up to the start of that literal so the whole
-        number stays together on one side of the split. Only ever moves
-        pos earlier, so it can't undo a capacity check that already
-        accepted this position."""
+        number stays together on one side of the split. Also backs up past
+        an immediately-preceding currency marker (CNY/RMB/人民币/$/¥/...) so
+        a bare currency symbol doesn't get stranded with its amount on the
+        far side of the split. Only ever moves pos earlier, so it can't
+        undo a capacity check that already accepted this position."""
         if pos <= 0 or pos >= len(text):
             return pos
         numeric_chars = set('0123456789,.')
@@ -3412,7 +3435,19 @@ class PowerPointGenerator:
             start = pos
             while start > 0 and text[start - 1] in numeric_chars:
                 start -= 1
-            return start
+            pos = start
+        # pos is now either unchanged (wasn't mid-number) or at the start of
+        # a numeric literal -- either way, check for a currency marker (and
+        # an optional single space) immediately before it, and back up past
+        # that too if found.
+        if pos < len(text) and text[pos] in set('0123456789'):
+            for marker in cls._CURRENCY_MARKERS:
+                candidate_start = pos - len(marker)
+                if candidate_start >= 0 and text[candidate_start:pos] == marker:
+                    return candidate_start
+                candidate_start_sp = pos - len(marker) - 1
+                if candidate_start_sp >= 0 and text[candidate_start_sp:pos] == marker + ' ':
+                    return candidate_start_sp
         return pos
 
     def _try_partial_split_into_gap(
