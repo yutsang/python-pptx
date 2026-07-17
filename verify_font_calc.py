@@ -116,8 +116,13 @@ def main() -> int:
                   f"box {box.width_pt:.0f} x {box.height_pt:.0f} pt ==")
 
             for lang, is_cjk, size, spacing, sample, mpath in (
+                # Both 1.0 -- matches _real_line_spacing / _fill_text_main_
+                # bullets_with_category_and_key, which hardcodes line_spacing
+                # = 1.0 on every paragraph it renders, any language. There is
+                # no live code path that actually applies 0.95 to a Chinese
+                # commentary bullet.
                 ("ENG", False, 9, 1.0, SAMPLE_ENG, eng_path),
-                ("CHI", True, 9, 0.95, SAMPLE_CHI, chi_path),
+                ("CHI", True, 9, 1.0, SAMPLE_CHI, chi_path),
             ):
                 cpl = LEGACY_CPL[slot]["chi" if is_cjk else "eng"]
                 legacy_lines = math.ceil(len(sample) / cpl)
