@@ -3382,12 +3382,38 @@ class PowerPointGenerator:
         except Exception:
             pass  # measurer unavailable -- fall through with the crude best_split
 
+        # Never split inside a number -- a real production case did exactly
+        # this ("...室外工程人民币2," at the end of one slide, "818.7万元..."
+        # continuing the next): the hard-cut/character-trim fallbacks above
+        # have no concept of a numeric literal, so a raw character offset
+        # can land between the "2" and the "8" of "2,818.7". Backing up
+        # only ever REMOVES characters from head (never adds), so whatever
+        # capacity check already accepted this position stays satisfied.
+        best_split = self._snap_split_before_number(para, best_split)
+
         head = para[:best_split].strip()
         tail_rest = para[best_split:].strip()
         tail = (tail_rest + '\n\n' + '\n\n'.join(paragraphs[1:])).strip() if len(paragraphs) > 1 else tail_rest
         if not head or not tail:
             return None
         return head, tail
+
+    @staticmethod
+    def _snap_split_before_number(text: str, pos: int) -> int:
+        """If `pos` sits inside a numeric literal (digits, thousands commas,
+        decimal point), back up to the start of that literal so the whole
+        number stays together on one side of the split. Only ever moves
+        pos earlier, so it can't undo a capacity check that already
+        accepted this position."""
+        if pos <= 0 or pos >= len(text):
+            return pos
+        numeric_chars = set('0123456789,.')
+        if text[pos - 1] in numeric_chars and text[pos] in numeric_chars:
+            start = pos
+            while start > 0 and text[start - 1] in numeric_chars:
+                start -= 1
+            return start
+        return pos
 
     def _try_partial_split_into_gap(
         self,
