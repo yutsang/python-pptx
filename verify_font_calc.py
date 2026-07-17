@@ -102,6 +102,10 @@ def main() -> int:
     print(f"metrics (CN) : {chi_path or '(none — will use system font only)'}"
           f"{'' if not chi_path or os.path.exists(chi_path) else '   ⚠️ FILE NOT FOUND'}")
 
+    print("\n—— Sample text (copy/paste this exact text into PowerPoint for the ground-truth check) ——")
+    print(f"\n[SAMPLE_ENG]\n{SAMPLE_ENG}")
+    print(f"\n[SAMPLE_CHI]\n{SAMPLE_CHI}")
+
     prs = Presentation(args.template)
     seen = set()
     for slide_idx, slide in enumerate(prs.slides):
