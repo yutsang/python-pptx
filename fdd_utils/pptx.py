@@ -2995,7 +2995,21 @@ class PowerPointGenerator:
             # sharing the continuation's category would wrongly believe its
             # own header was already shown further up.
             if cat and cat != prev_cat and not account.get("is_continuation"):
-                used += 1.0   # category header (same as slot_cost)
+                if prev_cat is None:
+                    # The slot's OWN first category header gets NO space_before
+                    # (matches the render's "p_category.space_before = Pt(3)
+                    # if current_category else Pt(0)" -- current_category is
+                    # still unset the very first time). Charging the full
+                    # 1.0-unit (line_h+gap) here overstated every slot's
+                    # opening header by one gap's worth -- confirmed by
+                    # replicating the render's own paragraph-by-paragraph pt
+                    # math for a real 7-account/2-category slot and comparing
+                    # totals directly (0.23-unit gap, ~3pt, matched exactly).
+                    _approx_line_h = self._real_font_size_pt(False) * self._real_line_spacing(False)
+                    _approx_std_lh = _approx_line_h + self._real_para_gap_pt(False)
+                    used += (_approx_line_h / _approx_std_lh) if _approx_std_lh > 0 else 1.0
+                else:
+                    used += 1.0   # category header (same as slot_cost)
                 prev_cat = cat
             used += self._calculate_content_lines(
                 "",
