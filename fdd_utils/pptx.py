@@ -3177,6 +3177,7 @@ class PowerPointGenerator:
         shape=None,
         statement_type: Optional[str] = None,
         min_fill_ratio: float = 0.5,
+        key_prefix: str = "",
     ) -> Optional[Tuple[str, str]]:
         """Find a clean split point (paragraph boundary, else sentence
         boundary, else word boundary) so the head of `commentary` fits
@@ -3291,6 +3292,96 @@ class PowerPointGenerator:
         if not best_split:
             return None
 
+        # Validate against the REAL measurer, not the crude chars_per_line
+        # estimate used to find best_split above -- the two can disagree,
+        # and because wrapped-line cost is quantized (a candidate a few
+        # characters shorter often still wraps to the SAME line count),
+        # _maximize_forward_fill's retry loop would see this function
+        # propose the exact same "still too big" candidate across several
+        # attempts (a small budget cut rarely crosses the crude estimate's
+        # own boundary even when the real candidate measurably overshoots),
+        # then give up once its overage-scaled reduction blew past the
+        # retry floor -- confirmed via a real production case: a 0.44-unit
+        # (well under half a line) overage was enough to end the whole
+        # retry after a single attempt, discarding a boundary that
+        # genuinely had 1.3 real units of room. Back off through the same
+        # candidate boundaries already found above (largest to smallest),
+        # accepting the first whose ACCURATE wrapped cost actually fits.
+        try:
+            from fdd_utils.text_metrics import get_measurer, text_box_from_shape
+            if shape is not None:
+                packing = self._packing_settings(statement_type)
+                family = self._measurer_family(is_chinese, packing)
+                font_size_pt = self._real_font_size_pt(is_chinese)
+                line_spacing = self._real_line_spacing(is_chinese)
+                _mpath = self._resolve_font_metrics_path(is_chinese, packing)
+                measurer = get_measurer(
+                    family, font_size_pt, is_cjk=is_chinese, line_spacing=line_spacing,
+                    metrics_path=_mpath,
+                )
+                box = text_box_from_shape(shape)
+                line_h = measurer.line_height_pt()
+                para_gap = self._real_para_gap_pt(is_chinese)
+                std_lh = line_h + para_gap
+                budget_pt = max(0.0, available_std_lh_units) * std_lh
+                min_fill_pt = budget_pt * min_fill_ratio
+
+                # Every candidate boundary found above, largest first --
+                # sentence ends, then the word/comma/hard-cut fallback
+                # position, each de-duplicated and capped at best_split
+                # (never consider a candidate BIGGER than the crude
+                # estimate already chose).
+                backoff_candidates = sorted(
+                    {p for p in candidates if p <= best_split} | {best_split}, reverse=True,
+                )
+                accepted = None
+                for cand_pos in backoff_candidates:
+                    cand_head = para[:cand_pos].strip()
+                    if not cand_head:
+                        continue
+                    # key_prefix mirrors _calculate_content_lines' own
+                    # "■ {mapping_key} - " prepended to an account's first
+                    # paragraph -- omitting it here (the original bug) made
+                    # every candidate measure smaller than what the caller's
+                    # actual _compute_slot_used_lines check would find, so
+                    # a "fixed" head that trimmed real characters off could
+                    # still fail the caller's check by the exact same margin.
+                    wrapped = measurer.wrap(key_prefix + cand_head, box.width_pt)
+                    cand_pt = len(wrapped) * line_h + para_gap
+                    if cand_pt <= budget_pt and cand_pt >= min_fill_pt:
+                        accepted = cand_pos
+                        break
+                if accepted is not None and accepted != best_split:
+                    best_split = accepted
+                elif accepted is None:
+                    # Nothing in the existing candidate list fits even
+                    # accurately-measured -- fall back to trimming the
+                    # crude choice down word-by-word (Latin) or char-by-
+                    # char (CJK) until it does, rather than giving up
+                    # outright on a boundary that may still have room. This
+                    # is the last-resort branch (no sentence/comma boundary
+                    # produced anything accurately-fitting either) -- accept
+                    # the first fit regardless of min_fill_ratio here, since
+                    # by construction it's the LARGEST candidate that fits
+                    # (we're trimming down from best_split), so nothing
+                    # smaller would meet min_fill_ratio either; a small-but-
+                    # real split still beats the caller getting nothing back
+                    # and abandoning a boundary that had real room to spare.
+                    trimmed = best_split
+                    while trimmed > 0:
+                        cand_head = para[:trimmed].strip()
+                        if cand_head:
+                            wrapped = measurer.wrap(key_prefix + cand_head, box.width_pt)
+                            cand_pt = len(wrapped) * line_h + para_gap
+                            if cand_pt <= budget_pt:
+                                best_split = trimmed
+                                break
+                        trimmed -= max(1, len(cand_head) // 10) if cand_head else 5
+                    else:
+                        return None  # nothing, down to zero, ever fit
+        except Exception:
+            pass  # measurer unavailable -- fall through with the crude best_split
+
         head = para[:best_split].strip()
         tail_rest = para[best_split:].strip()
         tail = (tail_rest + '\n\n' + '\n\n'.join(paragraphs[1:])).strip() if len(paragraphs) > 1 else tail_rest
@@ -3356,6 +3447,7 @@ class PowerPointGenerator:
                 is_chinese=is_chinese,
                 shape=cur_shape,
                 statement_type=statement_type,
+                key_prefix=f"■ {head_acct.get('mapping_key', head_acct.get('account_name', ''))} - ",
             )
             if not split_result:
                 return False
@@ -3562,6 +3654,7 @@ class PowerPointGenerator:
                 shape=cur_shape,
                 statement_type=statement_type,
                 min_fill_ratio=0.3,
+                key_prefix=f"■ {tail_acct.get('mapping_key', tail_acct.get('account_name', ''))} - ",
             )
             if not split_result:
                 return False
@@ -3783,6 +3876,7 @@ class PowerPointGenerator:
                         # off fragment is still worth taking here even
                         # where it wouldn't be for a balance-oriented move.
                         min_fill_ratio=0.15,
+                        key_prefix=f"■ {head_acct.get('mapping_key', head_acct.get('account_name', ''))} - ",
                     )
                     if not split_result:
                         break
