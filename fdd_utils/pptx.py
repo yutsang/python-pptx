@@ -3975,6 +3975,68 @@ class PowerPointGenerator:
                 )
                 continue
 
+    def _consolidate_trailing_near_empty_slot(
+        self,
+        assignment: List[List[Dict[str, Any]]],
+        slots: List[Dict[str, Any]],
+        statement_type: Optional[str],
+    ) -> None:
+        """User-reported case: a whole trailing slide held only a single
+        leftover sentence spilled from the slide before it (e.g. one
+        continuation of an already-mostly-placed account), while that
+        prior slide was already packed to ~100% -- _maximize_forward_fill
+        correctly refuses to grow a slot past its own capacity, so this
+        sliver never had anywhere to go and sat alone on an otherwise
+        blank page. Eliminating a whole near-empty trailing page is worth
+        more than staying strictly under 100% on the page before it, so
+        this runs LAST and explicitly accepts a small bounded overflow
+        (up to 15% over nominal capacity -- well within what
+        _apply_bounded_autofit's shrink, floored at _BOUNDED_AUTOFIT_MIN_
+        SCALE=0.70, can visually absorb) specifically to empty this slot
+        out entirely. An emptied slot's slide becomes eligible for the
+        existing unused-slide removal, collapsing the whole page.
+
+        Only the true tail of the WHOLE statement -- not every small
+        slot -- since folding a small-but-legitimate MIDDLE slot forward
+        would just recreate the same problem one slot earlier.
+        """
+        n = len(assignment)
+        if n < 2:
+            return
+        last_i = n - 1
+        while last_i > 0 and not assignment[last_i]:
+            last_i -= 1
+        if last_i <= 0:
+            return  # nothing trails, or the whole statement is one slot
+
+        last_slot = slots[last_i]
+        last_accts = assignment[last_i]
+        last_used = self._compute_slot_used_lines(
+            last_accts, last_slot["slot_name"], slot_shape=last_slot["shape"], statement_type=statement_type,
+        )
+        # Only a genuinely tiny leftover -- not a legitimately-substantial
+        # trailing slot that just happens to be under-filled because its
+        # own statement's content ran out (that's expected and fine, per
+        # _maximize_forward_fill's own docstring).
+        if last_used > 3.0 or last_used > 0.25 * last_slot["capacity"]:
+            return
+
+        prev_i = last_i - 1
+        prev_slot = slots[prev_i]
+        prev_accts = assignment[prev_i]
+        if not prev_accts:
+            return
+        combined_used = self._compute_slot_used_lines(
+            prev_accts + last_accts, prev_slot["slot_name"], slot_shape=prev_slot["shape"], statement_type=statement_type,
+        )
+        if combined_used <= prev_slot["capacity"] * 1.15:
+            assignment[prev_i] = prev_accts + last_accts
+            assignment[last_i] = []
+            logger.info(
+                "  Consolidated trailing near-empty slot %s (%.1f units) into slot %s (now %.1f/%.1f)",
+                last_i, last_used, prev_i, combined_used, prev_slot["capacity"],
+            )
+
     def _optimize_slot_fill(
         self,
         distribution: List[tuple],
@@ -4285,6 +4347,7 @@ class PowerPointGenerator:
         self._rebalance_underfilled_boundaries(assignment, slots, statement_type)
         self._rebalance_overflowing_boundaries(assignment, slots, statement_type)
         self._maximize_forward_fill(assignment, slots, statement_type)
+        self._consolidate_trailing_near_empty_slot(assignment, slots, statement_type)
 
         for s_i, slot in enumerate(slots):
             lines = slot_cost(s_i, 0, -1) if not assignment[s_i] else self._compute_slot_used_lines(
@@ -4506,12 +4569,18 @@ class PowerPointGenerator:
                 logger.warning("Slide index %s exceeds available slides", actual_slide_idx + 1)
                 continue
             
-            used_slide_indices.add(actual_slide_idx)
             slide = self.presentation.slides[actual_slide_idx]
             slot_contents = slides_content[slide_idx]  # {'single': [...], 'L': [...], 'R': [...]}
-            
+            # A slide only counts as "used" if at least one of its slots has
+            # real content -- a slide whose slots are ALL empty (e.g. after
+            # _consolidate_trailing_near_empty_slot folds its one leftover
+            # sliver into the previous slide) should be eligible for the
+            # unused-slide removal below, not kept around as a blank page.
+            if any(slot_contents.values()):
+                used_slide_indices.add(actual_slide_idx)
+
             # Note: Financial tables are filled by embed_financial_tables()
-            
+
             # Collect all accounts on this slide for summary generation
             all_slide_accounts = []
             for slot_name, accounts in slot_contents.items():
