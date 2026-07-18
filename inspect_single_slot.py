@@ -117,10 +117,17 @@ def main() -> int:
         p_measurer = chi_measurer if p_is_chi else eng_measurer
         p_line_h = p_measurer.line_height_pt()
         p_para_gap = 3.0
-        # Bullet paragraphs hang-indent wrapped lines by 0.15" (10.8pt) --
-        # same effective width the packer charges (_BULLET_HANGING_INDENT_PT).
-        p_wrap_w = max(10.0, box.width_pt - 10.8) if text.lstrip().startswith("■") else box.width_pt
-        wrapped = p_measurer.wrap(text, p_wrap_w)
+        # "■ key - ..." paragraphs (p_key) hang-indent: line 1 is FULL box
+        # width (first_line_indent=-0.15" cancels left_indent=0.15"), only
+        # WRAPPED lines (2+) are 10.8pt narrower. Continuation paragraphs
+        # (p_text, first_line_indent=0) are narrow on every line -- same
+        # effective widths the packer charges (_BULLET_HANGING_INDENT_PT /
+        # first_line_width_pt).
+        p_hang_w = max(10.0, box.width_pt - 10.8)
+        p_is_bullet = text.lstrip().startswith("■")
+        wrapped = p_measurer.wrap(
+            text, p_hang_w, first_line_width_pt=box.width_pt if p_is_bullet else None,
+        )
         p_pt = len(wrapped) * p_line_h + p_para_gap
         units = p_pt / std_lh
         total_units += units

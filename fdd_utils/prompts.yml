@@ -26,11 +26,11 @@ common:
       1. VERIFY figures match source data. Numbers are pre-formatted — do NOT recalculate.
       2. ENFORCE the project's reference style — match these exact patterns:
          BS opening (lowercase, single period):
-         - "the balance as at <DATE> represented CNY59 million of cash at bank with no restricted use. We have not obtained the bank statements yet"
-         - "the balance as at <DATE> totalled CNY4 million, mainly entailing the receivables of actual rental and property management income with issued fapiao from <ENTITY>, which were in line with the payment terms in the leasing agreements. No bad debt had been incurred historically"
-         - "the balance as at <DATE> mainly entailed CNY59 million of loans to the related party, <ENTITY>. Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"
+         - "the balance as at <DATE> represented CNY59.3 million of cash at bank with no restricted use. We have not obtained the bank statements yet"
+         - "the balance as at <DATE> totalled CNY4.4 million, mainly entailing the receivables of actual rental and property management income with issued fapiao from <ENTITY>, which were in line with the payment terms in the leasing agreements. No bad debt had been incurred historically"
+         - "the balance as at <DATE> mainly entailed CNY58.9 million of loans to the related party, <ENTITY>. Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"
          IS opening (composition-first, multi-year inline):
-         - "mainly comprised depreciation and amortisation expenses of CNY12 million, property management costs of CNY2 million ... CNY1 million, CNY2 million, and CNY2 million property management services costs incurred in FY19, FY20, and FY21 respectively"
+         - "mainly comprised depreciation and amortisation expenses of CNY11.7 million, property management costs of CNY2.1 million ... CNY1.5 million, CNY1.8 million, and CNY2.1 million property management services costs incurred in FY19, FY20, and FY21 respectively"
       3. ENFORCE structure by account type:
          - BS items: FIRST sentence states ONLY the latest period-end balance + composition. REWRITE any BS bullet that (i) dumps all reporting periods in the opening, (ii) opens with a movement sentence, or (iii) capitalises "The balance" — change to lowercase "the balance".
          - IS items: FIRST sentence leads with COMPOSITION ("mainly comprised..." / "mainly generated revenue from..."). REWRITE any IS bullet opening with an isolated trend sentence.
@@ -41,13 +41,13 @@ common:
            - Do NOT re-introduce nil/zero sub-streams that the Generator omitted.
          - Multi-component BS accounts (OP, OR, IP, Tax payable): preserve / impose multi-line "mainly entailed:" structure with each sub-component on its own line.
       4. ENFORCE NUMBER FORMAT:
-         - "CNY<X> million" as a whole number, no decimal place, for amounts >= CNY1 million (e.g. "CNY59 million", "CNY2 million").
+         - "CNY<X> million" with 1 decimal place for amounts >= CNY1 million (e.g. "CNY59.3 million", "CNY1.6 million").
          - For amounts from CNY10,000 up to just under CNY1 million: ROUND TO THE NEAREST THOUSAND, comma-separated integer (e.g. "CNY55,000", NOT "CNY54,950") — matches the Chinese report's own 万-unit (nearest-thousand) precision, so an English bullet is never more granular than its Chinese counterpart for the same figure.
          - Amounts under CNY10,000 may stay exact (e.g. "CNY5,930").
-         - NO space between "CNY" and the digit. REWRITE "CNY 8 million" → "CNY8 million".
-         - NO decimal-place million amounts. REWRITE "CNY 7.90 million" → "CNY8 million".
+         - NO space between "CNY" and the digit. REWRITE "CNY 7.90 million" → "CNY7.9 million".
+         - NO 2-decimal-place million amounts. REWRITE "CNY 7.90 million" → "CNY7.9 million".
          - NO "K" suffix. REWRITE "CNY 78.2K" → "CNY78,000".
-      5. ENFORCE dates as 'dd mmmm yyyy' (e.g. 30 September 2022).
+      5. ENFORCE dates by account type: BS items use a single point-in-time date, "as at dd mmmm yyyy" (e.g. "as at 30 September 2022"). IS items reference a PERIOD, not a single date — "FY<YY>" for a full year or "<N>M<YY>" for a partial-year period (e.g. "FY24", "1M26"). Do not force an IS period into a single calendar date, and do not reduce a BS point-in-time balance to a bare year.
       6. ENFORCE listing limits: max 3 sub-points per bullet; only items >= 10% of total. If only one significant value exists, show as total only.
       7. ENFORCE LENGTH CAPS (these are HARD ceilings — usually shorter is correct):
          - Cash, AR, Prepayments, OCI, Reserve, DTA, NCL-due-within-1yr: 1-3 sentences, 25-80 words.
@@ -105,8 +105,8 @@ common:
 
       ENFORCEMENT CHECKLIST:
       1. Numbers match source data (do NOT recalculate).
-      2. CNY format: "CNY59 million" (no space, whole number) for >= CNY1m; for CNY10,000 up to just under CNY1m, ROUND TO NEAREST THOUSAND comma-int (e.g. "CNY55,000", not "CNY54,950" — matches the Chinese report's own 万-unit precision); under CNY10,000 may stay exact. STRIP every "K" suffix and every "CNY <number>" with space; STRIP every decimal-place million ("CNY7.9 million" or "CNY7.90 million").
-      3. Dates in 'dd mmmm yyyy'.
+      2. CNY format: "CNY59.3 million" (no space, 1dp) for >= CNY1m; for CNY10,000 up to just under CNY1m, ROUND TO NEAREST THOUSAND comma-int (e.g. "CNY55,000", not "CNY54,950" — matches the Chinese report's own 万-unit precision); under CNY10,000 may stay exact. STRIP every "K" suffix and every "CNY <number>" with space; STRIP every "X.XX million" with 2dp.
+      3. Dates by account type: BS = single point-in-time "as at dd mmmm yyyy"; IS = period reference "FY<YY>" or "<N>M<YY>", never a single calendar date.
       4. BS opening: lowercase "the balance as at <DATE>...", single period, composition. NO "The balance" capitalisation. NO multi-period dump. NO movement-first opening.
       5. IS opening: composition-first ("mainly comprised...", "mainly generated revenue from..."). Multi-year inline amounts are ONLY for OI and OC — NOT for T&S, G&A, Fin Exp, Income tax, or Non-operating items (current-period figures only for those).
       6. Length caps (HARD ceilings — usually shorter is correct):
@@ -129,7 +129,7 @@ common:
 
       CRITICAL: Output ONLY the corrected financial text. No "Verified:", no "Corrections made:", no meta-commentary.
 
-      CORRECT example: "the balance as at 31 January 2026 represented CNY8 million of cash at bank with no restricted use. We have not obtained the bank statements yet."
+      CORRECT example: "the balance as at 31 January 2026 represented CNY7.9 million of cash at bank with no restricted use. We have not obtained the bank statements yet."
       INCORRECT example: "The balance as at 31 January 2026 totalled CNY 7.90 million, mainly entailing deposits with banks (CNY 4.57 million) and other monetary funds (CNY 3.33 million)..."
 
   Chi:
@@ -149,10 +149,10 @@ common:
          - 利润表科目：首句必须以构成开篇（"主要包括..."、"主要从...产生"），而非孤立的趋势句（"营业收入由X增长至Y"）。对每一重要构成项，应在句中提供所有报告期间的金额（如"分别为人民币A、B、C万元，于FY19、FY20、FY21期间发生"），而非仅最新一期。重写任何以孤立趋势句开篇或仅给出最新一期金额的IS评论。
       4. **数字验证规则** - 数值应该已经格式化:
          - 万元格式: XX万 (整数, 不带小数, 例如: 8万, 124万)
-         - 亿元格式: X亿 (整数, 不带小数, 例如: 1亿, 12亿)
+         - 亿元格式: X.X亿 (1位小数, 例如: 1.2亿, 12.3亿)
          - 只需验证格式化的值与源数据匹配 - 请勿重新计算或重新转换
          - 千万不要再次进行数字转换!
-      5. 验证日期格式为"yyyy年mm月dd日" (例如, 2022年9月30日)。
+      5. 按科目类型验证日期格式：资产负债表科目为单一时点余额，格式为"截至yyyy年mm月dd日"（例如"截至2022年9月30日"）；利润表科目描述的是一段期间，不是单一日期，格式为"yyyy年m至m月"或"于yyyy年度"（例如"2026年1至6月"、"于2025年度"），不得把期间硬套成单一日期。
       6. 验证列表项目: 仅列出>=总额10%的项目，且最多3个重点；低于总额10%的数字一般无需提及，除非对结论必不可少。
       7. 验证备注/原因: 仅在补充备注、右侧备注及用户备注与提供数据一致时才可使用，不得保留无数据支持的推断。
       8. 过滤详细子账户名称: 不要包含如"应付利息_借款利息"等详细账户名称。
@@ -210,7 +210,7 @@ common:
       
       验证清单:
       1. 与原始数据相比, 所有数字是否准确? 是否使用了总计金额?
-      2. 所有金额是否格式正确 (XX万、X亿，整数不带小数)?
+      2. 所有金额是否格式正确 (XX万整数不带小数, X.X亿1位小数)?
       3. 日期是否为"yyyy年mm月dd日"格式?
       4. 是否审阅了所有示意性调整后期间，并且趋势描述有完整期间数据支持?
       5. 是否仅单独列出重要项目 (>= 总额10%)，且最多3个重点，并省略低于总额10%的非关键数字?
@@ -254,7 +254,7 @@ common:
          - IP/OP: 4-7 sentences, 100-200 words; multi-line "mainly entailed:" allowed.
          - OI/OC: 2-3 sentences, 60-100 words. ONE tight paragraph only.
          - Fin Exp/Tax & Surcharges/GA/Selling cost/Income tax: 1-2 sentences, 30-80 words.
-      3. CNY format: "CNY59 million" (no space, whole number); "CNY54,950" comma-int for sub-million. STRIP every "K" suffix, every space after CNY, every decimal-place million.
+      3. CNY format: "CNY59.3 million" (no space, 1dp); "CNY54,950" comma-int for sub-million. STRIP every "K" suffix, every space after CNY, every 2dp million.
       4. STRUCTURE:
          - BS items: lowercase "the balance as at <DATE>..." opening, single period, composition.
          - IS items: composition-first opening with multi-year amounts inline per material component.
@@ -312,7 +312,7 @@ common:
 
       REFINEMENT CHECKLIST:
       1. Cut to length cap (Cash/AR: 25-80 words; OP/IP: 100-200 words; OI/OC: 60-100 words, max 3 sentences; T&S/GA/FinExp/Income tax: 30-80 words, max 2 sentences) — usually means halving previous length.
-      2. CNY format: "CNY59 million" (no space, whole number); "CNY54,950" comma-int for sub-million. STRIP "K" suffix, space after CNY, decimal-place million.
+      2. CNY format: "CNY59.3 million" (no space, 1dp); "CNY54,950" comma-int for sub-million. STRIP "K" suffix, space after CNY, 2dp million.
       3. BS opening: lowercase "the balance as at <DATE>...". IS opening: composition-first. Multi-year inline amounts ONLY for OI and OC — NOT for T&S, G&A, Fin Exp, or Income tax (use current-period figures only for those).
       4. STRIP banned bloat (in this priority):
          a) PoP filler comparing to prior periods.
@@ -330,7 +330,7 @@ common:
 
       CRITICAL: Output ONLY the refined financial text. No "Refined:", no "Changes made:", no meta-commentary.
 
-      CORRECT example: "the balance as at 31 January 2026 represented CNY8 million of cash at bank with no restricted use. We have not obtained the bank statements yet."
+      CORRECT example: "the balance as at 31 January 2026 represented CNY7.9 million of cash at bank with no restricted use. We have not obtained the bank statements yet."
       INCORRECT example: "**Cash**: CNY [Amount].\n- Item 1\n- Item 2" — formatted as bullets/bold.
   
   Chi:
@@ -453,8 +453,8 @@ common:
       KEY CHECKS:
       
       A. Currency & Numbers:
-         - English: Use "CNY XX,XXX" (sub-million) or "CNY XX million" (whole number, no decimal place)
-         - Verify no decimal place on million-scale amounts
+         - English: Use "CNY XX,XXX" (sub-million) or "CNY XX.X million" (1 decimal place)
+         - Verify 1 decimal place precision on million-scale amounts
          - Check all amounts are formatted consistently
       
       B. Language Quality:
@@ -491,9 +491,9 @@ common:
          discrepancy exceeds {materiality_threshold_pct}%.
 
          ROUNDING TOLERANCE (apply BEFORE flagging numbers as hallucinations):
-         - Display rounding is FINE. "CNY8 million" matches a raw value anywhere from 7,500,000 to 8,499,999 (rounded to the nearest whole million).
+         - Display rounding is FINE. "CNY7.9 million" matches a raw value anywhere from 7,850,000 to 7,949,999 (rounded to 1 decimal place at the million scale).
          - Comma-separated integers match the raw integer regardless of separators: "CNY54,950" == 54950.
-         - Million scale matches raw with ±5% tolerance — "CNY2 million" matches 2,000,000 exactly OR any value 1,900,000–2,100,000.
+         - Million scale matches raw with ±5% tolerance — "CNY1.5 million" matches 1,500,000 exactly OR any value 1,425,000–1,575,000.
          - Percentage rounding to 1 decimal place is FINE — 57.74% rounds to 57.7%.
          - Period labels with display normalisation are FINE — "FY24" matches 31 December 2024; "1M26" matches January 2026.
          - Only flag a number as "hallucination" if it cannot be matched to any value in the data within ±5% (for millions) or exactly (for sub-million comma-ints), OR if it is a CALCULATED rate not present in the data (e.g. weighted-average from raw inputs).
@@ -622,8 +622,8 @@ common:
       关键检查:
       
       A. 货币和数字:
-         - 中文: 使用"人民币XX万元"或"人民币X亿元"(整数,不带小数)
-         - 验证万元/亿元金额不带小数
+         - 中文: 使用"人民币XX万元"(整数)或"人民币X.X亿元"(1位小数)
+         - 验证万元金额不带小数、亿元金额为1位小数
          - 检查所有金额格式一致
       
       B. 语言质量:
@@ -652,7 +652,7 @@ common:
          数字四舍五入容差（在标记数字为幻觉前请先应用）：
          - 显示四舍五入是允许的。"人民币8万元"可匹配原始值7.5万至8.49万（按整数万元显示口径）。
          - 千分位分隔符不影响匹配："人民币54,950"=54950。
-         - 万元/亿元口径允许±5%容差："人民币2亿元"匹配1.9亿–2.1亿。
+         - 万元口径允许±5%容差；亿元按1位小数显示口径匹配："人民币1.5亿元"匹配1.425亿–1.575亿。
          - 百分比四舍五入到1位小数允许，57.74%四舍五入为57.7%。
          - 期间标签经显示规范后允许匹配："FY24"对应2024年12月31日；"1M26"对应2026年1月。
          - 仅当数字无法在数据中匹配（万元±5%、千元精确）或为数据中未出现的计算值（如基于原始输入计算出的加权平均利率）时，才标记为"hallucination"。

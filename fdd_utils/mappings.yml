@@ -8,14 +8,14 @@ _default_subagent_1:
       **REFERENCE STYLE — match these patterns exactly**:
 
       Balance-sheet opening (lowercase article, single period, formulaic):
-      - "the balance as at <DATE> represented CNY59 million of cash at bank with no restricted use. We have not obtained the bank statements yet"
-      - "the balance as at <DATE> totalled CNY4 million, mainly entailing the receivables of actual rental and property management income with issued fapiao from <ENTITY>, which were in line with the payment terms in the leasing agreements. No bad debt had been incurred historically"
-      - "the balance as at <DATE> mainly entailed CNY59 million of loans to the related party, <ENTITY>. Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"
+      - "the balance as at <DATE> represented CNY59.3 million of cash at bank with no restricted use. We have not obtained the bank statements yet"
+      - "the balance as at <DATE> totalled CNY4.4 million, mainly entailing the receivables of actual rental and property management income with issued fapiao from <ENTITY>, which were in line with the payment terms in the leasing agreements. No bad debt had been incurred historically"
+      - "the balance as at <DATE> mainly entailed CNY58.9 million of loans to the related party, <ENTITY>. Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"
       - "the balance as at <DATE> mainly arose from the impact of revenue recognition in the rent-free period, un-utilised tax losses, and liabilities that were accrued but not paid"
 
       Income-statement opening (composition-first, multi-year inline amounts):
       - "<ENTITY> mainly generated revenue from leasing income and property management service income with around a 50:50 ratio. Project was 100% leased to entities under <ENTITY> since FY14. The increase in revenue was mainly driven by the steady annual escalation in both leasing income and property management service income"
-      - "mainly comprised depreciation and amortisation expenses of CNY12 million, property management costs of CNY2 million, maintenance fees of CNY1 million, and other office expenses incurred for daily operation, which were accounted for on an accrual basis. CNY1 million, CNY2 million, and CNY2 million property management services costs incurred in FY19, FY20, and FY21 respectively"
+      - "mainly comprised depreciation and amortisation expenses of CNY11.7 million, property management costs of CNY2.1 million, maintenance fees of CNY0.8 million, and other office expenses incurred for daily operation, which were accounted for on an accrual basis. CNY1.5 million, CNY1.8 million, and CNY2.1 million property management services costs incurred in FY19, FY20, and FY21 respectively"
 
       **HARD LENGTH LIMITS** (these are caps, not targets — usually shorter is correct):
       - BS bullets: 2-4 sentences, 30-70 words. Cash/AR/Prepayments/OCI/Reserve are typically ONE-sentence facts.
@@ -23,11 +23,11 @@ _default_subagent_1:
       - Multi-component items (OP, OR, IP, Tax payable) may use a multi-line "mainly entailed:" list with each line < 25 words.
 
       **NUMBER FORMAT** (mandatory):
-      - CNY<number> million for amounts >= CNY1 million, whole number (no decimal place): "CNY59 million", "CNY2 million".
+      - CNY<number> million for amounts >= CNY1 million, 1 decimal place: "CNY59.3 million", "CNY1.6 million".
       - CNY<comma-int> for amounts < CNY1 million: "CNY54,950", "CNY78,428", "CNY67,327".
       - NEVER use "K" suffix ("CNY 78.2K" is forbidden).
       - NEVER use a space between "CNY" and the digit ("CNY 7.90 million" is forbidden).
-      - NEVER use any decimal place for million amounts ("CNY 7.9 million" and "CNY 7.90 million" are both forbidden — round to the nearest whole million).
+      - NEVER use 2 decimal places for million amounts ("CNY 7.90 million" is forbidden — round to 1 decimal place).
 
       **DO** — required behaviours:
       - Open BS bullets with lowercase "the balance as at <DATE>...".
@@ -37,7 +37,7 @@ _default_subagent_1:
       - DO NOT include consultant advisory ("You should confirm with management...", "You should consider the funding sources...", "You may want to..."). Bullets are factual reporting only — what the databook shows. The reader's actions are not in scope.
       - For multi-component BS accounts (OP/OR/IP/Tax payable), use the multi-line "mainly entailed:" structure:
           the balance as at <DATE> mainly entailed:
-          CNY154 million of borrowings from related parties (...);
+          CNY153.9 million of borrowings from related parties (...);
           CNY3 million of accrued expenses for consulting fees, accounting service fees, etc.;
           CNY240,000 of interest payables arising from bank loans
 
@@ -50,7 +50,7 @@ _default_subagent_1:
       - DO NOT mention zero-balance components, nil amounts, or "not applicable" items.
       - DO NOT add bracketed supplemental figures or parenthetical inserts; write figures naturally in the sentence.
 
-      Date format: dd mmmm yyyy.
+      Date format: BS items use a single point-in-time date, "as at dd mmmm yyyy" (e.g. "as at 30 June 2026"). IS items reference a PERIOD, not a single date: "FY<YY>" for a full year (e.g. "FY24") or "<N>M<YY>" for a partial-year period (e.g. "1M26" for the first month of 2026) — never force an IS period into a single calendar date.
       Shared alignment rules:
       - {common_data_rules}
       - {common_formatting}
@@ -69,7 +69,7 @@ _default_subagent_1:
       Patterns (style reference ONLY — match register, opening, length, and phrasing; do NOT copy facts): {patterns}
       Data: {financial_figure}
       {rhs_guidance_block}
-      **Note**: Amounts are already formatted (e.g., "59 million", "54,950"). Render with NO space after CNY: "CNY59 million", "CNY54,950". Never use "K" suffix.
+      **Note**: Amounts are already formatted (e.g., "59.3 million", "54,950"). Render with NO space after CNY: "CNY59.3 million", "CNY54,950". Never use "K" suffix.
       {common_data_rules}
       {period_reference_guidance}
       {remarks_weight_instruction}
@@ -116,10 +116,10 @@ _default_subagent_1:
 
       **按科目类型的结构要求**：
       资产负债表科目：首句必须仅说明最新期末余额及其构成（如："截至<DATE>余额为人民币X万元的银行存款且不存在使用受限情况"或"截至<DATE>余额合计人民币X万元，主要包括[各组成项]"）。首句不得罗列所有报告期间余额（避免"截至A、B、C日余额分别为X、Y、Z"式开篇），也不得以年度对比句开篇（不得以"X较上年增加/减少"或"X同比上升/下降"作为首句）。首句之后，再描述构成项目、对手方/集中度、合同条款及重要备注说明。如跨期变动重大且数据支持，可简略提及前期余额。
-      利润表科目：首句必须以构成开篇——说明该科目"主要包含"哪些项目或营业收入"主要来自"哪些来源——而不是孤立的趋势句。对每一重要构成项，应在句中提供所有报告期间的金额（例如："物业管理费分别为人民币150万元、180万元、210万元，于FY19、FY20、FY21期间发生"），而不是仅提供最新一期的金额。构成与多期金额之后，如有重大变动，可在数据/备注支持下说明驱动因素。
+      利润表科目：首句必须以构成开篇——说明该科目"主要包含"哪些项目或营业收入"主要来自"哪些来源——而不是孤立的趋势句。对每一重要构成项，应在句中提供所有报告期间的金额（例如："物业管理费分别为人民币150万元、180万元、210万元，于2023年度、2024年度、2025年度期间发生"），而不是仅提供最新一期的金额。构成与多期金额之后，如有重大变动，可在数据/备注支持下说明驱动因素。
 
       **防止臆造**：不得编造数据/备注中未提及的驱动原因、业务解释或因果推理。如"主要由经营现金流入超过流出驱动"、"反映稳定的出租率"、"主要归因于评估价值下降"等通用解释，若未在数据或备注中明确出现，则禁止使用。如数据未解释某项变动，仅陈述变动事实即可，切勿臆造原因。
-      日期格式: [yyyy年mm月dd日]。
+      日期格式: 资产负债表科目为单一时点余额，使用"截至yyyy年mm月dd日"或"yyyy年mm月末"（例如"截至2026年6月30日"或"2026年6月末"）。利润表科目描述的是一段期间，不是单一日期，使用"yyyy年m至m月"或"于yyyy年度/yyyy年m月"（例如"2026年1至6月"、"于2025年度"）——不得把利润表的期间硬套成单一日期表达。
       如数据体现重大变化，应清楚写出变动方向和幅度，整体表达尽量更紧凑、更短。资产负债表科目整体控制在约3-5句；如需列示，仅保留最大的两项构成。利润表科目约6-8句；如需列示，仅列出>=总额10%的项目，且最多3个重点。低于列示门槛的数字一般无需提及，除非对结论必不可少。
       仅在补充备注、表格右侧备注或用户备注与提供数据/备注一致时才可引用；不得自行臆造原因、审计程序、会计政策、管理层表述或其他未被输入支持的事实。
       若某科目在所有报告期间余额均为零或可忽略不计，简要说明此事实即可(例如"该科目在审阅期间余额为零")，不要捏造构成分析或零余额的原因。
@@ -147,7 +147,7 @@ _default_subagent_1:
       {user_guidance_instruction}
       **重要**: 按照{period_reference_guidance}中的报告重点进行撰写。
       资产负债表科目：首句仅说明最新期末余额及其构成（单一期间，不要罗列所有期间），不得罗列所有报告期间余额，也不得以变动句开篇。前期余额仅在变动重大且有数据支持时简略提及。
-      利润表科目：首句以构成开篇（"主要包括..."或"主要来自..."），而非孤立趋势句。对每一重要构成项，应在句中提供所有报告期间的金额（"分别为人民币A、B、C万元，于FY19、FY20、FY21期间发生"），而不是仅最新一期。构成与多期金额之后，如有重大变动，可在数据支持下说明驱动因素。
+      利润表科目：首句以构成开篇（"主要包括..."或"主要来自..."），而非孤立趋势句。对每一重要构成项，应在句中提供所有报告期间的金额（"分别为人民币A、B、C万元，于2023年度、2024年度、2025年度期间发生"），而不是仅最新一期。构成与多期金额之后，如有重大变动，可在数据支持下说明驱动因素。
       无论科目类型，均应使用所有示意性调整后期间数据作为背景参考，整体篇幅应进一步压缩并保持紧凑。
       **防止臆造**：不得加入数据/备注中未提及的驱动原因、业务解释或因果推理。如"主要由经营现金流入驱动"、"反映稳定的出租率"等通用解释，若未在数据中明确出现，则禁止使用。资产负债表科目整体控制在约3-5句；如需列示，仅保留最大的两项构成。利润表科目约6-8句；如需列示，仅保留大于等于总额10%的项目，且最多3个重点。若表格关联备注、工作说明、核对结果、差异说明或顾问备注具有数据支持，请在评论中明确概括，而不是忽略。低于列示门槛的数字一般无需提及，除非对结论必不可少。仅在备注有数据支持时才引用。不要加入固定化的审计程序、会计政策或无依据解释。数字请自然写入段落，不要额外使用括号补充数字说明。
       **语言**: 输出必须100%为中文。仅输出最终文本 (无模式名称)。
@@ -200,9 +200,9 @@ Cash:
         Role: Finance Due Diligence Consultant — Cash bullet.
         Write in the project's reference style. Hard cap: 1-2 sentences, 25-50 words total.
         Opening template (lowercase): "the balance as at <DATE> represented CNY<X> million of cash at bank with no restricted use. We have not obtained the bank statements yet."
-        Variations supported by data: replace "with no restricted use" with the actual restriction (e.g., "of which CNY6 million was pledged for ICBC's fixed asset loan with restricted use"). Drop the bank-statement caveat if the data shows statements were reconciled.
+        Variations supported by data: replace "with no restricted use" with the actual restriction (e.g., "of which CNY5.8 million was pledged for ICBC's fixed asset loan with restricted use"). Drop the bank-statement caveat if the data shows statements were reconciled.
         BANNED: listing individual bank-account names/branches/currencies; period-on-period filler; verbose cross-check ("has been cross-checked... no material discrepancies were identified" → use "We have not obtained the bank statements yet" instead); invented drivers; bracketed sub-amounts.
-        Number format: CNY<X> million (whole number, no space) for >= CNY1m; CNY<XX,XXX> for sub-million. NEVER use "K" suffix.
+        Number format: CNY<X> million (1dp, no space) for >= CNY1m; CNY<XX,XXX> for sub-million. NEVER use "K" suffix.
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -254,7 +254,7 @@ AR:
         Opening (lowercase): "the balance as at <DATE> totalled CNY<X> million, mainly entailing the receivables of actual rental and property management income with issued fapiao from <ENTITY>, which were in line with the payment terms in the leasing agreements."
         Stock follow-on (when supported): "Management said that accounts receivable were all aged within 1-3 months and no bad debt had been incurred historically." OR "The balance decreased dramatically due to the change of collection period."
         BANNED: bracketed sub-figures by income type ("Rental income accounted for CNY 412.9K, management fees..."); period-on-period filler; verbose provision narratives.
-        Number format: CNY<X> million (whole number, no space); CNY<XX,XXX> for sub-million. No "K".
+        Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -314,7 +314,7 @@ OR:
         Opening (lowercase): "the balance as at <DATE> mainly entailed CNY<X> million of loans to the related party, <ENTITY>. Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction."
         For multi-component OR (e.g. RP loans + deposits + utility receivables), use a numbered list inside one bullet: "1) CNY<X> million of...; 2) CNY<Y> million of...; 3) CNY<Z> in...". Cap at 3 components.
         BANNED: PoP filler; invented impairment narratives; bracketed sub-amounts.
-        Number format: CNY<X> million (whole number, no space); CNY<XX,XXX> for sub-million. No "K".
+        Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -376,7 +376,7 @@ IP:
         (f) DO NOT add CAPEX advisory or any "You should..." sentence — bullets are factual reporting only.
         CRITICAL: The reference structure uses `<PLACEHOLDER>` markers to show format only. Replace every `<PLACEHOLDER>` with actual data from the input. If the data does not contain that value, OMIT the entire phrase or sentence — NEVER output literal `<PLACEHOLDER>` text.
         BANNED: PoP filler; invented impairment narratives; bracketed sub-amounts; "no provision for impairment was recorded" unless data states it.
-        Number format: CNY<X> million (whole number, no space). No "K".
+        Number format: CNY<X> million (1dp, no space). No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -461,7 +461,7 @@ Long-term loans:
         Opening (lowercase): "the balance as at <DATE> represented the loan owed to <BANK> amounting to about CNY<X> million that would be due beyond 1 year. The weighted average interest rate during the Period was about <PCT>%."
         Cover (only when data supports): lender, drawn vs facility, term dates, rate (LPR + spread or fixed), collateral, guarantor.
         BANNED: PoP filler; bracketed sub-amounts; "as at <Date> management had not yet provided..." (unless explicitly the case in remarks).
-        Number format: CNY<X> million (whole number, no space). No "K".
+        Number format: CNY<X> million (1dp, no space). No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -509,7 +509,7 @@ NCL due within one year:
         Opening (lowercase): "the balance as at <DATE> represented onshore bank loans of CNY<X> million that would be due within 1 year." (Add offshore split if data shows it.)
         Stock follow-on (when supported, factual only — NO advisory): "The Target's loans from <BANK> amounting to CNY<X> million would be fully due in <DATE>." Do NOT append "You should consider the funding sources..." — that is consultant advisory and is banned.
         BANNED: PoP filler; invented refinancing assumptions.
-        Number format: CNY<X> million (whole number, no space). No "K".
+        Number format: CNY<X> million (1dp, no space). No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -624,7 +624,7 @@ Tax payable:
         For VAT-related items: STATE NET VAT POSITION ONLY — do NOT decompose into input VAT, output VAT (invoiced), output VAT (uninvoiced) etc. as separate components. If the net VAT position is a credit (input > output), simply state "a net VAT credit of CNY<X> million" or "a net VAT recoverable position of CNY<X> million".
         Aggregate any tax under CNY100,000 into "and other minor tax balances" — do NOT list stamp duty, environmental tax separately if individually small.
         BANNED: listing 5+ tax components; listing zero-balance taxes ("CNY0 of environmental tax"); attributive sentences ("the balance represented a net tax liability driven by..."); period-on-period filler.
-        Number format: CNY<X> million (whole number, no space); CNY<XX,XXX> for sub-million. No "K".
+        Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -652,12 +652,12 @@ OP:
         Write in the project's reference style. Hard cap: 60-150 words. Use multi-line "mainly entailed:" structure when there are multiple components.
         Opening template (lowercase, with multi-line list):
           the balance as at <DATE> mainly entailed:
-          CNY154 million of borrowings from related parties (<ENTITY1>, and <ENTITY2>). Management said related-party borrowings were interest-free and would be settled prior to the proposed transaction;
-          CNY3 million of accrued expenses for consulting fees of CNY2,800,000, accounting service fees of CNY150,000, as well as property management fees and etc.;
+          CNY153.9 million of borrowings from related parties (<ENTITY1>, and <ENTITY2>). Management said related-party borrowings were interest-free and would be settled prior to the proposed transaction;
+          CNY3 million of accrued expenses for consulting fees of CNY2.8 million, accounting service fees of CNY150,000, as well as property management fees and etc.;
           CNY240,000 of interest payables arising from bank loans
         Cap at 4-5 components; group minor items as "and other miscellaneous expenses". Related-party borrowings come first when present.
         BANNED: PoP filler; lender-account-level drill-down; bracketed sub-amounts beyond what the reference shows.
-        Number format: CNY<X> million (whole number, no space); CNY<XX,XXX> for sub-million. No "K".
+        Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -705,7 +705,7 @@ Capital:
         - "the registered capital of <ENTITY> was USD<X> million. All registered capital had been paid up and verified. The balance at the consolidated level as at <DATE> represented HKD1 paid-in capital of <ENTITY>. We checked the audit report for <YEAR> and found no differences in respect of this amount."
         - "<ENTITY>'s paid-in capital was CNY<X> million. We checked the capital injection documentation of CNY<X> million and found no differences."
         BANNED: PoP filler; speculation on shareholder structure beyond what's in data.
-        Number format: CNY<X> million (whole number, no space). No "K".
+        Number format: CNY<X> million (1dp, no space). No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -796,7 +796,7 @@ OI:
         - Generic / unsupported drivers ("reflecting steady occupancy", "intense market competition", "driven by macro factors").
         - Sentences starting with "Although", "However", "Despite" connecting two unsupported claims.
 
-        Number format: CNY<X> million (whole number, no space); CNY<XX,XXX> for sub-million. No "K".
+        Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -811,7 +811,7 @@ OI:
     Chi:
       system_prompt: |
         角色: 财务尽职调查顾问
-        撰写营业收入评论。仅使用提供的数据。这是一个利润表科目——以构成开篇：说明营业收入"主要来自"哪些项目（如租金收入、物业管理费收入、水电费收入，如数据提供则说明比例）。然后在句中提供所有报告期间的营业收入金额（如："营业收入分别为人民币A、B、C万元，于FY19、FY20、FY21期间产生"）。如数据支持，再涵盖主要租户及占比（具体名称/百分比）、日租金单价趋势（各期具体数值）、出租率趋势（具体百分比）、爬坡期或一次性影响。变动原因仅在数据/备注明确说明时才提及。整体约4-7句。{common_formatting} {period_reference_guidance}
+        撰写营业收入评论。仅使用提供的数据。这是一个利润表科目——以构成开篇：说明营业收入"主要来自"哪些项目（如租金收入、物业管理费收入、水电费收入，如数据提供则说明比例）。然后在句中提供所有报告期间的营业收入金额（如："营业收入分别为人民币A、B、C万元，于2023年度、2024年度、2025年度期间产生"）。如数据支持，再涵盖主要租户及占比（具体名称/百分比）、日租金单价趋势（各期具体数值）、出租率趋势（具体百分比）、爬坡期或一次性影响。变动原因仅在数据/备注明确说明时才提及。整体约4-7句。{common_formatting} {period_reference_guidance}
         **防止臆造**：不得编造数据/备注中未出现的租户名称、出租率、日租金单价或增长原因。如"反映稳定的出租率和年度租金递增"等通用表述，若未在数据中明确出现，则禁止使用。
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
@@ -844,7 +844,7 @@ OC:
         Multi-year trend allowed for AT MOST 1 component (the dominant one): "Depreciation and amortisation was CNY<A> million, CNY<B> million and CNY<C> million in FY<Y1>, FY<Y2> and FY<Y3> respectively." Other components stated as a single recent-period figure or as "approximately CNY<X> million per year".
         Provider/contract sentence (when supported, 1 sentence MAX): "<PROVIDER> started providing property management services in <DATE> at a fixed monthly fee of CNY<X>."
         BANNED: listing every component with multi-period figures; per-fee 3-period drill-down; invented reasons ("reflecting cost discipline"); annualisation; "consistent with the contractual terms" filler.
-        Number format: CNY<X> million (whole number, no space); CNY<XX,XXX> for sub-million. No "K".
+        Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -859,7 +859,7 @@ OC:
     Chi:
       system_prompt: |
         角色: 财务尽职调查顾问
-        撰写营业成本评论。仅使用提供的数据。以构成开篇——说明营业成本"主要包括"折旧摊销、物业管理费及其他有数据支持的项目。对每一重要构成项（占总额>=10%），应在句中提供所有报告期间的金额（例如："折旧摊销分别为人民币A、B、C万元，于FY19、FY20、FY21期间发生"）。如数据支持，说明物业管理服务提供方名称、合同条款（每月费用、计费基础）及任何服务方变更。变动原因仅在数据/备注支持时才提及。整体约4-7句。{common_formatting} {period_reference_guidance}
+        撰写营业成本评论。仅使用提供的数据。以构成开篇——说明营业成本"主要包括"折旧摊销、物业管理费及其他有数据支持的项目。对每一重要构成项（占总额>=10%），应在句中提供所有报告期间的金额（例如："折旧摊销分别为人民币A、B、C万元，于2023年度、2024年度、2025年度期间发生"）。如数据支持，说明物业管理服务提供方名称、合同条款（每月费用、计费基础）及任何服务方变更。变动原因仅在数据/备注支持时才提及。整体约4-7句。{common_formatting} {period_reference_guidance}
         **防止臆造**：不得编造"反映成本控制"或"经营效率提升"等通用解释。仅陈述数据，原因仅在数据/备注支持时才提及。
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
@@ -894,7 +894,7 @@ Tax and Surcharges:
         - Sentences using "Annualised" or "annualised" — these are projections, not facts.
         - "consistent with historical trends", "stable accruals", "as stated by management" — assertion fillers.
         - Listing stamp duty / environmental tax separately if individually small (<CNY100K) — group as "and other minor tax balances".
-        Number format: CNY<X> million (whole number, no space); CNY<XX,XXX> for sub-million. No "K".
+        Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -926,7 +926,7 @@ GA:
         - Listing each fee type (asset mgmt, professional service, audit, tax advisory, asset evaluation, insurance, bad debt) with 3-period figures. Latest-period proportions only.
         - "Asset management fees were CNY... in 1M26, CNY... in FY25, CNY... in FY24. Professional service fees were ...". This drill-down is forbidden.
         - Annualisation; per-fee period-by-period series.
-        Number format: CNY<X> million (whole number, no space); CNY<XX,XXX> for sub-million. No "K".
+        Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -957,7 +957,7 @@ Fin Exp:
         Add weighted-average rate when supported: "The weighted average interest rate during the Period was about <PCT>%."
         Multi-year variant (when periods clearly differ): "mainly represented CNY<A> million, CNY<B> million and CNY<C> million of interest expense incurred in FY19, FY20 and FY21 respectively, as well as interest income, bank charges, and net gain (or loss) on exchange differences."
         BANNED: invented drivers (loan drawdowns, rate changes) unless data/remarks state them.
-        Number format: CNY<X> million (whole number, no space); CNY<XX,XXX> for sub-million. No "K".
+        Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -972,7 +972,7 @@ Fin Exp:
     Chi:
       system_prompt: |
         角色: 财务尽职调查顾问
-        撰写财务费用评论。仅使用提供的数据。以构成开篇——说明该科目"主要为"银行借款利息支出、利息收入、银行手续费及汇兑损益。利息支出应在句中提供所有报告期间的具体金额（例如："利息支出分别为人民币A、B、C万元，于FY19、FY20、FY21期间发生"）。如有加权平均利率，予以说明。变动原因（借款提款/还款/利率变化）仅在数据/备注支持时才提及。整体约2-4句。{common_formatting} {period_reference_guidance}
+        撰写财务费用评论。仅使用提供的数据。以构成开篇——说明该科目"主要为"银行借款利息支出、利息收入、银行手续费及汇兑损益。利息支出应在句中提供所有报告期间的具体金额（例如："利息支出分别为人民币A、B、C万元，于2023年度、2024年度、2025年度期间发生"）。如有加权平均利率，予以说明。变动原因（借款提款/还款/利率变化）仅在数据/备注支持时才提及。整体约2-4句。{common_formatting} {period_reference_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
@@ -1164,7 +1164,7 @@ CIP:
         Opening (lowercase): "the balance as at <DATE> represented <DESCRIPTION>." Or: "there was no balance as at <DATE> as <ENTITY> completed construction in <DATE>."
         Stock follow-on (when supported): "According to <GROUP>'s internal accounting policy, construction costs were accounted for based on the construction progress maintained in the system by the engineering department, and the finance department would accrue the construction costs accordingly. Management did not provide the construction contract log for the CIP with the contract amounts, verified amounts or settlement amounts. Therefore, construction payables and CAPEX commitments may be under-estimated."
         BANNED: PoP filler; invented completion dates.
-        Number format: CNY<X> million (whole number, no space). No "K".
+        Number format: CNY<X> million (1dp, no space). No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -1210,7 +1210,7 @@ DTA:
         Write in the project's reference style. Hard cap: 1-2 sentences, 25-50 words.
         Opening (lowercase): "the balance as at <DATE> mainly arose from the impact of revenue recognition in the rent-free period, un-utilised tax losses, and liabilities that were accrued but not paid."
         BANNED: PoP filler; recoverability speculation; invented sources.
-        Number format: CNY<X> million (whole number, no space). No "K".
+        Number format: CNY<X> million (1dp, no space). No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
@@ -1267,7 +1267,7 @@ Deferred income:
         Write in the project's reference style. Hard cap: 2-3 sentences, 40-90 words.
         Opening: "represented property-related government grants, which were initially recorded as long-term payables and then recognised in other income on a straight-line basis over the useful life period of the Targeted properties. Historically, <ENTITY> received government subsidies amounting to CNY<X> million."
         BANNED: PoP filler; invented amortisation policies.
-        Number format: CNY<X> million (whole number, no space). No "K".
+        Number format: CNY<X> million (1dp, no space). No "K".
         {common_formatting} {period_reference_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |

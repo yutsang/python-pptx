@@ -2507,11 +2507,18 @@ class PowerPointGenerator:
 
                 paras = [p for p in commentary.split('\n') if p.strip()] if commentary else []
                 key_prefix = f"\u25a0 {mapping_key} - "
-                # Hanging indent: wrapped lines render 0.15" narrower than
-                # the box (see _BULLET_HANGING_INDENT_PT).
+                # Hanging indent: wrapped CONTINUATION lines render 0.15"
+                # narrower than the box (see _BULLET_HANGING_INDENT_PT), but
+                # line 1 of the account's own first paragraph (p_key) spans
+                # the FULL box width -- first_line_indent=-0.15" cancels
+                # left_indent=0.15" for that one line only. Only paras[0]
+                # (rendered as p_key) gets this exception; paras[1:] render
+                # as p_text with first_line_indent=0, i.e. narrow throughout.
                 wrap_w = max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT)
                 if paras:
-                    first_wrapped = measurer.wrap(key_prefix + paras[0], wrap_w)
+                    first_wrapped = measurer.wrap(
+                        key_prefix + paras[0], wrap_w, first_line_width_pt=box.width_pt,
+                    )
                     total_pt += len(first_wrapped) * line_h + para_gap
                     for para in paras[1:]:
                         wrapped = measurer.wrap(para, wrap_w)
@@ -3408,6 +3415,7 @@ class PowerPointGenerator:
                     wrapped = measurer.wrap(
                         key_prefix + cand_head,
                         max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT),
+                        first_line_width_pt=box.width_pt,
                     )
                     cand_pt = len(wrapped) * line_h + para_gap
                     if cand_pt <= budget_pt and cand_pt >= min_fill_pt:
@@ -3434,9 +3442,10 @@ class PowerPointGenerator:
                         cand_head = para[:trimmed].strip()
                         if cand_head:
                             wrapped = measurer.wrap(
-                        key_prefix + cand_head,
-                        max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT),
-                    )
+                                key_prefix + cand_head,
+                                max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT),
+                                first_line_width_pt=box.width_pt,
+                            )
                             cand_pt = len(wrapped) * line_h + para_gap
                             if cand_pt <= budget_pt:
                                 best_split = trimmed

@@ -173,17 +173,27 @@ def _apply_kinsoku(lines: List[str]) -> List[str]:
 
 
 def wrap_text_with_metrics(text: str, metrics: "MetricsTable", *, size_pt: float,
-                           max_width_pt: float) -> List[str]:
+                           max_width_pt: float,
+                           first_line_width_pt: Optional[float] = None) -> List[str]:
     """Greedy word-wrap using a MetricsTable's advance widths (no font file).
 
     Latin text wraps on spaces; CJK (no spaces) wraps per character. Mixed text is
     handled by treating a CJK char as its own breakable unit.
+
+    first_line_width_pt, if given, is the width budget for ONLY the first
+    wrapped line; every subsequent line uses max_width_pt. Mirrors a
+    PowerPoint hanging-indent paragraph (first_line_indent negative,
+    left_indent positive): line 1 spans the box's full width, wrapped
+    continuation lines sit narrower at the indent.
     """
     if max_width_pt <= 0 or not str(text or "").strip():
         return [text] if text else []
     lines: List[str] = []
     cur = ""
     cur_w = 0.0
+
+    def _limit() -> float:
+        return first_line_width_pt if (first_line_width_pt is not None and not lines) else max_width_pt
 
     def _flush():
         nonlocal cur, cur_w
@@ -194,14 +204,15 @@ def wrap_text_with_metrics(text: str, metrics: "MetricsTable", *, size_pt: float
     import re as _re
     tokens = _re.findall(r"[^\s　-鿿＀-￯]+|[　-鿿＀-￯]|\s+", text)
     for tok in tokens:
+        limit = _limit()
         if tok.isspace():
             w = metrics.text_width_pt(tok, size_pt)
-            if cur and cur_w + w <= max_width_pt:
+            if cur and cur_w + w <= limit:
                 cur += tok
                 cur_w += w
             continue
         w = metrics.text_width_pt(tok, size_pt)
-        if cur and cur_w + w > max_width_pt:
+        if cur and cur_w + w > limit:
             _flush()
             tok_stripped = tok
             cur, cur_w = tok_stripped, metrics.text_width_pt(tok_stripped, size_pt)
@@ -485,8 +496,17 @@ def wrap_paragraph(
     text: str,
     font: ImageFont.FreeTypeFont,
     max_width_pt: float,
+    *,
+    first_line_width_pt: Optional[float] = None,
 ) -> List[str]:
-    """Greedy word wrap of a single paragraph using real glyph widths."""
+    """Greedy word wrap of a single paragraph using real glyph widths.
+
+    first_line_width_pt, if given, is the width budget for ONLY the first
+    wrapped line; every subsequent line uses max_width_pt. Mirrors a
+    PowerPoint hanging-indent paragraph (first_line_indent negative,
+    left_indent positive): line 1 spans the box's full width, wrapped
+    continuation lines sit narrower at the indent.
+    """
     if not text or not text.strip():
         return [""]
     if max_width_pt <= 0:
@@ -499,21 +519,27 @@ def wrap_paragraph(
     lines: List[str] = []
     current = ""
 
+    def _limit() -> float:
+        return first_line_width_pt if (first_line_width_pt is not None and not lines) else max_width_pt
+
     for sep, word in atoms:
+        limit = _limit()
         candidate = word if not current else current + sep + word
-        if _measure(font, candidate) <= max_width_pt:
+        if _measure(font, candidate) <= limit:
             current = candidate
             continue
 
         # Doesn't fit. Flush the current line, then try the word alone.
         if current:
             lines.append(current)
+            current = ""
+        limit = _limit()
 
-        if _measure(font, word) > max_width_pt:
+        if _measure(font, word) > limit:
             # Word itself is wider than the line — break per character.
             sub = ""
             for ch in word:
-                if _measure(font, sub + ch) <= max_width_pt:
+                if _measure(font, sub + ch) <= _limit():
                     sub += ch
                 else:
                     if sub:
@@ -533,15 +559,27 @@ def wrap_text(
     text: str,
     font: ImageFont.FreeTypeFont,
     max_width_pt: float,
+    *,
+    first_line_width_pt: Optional[float] = None,
 ) -> List[str]:
     """Wrap multi-paragraph text. Empty source paragraphs are preserved as
-    blank lines so the vertical capacity check counts them."""
+    blank lines so the vertical capacity check counts them.
+
+    first_line_width_pt applies only to the first wrapped line of the
+    FIRST non-blank paragraph (matches the render: only that paragraph is
+    a hanging-indent p_key; every later paragraph is fully indented with
+    no first-line exception -- see _fill_text_main_bullets_with_category_
+    and_key's p_text.first_line_indent = Inches(0)).
+    """
     out: List[str] = []
+    first = True
     for para in str(text or "").split("\n"):
         if para.strip() == "":
             out.append("")
         else:
-            out.extend(wrap_paragraph(para, font, max_width_pt))
+            flw = first_line_width_pt if first else None
+            out.extend(wrap_paragraph(para, font, max_width_pt, first_line_width_pt=flw))
+            first = False
     return out
 
 
@@ -611,15 +649,21 @@ class Measurer:
         return (POWERPOINT_LINE_PITCH_FACTOR * self.size_pt * self.line_spacing
                 + extra_leading_pt)
 
-    def wrap(self, text: str, max_width_pt: float) -> List[str]:
+    def wrap(self, text: str, max_width_pt: float, *, first_line_width_pt: Optional[float] = None) -> List[str]:
         if self._metrics is None:
-            return wrap_text(text, self._font, max_width_pt)
+            return wrap_text(text, self._font, max_width_pt, first_line_width_pt=first_line_width_pt)
         out: List[str] = []
+        first = True
         for para in str(text or "").split("\n"):
             if para.strip() == "":
                 out.append("")
             else:
-                out.extend(wrap_text_with_metrics(para, self._metrics, size_pt=self.size_pt, max_width_pt=max_width_pt))
+                flw = first_line_width_pt if first else None
+                out.extend(wrap_text_with_metrics(
+                    para, self._metrics, size_pt=self.size_pt, max_width_pt=max_width_pt,
+                    first_line_width_pt=flw,
+                ))
+                first = False
         return out
 
 

@@ -201,11 +201,15 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
             # live packer actually computes.
             capacity = (box.height_pt / std_lh) if std_lh > 0 else 0.0
 
-            # Bullet paragraphs render with a 0.15" hanging indent
-            # (left_indent 0.15 / first_line_indent -0.15): wrapped lines
-            # are 10.8pt narrower than the box. Mirror fdd_utils/pptx.py's
-            # _BULLET_HANGING_INDENT_PT so this independent re-check uses
-            # the same effective width as the packer AND the real render.
+            # Bullet paragraphs (the "■ key - ..." line, rendered as p_key)
+            # hang-indent: left_indent=0.15" / first_line_indent=-0.15", so
+            # LINE 1 spans the box's FULL width and only WRAPPED continuation
+            # lines (2+) are 10.8pt narrower. Continuation paragraphs (a
+            # second '\n'-split commentary line, rendered as p_text with
+            # first_line_indent=0) are narrow on EVERY line, no exception.
+            # Mirror fdd_utils/pptx.py's _BULLET_HANGING_INDENT_PT /
+            # first_line_width_pt so this independent re-check uses the same
+            # effective width as the packer AND the real render.
             hang_w = max(10.0, box.width_pt - 10.8)
 
             # Literal wrapped-line count, for display only (chars=/wraps_to=).
@@ -222,8 +226,10 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
             # paragraphs before this was unit-matched.
             paras = [p for p in text.split("\n") if p.strip()] if text.strip() else []
             content_pt = sum(
-                len(measurer.wrap(p, hang_w if p.lstrip().startswith("■") else box.width_pt))
-                * line_h + para_gap
+                len(measurer.wrap(
+                    p, hang_w,
+                    first_line_width_pt=box.width_pt if p.lstrip().startswith("■") else None,
+                )) * line_h + para_gap
                 for p in paras
             )
             content_units = (content_pt / std_lh) if std_lh > 0 else 0.0

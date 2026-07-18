@@ -14,6 +14,11 @@ def format_number_chinese(value: Union[float, int], language: str = "Chi") -> st
     is_negative = value < 0
     abs_value = abs(value)
 
+    # 万元 (10k unit) rounds to a whole number -- at that scale a decimal
+    # place adds little real precision. 亿元 (100M unit) keeps 1dp: at that
+    # much larger scale, dropping the decimal loses too much (e.g. 1.56亿
+    # -> "2亿" is a ~28% swing), so 亿 keeps SOME sub-unit resolution while
+    # 万 does not.
     if language == "Chi":
         if abs_value < 10000:
             result = f"{abs_value:,.0f}元"
@@ -21,7 +26,7 @@ def format_number_chinese(value: Union[float, int], language: str = "Chi") -> st
             wan_value = abs_value / 10000
             if wan_value >= 10000:
                 yi_value = wan_value / 10000
-                result = f"{yi_value:.0f}亿元"
+                result = f"{yi_value:.1f}亿元"
             else:
                 result = f"{wan_value:.0f}万元"
         return f"人民币-{result}" if is_negative else f"人民币{result}"
@@ -29,7 +34,7 @@ def format_number_chinese(value: Union[float, int], language: str = "Chi") -> st
     if abs_value < 1000000:
         result = f"{abs_value:,.0f}"
     else:
-        result = f"{abs_value / 1000000:.0f} million"
+        result = f"{abs_value / 1000000:.1f} million"
     return f"CNY-{result}" if is_negative else f"CNY{result}"
 
 
@@ -81,9 +86,10 @@ def format_value_by_language(value, language: str, _account_name=None) -> str:
     is_negative = value < 0
     abs_value = abs(value)
 
+    # See format_number_chinese: 万/K stay whole numbers, 亿/million keep 1dp.
     if language == "Chi":
         if abs_value >= 100000000:
-            formatted = f"{abs_value / 100000000:.0f}亿"
+            formatted = f"{abs_value / 100000000:.1f}亿"
         elif abs_value >= 10000:
             formatted = f"{abs_value / 10000:.0f}万"
         else:
@@ -91,7 +97,7 @@ def format_value_by_language(value, language: str, _account_name=None) -> str:
         return f"-{formatted}" if is_negative else formatted
 
     if abs_value >= 1000000:
-        formatted = f"{abs_value / 1000000:.0f} million"
+        formatted = f"{abs_value / 1000000:.1f} million"
     else:
         formatted = f"{abs_value:,.0f}"
     return f"-{formatted}" if is_negative else formatted
