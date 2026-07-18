@@ -2285,8 +2285,8 @@ class PowerPointGenerator:
             return None
         try:
             packing = self._packing_settings(None)
-            font_size_pt = 10 if is_chinese else 9
-            line_spacing = 0.95 if is_chinese else 1.0
+            font_size_pt = self._real_font_size_pt(is_chinese)
+            line_spacing = self._real_line_spacing(is_chinese)
             _mpath = self._resolve_font_metrics_path(is_chinese, packing)
             measurer = get_measurer(
                 self._measurer_family(is_chinese, packing), font_size_pt,
@@ -2507,11 +2507,14 @@ class PowerPointGenerator:
 
                 paras = [p for p in commentary.split('\n') if p.strip()] if commentary else []
                 key_prefix = f"\u25a0 {mapping_key} - "
+                # Hanging indent: wrapped lines render 0.15" narrower than
+                # the box (see _BULLET_HANGING_INDENT_PT).
+                wrap_w = max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT)
                 if paras:
-                    first_wrapped = measurer.wrap(key_prefix + paras[0], box.width_pt)
+                    first_wrapped = measurer.wrap(key_prefix + paras[0], wrap_w)
                     total_pt += len(first_wrapped) * line_h + para_gap
                     for para in paras[1:]:
-                        wrapped = measurer.wrap(para, box.width_pt)
+                        wrapped = measurer.wrap(para, wrap_w)
                         total_pt += len(wrapped) * line_h + para_gap
                 else:
                     total_pt += line_h + para_gap
@@ -2973,6 +2976,40 @@ class PowerPointGenerator:
 
         return distribution
 
+    # Rendered bullet paragraphs hang-indent their WRAPPED lines by 0.15"
+    # (p_key.left_indent = Inches(0.15), first_line_indent = Inches(-0.15)):
+    # line 1 starts at the box margin and spans the full width, every wrapped
+    # line starts 10.8pt further right. Cost estimates wrap at
+    # (width - 10.8pt) -- exact for wrapped lines, ~1 char conservative for
+    # line 1. Measuring every line at full width under-counted long
+    # paragraphs by up to a line each; that error was masked while the old
+    # line-height model over-charged the vertical axis, and became real
+    # (uncaught-by-autofit) overflow once the 1.2x-size pitch fix landed.
+    _BULLET_HANGING_INDENT_PT = 10.8  # 0.15 inch
+
+    def _account_is_chinese(self, account: Dict) -> bool:
+        """Language flag for MEASUREMENT (which glyph-width table to wrap
+        with). Uses the account's own is_chinese when present (set by the
+        payload builder via contains_predominantly_chinese_text); otherwise
+        detects from the commentary instead of silently defaulting to
+        English -- measuring CJK text with Arial's advance table (which has
+        no CJK glyphs) under-counted lines badly enough that genuinely
+        overflowing slots passed the render-time autofit gate as 'fits'."""
+        v = (account or {}).get("is_chinese")
+        if v is not None:
+            return bool(v)
+        return contains_predominantly_chinese_text(str((account or {}).get("commentary", "")))
+
+    def _account_cost_key(self, account: Dict) -> str:
+        """The key text whose rendered width the cost model should charge:
+        mapping_key plus the continuation marker the renderer appends
+        (' (续)' / \" (cont'd)\") -- previously never charged, so every
+        continuation's first paragraph was measured ~4-9 chars short."""
+        key = str(account.get("mapping_key", account.get("account_name", "")) or "")
+        if account.get("is_continuation"):
+            key += " (续)" if self._account_is_chinese(account) else " (cont'd)"
+        return key
+
     def _compute_slot_used_lines(
         self,
         accounts: List[Dict],
@@ -3028,11 +3065,11 @@ class PowerPointGenerator:
                 prev_cat = cat
             used += self._calculate_content_lines(
                 "",
-                account.get("mapping_key", account.get("account_name", "")),
+                self._account_cost_key(account),
                 account.get("commentary", ""),
                 slot_name=slot_name,
                 shape=slot_shape,
-                is_chinese=bool(account.get("is_chinese", False)),
+                is_chinese=self._account_is_chinese(account),
                 statement_type=statement_type,
             )
         return max(0.0, used)
@@ -3368,7 +3405,10 @@ class PowerPointGenerator:
                     # actual _compute_slot_used_lines check would find, so
                     # a "fixed" head that trimmed real characters off could
                     # still fail the caller's check by the exact same margin.
-                    wrapped = measurer.wrap(key_prefix + cand_head, box.width_pt)
+                    wrapped = measurer.wrap(
+                        key_prefix + cand_head,
+                        max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT),
+                    )
                     cand_pt = len(wrapped) * line_h + para_gap
                     if cand_pt <= budget_pt and cand_pt >= min_fill_pt:
                         accepted = cand_pos
@@ -3393,7 +3433,10 @@ class PowerPointGenerator:
                     while trimmed > 0:
                         cand_head = para[:trimmed].strip()
                         if cand_head:
-                            wrapped = measurer.wrap(key_prefix + cand_head, box.width_pt)
+                            wrapped = measurer.wrap(
+                        key_prefix + cand_head,
+                        max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT),
+                    )
                             cand_pt = len(wrapped) * line_h + para_gap
                             if cand_pt <= budget_pt:
                                 best_split = trimmed
@@ -3497,7 +3540,7 @@ class PowerPointGenerator:
         if text_budget < 1.0:
             return False
 
-        is_chinese = bool(head_acct.get("is_chinese", False))
+        is_chinese = self._account_is_chinese(head_acct)
         # The split-point estimate (char-count based) and the real measurement
         # (_compute_slot_used_lines, font-metric based) don't perfectly agree --
         # shrink the requested budget and retry a few times if the chosen head
@@ -3515,7 +3558,7 @@ class PowerPointGenerator:
                 is_chinese=is_chinese,
                 shape=cur_shape,
                 statement_type=statement_type,
-                key_prefix=f"■ {head_acct.get('mapping_key', head_acct.get('account_name', ''))} - ",
+                key_prefix=f"■ {self._account_cost_key(head_acct)} - ",
             )
             if not split_result:
                 return False
@@ -3709,7 +3752,7 @@ class PowerPointGenerator:
         if available_for_tail < 1.0:
             return False
 
-        is_chinese = bool(tail_acct.get("is_chinese", False))
+        is_chinese = self._account_is_chinese(tail_acct)
         part1 = None
         head_text = tail_text = ""
         remaining_budget = available_for_tail
@@ -3722,7 +3765,7 @@ class PowerPointGenerator:
                 shape=cur_shape,
                 statement_type=statement_type,
                 min_fill_ratio=0.3,
-                key_prefix=f"■ {tail_acct.get('mapping_key', tail_acct.get('account_name', ''))} - ",
+                key_prefix=f"■ {self._account_cost_key(tail_acct)} - ",
             )
             if not split_result:
                 return False
@@ -3929,7 +3972,7 @@ class PowerPointGenerator:
                 if text_budget < 0.5:
                     break
 
-                is_chinese = bool(head_acct.get("is_chinese", False))
+                is_chinese = self._account_is_chinese(head_acct)
                 part1 = None
                 head_text = tail_text = ""
                 remaining_budget = text_budget
@@ -3957,7 +4000,7 @@ class PowerPointGenerator:
                         # off fragment is still worth taking here even
                         # where it wouldn't be for a balance-oriented move.
                         min_fill_ratio=0.15,
-                        key_prefix=f"■ {head_acct.get('mapping_key', head_acct.get('account_name', ''))} - ",
+                        key_prefix=f"■ {self._account_cost_key(head_acct)} - ",
                         # Also lower than the shared 1.0 default, in step
                         # with this pass's own gap<0.2/text_budget<0.5 gates
                         # above -- same reasoning: this is the last-word,
@@ -4109,7 +4152,7 @@ class PowerPointGenerator:
             return distribution
 
         slots: List[Dict[str, Any]] = []
-        is_chinese_any = any(bool(a.get("is_chinese")) for a in flat_accounts)
+        is_chinese_any = any(self._account_is_chinese(a) for a in flat_accounts)
         for slide_idx, slot_name, _accounts in distribution:
             shape = _resolve_shape(slide_idx, slot_name)
             capacity = self._calculate_max_lines_for_textbox(
@@ -4149,11 +4192,11 @@ class PowerPointGenerator:
             for a_i, account in enumerate(flat_accounts):
                 _acct_cost[(a_i, slot["slot_name"], w_key)] = self._calculate_content_lines(
                     "",
-                    account.get("mapping_key", account.get("account_name", "")),
+                    self._account_cost_key(account),
                     account.get("commentary", ""),
                     slot_name=slot["slot_name"],
                     shape=shape,
-                    is_chinese=bool(account.get("is_chinese", False)),
+                    is_chinese=self._account_is_chinese(account),
                     statement_type=statement_type,
                 )
 
@@ -4685,7 +4728,7 @@ class PowerPointGenerator:
                 # so give exactly those slots a bounded normAutofit shrink
                 # (never below _BOUNDED_AUTOFIT_MIN_SCALE) so the overflow
                 # the DP already decided was "worth it" is actually visible.
-                slot_is_chinese = any(bool(a.get('is_chinese')) for a in account_data_list)
+                slot_is_chinese = any(self._account_is_chinese(a) for a in account_data_list)
                 slot_capacity = self._calculate_max_lines_for_textbox(
                     bullets_shape, is_chinese=slot_is_chinese, slot_name=slot_name,
                     statement_type=statement_type,

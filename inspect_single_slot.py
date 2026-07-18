@@ -117,7 +117,10 @@ def main() -> int:
         p_measurer = chi_measurer if p_is_chi else eng_measurer
         p_line_h = p_measurer.line_height_pt()
         p_para_gap = 3.0
-        wrapped = p_measurer.wrap(text, box.width_pt)
+        # Bullet paragraphs hang-indent wrapped lines by 0.15" (10.8pt) --
+        # same effective width the packer charges (_BULLET_HANGING_INDENT_PT).
+        p_wrap_w = max(10.0, box.width_pt - 10.8) if text.lstrip().startswith("■") else box.width_pt
+        wrapped = p_measurer.wrap(text, p_wrap_w)
         p_pt = len(wrapped) * p_line_h + p_para_gap
         units = p_pt / std_lh
         total_units += units

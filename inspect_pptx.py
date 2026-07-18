@@ -201,8 +201,15 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
             # live packer actually computes.
             capacity = (box.height_pt / std_lh) if std_lh > 0 else 0.0
 
+            # Bullet paragraphs render with a 0.15" hanging indent
+            # (left_indent 0.15 / first_line_indent -0.15): wrapped lines
+            # are 10.8pt narrower than the box. Mirror fdd_utils/pptx.py's
+            # _BULLET_HANGING_INDENT_PT so this independent re-check uses
+            # the same effective width as the packer AND the real render.
+            hang_w = max(10.0, box.width_pt - 10.8)
+
             # Literal wrapped-line count, for display only (chars=/wraps_to=).
-            wrapped = measurer.wrap(text, box.width_pt) if text.strip() else []
+            wrapped = measurer.wrap(text, hang_w) if text.strip() else []
             n_lines = len(wrapped)
 
             # Content cost in the SAME std_lh units as capacity: one para_gap
@@ -215,7 +222,9 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
             # paragraphs before this was unit-matched.
             paras = [p for p in text.split("\n") if p.strip()] if text.strip() else []
             content_pt = sum(
-                len(measurer.wrap(p, box.width_pt)) * line_h + para_gap for p in paras
+                len(measurer.wrap(p, hang_w if p.lstrip().startswith("■") else box.width_pt))
+                * line_h + para_gap
+                for p in paras
             )
             content_units = (content_pt / std_lh) if std_lh > 0 else 0.0
 

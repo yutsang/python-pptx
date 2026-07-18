@@ -65,6 +65,24 @@ DEFAULT_BIns_EMU = 45720   # 0.05"
 
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
+# PowerPoint renders percentage line spacing (spcPct, what python-pptx writes
+# for `paragraph.line_spacing = 1.0`) as 1.2 x the font POINT SIZE — it does
+# NOT consult the font's own ascent/descent/lineGap tables. Confirmed
+# empirically by exporting a test deck through real PowerPoint to PDF and
+# measuring baseline-to-baseline pitch with pdfminer, at 9pt / spcPct 100%:
+#     Arial              -> 10.80 pt   (hhea+gap tables predict 10.35)
+#     Microsoft JhengHei -> 10.80 pt   (hhea tables predict ~11.9)
+#     Arial Unicode MS   -> 10.80 pt
+#     spcAft 3pt         -> adds exactly 3.00 pt between paragraphs
+# Three fonts with wildly different metric tables all land on exactly
+# 1.2 x size, so any font-table-derived line height is the wrong model for
+# PowerPoint fit prediction. The previous table-based values overcharged
+# CJK boxes ~1.1 pt/line (msyh hhea = 1.32 x em vs the real 1.2 x em),
+# which compounded to a consistent ~3-line visible under-fill on every
+# "full" Chinese commentary box. (Width/wrap measurement still uses real
+# glyph advances — only the VERTICAL pitch follows this fixed rule.)
+POWERPOINT_LINE_PITCH_FACTOR = 1.2
+
 
 # ---------------------------------------------------------------------------
 # Metrics-only measurement (no font binary required)
@@ -113,9 +131,12 @@ class MetricsTable:
         return sum(self.char_width_pt(c, size_pt) for c in str(text or ""))
 
     def line_height_pt(self, size_pt: float, *, line_spacing: float = 1.0) -> float:
-        # (ascent - descent + line_gap) scaled to point size, then × spacing.
-        raw = (self.ascent - self.descent + self.line_gap) / self.units_per_em * size_pt
-        return raw * line_spacing
+        # NOT (ascent - descent + line_gap) x size: PowerPoint ignores the
+        # font's vertical tables for spcPct spacing and uses 1.2 x point size
+        # (see POWERPOINT_LINE_PITCH_FACTOR). The ascent/descent/line_gap
+        # fields above are kept for reference; only advance widths from this
+        # table still drive measurement (horizontal wrap).
+        return POWERPOINT_LINE_PITCH_FACTOR * size_pt * line_spacing
 
 
 # Characters that PowerPoint/Word never let start a line (行首禁则/kinsoku):
@@ -536,12 +557,15 @@ def line_height_pt(
 ) -> float:
     """Compute baseline-to-baseline distance in points.
 
-    Uses the font's ascent + descent (from the OS/2 / hhea tables) rather
-    than a fixed multiplier of the font size. This is closer to PowerPoint's
-    actual behavior. Calibrate the residual error with `extra_leading_pt`.
+    1.2 x the font point size (POWERPOINT_LINE_PITCH_FACTOR) — measured from
+    real PowerPoint output, which ignores the font's vertical metric tables
+    for spcPct line spacing. The previous implementation used Pillow's
+    font.getmetrics(), which is doubly wrong for fit prediction: it reads
+    hhea ascent/descent (a different, font-dependent model) AND rounds each
+    to whole points, so Arial @ 9pt came back as 11.0 pt against a real
+    10.8 pt, and CJK fonts drifted further still.
     """
-    ascent, descent = font.getmetrics()
-    return (ascent + descent) * line_spacing + extra_leading_pt
+    return POWERPOINT_LINE_PITCH_FACTOR * float(font.size) * line_spacing + extra_leading_pt
 
 
 def lines_that_fit(height_pt: float, line_h_pt: float) -> int:
@@ -582,9 +606,10 @@ class Measurer:
         return "client-metrics" if self._metrics is not None else "system-font"
 
     def line_height_pt(self, *, extra_leading_pt: float = 0.0) -> float:
-        if self._metrics is not None:
-            return self._metrics.line_height_pt(self.size_pt, line_spacing=self.line_spacing) + extra_leading_pt
-        return line_height_pt(self._font, line_spacing=self.line_spacing, extra_leading_pt=extra_leading_pt)
+        # Same fixed PowerPoint rule for BOTH backends — vertical pitch does
+        # not depend on which font supplied the advance widths.
+        return (POWERPOINT_LINE_PITCH_FACTOR * self.size_pt * self.line_spacing
+                + extra_leading_pt)
 
     def wrap(self, text: str, max_width_pt: float) -> List[str]:
         if self._metrics is None:
