@@ -1771,13 +1771,34 @@ class PowerPointGenerator:
         if total_width <= 0:
             return
 
+        # A CJK character renders roughly 2x as wide as a Latin
+        # character/digit at the same point size, but max_len here is a
+        # raw character COUNT -- an 11-character Chinese row label like
+        # "一年内到期的非流动负债" measures the same "length" as an
+        # 11-character Latin one that's actually half as wide on the page.
+        # Using the same /10 divisor for both meant max_len/10 almost never
+        # exceeded the 2.0 floor for realistic Chinese labels (would need
+        # 20+ characters), so column 0's weight was effectively a FIXED
+        # 2.0 regardless of actual label length -- combined with the 0.12in
+        # left-indent every leaf row gets, longer labels routinely wrapped
+        # to 2 lines, each one rendering roughly 2x its neighbors' height
+        # (PowerPoint auto-grows a row to fit wrapped text; the nominal
+        # row.height set elsewhere is a floor, not a cap).
+        col0_series = df.iloc[:, 0].astype(str) if len(df.columns) else pd.Series(dtype=str)
+        is_cjk_labels = any(
+            any('一' <= ch <= '鿿' for ch in str(v)) for v in col0_series.head(25).tolist()
+        )
+
         weights = []
         for col_idx, col_name in enumerate(df.columns[: len(table.columns)]):
             col_series = df.iloc[:, col_idx].astype(str) if col_idx < len(df.columns) else pd.Series(dtype=str)
             max_len = max([len(str(col_name))] + [len(val) for val in col_series.head(25).tolist()]) if len(col_series) else len(str(col_name))
             col_name_str = str(col_name).lower()
             if col_idx == 0:
-                weight = max(2.0, min(3.2, max_len / 10))
+                weight = (
+                    max(2.6, min(4.2, max_len / 5)) if is_cjk_labels
+                    else max(2.0, min(3.2, max_len / 10))
+                )
             elif any(token in col_name_str for token in ["20", "19", "date", "年", "月"]):
                 weight = max(1.4, min(2.0, max_len / 10))
             else:
