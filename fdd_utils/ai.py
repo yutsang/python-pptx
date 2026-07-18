@@ -1895,7 +1895,23 @@ class PromptEngine:
         )
 
     @staticmethod
-    def _prompt_ready_adjacent_detail_rows(adjacent_detail_rows: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    def _prompt_ready_adjacent_detail_rows(
+        adjacent_detail_rows: list[Dict[str, Any]], language: str = "Eng",
+    ) -> list[Dict[str, Any]]:
+        """Strip prompt-metadata keys and reformat any bare numeric remark
+        value (万/亿/million per format_value_by_language) before this reaches
+        the AI. Unlike the main financial_data table, adjacent-detail /
+        RHS-remark columns are raw cell text straight from the workbook --
+        a plain check/reconciliation figure like -980981 flowed through
+        untouched, so the model wrote it verbatim ("负人民币980,981元"
+        instead of "-98万元") since only the main table is covered by the
+        "already formatted, do not reconvert" instruction. Skips
+        "Description" (the row label) and anything that isn't a clean
+        numeric string (dates, percentages, free-text notes stay as-is).
+        """
+        from .financial_display_format import format_value_by_language
+        from .financial_common import coerce_numeric
+
         cleaned_rows: list[Dict[str, Any]] = []
         for row in adjacent_detail_rows:
             if not isinstance(row, dict):
@@ -1905,6 +1921,12 @@ class PromptEngine:
                 key_text = str(key)
                 if PromptEngine._should_skip_prompt_metadata_key(key_text):
                     continue
+                if key_text != "Description" and isinstance(value, str) and value.strip():
+                    text = value.strip()
+                    if re.fullmatch(r"-?[\d,，]+(\.\d+)?", text):
+                        numeric = coerce_numeric(text)
+                        if numeric is not None:
+                            value = format_value_by_language(numeric, language)
                 cleaned_row[key_text] = value
             if cleaned_row:
                 cleaned_rows.append(cleaned_row)
@@ -2201,7 +2223,7 @@ class PromptEngine:
         normalized_prompt_df = self._normalize_prompt_dataframe(df, language)
         normalized_analysis_df = self._normalize_prompt_dataframe(formatted_analysis_df, language)
         normalized_supporting_notes = self._normalize_prompt_value(supporting_notes, language)
-        prompt_ready_adjacent_detail_rows = self._prompt_ready_adjacent_detail_rows(adjacent_detail_rows)
+        prompt_ready_adjacent_detail_rows = self._prompt_ready_adjacent_detail_rows(adjacent_detail_rows, format_language)
         normalized_adjacent_detail_rows = self._normalize_prompt_value(prompt_ready_adjacent_detail_rows, language)
         normalized_table_linked_remarks = self._normalize_prompt_value(table_linked_remarks, language)
         normalized_rhs_remark_summary = self._normalize_prompt_value(rhs_remark_summary, language)

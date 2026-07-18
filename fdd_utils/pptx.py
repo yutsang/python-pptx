@@ -2039,6 +2039,25 @@ class PowerPointGenerator:
             if any(token in current_text for token in replacements):
                 self.replace_text_preserve_formatting(proj_title_shape, replacements)
 
+            # Chinese reports: the template's own title text is an English
+            # scaffold ("Entity overview - Project [PROJECT] (1/4)") with
+            # only the [PROJECT] token substituted above -- for a Chinese
+            # entity name that reads as English label + Chinese name mixed
+            # mid-title. Strip the English lead-in so the title is just the
+            # entity name (plus any pagination suffix the template kept),
+            # e.g. "昆明经开 (1/4)" instead of "Entity overview - Project
+            # 昆明经开 (1/4)".
+            if self.language == 'chinese':
+                stripped = proj_title_shape.text
+                stripped = re.sub(
+                    r'(?i)^\s*entity\s+overview\s*[-–:]\s*(project\s*)?',
+                    '', stripped,
+                )
+                if stripped != proj_title_shape.text:
+                    self.replace_text_preserve_formatting(
+                        proj_title_shape, {proj_title_shape.text: stripped},
+                    )
+
     def update_project_titles(self, project_name: str, statement_type: str = 'BS'):
         """Update project titles in presentation"""
         if not self.presentation:
@@ -5197,7 +5216,44 @@ class PowerPointGenerator:
                 else:
                     data_font_size = Pt(7)
                     data_row_height = Inches(0.17)
-                
+
+                # Title band and column-header row scale WITH the data tier
+                # instead of a fixed Pt(8)/Pt(7)/0.25" -- on a dense table
+                # (total_visible_rows >= 26, data shrunk to 6pt/0.13") a
+                # hardcoded 0.25"/Pt(7) header reads nearly 2x taller and a
+                # full point bigger than every row beneath it, exactly the
+                # "header row太大" mismatch a user screenshot flagged.
+                header_font_size = Pt(data_font_size.pt + 1)
+                header_row_height = Inches(data_row_height.inches + 0.03)
+                title_font_size = Pt(data_font_size.pt + 2)
+                title_row_height = Inches(data_row_height.inches + 0.05)
+
+                # Hard clamp: the three fixed tiers above are picked from
+                # ROW COUNT alone and don't know this table's actual
+                # available height (varies by template/slide) -- a table
+                # with unusually many rows for its placeholder could still
+                # render taller than its bounds and spill onto the slide.
+                # Scale every row height (and, floored at a legibility
+                # minimum, font size) down uniformly so the whole table's
+                # summed row heights never exceed bounds["height"].
+                try:
+                    _available_h_in = max(0.1, (bounds.get("height", 0) or 0) / 914400)
+                    _needed_h_in = (
+                        (title_row_height.inches if table_name else 0.0)
+                        + header_row_height.inches
+                        + len(df) * data_row_height.inches
+                    )
+                    if _needed_h_in > _available_h_in > 0:
+                        _scale = _available_h_in / _needed_h_in
+                        data_row_height = Inches(max(0.08, data_row_height.inches * _scale))
+                        header_row_height = Inches(max(0.09, header_row_height.inches * _scale))
+                        title_row_height = Inches(max(0.10, title_row_height.inches * _scale))
+                        data_font_size = Pt(max(4.5, data_font_size.pt * _scale))
+                        header_font_size = Pt(max(5.0, header_font_size.pt * _scale))
+                        title_font_size = Pt(max(5.5, title_font_size.pt * _scale))
+                except Exception:
+                    pass
+
                 # Add table name as first row if provided
                 if table_name:
                     # Insert a new row at the top for table name
@@ -5207,7 +5263,7 @@ class PowerPointGenerator:
                             table.rows.add_row()
                             
                         name_row = table.rows[0]  # Use first row for name
-                        name_row.height = Inches(0.25)
+                        name_row.height = title_row_height
                         
                         # Merge all cells in first row for table name
                         if len(table.columns) > 1:
@@ -5227,7 +5283,7 @@ class PowerPointGenerator:
                             else:
                                 run = p.add_run()
                             run.font.name = 'Arial'
-                            run.font.size = Pt(8)
+                            run.font.size = title_font_size
                             run.font.bold = True
                             run.font.color.rgb = WHITE
 
@@ -5251,7 +5307,7 @@ class PowerPointGenerator:
                 
                 # Set header row height slightly taller for readability
                 try:
-                    table.rows[header_row_idx].height = Inches(0.25)
+                    table.rows[header_row_idx].height = header_row_height
                 except:
                     pass
                     
@@ -5287,7 +5343,7 @@ class PowerPointGenerator:
                                 run = p.add_run()
 
                             run.font.name = 'Arial'
-                            run.font.size = Pt(7)
+                            run.font.size = header_font_size
                             run.font.bold = True
                             run.font.color.rgb = BLACK
                             p.line_spacing = 1.0
@@ -5307,11 +5363,13 @@ class PowerPointGenerator:
                             LIGHT_BLUE_HIGHLIGHT if col_idx == max_cols - 1 else WHITE
                         )
 
-                        # Company-format reference is a fully ruled grid
-                        # (every cell bordered on all 4 sides), not the
-                        # mostly-borderless-except-totals look this table
-                        # previously had -- thin black lines throughout.
-                        for _side in ("top", "bottom", "left", "right"):
+                        # Vertical (column-separating) borders plus ONE
+                        # bottom rule under the header row -- horizontal
+                        # rules on every data row read as cluttered once the
+                        # table has 20+ rows; the total/subtotal rows below
+                        # get their own explicit top/bottom rule so those
+                        # separators are still there where they matter.
+                        for _side in ("left", "right", "bottom"):
                             self._set_cell_border(cell, _side, color_rgb="000000", width=Pt(0.5))
 
                         try:
@@ -5373,10 +5431,9 @@ class PowerPointGenerator:
                         _is_blank_cell(df_row[col]) for col in df.columns[1:max_cols] if col in df_row.index
                     )
 
-                    # Check if this is a title, date, total, or subtotal row
+                    # Check if this is a title, total, or subtotal row
                     is_special_row = False
                     is_total_row = False
-                    is_date_row = False
                     first_col_lower = first_col_value.lower()
                     # 'total'/合计 etc. cover BS lines (Total assets, Total
                     # current assets, ...); IS running-total lines (Gross
@@ -5390,8 +5447,21 @@ class PowerPointGenerator:
                         {'total', '合计', '总计', '小计', 'subtotal', 'sub-total', 'sub total'}
                         | set(SUMMARY_ACCOUNT_SKIP_KEYWORDS)
                     )
-                    date_keywords = ['date', '日期', '年', '月']
-                    special_keywords = total_keywords + ['title', '标题'] + date_keywords
+                    # NOTE: previously also matched a 'date_keywords' list
+                    # ('date'/'日期'/'年'/'月') into special_keywords AND a
+                    # separate is_date_row flag that forced a fixed Pt(7)
+                    # font. The actual date/period COLUMN HEADER row (e.g.
+                    # "2023-12-31") is a different row entirely, handled
+                    # above via header_row_idx -- this per-data-row loop only
+                    # ever sees ACCOUNT LABELS, and '年'/'月' as bare
+                    # substrings match ordinary Chinese account names like
+                    # "一年内到期的非流动负债" ("non-current liabilities due
+                    # within one year"), wrongly bolding them AND overriding
+                    # their font size to Pt(7) regardless of the table's
+                    # actual density tier (data_font_size could be 6/6.5/7pt)
+                    # -- a real, visible font-size/weight mismatch against
+                    # every other leaf row on the same table.
+                    special_keywords = total_keywords + ['title', '标题']
 
                     if any(keyword in first_col_lower for keyword in special_keywords):
                         is_special_row = True
@@ -5408,9 +5478,6 @@ class PowerPointGenerator:
                     is_category_header_row = is_category_header_row and not is_total_row
                     if is_category_header_row:
                         is_special_row = True
-
-                    if any(keyword in first_col_lower for keyword in date_keywords):
-                        is_date_row = True
 
                     # Statement-terminal lines (grand totals) get the heavier
                     # two-border/grey-fill treatment; everything else that only
@@ -5503,7 +5570,7 @@ class PowerPointGenerator:
                         # roundtrip. Just apply the font formatting.
                         for run in p.runs:
                             run.font.name = 'Arial'
-                            run.font.size = Pt(7) if is_date_row else data_font_size
+                            run.font.size = data_font_size
                             try:
                                 run.font.color.rgb = BLACK
                             except Exception:
@@ -5540,12 +5607,14 @@ class PowerPointGenerator:
                         except Exception:
                             pass
 
-                        # Company-format reference is a fully ruled grid --
-                        # thin black borders on every cell, every side. The
-                        # heavier navy total/subtotal borders below are
-                        # applied AFTER this and override the same side where
-                        # they apply (top/bottom on total rows).
-                        for _side in ("top", "bottom", "left", "right"):
+                        # Vertical (column-separating) borders only -- a
+                        # horizontal rule under every single data row reads
+                        # as visually busy/cluttered once the table has 20+
+                        # rows. Total/subtotal rows get their own explicit
+                        # top (and, for grand totals, bottom) rule below,
+                        # applied AFTER this, so those separators are still
+                        # there exactly where they matter.
+                        for _side in ("left", "right"):
                             self._set_cell_border(cell, _side, color_rgb="000000", width=Pt(0.5))
 
                         # Only the LAST column is highlighted light blue, on
