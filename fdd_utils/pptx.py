@@ -3493,6 +3493,64 @@ class PowerPointGenerator:
                         trimmed -= max(1, len(cand_head) // 10) if cand_head else 5
                     else:
                         return None  # nothing, down to zero, ever fit
+
+                # Extend FORWARD past whatever best_split the crude search
+                # above settled on, up to the TRUE available budget. The
+                # crude per-character estimate that located candidates/
+                # hard_cap above (_AVG_CHAR_WIDTH_CHI/_WORD_WRAP_SLACK)
+                # systematically under-counts real Chinese glyph density
+                # (~10.9pt/char effective vs the real ~9pt at this font
+                # size), and that same 8% "word-wrap slack" margin is
+                # justified for Latin text (room for a whole word that
+                # might not fit) but doesn't apply to CJK at all (every
+                # character is its own valid break point) -- so even the
+                # "largest candidate that fits" from the search above
+                # routinely stops well short of the box's true capacity.
+                # This is exactly the "沒有用盡那一行才cut" a user report
+                # confirmed by hand-counting real rendered lines against
+                # this file's own prediction: a whole further line of real,
+                # usable room was never even considered as a candidate.
+                # Binary-search directly against the accurate measurer (not
+                # the crude heuristic) for the true maximum that fits, then
+                # prefer snapping to the nearest natural sentence/comma
+                # boundary AT OR BEFORE that true maximum so the cut still
+                # reads naturally wherever that costs nothing.
+                lo, hi = best_split, len(para)
+                true_max = best_split
+                while lo <= hi:
+                    mid = (lo + hi) // 2
+                    cand_head = para[:mid].strip()
+                    if not cand_head:
+                        lo = mid + 1
+                        continue
+                    wrapped = measurer.wrap(
+                        key_prefix + cand_head,
+                        max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT),
+                        first_line_width_pt=box.width_pt,
+                    )
+                    cand_pt = len(wrapped) * line_h + para_gap
+                    if cand_pt <= budget_pt:
+                        true_max = mid
+                        lo = mid + 1
+                    else:
+                        hi = mid - 1
+
+                if true_max > best_split:
+                    natural = None
+                    for end_char in ('. ', '。', '! ', '！', '? ', '？'):
+                        found = para.rfind(end_char, best_split, true_max + len(end_char))
+                        if found >= 0:
+                            cand = found + len(end_char)
+                            if cand <= true_max and (natural is None or cand > natural):
+                                natural = cand
+                    if natural is None:
+                        found = max(
+                            para.rfind('，', best_split, true_max + 1),
+                            para.rfind(',', best_split, true_max + 1),
+                        )
+                        if found >= 0:
+                            natural = found + 1
+                    best_split = natural if natural is not None else true_max
         except Exception:
             pass  # measurer unavailable -- fall through with the crude best_split
 
