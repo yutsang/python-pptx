@@ -3193,6 +3193,7 @@ class PowerPointGenerator:
         statement_type: Optional[str] = None,
         min_fill_ratio: float = 0.5,
         key_prefix: str = "",
+        min_available_visual: float = 1.0,
     ) -> Optional[Tuple[str, str]]:
         """Find a clean split point (paragraph boundary, else sentence
         boundary, else word boundary) so the head of `commentary` fits
@@ -3206,6 +3207,12 @@ class PowerPointGenerator:
         Returns None if nothing usable can be carved off (already fits
         whole, or every candidate split leaves a sliver below
         `min_fill_ratio` of the available space).
+
+        `min_available_visual` is the floor below which this refuses to
+        even try -- default 1.0 (roughly one real line) for
+        balance-oriented callers. _maximize_forward_fill, whose whole
+        purpose is squeezing out the LAST bit of a nearly-full slot,
+        passes a lower value; every other caller keeps the safer default.
         """
         commentary = str(commentary or "")
         if not commentary.strip():
@@ -3221,7 +3228,7 @@ class PowerPointGenerator:
         _lh_est = 9.0
         _std_lh_est = _lh_est + self._PARA_SPACE_AFTER
         available_visual = max(0.0, available_std_lh_units) * (_std_lh_est / _lh_est)
-        if available_visual < 1.0:
+        if available_visual < min_available_visual:
             return None
 
         paragraphs = commentary.split('\n\n')
@@ -3890,7 +3897,16 @@ class PowerPointGenerator:
                     cur_accts, cur_name, slot_shape=cur_shape, statement_type=statement_type,
                 )
                 gap = cur_cap - cur_used
-                if gap < 0.5:
+                # Lowered from 0.5 -- with the accurate-measurer backoff/trim
+                # now in _split_commentary_at_boundary (5fd871e) and the
+                # number/currency-safe split points (3149651/f88de44), a
+                # small gap can safely be attempted rather than written off;
+                # the 1.0-unit floors below this used to compound into a
+                # worst-case ~2-line leftover (this gate PLUS a category-
+                # transition cost eating into the split attempt), which is
+                # exactly the "some pages 2 lines short" the user reported
+                # even after those other fixes landed.
+                if gap < 0.2:
                     break
 
                 head_acct = nxt_accts[0]
@@ -3906,7 +3922,11 @@ class PowerPointGenerator:
                 head_cat = str(head_acct.get("category", "") or "")
                 category_gap_cost = 1.0 if (head_cat and head_cat != cur_last_cat) else 0.0
                 text_budget = gap - category_gap_cost
-                if text_budget < 1.0:
+                # Lowered from 1.0 in step with _split_commentary_at_boundary's
+                # own internal floor (also lowered below) -- see the gap<0.2
+                # comment above for why 1.0 here was leaving up to ~2 real
+                # lines on the table in the worst case.
+                if text_budget < 0.5:
                     break
 
                 is_chinese = bool(head_acct.get("is_chinese", False))
@@ -3938,6 +3958,11 @@ class PowerPointGenerator:
                         # where it wouldn't be for a balance-oriented move.
                         min_fill_ratio=0.15,
                         key_prefix=f"■ {head_acct.get('mapping_key', head_acct.get('account_name', ''))} - ",
+                        # Also lower than the shared 1.0 default, in step
+                        # with this pass's own gap<0.2/text_budget<0.5 gates
+                        # above -- same reasoning: this is the last-word,
+                        # maximize-fill pass, not a balance-oriented one.
+                        min_available_visual=0.5,
                     )
                     if not split_result:
                         break
@@ -3955,7 +3980,7 @@ class PowerPointGenerator:
                         break
                     overage = candidate_used - cur_cap
                     remaining_budget -= (overage * 1.5) + 0.25
-                    if remaining_budget < 1.0:
+                    if remaining_budget < 0.5:
                         break
 
                 if part1 is None:
