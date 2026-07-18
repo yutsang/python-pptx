@@ -112,7 +112,7 @@ class ShapeInfo:
     height_in: float
     text: str
     n_chars: int
-    capacity_lines: int
+    capacity_lines: float
     wrapped_lines: int
     content_units: float
     fill_ratio: float
@@ -192,7 +192,14 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
             line_h = measurer.line_height_pt()
             para_gap = PARA_GAP_CHI if is_chi else PARA_GAP_ENG
             std_lh = line_h + para_gap
-            capacity = int(box.height_pt // std_lh) if std_lh > 0 else 0
+            # Float, not int()-floored -- matches fdd_utils/pptx.py's
+            # _calculate_max_lines_for_textbox (fixed in 5bbec43) and
+            # inspect_single_slot.py (fixed in 3ceb2a4). This file's own
+            # copy of the capacity formula was missed by both of those
+            # fixes, so it kept discarding up to a full std_lh unit of
+            # real box height and understating fill_ratio against what the
+            # live packer actually computes.
+            capacity = (box.height_pt / std_lh) if std_lh > 0 else 0.0
 
             # Literal wrapped-line count, for display only (chars=/wraps_to=).
             wrapped = measurer.wrap(text, box.width_pt) if text.strip() else []
@@ -236,8 +243,9 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
                 total_warnings += 1
                 warning_details.append(f"Slide {slide_idx + 1} [{info.slot}] {info.name}: {', '.join(flags)}")
             _print(f"  [{info.slot:6s}] {info.name:24s} left={info.left_in:5.2f}in width={info.width_in:5.2f}in "
-                   f"chars={info.n_chars:4d} capacity={info.capacity_lines:3d}L used={info.content_units:5.1f}L "
-                   f"(raw wraps_to={info.wrapped_lines:3d}L){flag_str}")
+                   f"chars={info.n_chars:4d} capacity={info.capacity_lines:5.1f}L used={info.content_units:5.1f}L "
+                   f"fill={info.fill_ratio:.0%} "
+                   f"(raw wraps_to={info.wrapped_lines:3d}L, NOT comparable to capacity){flag_str}")
 
         # 1. L/R collision: a page with no table/summary (i.e. NOT the
         # designed single-column table slide) but only a single unsplit slot.
