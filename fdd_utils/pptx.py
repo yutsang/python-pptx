@@ -3529,6 +3529,28 @@ class PowerPointGenerator:
         undo a capacity check that already accepted this position."""
         if pos <= 0 or pos >= len(text):
             return pos
+        # `pos` landing strictly INSIDE a multi-character marker itself
+        # (e.g. between "人民" and "币") is a different failure mode from
+        # the number/marker-boundary case below -- neither text[pos-1] nor
+        # text[pos] is a digit, so the numeric-literal check never fires
+        # and this position was never being checked at all. Confirmed in
+        # real production output: "...人民" end of one slide, "币-784万元..."
+        # start of the next -- the SAME general split logic (comma/
+        # sentence/hard-cut fallback) that this function was already
+        # guarding for numbers can just as easily land inside a CJK
+        # currency word, which has no internal punctuation to avoid it.
+        for marker in cls._CURRENCY_MARKERS:
+            if len(marker) < 2:
+                continue  # single-char symbols ($/¥/£/€) can't be split mid-marker
+            # Check every position `start` such that the marker, if present
+            # there, would straddle pos (start < pos < start+len(marker)).
+            # str.find's end argument is EXCLUSIVE, so searching up to `pos`
+            # can never match an occurrence whose last character IS at pos
+            # -- exactly the case being guarded against -- hence the direct
+            # index scan instead.
+            for start in range(max(0, pos - len(marker) + 1), pos):
+                if text[start:start + len(marker)] == marker:
+                    return start
         numeric_chars = set('0123456789,.')
         if text[pos - 1] in numeric_chars and text[pos] in numeric_chars:
             start = pos
