@@ -3944,6 +3944,105 @@ class PowerPointGenerator:
             if not changed:
                 break
 
+    def _extend_continuation_in_place(
+        self,
+        cur_accts: List[Dict[str, Any]],
+        nxt_accts: List[Dict[str, Any]],
+        cur_name: str,
+        cur_shape,
+        cur_cap: float,
+        statement_type: Optional[str],
+    ) -> bool:
+        """Mutates cur_accts/nxt_accts in place. Pulls more of nxt_accts[0]
+        (a direct continuation of cur_accts[-1], same original account)
+        into cur_accts[-1]'s own paragraph, instead of adding it as a new
+        one. Returns True if anything changed.
+
+        Why this exists: a NEW paragraph costs at minimum line_h+para_gap
+        (~1.0 std_lh unit) even for a single character, since the wrap+
+        cost formula charges a full line height for any non-empty text
+        plus the fixed per-paragraph gap. _maximize_forward_fill's normal
+        "add next account as a new paragraph" path can therefore never
+        fill a gap smaller than that floor, however much real room is
+        left. Extending an EXISTING paragraph's text only adds wrapped
+        LINES (no extra para_gap), so it can use up a fractional-line gap
+        the new-paragraph path mathematically cannot.
+        """
+        head_acct = cur_accts[-1]
+        tail_acct = nxt_accts[0]
+        head_commentary = str(head_acct.get("commentary", "") or "")
+        tail_commentary = str(tail_acct.get("commentary", "") or "")
+        if not tail_commentary.strip():
+            return False
+        combined = (head_commentary + tail_commentary).strip()
+
+        other_used = self._compute_slot_used_lines(
+            cur_accts[:-1], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+        )
+        budget = cur_cap - other_used
+        if budget <= 0:
+            return False
+
+        # First check whether the WHOLE combined text now fits -- if so,
+        # absorb tail_acct entirely rather than leaving an artificially
+        # truncated remainder.
+        candidate_whole = dict(head_acct)
+        candidate_whole["commentary"] = combined
+        whole_used = self._compute_slot_used_lines(
+            cur_accts[:-1] + [candidate_whole], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+        )
+        if whole_used <= cur_cap:
+            cur_accts[-1] = candidate_whole
+            nxt_accts.pop(0)
+            return True
+
+        # Deliberately NOT using _split_commentary_at_boundary here: its
+        # rough char-count pre-check can decide "the whole paragraph fits"
+        # (a coarser, disagreeing estimate from the accurate whole_used
+        # check just above) and return None on that basis alone, before
+        # ever reaching its own accurate-measurer validation -- a real
+        # false negative observed here (whole_used said no, but the
+        # function still gave up immediately). A direct binary search
+        # against the same accurate _compute_slot_used_lines this whole
+        # pass already trusts sidesteps that disagreement entirely.
+        lo, hi = len(head_commentary), len(combined) - 1
+        best_len = len(head_commentary)
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            candidate = dict(head_acct)
+            candidate["commentary"] = combined[:mid].strip()
+            used = self._compute_slot_used_lines(
+                cur_accts[:-1] + [candidate], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+            )
+            if used <= cur_cap:
+                best_len = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        if best_len <= len(head_commentary):
+            return False
+
+        best_len = self._snap_split_before_number(combined, best_len)
+        if best_len <= len(head_commentary):
+            return False
+        new_head = combined[:best_len].strip()
+        new_tail = combined[best_len:].strip()
+        if not new_head or not new_tail:
+            return False
+
+        candidate = dict(head_acct)
+        candidate["commentary"] = new_head
+        candidate_used = self._compute_slot_used_lines(
+            cur_accts[:-1] + [candidate], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+        )
+        if candidate_used > cur_cap:
+            return False
+
+        cur_accts[-1] = candidate
+        tail_acct["commentary"] = new_tail
+        return True
+
     def _maximize_forward_fill(
         self,
         assignment: List[List[Dict[str, Any]]],
@@ -4002,6 +4101,33 @@ class PowerPointGenerator:
                     break
 
                 head_acct = nxt_accts[0]
+
+                # A brand-new paragraph costs AT LEAST line_h+para_gap
+                # (~1.0 std_lh unit) no matter how short its text is -- the
+                # wrap+cost formula charges a full line height for even a
+                # single character, plus the fixed per-paragraph gap. So
+                # whenever gap < ~1.0 and the next slot's head is a DIRECT
+                # continuation of the account already at the end of THIS
+                # slot, extending that existing paragraph's own text (which
+                # only adds wrapped LINES, no extra para_gap) can use up a
+                # gap the "add as a new paragraph" logic below can never
+                # fill by construction -- confirmed via a real production
+                # case: gap=0.641 units (8.85pt) sat permanently unfilled
+                # because even a 1-character new split costs >=13.8pt
+                # (1 line + the paragraph gap), a mathematical floor, not a
+                # tuning knob. Try this FIRST, before the new-paragraph path.
+                if (
+                    cur_accts
+                    and head_acct.get("is_continuation")
+                    and cur_accts[-1].get("mapping_key") == head_acct.get("mapping_key")
+                    and cur_accts[-1].get("original_key", cur_accts[-1].get("mapping_key"))
+                        == head_acct.get("original_key", head_acct.get("mapping_key"))
+                ):
+                    if self._extend_continuation_in_place(
+                        cur_accts, nxt_accts, cur_name, cur_shape, cur_cap, statement_type,
+                    ):
+                        continue
+
                 whole_used = self._compute_slot_used_lines(
                     cur_accts + [head_acct], cur_name, slot_shape=cur_shape, statement_type=statement_type,
                 )
