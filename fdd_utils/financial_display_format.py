@@ -21,15 +21,15 @@ def format_number_chinese(value: Union[float, int], language: str = "Chi") -> st
             wan_value = abs_value / 10000
             if wan_value >= 10000:
                 yi_value = wan_value / 10000
-                result = f"{yi_value:.1f}亿元"
+                result = f"{yi_value:.0f}亿元"
             else:
-                result = f"{wan_value:.1f}万元"
+                result = f"{wan_value:.0f}万元"
         return f"人民币-{result}" if is_negative else f"人民币{result}"
 
     if abs_value < 1000000:
         result = f"{abs_value:,.0f}"
     else:
-        result = f"{abs_value / 1000000:.1f} million"
+        result = f"{abs_value / 1000000:.0f} million"
     return f"CNY-{result}" if is_negative else f"CNY{result}"
 
 
@@ -83,15 +83,15 @@ def format_value_by_language(value, language: str, _account_name=None) -> str:
 
     if language == "Chi":
         if abs_value >= 100000000:
-            formatted = f"{abs_value / 100000000:.2f}亿"
+            formatted = f"{abs_value / 100000000:.0f}亿"
         elif abs_value >= 10000:
-            formatted = f"{abs_value / 10000:.1f}万"
+            formatted = f"{abs_value / 10000:.0f}万"
         else:
             formatted = f"{abs_value:.0f}"
         return f"-{formatted}" if is_negative else formatted
 
     if abs_value >= 1000000:
-        formatted = f"{abs_value / 1000000:.1f} million"
+        formatted = f"{abs_value / 1000000:.0f} million"
     else:
         formatted = f"{abs_value:,.0f}"
     return f"-{formatted}" if is_negative else formatted
