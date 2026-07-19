@@ -4861,6 +4861,27 @@ class PowerPointGenerator:
         # Running this last makes its "no box should sit visibly blank next to
         # a non-empty one" verdict the actual final word instead.
         self._rebalance_lopsided_lr_pairs(assignment, slots, statement_type)
+        # Second forward-fill pass: the reading-order fix above can leave a
+        # slot "correctly but wastefully empty" (e.g. R emptied because its
+        # content was moved back into an empty L) right before a LATER slide
+        # that still has plenty of content queued up. The FIRST
+        # _maximize_forward_fill call above already used its one chance
+        # before this reorder existed, so nothing pulls that later content
+        # backward into the newly-freed room -- confirmed via direct trace on
+        # IMG_0087's 上海松江(2/5) case: slide1 R sat empty with a full
+        # slide2 (4L+5R accounts) right after it. Re-running the same
+        # forward-fill here gives it that second chance.
+        self._maximize_forward_fill(assignment, slots, statement_type)
+        # Re-run the lopsided-pair fix ONE more time, genuinely last. This
+        # second _maximize_forward_fill call is itself capable of re-
+        # creating the exact "pulled R's content back into L" / reading-
+        # order regression the first _rebalance_lopsided_lr_pairs call
+        # above exists to prevent (that's WHY it originally had to move to
+        # last-in-sequence -- see the comment above it). Bookending forward-
+        # fill with this pass on both sides keeps its balance verdict the
+        # true final word while still letting the second forward-fill pass
+        # claim newly-freed room from the first rebalance.
+        self._rebalance_lopsided_lr_pairs(assignment, slots, statement_type)
 
         for s_i, slot in enumerate(slots):
             lines = slot_cost(s_i, 0, -1) if not assignment[s_i] else self._compute_slot_used_lines(
