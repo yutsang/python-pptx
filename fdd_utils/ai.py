@@ -1085,7 +1085,27 @@ class SourceIndex:
         # Also ground against numbers cited in the supporting notes / remarks
         # (df.attrs), e.g. registered capital "7000万美元" that never appears in
         # the numeric table. Without this they were false-flagged as hallucinations.
-        values += _numbers_in_text(_attr_text_blob(df))
+        text_values = _numbers_in_text(_attr_text_blob(df))
+        values += text_values
+        # Detail/remark-row figures (e.g. a stamp-duty sub-line that only ever
+        # appears inside a note, never as its own numeric-table row) have no
+        # pre-calculated annualized column the way a main account row does
+        # (see _period_reference_guidance's "预计算为...(年化)列" instruction,
+        # which only covers the account's own projection_df/analysis_df
+        # columns) -- so whenever the AI correctly annualizes one of these for
+        # a partial reporting year, following the SAME x12/months convention
+        # every main row already gets, the result is invisible to this
+        # grounding pool and gets false-flagged as "hallucination" regardless
+        # of whether the arithmetic is right. Confirmed via a real screenshot:
+        # "印花税...2026年1-6月年化后为人民币4,485元" flagged red purely
+        # because 4,485 (= the raw H1 actual x2) was never in the pool.
+        integrity = df.attrs.get("integrity") or {}
+        annualization_months = df.attrs.get("annualization_months")
+        if annualization_months in (None, ""):
+            annualization_months = integrity.get("annualization_months")
+        if isinstance(annualization_months, (int, float)) and 0 < annualization_months < 12:
+            factor = 12.0 / annualization_months
+            values += [v * factor for v in text_values]
         return values
 
     @classmethod
