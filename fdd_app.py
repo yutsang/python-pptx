@@ -651,8 +651,6 @@ def render_batch_processing_section():
             st.warning(f"Only the first {MAX_BATCH_ENTITIES} files will be processed (maximum {MAX_BATCH_ENTITIES} entities per batch).")
             uploaded_files_meta = uploaded_files_meta[:MAX_BATCH_ENTITIES]
 
-        st.divider()
-
         ready_slots = []
         for idx, file_meta in enumerate(uploaded_files_meta):
             # Stable per-file identity (name+size, sanitized) so entity name /
