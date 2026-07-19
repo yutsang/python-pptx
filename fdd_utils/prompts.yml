@@ -63,6 +63,7 @@ common:
          - Bracketed supplemental figures or parenthetical numeric inserts — INLINE them.
          - A sub-stream/component that is zero in EVERY reporting period — DELETE it from composition lists entirely (do not mention it at all). This is DIFFERENT from a single zero PERIOD within an otherwise multi-period trend for an account that has real activity in other periods — that period must stay in the sentence and read as "nil" (see ENFORCE NUMBER FORMAT below), never be silently dropped.
          - Annualisation projections ("annualised at CNY 6.80 million") — DELETE; just state the actual period figure.
+         - A whole account's own zero balance written mechanically as "the balance was CNY0" / "represented CNY0" — REWRITE to "there was no balance as at <DATE>" (BS) or the equivalent nil-period phrasing (IS), matching reference style.
       9. PRESERVE consultant voice:
          - Use stock factual FDD phrases when supported: "Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"; "We have not obtained the bank statements yet"; "We checked the audit report for [year] and found no differences in respect of this amount"; "no bad debt had been incurred historically"; "in line with the payment terms in the leasing agreements".
          - REMOVE consultant advisory ("You should confirm with management...", "You should consider the funding sources..."). Bullets are factual reporting — do NOT direct the reader's actions.
@@ -152,6 +153,8 @@ common:
          - 亿元格式: X.X亿 (1位小数, 例如: 1.2亿, 12.3亿)
          - 只需验证格式化的值与源数据匹配 - 请勿重新计算或重新转换
          - 千万不要再次进行数字转换!
+         - **同句列举多期金额时"人民币"只出现一次**：重写"分别为人民币2,216万元、人民币2,421万元及人民币968万元"（重复3次）为"分别为人民币2,216万元、2,421万元及968万元"（只出现一次，后续数字直接接万元/亿元）。
+         - **零余额不得写成"余额为人民币0元"或"为0"**：改写为"无余额"/"未形成余额"（资产负债表科目）或"未发生"（利润表/期间性科目，已是标准写法）。仅最新一期为零、之前期间有余额时，首句说明最新期无余额，再补充前期余额。
       5. 按科目类型验证日期格式：资产负债表科目为单一时点余额，格式为"截至yyyy年mm月dd日"（例如"截至2022年9月30日"）；利润表科目描述的是一段期间，不是单一日期，格式为"yyyy年m至m月"或"于yyyy年度"（例如"2026年1至6月"、"于2025年度"），不得把期间硬套成单一日期。
       6. 验证列表项目: 仅列出>=总额10%的项目，且最多3个重点；低于总额10%的数字一般无需提及，除非对结论必不可少。
       7. 验证备注/原因: 仅在补充备注、右侧备注及用户备注与提供数据一致时才可使用，不得保留无数据支持的推断。
@@ -210,7 +213,7 @@ common:
       
       验证清单:
       1. 与原始数据相比, 所有数字是否准确? 是否使用了总计金额?
-      2. 所有金额是否格式正确 (XX万整数不带小数, X.X亿1位小数)?
+      2. 所有金额是否格式正确 (XX万整数不带小数, X.X亿1位小数)？同句多期列举中"人民币"是否只出现一次？零余额是否避免了"为人民币0元"这种机械写法？
       3. 日期是否为"yyyy年mm月dd日"格式?
       4. 是否审阅了所有示意性调整后期间，并且趋势描述有完整期间数据支持?
       5. 是否仅单独列出重要项目 (>= 总额10%)，且最多3个重点，并省略低于总额10%的非关键数字?

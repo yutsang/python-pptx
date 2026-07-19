@@ -49,6 +49,7 @@ _default_subagent_1:
       - DO NOT invent drivers, business explanations, or causal reasoning not in the data/notes/remarks. Generic phrases like "driven by operating cash inflows", "reflecting steady occupancy", "due to ramp-up of new tenants", "attributed to market competition" are forbidden unless the data/remarks state them. If the data doesn't explain a movement, state the movement only.
       - DO NOT mention zero-balance components, nil amounts, or "not applicable" items.
       - DO NOT add bracketed supplemental figures or parenthetical inserts; write figures naturally in the sentence.
+      - DO NOT write a whole account's own zero balance as "the balance was CNY0" / "represented CNY0" — that mechanical phrasing doesn't match real report style. Use "there was no balance as at <DATE>" (BS) — reference style: "there was no balance as at 31 December 2021. The balance as at the end of FY19 and FY20 represented prepaid rentals..." — or state the period had no activity for an IS item. If only the latest period is nil and an earlier period had a real balance, lead with the nil statement, then describe the earlier balance in the same bullet.
 
       Date format: BS items use a single point-in-time date, "as at dd mmmm yyyy" (e.g. "as at 30 June 2026"). IS items reference a PERIOD, not a single date: "FY<YY>" for a full year (e.g. "FY24") or "<N>M<YY>" for a partial-year period (e.g. "1M26" for the first month of 2026) — never force an IS period into a single calendar date.
       Shared alignment rules:
@@ -117,12 +118,13 @@ _default_subagent_1:
       **按科目类型的结构要求**：
       资产负债表科目：首句必须仅说明最新期末余额及其构成（如："截至<DATE>余额为人民币X万元的银行存款且不存在使用受限情况"或"截至<DATE>余额合计人民币X万元，主要包括[各组成项]"）。首句不得罗列所有报告期间余额（避免"截至A、B、C日余额分别为X、Y、Z"式开篇），也不得以年度对比句开篇（不得以"X较上年增加/减少"或"X同比上升/下降"作为首句）。首句之后，再描述构成项目、对手方/集中度、合同条款及重要备注说明。如跨期变动重大且数据支持，可简略提及前期余额。
       利润表科目：首句必须以构成开篇——说明该科目"主要包含"哪些项目或营业收入"主要来自"哪些来源——而不是孤立的趋势句。对每一重要构成项，应在句中提供所有报告期间的金额（例如："物业管理费分别为人民币150万元、180万元、210万元，于2023年度、2024年度、2025年度期间发生"），而不是仅提供最新一期的金额。构成与多期金额之后，如有重大变动，可在数据/备注支持下说明驱动因素。
+      **同句多期金额列举，"人民币"只出现一次**：一句话里连续列出多个期间的金额时（如"分别为人民币A万元、B万元及C万元"），"人民币"只在第一个数字前出现一次，后面的数字直接接"万元"/"亿元"，不要在每个数字前都重复"人民币"。错误示范："分别为人民币2,216万元、人民币2,421万元及人民币968万元"（重复3次，读起来破碎）；正确示范："分别为人民币2,216万元、2,421万元及968万元"（只出现一次）。同一整句里出现多个不同科目/构成项各自的多期列举时，每个构成项可以各自起一次"人民币"，但同一个构成项自己的多期列举内部不得重复。
 
       **防止臆造**：不得编造数据/备注中未提及的驱动原因、业务解释或因果推理。如"主要由经营现金流入超过流出驱动"、"反映稳定的出租率"、"主要归因于评估价值下降"等通用解释，若未在数据或备注中明确出现，则禁止使用。如数据未解释某项变动，仅陈述变动事实即可，切勿臆造原因。
       日期格式: 资产负债表科目为单一时点余额，使用"截至yyyy年mm月dd日"或"yyyy年mm月末"（例如"截至2026年6月30日"或"2026年6月末"）。利润表科目描述的是一段期间，不是单一日期，使用"yyyy年m至m月"或"于yyyy年度/yyyy年m月"（例如"2026年1至6月"、"于2025年度"）——不得把利润表的期间硬套成单一日期表达。
       如数据体现重大变化，应清楚写出变动方向和幅度，整体表达尽量更紧凑、更短。资产负债表科目整体控制在约3-5句；如需列示，仅保留最大的两项构成。利润表科目约6-8句；如需列示，仅列出>=总额10%的项目，且最多3个重点。低于列示门槛的数字一般无需提及，除非对结论必不可少。
       仅在补充备注、表格右侧备注或用户备注与提供数据/备注一致时才可引用；不得自行臆造原因、审计程序、会计政策、管理层表述或其他未被输入支持的事实。
-      若某科目在所有报告期间余额均为零或可忽略不计，简要说明此事实即可(例如"该科目在审阅期间余额为零")，不要捏造构成分析或零余额的原因。
+      若某科目在所有报告期间余额均为零或可忽略不计，简要说明此事实即可，不要捏造构成分析或零余额的原因。**不得写成"余额为人民币0元"或"为0"这种机械式表达**——真实报告不会这样描述零余额。资产负债表科目用"无余额"/"未形成余额"/"该科目未产生余额"（例如"该科目于2023年12月31日无余额"）；利润表/期间性科目用"未发生"（例如"于2023年度未发生"，已在其他规则中使用的标准写法）。仅最新一期为零、之前期间有余额时，首句说明最新期无余额，随后补充前期余额及其构成（参考："截至<DATE>，该科目无余额。<PRIOR_DATE>余额主要为..."）。
       撰写的是科目评论，而不是套用固定模板。避免机械化措辞，保持分析性、简洁和报告化表达。
       数字和补充说明应自然写入段落，不要把补充金额、日期或解释放在括号中，除非源数据本身就要求如此表达。
       共享对齐规则:
