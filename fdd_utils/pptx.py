@@ -4866,34 +4866,66 @@ class PowerPointGenerator:
 
     @staticmethod
     def _merge_contd_pairs(accounts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Merge any consecutive (part1, cont'd-part2) pair that landed in the
-        same slot.  This happens when the DP re-balances: the split was created
-        because the *previous* slot was almost full, but the two halves together
-        fit in the empty slot the DP chose.  Merging removes the spurious
-        (cont'd) label and restores the original single account."""
+        """Merge any consecutive run of (part1, cont'd-part2, cont'd-part3, ...)
+        fragments that landed in the same slot.  This happens when the DP
+        re-balances: a split was created because an earlier slot was almost
+        full, but the resulting pieces all fit together in the slot the DP
+        actually chose.  Merging removes the spurious (cont'd) label(s) and
+        restores the original single account.
+
+        Only ever merged a single PAIR until a real screenshot (IMG_0076)
+        showed an orphaned "(续)" bullet sitting right after its own
+        already-rendered head -- a 3-way split (a middle fragment that is
+        BOTH is_partial [it got re-split by a later rebalance pass] AND
+        is_continuation [it continues the fragment before it]) only had its
+        first two pieces merged; the third was never considered because the
+        old loop looked at exactly one `nxt`, not the whole chain. Confirmed
+        via direct reproduction + tracing: a 3-part split landed as
+        [is_partial, is_partial+is_continuation, is_continuation] in one
+        slot, and the old pairwise merge produced "merged(1+2)" followed by
+        untouched "3" as its own still-(续)-labelled bullet."""
         result: List[Dict[str, Any]] = []
-        skip = False
-        for i, acct in enumerate(accounts):
-            if skip:
-                skip = False
+        i = 0
+        n = len(accounts)
+        while i < n:
+            acct = accounts[i]
+            if not acct.get("is_partial"):
+                result.append(acct)
+                i += 1
                 continue
-            nxt = accounts[i + 1] if i + 1 < len(accounts) else None
-            if (
-                acct.get("is_partial")
-                and nxt is not None
-                and nxt.get("is_continuation")
-                and nxt.get("original_key", nxt.get("mapping_key")) == acct.get("mapping_key")
+            base_key = acct.get("mapping_key")
+            run = [acct]
+            j = i + 1
+            while (
+                j < n
+                and accounts[j].get("is_continuation")
+                and accounts[j].get("original_key", accounts[j].get("mapping_key")) == base_key
             ):
-                combined = acct.copy()
-                p1 = str(acct.get("commentary", "") or "")
-                p2 = str(nxt.get("commentary", "") or "")
-                combined["commentary"] = (p1.rstrip() + " " + p2.lstrip()).strip()
-                for flag in ("is_partial", "is_continuation", "part_num", "original_key"):
-                    combined.pop(flag, None)
+                run.append(accounts[j])
+                j += 1
+            if len(run) > 1:
+                combined = run[0].copy()
+                combined["commentary"] = " ".join(
+                    str(a.get("commentary", "") or "").strip() for a in run
+                ).strip()
+                combined.pop("is_partial", None)
+                combined.pop("part_num", None)
+                # A middle fragment re-split by a later rebalance pass can
+                # itself be is_continuation=True (it continues a head that
+                # sits in an EARLIER slot) as well as is_partial=True (it
+                # got split again, with its own tail in THIS run) -- if
+                # run[0] is one of those, keep its is_continuation/
+                # original_key on the merged result so the "(续)" label
+                # renders correctly against the real earlier-slot head;
+                # only drop them when run[0] is a genuine, non-continuation
+                # first part (the common case).
+                if not run[0].get("is_continuation"):
+                    combined.pop("is_continuation", None)
+                    combined.pop("original_key", None)
                 result.append(combined)
-                skip = True
             else:
                 result.append(acct)
+            i = j
         return result
 
     def _greedy_forward_fill(
