@@ -3148,6 +3148,21 @@ class PowerPointGenerator:
         either box. If no such split exists, leave the pair as the DP
         produced it — this never risks introducing an overflow that wasn't
         there before.
+
+        If the full side is R (L empty), a balanced split isn't just a
+        nice-to-have -- L sitting empty while R holds content is a reading-
+        order violation (a reader scans L before R), strictly worse than
+        the "L full, R empty" pattern this pass otherwise tolerates. So for
+        that direction specifically, when no balanced split exists (a
+        single account, or nothing fits both sides), fall back to moving
+        the WHOLE of R into L if it fits L's own capacity -- restores
+        correct reading order even without an even split. Confirmed
+        reachable in practice once _optimize_slot_fill started seeing every
+        originally-intended slot (not just the ones the greedy pre-pass
+        happened to populate -- see slot_meta fix above): the DP's own
+        j==-1 "start fresh" transition doesn't care WHICH slot it skips,
+        and once R became visible as a genuine option it sometimes skipped
+        L outright, producing exactly this backwards state.
         """
         by_slide: Dict[int, Dict[str, int]] = {}
         for s_i, slot in enumerate(slots):
@@ -3163,8 +3178,7 @@ class PowerPointGenerator:
                 continue  # both empty, or both already non-empty -- nothing to rebalance
             full_i, empty_i = (l_i, r_i) if l_accts else (r_i, l_i)
             full_accts = assignment[full_i]
-            if len(full_accts) < 2:
-                continue  # can't split a single account here -- that's the greedy first pass's job
+            is_reading_order_violation = full_i == r_i  # content in R while L sits empty
 
             full_name = slots[full_i]["slot_name"]
             empty_name = slots[empty_i]["slot_name"]
@@ -3174,29 +3188,50 @@ class PowerPointGenerator:
             empty_shape = slots[empty_i]["shape"]
 
             best_k, best_diff = None, None
-            for k in range(1, len(full_accts)):
-                first, rest = full_accts[:k], full_accts[k:]
-                first_lines = self._compute_slot_used_lines(
-                    first, empty_name, slot_shape=empty_shape, statement_type=statement_type,
-                )
-                rest_lines = self._compute_slot_used_lines(
-                    rest, full_name, slot_shape=full_shape, statement_type=statement_type,
-                )
-                if first_lines > empty_cap or rest_lines > full_cap:
-                    continue
-                diff = abs(first_lines - rest_lines)
-                if best_diff is None or diff < best_diff:
-                    best_diff, best_k = diff, k
+            if len(full_accts) >= 2:
+                for k in range(1, len(full_accts)):
+                    first, rest = full_accts[:k], full_accts[k:]
+                    first_lines = self._compute_slot_used_lines(
+                        first, empty_name, slot_shape=empty_shape, statement_type=statement_type,
+                    )
+                    rest_lines = self._compute_slot_used_lines(
+                        rest, full_name, slot_shape=full_shape, statement_type=statement_type,
+                    )
+                    if first_lines > empty_cap or rest_lines > full_cap:
+                        continue
+                    diff = abs(first_lines - rest_lines)
+                    if best_diff is None or diff < best_diff:
+                        best_diff, best_k = diff, k
 
-            if best_k is None:
-                continue  # no split keeps both sides within capacity -- leave as-is
+            if best_k is not None:
+                assignment[empty_i] = full_accts[:best_k]
+                assignment[full_i] = full_accts[best_k:]
+                logger.info(
+                    "  Rebalanced lopsided L/R pair on slide %s: moved %s account(s) from slot %s "
+                    "into previously-empty slot %s",
+                    slide_idx, best_k, full_i, empty_i,
+                )
+                continue
 
-            assignment[empty_i] = full_accts[:best_k]
-            assignment[full_i] = full_accts[best_k:]
+            if not is_reading_order_violation:
+                continue  # "L full, R empty" with no even split available -- acceptable, leave as-is
+
+            # L empty, R full, and no balanced split fits -- whole-move R
+            # into L if it fits at all (even over the smooth target, same
+            # tolerance _rebalance_overflowing_boundaries' own whole-move
+            # already relies on elsewhere), since ANY non-empty L beats an
+            # empty one sitting ahead of a filled R in reading order.
+            whole_lines = self._compute_slot_used_lines(
+                full_accts, empty_name, slot_shape=empty_shape, statement_type=statement_type,
+            )
+            if whole_lines > empty_cap:
+                continue  # doesn't fit even alone -- nothing safe to do here
+            assignment[empty_i] = full_accts
+            assignment[full_i] = []
             logger.info(
-                "  Rebalanced lopsided L/R pair on slide %s: moved %s account(s) from slot %s "
-                "into previously-empty slot %s",
-                slide_idx, best_k, full_i, empty_i,
+                "  Fixed reading-order violation on slide %s: moved all %s account(s) from R "
+                "(slot %s) into empty L (slot %s)",
+                slide_idx, len(full_accts), full_i, empty_i,
             )
 
     def _consolidate_tiny_stub_lr_pairs(
@@ -4529,9 +4564,28 @@ class PowerPointGenerator:
         if not flat_accounts:
             return distribution
 
+        # Build the slot list from `slot_meta` (the FULL, originally-intended
+        # slot template the caller built BEFORE the greedy pre-pass ran) when
+        # available, not from `distribution`'s own entries. The greedy pass
+        # only ever appends a distribution entry "if current_slot_content" --
+        # a slot it never reached before running out of accounts (e.g. R of
+        # an L/R pair, when content happened to end exactly on L) is simply
+        # ABSENT from `distribution`, so building `slots` from `distribution`
+        # meant this whole DP-and-rebalance layer, including
+        # _rebalance_lopsided_lr_pairs below, never even knew that slot
+        # existed -- it only got cosmetically re-added as an empty
+        # placeholder in _distribute_content_across_slots' own epilogue,
+        # entirely AFTER every rebalance pass had already run and returned.
+        # Confirmed via direct tracing on real screenshots (IMG_0079-0086):
+        # _rebalance_lopsided_lr_pairs's own trace showed L with 5 accounts
+        # but NO corresponding R entry at all for the same slide -- not "R
+        # with 0 accounts", R simply wasn't in `slots`/`assignment`, so the
+        # "one side empty" rebalance could never fire in the first place.
         slots: List[Dict[str, Any]] = []
         is_chinese_any = any(self._account_is_chinese(a) for a in flat_accounts)
-        for slide_idx, slot_name, _accounts in distribution:
+        slot_source = slot_meta if slot_meta else [(s, n, None) for s, n, _a in distribution]
+        for slot_entry in slot_source:
+            slide_idx, slot_name = slot_entry[0], slot_entry[1]
             shape = _resolve_shape(slide_idx, slot_name)
             capacity = self._calculate_max_lines_for_textbox(
                 shape,
@@ -4788,12 +4842,25 @@ class PowerPointGenerator:
             if i < 0:
                 break
 
-        self._rebalance_lopsided_lr_pairs(assignment, slots, statement_type)
         self._consolidate_tiny_stub_lr_pairs(assignment, slots, statement_type)
         self._rebalance_underfilled_boundaries(assignment, slots, statement_type)
         self._rebalance_overflowing_boundaries(assignment, slots, statement_type)
         self._maximize_forward_fill(assignment, slots, statement_type)
         self._consolidate_trailing_near_empty_slot(assignment, slots, statement_type)
+        # Runs GENUINELY LAST, after _maximize_forward_fill -- moved here from
+        # first-in-sequence. _maximize_forward_fill's own greedy "pull nxt into
+        # cur until cur is full" design (documented as deliberately front-
+        # loading, "nothing after it should undo that") was itself undoing this
+        # pass's own balance decision on every L/R pair where L wasn't already
+        # at capacity: this ran first, split an all-in-L page into a balanced
+        # L+R, then _maximize_forward_fill immediately treated L's newfound
+        # spare room as fair game and pulled R's content straight back into L,
+        # re-emptying R -- confirmed via real screenshots (IMG_0079-0086,
+        # entities 上海松江/昆明经开) showing a completely blank R column next
+        # to a 40-50%-full L on BOTH entities' trailing BS and IS L/R pages.
+        # Running this last makes its "no box should sit visibly blank next to
+        # a non-empty one" verdict the actual final word instead.
+        self._rebalance_lopsided_lr_pairs(assignment, slots, statement_type)
 
         for s_i, slot in enumerate(slots):
             lines = slot_cost(s_i, 0, -1) if not assignment[s_i] else self._compute_slot_used_lines(
