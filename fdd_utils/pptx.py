@@ -115,15 +115,18 @@ PPTX_DEFAULT_SETTINGS: Dict[str, Any] = {
         # AND every account split point in one pass (see project memory /
         # the 2026-07-19 redesign plan, commit fde9f2c). "legacy": the
         # original DP-once-plus-six-sequential-rebalance-passes pipeline.
-        # Verified via repro_user_deck.py (both real entities, BS+IS) and
-        # inspect_databook.py: no crashes, no overflow, no lopsided/empty-
-        # vs-full L/R pairs -- but non-final-page fill (70-94%) trails
-        # legacy's typical 95-99% peaks (legacy partly reaches those via
-        # occasional slight overflow this design never allows). User
-        # explicitly asked to try it live and roll back to "legacy" here
-        # if it doesn't hold up on real content -- both code paths remain
-        # intact specifically so this is a one-line revert.
-        "algo": "clause_dp",
+        # Tried as the default (723eeae) for real-world testing on actual
+        # generated reports -- user reported the real result was WORSE
+        # than legacy (not just the already-known lower-peak-fill
+        # trade-off; a genuinely regressed outcome) and asked to roll back
+        # immediately rather than keep iterating under time pressure.
+        # Reverted to "legacy". clause_dp's code is intentionally
+        # left fully intact, not deleted -- worth revisiting with a
+        # stronger model/more iteration budget later, but not a live
+        # default until it's demonstrably at least as good as legacy on
+        # real content, not just the synthetic repro decks it was
+        # validated against this session.
+        "algo": "legacy",
         "use_pillow_text_fitting": True,
         # Repeatedly bumped up (1.08 -> 1.15 -> 1.25, and the BS override
         # further to 1.13 -> 1.47) in response to page fill plateauing too
