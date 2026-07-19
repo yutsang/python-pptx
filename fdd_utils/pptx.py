@@ -113,11 +113,17 @@ PPTX_DEFAULT_SETTINGS: Dict[str, Any] = {
     "commentary_packing": {
         # "clause_dp": single page-level DP that chooses every slot boundary
         # AND every account split point in one pass (see project memory /
-        # the 2026-07-19 redesign plan). "legacy": the original DP-once-plus-
-        # six-sequential-rebalance-passes pipeline. Coexist during rollout;
-        # default stays "legacy" until side-by-side verification against
-        # inspect_pptx.py + inspect_databook.py confirms no regression.
-        "algo": "legacy",
+        # the 2026-07-19 redesign plan, commit fde9f2c). "legacy": the
+        # original DP-once-plus-six-sequential-rebalance-passes pipeline.
+        # Verified via repro_user_deck.py (both real entities, BS+IS) and
+        # inspect_databook.py: no crashes, no overflow, no lopsided/empty-
+        # vs-full L/R pairs -- but non-final-page fill (70-94%) trails
+        # legacy's typical 95-99% peaks (legacy partly reaches those via
+        # occasional slight overflow this design never allows). User
+        # explicitly asked to try it live and roll back to "legacy" here
+        # if it doesn't hold up on real content -- both code paths remain
+        # intact specifically so this is a one-line revert.
+        "algo": "clause_dp",
         "use_pillow_text_fitting": True,
         # Repeatedly bumped up (1.08 -> 1.15 -> 1.25, and the BS override
         # further to 1.13 -> 1.47) in response to page fill plateauing too
