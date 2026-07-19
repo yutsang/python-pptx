@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # --- begin pptx/text.py ---
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import bisect
 import re
 from typing import Optional
 
@@ -110,6 +111,13 @@ PPTX_DEFAULT_SETTINGS: Dict[str, Any] = {
         "validation_temperature": 0.1,
     },
     "commentary_packing": {
+        # "clause_dp": single page-level DP that chooses every slot boundary
+        # AND every account split point in one pass (see project memory /
+        # the 2026-07-19 redesign plan). "legacy": the original DP-once-plus-
+        # six-sequential-rebalance-passes pipeline. Coexist during rollout;
+        # default stays "legacy" until side-by-side verification against
+        # inspect_pptx.py + inspect_databook.py confirms no regression.
+        "algo": "legacy",
         "use_pillow_text_fitting": True,
         # Repeatedly bumped up (1.08 -> 1.15 -> 1.25, and the BS override
         # further to 1.13 -> 1.47) in response to page fill plateauing too
@@ -2593,6 +2601,658 @@ class PowerPointGenerator:
         self._content_lines_cache[cache_key] = result
         return result
 
+    # ------------------------------------------------------------------
+    # Clause-level packing DP ("clause_dp" algo) -- see the 2026-07-19
+    # redesign plan: replaces the legacy DP-once-plus-six-rebalance-passes
+    # pipeline with one page-level DP that chooses every slot boundary AND
+    # every account split point in a single pass, so no post-hoc patch is
+    # needed. Gated behind commentary_packing.algo ("clause_dp" vs
+    # "legacy") during rollout -- see _distribute_content_across_slots.
+    # ------------------------------------------------------------------
+
+    _PACKING_CLAUSE_END_CHARS = ".;。；！？!?"
+
+    @classmethod
+    def _segment_clauses_for_packing(cls, text: str) -> List[List[str]]:
+        """Paragraph-aware clause segmentation for the clause-level DP.
+
+        Splits on '\\n' into paragraphs first (matching _calculate_content_
+        lines' own paras[0]-vs-paras[1:] distinction: the account's own
+        first paragraph gets a full-width first line, later paragraphs are
+        narrow throughout via the hanging indent), then each paragraph into
+        clauses on the SAME boundary set ai.py's segment_clauses uses
+        (sentence-enders plus comma, protecting a comma/period sitting
+        between two digits) -- broader than the legacy
+        _split_commentary_at_boundary's set, so a DP-chosen split point can
+        never fall inside a clause_reviews-defined clause used for
+        hallucination-highlighting (_build_clause_segments). Falls back to
+        the whole paragraph as one atomic clause if no boundary is found.
+        """
+        text = str(text or "")
+        if not text.strip():
+            return []
+        paragraphs = [p for p in text.split('\n') if p.strip()]
+        result: List[List[str]] = []
+        for para in paragraphs:
+            clauses: List[str] = []
+            start = 0
+            n = len(para)
+            for i, ch in enumerate(para):
+                boundary = ch in cls._PACKING_CLAUSE_END_CHARS or ch in ",，"
+                if boundary and ch in ".,，":
+                    prev_c = para[i - 1] if i > 0 else ""
+                    next_c = para[i + 1] if i + 1 < n else ""
+                    if prev_c.isdigit() and next_c.isdigit():
+                        boundary = False
+                if boundary:
+                    chunk = para[start:i + 1].strip()
+                    if chunk:
+                        clauses.append(chunk)
+                    start = i + 1
+            tail = para[start:].strip()
+            if tail:
+                clauses.append(tail)
+            if not clauses:
+                clauses = [para.strip()]
+            result.append(clauses)
+        return result
+
+    def _flatten_accounts_to_units(self, structured_data: List[Dict]) -> List[Dict[str, Any]]:
+        """Reading-order global clause stream. Each unit keeps a reference to
+        its ORIGINAL account dict (identity-compared downstream, never
+        mutated) plus its paragraph position so a range of units can be
+        rejoined back into exact original text."""
+        units: List[Dict[str, Any]] = []
+        for account in structured_data:
+            commentary = str(account.get("commentary", "") or "")
+            paras = self._segment_clauses_for_packing(commentary)
+            is_first = True
+            for para_idx, clauses in enumerate(paras):
+                for clause_text in clauses:
+                    units.append({
+                        "account": account,
+                        "para_idx": para_idx,
+                        "text": clause_text,
+                        "is_first_unit_of_account": is_first,
+                    })
+                    is_first = False
+        return units
+
+    @staticmethod
+    def _units_range_to_fragments(units: List[Dict[str, Any]], start: int, end: int) -> List[Dict[str, Any]]:
+        """Convert units[start:end) into the same account-fragment-dict shape
+        rendering (and _compute_slot_used_lines) already expects -- reused
+        both for DP cost lookups (transient, thrown away immediately) and
+        for the final real assignment (_units_to_account_fragments, which
+        additionally fixes up part_num across the whole statement)."""
+        fragments: List[Dict[str, Any]] = []
+        i = start
+        while i < end:
+            account = units[i]["account"]
+            run_start = i
+            while i < end and units[i]["account"] is account:
+                i += 1
+            run_units = units[run_start:i]
+            by_para: Dict[int, List[str]] = {}
+            for u in run_units:
+                by_para.setdefault(u["para_idx"], []).append(u["text"])
+            commentary = "\n".join("".join(chunks) for chunks in by_para.values())
+            is_continuation = not run_units[0]["is_first_unit_of_account"]
+            is_partial = (
+                i == end and i < len(units) and units[i]["account"] is account
+            )
+            fragment = dict(account)
+            fragment["commentary"] = commentary
+            if is_continuation:
+                fragment["is_continuation"] = True
+                fragment["original_key"] = account.get("mapping_key", account.get("account_name"))
+            else:
+                fragment.pop("is_continuation", None)
+                fragment.pop("original_key", None)
+            if is_partial:
+                fragment["is_partial"] = True
+            else:
+                fragment.pop("is_partial", None)
+            fragment["part_num"] = 1
+            fragments.append(fragment)
+        return fragments
+
+    def _range_cost(
+        self,
+        units: List[Dict[str, Any]],
+        start: int,
+        end: int,
+        slot_name: str,
+        shape,
+        statement_type: Optional[str],
+    ) -> float:
+        """std_lh-unit cost of placing units[start:end) in one slot -- reuses
+        _compute_slot_used_lines (accurate measurer, real category-header
+        costing) unchanged via the shared fragment builder above."""
+        if start >= end:
+            return 0.0
+        fragments = self._units_range_to_fragments(units, start, end)
+        return self._compute_slot_used_lines(
+            fragments, slot_name, slot_shape=shape, statement_type=statement_type,
+        )
+
+    # Below target_fill_min_ratio, a slot is charged the smooth "how short
+    # of target" cost; below THIS ratio, it's charged a large flat penalty
+    # instead -- this single step is what makes the DP prefer a genuinely
+    # empty slot (0 penalty -- deliberately unused) or a properly-filled one
+    # over an accidental sliver, without a separate lopsided/stub rebalance
+    # pass. Comparable in scale to "a full page's worth" so it always
+    # dominates the smooth in-between cost (which maxes out at
+    # target_fill_min_ratio, ~0.95).
+    _CLAUSE_DP_STUB_THRESHOLD = 0.20
+    _CLAUSE_DP_STUB_PENALTY = 3.0
+    # Small fixed cost whenever a chosen boundary lands strictly inside an
+    # account (not at its natural start/end) -- makes the DP default to NOT
+    # splitting whenever splitting and not-splitting would otherwise tie on
+    # fill quality, which is what makes a later "did two split halves end up
+    # back in one slot" merge pass unnecessary (the DP never speculatively
+    # splits in the first place).
+    _CLAUSE_DP_SPLIT_PENALTY = 0.02
+    # Small tie-break weight for a two-slot page's own L/R fill-ratio gap
+    # (see _page_transition) -- only ever discriminates between candidates
+    # that already tied on total shortfall, deliberately kept far smaller
+    # than a real fill-ratio difference so it can never override one.
+    _CLAUSE_DP_IMBALANCE_WEIGHT = 0.05
+    # Widening capacity-relax sequence, matching the legacy DP's own
+    # _relax_factors ([1.0, ~1.05-1.15, 1.35, 1.6, 10.0]): try a tight fit
+    # first, only concede more room if genuinely infeasible. The tail value
+    # (10.0) is a "never leave content unplaced" absolute last resort, NOT
+    # a normal operating point -- _apply_bounded_autofit only ever shrinks
+    # font down to _BOUNDED_AUTOFIT_MIN_SCALE=0.70, so anything much beyond
+    # ~1.4x is already unrenderable in practice. A first draft used factors
+    # up to 12.0 densely populated across the whole range; combined with a
+    # (since-reverted) page-count-first retry structure, that let a
+    # single-page attempt "succeed" at an absurd relax factor, cramming 17
+    # accounts into one box at 300% fill -- confirmed via direct
+    # reproduction. Kept dense only in the sane 1.0-1.6 range; the huge
+    # final entry exists solely so the DP can never return infeasible.
+    _CLAUSE_DP_RELAX_FACTORS = (1.0, 1.05, 1.15, 1.3, 1.6, 10.0)
+
+    def _clause_dp_slot_penalty(self, used: float, capacity: float, target_fill_min_ratio: float) -> float:
+        """A used=0 slot is NOT exempted here (deliberately, unlike a naive
+        port of the legacy DP's per-slot objective) -- the only place this
+        function is ever called with used=0 is _page_transition's L/R inner
+        search, where a genuinely content-exhausted trailing page is
+        already handled separately by the page-level skip-transition
+        (bypasses this function entirely). So a used=0 side reaching this
+        function always means "content exists and could have gone here, but
+        the search put it all on the sibling side instead" -- exactly the
+        lopsided-L/R defect this redesign exists to eliminate structurally,
+        confirmed via direct reproduction (a real 2-account page split as
+        L=0/R=482-chars instead of a roughly even split, because the old
+        exemption let one side's forced 0.0 mask how much worse the total
+        was versus balancing)."""
+        if capacity <= 0:
+            return 0.0
+        ratio = used / capacity
+        if ratio < self._CLAUSE_DP_STUB_THRESHOLD:
+            return self._CLAUSE_DP_STUB_PENALTY
+        if ratio >= target_fill_min_ratio:
+            return 0.0
+        # Linear, deliberately -- NOT squared. A squared shortfall was tried
+        # first (to fix a same-page L/R tie -- see _page_transition's
+        # imbalance_penalty for the real fix) but made the objective convex
+        # ACROSS EVERY PAGE COMPARISON, not just within one page's L/R
+        # split, so the DP started preferring "every page evenly at ~60%"
+        # over "some pages near target, one page lower" even though the
+        # LATTER has higher total utilisation and is exactly what "text
+        # utilisation" (the user's stated priority) means -- confirmed via
+        # direct reproduction: overall fill dropped from 87%/93% peaks to a
+        # flat ~55-70% everywhere. Reverted to linear; same-page L/R balance
+        # is handled by a small dedicated tie-break term instead, which
+        # doesn't touch the cross-page aggregate objective at all.
+        return max(0.0, target_fill_min_ratio - ratio)
+
+    @staticmethod
+    def _is_unit_account_boundary(units: List[Dict[str, Any]], idx: int) -> bool:
+        if idx <= 0 or idx >= len(units):
+            return True
+        return units[idx - 1]["account"] is not units[idx]["account"]
+
+    def _max_fit_end(
+        self,
+        units: List[Dict[str, Any]],
+        start: int,
+        end_limit: int,
+        slot_name: str,
+        shape,
+        statement_type: Optional[str],
+        cap: float,
+    ) -> int:
+        """Binary search (same technique as the true_max search in the
+        legacy _split_commentary_at_boundary, applied at clause-unit
+        granularity) for the largest `end` in (start, end_limit] whose
+        range_cost still fits `cap`. Returns `start` if nothing fits.
+        _range_cost is monotonically non-decreasing in `end`, so this is
+        the O(log n) alternative to scanning every candidate end value."""
+        if start >= end_limit:
+            return start
+        if self._range_cost(units, start, end_limit, slot_name, shape, statement_type) <= cap:
+            return end_limit
+        lo, hi, best = start + 1, end_limit, start
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if self._range_cost(units, start, mid, slot_name, shape, statement_type) <= cap:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best
+
+    def _page_transition(
+        self,
+        units: List[Dict[str, Any]],
+        c: int,
+        cprime: int,
+        page: Dict[str, Any],
+        cap_mult: float,
+        target_fill_min_ratio: float,
+        statement_type: Optional[str],
+        boundaries: List[int],
+        M: Optional[int] = None,
+    ) -> Optional[Tuple[float, Optional[int]]]:
+        """Best achievable (total_penalty, split_point) for placing
+        units[c:cprime) on this page (1 or 2 slots), or None if infeasible
+        even at cap_mult relax. split_point is None for a single-slot page,
+        else the winning L/R boundary `m` (L takes [c, m), R takes
+        [m, cprime)).
+
+        Candidate `m` values are restricted to account boundaries within
+        the range (looked up via `boundaries`, precomputed once by the
+        caller -- bisect, not a rescan) plus the single left-slot max-fit
+        point (binary search) -- a full linear scan over every clause
+        boundary was the dominant cost of the whole DP (O(page-size)
+        candidates x O(page-size) work each); a genuinely optimal split is
+        essentially always at an account boundary or at the point that
+        maximizes one side's fill, never at an arbitrary interior clause,
+        so this loses no real solutions in practice while cutting
+        candidate count by roughly (clauses per account)-fold.
+
+        `M`, if given, marks the length of the WHOLE unit stream --
+        `cprime == M` means this page holds the true tail of the entire
+        document (nothing left afterward), which is exempted from all
+        fill-quality penalties (matches the legacy DP's own "last slot
+        exempt from underfill penalty" rule). Linear per-slot penalty is
+        mathematically invariant to WHERE a fixed total shortfall lands
+        across different pages (proven the same way the same-page L/R tie
+        was: shortfall-sum is unchanged by redistribution), so without
+        this exemption the DP has no preference for pushing any
+        unavoidable shortfall specifically onto the FINAL page -- confirmed
+        via direct reproduction: a middle page landed at 37%/45% while the
+        page immediately after it (which should have been the lighter,
+        expected-to-be-trailing one) sat at 59%/70%, backwards from every
+        established front-loading expectation in this codebase."""
+        page_slots = page["slots"]
+        # cprime == M means this page's range reaches the true tail of the
+        # whole document -- exempt from having to reach target_fill_min_
+        # ratio (a lighter final page is expected, matches the legacy DP's
+        # own "last slot exempt from underfill penalty" rule), but NOT from
+        # the stub-threshold check: an exemption that zeroed penalty
+        # unconditionally reintroduced the exact "one side left empty while
+        # its sibling gets content" defect this redesign exists to
+        # eliminate, just relocated onto the final page specifically
+        # (confirmed via direct reproduction: L=0/R=23% on the true trailing
+        # page after a naive unconditional exemption). Passing
+        # target_fill_min_ratio=0.0 into _clause_dp_slot_penalty keeps its
+        # stub_threshold check fully active (that branch is checked BEFORE
+        # comparing against target) while making every non-stub ratio
+        # trivially satisfy "ratio >= target" and score 0 -- exactly "don't
+        # require fullness, but still don't leave one side suspiciously
+        # empty next to a filled sibling."
+        effective_target = 0.0 if (M is not None and cprime == M) else target_fill_min_ratio
+        edge_penalty = 0.0
+        if c < cprime:
+            if not self._is_unit_account_boundary(units, c):
+                edge_penalty += self._CLAUSE_DP_SPLIT_PENALTY
+            if not self._is_unit_account_boundary(units, cprime):
+                edge_penalty += self._CLAUSE_DP_SPLIT_PENALTY
+
+        if len(page_slots) == 1:
+            slot = page_slots[0]
+            cost = self._range_cost(units, c, cprime, slot["slot_name"], slot["shape"], statement_type)
+            if cost > slot["capacity"] * cap_mult:
+                return None
+            slot_penalty = self._clause_dp_slot_penalty(cost, slot["capacity"], effective_target)
+            return (slot_penalty + edge_penalty, None)
+
+        left, right = page_slots[0], page_slots[1]
+        left_cap = left["capacity"] * cap_mult
+        right_cap = right["capacity"] * cap_mult
+
+        lo_i = bisect.bisect_left(boundaries, c)
+        hi_i = bisect.bisect_right(boundaries, cprime)
+        candidates = {c, cprime}
+        candidates.update(boundaries[lo_i:hi_i])
+        candidates.add(
+            self._max_fit_end(units, c, cprime, left["slot_name"], left["shape"], statement_type, left_cap)
+        )
+
+        best_penalty: Optional[float] = None
+        best_m: int = c
+        for m in sorted(candidates):
+            cost_l = self._range_cost(units, c, m, left["slot_name"], left["shape"], statement_type)
+            if cost_l > left_cap:
+                continue
+            cost_r = self._range_cost(units, m, cprime, right["slot_name"], right["shape"], statement_type)
+            if cost_r > right_cap:
+                continue
+            penalty = (
+                self._clause_dp_slot_penalty(cost_l, left["capacity"], effective_target)
+                + self._clause_dp_slot_penalty(cost_r, right["capacity"], effective_target)
+            )
+            # Small dedicated tie-break for THIS page's own L/R balance only
+            # -- deliberately not folded into _clause_dp_slot_penalty itself
+            # (a squared/convex version of that function was tried and
+            # reverted: it fixed same-page ties but also made the
+            # CROSS-page objective convex, dragging every page toward a
+            # uniform ~60% instead of letting some genuinely sit near
+            # target while others are lower, which is what "utilisation"
+            # actually wants). A small linear imbalance term here only ever
+            # discriminates between L/R splits that already tied on total
+            # shortfall -- it can't out-weigh a real fill difference.
+            ratio_l = cost_l / left["capacity"] if left["capacity"] > 0 else 0.0
+            ratio_r = cost_r / right["capacity"] if right["capacity"] > 0 else 0.0
+            penalty += abs(ratio_l - ratio_r) * self._CLAUSE_DP_IMBALANCE_WEIGHT
+            if not self._is_unit_account_boundary(units, m):
+                penalty += self._CLAUSE_DP_SPLIT_PENALTY
+            if best_penalty is None or penalty < best_penalty:
+                best_penalty = penalty
+                best_m = m
+        if best_penalty is None:
+            return None
+        return best_penalty + edge_penalty, best_m
+
+    def _ensure_units_fit_any_page(
+        self,
+        units: List[Dict[str, Any]],
+        pages: List[Dict[str, Any]],
+        statement_type: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        """Guarantee every unit individually fits within at least the most
+        permissive available slot at max relax -- a pathological single
+        clause with no internal punctuation (so segmentation couldn't break
+        it) would otherwise make the whole DP infeasible. Recursively halves
+        an oversized clause at a word/number-safe midpoint (reusing
+        _snap_split_before_number) until every piece fits. Should be
+        unreachable on real financial commentary; exists as a safety net."""
+        if not pages:
+            return units
+        ref_slot = max(
+            (s for page in pages for s in page["slots"]),
+            key=lambda s: s["capacity"],
+        )
+        max_relaxed = ref_slot["capacity"] * self._CLAUSE_DP_RELAX_FACTORS[-1]
+
+        def fit(u: Dict[str, Any]) -> List[Dict[str, Any]]:
+            cost = self._range_cost([u], 0, 1, ref_slot["slot_name"], ref_slot["shape"], statement_type)
+            if cost <= max_relaxed or len(u["text"]) < 20:
+                return [u]
+            mid = len(u["text"]) // 2
+            mid = self._snap_split_before_number(u["text"], mid)
+            mid = max(1, min(mid, len(u["text"]) - 1))
+            head = u["text"][:mid].strip()
+            tail = u["text"][mid:].strip()
+            if not head or not tail:
+                return [u]
+            u1 = dict(u)
+            u1["text"] = head
+            u2 = dict(u)
+            u2["text"] = tail
+            u2["is_first_unit_of_account"] = False
+            return fit(u1) + fit(u2)
+
+        out: List[Dict[str, Any]] = []
+        for u in units:
+            out.extend(fit(u))
+        return out
+
+    def _pack_accounts_via_clause_dp(
+        self,
+        structured_data: List[Dict],
+        slots: List[Tuple[int, str]],
+        slot_shapes: Dict[int, Any],
+        statement_type: Optional[str],
+    ) -> List[Tuple[int, str, List[Dict[str, Any]]]]:
+        """Single page-level DP that chooses every slot boundary AND every
+        account split point in one pass -- see the 2026-07-19 redesign plan.
+        dp[p][c] = lexicographic-best (num_pages_used, total_penalty) for
+        placing units[0:c] into the first p pages. Replaces the legacy
+        greedy-seed + whole-account-DP + six-rebalance-pass + merge pipeline
+        entirely for this statement."""
+        units = self._flatten_accounts_to_units(structured_data)
+        if not units:
+            return []
+
+        is_chinese_any = any(self._account_is_chinese(a) for a in structured_data)
+        pages: List[Dict[str, Any]] = []
+        i = 0
+        while i < len(slots):
+            slide_idx = slots[i][0]
+            page_slots: List[Dict[str, Any]] = []
+            while i < len(slots) and slots[i][0] == slide_idx:
+                s_idx, slot_name = slots[i]
+                shape = slot_shapes.get(i)
+                capacity = self._calculate_max_lines_for_textbox(
+                    shape, is_chinese=is_chinese_any, slot_name=slot_name, statement_type=statement_type,
+                )
+                page_slots.append({
+                    "slot_name": slot_name, "shape": shape,
+                    "capacity": max(1.0, float(capacity or 1)), "slide_idx": s_idx,
+                })
+                i += 1
+            pages.append({"slide_idx": slide_idx, "slots": page_slots})
+
+        if not pages:
+            return []
+
+        units = self._ensure_units_fit_any_page(units, pages, statement_type)
+
+        packing = self._packing_settings(statement_type)
+        target_fill_min_ratio = float(packing.get("target_fill_min_ratio", 0.95) or 0.95)
+
+        M = len(units)
+        P = len(pages)
+        INF = float("inf")
+        INF_ST: Tuple[int, float] = (P + 1, INF)
+
+        # Every account-boundary index (0, M, and every point where the
+        # account identity changes) -- the DP only ever needs to consider
+        # `c`/`cprime` landing at one of these OR at a max-fit point (see
+        # _page_transition/_max_fit_end), never an arbitrary interior
+        # clause. Cuts the state space from O(M) to O(number of accounts).
+        boundaries: List[int] = [
+            idx for idx in range(M + 1) if self._is_unit_account_boundary(units, idx)
+        ]
+
+        solved = False
+        cap_mult = self._CLAUSE_DP_RELAX_FACTORS[-1]
+        dp: List[List[Tuple[int, float]]] = []
+        backptr: List[List[Optional[int]]] = []
+
+        # Single loop over cap_mult, always using the FULL P pages -- NOT a
+        # separate outer loop over page-count. Mirrors the legacy DP's own
+        # documented structure exactly ("run the DP at full S_orig slots --
+        # because the DP's own tight-packing objective will already leave
+        # trailing slots empty when the content fits in fewer"): the
+        # page-0-forced-non-skippable page-1..P-1-skippable transitions
+        # ALREADY let the DP prefer fewer non-empty pages WITHIN one
+        # cap_mult attempt, so a separate S_try outer loop is both
+        # redundant AND dangerous -- confirmed via direct reproduction: an
+        # earlier version of this that tried S_try=1 (single page) FIRST
+        # found it "feasible" only by climbing to a wildly permissive
+        # relax factor, cramming all 17 accounts into one box at 300% fill
+        # (a real render would need to shrink text far below
+        # _BOUNDED_AUTOFIT_MIN_SCALE=0.70 to fit, i.e. actually broken) --
+        # fewer-pages-at-any-cost is not the same goal as fewer-pages-at-a-
+        # SENSIBLE-relax, and the lexicographic objective has no way to
+        # know 12x relax is unrenderable while 1.3x is fine. Relax factors
+        # themselves are capped accordingly (see _CLAUSE_DP_RELAX_FACTORS).
+        for _cap_mult in self._CLAUSE_DP_RELAX_FACTORS:
+            dp = [[INF_ST for _ in range(M + 1)] for _ in range(P + 1)]
+            backptr = [[None for _ in range(M + 1)] for _ in range(P + 1)]
+            dp[0][0] = (0, 0.0)
+
+            for p in range(P):
+                page = pages[p]
+                total_cap = sum(s["capacity"] for s in page["slots"]) * _cap_mult
+                proxy_slot = page["slots"][0]
+                for c in boundaries:
+                    if dp[p][c][0] >= INF_ST[0]:
+                        continue
+                    # Page 0 (the first page of this statement) always
+                    # physically exists regardless of content -- it holds
+                    # the embedded financial table, only the commentary box
+                    # beside it is being decided here. Leaving it "empty"
+                    # saves no real slide, unlike a genuinely-droppable
+                    # later commentary-only L/R page, so it must never earn
+                    # the free num_pages_used credit the skip-transition
+                    # below grants -- otherwise the lexicographic objective
+                    # (fewer pages first) actively prefers cramming
+                    # everything into fewer LATER pages while page 0's
+                    # commentary sits blank next to a half-empty table
+                    # page, which is strictly worse with zero benefit.
+                    # Confirmed via direct reproduction: without this guard
+                    # a real 17-account BS packed 0 accounts onto the table
+                    # page and lopsidedly crammed the rest into 2 pages
+                    # instead of 3.
+                    if p > 0 and dp[p][c] < dp[p + 1][c]:
+                        dp[p + 1][c] = dp[p][c]
+                        backptr[p + 1][c] = c
+                    if len(page["slots"]) == 1:
+                        max_fit_cprime = self._max_fit_end(
+                            units, c, M, proxy_slot["slot_name"], proxy_slot["shape"], statement_type, total_cap,
+                        )
+                        if max_fit_cprime <= c:
+                            continue
+                        lo_i = bisect.bisect_right(boundaries, c)
+                        hi_i = bisect.bisect_right(boundaries, max_fit_cprime)
+                        cprime_candidates = set(boundaries[lo_i:hi_i])
+                        cprime_candidates.add(max_fit_cprime)
+                    else:
+                        # A single-column proxy measurement underestimates a
+                        # two-slot page's true combined capacity -- content
+                        # actually gets SPLIT across two narrower columns,
+                        # not crammed into one, so bounding cprime by the
+                        # proxy's max-fit point silently cut off real,
+                        # achievable placements (confirmed via direct
+                        # reproduction: a real page landed at 23%/26% fill
+                        # while a later page absorbed content that should
+                        # have stayed here). Boundary count is small (~tens
+                        # per statement), so just try every remaining
+                        # account boundary and let _page_transition's own
+                        # feasibility check (the real two-column-aware cost)
+                        # reject whatever doesn't fit.
+                        lo_i = bisect.bisect_right(boundaries, c)
+                        cprime_candidates = set(boundaries[lo_i:])
+                    if not cprime_candidates:
+                        continue
+                    for cprime in sorted(cprime_candidates):
+                        result = self._page_transition(
+                            units, c, cprime, page, _cap_mult, target_fill_min_ratio, statement_type, boundaries,
+                            M=M,
+                        )
+                        if result is None:
+                            continue
+                        penalty, _m = result
+                        candidate = (dp[p][c][0] + 1, dp[p][c][1] + penalty)
+                        if candidate < dp[p + 1][cprime]:
+                            dp[p + 1][cprime] = candidate
+                            backptr[p + 1][cprime] = c
+
+            if dp[P][M][0] < INF_ST[0]:
+                solved = True
+                cap_mult = _cap_mult
+                break
+
+        P_full = len(pages)
+
+        if solved:
+            page_assign: List[Tuple[int, int]] = []
+            p, c = P, M
+            while p > 0:
+                prev_c = backptr[p][c]
+                page_assign.append((prev_c, c))
+                c = prev_c
+                p -= 1
+            page_assign.reverse()
+        else:
+            logger.warning(
+                "Clause DP: infeasible even at max relax (%s pages, %s clause-units) -- "
+                "falling back to naive even split (content preserved, may overflow visually).",
+                P_full, M,
+            )
+            page_assign = []
+            c = 0
+            per_page = max(1, -(-M // P_full))  # ceil division
+            for idx in range(P_full):
+                end = M if idx == P_full - 1 else min(M, c + per_page)
+                page_assign.append((c, end))
+                c = end
+
+        return self._units_to_account_fragments(
+            units, pages, page_assign, statement_type, target_fill_min_ratio, cap_mult, boundaries, M,
+        )
+
+    def _units_to_account_fragments(
+        self,
+        units: List[Dict[str, Any]],
+        pages: List[Dict[str, Any]],
+        page_assign: List[Tuple[int, int]],
+        statement_type: Optional[str],
+        target_fill_min_ratio: float,
+        cap_mult: float,
+        boundaries: List[int],
+        M: int,
+    ) -> List[Tuple[int, str, List[Dict[str, Any]]]]:
+        """Reconstruct the final (slide_idx, slot_name, [account_fragment])
+        list from the DP's chosen page ranges, re-deriving each two-slot
+        page's L/R split point and assigning part_num across the whole
+        statement in true reading order (each original account's own stable
+        identity, via `id()`, tracks how many fragments it's produced so
+        far)."""
+        # First compute the flat list of (slide_idx, slot_name, start, end)
+        # slot ranges in true reading order -- re-deriving each 2-slot
+        # page's L/R split point once (cheap, O(page size), not part of the
+        # DP's own hot loop).
+        slot_ranges: List[Tuple[int, str, int, int]] = []
+        for page, (c, cprime) in zip(pages, page_assign):
+            if len(page["slots"]) == 1:
+                slot = page["slots"][0]
+                slot_ranges.append((page["slide_idx"], slot["slot_name"], c, cprime))
+                continue
+            left, right = page["slots"]
+            if c == cprime:
+                slot_ranges.append((page["slide_idx"], left["slot_name"], c, c))
+                slot_ranges.append((page["slide_idx"], right["slot_name"], c, c))
+                continue
+            transition = self._page_transition(
+                units, c, cprime, page, cap_mult, target_fill_min_ratio, statement_type, boundaries, M=M,
+            )
+            m = transition[1] if transition and transition[1] is not None else cprime
+            slot_ranges.append((page["slide_idx"], left["slot_name"], c, m))
+            slot_ranges.append((page["slide_idx"], right["slot_name"], m, cprime))
+
+        part_num_by_account: Dict[int, int] = {}
+        result: List[Tuple[int, str, List[Dict[str, Any]]]] = []
+        for slide_idx, slot_name, start, end in slot_ranges:
+            fragments = self._units_range_to_fragments(units, start, end)
+            j = start
+            for frag in fragments:
+                account = units[j]["account"]
+                while j < end and units[j]["account"] is account:
+                    j += 1
+                key = id(account)
+                part_num_by_account[key] = part_num_by_account.get(key, 0) + 1
+                frag["part_num"] = part_num_by_account[key]
+            result.append((slide_idx, slot_name, fragments))
+
+        return result
+
     def _distribute_content_across_slots(
         self,
         structured_data: List[Dict],
@@ -2668,6 +3328,22 @@ class PowerPointGenerator:
                 slide = self.presentation.slides[actual_slide_idx]
                 slot_shape = self._resolve_commentary_slot_shape(slide, slot_name)
             slot_shapes[slot_idx] = slot_shape or sample_shape
+
+        packing_algo = str(self._packing_settings(statement_type).get("algo", "legacy") or "legacy")
+        if packing_algo == "clause_dp":
+            distribution = self._pack_accounts_via_clause_dp(
+                structured_data, slots, slot_shapes, statement_type,
+            )
+            # Same "represent an empty slot on an otherwise-used slide"
+            # bookkeeping the legacy path's own epilogue applies below --
+            # duplicated here (not shared via a fallthrough) so the legacy
+            # body remains completely untouched during rollout.
+            slides_with_content = {slide_idx for slide_idx, _slot_name, accounts in distribution if accounts}
+            present_pairs = {(slide_idx, slot_name) for slide_idx, slot_name, _accounts in distribution}
+            for slide_idx, slot_name in slots:
+                if slide_idx in slides_with_content and (slide_idx, slot_name) not in present_pairs:
+                    distribution.append((slide_idx, slot_name, []))
+            return distribution
 
         logger.info("Total slots available: %s", len(slots))
         
