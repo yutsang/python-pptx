@@ -640,8 +640,6 @@ def render_batch_processing_section():
             key=combined_filename_key,
         )
 
-        st.divider()
-
         # Databooks themselves are uploaded once in the sidebar (2+ files
         # there is what puts batch mode into effect at all -- see
         # render_sidebar_upload) and already persisted to stable temp paths
