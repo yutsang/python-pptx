@@ -987,13 +987,27 @@ def _attr_text_blob(df) -> str:
     """Concatenate all free-text in df.attrs (supporting_notes, table_linked_remarks,
     adjacent_detail_rows, rhs context, etc.) so figures cited in the NOTES — not just
     the numeric table — can ground a clause. Many legitimate figures (registered
-    capital, audit fees, USD amounts) live only in the remarks."""
+    capital, audit fees, USD amounts) live only in the remarks.
+
+    Also stringifies bare int/float leaf values, not just strings -- confirmed via
+    real screenshots that adjacent_detail_rows' own primary value (e.g. a "房产税"
+    sub-line-item that only ever appears as a detail row, never its own numeric-
+    table row) is stored as a raw Python float (workbook.py's own `effective_value`
+    keyed by the column label), not a string. The walk below used to silently drop
+    any non-str/dict/list/tuple leaf, so that number was NEVER in the grounding
+    pool at all -- not even in its raw, non-annualized form, which is a more
+    fundamental gap than the annualization-only fix layered on top of this
+    function's output (see SourceIndex._values_for_one_df)."""
     parts: List[str] = []
     attrs = getattr(df, "attrs", None) or {}
 
     def walk(v):
         if isinstance(v, str):
             parts.append(v)
+        elif isinstance(v, bool):
+            return
+        elif isinstance(v, (int, float)):
+            parts.append(str(v))
         elif isinstance(v, dict):
             for vv in v.values():
                 walk(vv)
