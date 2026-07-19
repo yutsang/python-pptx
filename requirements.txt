@@ -10,3 +10,4 @@ openai>=1.0.0
 ipython>=8.0.0
 pillow>=10.0.0
 PyYAML>=6.0
+jieba>=0.42.1

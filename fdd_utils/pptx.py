@@ -3599,19 +3599,63 @@ class PowerPointGenerator:
     )
 
     @classmethod
+    def _jieba_word_boundary_snap(cls, text: str, pos: int) -> Optional[int]:
+        """If jieba is installed, segment `text` and return the start index
+        of whichever word strictly contains `pos`, or None if pos already
+        sits on a word boundary (or jieba is unavailable/errors).
+
+        This is the GENERAL version of the curated _PROTECTED_CJK_COMPOUNDS
+        list below -- it was found to have a real gap: "结清" (settle) split
+        as "...或交割前结" / "清安排..." in real production output, the
+        SECOND compound found broken after the first round of fixes
+        (人民币/万元/分别/年度) -- confirming a fixed list will always be
+        one case behind whatever the AI writes next, since Chinese has no
+        spaces to mark word boundaries structurally. jieba is a real
+        Chinese-word-segmentation library (context-aware -- correctly
+        keeps "784"/"万元" as separate tokens but "分别"/"年度"/"结清" as
+        single ones); used here ONLY for its segmentation, no other
+        behaviour change. Optional dependency, imported lazily so a
+        machine without it still runs (falls back to the curated list
+        below, unchanged) rather than failing PPTX generation outright.
+        """
+        try:
+            import jieba  # type: ignore
+        except ImportError:
+            return None
+        try:
+            offset = 0
+            for word in jieba.cut(text):
+                word_len = len(word)
+                if offset < pos < offset + word_len:
+                    return offset
+                offset += word_len
+                if offset >= pos:
+                    break
+            return None
+        except Exception:
+            return None
+
+    @classmethod
     def _snap_split_before_number(cls, text: str, pos: int) -> int:
         """If `pos` sits inside a numeric literal (digits, thousands commas,
         decimal point), back up to the start of that literal so the whole
         number stays together on one side of the split. Also backs up past
         an immediately-preceding currency marker (CNY/RMB/人民币/$/¥/...) so
         a bare currency symbol doesn't get stranded with its amount on the
-        far side of the split, and past any _PROTECTED_CJK_COMPOUNDS word
-        `pos` would otherwise split in half. Only ever moves pos earlier,
-        so it can't undo a capacity check that already accepted this
-        position."""
+        far side of the split, past any word jieba's segmentation says
+        `pos` would split in half (see _jieba_word_boundary_snap), and past
+        any _PROTECTED_CJK_COMPOUNDS entry as a fallback/supplement when
+        jieba isn't installed or doesn't treat it as one token. Only ever
+        moves pos earlier, so it can't undo a capacity check that already
+        accepted this position."""
         if pos <= 0 or pos >= len(text):
             return pos
         numeric_chars = set('0123456789,.')
+        jieba_snap = cls._jieba_word_boundary_snap(text, pos)
+        if jieba_snap is not None:
+            pos = jieba_snap
+            if pos <= 0:
+                return pos
         # `pos` landing strictly INSIDE a multi-character marker/compound
         # itself (e.g. between "人民" and "币", or "分" and "别") is a
         # different failure mode from the number/marker-boundary case
