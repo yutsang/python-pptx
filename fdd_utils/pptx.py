@@ -645,9 +645,6 @@ def export_pptx_from_structured_data_combined(
     try:
         export_started_at = time.perf_counter()
         def _stage_log(msg: str) -> None:
-            # Print AND log so users see realtime progress in the terminal
-            # regardless of logger configuration.
-            print(f"[PPTX] {msg}", flush=True)
             logger.info(msg)
 
         _stage_log(f"Starting export | BS={len(bs_data)} IS={len(is_data)} skip_summary_ai={skip_summary_ai}")
@@ -3576,6 +3573,31 @@ class PowerPointGenerator:
     # was intact, only the currency prefix got separated from it).
     _CURRENCY_MARKERS = ('CNY', 'RMB', 'USD', 'HKD', '人民币', '¥', '$', '£', '€')
 
+    # Common Chinese words/compounds this domain's commentary is full of --
+    # protected the same way as _CURRENCY_MARKERS (never split strictly
+    # inside one). The mid-word/mid-marker fix for "人民币" alone wasn't
+    # enough: the SAME hard-cut/character-trim fallback that used to land
+    # inside "人民币" lands just as easily inside any other bare CJK
+    # compound, since Chinese has no spaces to signal a word boundary in
+    # the first place. Confirmed in real production output on the SAME
+    # page: "...人民币784万" | "元变为..." (万元 split), "...2026年06月30日
+    # 分" | "别为人民币16万元..." (分别 split), "...2025年" | "度为人民币
+    # 17万元..." (年度 split) -- three different compounds, not a single
+    # fixable special case. Not exhaustive (full Chinese word segmentation
+    # is a different-sized problem) -- this is the domain-specific set
+    # observed breaking in real financial-commentary text plus the most
+    # obviously analogous high-frequency terms; the mechanism only ever
+    # backs a split up (never forces a worse one), so a broader list here
+    # is safe to extend further if new cases turn up.
+    _PROTECTED_CJK_COMPOUNDS = (
+        '万元', '亿元', '年度', '分别', '期间', '变为', '转为', '增至', '降至',
+        '合计', '其中', '构成', '包括', '管理层', '余额', '截至', '备注',
+        '数据', '期末', '期初', '账款', '借款', '贷款', '利息', '费用',
+        '资产', '负债', '权益', '收入', '成本', '折旧', '摊销', '核对',
+        '差异', '发生', '形成', '增加', '维持', '原值', '净值', '账面',
+        '进一步', '未发生', '无余额', '未形成',
+    )
+
     @classmethod
     def _snap_split_before_number(cls, text: str, pos: int) -> int:
         """If `pos` sits inside a numeric literal (digits, thousands commas,
@@ -3583,21 +3605,20 @@ class PowerPointGenerator:
         number stays together on one side of the split. Also backs up past
         an immediately-preceding currency marker (CNY/RMB/人民币/$/¥/...) so
         a bare currency symbol doesn't get stranded with its amount on the
-        far side of the split. Only ever moves pos earlier, so it can't
-        undo a capacity check that already accepted this position."""
+        far side of the split, and past any _PROTECTED_CJK_COMPOUNDS word
+        `pos` would otherwise split in half. Only ever moves pos earlier,
+        so it can't undo a capacity check that already accepted this
+        position."""
         if pos <= 0 or pos >= len(text):
             return pos
-        # `pos` landing strictly INSIDE a multi-character marker itself
-        # (e.g. between "人民" and "币") is a different failure mode from
-        # the number/marker-boundary case below -- neither text[pos-1] nor
-        # text[pos] is a digit, so the numeric-literal check never fires
-        # and this position was never being checked at all. Confirmed in
-        # real production output: "...人民" end of one slide, "币-784万元..."
-        # start of the next -- the SAME general split logic (comma/
-        # sentence/hard-cut fallback) that this function was already
-        # guarding for numbers can just as easily land inside a CJK
-        # currency word, which has no internal punctuation to avoid it.
-        for marker in cls._CURRENCY_MARKERS:
+        numeric_chars = set('0123456789,.')
+        # `pos` landing strictly INSIDE a multi-character marker/compound
+        # itself (e.g. between "人民" and "币", or "分" and "别") is a
+        # different failure mode from the number/marker-boundary case
+        # below -- neither text[pos-1] nor text[pos] is a digit, so the
+        # numeric-literal check never fires and this position was never
+        # being checked at all.
+        for marker in cls._CURRENCY_MARKERS + cls._PROTECTED_CJK_COMPOUNDS:
             if len(marker) < 2:
                 continue  # single-char symbols ($/¥/£/€) can't be split mid-marker
             # Check every position `start` such that the marker, if present
@@ -3608,8 +3629,20 @@ class PowerPointGenerator:
             # index scan instead.
             for start in range(max(0, pos - len(marker) + 1), pos):
                 if text[start:start + len(marker)] == marker:
+                    # 万元/亿元 are magnitude units directly attached to the
+                    # number before them ("784万元") -- stranding the bare
+                    # number from its own unit reads almost as broken as
+                    # splitting the unit itself would. Back up further past
+                    # any digits/comma/decimal-point run immediately before
+                    # the unit, same treatment as a currency marker glued
+                    # to its amount below.
+                    if marker in ('万元', '亿元'):
+                        num_start = start
+                        while num_start > 0 and text[num_start - 1] in numeric_chars:
+                            num_start -= 1
+                        if num_start < start:
+                            return num_start
                     return start
-        numeric_chars = set('0123456789,.')
         if text[pos - 1] in numeric_chars and text[pos] in numeric_chars:
             start = pos
             while start > 0 and text[start - 1] in numeric_chars:
