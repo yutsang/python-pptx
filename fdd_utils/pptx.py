@@ -3688,6 +3688,30 @@ class PowerPointGenerator:
             pos = jieba_snap
             if pos <= 0:
                 return pos
+        # Units glued directly to the number immediately before them --
+        # magnitude units (784万元) and date suffixes (2024年/12月/31日)
+        # are the same shape of bug: jieba correctly tokenizes the number
+        # and the unit as SEPARATE tokens (confirmed: jieba.cut gives
+        # ['784', '万元'] and ['31', '日']), so once jieba has already
+        # snapped `pos` to that clean token boundary, the straddle-scan
+        # below (which only fires when `pos` sits INSIDE the unit itself)
+        # never gets a chance to also pull the number back -- jieba
+        # correctly stops a mid-unit split but, on its own, still leaves
+        # the number stranded from its own unit one token earlier. Two
+        # real production cases hit this: "784万" | "元..." before jieba
+        # existed, and "...2024年12月31" | "日及2025年12月31日..." AFTER
+        # jieba was added (jieba's OWN snap masked the marker loop's
+        # number-pullback special case below, since by the time that loop
+        # runs, `pos` no longer straddles "万元" -- it sits cleanly right
+        # before it). Checking here, unconditionally, right after the
+        # jieba snap and before the straddle-scan, closes both cases.
+        for _suffix in ('万元', '亿元', '年', '月', '日'):
+            if text[pos:pos + len(_suffix)] == _suffix and text[pos - 1] in numeric_chars:
+                num_start = pos
+                while num_start > 0 and text[num_start - 1] in numeric_chars:
+                    num_start -= 1
+                if num_start < pos:
+                    return num_start
         # `pos` landing strictly INSIDE a multi-character marker/compound
         # itself (e.g. between "人民" and "币", or "分" and "别") is a
         # different failure mode from the number/marker-boundary case
