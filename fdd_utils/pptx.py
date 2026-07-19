@@ -3547,6 +3547,38 @@ class PowerPointGenerator:
                         )
                         if found >= 0:
                             natural = found + 1
+
+                    # The comment above promises "wherever that costs
+                    # nothing" but this never actually checked cost --
+                    # `natural` was accepted whenever ANY sentence/comma
+                    # boundary existed in (best_split, true_max], no matter
+                    # how far short of true_max it landed. A real production
+                    # case ("...结清安排...") had a comma several dozen
+                    # characters before true_max that sacrificed a whole
+                    # further wrapped line of real capacity purely for a
+                    # marginally nicer-looking cut -- directly reproducing
+                    # the user-reported "there's still room but it cuts
+                    # here anyway" symptom, independent of any word-boundary
+                    # concern. Only accept `natural` if it wraps to the SAME
+                    # line count (and thus costs the same budget_pt) as
+                    # true_max would -- i.e. genuinely free -- otherwise
+                    # maximize real capacity and let the word-boundary snap
+                    # below handle readability with a far smaller backoff.
+                    if natural is not None and natural < true_max:
+                        natural_head = para[:natural].strip()
+                        true_max_head = para[:true_max].strip()
+                        wrapped_natural = measurer.wrap(
+                            key_prefix + natural_head,
+                            max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT),
+                            first_line_width_pt=box.width_pt,
+                        )
+                        wrapped_true_max = measurer.wrap(
+                            key_prefix + true_max_head,
+                            max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT),
+                            first_line_width_pt=box.width_pt,
+                        )
+                        if len(wrapped_natural) < len(wrapped_true_max):
+                            natural = None
                     best_split = natural if natural is not None else true_max
         except Exception:
             pass  # measurer unavailable -- fall through with the crude best_split
