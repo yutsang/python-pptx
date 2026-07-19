@@ -4105,25 +4105,47 @@ class PowerPointGenerator:
                 if nxt_used >= nxt_cap:
                     continue  # next slot has no spare room either -- can't help here
 
-                tail_acct = cur_accts[-1]
-                if len(cur_accts) >= 2:
+                # Moving just the SINGLE last account used to be the only
+                # whole-account move attempted -- if the accounts BEFORE it
+                # already exceed cur_cap on their own (several trailing
+                # accounts collectively overflow, not just the tail one),
+                # `rest_used <= cur_cap` was never true, this whole branch
+                # fell through, and _try_partial_split_overflow_forward's own
+                # `other_used` (the same all-but-last cost) was equally over
+                # cur_cap, so IT bailed immediately too -- nothing ever moved
+                # at all. Confirmed via a real production case: a slot at
+                # 109% sat next to a COMPLETELY EMPTY next slot (0% -- not
+                # merely underfilled) because neither path could ever fire.
+                # Grow the batch of trailing whole accounts to move one at a
+                # time until what remains in cur actually fits, or until
+                # moving the next one would overflow nxt -- whichever comes
+                # first. Single-account overflow (the original case) is
+                # k=1 here, unchanged in behavior.
+                move_count = 0
+                for k in range(1, len(cur_accts)):
                     rest_used = self._compute_slot_used_lines(
-                        cur_accts[:-1], cur_name, slot_shape=cur_shape, statement_type=statement_type,
+                        cur_accts[:-k], cur_name, slot_shape=cur_shape, statement_type=statement_type,
                     )
-                    trial_nxt_accts = [tail_acct] + nxt_accts
+                    trial_nxt_accts = cur_accts[-k:] + nxt_accts
                     trial_nxt_used = self._compute_slot_used_lines(
                         trial_nxt_accts, nxt_name, slot_shape=nxt_shape, statement_type=statement_type,
                     )
-                    if rest_used <= cur_cap and trial_nxt_used <= nxt_cap:
-                        cur_accts.pop()
-                        nxt_accts.insert(0, tail_acct)
-                        changed = True
-                        logger.info(
-                            "  Rebalanced overflowing boundary: moved whole '%s' forward from slot %s "
-                            "(was %.1f/%s) into slot %s",
-                            tail_acct.get("mapping_key", "?"), i, cur_used, cur_cap, i + 1,
-                        )
-                        continue
+                    if trial_nxt_used > nxt_cap:
+                        break
+                    move_count = k
+                    if rest_used <= cur_cap:
+                        break
+                if move_count:
+                    moved = cur_accts[-move_count:]
+                    del cur_accts[-move_count:]
+                    nxt_accts[0:0] = moved
+                    changed = True
+                    logger.info(
+                        "  Rebalanced overflowing boundary: moved %d whole account(s) forward from slot %s "
+                        "(was %.1f/%s) into slot %s",
+                        move_count, i, cur_used, cur_cap, i + 1,
+                    )
+                    continue
 
                 if self._try_partial_split_overflow_forward(
                     cur_accts, nxt_accts, cur_cap, cur_name, cur_shape,
