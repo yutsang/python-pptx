@@ -677,6 +677,57 @@ def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
 # 4. Reconciliation summary with actionable tab-name listing
 # ---------------------------------------------------------------------------
 
+_NOTE_VALUE_RE = re.compile(r"-?[\d,]+(?:\.\d+)?")
+
+
+def _extract_note_values(note: str) -> List[float]:
+    """A supporting_note like 'Check | 2024-12-31: 3,000,000 | 2026-06-30:
+    -17,658,307' is client-authored free text shown to the AI as a remark,
+    separate from the structured table. Split on '|' and take only the part
+    after the LAST ':' in each segment before regexing for a number, so a
+    date fragment like '2024-12-31' is never misread as the value -12 or -31."""
+    values: List[float] = []
+    for segment in (note or "").split("|"):
+        segment = segment.strip()
+        if ":" in segment:
+            value_part = segment.rsplit(":", 1)[-1]
+        elif parse_date(segment):
+            continue  # a bare date fragment (no ':'), not a value -- skip so
+            # e.g. '2024-12-31' is never misread as the values 2024/-12/-31
+        else:
+            value_part = segment
+        for match in _NOTE_VALUE_RE.finditer(value_part):
+            raw = match.group(0)
+            if raw in ("-", ""):
+                continue
+            try:
+                values.append(float(raw.replace(",", "")))
+            except ValueError:
+                continue
+    return values
+
+
+def _notes_matching_diff(tab_account: str, dfs: Dict[str, pd.DataFrame], diff_val: float) -> List[str]:
+    """A ❌ Diff means the Financials summary and this breakdown tab's total
+    disagree -- but sometimes the breakdown tab ALREADY explains the gap via
+    its own supporting_notes (e.g. a client 'Check' remark row that equals
+    the diff exactly, meaning the client's own workbook already flagged this
+    as a known reconciling item, not a pipeline extraction bug). Same
+    tolerance as reconcile_financial_statements (workbook.py): abs <= 1.0 OR
+    relative <= 0.5%, so this only fires on a genuine match, not a coincidence."""
+    if diff_val is None or tab_account in (None, "-", "Not Found"):
+        return []
+    df = dfs.get(tab_account)
+    if df is None:
+        return []
+    notes = df.attrs.get("supporting_notes") or []
+    tolerance = max(1.0, abs(diff_val) * 0.005)
+    matches = []
+    for note in notes:
+        if any(abs(abs(v) - abs(diff_val)) <= tolerance for v in _extract_note_values(note)):
+            matches.append(note)
+    return matches
+
 def check_reconciliation(
     databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "",
     financials_from: Optional[str] = None,
@@ -724,9 +775,13 @@ def check_reconciliation(
                     fin_val = r.get("Financials_Value")
                     tab_val = r.get("Tab_Value")
                     diff_val = r.get("Diff")
+                    tab_account = r.get("Tab_Account", "?")
                     print(f"    - {r['Financials_Account']!r}: {r['Match']} -- "
-                          f"Financials={fin_val:,.0f}  Tab({r.get('Tab_Account', '?')})={tab_val:,.0f}  "
+                          f"Financials={fin_val:,.0f}  Tab({tab_account})={tab_val:,.0f}  "
                           f"diff={diff_val:,.0f} | {r['Mapping_Note']}")
+                    for note in _notes_matching_diff(tab_account, dfs, diff_val):
+                        print(f"        ↳ possibly already explained by this tab's own remark "
+                              f"(client-side reconciling item, not necessarily a pipeline bug): {note!r}")
                 else:
                     print(f"    - {r['Financials_Account']!r}: {r['Mapping_Status']} | {r['Mapping_Note']}")
             print(f"\n  All tab names actually present in this workbook (for adding to mappings.yml):")
