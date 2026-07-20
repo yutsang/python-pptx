@@ -616,6 +616,16 @@ Contract liabilities:
   system_prompts:
   user_prompts:
   patterns:
+Short-term loans:
+  type: BS
+  category: Current liabilities
+  # Repeatedly flagged as "Missing mapping" across Project Mint Portfolio II
+  # entities' Financials sheets (海南澄迈/太仓双凤/惠州平潭二期/无锡项目/北京牛栏山).
+  aliases: ["Short-term loans", "Short-term loan", "Short term loans", "Short term loan",
+            "短期借款", "Short-term borrowings", "Current bank loans"]
+  system_prompts:
+  user_prompts:
+  patterns:
 Employee benefits payable:
   type: BS
   category: Current liabilities
