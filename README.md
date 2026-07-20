@@ -85,11 +85,11 @@ removing it outright would mean re-deriving the prompt from scratch later.
 | 4 | **Validator** | Final evidence check with clause-level hallucination detection | Yes |
 
 A feedback loop retries Generator + Auditor + Validator when too many clauses
-come back unsupported — see [AI Engineering](#ai-engineering-prompt-harness-audit-loop) below.
+come back unsupported — see [From AI Draft to Final Slide](#from-ai-draft-to-final-slide) below.
 
 ---
 
-## AI Engineering: Prompt, Harness, Audit, Loop
+## From AI Draft to Final Slide
 
 Four methodology-level concerns, stacked on top of each other, that turn
 "call an LLM once" into a reliable pipeline:
@@ -108,72 +108,44 @@ Four methodology-level concerns, stacked on top of each other, that turn
   automatically regenerates it with the specific problems fed back, up to a
   couple of retries, before accepting the result.
 
-```mermaid
-flowchart LR
-    A[Generate] --> B["Harness:<br/>retry / fallback if the call fails"]
-    B --> C["Audit:<br/>check every number against source data"]
-    C -->|too many issues| D[Feed issues back]
-    D --> A
-    C -->|clean enough| E["Accept +<br/>highlight any remaining flags"]
-```
-
----
-
-## Text-to-Layout Utilisation: How the Packer Decides What Goes Where
-
-AI-written commentary varies in length; the PPTX template's text boxes don't.
-The packer's job is to decide which account's text goes in which box so every
-box reads full without spilling over, using as few slides as possible.
-
-Methodology, in four steps:
+Once commentary is accepted, it still needs to physically fit the template —
+that's the packing job: decide which account's text goes in which box so
+every box reads full without spilling over, using as few slides as possible.
 
 1. **Measure real space** — how much room each account's text actually needs,
    using real font rendering, not a word-count guess.
 2. **Optimise the layout** — an algorithm decides which accounts go on which
    slide, favouring filling earlier slides fully and letting only the very
-   last one run lighter (so the report doesn't end on an obviously
-   under-filled page, but also doesn't spread everything evenly-thin).
+   last one run lighter.
 3. **Clean up edge cases** — a handful of follow-up passes catch patterns the
-   main algorithm doesn't fully solve on its own — e.g. one box ending up
-   empty next to a full one, or a leftover sliver of text that should be
-   folded into its neighbour instead of standing alone. This is the most
-   iterated-on part of the system: each pass exists because a real generated
-   report hit that exact pattern.
+   main algorithm doesn't fully solve on its own, e.g. one box ending up empty
+   next to a full one. This is the most iterated-on part of the system: each
+   pass exists because a real generated report hit that exact pattern.
 4. **A safety net, not the plan** — if content still doesn't quite fit,
    PowerPoint's own autofit shrinks the font slightly rather than cutting
-   text off. Normal pages never need this; it only engages on a genuine edge
-   case.
-
-```mermaid
-flowchart TD
-    A[Text + boxes] --> B[Measure real space needed]
-    B --> C["Optimise:<br/>fewest slides, fill earlier ones first"]
-    C --> D["Clean-up passes<br/>for edge cases"]
-    D --> E{Still doesn't fit?}
-    E -- yes --> F[Shrink font slightly]
-    E -- no --> G[Render as-is]
-```
+   text off.
 
 The main lever for controlling how full a page looks is upstream of all this:
 each account's AI prompt carries its own word-count target, sized to that
-account's real complexity. The packer can rearrange text but can't conjure
-content the prompt didn't ask for — if a page looks under-filled, that's
-usually the first place to look.
+account's real complexity — if a page looks under-filled, that's usually the
+first place to look.
 
----
-
-## Style Enforcement
-
-Two layers ensure commentary matches the project's reference style:
-
-1. **Prompt-level** (`mappings.yml`, `prompts.yml`) — formulaic openings, banned bloat patterns, length caps per account type, anti-hallucination rules.
-2. **Post-process polish** (`polish_english_commentary` in `ai.py`) — deterministic regex pass that catches AI leaks the prompt missed:
-   - ISO dates → `dd Month yyyy`
-   - `The balance as at` → `the balance as at`
-   - `CNY 7.90 million` → `CNY7.9 million` (no space, 1dp)
-   - `CNY 78.2K` → `CNY78,200` (no K notation)
-   - `CNY0` / `CNY0.0 million` → `nil`
-   - Strips period-on-period filler, verbose cross-checks, advisory `You should…`, annualisation projections, calculated rates not in source, land residual hallucinations, and meta-commentary.
+```mermaid
+flowchart TD
+    A[Generate] --> B["Harness:<br/>retry / fallback if the call fails"]
+    B --> C["Audit:<br/>check every number against source data"]
+    C -->|too many issues| D[Feed issues back]
+    D --> A
+    C -->|clean enough| E[Commentary accepted]
+    E --> F[Measure real space needed]
+    F --> G["Optimise:<br/>fewest slides, fill earlier ones first"]
+    G --> H["Clean-up passes<br/>for edge cases"]
+    H --> I{Still doesn't fit?}
+    I -- yes --> J[Shrink font slightly]
+    I -- no --> K[Render as-is]
+    J --> L[Final PPTX]
+    K --> L
+```
 
 ---
 
