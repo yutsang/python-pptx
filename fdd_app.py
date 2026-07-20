@@ -786,16 +786,91 @@ def render_batch_processing_section():
             st.session_state.batch_combined_pptx = None
             st.rerun()
 
+    failed_entities = st.session_state.get("batch_failed_entities")
+    if failed_entities:
+        for failure in failed_entities:
+            st.error(f"❌ {failure['entity_name']}: {failure['error']}")
+
+    # --- Review: entity switcher reusing the single-file UI -- browsable as
+    # soon as ANY entity has at least reached the data-extraction stage,
+    # growing as more finish, not gated on the whole batch completing.
+    # Placed BEFORE the auto-continuing processing block below (not after
+    # it) deliberately: every branch of that block ends in st.rerun(),
+    # which aborts the rest of THIS script run immediately -- code placed
+    # after it never executes at all while batch_processing_in_progress
+    # stays True, i.e. for the ENTIRE duration of a batch run. Rendering
+    # the switcher first means every phase-transition rerun (and the
+    # in-place progress-bar/status updates during a long blocking AI call)
+    # actually reaches the browser with the latest cached entities visible
+    # and selectable, instead of only ever appearing once the whole batch
+    # finishes. ---
+    entity_order = st.session_state.get("batch_entity_order") or []
+    if entity_order:
+        st.divider()
+
+        processed_order = st.session_state.get("batch_processed_entity_order") or []
+        if st.session_state.get("batch_processing_done") and processed_order:
+            batch_timestamp = st.session_state.get("batch_export_timestamp") or time.strftime("%Y%m%d_%H%M%S")
+            zip_data = st.session_state.get("batch_zip_data")
+            combined_data = st.session_state.get("batch_combined_pptx")
+
+            download_col1, download_col2 = st.columns(2)
+            with download_col1:
+                st.download_button(
+                    label=f"⬇️ Download All ({len(processed_order)}) as ZIP",
+                    data=zip_data or b"",
+                    file_name=f"batch_export_{batch_timestamp}.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    disabled=not zip_data,
+                    key="batch_download_zip",
+                )
+            with download_col2:
+                if combined_data:
+                    combined_name = re.sub(
+                        r"[^\w\-]", "_", str(st.session_state.get("batch_combined_filename") or "")
+                    ).strip("_") or "Batch_Combined"
+                    st.download_button(
+                        label=f"⬇️ Download Combined PPTX ({len(processed_order)} entities)",
+                        data=combined_data,
+                        file_name=f"{combined_name}_{batch_timestamp}.pptx",
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        use_container_width=True,
+                        key="batch_download_combined",
+                    )
+                else:
+                    st.caption("Combined PPTX needs 2+ entities.")
+        elif st.session_state.get("batch_processing_in_progress"):
+            st.caption("⬇️ Downloads become available once the whole batch finishes.")
+
+        active_entity = _resolve_active_entity(entity_order)
+        _render_entity_switcher(entity_order, "batch_active_entity_top", active_entity)
+        bundle = (st.session_state.get("batch_entity_cache") or {}).get(active_entity)
+        if bundle:
+            st.session_state.update(bundle)
+            if bundle.get("ai_results"):
+                render_processed_view(
+                    session_state=st.session_state,
+                    generate_pptx_callback=generate_pptx_presentation,
+                    get_model_display_name=get_model_display_name,
+                    before_ai_section=lambda: _render_entity_switcher(
+                        entity_order, "batch_active_entity_bottom", active_entity
+                    ),
+                )
+            else:
+                st.info(f"⏳ AI generation for **{active_entity}** hasn't finished yet -- showing extracted data only.")
+                render_data_tables_section(st.session_state)
+
     # --- Processing: TWO checkpointed phases per entity (extract, then
     # AI+export), not one big blocking loop and not even one blocking call
     # per entity. Streamlit only paints the browser once a script run
     # returns control to it -- an on_data_ready-style callback fired
     # MIDWAY through a single long batch_process_entity() call can update
-    # session_state all it wants, but the switcher/data-view code later in
-    # the SAME script run still can't actually render until that whole
-    # call returns, and it doesn't return until AI is ALSO done. So a
-    # callback alone can never make the browser show "data ready, AI still
-    # running" -- only an actual st.rerun() between the two phases can.
+    # session_state all it wants, but the switcher/data-view code rendered
+    # above already caught up on this run before this block ever starts,
+    # so it doesn't need to wait for a callback -- only an actual
+    # st.rerun() between the two phases can advance to the NEXT entity's
+    # data becoming visible, though.
     # batch_extract_entity_data() (fast) runs, caches its data-only bundle,
     # reruns; THEN batch_run_ai_for_entity() (slow) runs for that same
     # entity using what extraction already produced, reruns again before
@@ -947,71 +1022,6 @@ def render_batch_processing_section():
             st.session_state.batch_processing_in_progress = False
             st.session_state.batch_processing_done = True
             st.rerun()
-
-    failed_entities = st.session_state.get("batch_failed_entities")
-    if failed_entities:
-        for failure in failed_entities:
-            st.error(f"❌ {failure['entity_name']}: {failure['error']}")
-
-    # --- Review: entity switcher reusing the single-file UI -- browsable as
-    # soon as ANY entity has at least reached the data-extraction stage,
-    # growing as more finish, not gated on the whole batch completing. ---
-    entity_order = st.session_state.get("batch_entity_order") or []
-    if entity_order:
-        st.divider()
-
-        processed_order = st.session_state.get("batch_processed_entity_order") or []
-        if st.session_state.get("batch_processing_done") and processed_order:
-            batch_timestamp = st.session_state.get("batch_export_timestamp") or time.strftime("%Y%m%d_%H%M%S")
-            zip_data = st.session_state.get("batch_zip_data")
-            combined_data = st.session_state.get("batch_combined_pptx")
-
-            download_col1, download_col2 = st.columns(2)
-            with download_col1:
-                st.download_button(
-                    label=f"⬇️ Download All ({len(processed_order)}) as ZIP",
-                    data=zip_data or b"",
-                    file_name=f"batch_export_{batch_timestamp}.zip",
-                    mime="application/zip",
-                    use_container_width=True,
-                    disabled=not zip_data,
-                    key="batch_download_zip",
-                )
-            with download_col2:
-                if combined_data:
-                    combined_name = re.sub(
-                        r"[^\w\-]", "_", str(st.session_state.get("batch_combined_filename") or "")
-                    ).strip("_") or "Batch_Combined"
-                    st.download_button(
-                        label=f"⬇️ Download Combined PPTX ({len(processed_order)} entities)",
-                        data=combined_data,
-                        file_name=f"{combined_name}_{batch_timestamp}.pptx",
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        use_container_width=True,
-                        key="batch_download_combined",
-                    )
-                else:
-                    st.caption("Combined PPTX needs 2+ entities.")
-        elif st.session_state.get("batch_processing_in_progress"):
-            st.caption("⬇️ Downloads become available once the whole batch finishes.")
-
-        active_entity = _resolve_active_entity(entity_order)
-        _render_entity_switcher(entity_order, "batch_active_entity_top", active_entity)
-        bundle = (st.session_state.get("batch_entity_cache") or {}).get(active_entity)
-        if bundle:
-            st.session_state.update(bundle)
-            if bundle.get("ai_results"):
-                render_processed_view(
-                    session_state=st.session_state,
-                    generate_pptx_callback=generate_pptx_presentation,
-                    get_model_display_name=get_model_display_name,
-                    before_ai_section=lambda: _render_entity_switcher(
-                        entity_order, "batch_active_entity_bottom", active_entity
-                    ),
-                )
-            else:
-                st.info(f"⏳ AI generation for **{active_entity}** hasn't finished yet -- showing extracted data only.")
-                render_data_tables_section(st.session_state)
 
 
 # Initialize
