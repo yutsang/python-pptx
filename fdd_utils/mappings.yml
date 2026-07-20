@@ -593,8 +593,7 @@ Advances:
   type: BS
   category: Current liabilities
   aliases: ["Advances", "Advances from Customers", "Advances from customers", "Advances from customer",
-            "Advances from Customer", "预收款项", "預收款項", "Advance payments received", "Contract liabilities",
-            "Contract liability", "合同负债", "合同負債"]
+            "Advances from Customer", "预收款项", "預收款項", "Advance payments received"]
   system_prompts:
   user_prompts:
   patterns:
@@ -602,6 +601,21 @@ Advances:
       there was no balance as at <DATE>. The balance as at the end of <DATE> and <DATE> represented prepaid rentals and property management income from tenants
     Pattern 2: |
       系预收<ENTITY>的租服费<AMT>
+Contract liabilities:
+  type: BS
+  category: Current liabilities
+  # Split out from "Advances" (commit pending) -- real batch data (Project
+  # Mint, multiple entities) showed workbooks with BOTH "合同负债" and
+  # "预收款项" as separate, independently-populated breakdown tabs, not just
+  # two names for the same account. Sharing one mapping_key meant whichever
+  # tab find_account_in_dfs picked first silently absorbed BOTH the
+  # Financials line and the schedule data, leaving the other tab invisible
+  # to reconciliation -- confirmed on 昆明经开 (Financials '合同负债'=0
+  # incorrectly matched against the '预收款项' tab's real 778,966 balance).
+  aliases: ["Contract liabilities", "Contract liability", "合同负债", "合同負債"]
+  system_prompts:
+  user_prompts:
+  patterns:
 Employee benefits payable:
   type: BS
   category: Current liabilities
