@@ -711,6 +711,25 @@ def check_reconciliation(
             continue
         print(f"\n{label}: {len(recon)} lines")
         print(recon["Match"].value_counts().to_string())
+
+        # Full per-line table, every row (not just flagged ones) -- the
+        # summary counts + selective detail below only ever explain rows
+        # the code itself already suspects, which is no help when the
+        # suspicion is wrong (a row can show a clean status while still
+        # deserving a look, or vice versa be flagged for a reason that
+        # turns out benign once you see the raw numbers). One compact line
+        # per account so every row is visually auditable directly against
+        # the source Excel, not just the ones this check flagged.
+        print(f"\n  All {label} lines:")
+        for _, r in recon.iterrows():
+            fin_val = r.get("Financials_Value")
+            tab_val = r.get("Tab_Value")
+            fin_str = f"{fin_val:,.0f}" if isinstance(fin_val, (int, float)) else str(fin_val)
+            tab_str = f"{tab_val:,.0f}" if isinstance(tab_val, (int, float)) else str(tab_val)
+            tab_acct = r.get("Tab_Account") or "-"
+            print(f"    [{str(r['Match']):14s}] {r['Financials_Account']!r:32s} "
+                  f"Financials={fin_str:>15s}  Tab({tab_acct})={tab_str}")
+
         problems = recon[recon["Match"].astype(str).str.contains("Not Found|Diff", na=False)]
         if not problems.empty:
             print(f"\n  Unmatched/diff lines for {label} (account -> mapping status):")
