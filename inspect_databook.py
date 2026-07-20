@@ -108,6 +108,7 @@ from fdd_utils.workbook import (
     load_workbook_frames,
     normalize_financial_schedule,
     parse_date,
+    PREFERRED_STAGE,
     profile_sheet,
     reconcile_financial_statements,
 )
@@ -762,6 +763,27 @@ def check_reconciliation(
             continue
         print(f"\n{label}: {len(recon)} lines")
         print(recon["Match"].value_counts().to_string())
+
+        # Which stage/period column each breakdown tab's total was actually
+        # pulled from (_choose_projection in workbook.py) -- answers "did
+        # this map to the preferred stage (Indicative adjusted), or fall
+        # back to something else because that stage had no non-zero data
+        # for this particular tab?" without a manual --dump-tab round-trip.
+        if "Projection_Stage" in recon.columns:
+            stage_counts = recon.loc[recon["Projection_Stage"] != "-", "Projection_Stage"].value_counts()
+            if not stage_counts.empty:
+                print(f"\n  Projection stage used (which stage/period column each breakdown tab's "
+                      f"total came from; preferred stage is {PREFERRED_STAGE!r}):")
+                print("    " + stage_counts.to_string().replace("\n", "\n    "))
+            if "Integrity_Flag" in recon.columns:
+                fallback_rows = recon[recon["Integrity_Flag"].astype(str).str.startswith("Fallback")]
+                if not fallback_rows.empty:
+                    print(f"\n  ⚠️ {len(fallback_rows)} account(s) fell back away from {PREFERRED_STAGE!r} "
+                          f"(means that stage had no non-zero data anywhere in the tab):")
+                    for _, r in fallback_rows.iterrows():
+                        print(f"    - {r['Financials_Account']!r} (tab {r.get('Tab_Account', '?')!r}): "
+                              f"{r['Integrity_Flag']}")
+
         problems = recon[recon["Match"].astype(str).str.contains("Not Found|Diff", na=False)]
         if not problems.empty:
             print(f"\n  Unmatched/diff lines for {label} (account -> mapping status):")
