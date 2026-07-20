@@ -1466,8 +1466,25 @@ def analyze_population_fill(
 
 def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
     """Exact 'Financials' match wins. Otherwise look for a multi-entity
-    pattern like 'Financials - NB' / 'Financials - HN' (no single combined
-    Financials sheet — common when one workbook covers several properties).
+    pattern -- either 'Financials - NB' / 'Financials - HN' (space/hyphen-
+    separated, common when one workbook covers several properties) OR
+    '<entity>Financials' (CJK-name glued directly onto the suffix with no
+    separator, e.g. '上海松江Financials' -- a different, equally real client
+    template convention). Both patterns are matched and returned together
+    so `inspect_one`'s existing "multi-entity workbook, found N Financials
+    sheets -- running reconciliation against each" path covers both.
+
+    Matching ONLY the prefix form silently missed every suffix-style sheet.
+    Confirmed on a real portfolio workbook that has BOTH a portfolio-wide
+    aggregate ('Financials-portfolio III+自持', prefix-style, matched) AND
+    per-entity suffix-style sheets ('上海松江Financials', '昆明经开Financials',
+    NOT matched by the old prefix-only regex): with only the aggregate
+    found, EVERY individual entity's own workbook reconciled its own
+    breakdown tabs against the WHOLE portfolio's combined total instead of
+    its own entity's summary -- producing large, entirely spurious "Diff"
+    flags with nothing wrong in the underlying data (the two entities'
+    Tab values summed exactly to the aggregate's Financials value).
+
     Falling back to sheet_names[0] (e.g. a 'Briefing'/'Cover' tab) silently
     reconciles against the wrong sheet and reports an empty/misleading
     result, so that fallback is deliberately NOT used here.
@@ -1476,7 +1493,17 @@ def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
     if exact:
         return exact
     prefixed = [s for s in xl.sheet_names if re.match(r"^financials\s*-", s.strip(), re.IGNORECASE)]
-    return prefixed
+    suffixed = [
+        s for s in xl.sheet_names
+        if re.search(r"financials\s*$", s.strip(), re.IGNORECASE) and s.strip().lower() != "financials"
+    ]
+    seen: set = set()
+    combined: List[str] = []
+    for s in prefixed + suffixed:
+        if s not in seen:
+            seen.add(s)
+            combined.append(s)
+    return combined
 
 
 def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
