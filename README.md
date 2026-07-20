@@ -119,6 +119,15 @@ in `ai.py`), most specific wins:
    `mappings.yml` at all, so an unrecognised account still gets a sane prompt
    instead of an empty one.
 
+```mermaid
+flowchart TD
+    A["mapping_key + language"] --> B{"Per-account override<br/>in mappings.yml?"}
+    B -- yes --> C["Use this account's own<br/>subagent_1_prompts"]
+    B -- no --> D{"Account key found<br/>in mappings.yml at all?"}
+    D -- yes --> E["Use per-agent default<br/>(_default_subagent_1 / prompts.yml)"]
+    D -- no --> F["Fall back to<br/>_general_dynamic_mapping"]
+```
+
 Each account's Generator prompt carries its own **word-count budget**, sized
 to the account's real complexity (see [Text-to-Layout Utilisation](#text-to-layout-utilisation-how-the-packer-decides-what-goes-where)
 above) — this is the main lever for controlling both commentary depth and,
@@ -135,13 +144,13 @@ The pipeline assumes the LLM endpoint may be slow, rate-limited, or briefly
 unavailable, independent of whether the prompt or the audit logic is doing
 its job correctly. Several layers cushion that:
 
-```
-        per-call          per-stage        per-export
-        +-------+         +-------+        +---------+
-LLM ->  | retry | -fail-> |breaker|-trip-> |fallback |  -> bullet rendered
-        | 3x w/ |         | 4 in  |        |(data    |
-        | 2s/5s |         | a row |        | only)   |
-        +-------+         +-------+        +---------+
+```mermaid
+flowchart LR
+    A["LLM call"] -->|fails| B["Retry: 0s, then 2s,<br/>then 5s between attempts<br/>(3 total)"]
+    B -->|succeeds| C["Bullet rendered"]
+    B -->|4 consecutive stage<br/>failures| D["Circuit breaker OPENS<br/>for this stage"]
+    D --> E["Deterministic fallback:<br/>data-only bullet"]
+    D -. new stage starts .-> F["Breaker resets"]
 ```
 
 | Layer | Behaviour | Tunable |
@@ -192,6 +201,20 @@ confidently wrong about its own arithmetic). So every numeric claim gets a
    flags so they don't visually highlight — keeping false-positive noise low
    was an explicit design priority over catching every possible soft issue.
 
+```mermaid
+flowchart TD
+    A["Clause"] --> B["ground_amounts vs<br/>SourceIndex pool"]
+    B -->|amount unmatched| C["hallucination<br/>(deterministic, overrides LLM)"]
+    B -->|amount matched| D{"LLM also flagged<br/>reasoning-unsupported?"}
+    D -- yes --> E["reasoning<br/>(numbers ok, inference isn't)"]
+    D -- no --> F["data-backed<br/>(LLM hallucination claim dropped)"]
+    B -->|no checkable amount| G{"LLM gave a flag?"}
+    G -- yes --> H["Use LLM's own flag"]
+    G -- no --> I{"Causal language<br/>detected?"}
+    I -- yes --> J["reasoning<br/>(unsupported inference)"]
+    I -- no --> K["data-backed<br/>(nothing to check)"]
+```
+
 The result (`clause_reviews`) surfaces the same way in both places a human
 reviews the output:
 
@@ -228,6 +251,18 @@ per account, up to `max_retries` (default 2) times:
    to the retry cap, after which the pipeline accepts whatever the last
    attempt produced rather than looping forever.
 
+```mermaid
+flowchart LR
+    A["Validator result"] --> B{"unsupported clauses<br/>over 30%?"}
+    B -- no --> C["Accept -- done"]
+    B -- "yes, retries left" --> D["Feed specific unsupported<br/>clauses back as context"]
+    D --> E["Re-run Generator"]
+    E --> F["Re-run Auditor<br/>(not skipped)"]
+    F --> G["Re-run Validator"]
+    G --> A
+    B -- "yes, retries exhausted" --> H["Accept last attempt<br/>-- stop retrying"]
+```
+
 This closes the audit layer into an actual correction mechanism instead of
 just a warning label — the system gets a bounded number of genuine chances to
 fix a real problem before a human ever sees it.
@@ -244,7 +279,23 @@ problem with several conflicting objectives at once (use as few slides as
 possible, keep every slide's fill high, never overflow, never leave a box
 looking obviously blank, never cut a split account at an ugly point), and this
 codebase has iterated on it across many real-report test cycles because a fix
-for one objective routinely breaks another. The mechanics, in order:
+for one objective routinely breaks another.
+
+```mermaid
+flowchart TD
+    A["Accounts + AI commentary<br/>+ per-account word budgets"] --> B["Measure: real font metrics,<br/>capacity and content cost<br/>in the same std_lh unit"]
+    B --> C{"DP: fewest slots,<br/>front-loaded fill"}
+    C -->|infeasible at 1.0x| D["Relax capacity:<br/>1.05x, 1.35x, 1.6x, 10x"]
+    D --> C
+    C -->|feasible| E["7 rebalance passes<br/>(see below)"]
+    E --> F{"Any slot still<br/>over 1.0x capacity?"}
+    F -- yes --> G["Bounded autofit:<br/>shrink font to fit"]
+    F -- no --> H["Render at intended size"]
+    G --> I["Final PPTX"]
+    H --> I
+```
+
+The mechanics, in order:
 
 **1. Measurement, not estimation.** `_calculate_max_lines_for_textbox` and
 `_calculate_content_lines` both measure against the *same* real font-metrics
@@ -293,7 +344,17 @@ that's what filling every boundary takes.
 **5. Post-DP rebalancing.** The DP's own objective is necessarily a
 simplification — it can't see every real-world layout expectation at once —
 so a sequence of narrowly-scoped passes runs afterward, each fixing one
-specific pattern the DP objective alone doesn't cover:
+specific pattern the DP objective alone doesn't cover, in this fixed order:
+
+```mermaid
+flowchart LR
+    P1["1. Lopsided L/R<br/>(empty vs full)"] --> P2["2. Tiny-stub<br/>consolidation"]
+    P2 --> P3["3. Underfilled-boundary<br/>pull-back"]
+    P3 --> P4["4. Overflow<br/>push-forward"]
+    P4 --> P5["5. Forward-fill<br/>maximisation"]
+    P5 --> P6["6. Trailing near-empty<br/>consolidation"]
+    P6 --> P7["7. Continuation-<br/>fragment merge"]
+```
 
 | Pass | Fixes |
 |---|---|
