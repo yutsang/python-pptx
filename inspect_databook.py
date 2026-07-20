@@ -222,6 +222,8 @@ def check_unit_markers(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None
     any_missing = False
     missing_relevant: List[str] = []
     ok_count = 0
+    skip_count = 0
+    SKIPPED_STATUS = "·  (not a parsed account tab, skipped)"
     for sheet in xl.sheet_names:
         try:
             df = xl.parse(sheet, header=None, nrows=12)
@@ -241,11 +243,18 @@ def check_unit_markers(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None
             any_missing = True
             missing_relevant.append(sheet)
         else:
-            status = "·  (not a parsed account tab, skipped)"
-        if VERBOSE or status != "✅":
+            status = SKIPPED_STATUS
+            skip_count += 1
+        # Irrelevant nav/cover/TB tabs (SKIPPED_STATUS) are expected to have no
+        # marker and aren't a problem -- printing one line per such sheet was
+        # pure noise on 100+-sheet template workbooks where most sheets are
+        # irrelevant; only actual anomalies print individually now.
+        if VERBOSE or status not in ("✅", SKIPPED_STATUS):
             print(f"  {status}  {sheet}: markers(first 8 rows)={markers_8}  markers(first 12 rows)={markers_12}")
     if not VERBOSE:
-        print(f"  {ok_count}/{len(xl.sheet_names)} sheet(s) ✅ (marker found in first 8 rows) -- not printed individually, use --verbose for the full per-sheet list.")
+        print(f"  {ok_count}/{len(xl.sheet_names)} sheet(s) ✅ (marker found in first 8 rows), "
+              f"{skip_count} not a parsed account tab (skipped) -- not printed individually, "
+              f"use --verbose for the full per-sheet list.")
     if any_missing:
         print(
             f"\n⚠️  {len(missing_relevant)} PARSED account tab(s) have no unit marker in the\n"
@@ -731,7 +740,7 @@ def _notes_matching_diff(tab_account: str, dfs: Dict[str, pd.DataFrame], diff_va
 
 def check_reconciliation(
     databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "",
-    financials_from: Optional[str] = None,
+    financials_from: Optional[str] = None, show_tab_list: bool = True,
 ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     # financials_from: some portfolios keep each sub-entity's OWN databook
     # free of any Financials-pattern sheet entirely -- the real summary for
@@ -757,6 +766,14 @@ def check_reconciliation(
     )
 
     all_tab_names = sorted(dfs.keys())
+    # dfs (and so all_tab_names) is identical across BS/IS within one call, AND
+    # across every Financials sheet in a multi-entity workbook (same file) --
+    # printing the same ~40-item list twice per call and again per sibling
+    # Financials sheet was the single biggest source of duplicated output on
+    # multi-entity portfolio files. Print it at most once per call now;
+    # show_tab_list=False lets the caller suppress it entirely on repeat
+    # Financials sheets within the same file.
+    tab_list_shown = not show_tab_list
     for label, recon in (("Balance Sheet", bs_recon), ("Income Statement", is_recon)):
         if recon is None or recon.empty:
             print(f"\n{label}: no rows")
@@ -806,8 +823,10 @@ def check_reconciliation(
                               f"(client-side reconciling item, not necessarily a pipeline bug): {note!r}")
                 else:
                     print(f"    - {r['Financials_Account']!r}: {r['Mapping_Status']} | {r['Mapping_Note']}")
-            print(f"\n  All tab names actually present in this workbook (for adding to mappings.yml):")
-            print(f"    {all_tab_names}")
+            if not tab_list_shown:
+                print(f"\n  All tab names actually present in this workbook (for adding to mappings.yml):")
+                print(f"    {all_tab_names}")
+                tab_list_shown = True
 
         # "⚠️ Match" is NOT a value mismatch -- reconcile_financial_statements
         # (workbook.py) only assigns it when the two sides already agree
@@ -1644,9 +1663,12 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
 
     bs_recon_parts: List[pd.DataFrame] = []
     is_recon_parts: List[pd.DataFrame] = []
-    for sheet_name in sheet_names:
+    for i, sheet_name in enumerate(sheet_names):
+        # all_tab_names (dfs.keys()) is the same for every Financials sheet in
+        # this file -- only show the full tab-name list once, on the first one.
         bs_recon, is_recon = check_reconciliation(
             path, sheet_name, dfs, entity_name=entity_name, financials_from=financials_from,
+            show_tab_list=(i == 0),
         )
         if bs_recon is not None and not bs_recon.empty:
             bs_recon_parts.append(bs_recon)
