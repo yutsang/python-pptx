@@ -732,6 +732,29 @@ def check_reconciliation(
             print(f"\n  All tab names actually present in this workbook (for adding to mappings.yml):")
             print(f"    {all_tab_names}")
 
+        # "⚠️ Match" is NOT a value mismatch -- reconcile_financial_statements
+        # (workbook.py) only assigns it when the two sides already agree
+        # within tolerance (that's what "Match" means); the warning is a
+        # SEPARATE sanity flag for "the latest period reads zero but an
+        # earlier period had real data here" (zero_with_adjacent), meant to
+        # catch a schedule tab silently missing its latest column (which
+        # would default to 0 and trivially "match" a genuinely-zero
+        # Financials figure) -- not necessarily a real problem when the
+        # account legitimately went to nil. Printed separately from the
+        # Diff/Not-Found block above so it's never confused with an actual
+        # numeric discrepancy.
+        zero_flags = recon[recon["Match"].astype(str) == "⚠️ Match"]
+        if not zero_flags.empty:
+            print(f"\n  '⚠️ Match' lines for {label} (values already agree -- flagged only because "
+                  f"the latest period is 0 while an earlier period had data; verify the schedule "
+                  f"tab isn't silently missing its latest column rather than genuinely being nil):")
+            for _, r in zero_flags.iterrows():
+                fin_val = r.get("Financials_Value")
+                tab_val = r.get("Tab_Value")
+                print(f"    - {r['Financials_Account']!r}: Financials={fin_val:,.0f}  "
+                      f"Tab({r.get('Tab_Account', '?')})={tab_val if isinstance(tab_val, str) else f'{tab_val:,.0f}'}  "
+                      f"-- both read 0, matches exactly")
+
     return bs_recon, is_recon
 
 
