@@ -860,11 +860,13 @@ def render_batch_processing_section():
             st.session_state.update(bundle)
             if bundle.get("ai_results"):
                 def _before_ai_section():
-                    # Progress bar first (placeholder only -- filled in by the
-                    # batch engine block below), switcher second, so the bar
-                    # sits directly under "AI Content Generation" and above
-                    # the switcher regardless of which entity is selected.
+                    # Progress bar + its status text first (placeholders only
+                    # -- filled in by the batch engine block below), switcher
+                    # second, so both sit directly under "AI Content
+                    # Generation" and above the switcher, together, instead
+                    # of the status text being left behind at the bottom.
                     progress_slot["placeholder"] = st.empty()
+                    progress_slot["status_placeholder"] = st.empty()
                     _render_entity_switcher(entity_order, "batch_active_entity_bottom", active_entity)
 
                 render_processed_view(
@@ -878,9 +880,11 @@ def render_batch_processing_section():
                 st.info(f"⏳ AI generation for **{active_entity}** hasn't finished yet -- showing extracted data only.")
                 # Same placeholder trick as the ai_results branch above --
                 # this is the common mid-batch case (viewing the entity
-                # that's currently being generated), so the progress bar
-                # needs a stable anchor here too, not just once results exist.
+                # that's currently being generated), so the progress bar and
+                # its status text need a stable anchor here too, not just
+                # once results exist.
                 progress_slot["placeholder"] = st.empty()
+                progress_slot["status_placeholder"] = st.empty()
                 render_data_tables_section(st.session_state)
 
     # --- Processing: TWO checkpointed phases per entity (extract, then
@@ -909,17 +913,18 @@ def render_batch_processing_section():
         phase = st.session_state.get("batch_current_phase", "extract")
         batch_start_time = st.session_state.get("batch_start_time") or time.time()
 
-        # Prefer the placeholder created earlier (right under "AI Content
-        # Generation", above the entity switcher) so the bar renders there
-        # instead of at the bottom of the page; falls back to a plain
-        # st.progress() here only when no entity is selectable yet (e.g.
-        # the very first entity is still in its "extract" phase).
+        # Prefer the placeholders created earlier (right under "AI Content
+        # Generation", above the entity switcher) so the bar AND its status
+        # text render there together instead of the bar moving up while its
+        # label is left behind at the bottom of the page; falls back to
+        # plain st.empty()/st.progress() here only when no entity is
+        # selectable yet (e.g. the very first entity is still extracting).
         _progress_host = progress_slot.get("placeholder") or st
         progress_bar = _progress_host.progress(min(idx / total, 1.0) if total else 1.0)
 
         if idx < total:
             slot = ready_slots[idx]
-            status = st.empty()
+            status = progress_slot.get("status_placeholder") or st.empty()
 
             if phase == "extract":
                 status.info(f"⏳ Entity {idx + 1}/{total}: {slot['entity_name']} — extracting data...")
