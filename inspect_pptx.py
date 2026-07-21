@@ -311,12 +311,33 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
     }
 
 
+# A duplicate bullet whose only numeric content is "no balance in any period"
+# language, with no comma-grouped/CNY figure anywhere, is usually NOT a
+# copy-paste bug -- in a multi-entity deck, several different entities can
+# genuinely carry a zero balance in the same account, and the AI writes the
+# same near-boilerplate sentence for each. Flag these separately (informational)
+# instead of alongside real duplicates (same account, same entity, real figures
+# repeated verbatim -- which IS always a bug).
+_ZERO_BALANCE_PHRASES = ("无余额", "未形成余额", "未发生", "均无", "无变动", "为零", "未产生")
+
+
+def _is_likely_zero_balance_boilerplate(text: str) -> bool:
+    if not any(phrase in text for phrase in _ZERO_BALANCE_PHRASES):
+        return False
+    if _ENG_CNY_INT_RE.search(text):
+        return False
+    if re.search(r"\d,\d{3}", text):
+        return False
+    return True
+
+
 def _dump_text_and_check_duplicates(result: dict) -> int:
     """Prints every commentary shape's full text (not just the char-count
     summary line inspect_pptx() already prints), and scans every '■ '-led
     bullet across the WHOLE file for duplicates -- i.e. the same account's
     commentary appearing on more than one slide/slot. Returns the number of
-    duplicate bullets found (0 = clean)."""
+    duplicate bullets found (0 = clean), NOT counting likely-benign
+    zero-balance boilerplate (see _is_likely_zero_balance_boilerplate)."""
     print("\n" + "=" * 78)
     print("  FULL TEXT DUMP (per slide/shape)")
     print("=" * 78)
@@ -332,24 +353,32 @@ def _dump_text_and_check_duplicates(result: dict) -> int:
             for line in text.split("\n"):
                 stripped = line.strip()
                 if stripped.startswith("■"):
-                    # Key on the label + first ~40 chars of body -- enough to
-                    # catch a genuine full-bullet repeat without false-flagging
-                    # two different bullets that happen to share a label.
-                    key = stripped[:60]
-                    bullet_locations.setdefault(key, []).append(f"slide {slide_no} [{shape['name']}]")
+                    # Key on the FULL line, not a truncated prefix -- a
+                    # truncated key false-flags two DIFFERENT bullets (same
+                    # account, different entity, same generic opening template
+                    # but different trailing figures) as duplicates just
+                    # because they share their first N characters.
+                    bullet_locations.setdefault(stripped, []).append(f"slide {slide_no} [{shape['name']}]")
 
     print("\n" + "=" * 78)
     print("  DUPLICATE-BULLET SCAN (same bullet text appearing on >1 slide/slot)")
     print("=" * 78)
-    duplicates = {k: v for k, v in bullet_locations.items() if len(v) > 1}
-    if not duplicates:
+    all_duplicates = {k: v for k, v in bullet_locations.items() if len(v) > 1}
+    real_duplicates = {k: v for k, v in all_duplicates.items() if not _is_likely_zero_balance_boilerplate(k)}
+    benign_duplicates = {k: v for k, v in all_duplicates.items() if _is_likely_zero_balance_boilerplate(k)}
+    if not all_duplicates:
         print("✅ No duplicate bullets found -- every account's commentary appears exactly once.")
     else:
-        for key, locations in duplicates.items():
-            print(f"  ❌ DUPLICATE: {key!r}...")
+        for key, locations in real_duplicates.items():
+            print(f"  ❌ DUPLICATE: {key[:90]!r}{'...' if len(key) > 90 else ''}")
             for loc in locations:
                 print(f"      - {loc}")
-    return len(duplicates)
+        for key, locations in benign_duplicates.items():
+            print(f"  ℹ️  LIKELY BENIGN, zero-balance boilerplate repeated across different entities: "
+                  f"{key[:90]!r}{'...' if len(key) > 90 else ''}")
+            for loc in locations:
+                print(f"      - {loc}")
+    return len(real_duplicates)
 
 
 # English "CNY<comma-grouped integer>" -- requires at least one comma group,
@@ -362,11 +391,22 @@ _ENG_CNY_INT_RE = re.compile(r"CNY\s?(\d{1,3}(?:,\d{3})+)\b")
 # VALUE can be checked for zero in Python rather than pattern-matching "0" as
 # text -- matching text like "0" would also match the trailing ".0" inside an
 # ordinary non-zero number such as "457.0万元" or "CNY570.0 million".
+# Digit-group patterns accept comma-grouping ("3,000") as ONE number, and the
+# negative lookbehind excludes a preceding comma too -- without this, a comma-
+# grouped amount like "人民币3,000万元" gets mis-split: the digits after the
+# comma ("000") pass the lookbehind on their own and get misread as a
+# standalone zero-value match ("000万元" -> 0), even though the real number is
+# 3000, not 0.
+_GROUPED_DIGITS = r"(\d{1,3}(?:,\d{3})*(?:\.\d+)?)"
 _NUMBER_WITH_UNIT_RES = [
-    re.compile(r"CNY\s?(\d+(?:\.\d+)?)\s?(?:million|thousand)?"),
-    re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)万元"),
-    re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)亿元"),
-    re.compile(r"人民币\s?(\d+(?:\.\d+)?)元(?!\S)"),
+    re.compile(rf"CNY\s?{_GROUPED_DIGITS}\s?(?:million|thousand)?"),
+    re.compile(rf"(?<![\d.,]){_GROUPED_DIGITS}万元"),
+    re.compile(rf"(?<![\d.,]){_GROUPED_DIGITS}亿元"),
+    # Excludes only a following letter/digit (avoids matching "元" as part of a
+    # longer alphanumeric token) -- NOT `(?!\S)`, which also blocked a match
+    # right before Chinese punctuation like "。"/"，", i.e. the overwhelmingly
+    # common case for how a real bullet sentence actually ends ("...为人民币0元。").
+    re.compile(rf"人民币\s?{_GROUPED_DIGITS}元(?![A-Za-z0-9])"),
 ]
 
 
@@ -383,7 +423,7 @@ def _find_zero_currency_mentions(text: str) -> List[str]:
     for pattern in _NUMBER_WITH_UNIT_RES:
         for m in pattern.finditer(text):
             try:
-                if float(m.group(1)) == 0:
+                if float(m.group(1).replace(",", "")) == 0:
                     hits.append(m.group(0))
             except ValueError:
                 continue
