@@ -1545,8 +1545,6 @@ def render_processed_view(
                 key=f"download_icon_{session_state.button_click_counter}",
                 use_container_width=True,
             )
-        elif not show_download_button and session_state.get("pptx_ready", False):
-            st.caption("Use the batch-wide download once the whole batch finishes.")
 
     if before_ai_section:
         before_ai_section()

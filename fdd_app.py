@@ -804,6 +804,16 @@ def render_batch_processing_section():
     # actually reaches the browser with the latest cached entities visible
     # and selectable, instead of only ever appearing once the whole batch
     # finishes. ---
+    # Mutable holder so the progress-bar placeholder created below (inside
+    # render_processed_view's before_ai_section hook, positioned right under
+    # the "AI Content Generation" header) can be reused by the batch engine
+    # block further down in this same function -- Streamlit renders a
+    # placeholder at the position it was CREATED, not where it's later
+    # filled in, so this is what lets the progress bar visually sit between
+    # the header and the entity switcher even though the code that drives it
+    # (and must rerun last, see the block below) runs after both.
+    progress_slot: Dict[str, object] = {}
+
     entity_order = st.session_state.get("batch_entity_order") or []
     if entity_order:
         st.divider()
@@ -849,13 +859,19 @@ def render_batch_processing_section():
         if bundle:
             st.session_state.update(bundle)
             if bundle.get("ai_results"):
+                def _before_ai_section():
+                    # Progress bar first (placeholder only -- filled in by the
+                    # batch engine block below), switcher second, so the bar
+                    # sits directly under "AI Content Generation" and above
+                    # the switcher regardless of which entity is selected.
+                    progress_slot["placeholder"] = st.empty()
+                    _render_entity_switcher(entity_order, "batch_active_entity_bottom", active_entity)
+
                 render_processed_view(
                     session_state=st.session_state,
                     generate_pptx_callback=generate_pptx_presentation,
                     get_model_display_name=get_model_display_name,
-                    before_ai_section=lambda: _render_entity_switcher(
-                        entity_order, "batch_active_entity_bottom", active_entity
-                    ),
+                    before_ai_section=_before_ai_section,
                     show_download_button=False,
                 )
             else:
@@ -888,7 +904,13 @@ def render_batch_processing_section():
         phase = st.session_state.get("batch_current_phase", "extract")
         batch_start_time = st.session_state.get("batch_start_time") or time.time()
 
-        progress_bar = st.progress(min(idx / total, 1.0) if total else 1.0)
+        # Prefer the placeholder created earlier (right under "AI Content
+        # Generation", above the entity switcher) so the bar renders there
+        # instead of at the bottom of the page; falls back to a plain
+        # st.progress() here only when no entity is selectable yet (e.g.
+        # the very first entity is still in its "extract" phase).
+        _progress_host = progress_slot.get("placeholder") or st
+        progress_bar = _progress_host.progress(min(idx / total, 1.0) if total else 1.0)
 
         if idx < total:
             slot = ready_slots[idx]
