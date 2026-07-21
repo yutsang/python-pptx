@@ -856,6 +856,7 @@ def render_batch_processing_section():
                     before_ai_section=lambda: _render_entity_switcher(
                         entity_order, "batch_active_entity_bottom", active_entity
                     ),
+                    show_download_button=False,
                 )
             else:
                 st.info(f"⏳ AI generation for **{active_entity}** hasn't finished yet -- showing extracted data only.")

@@ -1438,6 +1438,7 @@ def render_processed_view(
     generate_pptx_callback,
     get_model_display_name,
     before_ai_section: Optional[Callable[[], None]] = None,
+    show_download_button: bool = True,
 ) -> None:
     mappings = effective_mappings_from_session(session_state)
     account_display_dfs = session_state.get("display_dfs") or session_state.dfs
@@ -1534,7 +1535,7 @@ def render_processed_view(
             st.rerun()
     with col_download:
         st.markdown("<br>", unsafe_allow_html=True)
-        if session_state.get("pptx_ready", False) and "pptx_download_data" in session_state:
+        if show_download_button and session_state.get("pptx_ready", False) and "pptx_download_data" in session_state:
             st.download_button(
                 label="📥",
                 data=session_state.pptx_download_data,
@@ -1544,6 +1545,8 @@ def render_processed_view(
                 key=f"download_icon_{session_state.button_click_counter}",
                 use_container_width=True,
             )
+        elif not show_download_button and session_state.get("pptx_ready", False):
+            st.caption("Use the batch-wide download once the whole batch finishes.")
 
     if before_ai_section:
         before_ai_section()
