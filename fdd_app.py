@@ -876,6 +876,11 @@ def render_batch_processing_section():
                 )
             else:
                 st.info(f"⏳ AI generation for **{active_entity}** hasn't finished yet -- showing extracted data only.")
+                # Same placeholder trick as the ai_results branch above --
+                # this is the common mid-batch case (viewing the entity
+                # that's currently being generated), so the progress bar
+                # needs a stable anchor here too, not just once results exist.
+                progress_slot["placeholder"] = st.empty()
                 render_data_tables_section(st.session_state)
 
     # --- Processing: TWO checkpointed phases per entity (extract, then
