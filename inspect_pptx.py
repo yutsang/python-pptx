@@ -370,6 +370,14 @@ _NUMBER_WITH_UNIT_RES = [
 ]
 
 
+# Chinese sentence boundary, for the repeated-人民币 check below -- the rule
+# (confirmed against redd_patterns.xlsx, the project's real-report reference
+# corpus) is per-SENTENCE, not per-bullet: a multi-period list should state
+# "人民币" once ("分别为人民币2,216万元、2,421万元及968万元"), not before every
+# number in the list ("...人民币2,216万元、人民币2,421万元及人民币968万元").
+_CHI_SENTENCE_SPLIT_RE = re.compile(r"[。！？；]")
+
+
 def _find_zero_currency_mentions(text: str) -> List[str]:
     hits: List[str] = []
     for pattern in _NUMBER_WITH_UNIT_RES:
@@ -383,24 +391,32 @@ def _find_zero_currency_mentions(text: str) -> List[str]:
 
 
 def _check_number_formatting_and_zero_wording(result: dict) -> int:
-    """Scans every '■ '-led bullet for two classes of issue flagged from real
-    reports: (1) English sub-million CNY amounts more precise than the
+    """Scans every '■ '-led bullet for three classes of issue flagged from
+    real reports: (1) English sub-million CNY amounts more precise than the
     intended nearest-thousand rounding (e.g. 'CNY238,366' instead of
     'CNY238,000') -- these read as excessive, inconsistent-with-Chinese
     detail; (2) a literal zero-value currency mention that should have been
-    reworded as 'nil'/'未发生' instead (e.g. 'CNY0', '人民币0.0万元').
+    reworded as 'nil'/'未发生' instead (e.g. 'CNY0', '人民币0.0万元'); (3) '人民币'
+    repeated before every number in a Chinese multi-period list within the
+    SAME sentence (e.g. '分别为人民币2,216万元、人民币2,421万元及人民币968万元')
+    instead of stated once for the whole list -- confirmed against
+    redd_patterns.xlsx, the project's real-report reference corpus, as a
+    Chinese-specific convention (English correctly repeats 'CNY' per item).
     Returns the total number of flagged bullets (0 = clean)."""
     print("\n" + "=" * 78)
     print("  NUMBER-FORMATTING / ZERO-WORDING SCAN")
     print("=" * 78)
     print(
-        "Flags two things per bullet: (a) English sub-million CNY amounts that\n"
+        "Flags three things per bullet: (a) English sub-million CNY amounts that\n"
         "aren't rounded to the nearest thousand (over-precise vs the Chinese\n"
         "report's own 万-unit rounding for the same figure), (b) a literal zero\n"
-        "currency mention that should read as 'nil'/'未发生' instead. Neither is\n"
-        "necessarily wrong on its own -- a genuinely sub-CNY10,000 amount is\n"
-        "correctly exact, and a materiality-threshold '0%' isn't a currency\n"
-        "mention -- so treat this as a worklist to skim, not an automatic fail.\n"
+        "currency mention that should read as 'nil'/'未发生' instead, (c) '人民币'\n"
+        "repeated before every number in one Chinese multi-period list sentence\n"
+        "instead of stated once for the whole list. None of these is necessarily\n"
+        "wrong on its own -- a genuinely sub-CNY10,000 amount is correctly exact,\n"
+        "a materiality-threshold '0%' isn't a currency mention, and a single\n"
+        "'人民币' per DIFFERENT sentence is fine -- so treat this as a worklist\n"
+        "to skim, not an automatic fail.\n"
     )
     flagged = 0
     for slide_report in result["slide_reports"]:
@@ -422,6 +438,15 @@ def _check_number_formatting_and_zero_wording(result: dict) -> int:
                 for hit in _find_zero_currency_mentions(stripped):
                     issues.append(f"literal zero mention {hit!r} (should read as 'nil'/'未发生')")
 
+                if "人民币" in stripped:
+                    for sentence in _CHI_SENTENCE_SPLIT_RE.split(stripped):
+                        count = sentence.count("人民币")
+                        if count >= 2:
+                            issues.append(
+                                f"'人民币' repeated {count}x in one sentence (state it once for the "
+                                f"whole list): {sentence.strip()[:150]!r}"
+                            )
+
                 if issues:
                     flagged += 1
                     print(f"  Slide {slide_no} [{shape['name']}] {label!r}...")
@@ -429,7 +454,7 @@ def _check_number_formatting_and_zero_wording(result: dict) -> int:
                         print(f"      - {issue}")
 
     if not flagged:
-        print("✅ No over-precise amounts or literal zero mentions found.")
+        print("✅ No over-precise amounts, literal zero mentions, or repeated-人民币 sentences found.")
     return flagged
 
 
@@ -443,7 +468,8 @@ def main() -> int:
                           "bullets across the whole file (same account's commentary appearing on "
                           "more than one slide/slot), (2) over-precise English sub-million CNY amounts "
                           "(not rounded to the nearest thousand), (3) literal zero-value currency "
-                          "mentions that should read as 'nil'/'未发生' instead.")
+                          "mentions that should read as 'nil'/'未发生' instead, (4) '人民币' repeated "
+                          "before every number in one Chinese multi-period list sentence.")
     args = ap.parse_args()
 
     config = _load_config(args.config)
