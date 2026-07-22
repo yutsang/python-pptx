@@ -30,10 +30,27 @@ from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+
+
+# Excludes period/date-range labels like "LTM Jun 26" / "2024年" -- these
+# repeat across many columns exactly like a real type tag does (confirmed:
+# 13/17 real tabs flagged row 1 as a "type tag" purely because of this),
+# but a genuine asset-type name doesn't contain digits or a month/year word.
+_PERIOD_LABEL_RE = re.compile(
+    r"\d|年|月|日|LTM|Q[1-4]\b|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec", re.IGNORECASE
+)
 
 
 def _is_short_text(v) -> bool:
-    return isinstance(v, str) and 1 <= len(v.strip()) <= 8 and not v.strip().replace(".", "").isdigit()
+    if not (isinstance(v, str) and 1 <= len(v.strip()) <= 8):
+        return False
+    text = v.strip()
+    if text.replace(".", "").isdigit():
+        return False
+    if _PERIOD_LABEL_RE.search(text):
+        return False
+    return True
 
 
 def find_tag_rows(ws, min_repeat: int = 4, max_scan_row: int = 20) -> List[Tuple[int, Dict[str, int]]]:
@@ -99,16 +116,61 @@ def _stride_summary(rows: List[int]) -> str:
     return f"diffs={diffs}"
 
 
+def dump_rows(ws_values, ws_formulas, rows: List[int]):
+    """Full raw content (values, formulas where present) for specific rows
+    -- for verifying what a flagged row ACTUALLY contains, e.g. confirming
+    a candidate tag row is a real type label vs. a period marker."""
+    for r in rows:
+        print(f"\n--- row {r} ---")
+        cells = []
+        for c in range(1, ws_values.max_column + 1):
+            v = ws_values.cell(row=r, column=c).value
+            f = ws_formulas.cell(row=r, column=c).value
+            if v is None and f is None:
+                continue
+            addr = get_column_letter(c)
+            if isinstance(f, str) and f.startswith("="):
+                cells.append(f"{addr}={f!r} -> {v!r}")
+            else:
+                cells.append(f"{addr}={v!r}")
+        print("  " + " | ".join(cells) if cells else "  (empty)")
+
+
+def _parse_row_spec(spec: str) -> List[int]:
+    rows = []
+    for part in spec.split(","):
+        part = part.strip()
+        if "-" in part:
+            lo, hi = part.split("-")
+            rows.extend(range(int(lo), int(hi) + 1))
+        else:
+            rows.append(int(part))
+    return rows
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", help="path to the databook .xlsx")
     ap.add_argument("--tab", default=None, help="only inspect this one AB- tab (default: all of them)")
     ap.add_argument("--verbose", "-v", action="store_true", help="print full tag-row/metric-row detail per tab")
+    ap.add_argument("--dump-rows", default=None, metavar="SPEC",
+                     help="skip the structural scan and just dump full raw content for these rows of "
+                          "--tab, e.g. --tab AB-KS1 --dump-rows 1-20,25")
     args = ap.parse_args()
 
     print(f"Loading {args.path!r}...")
     wb_values = load_workbook(args.path, data_only=True)
     wb_formulas = load_workbook(args.path, data_only=False)
+
+    if args.dump_rows:
+        if not args.tab:
+            print("❌ --dump-rows requires --tab")
+            return 1
+        if args.tab not in wb_values.sheetnames:
+            print(f"❌ tab {args.tab!r} not found.")
+            return 1
+        dump_rows(wb_values[args.tab], wb_formulas[args.tab], _parse_row_spec(args.dump_rows))
+        return 0
 
     all_sheets = wb_values.sheetnames
     ab_tabs = [s for s in all_sheets if s.startswith("AB-") or s.startswith("AB")]
