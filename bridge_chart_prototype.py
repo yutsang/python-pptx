@@ -43,7 +43,9 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, Reference
 from openpyxl.chart.shapes import GraphicalProperties
-from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.label import DataLabel, DataLabelList
+from openpyxl.chart.text import RichText
+from openpyxl.drawing.text import CharacterProperties, Paragraph, ParagraphProperties, RichTextProperties
 
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData
@@ -263,8 +265,23 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     chart.gapWidth = 40
     chart.y_axis.scaling.min = 0
     chart.y_axis.numFmt = "#,##0"
+    # Default openpyxl chart size (~15x7.5cm) is far too small once there are
+    # 8-11 categories with Chinese labels -- everything overlaps and reads as
+    # one dense blob. Size it closer to a full slide so bars/labels breathe.
+    chart.width = 30
+    chart.height = 15
+    # Category labels are long Chinese phrases ("综合楼运营天数增加") -- at
+    # default horizontal orientation with 8-11 of them they overlap into an
+    # unreadable strip. Rotate -45 degrees (rot is in 60,000ths of a degree)
+    # and shrink the font slightly so each label gets its own diagonal slot.
+    axis_text_props = RichText(
+        bodyPr=RichTextProperties(rot=-2700000, vert="horz"),
+        p=[Paragraph(pPr=ParagraphProperties(defRPr=CharacterProperties(sz=900)), endParaRPr=CharacterProperties(sz=900))],
+    )
+    chart.x_axis.txPr = axis_text_props
 
     cats_ref = Reference(ws, min_col=start_col, min_row=header_row + 1, max_row=data_last_row)
+    series_values = {"Total": total_vals, "Increase": inc_vals, "Decrease": dec_vals}
     colors = {"Base": None, "Total": "44546A", "Increase": "2E8B57", "Decrease": "C0392B"}
     for col_offset, name in [(1, "Base"), (2, "Total"), (3, "Increase"), (4, "Decrease")]:
         data_ref = Reference(ws, min_col=start_col + col_offset, min_row=header_row, max_row=data_last_row)
@@ -276,12 +293,19 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
             series.graphicalProperties = GraphicalProperties(noFill=True)
         else:
             series.graphicalProperties = GraphicalProperties(solidFill=colors[name])
-            series.dLbls = DataLabelList(showVal=True, numFmt="#,##0")
+            dlbls = DataLabelList(showVal=True, numFmt="#,##0")
+            # Every category has a value in only ONE of Total/Increase/Decrease
+            # (that's the whole point of the invisible-base-series technique) --
+            # the other two series read 0 for that category. Without this, every
+            # bar shows two extra "0" labels floating on the invisible portion,
+            # which is most of what made the chart look cluttered.
+            dlbls.dLbl = [DataLabel(idx=i, showVal=False) for i, v in enumerate(series_values[name]) if v == 0]
+            series.dLbls = dlbls
 
     anchor_row = data_last_row + 2
     ws.add_chart(chart, f"{get_column_letter(start_col)}{anchor_row}")
 
-    return anchor_row + 18  # leave room for the chart itself before the next block
+    return anchor_row + 32  # bigger chart now -- leave more room before the next block
 
 
 def _build_synthetic_workbook() -> Workbook:

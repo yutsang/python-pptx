@@ -2458,7 +2458,7 @@ def render_bridge_lab() -> None:
     out_ws = out_wb.create_sheet("Bridge_Output")
     next_row = 1
     for block in usable_blocks:
-        title = f"{selected_sheet}: {block.items[0].label} → {block.items[-1].label}"
+        title = f"{block.items[0].label} → {block.items[-1].label}"
         next_row = build_excel_waterfall_chart(out_ws, block, title, start_row=next_row)
 
     out_buffer = _bridge_lab_io.BytesIO()
