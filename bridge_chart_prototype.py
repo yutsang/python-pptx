@@ -42,6 +42,7 @@ from typing import List, Optional, Tuple
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.axis import ChartLines
 from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.chart.label import DataLabel, DataLabelList
 from openpyxl.chart.text import RichText
@@ -249,6 +250,19 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     inc_vals = [round(v) for v in inc_vals]
     dec_vals = [round(v) for v in dec_vals]
 
+    # Reference-format constants, matched to the analyst-built bridge chart
+    # (photo of the team's real deliverable): navy total bars, dark-purple
+    # increase bars, teal decrease bars; thousands separators, negatives in
+    # parentheses, zeros as a bare "-" dash. Number formats live on the CELLS
+    # (data labels are source-linked, so the cell format is what Excel
+    # actually renders -- chart-level dLbls numFmt is ignored, see below).
+    # The Decrease column stores positive magnitudes (the stacked-bar
+    # technique needs positive heights), so its "positive" format section is
+    # parenthesised to display them as the negatives they represent.
+    COLOR_TOTAL, COLOR_INC, COLOR_DEC = "1F3864", "4C2170", "00A3A1"
+    NUM_FMT = '#,##0;(#,##0);"-"'
+    NUM_FMT_PARENS = '(#,##0);(#,##0);"-"'
+
     ws.column_dimensions[get_column_letter(start_col)].width = 22
     for offset in range(1, 5):
         ws.column_dimensions[get_column_letter(start_col + offset)].width = 12
@@ -262,10 +276,14 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     for i, cat in enumerate(categories):
         r = header_row + 1 + i
         ws.cell(row=r, column=start_col, value=cat)
-        ws.cell(row=r, column=start_col + 1, value=base_vals[i])
-        ws.cell(row=r, column=start_col + 2, value=total_vals[i])
-        ws.cell(row=r, column=start_col + 3, value=inc_vals[i])
-        ws.cell(row=r, column=start_col + 4, value=dec_vals[i])
+        for off, vals, fmt in (
+            (1, base_vals, NUM_FMT),
+            (2, total_vals, NUM_FMT),
+            (3, inc_vals, NUM_FMT),
+            (4, dec_vals, NUM_FMT_PARENS),
+        ):
+            cell = ws.cell(row=r, column=start_col + off, value=vals[i])
+            cell.number_format = fmt
     ws.cell(row=header_row, column=start_col + 6, value=title)
     data_last_row = header_row + len(categories)
 
@@ -275,9 +293,11 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     chart.overlap = 100
     chart.title = title
     chart.legend = None
-    chart.gapWidth = 40
+    chart.gapWidth = 130  # reference chart's bars are narrow with visible gaps, not chunky
     chart.y_axis.scaling.min = 0
-    chart.y_axis.numFmt = "#,##0"
+    chart.y_axis.numFmt = NUM_FMT  # axis numFmt DOES carry sourceLinked="0", so this one is honoured
+    chart.y_axis.title = "人民币千元"
+    chart.y_axis.majorGridlines = ChartLines()  # reference has light horizontal gridlines
     # Default openpyxl chart size (~15x7.5cm) is far too small once there are
     # 8-11 categories with Chinese labels -- everything overlaps and reads as
     # one dense blob. Size it closer to a full slide so bars/labels breathe.
@@ -294,22 +314,41 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     chart.x_axis.txPr = axis_text_props
 
     cats_ref = Reference(ws, min_col=start_col, min_row=header_row + 1, max_row=data_last_row)
-    series_values = {"Total": total_vals, "Increase": inc_vals, "Decrease": dec_vals}
-    colors = {"Base": None, "Total": "44546A", "Increase": "2E8B57", "Decrease": "C0392B"}
+    colors = {"Base": None, "Total": COLOR_TOTAL, "Increase": COLOR_INC, "Decrease": COLOR_DEC}
     for col_offset, name in [(1, "Base"), (2, "Total"), (3, "Increase"), (4, "Decrease")]:
         data_ref = Reference(ws, min_col=start_col + col_offset, min_row=header_row, max_row=data_last_row)
         chart.add_data(data_ref, titles_from_data=True)
     chart.set_categories(cats_ref)
 
-    # Openpyxl's DataLabel has no per-point "delete" field in this version --
-    # only the list-level DataLabelList does -- so an individual override can
-    # only ever suppress specific *shown fields* (showVal etc.), never remove
-    # the dLbl element outright. Being explicit about every show* flag (not
-    # just showVal) on BOTH the list default and each override matters: left
-    # unset/None, Excel/openpyxl can fall back to showing the series name AND
-    # category name alongside the value (this is what actually produced the
-    # "Increase, 干仓运营天数增加, 3298.960106" wall-of-text labels -- the
-    # value alone was never the whole problem).
+    # Exactly ONE label per category, owned by the series that represents it
+    # (the reference chart shows "-" for a zero factor and "(0)" for a
+    # negative that rounds to zero, so ownership must follow the item's KIND
+    # and the raw delta's SIGN, not the rounded cell value):
+    #   total item          -> Total series label (navy bar)
+    #   delta >= 0 (incl 0) -> Increase label ("-" via the cell format when 0)
+    #   delta < 0           -> Decrease label (parenthesised via cell format,
+    #                          "(0)" when the magnitude rounds to zero)
+    raw_deltas = [0.0 if it.kind == "total" else it.value for it in block.items]
+    kinds = [it.kind for it in block.items]
+    keep_idx = {
+        "Total": {i for i, k in enumerate(kinds) if k == "total"},
+        "Increase": {i for i, k in enumerate(kinds) if k == "delta" and raw_deltas[i] >= 0},
+        "Decrease": {i for i, k in enumerate(kinds) if k == "delta" and raw_deltas[i] < 0},
+    }
+    series_mags = {"Total": total_vals, "Increase": inc_vals, "Decrease": dec_vals}
+    peak = max(base_vals[i] + total_vals[i] + inc_vals[i] + dec_vals[i] for i in range(len(kinds))) or 1
+
+    def _label_font(color=None, bold=None):
+        rpr = CharacterProperties(solidFill=color, b=bold)
+        return RichText(p=[Paragraph(pPr=ParagraphProperties(defRPr=rpr), endParaRPr=rpr)])
+
+    # Being explicit about every show* flag (not just showVal) on BOTH the
+    # list default and each per-point override matters: left unset/None,
+    # Excel fills in its own defaults and shows the series name AND category
+    # name alongside the value (this is what produced the earlier
+    # "Increase, 干仓运营天数增加, 3298.960106" wall-of-text labels).
+    # openpyxl's DataLabel has no per-point "delete" field in this version,
+    # so suppression = every show* flag off, never removing the element.
     label_field_defaults = dict(
         showVal=True, showCatName=False, showSerName=False,
         showLegendKey=False, showPercent=False, showBubbleSize=False,
@@ -321,19 +360,31 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     for series, name in zip(chart.series, ["Base", "Total", "Increase", "Decrease"]):
         if name == "Base":
             series.graphicalProperties = GraphicalProperties(noFill=True)
-        else:
-            series.graphicalProperties = GraphicalProperties(solidFill=colors[name])
-            dlbls = DataLabelList(numFmt="#,##0", **label_field_defaults)
-            # Every category has a value in only ONE of Total/Increase/Decrease
-            # (that's the whole point of the invisible-base-series technique) --
-            # the other two series read 0 for that category. Without this, every
-            # bar shows two extra "0" labels floating on the invisible portion,
-            # which is most of what made the chart look cluttered.
-            dlbls.dLbl = [
-                DataLabel(idx=i, **suppressed_field_defaults)
-                for i, v in enumerate(series_values[name]) if v == 0
-            ]
-            series.dLbls = dlbls
+            continue
+        series.graphicalProperties = GraphicalProperties(solidFill=colors[name])
+        # "inEnd" (top of the segment) is the closest a STACKED bar chart can
+        # get to the reference's above-the-bar labels -- outside-end isn't a
+        # legal position for stacked charts in the file format (the reference
+        # is a native Excel waterfall chart type, which openpyxl can't write).
+        dlbls = DataLabelList(dLblPos="inEnd", **label_field_defaults)
+        if name == "Total":
+            dlbls.txPr = _label_font(bold=True)  # reference shows totals in bold
+        overrides = []
+        for i in range(len(kinds)):
+            if i not in keep_idx[name]:
+                overrides.append(DataLabel(idx=i, **suppressed_field_defaults))
+            elif series_mags[name][i] / peak >= 0.12:
+                # The label sits INSIDE the top of a tall dark bar -- flip it
+                # to white or it's near-invisible navy-on-navy/purple. Short
+                # bars keep default black: their label spills above the bar
+                # onto the white plot area, where white text would vanish.
+                overrides.append(DataLabel(
+                    idx=i,
+                    txPr=_label_font(color="FFFFFF", bold=(name == "Total")),
+                    **label_field_defaults,
+                ))
+        dlbls.dLbl = overrides
+        series.dLbls = dlbls
 
     anchor_row = data_last_row + 2
     ws.add_chart(chart, f"{get_column_letter(start_col)}{anchor_row}")
