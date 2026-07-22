@@ -44,6 +44,19 @@ Usage:
         # from that second file for reconciliation while breakdown tabs (dfs) still
         # come from the entity's own file as normal. Requires both flags together --
         # no auto-matching by entity name, you name the exact sheet.
+    python inspect_databook.py "databooks/"
+        # FOLDER MODE AUTO-DETECTS the above pattern instead of needing it spelled out
+        # per file: files named "...Portfolio {I,II,III}...主表....xlsx" are treated as
+        # that portfolio's roll-up, every other "...Portfolio {I,II,III}...xlsx" in the
+        # same folder is treated as one of its entities (entity name = whatever's left
+        # of the filename after stripping the "Portfolio X." prefix and a leading
+        # "databook" token), matched to a roll-up sheet via suggest_rollup_sheet_for_entity
+        # (fdd_utils/workbook.py -- same fuzzy entity-name matcher the batch UI's roll-up
+        # dropdown already uses). Prints what it matched before processing anything, and
+        # only ever picks a sheet above that function's own confidence floor -- an entity
+        # file with no confident match just runs without a financials_from override
+        # (same as if it weren't in a portfolio at all), never a silent wrong guess.
+        # Pass --no-auto-rollup to disable and fall back to old per-file default behaviour.
 
 AI-dependent checks (only with --run-ai; needs a configured provider in
 fdd_utils/config.yml, costs real tokens/time — run once per databook when
@@ -111,6 +124,7 @@ from fdd_utils.workbook import (
     PREFERRED_STAGE,
     profile_sheet,
     reconcile_financial_statements,
+    suggest_rollup_sheet_for_entity,
 )
 from fdd_utils.ui import derive_reconciliation_matched_keys
 from fdd_utils.financial_common import get_pipeline_result_text
@@ -1800,6 +1814,76 @@ def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
                   f"{total_genuine_gaps} genuine packing gap(s) total.")
 
 
+# Real naming convention confirmed against a live databooks/ folder (Project
+# Mint, 2026-07-22): "Project Mint.Portfolio I.南通通海.xlsx" (entity file),
+# "Project Mint.Portfolio I.databook. 主表.xlsx" (roll-up -- note the space
+# before 主表), and Portfolio III's entity files use a slightly different
+# form with "databook" ahead of the entity name and NO period before it
+# ("Project Mint.Portfolio III.databook 上海松江.xlsx") -- both forms are
+# handled below. Files with no "Portfolio {I,II,III}" token at all (a
+# standalone file, or something unrelated like this session's bridge/
+# waterfall source workbook) are left alone entirely, same as before.
+_PORTFOLIO_RE = re.compile(r"Portfolio\s+(I{1,3})\b", re.IGNORECASE)
+
+
+def parse_portfolio_filename(name: str) -> Optional[Dict[str, Any]]:
+    """Returns {'portfolio': 'I'/'II'/'III', 'is_rollup': bool,
+    'entity_name': str or None} for a file matching the Portfolio naming
+    convention, else None (not part of any portfolio group)."""
+    stem = name[:-5] if name.lower().endswith(".xlsx") else name
+    m = _PORTFOLIO_RE.search(stem)
+    if not m:
+        return None
+    portfolio = m.group(1).upper()
+    remainder = stem[m.end():].lstrip(".").strip()
+    if "主表" in remainder:
+        return {"portfolio": portfolio, "is_rollup": True, "entity_name": None}
+    entity = re.sub(r"^databook\.?\s*", "", remainder, flags=re.IGNORECASE).strip(" .")
+    return {"portfolio": portfolio, "is_rollup": False, "entity_name": entity or None}
+
+
+def group_portfolio_files(files: List[Path]) -> Dict[str, Dict[str, Any]]:
+    """{'I': {'rollup': Path or None, 'entities': {entity_name: Path}}, ...}"""
+    groups: Dict[str, Dict[str, Any]] = {}
+    for f in files:
+        parsed = parse_portfolio_filename(f.name)
+        if not parsed:
+            continue
+        group = groups.setdefault(parsed["portfolio"], {"rollup": None, "entities": {}})
+        if parsed["is_rollup"]:
+            group["rollup"] = f
+        elif parsed["entity_name"]:
+            group["entities"][parsed["entity_name"]] = f
+    return groups
+
+
+def resolve_auto_rollup_targets(files: List[Path]) -> Dict[Path, Tuple[Path, str]]:
+    """{entity_file_path: (rollup_path, matched_sheet_name)} for every entity
+    file whose portfolio group has a roll-up file AND a confident sheet
+    match (suggest_rollup_sheet_for_entity, the same fuzzy matcher the batch
+    UI's roll-up dropdown already relies on) -- entities with no confident
+    match are simply absent from the returned dict, never guessed."""
+    from openpyxl import load_workbook as _load_workbook_names
+
+    groups = group_portfolio_files(files)
+    targets: Dict[Path, Tuple[Path, str]] = {}
+    for portfolio, group in sorted(groups.items()):
+        rollup = group["rollup"]
+        entities = group["entities"]
+        if not rollup or not entities:
+            continue
+        try:
+            rollup_sheets = _load_workbook_names(rollup, read_only=True).sheetnames
+        except Exception as exc:
+            print(f"  ⚠️ Portfolio {portfolio}: could not read roll-up {rollup.name!r} sheet names: {exc}")
+            continue
+        for entity_name, entity_path in sorted(entities.items()):
+            matched = suggest_rollup_sheet_for_entity(entity_name, rollup_sheets)
+            if matched:
+                targets[entity_path] = (rollup, matched)
+    return targets
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", help="databook .xlsx file, or a folder to scan every .xlsx in it")
@@ -1858,6 +1942,11 @@ def main() -> int:
                          "default) collapses into one-line summaries. Findings/flags always "
                          "print in full either way -- this only controls the 'everything is "
                          "fine' noise, which is what makes a multi-file batch run unpasteable.")
+    ap.add_argument("--no-auto-rollup", action="store_true",
+                    help="folder mode only: disable auto-detecting each entity file's roll-up "
+                         "('主表') Financials source from the Portfolio I/II/III naming "
+                         "convention (see the folder-mode usage example above). Falls back to "
+                         "each file's own default behaviour, same as before this flag existed.")
     args = ap.parse_args()
 
     global VERBOSE
@@ -1881,6 +1970,7 @@ def main() -> int:
         print("❌ --financials-from only works against a single file, not a folder. "
               "Pass the exact .xlsx path.")
         return 1
+    auto_rollup_targets: Dict[Path, Tuple[Path, str]] = {}
     if target.is_dir():
         files = sorted(target.glob("*.xlsx"))
         files = [f for f in files if not f.name.startswith("~$")]
@@ -1896,6 +1986,27 @@ def main() -> int:
                 f"Consider --limit 5 for a first pass across everything, then a full,\n"
                 f"   unlimited run on just the file(s) that need a closer look."
             )
+        if not args.no_auto_rollup:
+            print("\nAuto-detecting Portfolio I/II/III roll-up ('主表') Financials sources...")
+            auto_rollup_targets = resolve_auto_rollup_targets(files)
+            groups = group_portfolio_files(files)
+            for portfolio, group in sorted(groups.items()):
+                rollup = group["rollup"]
+                entities = group["entities"]
+                if not rollup:
+                    print(f"  Portfolio {portfolio}: {len(entities)} entity file(s), "
+                          f"no roll-up ('主表') file found -- using each file's own default.")
+                    continue
+                matched = sum(1 for p in entities.values() if p in auto_rollup_targets)
+                print(f"  Portfolio {portfolio}: roll-up={rollup.name!r}, "
+                      f"{matched}/{len(entities)} entity file(s) matched a sheet")
+                for entity_name, entity_path in sorted(entities.items()):
+                    hit = auto_rollup_targets.get(entity_path)
+                    if hit:
+                        print(f"    {entity_path.name!r} -> sheet {hit[1]!r}")
+                    else:
+                        print(f"    {entity_path.name!r} -> ⚠️ no confident sheet match, "
+                              f"using its own default")
     else:
         files = [target]
 
@@ -1904,12 +2015,15 @@ def main() -> int:
     summaries: List[Dict[str, Any]] = []
     for f in files:
         try:
+            auto_hit = auto_rollup_targets.get(f)
+            financials_from = args.financials_from or (str(auto_hit[0]) if auto_hit else None)
+            financials_sheet = args.financials_sheet or (auto_hit[1] if auto_hit else None)
             summary = inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model,
                                    args.model_name, limit=args.limit, workers=args.workers,
                                    dump_tab_name=args.dump_tab, accounts=accounts_filter,
                                    export_pptx=args.export_pptx, pptx_out_dir=args.pptx_out,
-                                   financials_from=args.financials_from,
-                                   financials_sheet=args.financials_sheet)
+                                   financials_from=financials_from,
+                                   financials_sheet=financials_sheet)
             summaries.append(summary)
         except Exception as exc:
             print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
