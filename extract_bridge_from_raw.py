@@ -180,6 +180,89 @@ def extract_annual_series(ws_values, block: PhaseBlock, year_row: int, days_row:
     return out
 
 
+def find_month_row(ws_values, max_scan_row: int = 60) -> Optional[int]:
+    labeled = find_labeled_rows(ws_values, max_scan_row)
+    for r in sorted(labeled):
+        if any(cat == "period_month" for _, _, cat in labeled[r]):
+            return r
+    return None
+
+
+def _month_col_map(ws_values, year_row: int, month_row: int, max_col: int) -> Dict[tuple, int]:
+    """{(year, month): column} -- built from the label-anchored Year and
+    Month rows' own values, not a guessed column layout."""
+    mapping: Dict[tuple, int] = {}
+    for c in range(1, max_col + 1):
+        y = ws_values.cell(row=year_row, column=c).value
+        m = ws_values.cell(row=month_row, column=c).value
+        if isinstance(y, (int, float)) and 2000 <= y <= 2100 and isinstance(m, (int, float)) and 1 <= m <= 12:
+            mapping[(int(y), int(m))] = c
+    return mapping
+
+
+def extract_ltm_series(ws_values, block: PhaseBlock, year_row: int, month_row: int, days_row: int,
+                        end_year: int, end_month: int, window: int = 12) -> Optional[Dict[str, float]]:
+    """Same aggregation as extract_annual_series (SUM revenue, AVERAGE
+    area>0, SUM days from the phase's own start column onward) but over a
+    trailing N-month window ending at (end_year, end_month) instead of a
+    calendar year -- e.g. window=12 ending at (2026, 6) covers Jul 2025
+    through Jun 2026. This is what the REAL '成都-量价桥图' bridge tab's
+    own second transition does for its trailing period ('2025年7月至2026
+    年6月收入') instead of comparing a full calendar year against a
+    partial one -- confirmed to require no assumption/extrapolation,
+    unlike annualizing a partial year. Returns None if the window isn't
+    fully covered by actual data (won't fabricate a short window)."""
+    max_col = ws_values.max_column
+    ym_map = _month_col_map(ws_values, year_row, month_row, max_col)
+    if not ym_map:
+        return None
+
+    keys = []
+    y, m = end_year, end_month
+    for _ in range(window):
+        keys.append((y, m))
+        m -= 1
+        if m == 0:
+            m = 12
+            y -= 1
+    keys.reverse()
+    if any(k not in ym_map for k in keys):
+        return None
+    cols = [ym_map[k] for k in keys]
+
+    start_col = _phase_start_col(ws_values, block, max_col)
+    revenue = 0.0
+    area_vals = []
+    days = 0.0
+    for c in cols:
+        if block.revenue_row:
+            v = ws_values.cell(row=block.revenue_row, column=c).value
+            if isinstance(v, (int, float)):
+                revenue += v
+        if block.area_row:
+            v = ws_values.cell(row=block.area_row, column=c).value
+            if isinstance(v, (int, float)) and v > 0:
+                area_vals.append(v)
+        if start_col is not None and c >= start_col:
+            v = ws_values.cell(row=days_row, column=c).value
+            if isinstance(v, (int, float)):
+                days += v
+    area = sum(area_vals) / len(area_vals) if area_vals else 0.0
+    unit_rent = (revenue / area / days) if (area and days) else 0.0
+    return {"revenue_k": revenue / 1000, "area": area, "days": days, "unit_rent": unit_rent}
+
+
+def format_ltm_label(end_year: int, end_month: int, window: int = 12) -> str:
+    """Matches the real bridge tab's own label convention exactly, e.g.
+    (2026, 6) -> '2025年7月至2026年6月收入'."""
+    start_month = end_month - window + 1
+    start_year = end_year
+    while start_month < 1:
+        start_month += 12
+        start_year -= 1
+    return f"{start_year}年{start_month}月至{end_year}年{end_month}月收入"
+
+
 # Hardcoded from the REAL '成都-量价桥图' bridge tab's own values (already
 # confirmed earlier this session against the real file) -- the "answer key"
 # for --validate. Only the annual columns (2023/2024/2025), not LTM.
