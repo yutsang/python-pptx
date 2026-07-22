@@ -23,6 +23,8 @@ from fdd_utils.ui import (
     generate_pptx_presentation as render_generate_pptx_presentation,
     initialize_app_state,
     persist_uploaded_workbook,
+    render_bridge_lab,
+    render_bridge_lab_toggle,
     render_data_tables_section,
     render_language_selector,
     render_processed_view,
@@ -1059,6 +1061,15 @@ def render_batch_processing_section():
 
 # Initialize
 init_session_state()
+
+# Bridge Lab -- experimental, fully isolated from the main upload/process/AI/
+# PPTX flow below. Toggled from its own sidebar button; when active it takes
+# over the whole page and the normal sidebar/flow is skipped entirely.
+render_bridge_lab_toggle()
+
+if st.session_state.get("show_bridge_lab"):
+    render_bridge_lab()
+    st.stop()
 
 # Sidebar - must run first to set temp_path before main content reads it
 temp_path = render_sidebar_upload(st.session_state, get_model_display_name)

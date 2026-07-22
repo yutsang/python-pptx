@@ -2371,3 +2371,104 @@ def batch_process_entity(
         progress_callback=progress_callback,
     )
 # --- end ui/pptx_export.py ---
+
+
+# --- Bridge Lab (experimental, isolated testing page) ---
+# Lets the project team upload a workbook, pick one tab, and auto-detect a
+# 'Base'/'Change' bridge helper block (the same convention as the real
+# 成都-量价桥图 tab) to generate a NATIVE Excel waterfall chart -- not PPTX,
+# because the team's actual downstream tool (UpSlide) links PowerPoint
+# charts FROM Excel chart objects; it has no concept of a python-pptx chart,
+# so a python-pptx output would be a dead end for their real workflow.
+# Entirely separate code path from the main upload/process/AI/PPTX flow --
+# gated behind its own session_state flag so it can't interfere with it.
+import io as _bridge_lab_io
+
+from openpyxl import load_workbook as _bridge_lab_load_workbook
+
+from bridge_chart_prototype import build_excel_waterfall_chart, find_bridge_blocks
+
+
+def render_bridge_lab_toggle() -> None:
+    with st.sidebar:
+        st.markdown("---")
+        if st.session_state.get("show_bridge_lab"):
+            if st.button("← 返回主流程", use_container_width=True, key="bridge_lab_back_btn"):
+                st.session_state["show_bridge_lab"] = False
+                st.rerun()
+        else:
+            if st.button("🧪 橋圖測試 (Bridge Lab)", use_container_width=True, key="bridge_lab_enter_btn"):
+                st.session_state["show_bridge_lab"] = True
+                st.rerun()
+
+
+def render_bridge_lab() -> None:
+    st.title("🧪 橋圖測試 (Bridge Chart Lab)")
+    st.caption(
+        "實驗性功能，與主流程完全獨立。上傳一個含有 Base/Change 橋圖輔助區塊的 Excel"
+        "（格式參考「成都-量价桥图」tab），選擇 tab 後自動偵測並生成原生 Excel 疊加圖，"
+        "供下載後透過 UpSlide 帶入 PPT。"
+    )
+
+    uploaded = st.file_uploader("上傳 Excel 檔案 (.xlsx)", type=["xlsx"], key="bridge_lab_upload")
+    if not uploaded:
+        st.info("請先上傳一個 .xlsx 檔案。")
+        return
+
+    file_bytes = uploaded.getvalue()
+    try:
+        wb_values = _bridge_lab_load_workbook(_bridge_lab_io.BytesIO(file_bytes), data_only=True)
+    except Exception as exc:
+        st.error(f"無法讀取此 Excel 檔案：{exc}")
+        return
+
+    sheet_names = wb_values.sheetnames
+    selected_sheet = st.selectbox("選擇 tab", sheet_names, key="bridge_lab_sheet")
+
+    if not st.button("偵測並生成", type="primary", key="bridge_lab_detect_btn"):
+        return
+
+    ws = wb_values[selected_sheet]
+    blocks = find_bridge_blocks(ws)
+    if not blocks:
+        st.warning(f"在「{selected_sheet}」中找不到符合 Base/Change 格式的橋圖區塊。")
+        return
+
+    st.success(f"找到 {len(blocks)} 個橋圖區塊。")
+    usable_blocks = []
+    for i, block in enumerate(blocks):
+        block_label = f"區塊 {i + 1}：{block.items[0].label} → {block.items[-1].label}"
+        with st.expander(block_label, expanded=True):
+            for it in block.items:
+                st.write(f"[{it.kind}] {it.label}：{it.value:,.2f}")
+            if block.check_ok is True:
+                st.success("✅ 對照工作表自身的 check 列核對一致")
+                usable_blocks.append(block)
+            elif block.check_ok is False:
+                st.error("❌ 對照 check 列核對不一致 -- 不會為此區塊生成圖表，請檢查來源表格")
+            else:
+                st.warning("⚠️ 附近找不到 check 列，無法核對一致性，仍會生成圖表，請自行核對數字")
+                usable_blocks.append(block)
+
+    if not usable_blocks:
+        st.error("沒有通過核對、可生成圖表的區塊。")
+        return
+
+    out_wb = _bridge_lab_load_workbook(_bridge_lab_io.BytesIO(file_bytes))  # fresh copy, keeps original sheets/formulas untouched
+    out_ws = out_wb.create_sheet("Bridge_Output")
+    next_row = 1
+    for block in usable_blocks:
+        title = f"{selected_sheet}: {block.items[0].label} → {block.items[-1].label}"
+        next_row = build_excel_waterfall_chart(out_ws, block, title, start_row=next_row)
+
+    out_buffer = _bridge_lab_io.BytesIO()
+    out_wb.save(out_buffer)
+    st.download_button(
+        "下載含橋圖的 Excel",
+        data=out_buffer.getvalue(),
+        file_name=f"bridge_output_{selected_sheet}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="bridge_lab_download_btn",
+    )
+    st.caption("原始上傳檔案的所有分頁保持不變，圖表與數據寫在新增的「Bridge_Output」分頁。")
+# --- end Bridge Lab ---

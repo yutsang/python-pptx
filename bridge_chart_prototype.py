@@ -41,6 +41,9 @@ from typing import List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
+from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.shapes import GraphicalProperties
+from openpyxl.chart.label import DataLabelList
 
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData
@@ -142,9 +145,10 @@ def _validate_block(ws_values, header_row: int, end_row: int, items: List[Bridge
     return abs(reconstructed_end - expected_end) < max(1.0, abs(expected_end) * 0.005)
 
 
-def build_waterfall_chart(slide, block: BridgeBlock, title: str, left, top, width, height):
-    """Classic stacked-bar-simulated waterfall: invisible Base series +
-    Total/Increase/Decrease series, one non-zero per category."""
+def _compute_waterfall_series(block: BridgeBlock):
+    """Shared series math for both renderers (PPTX and Excel): decomposes
+    the block's items into the classic invisible-base-series stacked-bar
+    layout -- one non-zero value per category across 4 series."""
     categories = [it.label for it in block.items]
     base_vals, total_vals, inc_vals, dec_vals = [], [], [], []
     running = 0.0
@@ -166,6 +170,13 @@ def build_waterfall_chart(slide, block: BridgeBlock, title: str, left, top, widt
                 dec_vals.append(-it.value)
             total_vals.append(0.0)
             running += it.value
+    return categories, base_vals, total_vals, inc_vals, dec_vals
+
+
+def build_waterfall_chart(slide, block: BridgeBlock, title: str, left, top, width, height):
+    """Classic stacked-bar-simulated waterfall: invisible Base series +
+    Total/Increase/Decrease series, one non-zero per category."""
+    categories, base_vals, total_vals, inc_vals, dec_vals = _compute_waterfall_series(block)
 
     chart_data = CategoryChartData()
     chart_data.categories = categories
@@ -213,6 +224,64 @@ def build_waterfall_chart(slide, block: BridgeBlock, title: str, left, top, widt
             series.data_labels.number_format_is_linked = False
             series.data_labels.position = XL_LABEL_POSITION.CENTER
     return chart
+
+
+def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: int = 1, start_col: int = 1):
+    """Writes the block's Base/Total/Increase/Decrease series into `ws`
+    starting at (start_row, start_col) and adds a NATIVE Excel stacked bar
+    chart using the same invisible-base-series waterfall technique as
+    build_waterfall_chart (PPTX version) -- so downstream tooling that
+    expects a real Excel chart object (e.g. UpSlide, which links FROM Excel
+    charts INTO PowerPoint rather than being driven programmatically) can
+    pick this up directly, unlike a python-pptx chart which UpSlide has no
+    concept of. Returns the row just below the written block (for stacking
+    multiple blocks on one sheet)."""
+    categories, base_vals, total_vals, inc_vals, dec_vals = _compute_waterfall_series(block)
+
+    header_row = start_row
+    ws.cell(row=header_row, column=start_col, value="Label")
+    ws.cell(row=header_row, column=start_col + 1, value="Base")
+    ws.cell(row=header_row, column=start_col + 2, value="Total")
+    ws.cell(row=header_row, column=start_col + 3, value="Increase")
+    ws.cell(row=header_row, column=start_col + 4, value="Decrease")
+    for i, cat in enumerate(categories):
+        r = header_row + 1 + i
+        ws.cell(row=r, column=start_col, value=cat)
+        ws.cell(row=r, column=start_col + 1, value=base_vals[i])
+        ws.cell(row=r, column=start_col + 2, value=total_vals[i])
+        ws.cell(row=r, column=start_col + 3, value=inc_vals[i])
+        ws.cell(row=r, column=start_col + 4, value=dec_vals[i])
+    ws.cell(row=header_row, column=start_col + 6, value=title)
+    data_last_row = header_row + len(categories)
+
+    chart = BarChart()
+    chart.type = "col"
+    chart.grouping = "stacked"
+    chart.overlap = 100
+    chart.title = title
+    chart.legend = None
+    chart.gapWidth = 40
+    chart.y_axis.scaling.min = 0
+    chart.y_axis.numFmt = "#,##0"
+
+    cats_ref = Reference(ws, min_col=start_col, min_row=header_row + 1, max_row=data_last_row)
+    colors = {"Base": None, "Total": "44546A", "Increase": "2E8B57", "Decrease": "C0392B"}
+    for col_offset, name in [(1, "Base"), (2, "Total"), (3, "Increase"), (4, "Decrease")]:
+        data_ref = Reference(ws, min_col=start_col + col_offset, min_row=header_row, max_row=data_last_row)
+        chart.add_data(data_ref, titles_from_data=True)
+    chart.set_categories(cats_ref)
+
+    for series, name in zip(chart.series, ["Base", "Total", "Increase", "Decrease"]):
+        if name == "Base":
+            series.graphicalProperties = GraphicalProperties(noFill=True)
+        else:
+            series.graphicalProperties = GraphicalProperties(solidFill=colors[name])
+            series.dLbls = DataLabelList(showVal=True, numFmt="#,##0")
+
+    anchor_row = data_last_row + 2
+    ws.add_chart(chart, f"{get_column_letter(start_col)}{anchor_row}")
+
+    return anchor_row + 18  # leave room for the chart itself before the next block
 
 
 def _build_synthetic_workbook() -> Workbook:
@@ -289,6 +358,10 @@ def main() -> int:
                      help="skip the real file and use a synthetic workbook rebuilt from the "
                           "already-confirmed real Chengdu values, to test the pipeline end-to-end")
     ap.add_argument("--out", default="bridge_chart_prototype_output.pptx", help="output pptx path")
+    ap.add_argument("--excel-out", default=None,
+                     help="also write a native-Excel-chart version (openpyxl BarChart, same invisible-base-"
+                          "series technique) to this .xlsx path, e.g. for UpSlide-based downstream workflows "
+                          "that link FROM Excel charts rather than accepting a python-pptx chart object")
     args = ap.parse_args()
 
     if args.self_test:
@@ -356,6 +429,22 @@ def main() -> int:
 
     prs.save(args.out)
     print(f"Saved demo PPTX ({slides_added} slide(s)) to {args.out!r}. Open it and check the bars visually.")
+
+    if args.excel_out:
+        out_wb = Workbook()
+        out_wb.remove(out_wb.active)
+        out_ws = out_wb.create_sheet("Bridge_Output")
+        next_row = 1
+        charts_added = 0
+        for sheet_name, block in all_blocks:
+            if block.check_ok is False:
+                continue
+            title = f"{sheet_name}: {block.items[0].label} → {block.items[-1].label}"
+            next_row = build_excel_waterfall_chart(out_ws, block, title, start_row=next_row)
+            charts_added += 1
+        out_wb.save(args.excel_out)
+        print(f"Saved demo XLSX ({charts_added} chart(s)) to {args.excel_out!r}. Open it and check the bars visually.")
+
     return 0
 
 
