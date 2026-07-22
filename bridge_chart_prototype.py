@@ -44,7 +44,7 @@ from openpyxl.utils import get_column_letter
 
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData
-from pptx.enum.chart import XL_CHART_TYPE
+from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 
@@ -182,7 +182,16 @@ def build_waterfall_chart(slide, block: BridgeBlock, title: str, left, top, widt
     chart.chart_title.text_frame.text = title
     chart.has_legend = False
 
+    # Anchor the value axis at 0 and use a plain thousands-separated number
+    # format -- without this, PowerPoint's auto-scaled axis (based on the
+    # STACKED total per category, which varies a lot between a small delta
+    # bar and a large running-total bar) can end up looking arbitrary.
+    chart.value_axis.minimum_scale = 0
+    chart.value_axis.tick_labels.number_format = "#,##0"
+    chart.value_axis.tick_labels.number_format_is_linked = False
+
     plot = chart.plots[0]
+    plot.gap_width = 40  # tighter bars -- default (150) reads as too sparse for 9+ categories
     colors = {
         "Base": None,  # made invisible below
         "Total": RGBColor(0x44, 0x54, 0x6A),
@@ -196,6 +205,13 @@ def build_waterfall_chart(slide, block: BridgeBlock, title: str, left, top, widt
         else:
             fill.solid()
             fill.fore_color.rgb = colors[series.name]
+            # Mark the actual number on every visible segment -- the whole
+            # point of a bridge chart is reading off each factor's size,
+            # not just eyeballing bar heights.
+            series.data_labels.show_value = True
+            series.data_labels.number_format = "#,##0"
+            series.data_labels.number_format_is_linked = False
+            series.data_labels.position = XL_LABEL_POSITION.CENTER
     return chart
 
 
@@ -264,7 +280,11 @@ def _build_synthetic_workbook() -> Workbook:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", nargs="?", default=None, help="path to the databook .xlsx")
-    ap.add_argument("--sheet", default="成都-量价桥图", help="bridge tab name")
+    ap.add_argument("--sheet", default=None,
+                     help="scan only this one sheet by name. If omitted, scans EVERY sheet in the "
+                          "workbook (this is the default -- covers every entity's bridge tab in one "
+                          "pass, not just one hardcoded tab name, since new entities may name theirs "
+                          "differently, e.g. '<City>-量价桥图').")
     ap.add_argument("--self-test", action="store_true",
                      help="skip the real file and use a synthetic workbook rebuilt from the "
                           "already-confirmed real Chengdu values, to test the pipeline end-to-end")
@@ -274,32 +294,46 @@ def main() -> int:
     if args.self_test:
         print("Using synthetic self-test workbook (real Chengdu values, reconstructed structure)...")
         wb_values = _build_synthetic_workbook()
-        ws = wb_values[args.sheet]
+        sheet_names = [args.sheet] if args.sheet else wb_values.sheetnames
     else:
         if not args.path:
             print("❌ provide a databook path, or use --self-test")
             return 1
         print(f"Loading {args.path!r}...")
         wb_values = load_workbook(args.path, data_only=True)
-        if args.sheet not in wb_values.sheetnames:
-            print(f"❌ sheet {args.sheet!r} not found. Available: {wb_values.sheetnames}")
-            return 1
-        ws = wb_values[args.sheet]
+        if args.sheet:
+            if args.sheet not in wb_values.sheetnames:
+                print(f"❌ sheet {args.sheet!r} not found. Available: {wb_values.sheetnames}")
+                return 1
+            sheet_names = [args.sheet]
+        else:
+            sheet_names = wb_values.sheetnames
 
-    print(f"\nScanning {args.sheet!r} for 'Base'/'Change' bridge helper block(s)...")
-    blocks = find_bridge_blocks(ws)
-    if not blocks:
-        print("❌ No bridge block found -- the 'Base'/'Change' header convention wasn't detected on this tab.")
+    print(f"\nScanning {len(sheet_names)} sheet(s) for 'Base'/'Change' bridge helper block(s)...")
+    all_blocks: List[Tuple[str, BridgeBlock]] = []
+    sheets_with_blocks = 0
+    for sheet_name in sheet_names:
+        ws = wb_values[sheet_name]
+        blocks = find_bridge_blocks(ws)
+        if blocks:
+            sheets_with_blocks += 1
+            for b in blocks:
+                all_blocks.append((sheet_name, b))
+
+    print(f"{sheets_with_blocks}/{len(sheet_names)} sheet(s) have at least one bridge block; "
+          f"{len(all_blocks)} block(s) total.\n")
+    if not all_blocks:
+        print("❌ No bridge blocks found anywhere in this workbook.")
         return 1
 
-    print(f"Found {len(blocks)} block(s).\n")
     prs = Presentation()
     prs.slide_width = Inches(13.33)
     prs.slide_height = Inches(7.5)
     blank_layout = prs.slide_layouts[6]
 
-    for i, block in enumerate(blocks):
-        print(f"--- Block {i + 1} (header row {block.header_row}, "
+    slides_added = 0
+    for i, (sheet_name, block) in enumerate(all_blocks):
+        print(f"--- Block {i + 1}/{len(all_blocks)} -- sheet {sheet_name!r} (header row {block.header_row}, "
               f"label col {get_column_letter(block.label_col)}, "
               f"base col {get_column_letter(block.base_col)}, "
               f"change col {get_column_letter(block.change_col)}) ---")
@@ -308,16 +342,20 @@ def main() -> int:
         check_msg = {True: "✅ reconstructs correctly", False: "❌ MISMATCH -- do not trust this block",
                      None: "⚠️ no check row found nearby, unverified"}[block.check_ok]
         print(f"  {check_msg}\n")
+        if block.check_ok is False:
+            print("  Skipping chart generation for this block (failed its own reconciliation check).\n")
+            continue
 
         slide = prs.slides.add_slide(blank_layout)
-        title = f"{block.items[0].label} → {block.items[-1].label}"
+        title = f"{sheet_name}: {block.items[0].label} → {block.items[-1].label}"
         build_waterfall_chart(
             slide, block, title,
             left=Inches(0.5), top=Inches(0.5), width=Inches(12.3), height=Inches(6.3),
         )
+        slides_added += 1
 
     prs.save(args.out)
-    print(f"Saved {len(blocks)}-chart demo PPTX to {args.out!r}. Open it and check the bars visually.")
+    print(f"Saved demo PPTX ({slides_added} slide(s)) to {args.out!r}. Open it and check the bars visually.")
     return 0
 
 
