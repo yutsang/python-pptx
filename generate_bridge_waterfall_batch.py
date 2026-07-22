@@ -41,6 +41,39 @@ from pptx.util import Inches
 _FACTOR_SUFFIX = {"price": "单价变动", "area": "出租率/面积变动", "days": "运营天数变动"}
 
 
+def annualize_partial_year(series: Dict[str, float], apply: bool = True) -> Dict[str, float]:
+    """Scales a partial-year's revenue up to a full-year-equivalent basis so
+    a bridge comparing it against a full prior/next year doesn't produce a
+    misleading 'days effect' purely from period-length mismatch (confirmed
+    on real data: every entity's 2025->2026 transition, 2026 being a ~181
+    day LTM stub, was producing a large systematic negative days-effect
+    bar with no real operational meaning). unit_rent is a per-day RATE, so
+    it is mathematically UNCHANGED by this -- only the cumulative revenue
+    total and the days denominator are rescaled (revenue_k * 365/days,
+    days -> 365); area is already an average, not a sum, so it's untouched
+    either way.
+
+    `apply` must be decided by the CALLER, not inferred from days alone --
+    confirmed on real data that a partial year can ALSO be a genuine ramp-up
+    (e.g. AB-CD's 2024, only 214 days, because 干仓/综合楼 didn't start
+    operating until partway through the year -- annualizing this would
+    misrepresent a property that didn't exist yet as if it ran all year,
+    and the real analyst-built '成都-量价桥图' bridge does NOT annualize
+    it either). The caller should only pass apply=True for the single
+    LATEST year across the whole series (still-in-progress reporting
+    cutoff), never an early ramp-up year."""
+    days = series["days"]
+    if not apply or not _is_partial_year(days):
+        return series
+    scale = 365.0 / days
+    return {
+        "revenue_k": series["revenue_k"] * scale,
+        "area": series["area"],
+        "days": 365.0,
+        "unit_rent": series["unit_rent"],
+    }
+
+
 def decompose_transition(phase_label: str, series_a: Dict[str, float], series_b: Dict[str, float]) -> List[BridgeItem]:
     price_a, price_b = series_a["unit_rent"], series_b["unit_rent"]
     area_a, area_b = series_a["area"], series_b["area"]
@@ -70,17 +103,36 @@ def find_year_days_rows(ws_values) -> Dict[str, Optional[int]]:
 
 
 def build_bridge_for_transition(ws_values, blocks: List[PhaseBlock], year_row: int, days_row: int,
-                                 year_a: int, year_b: int, start_label: str, end_label: str) -> Optional[BridgeBlock]:
+                                 year_a: int, year_b: int, start_label: str, end_label: str,
+                                 annualize: bool = True, max_year: Optional[int] = None) -> Optional[BridgeBlock]:
     all_series = [extract_annual_series(ws_values, b, year_row, days_row) for b in blocks]
     if any(year_a not in s or year_b not in s for s in all_series):
         return None
 
-    total_a = sum(s[year_a]["revenue_k"] for s in all_series)
-    total_b = sum(s[year_b]["revenue_k"] for s in all_series)
+    # Only the single LATEST year across the whole series is a candidate for
+    # annualization (a still-in-progress reporting cutoff) -- an early
+    # partial year (year_a here, always < year_b) is a ramp-up, not a
+    # cutoff, and must never be annualized (see annualize_partial_year's
+    # docstring for why -- this is what keeps --validate matching AB-CD's
+    # real, non-annualized 2024 ramp-up year).
+    apply_a = annualize and max_year is not None and year_a == max_year
+    apply_b = annualize and max_year is not None and year_b == max_year
+
+    raw_a = [s[year_a] for s in all_series]
+    raw_b = [s[year_b] for s in all_series]
+    series_a = [annualize_partial_year(s, apply=apply_a) for s in raw_a]
+    series_b = [annualize_partial_year(s, apply=apply_b) for s in raw_b]
+    if apply_a and any(_is_partial_year(s["days"]) for s in raw_a):
+        start_label += "(年化)"
+    if apply_b and any(_is_partial_year(s["days"]) for s in raw_b):
+        end_label += "(年化)"
+
+    total_a = sum(s["revenue_k"] for s in series_a)
+    total_b = sum(s["revenue_k"] for s in series_b)
 
     items: List[BridgeItem] = [BridgeItem(label=start_label, kind="total", value=total_a)]
-    for block, series in zip(blocks, all_series):
-        items.extend(decompose_transition(block.label, series[year_a], series[year_b]))
+    for block, sa, sb in zip(blocks, series_a, series_b):
+        items.extend(decompose_transition(block.label, sa, sb))
     items.append(BridgeItem(label=end_label, kind="total", value=total_b))
 
     reconstructed = total_a + sum(it.value for it in items[1:-1])
@@ -100,15 +152,6 @@ _AB_CD_EXPECTED_FACTORS_2024_2025 = {
     "综合楼": {"price": 66.9393853357857, "area": -55.45101747277201, "days": 29.103442136986306},
     "冷库": {"price": 0.0, "area": 0.0, "days": 3061.83285},
 }
-
-
-# A year with meaningfully fewer than ~365 days of data is a partial/LTM
-# period (e.g. "2026" only has Jan-Jun -> ~181 days) -- comparing it
-# directly against a FULL prior year makes the 'days effect' bar swing by
-# roughly negative-half-a-year, which reads as a dramatic decline but is
-# really just an apples-to-oranges period-length mismatch, not a real
-# number. 350 leaves headroom for leap years / short first/last months
-# without flagging genuine full years as partial.
 _PARTIAL_YEAR_DAYS_THRESHOLD = 350
 
 
@@ -116,18 +159,28 @@ def _is_partial_year(days: float) -> bool:
     return 0 < days < _PARTIAL_YEAR_DAYS_THRESHOLD
 
 
-def dump_transition_detail(blocks: List[PhaseBlock], all_series, year_a: int, year_b: int):
+def _fmt_series(label: str, s: Dict[str, float]) -> str:
+    return (f"{label}: revenue={s['revenue_k']:,.2f}k area={s['area']:,.2f} "
+            f"days={s['days']:.0f} unit_rent={s['unit_rent']:.4f}")
+
+
+def dump_transition_detail(blocks: List[PhaseBlock], all_series, year_a: int, year_b: int,
+                            apply_a: bool = False, apply_b: bool = False):
     for block, series in zip(blocks, all_series):
         sa, sb = series.get(year_a), series.get(year_b)
         if sa is None or sb is None:
             print(f"    [{block.label}] missing {year_a if sa is None else year_b} data entirely")
             continue
         print(f"    [{block.label}]")
-        print(f"      {year_a}: revenue={sa['revenue_k']:,.2f}k area={sa['area']:,.2f} "
-              f"days={sa['days']:.0f} unit_rent={sa['unit_rent']:.4f}")
-        print(f"      {year_b}: revenue={sb['revenue_k']:,.2f}k area={sb['area']:,.2f} "
-              f"days={sb['days']:.0f} unit_rent={sb['unit_rent']:.4f}")
-        items = decompose_transition(block.label, sa, sb)
+        print(f"      {_fmt_series(f'{year_a} (raw)', sa)}")
+        print(f"      {_fmt_series(f'{year_b} (raw)', sb)}")
+        eff_a = annualize_partial_year(sa, apply=apply_a)
+        eff_b = annualize_partial_year(sb, apply=apply_b)
+        if eff_a is not sa:
+            print(f"      {_fmt_series(f'{year_a} (annualized)', eff_a)}")
+        if eff_b is not sb:
+            print(f"      {_fmt_series(f'{year_b} (annualized)', eff_b)}")
+        items = decompose_transition(block.label, eff_a, eff_b)
         for it in items:
             print(f"      -> {it.label}: {it.value:,.2f}k")
 
@@ -148,6 +201,13 @@ def main() -> int:
                           "data (a partial/LTM period) -- comparing a partial year directly against "
                           "a full year produces a misleadingly large 'days effect' bar that's really "
                           "just a period-length mismatch, not a genuine change" % _PARTIAL_YEAR_DAYS_THRESHOLD)
+    ap.add_argument("--no-annualize", action="store_true",
+                     help="disable annualizing the latest partial/LTM year (default: ON) -- only ever "
+                          "applies to the single LATEST year across a tab's whole series (a still-in-"
+                          "progress reporting cutoff, e.g. '2026' with only 6 months of data); an early "
+                          "partial year (e.g. a property's ramp-up first year) is NEVER annualized "
+                          "regardless of this flag, since that would misrepresent a property that "
+                          "didn't exist yet as if it ran all year")
     ap.add_argument("--out", default="bridge_waterfall_batch_output.pptx", help="output pptx path")
     args = ap.parse_args()
 
@@ -182,6 +242,7 @@ def main() -> int:
         years = sorted({y for b in blocks
                          for y in extract_annual_series(ws, b, yd["year_row"], yd["days_row"]).keys()})
         transitions = list(zip(years, years[1:]))
+        max_year = years[-1] if years else None
         print(f"--- {tab}: {len(blocks)} phase(s) [{', '.join(b.label for b in blocks)}], "
               f"years {years} ---")
 
@@ -190,21 +251,30 @@ def main() -> int:
             days_a = max((s.get(year_a, {}).get("days", 0) for s in all_series), default=0)
             days_b = max((s.get(year_b, {}).get("days", 0) for s in all_series), default=0)
             partial = _is_partial_year(days_a) or _is_partial_year(days_b)
+            annualize = not args.no_annualize
+            apply_a = annualize and year_a == max_year and _is_partial_year(days_a)
+            apply_b = annualize and year_b == max_year and _is_partial_year(days_b)
 
             bridge = build_bridge_for_transition(
                 ws, blocks, yd["year_row"], yd["days_row"], year_a, year_b,
                 start_label=f"{year_a}年收入", end_label=f"{year_b}年收入",
+                annualize=annualize, max_year=max_year,
             )
             if bridge is None:
                 continue
             check_msg = "✅" if bridge.check_ok else "⚠️ residual > tolerance"
-            partial_msg = f"  ⚠️ PARTIAL YEAR ({year_a}={days_a:.0f}d, {year_b}={days_b:.0f}d) -- " \
-                          f"days-effect bar below is a period-length artifact, not a real change" if partial else ""
+            if apply_a or apply_b:
+                partial_msg = f"  ⚠️ PARTIAL YEAR ({year_a}={days_a:.0f}d, {year_b}={days_b:.0f}d) -- annualized"
+            elif partial:
+                partial_msg = f"  ⚠️ PARTIAL YEAR ({year_a}={days_a:.0f}d, {year_b}={days_b:.0f}d) -- " \
+                               f"early ramp-up, left as-is (not the latest year, so not annualized)"
+            else:
+                partial_msg = ""
             print(f"    {year_a}->{year_b}: start={bridge.items[0].value:,.1f}k "
                   f"end={bridge.items[-1].value:,.1f}k  {check_msg}{partial_msg}")
 
             if args.dump_detail:
-                dump_transition_detail(blocks, all_series, year_a, year_b)
+                dump_transition_detail(blocks, all_series, year_a, year_b, apply_a=apply_a, apply_b=apply_b)
 
             if partial and args.skip_partial:
                 print(f"      -> --skip-partial: not charting this transition")
@@ -216,6 +286,12 @@ def main() -> int:
                     if not exp:
                         continue
                     got_items = [it for it in bridge.items if it.label.startswith(phase_name)]
+                    if len(got_items) < 3:
+                        print(f"      ⚠️  {phase_name}: expected 3 factor items, found {len(got_items)} "
+                              f"(block label was {block.label!r} -- --validate only works against the "
+                              f"real AB-CD tab with its real 干仓/综合楼/冷库 tag-row labels)")
+                        all_ok = False
+                        continue
                     got = {"price": got_items[0].value, "area": got_items[1].value, "days": got_items[2].value}
                     for factor in ("price", "area", "days"):
                         tol = max(0.5, abs(exp[factor]) * 0.005)
