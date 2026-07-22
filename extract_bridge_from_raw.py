@@ -49,34 +49,52 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
     """Groups labeled metric rows into phase blocks. A block starts at each
     'metric_occupancy' row (confirmed anchor: every real phase block in the
     17-tab scan starts with a Total occupancy rate row) and runs until the
-    next one (or end of scan range)."""
-    labeled = find_labeled_rows(ws_values, max_scan_row)
-    by_row = {r: {cat for _, _, cat in hits} for r, hits in labeled.items()}
+    next one (or end of scan range).
 
-    occ_rows = sorted(r for r, cats in by_row.items() if "metric_occupancy" in cats)
-    if not occ_rows:
+    Confirmed on real AB-CD data: per-phase rows (occupancy/area/rent/
+    revenue) all sit in the SAME label column (D in AB-CD), while the
+    aggregate/grand-total rows below the last real phase block ('Total
+    Rental Revenue', 'Gross revenue', 'Net revenue', ...) sit in a
+    DIFFERENT column (C) despite also being tagged 'metric_revenue' and
+    falling inside the last block's row-range fallback window -- matching
+    on category alone (the earlier version of this function) silently
+    picked up 'Total Rental Revenue' as if it were the last phase's own
+    revenue, producing a number that was actually the grand total across
+    ALL phases. Restricting every row match to the occupancy row's own
+    column fixes this without needing a tighter row-range guess."""
+    labeled = find_labeled_rows(ws_values, max_scan_row)
+    # {row: {category: column}} -- keeps the column each category was found
+    # in, since a row can (rarely) have unrelated labels in other columns.
+    by_row: Dict[int, Dict[str, int]] = {}
+    for r, hits in labeled.items():
+        for col, _text, cat in hits:
+            by_row.setdefault(r, {})[cat] = col
+
+    occ_hits = sorted((r, cats["metric_occupancy"]) for r, cats in by_row.items() if "metric_occupancy" in cats)
+    if not occ_hits:
         return []
 
     tag_rows_hits = find_tag_rows(ws_values)
     tag_labels = [labels for _, labels in tag_rows_hits]
 
     blocks: List[PhaseBlock] = []
-    for i, start in enumerate(occ_rows):
-        end = occ_rows[i + 1] - 1 if i + 1 < len(occ_rows) else start + 8
+    for i, (start, anchor_col) in enumerate(occ_hits):
+        end = occ_hits[i + 1][0] - 1 if i + 1 < len(occ_hits) else start + 8
         area_row = rent_row = None
         revenue_rows: List[int] = []
         for r in range(start, end + 1):
-            cats = by_row.get(r, set())
-            if "metric_area_occupied" in cats or "metric_area_leased" in cats:
+            cats = by_row.get(r, {})
+            if cats.get("metric_area_occupied") == anchor_col or cats.get("metric_area_leased") == anchor_col:
                 area_row = r
-            if "metric_rent" in cats:
+            if cats.get("metric_rent") == anchor_col:
                 rent_row = r
-            if "metric_revenue" in cats:
+            if cats.get("metric_revenue") == anchor_col:
                 revenue_rows.append(r)
-        # AB-CD confirmed: of the 2 revenue rows per block (incl-VAT then
-        # post-VAT), the bridge tab's own formulas use the LATER (post-VAT)
-        # one -- e.g. 干仓 pulled from row 24 ('...post VAT'), not row 22
-        # ('...含税'/incl-VAT), even though both are labeled "revenue".
+        # AB-CD confirmed: of the 2 (same-column) revenue rows per block
+        # (incl-VAT then post-VAT), the bridge tab's own formulas use the
+        # LATER (post-VAT) one -- e.g. 干仓 pulled from row 24 ('...post
+        # VAT'), not row 22 ('...含税'/incl-VAT), even though both are
+        # labeled "revenue".
         revenue_row = revenue_rows[-1] if revenue_rows else None
         label = tag_labels[i] if i < len(tag_labels) else {}
         label_text = "/".join(label.keys()) if label else f"Phase {i + 1}"
