@@ -5,19 +5,21 @@ Before automating a bridge/waterfall chart FROM the raw AB-* tabs (instead
 of reading a pre-built '<entity>-量价桥图' helper tab, which per the
 project team likely only exists for one entity so far), we need evidence
 of whether every AB-* tab actually follows the same structural convention
-confirmed on AB-CD:
-  - a small number of "type tag" rows near the top, each containing the
-    SAME short text value repeated across many consecutive columns (this
-    is what a SUMIFS criteria-range formula matches against elsewhere)
-  - a 'Year' row and a 'Days in period' row (formula-detectable: YEAR(...)
-    and end-start+1 patterns)
-  - metric rows (area/revenue/etc.) that repeat once per type at a
-    consistent row offset
+confirmed on AB-CD.
 
-This is exploratory -- it does NOT assume AB-CD's exact row numbers (24,
-33, 42, etc.) apply anywhere else; it re-derives candidate rows per tab
-from generic signal, then reports a compact summary so we can see how much
-the format actually varies before committing to one detection strategy.
+Confirmed on TWO real tabs (AB-CD and AB-KS1) so far: both have a clean
+English LABEL COLUMN (a low-numbered column like C/D/F/G/I, not fixed to
+one letter) with recognizable terms -- 'Year', 'Days in period', 'Occupied
+area', 'Revenue', 'Occupancy rate', etc. This is the primary anchor now
+(find_labeled_rows / _LABEL_VOCAB), NOT position or repeated-value
+structure -- an earlier version of this script tried to infer 'Year'/'Days'
+rows from formula patterns and got it wrong on real data (matched a
+"=DATE(YEAR(x)+1,...)" formula that merely CONTAINS "YEAR(" before ever
+reaching the real year-extraction row). The two tabs also confirmed they
+DON'T use the same mechanism for multiple asset types: AB-CD has separate
+repeated-text tag rows (find_tag_rows), AB-KS1 folds the type straight into
+the metric row's own label (e.g. "Phase 1 - Dry") -- so this script reports
+both signals rather than assuming either one always applies.
 
 Usage:
     python inspect_ab_tabs_structure.py "databooks/xx.xlsx"
@@ -70,50 +72,70 @@ def find_tag_rows(ws, min_repeat: int = 4, max_scan_row: int = 20) -> List[Tuple
     return hits
 
 
-def find_year_days_rows(ws_values, ws_formulas, max_scan_row: int = 20) -> Dict[str, Optional[int]]:
-    year_row = days_row = None
-    for r in range(1, min(max_scan_row, ws_formulas.max_row) + 1):
-        for c in range(1, ws_formulas.max_column + 1):
-            f = ws_formulas.cell(row=r, column=c).value
-            if not isinstance(f, str):
-                continue
-            if year_row is None and re.search(r"YEAR\s*\(", f, re.IGNORECASE):
-                year_row = r
-            if days_row is None and re.search(r"=\s*\+?\w+\d+\s*-\s*\w+\d+\s*\+\s*1", f):
-                days_row = r
-        if year_row and days_row:
-            break
-    return {"year_row": year_row, "days_row": days_row}
+# Real-world confirmed (AB-CD AND AB-KS1 both use the SAME label vocabulary
+# in a low-numbered label column, e.g. D or I -- even though they use
+# DIFFERENT mechanisms for tagging multiple asset types: AB-CD has separate
+# repeated-text tag rows, AB-KS1 folds the type straight into the metric
+# row's own label, e.g. "Phase 1 - Dry"). This is a much more reliable
+# anchor than guessing from formula patterns or repeated-value structure --
+# the formula-pattern approach (previous find_year_days_rows) was CONFIRMED
+# WRONG on real data: it matched row 4's "=DATE(YEAR(W4)+1,...)" (a
+# "Quarter End + 1 year" formula that merely CONTAINS "YEAR(") before ever
+# reaching row 7's real "=YEAR(W3)" year-extraction row, because it wasn't
+# anchored to the row's own label text at all.
+# (label_text, match_mode, category) -- match_mode "exact" compares the
+# whole cell text case-insensitively; "substring" allows it to appear
+# anywhere in a longer label (needed for e.g. "Dry rental revenue post VAT"
+# to still count as a "revenue" row).
+_LABEL_VOCAB: List[Tuple[str, str, str]] = [
+    ("Year", "exact", "period_year"),
+    ("Days in period", "substring", "period_days"),
+    ("Quarter End", "substring", "period_quarter_end"),
+    ("Month", "exact", "period_month"),
+    ("Quarter", "exact", "period_quarter"),
+    ("Beg.", "exact", "period_begin"),
+    ("Beginning", "substring", "period_begin"),
+    ("End", "exact", "period_end"),
+    ("Occupied area", "substring", "metric_area_occupied"),
+    ("Gross leasing area", "substring", "metric_area_gross"),
+    ("Leased area", "substring", "metric_area_leased"),
+    ("Unit rent", "substring", "metric_rent"),
+    ("Occupancy rate", "substring", "metric_occupancy"),
+    ("Revenue", "substring", "metric_revenue"),
+]
+_LABEL_SCAN_MAX_COL = 12  # observed label columns (C/D/F/G/I) are all well within this
 
 
-def find_metric_row_candidates(ws_values, tag_rows: List[int], max_scan_row: int = 60) -> List[int]:
-    """Rows below the tag rows that are mostly numeric (not text-heavy) and
-    have enough non-empty cells to be real data, not stray notes -- a loose
-    filter, meant for eyeballing stride patterns, not a final answer."""
-    if not tag_rows:
-        return []
-    start = max(tag_rows) + 1
-    candidates = []
-    for r in range(start, min(max_scan_row, ws_values.max_row) + 1):
-        numeric_count = 0
-        total_count = 0
-        for c in range(1, ws_values.max_column + 1):
+def find_labeled_rows(ws_values, max_scan_row: int = 60) -> Dict[int, List[Tuple[int, str, str]]]:
+    """Returns {row: [(col, matched_vocab_term, category), ...]} for every
+    row in the first max_scan_row rows whose label column (a low-index
+    column, not a data column) matches something in _LABEL_VOCAB."""
+    hits: Dict[int, List[Tuple[int, str, str]]] = {}
+    for r in range(1, min(max_scan_row, ws_values.max_row) + 1):
+        for c in range(1, min(_LABEL_SCAN_MAX_COL, ws_values.max_column) + 1):
             v = ws_values.cell(row=r, column=c).value
-            if v is None:
+            if not isinstance(v, str) or not v.strip():
                 continue
-            total_count += 1
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                numeric_count += 1
-        if total_count >= 5 and numeric_count / total_count >= 0.7:
-            candidates.append(r)
-    return candidates
+            text = v.strip().lower()
+            for term, mode, category in _LABEL_VOCAB:
+                matched = (text == term.lower()) if mode == "exact" else (term.lower() in text)
+                if matched:
+                    hits.setdefault(r, []).append((c, v.strip(), category))
+    return hits
 
 
-def _stride_summary(rows: List[int]) -> str:
-    if len(rows) < 2:
-        return "(not enough rows to detect a stride)"
-    diffs = [b - a for a, b in zip(rows, rows[1:])]
-    return f"diffs={diffs}"
+def find_year_days_rows(ws_values, ws_formulas, max_scan_row: int = 60) -> Dict[str, Optional[int]]:
+    """Label-anchored (not formula-pattern-guessed) -- see find_labeled_rows
+    docstring for why the formula-pattern approach this replaced was wrong."""
+    labeled = find_labeled_rows(ws_values, max_scan_row)
+    year_row = days_row = None
+    for r in sorted(labeled):
+        cats = {cat for _, _, cat in labeled[r]}
+        if year_row is None and "period_year" in cats:
+            year_row = r
+        if days_row is None and "period_days" in cats:
+            days_row = r
+    return {"year_row": year_row, "days_row": days_row}
 
 
 def dump_rows(ws_values, ws_formulas, rows: List[int]):
@@ -184,22 +206,29 @@ def main() -> int:
     print(f"\nPre-built bridge-style tab(s) already in this workbook ({len(bridge_like)}): {bridge_like}")
     print(f"Inspecting {len(ab_tabs)} 'AB-' tab(s) for structural consistency with AB-CD...\n")
 
-    print(f"{'Tab':16s} {'Dims':14s} {'TagRows':10s} {'#Types':7s} {'YearRow':8s} {'DaysRow':8s} {'MetricCandidates(top20)'}")
-    print("-" * 110)
+    print(f"{'Tab':16s} {'Dims':14s} {'YearRow':8s} {'DaysRow':8s} {'TagRows':10s} {'LabeledMetricRows (row:category)'}")
+    print("-" * 130)
     for tab in ab_tabs:
         ws_v = wb_values[tab]
         ws_f = wb_formulas[tab]
         tag_hits = find_tag_rows(ws_v)
         tag_rows = [r for r, _ in tag_hits]
-        n_types = len({label for _, labels in tag_hits for label in labels})
         yd = find_year_days_rows(ws_v, ws_f)
-        metric_candidates = find_metric_row_candidates(ws_v, tag_rows)[:20]
-        print(f"{tab:16s} {ws_v.dimensions:14s} {str(tag_rows):10s} {n_types:<7d} "
-              f"{str(yd['year_row']):8s} {str(yd['days_row']):8s} {metric_candidates}")
+        labeled = find_labeled_rows(ws_v)
+        metric_rows = {
+            r: sorted({cat for _, _, cat in hits if cat.startswith("metric_")})
+            for r, hits in labeled.items()
+            if any(cat.startswith("metric_") for _, _, cat in hits)
+        }
+        metric_summary = ", ".join(f"{r}:{'/'.join(cats)}" for r, cats in sorted(metric_rows.items()))
+        print(f"{tab:16s} {ws_v.dimensions:14s} {str(yd['year_row']):8s} {str(yd['days_row']):8s} "
+              f"{str(tag_rows):10s} {metric_summary}")
         if args.verbose:
             for r, labels in tag_hits:
-                print(f"    row {r}: {labels}")
-            print(f"    metric candidate stride: {_stride_summary(metric_candidates)}")
+                print(f"    tag row {r}: {labels}")
+            for r in sorted(labeled):
+                for col, text, cat in labeled[r]:
+                    print(f"    row {r} col {get_column_letter(col)}: {cat} <- {text!r}")
 
     return 0
 
