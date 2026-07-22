@@ -239,6 +239,19 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     concept of. Returns the row just below the written block (for stacking
     multiple blocks on one sheet)."""
     categories, base_vals, total_vals, inc_vals, dec_vals = _compute_waterfall_series(block)
+    # openpyxl's chart numFmt (below) only writes a bare formatCode attribute
+    # with no sourceLinked="0" -- Excel then treats it as still linked to the
+    # CELL's own format and ignores it, rendering the raw value ("2059.545459"
+    # instead of "2,060"). Round at the cell level instead so the label is
+    # clean regardless of whether Excel honours the chart-level numFmt.
+    base_vals = [round(v) for v in base_vals]
+    total_vals = [round(v) for v in total_vals]
+    inc_vals = [round(v) for v in inc_vals]
+    dec_vals = [round(v) for v in dec_vals]
+
+    ws.column_dimensions[get_column_letter(start_col)].width = 22
+    for offset in range(1, 5):
+        ws.column_dimensions[get_column_letter(start_col + offset)].width = 12
 
     header_row = start_row
     ws.cell(row=header_row, column=start_col, value="Label")
@@ -288,18 +301,38 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
         chart.add_data(data_ref, titles_from_data=True)
     chart.set_categories(cats_ref)
 
+    # Openpyxl's DataLabel has no per-point "delete" field in this version --
+    # only the list-level DataLabelList does -- so an individual override can
+    # only ever suppress specific *shown fields* (showVal etc.), never remove
+    # the dLbl element outright. Being explicit about every show* flag (not
+    # just showVal) on BOTH the list default and each override matters: left
+    # unset/None, Excel/openpyxl can fall back to showing the series name AND
+    # category name alongside the value (this is what actually produced the
+    # "Increase, 干仓运营天数增加, 3298.960106" wall-of-text labels -- the
+    # value alone was never the whole problem).
+    label_field_defaults = dict(
+        showVal=True, showCatName=False, showSerName=False,
+        showLegendKey=False, showPercent=False, showBubbleSize=False,
+    )
+    suppressed_field_defaults = dict(
+        showVal=False, showCatName=False, showSerName=False,
+        showLegendKey=False, showPercent=False, showBubbleSize=False,
+    )
     for series, name in zip(chart.series, ["Base", "Total", "Increase", "Decrease"]):
         if name == "Base":
             series.graphicalProperties = GraphicalProperties(noFill=True)
         else:
             series.graphicalProperties = GraphicalProperties(solidFill=colors[name])
-            dlbls = DataLabelList(showVal=True, numFmt="#,##0")
+            dlbls = DataLabelList(numFmt="#,##0", **label_field_defaults)
             # Every category has a value in only ONE of Total/Increase/Decrease
             # (that's the whole point of the invisible-base-series technique) --
             # the other two series read 0 for that category. Without this, every
             # bar shows two extra "0" labels floating on the invisible portion,
             # which is most of what made the chart look cluttered.
-            dlbls.dLbl = [DataLabel(idx=i, showVal=False) for i, v in enumerate(series_values[name]) if v == 0]
+            dlbls.dLbl = [
+                DataLabel(idx=i, **suppressed_field_defaults)
+                for i, v in enumerate(series_values[name]) if v == 0
+            ]
             series.dLbls = dlbls
 
     anchor_row = data_last_row + 2
