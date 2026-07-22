@@ -102,6 +102,36 @@ _AB_CD_EXPECTED_FACTORS_2024_2025 = {
 }
 
 
+# A year with meaningfully fewer than ~365 days of data is a partial/LTM
+# period (e.g. "2026" only has Jan-Jun -> ~181 days) -- comparing it
+# directly against a FULL prior year makes the 'days effect' bar swing by
+# roughly negative-half-a-year, which reads as a dramatic decline but is
+# really just an apples-to-oranges period-length mismatch, not a real
+# number. 350 leaves headroom for leap years / short first/last months
+# without flagging genuine full years as partial.
+_PARTIAL_YEAR_DAYS_THRESHOLD = 350
+
+
+def _is_partial_year(days: float) -> bool:
+    return 0 < days < _PARTIAL_YEAR_DAYS_THRESHOLD
+
+
+def dump_transition_detail(blocks: List[PhaseBlock], all_series, year_a: int, year_b: int):
+    for block, series in zip(blocks, all_series):
+        sa, sb = series.get(year_a), series.get(year_b)
+        if sa is None or sb is None:
+            print(f"    [{block.label}] missing {year_a if sa is None else year_b} data entirely")
+            continue
+        print(f"    [{block.label}]")
+        print(f"      {year_a}: revenue={sa['revenue_k']:,.2f}k area={sa['area']:,.2f} "
+              f"days={sa['days']:.0f} unit_rent={sa['unit_rent']:.4f}")
+        print(f"      {year_b}: revenue={sb['revenue_k']:,.2f}k area={sb['area']:,.2f} "
+              f"days={sb['days']:.0f} unit_rent={sb['unit_rent']:.4f}")
+        items = decompose_transition(block.label, sa, sb)
+        for it in items:
+            print(f"      -> {it.label}: {it.value:,.2f}k")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", help="path to the databook .xlsx")
@@ -109,6 +139,15 @@ def main() -> int:
     ap.add_argument("--validate", action="store_true",
                      help="cross-check --tab AB-CD's 2024->2025 transition against its own real "
                           "bridge-tab factor values")
+    ap.add_argument("--dump-detail", action="store_true",
+                     help="print each phase's raw (revenue/area/days/unit_rent) for BOTH years of "
+                          "every transition, plus the resulting 3 factor values -- use this to trace "
+                          "a chart number that looks wrong back to its exact source inputs")
+    ap.add_argument("--skip-partial", action="store_true",
+                     help="skip (don't chart) any transition where either year has < %d days of "
+                          "data (a partial/LTM period) -- comparing a partial year directly against "
+                          "a full year produces a misleadingly large 'days effect' bar that's really "
+                          "just a period-length mismatch, not a genuine change" % _PARTIAL_YEAR_DAYS_THRESHOLD)
     ap.add_argument("--out", default="bridge_waterfall_batch_output.pptx", help="output pptx path")
     args = ap.parse_args()
 
@@ -147,6 +186,11 @@ def main() -> int:
               f"years {years} ---")
 
         for year_a, year_b in transitions:
+            all_series = [extract_annual_series(ws, b, yd["year_row"], yd["days_row"]) for b in blocks]
+            days_a = max((s.get(year_a, {}).get("days", 0) for s in all_series), default=0)
+            days_b = max((s.get(year_b, {}).get("days", 0) for s in all_series), default=0)
+            partial = _is_partial_year(days_a) or _is_partial_year(days_b)
+
             bridge = build_bridge_for_transition(
                 ws, blocks, yd["year_row"], yd["days_row"], year_a, year_b,
                 start_label=f"{year_a}年收入", end_label=f"{year_b}年收入",
@@ -154,8 +198,17 @@ def main() -> int:
             if bridge is None:
                 continue
             check_msg = "✅" if bridge.check_ok else "⚠️ residual > tolerance"
+            partial_msg = f"  ⚠️ PARTIAL YEAR ({year_a}={days_a:.0f}d, {year_b}={days_b:.0f}d) -- " \
+                          f"days-effect bar below is a period-length artifact, not a real change" if partial else ""
             print(f"    {year_a}->{year_b}: start={bridge.items[0].value:,.1f}k "
-                  f"end={bridge.items[-1].value:,.1f}k  {check_msg}")
+                  f"end={bridge.items[-1].value:,.1f}k  {check_msg}{partial_msg}")
+
+            if args.dump_detail:
+                dump_transition_detail(blocks, all_series, year_a, year_b)
+
+            if partial and args.skip_partial:
+                print(f"      -> --skip-partial: not charting this transition")
+                continue
 
             if args.validate and tab == "AB-CD" and (year_a, year_b) == (2024, 2025):
                 for block, phase_name in zip(blocks, ["干仓", "综合楼", "冷库"]):
