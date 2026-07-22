@@ -25,13 +25,40 @@ import sys
 from collections import defaultdict
 
 from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter, range_boundaries
+from openpyxl.utils import get_column_letter, column_index_from_string, range_boundaries
 
-# Matches 'Some-Sheet'!B3 or 'Some-Sheet'!B3:B9 or PlainSheet!B3 (quoted
-# form required whenever the sheet name has a hyphen/space, which is why
-# both a quoted and unquoted alternative are here).
+
+def _normalize_ref_to_range(c1: str, c2: str, ws) -> str:
+    """A traced reference may be a normal cell ref (B3), a whole-row ref
+    (24, from '$24:$24'), or a whole-column ref (A, from '$A:$A') -- only
+    the first is already a valid A1 range string. Whole-row/column refs get
+    expanded against the SOURCE sheet's own actual used bounds (not an
+    arbitrary large number) so the dump stays cheap."""
+    parts = [c1] + ([c2] if c2 else [])
+    if all(p.isdigit() for p in parts):
+        rows = sorted(int(p) for p in parts)
+        return f"A{rows[0]}:{get_column_letter(ws.max_column)}{rows[-1]}"
+    if all(p.isalpha() for p in parts):
+        cols = sorted(column_index_from_string(p) for p in parts)
+        return f"{get_column_letter(cols[0])}1:{get_column_letter(cols[-1])}{ws.max_row}"
+    return f"{c1}:{c2}" if c2 else f"{c1}:{c1}"
+
+# A single reference "part" is a cell ($B$3), a whole row ($24, matched
+# ":$24" for a row range), or a whole column ($A) -- tried in that order
+# since e.g. "$24" would otherwise never match the cell pattern (no column
+# letters) and must fall through to the whole-row pattern instead. SUMIFS/
+# AVERAGEIFS criteria ranges are very commonly whole-row refs like
+# 'AB-CD'!$7:$7, which an earlier version of this regex silently missed
+# entirely (only matched the cell-shaped refs, i.e. exactly the ones that
+# matter LEAST here).
+_REF_PART = r"(?:\$?[A-Z]{1,3}\$?\d+|\$?\d+|\$?[A-Z]{1,3})"
+
+# Matches 'Some-Sheet'!B3, 'Some-Sheet'!B3:B9, 'Some-Sheet'!$24:$24,
+# 'Some-Sheet'!$A:$A, or PlainSheet!B3 (quoted form required whenever the
+# sheet name has a hyphen/space, which is why both a quoted and unquoted
+# alternative are here).
 _CROSS_SHEET_REF_RE = re.compile(
-    r"(?:'([^']+)'|([A-Za-z0-9_一-鿿]+))!(\$?[A-Z]{1,3}\$?\d+)(?::(\$?[A-Z]{1,3}\$?\d+))?"
+    rf"(?:'([^']+)'|([A-Za-z0-9_一-鿿]+))!({_REF_PART})(?::({_REF_PART}))?"
 )
 
 
@@ -75,6 +102,9 @@ def main() -> int:
     ap.add_argument("--bridge-sheet", default="成都-量价桥图", help="the bridge/waterfall workings tab name")
     ap.add_argument("--bridge-range", default="B3:AE9", help="the data-taking range within the bridge tab")
     ap.add_argument("--source-sheet", default="AB-CD", help="the tab the bridge is expected to pull from")
+    ap.add_argument("--full-sheet", action="store_true",
+                     help="ignore --bridge-range and dump the bridge tab's ENTIRE used range instead "
+                          "(use this if the given range turns out to be only part of the tab)")
     args = ap.parse_args()
 
     print("Loading workbook (values pass)...")
@@ -99,10 +129,20 @@ def main() -> int:
     ws_f = wb_formulas[args.bridge_sheet]
     print(f"\n{args.bridge_sheet!r} full dimensions: {ws_v.dimensions}")
 
+    charts = getattr(ws_v, "_charts", None) or []
+    print(f"Embedded chart object(s) on this tab: {len(charts)}")
+    for i, chart in enumerate(charts):
+        print(f"  [{i}] type={type(chart).__name__} title={getattr(chart, 'title', None)!r} "
+              f"anchor={getattr(chart, 'anchor', None)!r}")
+
+    bridge_range = args.bridge_range
+    if args.full_sheet:
+        bridge_range = ws_v.dimensions
+
     print("\n" + "=" * 78)
     print("  BRIDGE TAB CONTENT (values + formulas)")
     print("=" * 78)
-    refs = _dump_range(ws_v, ws_f, args.bridge_range, f"BRIDGE [{args.bridge_sheet}]")
+    refs = _dump_range(ws_v, ws_f, bridge_range, f"BRIDGE [{args.bridge_sheet}]")
 
     print("\n" + "=" * 78)
     print("  CROSS-SHEET REFERENCES FOUND IN THE BRIDGE RANGE")
@@ -142,8 +182,9 @@ def main() -> int:
         print("  (none -- see note above; bridge range has no live formula link to this sheet)")
     else:
         for c1, c2 in sorted(source_refs):
-            rng = f"{c1}:{c2}" if c2 else f"{c1}:{c1}"
-            _dump_range(ws_sv, ws_sf, rng, f"{args.source_sheet}!{rng}")
+            rng = _normalize_ref_to_range(c1, c2, ws_sv)
+            raw = f"{c1}:{c2}" if c2 else c1
+            _dump_range(ws_sv, ws_sf, rng, f"{args.source_sheet}!{raw} (expanded to {rng})")
 
     return 0
 
