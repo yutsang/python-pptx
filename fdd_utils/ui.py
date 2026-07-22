@@ -2466,7 +2466,7 @@ def render_bridge_lab() -> None:
     st.download_button(
         "下載含橋圖的 Excel",
         data=out_buffer.getvalue(),
-        file_name=f"bridge_output_{selected_sheet}.xlsx",
+        file_name="bridge_output.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="bridge_lab_download_btn",
     )
