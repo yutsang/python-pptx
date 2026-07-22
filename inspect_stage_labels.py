@@ -24,6 +24,19 @@ the resolved canonical stage, so we can see directly whether a populated
 Indicative-adjusted column exists under a label canonical_stage_label
 fails to recognise, on the ACTUAL file that showed the problem.
 
+Follow-up finding (same session): on a real file, EVERY stage label
+resolved correctly (no unrecognized text at all), yet the final extracted
+data still only had 'Mgt acc' columns -- 'Indicative adjusted' was
+entirely ABSENT, not just zero-valued. An investigation traced this to
+normalize_financial_schedule's column-building loop (fdd_utils/workbook.py
+~3928-3944): a column only survives if it has BOTH a resolved stage label
+AND a parseable date in the date row at that same column -- so this script
+now ALSO dumps the date row at exactly the columns where a stage label was
+found, to show directly whether the OTHER 4 stage blocks (Audit adjustment/
+Audited/Indicative adjustment/Indicative adjusted) have their own dates or
+share a blank cell (a "write the dates once under the first block" layout,
+which the code would then correctly, silently drop every later block for).
+
 Usage:
     python inspect_stage_labels.py "databooks/xx.xlsx"
     python inspect_stage_labels.py "databooks/xx.xlsx" --sheet 长期借款
@@ -35,6 +48,7 @@ from fdd_utils.workbook import (
     load_workbook_frames,
     canonical_stage_label,
     _cell_text,
+    _date_row_index,
     stage_row_indices,
     parse_date,
 )
@@ -46,8 +60,11 @@ def dump_sheet_stage_labels(df, sheet_name: str):
         print(f"  (no stage row detected on {sheet_name!r})")
         return 0
     unresolved = 0
+    missing_dates = 0
     for row_idx in rows:
         print(f"  stage row {row_idx}:")
+        date_row_idx = _date_row_index(df, row_idx)
+        print(f"  paired date row: {date_row_idx}")
         for col in range(df.shape[1]):
             raw_val = df.iat[row_idx, col]
             raw_text = _cell_text(raw_val)
@@ -55,9 +72,22 @@ def dump_sheet_stage_labels(df, sheet_name: str):
                 continue
             resolved = canonical_stage_label(raw_val)
             flag = "" if resolved else "  ⚠️ UNRECOGNIZED"
-            print(f"    col {col}: {raw_text!r} -> {resolved!r}{flag}")
+            date_text = "(no date row found)"
+            date_flag = ""
+            if date_row_idx is not None:
+                date_raw = df.iat[date_row_idx, col]
+                date_text = _cell_text(date_raw)
+                parsed = parse_date(date_raw)
+                if not parsed:
+                    date_flag = "  ⚠️ NO PARSEABLE DATE HERE -- this column will be DROPPED entirely"
+                    missing_dates += 1
+            print(f"    col {col}: stage={raw_text!r} -> {resolved!r}{flag}   "
+                  f"| date={date_text!r}{date_flag}")
             if not resolved:
                 unresolved += 1
+    if missing_dates:
+        print(f"  ⚠️ {missing_dates} stage-labeled column(s) have no parseable date paired with them "
+              f"-- these silently produce ZERO output columns regardless of the stage label being fine.")
     return unresolved
 
 
