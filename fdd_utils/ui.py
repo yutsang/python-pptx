@@ -2405,9 +2405,8 @@ def render_bridge_lab_toggle() -> None:
 def render_bridge_lab() -> None:
     st.title("🧪 橋圖測試 (Bridge Chart Lab)")
     st.caption(
-        "實驗性功能，與主流程完全獨立。上傳一個含有 Base/Change 橋圖輔助區塊的 Excel"
-        "（格式參考「成都-量价桥图」tab），選擇 tab 後自動偵測並生成原生 Excel 疊加圖，"
-        "供下載後透過 UpSlide 帶入 PPT。"
+        "實驗性功能，與主流程完全獨立。上傳一個含有 Base/Change 橋圖輔助區塊的 Excel，"
+        "選擇 tab 後自動偵測並生成原生 Excel 疊加圖，供下載後透過 UpSlide 帶入 PPT。"
     )
 
     uploaded = st.file_uploader("上傳 Excel 檔案 (.xlsx)", type=["xlsx"], key="bridge_lab_upload")
