@@ -126,7 +126,7 @@ def _bbox_overlap(a, b) -> bool:
     return ax1 < bx2 and bx1 < ax2 and ay1 < by2 and by1 < ay2
 
 
-def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
+def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text: bool = False) -> dict:
     """Runs the full layout inspection and returns a structured summary
     (used both by this file's own CLI and by inspect_databook.py's combined
     export+inspect flow). Pass quiet=True to suppress the per-slide print
@@ -175,8 +175,14 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False) -> dict:
         for s_shape in summary_shapes:
             s_text = s_shape.text_frame.text.strip()
             if s_text:
-                preview = s_text[:120] + ("..." if len(s_text) > 120 else "")
-                _print(f"  [{s_shape.name}] executive summary ({len(s_text)} chars): {preview!r}")
+                if dump_text:
+                    # Full text, untruncated -- a 120-char preview cuts an
+                    # executive summary off mid-sentence, which is useless
+                    # for actually reading it for tone/wording.
+                    _print(f"  [{s_shape.name}] executive summary ({len(s_text)} chars): {s_text!r}")
+                else:
+                    preview = s_text[:120] + ("..." if len(s_text) > 120 else "")
+                    _print(f"  [{s_shape.name}] executive summary ({len(s_text)} chars): {preview!r}")
             else:
                 _print(f"  ⚠️  [{s_shape.name}] executive summary shape is EMPTY (0 chars)")
                 total_warnings += 1
@@ -530,7 +536,7 @@ def main() -> int:
     for pptx_file in pptx_files:
         if len(pptx_files) > 1:
             print(f"\n{'=' * 90}\n{pptx_file.name}\n{'=' * 90}")
-        result = inspect_pptx(str(pptx_file), config)
+        result = inspect_pptx(str(pptx_file), config, dump_text=args.dump_text)
         duplicate_count = 0
         wording_flag_count = 0
         if args.dump_text:
