@@ -41,7 +41,8 @@ Usage:
 """
 import argparse
 import sys
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Tuple
 
 from openpyxl import load_workbook
 
@@ -165,6 +166,111 @@ def dump_transition_detail(blocks: List[PhaseBlock], series_a: List[Dict[str, fl
             print(f"      -> {it.label}: {it.value:,.2f}k")
 
 
+@dataclass
+class BridgeResult:
+    """One rendered-ready bridge transition. Carries everything BOTH callers
+    need: the CLI (main) prints/validates/renders PPTX from it, and the
+    Streamlit Bridge Lab renders an Excel chart from `.bridge`."""
+    title: str                          # chart title, e.g. "AB-CD: 2024年→2025年 收入量价桥图"
+    start_label: str
+    end_label: str
+    bridge: BridgeBlock
+    series_a: List[Dict[str, float]]    # per-phase raw series for each side (for --dump-detail)
+    series_b: List[Dict[str, float]]
+    year_a: Optional[int]
+    year_b: Optional[int]
+    is_ltm: bool
+    latest_month: Optional[int] = None  # only set for LTM results (the anchor month)
+
+
+def build_bridges_for_ab_tab(
+    ws_values, tab_name: str, skip_partial: bool = False,
+    log: Callable[[str], None] = lambda _m: None,
+) -> Tuple[Optional[List[PhaseBlock]], List[BridgeResult]]:
+    """Side-effect-free bridge builder for one raw AB-* tab -- the SINGLE
+    source of the transition-selection logic, shared by main() (CLI, PPTX)
+    and the Streamlit Bridge Lab (Excel). Full-year-to-full-year transitions
+    for every complete year, plus one LTM transition at the tail when the
+    latest year is partial (matching AB-CD's own real methodology).
+
+    Returns (blocks, results). `blocks` is None when the tab isn't an AB--
+    style raw tab at all (no Year/Days rows or no phase blocks) -- the caller
+    uses that to fall through to the pre-built Base/Change path. Diagnostic
+    messages go to the injected `log` (main passes print; the UI a no-op)."""
+    yd = find_year_days_rows(ws_values)
+    if not yd["year_row"] or not yd["days_row"]:
+        log(f"--- {tab_name}: ⚠️ no Year/Days row found, skipping ---")
+        return None, []
+    blocks = find_phase_blocks(ws_values)
+    if not blocks:
+        log(f"--- {tab_name}: ⚠️ no phase blocks found, skipping ---")
+        return None, []
+
+    all_series = {b.label: extract_annual_series(ws_values, b, yd["year_row"], yd["days_row"]) for b in blocks}
+    years = sorted({y for series in all_series.values() for y in series.keys()})
+    log(f"--- {tab_name}: {len(blocks)} phase(s) [{', '.join(b.label for b in blocks)}], years {years} ---")
+    if not years:
+        return blocks, []
+
+    results: List[BridgeResult] = []
+    max_year = years[-1]
+    max_year_days = max((all_series[b.label].get(max_year, {}).get("days", 0) for b in blocks), default=0)
+    tail_is_partial = _is_partial_year(max_year_days)
+    full_years = years[:-1] if tail_is_partial else years
+
+    for year_a, year_b in zip(full_years, full_years[1:]):
+        bridge = build_bridge_for_transition(
+            ws_values, blocks, yd["year_row"], yd["days_row"], year_a, year_b,
+            start_label=f"{year_a}年收入", end_label=f"{year_b}年收入",
+        )
+        if bridge is None:
+            continue
+        results.append(BridgeResult(
+            title=f"{tab_name}: {year_a}年→{year_b}年 收入量价桥图",
+            start_label=f"{year_a}年收入", end_label=f"{year_b}年收入", bridge=bridge,
+            series_a=[all_series[b.label][year_a] for b in blocks],
+            series_b=[all_series[b.label][year_b] for b in blocks],
+            year_a=year_a, year_b=year_b, is_ltm=False,
+        ))
+
+    if tail_is_partial and not skip_partial:
+        last_full_year = full_years[-1] if full_years else None
+        month_row = find_month_row(ws_values)
+        if last_full_year is None or month_row is None:
+            log(f"    ⚠️ tail year {max_year} is partial ({max_year_days:.0f}d) but no Month row / prior "
+                f"full year found -- skipping tail transition (pass --skip-partial to silence)")
+            return blocks, results
+        latest_month = None
+        for m in range(12, 0, -1):
+            days = 0
+            for b in blocks:
+                s = extract_ltm_series(ws_values, b, yd["year_row"], month_row, yd["days_row"], max_year, m, window=1)
+                if s:
+                    days = max(days, s["days"])
+            if days > 0:
+                latest_month = m
+                break
+        if latest_month is None:
+            log(f"    ⚠️ tail year {max_year} is partial but no month with data found -- skipping")
+            return blocks, results
+        bridge = build_ltm_bridge(ws_values, blocks, yd["year_row"], month_row, yd["days_row"],
+                                   last_full_year, max_year, latest_month)
+        if bridge is None:
+            log(f"    ⚠️ tail year {max_year} is partial ({max_year_days:.0f}d) but LTM window couldn't be "
+                f"built (incomplete monthly data) -- skipping tail transition")
+            return blocks, results
+        results.append(BridgeResult(
+            title=f"{tab_name}: {last_full_year}年→LTM 收入量价桥图",
+            start_label=f"{last_full_year}年收入", end_label=format_ltm_label(max_year, latest_month),
+            bridge=bridge,
+            series_a=[all_series[b.label][last_full_year] for b in blocks],
+            series_b=[extract_ltm_series(ws_values, b, yd["year_row"], month_row, yd["days_row"],
+                                          max_year, latest_month) for b in blocks],
+            year_a=last_full_year, year_b=max_year, is_ltm=True, latest_month=latest_month,
+        ))
+    return blocks, results
+
+
 def _validate_against(bridge: BridgeBlock, expected: Dict[str, Dict[str, float]], label: str) -> bool:
     all_ok = True
     for phase_name, exp in expected.items():
@@ -219,100 +325,33 @@ def main() -> int:
     all_ok = True
     for tab in ab_tabs:
         ws = wb_values[tab]
-        yd = find_year_days_rows(ws)
-        if not yd["year_row"] or not yd["days_row"]:
-            print(f"--- {tab}: ⚠️ no Year/Days row found, skipping ---")
-            continue
-        blocks = find_phase_blocks(ws)
-        if not blocks:
-            print(f"--- {tab}: ⚠️ no phase blocks found, skipping ---")
-            continue
+        blocks, results = build_bridges_for_ab_tab(ws, tab, skip_partial=args.skip_partial, log=print)
+        if blocks is None:
+            continue  # already logged by the shared builder
 
-        all_series = {b.label: extract_annual_series(ws, b, yd["year_row"], yd["days_row"]) for b in blocks}
-        years = sorted({y for series in all_series.values() for y in series.keys()})
-        print(f"--- {tab}: {len(blocks)} phase(s) [{', '.join(b.label for b in blocks)}], years {years} ---")
-        if not years:
-            continue
-
-        max_year = years[-1]
-        max_year_days = max((all_series[b.label].get(max_year, {}).get("days", 0) for b in blocks), default=0)
-        tail_is_partial = _is_partial_year(max_year_days)
-        # full-year-to-full-year transitions cover everything EXCEPT a
-        # partial tail year, which gets the LTM treatment below instead.
-        full_years = years[:-1] if tail_is_partial else years
-        transitions = list(zip(full_years, full_years[1:]))
-
-        for year_a, year_b in transitions:
-            bridge = build_bridge_for_transition(
-                ws, blocks, yd["year_row"], yd["days_row"], year_a, year_b,
-                start_label=f"{year_a}年收入", end_label=f"{year_b}年收入",
-            )
-            if bridge is None:
-                continue
+        for res in results:
+            bridge = res.bridge
             check_msg = "✅" if bridge.check_ok else "⚠️ residual > tolerance"
-            print(f"    {year_a}->{year_b}: start={bridge.items[0].value:,.1f}k "
+            arrow = f"{res.year_a}->LTM({res.end_label})" if res.is_ltm else f"{res.year_a}->{res.year_b}"
+            print(f"    {arrow}: start={bridge.items[0].value:,.1f}k "
                   f"end={bridge.items[-1].value:,.1f}k  {check_msg}")
 
             if args.dump_detail:
-                series_a = [all_series[b.label][year_a] for b in blocks]
-                series_b = [all_series[b.label][year_b] for b in blocks]
-                dump_transition_detail(blocks, series_a, series_b, f"{year_a} (raw)", f"{year_b} (raw)")
+                label_a = f"{res.year_a} (raw)"
+                label_b = (f"LTM ending {res.year_b}-{res.latest_month:02d}"
+                           if res.is_ltm else f"{res.year_b} (raw)")
+                dump_transition_detail(blocks, res.series_a, res.series_b, label_a, label_b)
 
-            if args.validate and tab == "AB-CD" and (year_a, year_b) == (2024, 2025):
-                all_ok = _validate_against(bridge, _AB_CD_EXPECTED_FACTORS_2024_2025, "2024->2025") and all_ok
+            if args.validate and tab == "AB-CD":
+                if not res.is_ltm and (res.year_a, res.year_b) == (2024, 2025):
+                    all_ok = _validate_against(bridge, _AB_CD_EXPECTED_FACTORS_2024_2025, "2024->2025") and all_ok
+                elif res.is_ltm and res.year_a == 2025 and res.year_b == 2026:
+                    all_ok = _validate_against(bridge, _AB_CD_EXPECTED_FACTORS_LTM, "LTM") and all_ok
 
             slide = prs.slides.add_slide(blank_layout)
-            title = f"{tab}: {year_a}年→{year_b}年 收入量价桥图"
-            build_waterfall_chart(slide, bridge, title,
+            build_waterfall_chart(slide, bridge, res.title,
                                    left=Inches(0.5), top=Inches(0.5), width=Inches(12.3), height=Inches(6.3))
             slides_added += 1
-
-        if tail_is_partial:
-            last_full_year = full_years[-1] if full_years else None
-            month_row = find_month_row(ws)
-            if not args.skip_partial and last_full_year is not None and month_row is not None:
-                # anchor the LTM window at the latest (year, month) actually present
-                latest_month = None
-                for m in range(12, 0, -1):
-                    days = 0
-                    for b in blocks:
-                        s = extract_ltm_series(ws, b, yd["year_row"], month_row, yd["days_row"], max_year, m, window=1)
-                        if s:
-                            days = max(days, s["days"])
-                    if days > 0:
-                        latest_month = m
-                        break
-                if latest_month is not None:
-                    bridge = build_ltm_bridge(ws, blocks, yd["year_row"], month_row, yd["days_row"],
-                                               last_full_year, max_year, latest_month)
-                    if bridge is not None:
-                        print(f"    {last_full_year}->LTM({format_ltm_label(max_year, latest_month)}): "
-                              f"start={bridge.items[0].value:,.1f}k end={bridge.items[-1].value:,.1f}k "
-                              f"{'✅' if bridge.check_ok else '⚠️ residual > tolerance'}")
-
-                        if args.dump_detail:
-                            series_a = [all_series[b.label][last_full_year] for b in blocks]
-                            series_b = [extract_ltm_series(ws, b, yd["year_row"], month_row, yd["days_row"],
-                                                            max_year, latest_month) for b in blocks]
-                            dump_transition_detail(blocks, series_a, series_b, f"{last_full_year} (raw)",
-                                                    f"LTM ending {max_year}-{latest_month:02d}")
-
-                        if args.validate and tab == "AB-CD" and last_full_year == 2025 and max_year == 2026:
-                            all_ok = _validate_against(bridge, _AB_CD_EXPECTED_FACTORS_LTM, "LTM") and all_ok
-
-                        slide = prs.slides.add_slide(blank_layout)
-                        title = f"{tab}: {last_full_year}年→LTM 收入量价桥图"
-                        build_waterfall_chart(slide, bridge, title,
-                                               left=Inches(0.5), top=Inches(0.5), width=Inches(12.3), height=Inches(6.3))
-                        slides_added += 1
-                    else:
-                        print(f"    ⚠️ tail year {max_year} is partial ({max_year_days:.0f}d) but LTM window "
-                              f"couldn't be built (incomplete monthly data) -- skipping tail transition")
-                else:
-                    print(f"    ⚠️ tail year {max_year} is partial but no month with data found -- skipping")
-            elif not args.skip_partial:
-                print(f"    ⚠️ tail year {max_year} is partial ({max_year_days:.0f}d) but no Month row / "
-                      f"prior full year found -- skipping tail transition (pass --skip-partial to silence)")
 
     prs.save(args.out)
     print(f"\nSaved {slides_added} chart(s) to {args.out!r}.")

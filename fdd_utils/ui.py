@@ -2384,9 +2384,11 @@ def batch_process_entity(
 # gated behind its own session_state flag so it can't interfere with it.
 import io as _bridge_lab_io
 
+from openpyxl import Workbook as _bridge_lab_Workbook
 from openpyxl import load_workbook as _bridge_lab_load_workbook
 
 from bridge_chart_prototype import build_excel_waterfall_chart, find_bridge_blocks
+from generate_bridge_waterfall_batch import build_bridges_for_ab_tab
 
 
 def render_bridge_lab_toggle() -> None:
@@ -2402,11 +2404,30 @@ def render_bridge_lab_toggle() -> None:
                 st.rerun()
 
 
+def _bridge_lab_show_block(index: int, block, note: str = "") -> bool:
+    """Renders one detected bridge block in an expander and returns whether
+    it's usable (check passed or only unverified, never a hard mismatch)."""
+    with st.expander(f"區塊 {index + 1}：{block.items[0].label} → {block.items[-1].label}", expanded=True):
+        if note:
+            st.caption(note)
+        for it in block.items:
+            st.write(f"[{it.kind}] {it.label}：{it.value:,.2f}")
+        if block.check_ok is True:
+            st.success("✅ 核對一致")
+            return True
+        if block.check_ok is False:
+            st.error("❌ 核對不一致 -- 不會為此區塊生成圖表，請檢查來源表格")
+            return False
+        st.warning("⚠️ 無法核對一致性，仍會生成圖表，請自行核對數字")
+        return True
+
+
 def render_bridge_lab() -> None:
     st.title("🧪 橋圖測試 (Bridge Chart Lab)")
     st.caption(
-        "實驗性功能，與主流程完全獨立。上傳一個含有 Base/Change 橋圖輔助區塊的 Excel，"
-        "選擇 tab 後自動偵測並生成原生 Excel 疊加圖，供下載後透過 UpSlide 帶入 PPT。"
+        "實驗性功能，與主流程完全獨立。支援兩類 tab：(1) 已建好 Base/Change 輔助區塊的橋圖表，"
+        "(2) AB- 原始數據表（自動計算價/量/天數因子分解）。選擇 tab 後自動偵測、生成原生 Excel "
+        "疊加圖，供下載後透過 UpSlide 帶入 PPT。"
     )
 
     uploaded = st.file_uploader("上傳 Excel 檔案 (.xlsx)", type=["xlsx"], key="bridge_lab_upload")
@@ -2428,35 +2449,54 @@ def render_bridge_lab() -> None:
         return
 
     ws = wb_values[selected_sheet]
-    blocks = find_bridge_blocks(ws)
-    if not blocks:
-        st.warning(f"在「{selected_sheet}」中找不到符合 Base/Change 格式的橋圖區塊。")
-        return
 
-    st.success(f"找到 {len(blocks)} 個橋圖區塊。")
-    usable_blocks = []
-    for i, block in enumerate(blocks):
-        block_label = f"區塊 {i + 1}：{block.items[0].label} → {block.items[-1].label}"
-        with st.expander(block_label, expanded=True):
-            for it in block.items:
-                st.write(f"[{it.kind}] {it.label}：{it.value:,.2f}")
-            if block.check_ok is True:
-                st.success("✅ 對照工作表自身的 check 列核對一致")
-                usable_blocks.append(block)
-            elif block.check_ok is False:
-                st.error("❌ 對照 check 列核對不一致 -- 不會為此區塊生成圖表，請檢查來源表格")
-            else:
-                st.warning("⚠️ 附近找不到 check 列，無法核對一致性，仍會生成圖表，請自行核對數字")
-                usable_blocks.append(block)
+    # Route by tab type. A pre-built Base/Change helper block (like a
+    # <entity>-量价桥图 tab) is read directly; otherwise try to treat it as a
+    # raw AB-* data tab and COMPUTE the factor decomposition. Both paths
+    # converge on a list of BridgeBlock objects rendered identically.
+    renderable = []  # list of BridgeBlock that passed (or lack) their check
+    prebuilt = find_bridge_blocks(ws)
+    if prebuilt:
+        st.success(f"偵測到 {len(prebuilt)} 個預建 Base/Change 橋圖區塊。")
+        for i, block in enumerate(prebuilt):
+            if _bridge_lab_show_block(i, block):
+                renderable.append(block)
+    else:
+        ab_blocks, results = build_bridges_for_ab_tab(ws, selected_sheet)
+        if ab_blocks is None:
+            st.warning(
+                f"「{selected_sheet}」既不是 Base/Change 結構的橋圖表，也不是可識別的 AB- 原始數據表"
+                "（找不到 Year/Days 標籤列或分期區塊）。請確認選對了 tab。"
+            )
+            return
+        if not results:
+            st.warning(
+                f"「{selected_sheet}」偵測為 AB- 原始數據表，但算不出任何年度轉換（可能只有單一年度資料）。"
+            )
+            return
+        st.success(
+            f"偵測為 AB- 原始數據表，已計算出 {len(results)} 個年度轉換橋圖"
+            "（價/量/天數因子分解，末期採 LTM 滾動12個月口徑）。"
+        )
+        for i, res in enumerate(results):
+            note = "註：末期為不完整年度，已改用 LTM 滾動12個月窗口比較" if res.is_ltm else ""
+            if _bridge_lab_show_block(i, res.bridge, note=note):
+                renderable.append(res.bridge)
 
-    if not usable_blocks:
+    if not renderable:
         st.error("沒有通過核對、可生成圖表的區塊。")
         return
 
-    out_wb = _bridge_lab_load_workbook(_bridge_lab_io.BytesIO(file_bytes))  # fresh copy, keeps original sheets/formulas untouched
+    # STANDALONE output workbook -- we build a brand-new Workbook and NEVER
+    # re-save the user's upload, so their original file's formulas, cached
+    # values, and existing native charts are physically untouched (openpyxl
+    # round-tripping a workbook silently drops every formula's cached result,
+    # which is what made an earlier version appear to "change" old tabs).
+    out_wb = _bridge_lab_Workbook()
+    out_wb.remove(out_wb.active)
     out_ws = out_wb.create_sheet("Bridge_Output")
     next_row = 1
-    for block in usable_blocks:
+    for block in renderable:
         title = f"{block.items[0].label} → {block.items[-1].label}"
         next_row = build_excel_waterfall_chart(out_ws, block, title, start_row=next_row)
 
@@ -2469,5 +2509,8 @@ def render_bridge_lab() -> None:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="bridge_lab_download_btn",
     )
-    st.caption("原始上傳檔案的所有分頁保持不變，圖表與數據寫在新增的「Bridge_Output」分頁。")
+    st.caption(
+        "此為獨立的新檔案，只含生成的「Bridge_Output」分頁（結構化數據表＋橋圖）；"
+        "你上傳的原始檔案完全沒有被修改。"
+    )
 # --- end Bridge Lab ---
