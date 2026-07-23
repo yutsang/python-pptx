@@ -22,8 +22,8 @@ analyst already validated by hand, before trusting it on the other 16
 entities where there's no existing bridge tab to check against.
 
 Usage:
-    python extract_bridge_from_raw.py "databooks/xx.xlsx" --tab AB-KS1
-    python extract_bridge_from_raw.py "databooks/xx.xlsx" --tab AB-CD --validate
+    python -m fdd_utils.extract_bridge_from_raw "databooks/xx.xlsx" --tab AB-KS1
+    python -m fdd_utils.extract_bridge_from_raw "databooks/xx.xlsx" --tab AB-CD --validate
 """
 import argparse
 import sys
@@ -33,7 +33,7 @@ from typing import Dict, List, Optional
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from inspect_ab_tabs_structure import find_labeled_rows, find_tag_rows
+from .inspect_ab_tabs_structure import find_labeled_rows, find_tag_rows
 
 
 @dataclass

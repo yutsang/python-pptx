@@ -2387,8 +2387,8 @@ import io as _bridge_lab_io
 from openpyxl import Workbook as _bridge_lab_Workbook
 from openpyxl import load_workbook as _bridge_lab_load_workbook
 
-from bridge_chart_prototype import build_excel_waterfall_chart, find_bridge_blocks
-from generate_bridge_waterfall_batch import build_bridges_for_ab_tab
+from .bridge_chart_prototype import build_excel_waterfall_chart, find_bridge_blocks
+from .generate_bridge_waterfall_batch import build_bridges_for_ab_tab
 
 
 def render_bridge_lab_toggle() -> None:

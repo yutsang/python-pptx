@@ -27,12 +27,12 @@ earlier inspect_bridge_source.py findings) -- it only reads the bridge tab's
 OWN already-computed factor list, which is the part confirmed to generalize.
 
 Usage (against a real databook):
-    python bridge_chart_prototype.py "databooks/xx.xlsx" --sheet "成都-量价桥图"
+    python -m fdd_utils.bridge_chart_prototype "databooks/xx.xlsx" --sheet "成都-量价桥图"
 
 Usage (synthetic self-test, no file needed -- rebuilds a workbook from the
 real Chengdu numbers already inspected, to prove the reader+chart pipeline
 end-to-end without needing the actual client file locally):
-    python bridge_chart_prototype.py --self-test
+    python -m fdd_utils.bridge_chart_prototype --self-test
 """
 import argparse
 import sys

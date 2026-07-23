@@ -30,11 +30,11 @@ on hand, no assumption about how the rest of the year will look. This
 script reproduces that exact convention for the tail transition.
 
 Usage:
-    python generate_bridge_waterfall_batch.py "databooks/xx.xlsx"
+    python -m fdd_utils.generate_bridge_waterfall_batch "databooks/xx.xlsx"
         # every AB- tab: full-year-to-full-year transitions for all
         # complete years, plus one LTM transition at the tail if the
         # latest year is partial
-    python generate_bridge_waterfall_batch.py "databooks/xx.xlsx" --tab AB-CD --validate
+    python -m fdd_utils.generate_bridge_waterfall_batch "databooks/xx.xlsx" --tab AB-CD --validate
         # cross-checks BOTH real bridge blocks (2024->2025 and the LTM
         # 2025->Jul25-Jun26 transition) against AB-CD's own real bridge-tab
         # factor values (the "answer key")
@@ -46,12 +46,12 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from openpyxl import load_workbook
 
-from extract_bridge_from_raw import (
+from .extract_bridge_from_raw import (
     find_phase_blocks, extract_annual_series, extract_ltm_series,
     find_month_row, format_ltm_label, PhaseBlock,
 )
-from inspect_ab_tabs_structure import find_labeled_rows
-from bridge_chart_prototype import BridgeItem, BridgeBlock, build_waterfall_chart
+from .inspect_ab_tabs_structure import find_labeled_rows
+from .bridge_chart_prototype import BridgeItem, BridgeBlock, build_waterfall_chart
 
 from pptx import Presentation
 from pptx.util import Inches

@@ -15,8 +15,8 @@ the specific cells the bridge range's formulas reference, traced via regex
 over the formula strings.
 
 Usage:
-    python inspect_bridge_source.py "databooks/xx指標v1.xlsx"
-    python inspect_bridge_source.py "databooks/xx指標v1.xlsx" \
+    python -m fdd_utils.inspect_bridge_source "databooks/xx指標v1.xlsx"
+    python -m fdd_utils.inspect_bridge_source "databooks/xx指標v1.xlsx" \
         --bridge-sheet "成都-量价桥图" --bridge-range B3:AE9 --source-sheet "AB-CD"
 """
 import argparse

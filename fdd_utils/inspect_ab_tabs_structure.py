@@ -22,8 +22,8 @@ the metric row's own label (e.g. "Phase 1 - Dry") -- so this script reports
 both signals rather than assuming either one always applies.
 
 Usage:
-    python inspect_ab_tabs_structure.py "databooks/xx.xlsx"
-    python inspect_ab_tabs_structure.py "databooks/xx.xlsx" --tab AB-KS1 --verbose
+    python -m fdd_utils.inspect_ab_tabs_structure "databooks/xx.xlsx"
+    python -m fdd_utils.inspect_ab_tabs_structure "databooks/xx.xlsx" --tab AB-KS1 --verbose
 """
 import argparse
 import re
