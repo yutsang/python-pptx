@@ -4,9 +4,20 @@
 Built to answer these specific questions from a real-databook QA pass:
   1. Are financial + breakdown tabs actually being read correctly?
   2. Does reconciliation match up — and for anything that doesn't, which
-     tab names actually exist so a mapping can be added?
+     tab names actually exist so a mapping can be added? If the Financials
+     sheet's Balance Sheet or Income Statement section couldn't be located
+     at all, this automatically prints a full trace (section 4b) from the
+     real extractor's own debug mode — showing exactly which header-keyword
+     search failed, rather than leaving "no rows" unexplained. Use this when
+     an entire statement type (e.g. all of IS) is missing from output.
   3. Does the databook have indented / total-then-breakdown row structures
-     that a human eye catches but extraction might misread?
+     that a human eye catches but extraction might misread? Section 3b
+     specifically targets Excel's own indent level (Format > Cells >
+     Alignment > Indent) and leading whitespace, read directly via openpyxl
+     — signals the production pipeline's row classifier never looks at
+     (every read goes through pandas, which strips both). Use this when a
+     visually-indented "缩行" sub-item is ending up as its own standalone
+     account instead of being merged into its parent.
   4. Are '000-style unit markers (CNY'000 / 人民币千元) being detected
      correctly per tab, or could a tab silently fall back to a 1x
      multiplier when it should be 1000x?
@@ -698,6 +709,119 @@ def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 3b. Indent / sub-item signal check -- cell.alignment.indent (Excel's own
+#     "increase indent" level) and leading whitespace are NEVER read anywhere
+#     by the production pipeline. Every read of a description cell goes
+#     through _cell_text()/pandas, which calls .strip() -- that destroys
+#     leading whitespace (including full-width U+3000) before _row_type()
+#     ever sees it, and openpyxl's own indent attribute is never requested at
+#     all (pandas' read_excel discards style objects). So a genuinely
+#     Excel-indented sub-item ("缩行") row survives ONLY if it happens to
+#     also match one of _row_type()'s purely textual heuristics ("其中"/"of
+#     which" prefix, a total/subtotal keyword, a 6+ digit code, or an
+#     implicit sum-to-parent relationship) -- otherwise it's classified
+#     "detail", identical to a real top-level account, and extracted as its
+#     own standalone account rather than merged into its parent. This check
+#     opens the workbook via raw openpyxl (bypassing pandas' lossy read
+#     entirely) to see the indent/whitespace signal directly, and flags any
+#     row where that signal exists but the pipeline's own classification
+#     (row_types_by_description, already computed by check_row_structures)
+#     is NOT "breakdown".
+# ---------------------------------------------------------------------------
+
+def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None:
+    _hr("3b. INDENT / SUB-ITEM SIGNAL CHECK (Excel indent level + leading whitespace)")
+    if VERBOSE:
+        print(
+            "For every tab, reads the RAW description-column cells directly via openpyxl\n"
+            "(not through pandas, which discards both the indent style attribute and any\n"
+            "leading whitespace via .strip()). A row is flagged if it has a real Excel\n"
+            "indent level (Format > Cells > Alignment > Indent) or leading whitespace, but\n"
+            "the pipeline's own row classifier did NOT mark it 'breakdown' -- meaning this\n"
+            "row is currently being extracted as its own standalone account instead of\n"
+            "being recognized as a sub-item of the row above it.\n"
+        )
+    from openpyxl import load_workbook as _load_workbook_raw
+
+    try:
+        wb_raw = _load_workbook_raw(databook_path, data_only=True)
+    except Exception as exc:
+        print(f"⚠️  Could not open workbook via openpyxl for indent inspection: {exc}")
+        return
+
+    frames = load_workbook_frames(databook_path)
+    total_flagged = 0
+    tabs_with_signal = 0
+    tabs_checked = 0
+    for tab_name in sorted(dfs.keys()):
+        df = dfs.get(tab_name)
+        if df is None or df.empty:
+            continue
+        sheet_name = df.attrs.get("source_sheet_name")
+        if not sheet_name or sheet_name not in wb_raw.sheetnames:
+            continue
+        raw_df = frames.get(sheet_name)
+        if raw_df is None:
+            continue
+        desc_col_idx = _find_description_column(raw_df)
+        if desc_col_idx is None:
+            continue
+        tabs_checked += 1
+        ws = wb_raw[sheet_name]
+        row_types = df.attrs.get("row_types_by_description") or {}
+
+        flagged_rows: List[Tuple[int, int, bool, str, str]] = []
+        sheet_has_signal = False
+        for row_idx in range(len(raw_df)):
+            cell = ws.cell(row=row_idx + 1, column=desc_col_idx + 1)  # openpyxl is 1-indexed
+            raw_value = cell.value
+            if raw_value is None or not isinstance(raw_value, str):
+                continue
+            indent_level = 0
+            try:
+                indent_level = int(cell.alignment.indent or 0)
+            except Exception:
+                indent_level = 0
+            has_leading_ws = raw_value != raw_value.lstrip(" 　\t")
+            if indent_level <= 0 and not has_leading_ws:
+                continue
+            sheet_has_signal = True
+            stripped_desc = raw_value.strip()
+            if not stripped_desc:
+                continue
+            classification = row_types.get(stripped_desc, "plain")
+            if classification != "breakdown":
+                flagged_rows.append((row_idx + 1, indent_level, has_leading_ws, raw_value, classification))
+
+        if sheet_has_signal:
+            tabs_with_signal += 1
+        if flagged_rows:
+            total_flagged += len(flagged_rows)
+            print(f"\n  ⚠️  '{tab_name}' (sheet {sheet_name!r}): {len(flagged_rows)} row(s) with an indent/"
+                  f"whitespace signal in Excel but NOT classified 'breakdown':")
+            for excel_row, indent_level, has_leading_ws, raw_value, classification in flagged_rows:
+                signal = f"indent={indent_level}" if indent_level > 0 else "leading-whitespace"
+                print(f"      Excel row {excel_row}: [{signal}] {raw_value!r} -> classified {classification!r} "
+                      f"(will be extracted as its OWN account, not merged into its parent)")
+
+    print(f"\n{tabs_checked} tab(s) checked, {tabs_with_signal} with at least one indent/whitespace "
+          f"signal in their description column.")
+    if total_flagged:
+        print(
+            f"⚠️  {total_flagged} row(s) flagged above -- these are the concrete candidates for "
+            f"'缩行' sub-items being silently extracted as standalone accounts instead of merged "
+            f"into their parent row. Cross-check each against the real Excel layout for that tab."
+        )
+    elif tabs_with_signal:
+        print("✅ Every row with an indent/whitespace signal was already classified 'breakdown'.")
+    else:
+        print("ℹ️  No Excel indent level or leading whitespace found in any tab's description column "
+              "-- if this databook DOES have visually-indented sub-items, they're likely represented "
+              "some other way (e.g. a merged/nested cell, a separate marker column) rather than Excel's "
+              "own indent attribute or literal leading spaces.")
+
+
+# ---------------------------------------------------------------------------
 # 4. Reconciliation summary with actionable tab-name listing
 # ---------------------------------------------------------------------------
 
@@ -752,6 +876,51 @@ def _notes_matching_diff(tab_account: str, dfs: Dict[str, pd.DataFrame], diff_va
             matches.append(note)
     return matches
 
+
+def _trace_bs_is_detection_failure(
+    financials_path: str, sheet_name: str, bs_is_results: Dict[str, Any],
+) -> None:
+    """When extract_balance_sheet_and_income_statement() (fdd_utils/workbook.py)
+    comes back with balance_sheet=None or income_statement=None, re-runs it
+    with debug=True (stdout captured) and prints the trace -- this reuses the
+    REAL production keyword search and extraction path verbatim instead of
+    re-implementing a second copy of the BS/IS keyword lists here, which would
+    risk exactly the kind of drift already found between workbook.py's own
+    lists and the separate copy in keyword_registry.py (used by a different,
+    narrower diagnostic path, NOT by this function). Whichever statement
+    already succeeded is trimmed from the trace (its debug lines are verbose
+    and not the reason this fired) -- only the ❌-relevant portion is kept."""
+    missing = []
+    if bs_is_results.get("balance_sheet") is None:
+        missing.append("Balance Sheet")
+    if bs_is_results.get("income_statement") is None:
+        missing.append("Income Statement")
+    _hr(f"4b. SECTION-DETECTION FAILURE TRACE — {' and '.join(missing)} not found on {sheet_name!r}")
+    print(
+        "Re-running the real extractor (fdd_utils/workbook.py:"
+        "extract_balance_sheet_and_income_statement) with its own debug=True "
+        "trace to show exactly which keyword search failed and why. This is "
+        "the ACTUAL production code path, not a re-implementation -- if the "
+        "missing statement's section-header text in the Financials sheet "
+        "doesn't literally contain any of the phrases marked '[searching for]' "
+        "below, that's the root cause; if a header WAS found but extraction "
+        "still failed, the per-row/per-column detail after it explains why.\n"
+    )
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            extract_balance_sheet_and_income_statement(
+                workbook_path=financials_path, sheet_name=sheet_name, debug=True,
+            )
+    except Exception as exc:
+        print(f"❌ debug re-run itself raised: {exc}")
+        return
+    # Printed in full, matching this file's own convention that findings/
+    # flags (as opposed to "everything is fine" detail) are never trimmed --
+    # this trace only fires on a genuine failure, never on the happy path.
+    print(buf.getvalue())
+
+
 def check_reconciliation(
     databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "",
     financials_from: Optional[str] = None, show_tab_list: bool = True,
@@ -772,6 +941,9 @@ def check_reconciliation(
     except Exception as exc:
         print(f"❌ Could not extract Financials sheet '{sheet_name}' from {financials_path!r}: {exc}")
         return None, None
+
+    if bs_is_results.get("balance_sheet") is None or bs_is_results.get("income_statement") is None:
+        _trace_bs_is_detection_failure(financials_path, sheet_name, bs_is_results)
 
     mappings = get_effective_mappings(load_mappings(), None)
     bs_recon, is_recon = reconcile_financial_statements(
@@ -1635,6 +1807,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
     check_unit_markers(path, dfs)
     summary["scaling_mismatch_tabs"] = check_all_tabs_scaling(path, dfs, entity_name=entity_name)
     check_row_structures(dfs)
+    check_indent_signals(path, dfs)
 
     xl = pd.ExcelFile(path)
     summary["total_sheets"] = len(xl.sheet_names)
