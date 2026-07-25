@@ -9,29 +9,25 @@ Uses the same AIClient / config.yml path as the FDD pipeline.
 
 Usage:
     python vision_smoke_test.py contracts
-        # every PDF under contracts/ (all project subfolders), page 1 each
     python vision_smoke_test.py contracts/成都
-        # every PDF in that one project folder
     python vision_smoke_test.py contracts/成都/some.pdf
-        # single file
 """
 from __future__ import annotations
 
 import argparse
-import base64
-import io
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from contract_vision import (
+    SAFE_SINGLE_IMAGE_BYTES,
+    image_file_to_jpeg_bytes,
+    is_image_file,
+    rasterize_page_jpeg,
+    to_data_url,
+)
 from fdd_utils.ai import AIClient
 
-try:
-    import pypdfium2 as pdfium
-except ImportError:
-    pdfium = None
-
-_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp"}
 _DEFAULT_MODEL = "workbench"  # config.yml -> GPT-5.5
 
 _VISION_PROMPT = (
@@ -43,52 +39,31 @@ _VISION_PROMPT = (
 )
 
 
-def _page_to_png_bytes(pdf_path: Path, page_num: int, dpi: int = 200) -> bytes:
-    if pdfium is None:
-        raise RuntimeError("pypdfium2 not installed -- run `pip install pypdfium2`")
-    pdf = pdfium.PdfDocument(str(pdf_path))
-    if page_num < 1 or page_num > len(pdf):
-        raise ValueError(f"Page {page_num} out of range -- this PDF has {len(pdf)} page(s).")
-    page = pdf[page_num - 1]
-    bitmap = page.render(scale=dpi / 72)
-    pil_image = bitmap.to_pil()
-    buf = io.BytesIO()
-    pil_image.save(buf, format="PNG")
-    return buf.getvalue()
-
-
 def _collect_targets(path: Path) -> List[Path]:
-    """Single file, or every PDF/image under a folder (recursive)."""
     if path.is_file():
         return [path]
     files: List[Path] = []
     for p in sorted(path.rglob("*")):
-        if not p.is_file():
-            continue
-        ext = p.suffix.lower()
-        if ext == ".pdf" or ext in _IMAGE_EXTS:
+        if p.is_file() and (p.suffix.lower() == ".pdf" or is_image_file(p)):
             files.append(p)
     return files
 
 
-def _load_image(path: Path, page: int) -> Tuple[bytes, str]:
-    ext = path.suffix.lower()
-    if ext == ".pdf":
-        return _page_to_png_bytes(path, page), "image/png"
-    return path.read_bytes(), f"image/{ext.lstrip('.') or 'png'}"
+def _load_image(path: Path, page: int) -> bytes:
+    if path.suffix.lower() == ".pdf":
+        return rasterize_page_jpeg(path, page, max_bytes=SAFE_SINGLE_IMAGE_BYTES)
+    return image_file_to_jpeg_bytes(path, max_bytes=SAFE_SINGLE_IMAGE_BYTES)
 
 
 def _run_one(client: AIClient, path: Path, page: int, root: Optional[Path]) -> Tuple[bool, str, float]:
-    label = str(path.relative_to(root)) if root and path.is_relative_to(root) else path.name
     try:
-        image_bytes, mime = _load_image(path, page)
+        image_bytes = _load_image(path, page)
     except Exception as exc:
         return False, f"rasterize failed: {exc}", 0.0
 
-    data_url = f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"
     vision_content = [
         {"type": "text", "text": _VISION_PROMPT},
-        {"type": "image_url", "image_url": {"url": data_url}},
+        {"type": "image_url", "image_url": {"url": to_data_url(image_bytes)}},
     ]
     try:
         result = client.get_response(
@@ -132,7 +107,8 @@ def main() -> int:
 
     root = path if path.is_dir() else path.parent
     print(f"Model: GPT-5.5 (workbench)  |  page: {args.page}")
-    print(f"Files: {len(targets)} under {path}\n")
+    print(f"Files: {len(targets)} under {path}")
+    print(f"Image budget: <= {SAFE_SINGLE_IMAGE_BYTES // 1024} KB JPEG (gateway ~4MB body cap)\n")
 
     try:
         client = AIClient(model_type=_DEFAULT_MODEL, agent_name="subagent_1", language="Eng")
