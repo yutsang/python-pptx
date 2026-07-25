@@ -3433,6 +3433,116 @@ def _detect_implicit_breakdowns_from_sum(
                     break
 
 
+@lru_cache(maxsize=4)
+def _load_raw_workbook_for_style(workbook_path: str):
+    """Raw openpyxl Workbook (not the pandas-parsed frames from
+    load_workbook_frames) -- needed to read style attributes such as
+    cell.alignment.indent that pandas' read_excel discards entirely.
+    Cached per workbook_path so repeated calls across sheets in the same
+    run only load the file once, same convention as load_workbook_frames."""
+    from openpyxl import load_workbook as _load_workbook_raw
+    return _load_workbook_raw(workbook_path, data_only=True)
+
+
+def _infer_indent_hierarchy(rows: List[Tuple[int, int, str]]) -> Dict[int, List[int]]:
+    """rows: (row_idx, indent_level, label) for every non-empty description
+    cell in a tab, in sheet order. Returns {parent_row_idx: [direct_child_row_idx, ...]}
+    via the standard Excel-outline convention: a row's parent is the NEAREST
+    preceding row with a STRICTLY LOWER indent level (a classic stack walk) --
+    correctly handles multi-level nesting, not just flat one-level pairs."""
+    children_of: Dict[int, List[int]] = {}
+    stack: List[Tuple[int, int]] = []  # (indent_level, row_idx)
+    for row_idx, indent_level, _label in rows:
+        while stack and stack[-1][0] >= indent_level:
+            stack.pop()
+        if stack:
+            parent_row_idx = stack[-1][1]
+            children_of.setdefault(parent_row_idx, []).append(row_idx)
+        stack.append((indent_level, row_idx))
+    return children_of
+
+
+def _reclassify_indent_rollup_children(
+    row_entries: List[Dict[str, Any]],
+    projection_column_key: str,
+    workbook_path: str,
+    sheet_name: str,
+    desc_col_idx: int,
+) -> None:
+    """Excel's own indent level (Format > Cells > Alignment > Indent) is a
+    direct structural signal for sub-item ("缩行") rows that pandas'
+    read_excel silently discards, so a genuinely-indented child row survives
+    only if it happens to also match one of _row_type()'s textual heuristics
+    -- otherwise it's classified "detail", identical to a real account, and
+    extracted as its own standalone line.
+
+    When a parent row's own value already equals the sum of its indented
+    children (within tolerance), those children are already counted in the
+    parent's total -- reclassify them "breakdown" so they're excluded from
+    becoming standalone accounts, the same treatment an existing "其中"/"of
+    which" row already gets. Deliberately conservative: does NOT touch a
+    group where the parent has no value of its own (a pure category-label /
+    section-header row, not a rollup total -- its children are the real
+    leaf-level data) or where the sum doesn't match within tolerance (a
+    structurally different relationship, e.g. a contra/provision line, that
+    needs individual review rather than a blanket rule). Mutates row_entries
+    in place; no-ops fast when the sheet has no real indent signal at all.
+    """
+    try:
+        wb_raw = _load_raw_workbook_for_style(workbook_path)
+    except Exception:
+        return
+    if sheet_name not in wb_raw.sheetnames:
+        return
+    ws = wb_raw[sheet_name]
+
+    value_by_row_idx = {
+        row["row_idx"]: row["values"].get(projection_column_key) for row in row_entries
+    }
+    all_rows: List[Tuple[int, int, str]] = []
+    for row in row_entries:
+        row_idx = row["row_idx"]
+        cell = ws.cell(row=row_idx + 1, column=desc_col_idx + 1)  # openpyxl is 1-indexed
+        raw_value = cell.value
+        if raw_value is None or not isinstance(raw_value, str):
+            continue
+        stripped = raw_value.strip()
+        # Only trust the indent signal when the raw cell's text matches what
+        # row_entries already resolved for this row_idx -- guards against a
+        # standardized/rebuilt sheet_df (e.g. a rollforward schedule) whose
+        # row indices no longer line up 1:1 with the original Excel rows.
+        if not stripped or stripped != str(row.get("description") or "").strip():
+            continue
+        try:
+            indent_level = int(cell.alignment.indent or 0)
+        except Exception:
+            indent_level = 0
+        all_rows.append((row_idx, indent_level, stripped))
+
+    if not any(level > 0 for _, level, _ in all_rows):
+        return  # no real Excel indent anywhere on this tab -- fast no-op
+
+    children_of = _infer_indent_hierarchy(all_rows)
+    if not children_of:
+        return
+
+    row_entry_by_idx = {row["row_idx"]: row for row in row_entries}
+    for parent_row_idx, child_row_idxs in children_of.items():
+        parent_val = value_by_row_idx.get(parent_row_idx)
+        if parent_val is None:
+            continue  # pure category label, not a rollup -- leave children as real accounts
+        child_vals = [value_by_row_idx.get(c) for c in child_row_idxs]
+        if any(v is None for v in child_vals):
+            continue  # incomplete data for this group -- not safely checkable
+        child_sum = sum(child_vals)
+        if abs(parent_val - child_sum) > max(1.0, abs(parent_val) * 0.005):
+            continue  # doesn't match -- needs individual review, don't guess
+        for child_row_idx in child_row_idxs:
+            child_entry = row_entry_by_idx.get(child_row_idx)
+            if child_entry is not None:
+                child_entry["row_type"] = "breakdown"
+
+
 def _fallback_description(description: str, title: str, last_label: Optional[str]) -> str:
     if description:
         return description
@@ -4001,6 +4111,13 @@ def normalize_financial_schedule(
     # Detect implicit breakdown rows (parent-first structure without total keywords)
     # Must be called after _choose_projection so we know the projection column key.
     _detect_implicit_breakdowns_from_sum(row_entries, projection["column"]["key"])
+    _reclassify_indent_rollup_children(
+        row_entries=row_entries,
+        projection_column_key=projection["column"]["key"],
+        workbook_path=workbook_path,
+        sheet_name=sheet_name,
+        desc_col_idx=desc_col_idx,
+    )
     projection_column = projection["column"]
     analysis_stage = PREFERRED_STAGE if any(column["stage"] == PREFERRED_STAGE for column in columns) else projection["effective_stage"]
     prompt_analysis_df = _build_prompt_analysis_df(

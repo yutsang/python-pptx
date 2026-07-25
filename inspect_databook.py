@@ -118,6 +118,7 @@ from fdd_utils.workbook import (
     _date_row_index,
     _find_description_column,
     _forward_fill_stage_row,
+    _infer_indent_hierarchy,
     _is_numeric_enough,
     _multiply_factor,
     _select_entity_block,
@@ -729,26 +730,6 @@ def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
 #     is NOT "breakdown".
 # ---------------------------------------------------------------------------
 
-def _infer_indent_hierarchy(rows: List[Tuple[int, int, str]]) -> Dict[int, List[int]]:
-    """rows: (row_idx, indent_level, label) for every non-empty description
-    cell in a tab, in sheet order. Returns {parent_row_idx: [direct_child_row_idx, ...]}
-    via the standard Excel-outline convention: a row's parent is the NEAREST
-    preceding row with a STRICTLY LOWER indent level (a classic stack walk,
-    same technique as parsing indentation-based outlines generally) --
-    correctly handles multi-level nesting (indent 1->2->3->4 seen for real on
-    some tabs), not just flat one-level parent/child pairs."""
-    children_of: Dict[int, List[int]] = {}
-    stack: List[Tuple[int, int]] = []  # (indent_level, row_idx)
-    for row_idx, indent_level, _label in rows:
-        while stack and stack[-1][0] >= indent_level:
-            stack.pop()
-        if stack:
-            parent_row_idx = stack[-1][1]
-            children_of.setdefault(parent_row_idx, []).append(row_idx)
-        stack.append((indent_level, row_idx))
-    return children_of
-
-
 def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "") -> None:
     _hr("3b. INDENT / SUB-ITEM SIGNAL CHECK (Excel indent level + leading whitespace)")
     if VERBOSE:
@@ -868,9 +849,10 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entit
             if v is not None:
                 value_by_row_idx[row["row_idx"]] = v
 
+        label_by_row_idx = {row_idx: label for row_idx, _level, label in all_rows}
         checked = 0
         matches = 0
-        mismatches: List[Tuple[int, float, float, int]] = []
+        mismatches: List[Tuple[int, float, float, int, List[int]]] = []
         no_value_parents = 0
         for parent_row_idx, child_row_idxs in children_of.items():
             parent_val = value_by_row_idx.get(parent_row_idx)
@@ -885,16 +867,22 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entit
             if abs(parent_val - child_sum) <= max(1.0, abs(parent_val) * 0.005):
                 matches += 1
             else:
-                mismatches.append((parent_row_idx, parent_val, child_sum, len(child_row_idxs)))
+                mismatches.append((parent_row_idx, parent_val, child_sum, len(child_row_idxs), child_row_idxs))
 
         if checked or no_value_parents:
             print(f"\n  Rollup check for '{tab_name}' (latest period {latest_key!r}): "
                   f"{checked} parent/children group(s) checkable "
                   f"({matches} match, {len(mismatches)} mismatch), "
                   f"{no_value_parents} parent row(s) have NO value of their own (pure category label).")
-            for parent_row_idx, parent_val, child_sum, n_children in mismatches[:5]:
-                print(f"      Excel row {parent_row_idx + 1}: parent={parent_val:,.2f} != "
+            for parent_row_idx, parent_val, child_sum, n_children, child_row_idxs in mismatches[:5]:
+                parent_label = label_by_row_idx.get(parent_row_idx, "?")
+                print(f"      Excel row {parent_row_idx + 1} {parent_label!r}: parent={parent_val:,.2f} != "
                       f"sum of {n_children} child/children={child_sum:,.2f}")
+                for child_row_idx in child_row_idxs:
+                    child_label = label_by_row_idx.get(child_row_idx, "?")
+                    child_val = value_by_row_idx.get(child_row_idx)
+                    print(f"          child Excel row {child_row_idx + 1} {child_label!r}: "
+                          f"value={child_val if child_val is None else f'{child_val:,.2f}'}")
             if checked and matches == checked:
                 rollup_confirmed_tabs.append(tab_name)
             elif mismatches:
