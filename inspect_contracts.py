@@ -39,8 +39,10 @@ from typing import Dict, List, Optional
 
 try:
     from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
 except ImportError:
     load_workbook = None
+    get_column_letter = None
 
 # pypdf's crypto backend emits a CryptographyDeprecationWarning (a UserWarning
 # subclass, not a DeprecationWarning -- so a category-based filter doesn't
@@ -107,10 +109,16 @@ def inspect_template(template_path: Path) -> None:
         if merged:
             preview = [str(r) for r in merged[:20]]
             print(f"Merged cell ranges ({len(merged)}): {preview}{' ...' if len(merged) > 20 else ''}")
-        print("First 6 rows (raw cell values, first 15 columns):")
-        for row_idx in range(1, min(7, ws.max_row + 1)):
+        # ALL columns, not capped -- a capped dump previously hid columns
+        # 16+ on a real 32-column template, silently understating the
+        # actual schema an extraction prompt would need to target.
+        print(f"All {ws.max_column} column(s), first 8 rows (raw cell values):")
+        header_letters = [get_column_letter(c) if get_column_letter else str(c)
+                           for c in range(1, ws.max_column + 1)]
+        print(f"  columns: {header_letters}")
+        for row_idx in range(1, min(9, ws.max_row + 1)):
             values = []
-            for col_idx in range(1, min(16, ws.max_column + 1)):
+            for col_idx in range(1, ws.max_column + 1):
                 v = ws.cell(row=row_idx, column=col_idx).value
                 values.append("" if v is None else str(v))
             print(f"  row {row_idx}: {values}")
