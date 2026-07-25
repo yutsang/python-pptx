@@ -811,33 +811,55 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entit
 
         if sheet_has_signal:
             tabs_with_signal += 1
+        # Rollup check: does a parent row's own value already equal the sum
+        # of its direct children? Needs at least one real indent level (a
+        # leading-whitespace-only tab has no reliable multi-level structure
+        # to build a hierarchy from). Computed BEFORE the flagged-rows print
+        # (moved up from its original position after that print) so a FRESH,
+        # single-threaded normalize_financial_schedule call's own row_type
+        # can be shown alongside the PRODUCTION (extract_data_from_excel,
+        # which runs this same function inside a ThreadPoolExecutor)
+        # classification for the identical row -- if these two disagree, that
+        # is direct proof the discrepancy is specific to the threaded call
+        # path, not the reclassification logic itself; if they agree (both
+        # still non-'breakdown'), the bug is elsewhere and threading is a
+        # red herring, needing a different fix than the one already shipped.
+        has_real_indent = any(lvl > 0 for _, lvl, _ in all_rows)
+        normalized = None
+        fresh_row_types: Dict[str, str] = {}
+        if has_real_indent:
+            children_of = _infer_indent_hierarchy(all_rows)
+            if children_of:
+                try:
+                    profile = profile_sheet(raw_df, sheet_name)
+                    normalized = normalize_financial_schedule(
+                        workbook_path=databook_path, sheet_name=sheet_name,
+                        profile=profile, entity_name=entity_name, sheet_df=raw_df,
+                    )
+                    fresh_row_types = {
+                        row["description"]: row["row_type"] for row in normalized["row_entries"]
+                    }
+                except Exception as exc:
+                    print(f"\n  ⚠️  '{tab_name}': could not normalize for rollup-check ({exc}) -- skipping rollup check.")
+
         if flagged_rows:
             total_flagged += len(flagged_rows)
             print(f"\n  ⚠️  '{tab_name}' (sheet {sheet_name!r}): {len(flagged_rows)} row(s) with an indent/"
                   f"whitespace signal in Excel but NOT classified 'breakdown':")
             for excel_row, indent_level, has_leading_ws, raw_value, classification in flagged_rows:
                 signal = f"indent={indent_level}" if indent_level > 0 else "leading-whitespace"
+                fresh_classification = fresh_row_types.get(raw_value.strip())
+                agreement = ""
+                if fresh_classification is not None:
+                    agreement = (
+                        "  [fresh single-threaded call AGREES -- not a threading issue]"
+                        if fresh_classification == classification else
+                        f"  [fresh single-threaded call says {fresh_classification!r} instead -- THREADING-PATH-SPECIFIC]"
+                    )
                 print(f"      Excel row {excel_row}: [{signal}] {raw_value!r} -> classified {classification!r} "
-                      f"(will be extracted as its OWN account, not merged into its parent)")
+                      f"(will be extracted as its OWN account, not merged into its parent){agreement}")
 
-        # Rollup check: does a parent row's own value already equal the sum
-        # of its direct children? Needs at least one real indent level (a
-        # leading-whitespace-only tab has no reliable multi-level structure
-        # to build a hierarchy from).
-        has_real_indent = any(lvl > 0 for _, lvl, _ in all_rows)
-        if not has_real_indent:
-            continue
-        children_of = _infer_indent_hierarchy(all_rows)
-        if not children_of:
-            continue
-        try:
-            profile = profile_sheet(raw_df, sheet_name)
-            normalized = normalize_financial_schedule(
-                workbook_path=databook_path, sheet_name=sheet_name,
-                profile=profile, entity_name=entity_name, sheet_df=raw_df,
-            )
-        except Exception as exc:
-            print(f"\n  ⚠️  '{tab_name}': could not normalize for rollup-check ({exc}) -- skipping rollup check.")
+        if not has_real_indent or normalized is None:
             continue
         columns = normalized.get("columns") or []
         if not columns:

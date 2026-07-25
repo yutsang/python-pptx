@@ -3433,15 +3433,58 @@ def _detect_implicit_breakdowns_from_sum(
                     break
 
 
+def _extract_indent_signal_rows(ws, df: pd.DataFrame, desc_col_idx: int) -> List[Tuple[int, int, str]]:
+    """(row_idx, indent_level, stripped_description) for every non-empty
+    description cell in one already-open worksheet's description column."""
+    rows: List[Tuple[int, int, str]] = []
+    for row_idx in range(len(df)):
+        cell = ws.cell(row=row_idx + 1, column=desc_col_idx + 1)  # openpyxl is 1-indexed
+        raw_value = cell.value
+        if raw_value is None or not isinstance(raw_value, str):
+            continue
+        stripped = raw_value.strip()
+        if not stripped:
+            continue
+        try:
+            indent_level = int(cell.alignment.indent or 0)
+        except Exception:
+            indent_level = 0
+        rows.append((row_idx, indent_level, stripped))
+    return rows
+
+
 @lru_cache(maxsize=4)
-def _load_raw_workbook_for_style(workbook_path: str):
-    """Raw openpyxl Workbook (not the pandas-parsed frames from
-    load_workbook_frames) -- needed to read style attributes such as
-    cell.alignment.indent that pandas' read_excel discards entirely.
-    Cached per workbook_path so repeated calls across sheets in the same
-    run only load the file once, same convention as load_workbook_frames."""
-    from openpyxl import load_workbook as _load_workbook_raw
-    return _load_workbook_raw(workbook_path, data_only=True)
+def _build_indent_signal_index(workbook_path: str) -> Dict[str, List[Tuple[int, int, str]]]:
+    """Precomputes the indent-level signal for every sheet's description
+    column via exactly ONE openpyxl load, entirely synchronous, done for
+    ALL sheets upfront rather than lazily per-sheet. normalize_financial_schedule's
+    real caller (extract_normalized_data_from_excel) fans out across a
+    ThreadPoolExecutor, and openpyxl's Workbook/Worksheet objects are not
+    documented as safe for concurrent multi-threaded construction/access --
+    computing this here, once, before any worker thread can touch it, avoids
+    that risk by construction rather than relying on incidental GIL behavior.
+    Cached per workbook_path, same convention as load_workbook_frames/profile_workbook.
+    Only sheets with at least one real indent level (>0) are kept."""
+    try:
+        from openpyxl import load_workbook as _load_workbook_raw
+        wb_raw = _load_workbook_raw(workbook_path, data_only=True)
+    except Exception:
+        return {}
+    try:
+        workbook_frames = load_workbook_frames(workbook_path)
+    except Exception:
+        return {}
+    index: Dict[str, List[Tuple[int, int, str]]] = {}
+    for sheet_name, df in workbook_frames.items():
+        if sheet_name not in wb_raw.sheetnames or df is None or df.empty:
+            continue
+        desc_col_idx = _find_description_column(df)
+        if desc_col_idx is None:
+            continue
+        rows = _extract_indent_signal_rows(wb_raw[sheet_name], df, desc_col_idx)
+        if any(level > 0 for _, level, _ in rows):
+            index[sheet_name] = rows
+    return index
 
 
 def _infer_indent_hierarchy(rows: List[Tuple[int, int, str]]) -> Dict[int, List[int]]:
@@ -3467,7 +3510,6 @@ def _reclassify_indent_rollup_children(
     projection_column_key: str,
     workbook_path: str,
     sheet_name: str,
-    desc_col_idx: int,
 ) -> None:
     """Excel's own indent level (Format > Cells > Alignment > Indent) is a
     direct structural signal for sub-item ("缩行") rows that pandas'
@@ -3489,40 +3531,32 @@ def _reclassify_indent_rollup_children(
     in place; no-ops fast when the sheet has no real indent signal at all.
     """
     try:
-        wb_raw = _load_raw_workbook_for_style(workbook_path)
+        indent_index = _build_indent_signal_index(workbook_path)
     except Exception:
         return
-    if sheet_name not in wb_raw.sheetnames:
-        return
-    ws = wb_raw[sheet_name]
+    all_rows = indent_index.get(sheet_name)
+    if not all_rows:
+        return  # no real Excel indent anywhere on this tab -- fast no-op
 
     value_by_row_idx = {
         row["row_idx"]: row["values"].get(projection_column_key) for row in row_entries
     }
-    all_rows: List[Tuple[int, int, str]] = []
-    for row in row_entries:
-        row_idx = row["row_idx"]
-        cell = ws.cell(row=row_idx + 1, column=desc_col_idx + 1)  # openpyxl is 1-indexed
-        raw_value = cell.value
-        if raw_value is None or not isinstance(raw_value, str):
-            continue
-        stripped = raw_value.strip()
-        # Only trust the indent signal when the raw cell's text matches what
-        # row_entries already resolved for this row_idx -- guards against a
-        # standardized/rebuilt sheet_df (e.g. a rollforward schedule) whose
-        # row indices no longer line up 1:1 with the original Excel rows.
-        if not stripped or stripped != str(row.get("description") or "").strip():
-            continue
-        try:
-            indent_level = int(cell.alignment.indent or 0)
-        except Exception:
-            indent_level = 0
-        all_rows.append((row_idx, indent_level, stripped))
+    description_by_row_idx = {
+        row["row_idx"]: str(row.get("description") or "").strip() for row in row_entries
+    }
+    # Only trust a precomputed row when its text matches what row_entries
+    # resolved for that row_idx -- guards against a standardized/rebuilt
+    # sheet_df (e.g. a rollforward schedule) whose row indices no longer
+    # line up 1:1 with the original Excel rows.
+    verified_rows = [
+        (row_idx, indent_level, label)
+        for row_idx, indent_level, label in all_rows
+        if description_by_row_idx.get(row_idx) == label
+    ]
+    if not verified_rows:
+        return
 
-    if not any(level > 0 for _, level, _ in all_rows):
-        return  # no real Excel indent anywhere on this tab -- fast no-op
-
-    children_of = _infer_indent_hierarchy(all_rows)
+    children_of = _infer_indent_hierarchy(verified_rows)
     if not children_of:
         return
 
@@ -4116,7 +4150,6 @@ def normalize_financial_schedule(
         projection_column_key=projection["column"]["key"],
         workbook_path=workbook_path,
         sheet_name=sheet_name,
-        desc_col_idx=desc_col_idx,
     )
     projection_column = projection["column"]
     analysis_stage = PREFERRED_STAGE if any(column["stage"] == PREFERRED_STAGE for column in columns) else projection["effective_stage"]
@@ -6147,6 +6180,12 @@ def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=No
     profiles_started = time.perf_counter()
     profiles = profile_workbook(databook_path)
     workbook_frames = load_workbook_frames(databook_path)
+    # Pre-warm the indent-signal index synchronously, in this (single) thread,
+    # BEFORE the ThreadPoolExecutor below fans normalize_financial_schedule
+    # out across worker threads -- normalize_financial_schedule's indent-based
+    # reclassification reads this cache but must never be the one to trigger
+    # its first (openpyxl-touching) computation from inside a worker thread.
+    _build_indent_signal_index(databook_path)
     logger.debug("Profiled workbook %s in %.2fs", os.path.basename(databook_path), time.perf_counter() - profiles_started)
     resolver_language = _detect_report_language_from_profiles(profiles) or "Eng"
 
