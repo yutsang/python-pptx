@@ -729,7 +729,27 @@ def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
 #     is NOT "breakdown".
 # ---------------------------------------------------------------------------
 
-def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None:
+def _infer_indent_hierarchy(rows: List[Tuple[int, int, str]]) -> Dict[int, List[int]]:
+    """rows: (row_idx, indent_level, label) for every non-empty description
+    cell in a tab, in sheet order. Returns {parent_row_idx: [direct_child_row_idx, ...]}
+    via the standard Excel-outline convention: a row's parent is the NEAREST
+    preceding row with a STRICTLY LOWER indent level (a classic stack walk,
+    same technique as parsing indentation-based outlines generally) --
+    correctly handles multi-level nesting (indent 1->2->3->4 seen for real on
+    some tabs), not just flat one-level parent/child pairs."""
+    children_of: Dict[int, List[int]] = {}
+    stack: List[Tuple[int, int]] = []  # (indent_level, row_idx)
+    for row_idx, indent_level, _label in rows:
+        while stack and stack[-1][0] >= indent_level:
+            stack.pop()
+        if stack:
+            parent_row_idx = stack[-1][1]
+            children_of.setdefault(parent_row_idx, []).append(row_idx)
+        stack.append((indent_level, row_idx))
+    return children_of
+
+
+def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "") -> None:
     _hr("3b. INDENT / SUB-ITEM SIGNAL CHECK (Excel indent level + leading whitespace)")
     if VERBOSE:
         print(
@@ -740,6 +760,16 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> No
             "the pipeline's own row classifier did NOT mark it 'breakdown' -- meaning this\n"
             "row is currently being extracted as its own standalone account instead of\n"
             "being recognized as a sub-item of the row above it.\n"
+            "\n"
+            "ALSO reconstructs the full indent hierarchy (parent = nearest preceding row\n"
+            "with a strictly lower indent level, handling multi-level nesting) and checks\n"
+            "whether each parent row's own value already equals the SUM of its direct\n"
+            "children -- this is the key design question for any fix: if parent == sum(children)\n"
+            "everywhere, the parent row ALREADY holds the rolled-up total and children should\n"
+            "just be excluded from becoming standalone accounts (reclassified 'breakdown', same\n"
+            "as an existing '其中'/'of which' row); if parents have NO value of their own, the\n"
+            "indent structure is purely a presentational category label, not a rollup, and a\n"
+            "genuinely different fix (still exclude from account list, but nothing to re-sum).\n"
         )
     from openpyxl import load_workbook as _load_workbook_raw
 
@@ -753,6 +783,9 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> No
     total_flagged = 0
     tabs_with_signal = 0
     tabs_checked = 0
+    rollup_confirmed_tabs: List[str] = []
+    rollup_mismatch_tabs: List[str] = []
+    no_parent_value_tabs: List[str] = []
     for tab_name in sorted(dfs.keys()):
         df = dfs.get(tab_name)
         if df is None or df.empty:
@@ -770,6 +803,7 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> No
         ws = wb_raw[sheet_name]
         row_types = df.attrs.get("row_types_by_description") or {}
 
+        all_rows: List[Tuple[int, int, str]] = []  # (row_idx 0-based, indent_level, label)
         flagged_rows: List[Tuple[int, int, bool, str, str]] = []
         sheet_has_signal = False
         for row_idx in range(len(raw_df)):
@@ -782,13 +816,14 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> No
                 indent_level = int(cell.alignment.indent or 0)
             except Exception:
                 indent_level = 0
+            stripped_desc = raw_value.strip()
+            if not stripped_desc:
+                continue
+            all_rows.append((row_idx, indent_level, stripped_desc))
             has_leading_ws = raw_value != raw_value.lstrip(" 　\t")
             if indent_level <= 0 and not has_leading_ws:
                 continue
             sheet_has_signal = True
-            stripped_desc = raw_value.strip()
-            if not stripped_desc:
-                continue
             classification = row_types.get(stripped_desc, "plain")
             if classification != "breakdown":
                 flagged_rows.append((row_idx + 1, indent_level, has_leading_ws, raw_value, classification))
@@ -803,6 +838,69 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> No
                 signal = f"indent={indent_level}" if indent_level > 0 else "leading-whitespace"
                 print(f"      Excel row {excel_row}: [{signal}] {raw_value!r} -> classified {classification!r} "
                       f"(will be extracted as its OWN account, not merged into its parent)")
+
+        # Rollup check: does a parent row's own value already equal the sum
+        # of its direct children? Needs at least one real indent level (a
+        # leading-whitespace-only tab has no reliable multi-level structure
+        # to build a hierarchy from).
+        has_real_indent = any(lvl > 0 for _, lvl, _ in all_rows)
+        if not has_real_indent:
+            continue
+        children_of = _infer_indent_hierarchy(all_rows)
+        if not children_of:
+            continue
+        try:
+            profile = profile_sheet(raw_df, sheet_name)
+            normalized = normalize_financial_schedule(
+                workbook_path=databook_path, sheet_name=sheet_name,
+                profile=profile, entity_name=entity_name, sheet_df=raw_df,
+            )
+        except Exception as exc:
+            print(f"\n  ⚠️  '{tab_name}': could not normalize for rollup-check ({exc}) -- skipping rollup check.")
+            continue
+        columns = normalized.get("columns") or []
+        if not columns:
+            continue
+        latest_key = columns[-1]["key"]
+        value_by_row_idx: Dict[int, float] = {}
+        for row in normalized["row_entries"]:
+            v = row["values"].get(latest_key)
+            if v is not None:
+                value_by_row_idx[row["row_idx"]] = v
+
+        checked = 0
+        matches = 0
+        mismatches: List[Tuple[int, float, float, int]] = []
+        no_value_parents = 0
+        for parent_row_idx, child_row_idxs in children_of.items():
+            parent_val = value_by_row_idx.get(parent_row_idx)
+            child_vals = [value_by_row_idx.get(c) for c in child_row_idxs]
+            if any(v is None for v in child_vals):
+                continue  # incomplete data for this group -- not checkable
+            if parent_val is None:
+                no_value_parents += 1
+                continue
+            child_sum = sum(child_vals)
+            checked += 1
+            if abs(parent_val - child_sum) <= max(1.0, abs(parent_val) * 0.005):
+                matches += 1
+            else:
+                mismatches.append((parent_row_idx, parent_val, child_sum, len(child_row_idxs)))
+
+        if checked or no_value_parents:
+            print(f"\n  Rollup check for '{tab_name}' (latest period {latest_key!r}): "
+                  f"{checked} parent/children group(s) checkable "
+                  f"({matches} match, {len(mismatches)} mismatch), "
+                  f"{no_value_parents} parent row(s) have NO value of their own (pure category label).")
+            for parent_row_idx, parent_val, child_sum, n_children in mismatches[:5]:
+                print(f"      Excel row {parent_row_idx + 1}: parent={parent_val:,.2f} != "
+                      f"sum of {n_children} child/children={child_sum:,.2f}")
+            if checked and matches == checked:
+                rollup_confirmed_tabs.append(tab_name)
+            elif mismatches:
+                rollup_mismatch_tabs.append(tab_name)
+            if no_value_parents and not checked:
+                no_parent_value_tabs.append(tab_name)
 
     print(f"\n{tabs_checked} tab(s) checked, {tabs_with_signal} with at least one indent/whitespace "
           f"signal in their description column.")
@@ -819,6 +917,17 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> No
               "-- if this databook DOES have visually-indented sub-items, they're likely represented "
               "some other way (e.g. a merged/nested cell, a separate marker column) rather than Excel's "
               "own indent attribute or literal leading spaces.")
+
+    if rollup_confirmed_tabs or rollup_mismatch_tabs or no_parent_value_tabs:
+        print(
+            f"\nRollup semantics summary (this is what decides how the eventual fix should work):\n"
+            f"  {len(rollup_confirmed_tabs)} tab(s) where parent value == sum(children) everywhere "
+            f"checkable -- ROLLUP confirmed: {rollup_confirmed_tabs}\n"
+            f"  {len(rollup_mismatch_tabs)} tab(s) with at least one mismatch -- needs individual "
+            f"review, see rows printed above: {rollup_mismatch_tabs}\n"
+            f"  {len(no_parent_value_tabs)} tab(s) where parent rows have NO value at all -- pure "
+            f"category labels, not a numeric rollup: {no_parent_value_tabs}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1807,7 +1916,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
     check_unit_markers(path, dfs)
     summary["scaling_mismatch_tabs"] = check_all_tabs_scaling(path, dfs, entity_name=entity_name)
     check_row_structures(dfs)
-    check_indent_signals(path, dfs)
+    check_indent_signals(path, dfs, entity_name=entity_name)
 
     xl = pd.ExcelFile(path)
     summary["total_sheets"] = len(xl.sheet_names)
