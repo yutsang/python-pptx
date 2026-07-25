@@ -1,44 +1,28 @@
 #!/usr/bin/env python3
-"""Vision-capability smoke test for the configured AI provider (GPT-5.5 via
-Workbench, by default) -- confirms two independent things, cheaply, BEFORE
-building a real contract-extraction pipeline on top of an unverified
-assumption. Same "test the smallest possible thing first" discipline this
-project already used for plain text connectivity (a standalone connectivity
-script was built and used earlier for that, separate from this one):
-  1. Can a PDF page actually be rasterized locally at all (pypdfium2)?
-  2. Does the configured model deployment actually ACCEPT and correctly
-     read image input? Some enterprise LLM gateways only expose a
-     text-only deployment even when the underlying model family supports
-     vision -- this is a real, unverified assumption until tested against
-     the real endpoint. Nothing in this codebase has ever sent an image to
-     the AI provider before this script.
+"""Vision smoke test against Workbench GPT-5.5 (default, no model flag).
 
-Uses the EXACT SAME AIClient connection setup (config.yml credentials,
-endpoint, workbench headers, retry/param-adjustment logic) as the rest of
-this pipeline -- not a second, separately-maintained copy of the auth/
-connection logic. get_response()'s `content` field is passed through to
-the API as-is regardless of whether it's a plain string or a list of
-OpenAI-spec multimodal content blocks, so no changes to fdd_utils/ai.py
-were needed to support this.
+Confirms two things before building the real contract-extraction pipeline:
+  1. PDF pages can be rasterized locally (pypdfium2)
+  2. The configured GPT-5.5 deployment actually accepts image input
+
+Uses the same AIClient / config.yml path as the FDD pipeline.
 
 Usage:
-    python vision_smoke_test.py "path/to/a/contract.pdf"
-        # rasterizes page 1, sends it to the model, asks it to describe
-        # what it sees in one sentence and quote one specific piece of
-        # text it can actually read -- if the response correctly
-        # describes a lease contract (not a refusal / "I cannot see
-        # images" / hallucinated unrelated content), vision input works.
-    python vision_smoke_test.py "path/to/a/contract.pdf" --page 2
-    python vision_smoke_test.py "path/to/an/image.jpg"
-        # works directly on a raw image file too, no PDF rasterization needed
-    python vision_smoke_test.py "path/to/a/contract.pdf" --model openai
-        # test a different configured provider instead of the default workbench
+    python vision_smoke_test.py contracts
+        # every PDF under contracts/ (all project subfolders), page 1 each
+    python vision_smoke_test.py contracts/成都
+        # every PDF in that one project folder
+    python vision_smoke_test.py contracts/成都/some.pdf
+        # single file
 """
+from __future__ import annotations
+
 import argparse
 import base64
 import io
 import sys
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 from fdd_utils.ai import AIClient
 
@@ -47,11 +31,22 @@ try:
 except ImportError:
     pdfium = None
 
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp"}
+_DEFAULT_MODEL = "workbench"  # config.yml -> GPT-5.5
 
-def _page_to_png_bytes(pdf_path: str, page_num: int, dpi: int = 200) -> bytes:
+_VISION_PROMPT = (
+    "Describe in one sentence what kind of document this image shows "
+    "(e.g. a lease contract's cover page, a signature page, a rent "
+    "schedule table, etc.) and then quote ONE specific piece of text "
+    "you can actually read on it, to prove you are reading the real "
+    "image content and not guessing from context."
+)
+
+
+def _page_to_png_bytes(pdf_path: Path, page_num: int, dpi: int = 200) -> bytes:
     if pdfium is None:
         raise RuntimeError("pypdfium2 not installed -- run `pip install pypdfium2`")
-    pdf = pdfium.PdfDocument(pdf_path)
+    pdf = pdfium.PdfDocument(str(pdf_path))
     if page_num < 1 or page_num > len(pdf):
         raise ValueError(f"Page {page_num} out of range -- this PDF has {len(pdf)} page(s).")
     page = pdf[page_num - 1]
@@ -62,82 +57,121 @@ def _page_to_png_bytes(pdf_path: str, page_num: int, dpi: int = 200) -> bytes:
     return buf.getvalue()
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("file_path", help="path to a .pdf or image file (.jpg/.png/etc.)")
-    ap.add_argument("--page", type=int, default=1, help="for a PDF, which page to test (1-indexed, default 1)")
-    ap.add_argument("--model", default="workbench", help="model_type to test (default: workbench)")
-    args = ap.parse_args()
+def _collect_targets(path: Path) -> List[Path]:
+    """Single file, or every PDF/image under a folder (recursive)."""
+    if path.is_file():
+        return [path]
+    files: List[Path] = []
+    for p in sorted(path.rglob("*")):
+        if not p.is_file():
+            continue
+        ext = p.suffix.lower()
+        if ext == ".pdf" or ext in _IMAGE_EXTS:
+            files.append(p)
+    return files
 
-    path = Path(args.file_path)
-    if not path.exists():
-        print(f"❌ File not found: {path}")
-        return 1
 
-    print(f"Loading {path.name!r}...")
+def _load_image(path: Path, page: int) -> Tuple[bytes, str]:
     ext = path.suffix.lower()
     if ext == ".pdf":
-        try:
-            image_bytes = _page_to_png_bytes(str(path), args.page)
-        except Exception as exc:
-            print(f"❌ Could not rasterize page {args.page}: {exc}")
-            return 1
-        print(f"✅ Rasterized page {args.page} to a PNG ({len(image_bytes) / 1024:.0f} KB).")
-        mime = "image/png"
-    else:
-        image_bytes = path.read_bytes()
-        print(f"✅ Read image file directly ({len(image_bytes) / 1024:.0f} KB).")
-        mime = f"image/{ext.lstrip('.') or 'png'}"
+        return _page_to_png_bytes(path, page), "image/png"
+    return path.read_bytes(), f"image/{ext.lstrip('.') or 'png'}"
 
-    b64 = base64.b64encode(image_bytes).decode("ascii")
-    data_url = f"data:{mime};base64,{b64}"
 
-    print(f"\nConnecting via AIClient(model_type={args.model!r})...")
+def _run_one(client: AIClient, path: Path, page: int, root: Optional[Path]) -> Tuple[bool, str, float]:
+    label = str(path.relative_to(root)) if root and path.is_relative_to(root) else path.name
     try:
-        client = AIClient(model_type=args.model, agent_name="subagent_1", language="Eng")
+        image_bytes, mime = _load_image(path, page)
+    except Exception as exc:
+        return False, f"rasterize failed: {exc}", 0.0
+
+    data_url = f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    vision_content = [
+        {"type": "text", "text": _VISION_PROMPT},
+        {"type": "image_url", "image_url": {"url": data_url}},
+    ]
+    try:
+        result = client.get_response(
+            user_prompt=vision_content,
+            system_prompt="You are a helpful assistant.",
+        )
+    except Exception as exc:
+        return False, f"API failed: {exc}", 0.0
+
+    content = str(result.get("content") or "").strip()
+    duration = float(result.get("duration") or 0)
+    if not content:
+        return False, "(empty response)", duration
+    return True, content, duration
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Vision smoke test via Workbench GPT-5.5 (no model flag).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python vision_smoke_test.py contracts\n"
+            "  python vision_smoke_test.py contracts/成都\n"
+            "  python vision_smoke_test.py path/to/file.pdf\n"
+        ),
+    )
+    ap.add_argument("path", help="contracts folder, one project folder, or a single PDF/image")
+    ap.add_argument("--page", type=int, default=1, help="PDF page to send (default: 1)")
+    args = ap.parse_args()
+
+    path = Path(args.path)
+    if not path.exists():
+        print(f"❌ Path not found: {path}")
+        return 1
+
+    targets = _collect_targets(path)
+    if not targets:
+        print(f"❌ No PDF/image files found under {path}")
+        return 1
+
+    root = path if path.is_dir() else path.parent
+    print(f"Model: GPT-5.5 (workbench)  |  page: {args.page}")
+    print(f"Files: {len(targets)} under {path}\n")
+
+    try:
+        client = AIClient(model_type=_DEFAULT_MODEL, agent_name="subagent_1", language="Eng")
     except Exception as exc:
         print(f"❌ Could not initialize AIClient: {exc}")
         return 1
 
-    vision_content = [
-        {"type": "text", "text": (
-            "Describe in one sentence what kind of document this image shows "
-            "(e.g. a lease contract's cover page, a signature page, a rent "
-            "schedule table, etc.) and then quote ONE specific piece of text "
-            "you can actually read on it, to prove you are reading the real "
-            "image content and not guessing from context."
-        )},
-        {"type": "image_url", "image_url": {"url": data_url}},
-    ]
+    ok_n = 0
+    fail_n = 0
+    for i, target in enumerate(targets, 1):
+        label = str(target.relative_to(root)) if target.is_relative_to(root) else target.name
+        print("=" * 78)
+        print(f"[{i}/{len(targets)}] {label}")
+        print("=" * 78)
+        ok, detail, duration = _run_one(client, target, args.page, root)
+        if ok:
+            ok_n += 1
+            print(detail)
+            print(f"\n✅ ok ({duration:.1f}s)")
+        else:
+            fail_n += 1
+            print(f"❌ {detail}")
+        print()
 
-    print("Sending to the model (this is the untested part -- confirms whether "
-          "this deployment accepts image input at all)...\n")
-    try:
-        result = client.get_response(user_prompt=vision_content, system_prompt="You are a helpful assistant.")
-    except Exception as exc:
-        print(f"❌ Call failed: {exc}")
+    print("=" * 78)
+    print(f"SUMMARY: {ok_n} ok / {fail_n} failed / {len(targets)} total")
+    print("=" * 78)
+    if fail_n and ok_n == 0:
         print(
-            "\nIf this is an authentication/model-not-found/400-style error, the likely "
-            "cause is that this specific deployment/model ID doesn't support image input "
-            "at all (text-only), not a bug in this script -- check with whoever "
-            "administers the gateway whether the configured model supports vision."
+            "All calls failed — this deployment may be text-only, or auth/config is wrong. "
+            "Paste the first error back before building the extraction pipeline."
         )
         return 1
-
-    print("=" * 78)
-    print("RESPONSE:")
-    print("=" * 78)
-    print(result.get("content", "(no content field in response)"))
-    print("\n" + "=" * 78)
-    print(f"Duration: {result.get('duration', '?')}s")
-    print(
-        "\nIf the response above correctly describes a real lease-contract-looking page "
-        "AND quotes something plausibly readable from it, vision input works on this "
-        "gateway -- safe to build the full extraction pipeline on top of this. If it "
-        "refuses, hallucinates unrelated content, or errors, paste this whole output "
-        "back before any further contract-extraction work is built."
-    )
-    return 0
+    if ok_n:
+        print(
+            "If responses correctly describe lease-contract pages and quote readable text, "
+            "vision works — safe to build the full folder extraction next."
+        )
+    return 0 if fail_n == 0 else 2
 
 
 if __name__ == "__main__":
