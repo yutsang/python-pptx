@@ -44,14 +44,14 @@ import sys
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
-from openpyxl import load_workbook
+from openpyxl import load_workbook, Workbook
 
 from .extract_bridge_from_raw import (
     find_phase_blocks, extract_annual_series, extract_ltm_series,
     find_month_row, format_ltm_label, PhaseBlock,
 )
 from .inspect_ab_tabs_structure import find_labeled_rows
-from .bridge_chart_prototype import BridgeItem, BridgeBlock, build_waterfall_chart
+from .bridge_chart_prototype import BridgeItem, BridgeBlock, build_waterfall_chart, build_excel_waterfall_chart
 
 from pptx import Presentation
 from pptx.util import Inches
@@ -317,6 +317,11 @@ def main() -> int:
                      help="skip the tail transition entirely instead of building an LTM window for it "
                           "(e.g. if monthly data isn't available to construct one)")
     ap.add_argument("--out", default="bridge_waterfall_batch_output.pptx", help="output pptx path")
+    ap.add_argument("--excel-out", default=None,
+                     help="also write a standalone .xlsx with a native Excel waterfall chart per "
+                          "transition (same 'Bridge_Output' sheet/stacking/title shape the Streamlit "
+                          "Bridge Lab produces, including the '來源 (Source)' traceability column) -- "
+                          "lets you inspect the real deliverable shape without going through the UI")
     args = ap.parse_args()
 
     print(f"Loading {args.path!r}...")
@@ -333,6 +338,13 @@ def main() -> int:
     prs.slide_width = Inches(13.33)
     prs.slide_height = Inches(7.5)
     blank_layout = prs.slide_layouts[6]
+
+    excel_wb = excel_ws = None
+    excel_next_row = 1
+    if args.excel_out:
+        excel_wb = Workbook()
+        excel_wb.remove(excel_wb.active)
+        excel_ws = excel_wb.create_sheet("Bridge_Output")
 
     slides_added = 0
     all_ok = True
@@ -366,8 +378,16 @@ def main() -> int:
                                    left=Inches(0.5), top=Inches(0.5), width=Inches(12.3), height=Inches(6.3))
             slides_added += 1
 
+            if excel_ws is not None:
+                excel_next_row = build_excel_waterfall_chart(excel_ws, bridge, res.title, start_row=excel_next_row)
+
     prs.save(args.out)
     print(f"\nSaved {slides_added} chart(s) to {args.out!r}.")
+    if excel_wb is not None:
+        excel_wb.save(args.excel_out)
+        print(f"Saved {slides_added} chart(s) to {args.excel_out!r} "
+              f"(same 'Bridge_Output' sheet shape as the Streamlit Bridge Lab download -- "
+              f"check the '來源 (Source)' column).")
     if args.validate:
         print("✅ Factor decomposition matches AB-CD's own real values." if all_ok
               else "❌ MISMATCH -- do not trust this decomposition yet.")
