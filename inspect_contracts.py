@@ -61,6 +61,9 @@ with warnings.catch_warnings():
 # to auto-find the target summary template without the exact filename
 # being hardcoded here -- works for either a Chinese or English name.
 _TEMPLATE_NAME_HINTS = ("合同", "汇总", "匯總", "模板", "contract", "summary", "template")
+# Extraction / debug outputs also contain 合同/汇总 in the name — never treat
+# them as the human-maintained summary template.
+_TEMPLATE_NAME_EXCLUDE = ("_extracted", "_raw", "_output", "_result", "extracted")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp"}
 _MIN_TEXT_CHARS_PER_PAGE = 20  # below this, a PDF page is treated as image-only
 
@@ -72,26 +75,39 @@ def _hr(title: str = "") -> None:
         print("=" * 78)
 
 
+def _template_rank(path: Path) -> Optional[tuple]:
+    """Lower tuple sorts first. None = not a template candidate."""
+    if path.name.startswith("~$"):
+        return None
+    stem = path.stem
+    stem_l = stem.lower()
+    if any(ex in stem_l for ex in _TEMPLATE_NAME_EXCLUDE):
+        return None
+    if not any(hint.lower() in stem_l for hint in _TEMPLATE_NAME_HINTS):
+        return None
+    # Prefer real template names (…模板 / template) over generic 合同汇总 copies.
+    has_template_word = 0 if ("模板" in stem or "template" in stem_l) else 1
+    has_summary_word = 0 if any(x in stem for x in ("汇总", "匯總", "summary")) else 1
+    return (has_template_word, has_summary_word, len(path.parts), str(path).lower())
+
+
 def find_template(root: Path) -> Optional[Path]:
     """Looks for a file matching this project's contract-template naming
     convention anywhere under root (not just the top level, since it might
-    sit alongside or above the per-contract subfolders)."""
-    candidates = []
+    sit alongside or above the per-contract subfolders).
+
+    Skips Excel lock files (~$…) and extraction outputs (*_extracted.xlsx).
+    Prefers names containing 模板/template, then 汇总, then shallower paths.
+    """
+    ranked = []
     for path in root.rglob("*.xlsx"):
-        # Excel lock/temp files look like "~$合同汇总模板.xlsx" while the
-        # real workbook is open — never treat those as the template.
-        if path.name.startswith("~$"):
-            continue
-        name = path.stem
-        if any(hint.lower() in name.lower() for hint in _TEMPLATE_NAME_HINTS):
-            candidates.append(path)
-    if not candidates:
+        rank = _template_rank(path)
+        if rank is not None:
+            ranked.append((rank, path))
+    if not ranked:
         return None
-    # Prefer the shallowest path (closest to root) if multiple match --
-    # avoids accidentally picking a per-contract working copy over the
-    # actual top-level template.
-    candidates.sort(key=lambda p: len(p.parts))
-    return candidates[0]
+    ranked.sort(key=lambda item: item[0])
+    return ranked[0][1]
 
 
 def inspect_template(template_path: Path) -> None:

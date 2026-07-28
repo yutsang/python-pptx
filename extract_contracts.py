@@ -322,8 +322,24 @@ def extract_one(
     return row, dur, "vision-2pass", raw
 
 
+def _reference_fill_count(row: Dict[str, str]) -> int:
+    """How many core fields look human-filled (not blank / 未提及)."""
+    n = 0
+    for letter in CORE_VALUE_COLUMNS:
+        val = str(row.get(letter, "") or "").strip()
+        if val and val not in (_MISSING, "无", "不适用", "不適用"):
+            n += 1
+    return n
+
+
 def _load_gold_rows(template_path: Path) -> Dict[str, Dict[str, str]]:
-    """filename -> row dict, from already-filled data rows in the local template."""
+    """filename -> row dict from filled reference rows in the local template.
+
+    These are human-maintained placeholders — useful for calibration, not an
+    absolute ground truth (a person may also mis-read a scanned page).
+    Rows that only have parties filled (everything else 未提及) are skipped so
+    a previous extraction output cannot masquerade as the reference template.
+    """
     wb = load_workbook(template_path, data_only=True)
     ws = wb[wb.sheetnames[0]]
     gold: Dict[str, Dict[str, str]] = {}
@@ -340,6 +356,9 @@ def _load_gold_rows(template_path: Path) -> Dict[str, Dict[str, str]]:
             if val is None:
                 continue
             row[letter] = str(val).strip()
+        # Need real commercial fields, not just 甲方/乙方 from a failed extract.
+        if _reference_fill_count(row) < 5:
+            continue
         gold[row["A"]] = row
     return gold
 
@@ -365,11 +384,12 @@ def _validate_against_gold(
 ) -> int:
     overlap = sorted(set(extracted) & set(gold))
     if not overlap:
-        print("\n(validate) No overlapping filenames between extraction and template gold rows.")
+        print("\n(validate) No overlapping filenames vs template reference rows.")
         return 0
     print(
-        f"\n(validate) Comparing {len(overlap)} file(s) against local template gold rows "
-        f"on columns: {', '.join(CORE_VALUE_COLUMNS)}"
+        "\n(validate) Diff vs human reference rows in the template "
+        "(reference can also be wrong — use this to spot gaps, not as absolute truth).\n"
+        f"Files: {len(overlap)}  |  columns: {', '.join(CORE_VALUE_COLUMNS)}"
     )
     mismatches = 0
     for name in overlap:
@@ -385,20 +405,20 @@ def _validate_against_gold(
                     continue
             except Exception:
                 pass
-            # soft contain for 租赁单元: gold short name inside longer extract (or reverse)
+            # soft contain for 租赁单元: short name inside longer extract (or reverse)
             if letter == "F" and (exp in got or got in exp):
                 continue
             bad.append(letter)
             mismatches += 1
-            print(f"  {letter} mismatch")
-            print(f"    gold: {gold[name].get(letter, '')[:160]}")
-            print(f"    got:  {extracted[name].get(letter, '')[:160]}")
+            print(f"  {letter} differ")
+            print(f"    ref:  {gold[name].get(letter, '')[:160]}")
+            print(f"    gpt:  {extracted[name].get(letter, '')[:160]}")
         if not bad:
-            print("  ✅ all core columns match (or soft-match on F)")
+            print("  ✅ all core columns match reference (or soft-match on F)")
         else:
             ok_n = len(CORE_VALUE_COLUMNS) - len(bad)
-            print(f"  → {ok_n}/{len(CORE_VALUE_COLUMNS)} core columns ok")
-    print(f"\n(validate) core-field mismatches: {mismatches}")
+            print(f"  → {ok_n}/{len(CORE_VALUE_COLUMNS)} core columns agree with reference")
+    print(f"\n(validate) differing core fields: {mismatches}")
     return mismatches
 
 
@@ -437,9 +457,16 @@ def _write_debug_json(output_xlsx: Path, payloads: Dict[str, str]) -> Path:
 def _resolve_template(path: Path, root: Path, explicit: Optional[str]) -> Optional[Path]:
     if explicit:
         return Path(explicit)
-    for candidate_root in (root, path if path.is_dir() else None, root.parent):
+    # Prefer the parent of a project folder (contracts/) over the project
+    # folder itself — extraction outputs land in the project folder and used
+    # to win over 合同汇总模板.xlsx one level up.
+    ordered: List[Path] = []
+    for candidate_root in (root.parent, root, path if path.is_dir() else None):
         if candidate_root is None or not candidate_root.exists():
             continue
+        if candidate_root not in ordered:
+            ordered.append(candidate_root)
+    for candidate_root in ordered:
         found = find_template(candidate_root)
         if found:
             return found
@@ -453,8 +480,8 @@ def main() -> int:
         epilog=(
             "Examples:\n"
             "  python extract_contracts.py contracts/成都 --gold --validate\n"
-            "      # only the 2 filled placeholder rows in the local template\n"
-            "  python extract_contracts.py contracts/成都 --validate\n"
+            "      # only PDFs that have filled human reference rows in 合同汇总模板.xlsx\n"
+            "  python extract_contracts.py contracts/成都 --template contracts/合同汇总模板.xlsx --gold --validate\n"
             "  python extract_contracts.py contracts\n"
         ),
     )
@@ -465,12 +492,12 @@ def main() -> int:
     ap.add_argument(
         "--gold",
         action="store_true",
-        help="only process PDFs that already have filled gold rows in the local template",
+        help="only process PDFs that have filled human reference rows in the template",
     )
     ap.add_argument(
         "--validate",
         action="store_true",
-        help="compare results to filled gold rows already present in the local template",
+        help="diff results against human reference rows in the template (reference can also be wrong)",
     )
     args = ap.parse_args()
 
@@ -522,7 +549,9 @@ def main() -> int:
     if template_path:
         print(f"Template: {template_path}")
         if gold:
-            print(f"Gold rows in template: {len(gold)}")
+            print(f"Human reference rows in template: {len(gold)}")
+            for name in gold:
+                print(f"  - {name}  (core fields filled: {_reference_fill_count(gold[name])})")
     print()
 
     try:
