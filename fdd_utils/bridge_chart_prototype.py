@@ -60,6 +60,12 @@ class BridgeItem:
     label: str
     kind: str  # "total" or "delta"
     value: float
+    source_note: str = ""  # where this number came from, e.g. a cell ref
+    # ('NT1-量价桥图'!O13) for a pre-built Base/Change block, or a phase's
+    # row numbers for an AB- raw-data factor decomposition -- carried all
+    # the way through to the rendered deliverable (build_excel_waterfall_chart's
+    # "來源" column) so a number that looks wrong can be traced back without
+    # a separate diagnostic tool.
 
 
 @dataclass
@@ -117,10 +123,16 @@ def find_bridge_blocks(ws_values, max_gap: int = 2) -> List[BridgeBlock]:
                 # spurious zero-value bridge item.
                 break
             empty_streak = 0
+            sheet_name = getattr(ws_values, "title", None)
+            sheet_prefix = f"'{sheet_name}'!" if sheet_name else ""
             if _is_number(base) and not _is_number(change):
-                items.append(BridgeItem(label=str(label) if label is not None else f"row{row}", kind="total", value=float(base)))
+                cell_ref = ws_values.cell(row=row, column=base_col).coordinate
+                items.append(BridgeItem(label=str(label) if label is not None else f"row{row}", kind="total",
+                                         value=float(base), source_note=f"{sheet_prefix}{cell_ref}"))
             elif _is_number(change) and not _is_number(base):
-                items.append(BridgeItem(label=str(label) if label is not None else f"row{row}", kind="delta", value=float(change)))
+                cell_ref = ws_values.cell(row=row, column=change_col).coordinate
+                items.append(BridgeItem(label=str(label) if label is not None else f"row{row}", kind="delta",
+                                         value=float(change), source_note=f"{sheet_prefix}{cell_ref}"))
             row += 1
         if len(items) >= 2:  # need at least a start + end to be a real bridge
             check_ok = _validate_block(ws_values, header_row, row, items)
@@ -266,6 +278,7 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     ws.column_dimensions[get_column_letter(start_col)].width = 22
     for offset in range(1, 5):
         ws.column_dimensions[get_column_letter(start_col + offset)].width = 12
+    ws.column_dimensions[get_column_letter(start_col + 8)].width = 45
 
     header_row = start_row
     ws.cell(row=header_row, column=start_col, value="Label")
@@ -273,7 +286,14 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     ws.cell(row=header_row, column=start_col + 2, value="Total")
     ws.cell(row=header_row, column=start_col + 3, value="Increase")
     ws.cell(row=header_row, column=start_col + 4, value="Decrease")
-    for i, cat in enumerate(categories):
+    # A visible "來源" column, not just a cell comment -- per user feedback,
+    # the deliverable itself (not a separate diagnostic tool run by whoever
+    # built this) is where the project team needs to see where a number
+    # came from. Deliberately placed well clear of the chart's own data
+    # columns (Label..Decrease, start_col..start_col+4) so it can never be
+    # accidentally picked up as chart data.
+    ws.cell(row=header_row, column=start_col + 8, value="來源 (Source)")
+    for i, (cat, item) in enumerate(zip(categories, block.items)):
         r = header_row + 1 + i
         ws.cell(row=r, column=start_col, value=cat)
         for off, vals, fmt in (
@@ -284,6 +304,7 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
         ):
             cell = ws.cell(row=r, column=start_col + off, value=vals[i])
             cell.number_format = fmt
+        ws.cell(row=r, column=start_col + 8, value=item.source_note or "")
     ws.cell(row=header_row, column=start_col + 6, value=title)
     data_last_row = header_row + len(categories)
 

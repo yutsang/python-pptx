@@ -64,7 +64,8 @@ def _is_partial_year(days: float) -> bool:
     return 0 < days < _PARTIAL_YEAR_DAYS_THRESHOLD
 
 
-def decompose_transition(phase_label: str, series_a: Dict[str, float], series_b: Dict[str, float]) -> List[BridgeItem]:
+def decompose_transition(phase_label: str, series_a: Dict[str, float], series_b: Dict[str, float],
+                          block: Optional[PhaseBlock] = None, sheet_name: str = "") -> List[BridgeItem]:
     price_a, price_b = series_a["unit_rent"], series_b["unit_rent"]
     area_a, area_b = series_a["area"], series_b["area"]
     days_a, days_b = series_a["days"], series_b["days"]
@@ -73,10 +74,17 @@ def decompose_transition(phase_label: str, series_a: Dict[str, float], series_b:
     area_effect = price_b * (area_b - area_a) * days_a / 1000
     days_effect = price_b * area_b * (days_b - days_a) / 1000
 
+    source = ""
+    if block is not None:
+        sheet_prefix = f"'{sheet_name}'!" if sheet_name else ""
+        source = (f"{sheet_prefix}phase '{phase_label}': revenue row {block.revenue_row}, "
+                   f"area row {block.area_row} -- price×area×days factor decomposition "
+                   f"(run with --trace-cells for the exact columns each period used)")
+
     return [
-        BridgeItem(label=f"{phase_label}{_FACTOR_SUFFIX['price']}", kind="delta", value=price_effect),
-        BridgeItem(label=f"{phase_label}{_FACTOR_SUFFIX['area']}", kind="delta", value=area_effect),
-        BridgeItem(label=f"{phase_label}{_FACTOR_SUFFIX['days']}", kind="delta", value=days_effect),
+        BridgeItem(label=f"{phase_label}{_FACTOR_SUFFIX['price']}", kind="delta", value=price_effect, source_note=source),
+        BridgeItem(label=f"{phase_label}{_FACTOR_SUFFIX['area']}", kind="delta", value=area_effect, source_note=source),
+        BridgeItem(label=f"{phase_label}{_FACTOR_SUFFIX['days']}", kind="delta", value=days_effect, source_note=source),
     ]
 
 
@@ -93,14 +101,18 @@ def find_year_days_rows(ws_values) -> Dict[str, Optional[int]]:
 
 
 def _assemble_bridge(blocks: List[PhaseBlock], series_a: List[Dict[str, float]], series_b: List[Dict[str, float]],
-                      start_label: str, end_label: str) -> BridgeBlock:
+                      start_label: str, end_label: str, sheet_name: str = "") -> BridgeBlock:
     total_a = sum(s["revenue_k"] for s in series_a)
     total_b = sum(s["revenue_k"] for s in series_b)
 
-    items: List[BridgeItem] = [BridgeItem(label=start_label, kind="total", value=total_a)]
+    sheet_prefix = f"'{sheet_name}'!" if sheet_name else ""
+    revenue_rows = [b.revenue_row for b in blocks if b.revenue_row]
+    total_source = f"{sheet_prefix}sum of every phase's revenue row: {revenue_rows}"
+
+    items: List[BridgeItem] = [BridgeItem(label=start_label, kind="total", value=total_a, source_note=total_source)]
     for block, sa, sb in zip(blocks, series_a, series_b):
-        items.extend(decompose_transition(block.label, sa, sb))
-    items.append(BridgeItem(label=end_label, kind="total", value=total_b))
+        items.extend(decompose_transition(block.label, sa, sb, block=block, sheet_name=sheet_name))
+    items.append(BridgeItem(label=end_label, kind="total", value=total_b, source_note=total_source))
 
     reconstructed = total_a + sum(it.value for it in items[1:-1])
     # A real client-data residual is expected here (confirmed in AB-CD's own
@@ -112,17 +124,18 @@ def _assemble_bridge(blocks: List[PhaseBlock], series_a: List[Dict[str, float]],
 
 
 def build_bridge_for_transition(ws_values, blocks: List[PhaseBlock], year_row: int, days_row: int,
-                                 year_a: int, year_b: int, start_label: str, end_label: str) -> Optional[BridgeBlock]:
+                                 year_a: int, year_b: int, start_label: str, end_label: str,
+                                 sheet_name: str = "") -> Optional[BridgeBlock]:
     all_series = [extract_annual_series(ws_values, b, year_row, days_row) for b in blocks]
     if any(year_a not in s or year_b not in s for s in all_series):
         return None
     series_a = [s[year_a] for s in all_series]
     series_b = [s[year_b] for s in all_series]
-    return _assemble_bridge(blocks, series_a, series_b, start_label, end_label)
+    return _assemble_bridge(blocks, series_a, series_b, start_label, end_label, sheet_name=sheet_name)
 
 
 def build_ltm_bridge(ws_values, blocks: List[PhaseBlock], year_row: int, month_row: int, days_row: int,
-                      last_full_year: int, end_year: int, end_month: int) -> Optional[BridgeBlock]:
+                      last_full_year: int, end_year: int, end_month: int, sheet_name: str = "") -> Optional[BridgeBlock]:
     all_series_a = [extract_annual_series(ws_values, b, year_row, days_row) for b in blocks]
     if any(last_full_year not in s for s in all_series_a):
         return None
@@ -132,7 +145,7 @@ def build_ltm_bridge(ws_values, blocks: List[PhaseBlock], year_row: int, month_r
         return None
     start_label = f"{last_full_year}年收入"
     end_label = format_ltm_label(end_year, end_month)
-    return _assemble_bridge(blocks, series_a, series_b, start_label, end_label)
+    return _assemble_bridge(blocks, series_a, series_b, start_label, end_label, sheet_name=sheet_name)
 
 
 # Hardcoded from the REAL '成都-量价桥图' bridge tab's own values (already
@@ -221,7 +234,7 @@ def build_bridges_for_ab_tab(
     for year_a, year_b in zip(full_years, full_years[1:]):
         bridge = build_bridge_for_transition(
             ws_values, blocks, yd["year_row"], yd["days_row"], year_a, year_b,
-            start_label=f"{year_a}年收入", end_label=f"{year_b}年收入",
+            start_label=f"{year_a}年收入", end_label=f"{year_b}年收入", sheet_name=tab_name,
         )
         if bridge is None:
             continue
@@ -254,7 +267,7 @@ def build_bridges_for_ab_tab(
             log(f"    ⚠️ tail year {max_year} is partial but no month with data found -- skipping")
             return blocks, results
         bridge = build_ltm_bridge(ws_values, blocks, yd["year_row"], month_row, yd["days_row"],
-                                   last_full_year, max_year, latest_month)
+                                   last_full_year, max_year, latest_month, sheet_name=tab_name)
         if bridge is None:
             log(f"    ⚠️ tail year {max_year} is partial ({max_year_days:.0f}d) but LTM window couldn't be "
                 f"built (incomplete monthly data) -- skipping tail transition")
