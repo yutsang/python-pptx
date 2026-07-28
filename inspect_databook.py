@@ -868,10 +868,12 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entit
             continue
         latest_key = columns[-1]["key"]
         value_by_row_idx: Dict[int, float] = {}
+        type_by_row_idx: Dict[int, str] = {}
         for row in normalized["row_entries"]:
             v = row["values"].get(latest_key)
             if v is not None:
                 value_by_row_idx[row["row_idx"]] = v
+            type_by_row_idx[row["row_idx"]] = row.get("row_type")
 
         label_by_row_idx = {row_idx: label for row_idx, _level, label in all_rows}
         checked = 0
@@ -955,6 +957,61 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entit
                     text_match = "MATCH" if resolved_desc == raw_label else "MISMATCH"
                     print(f"      row_idx={r_idx}: raw_label={raw_label!r}  vs  row_entries.description="
                           f"{resolved_desc!r}  [{text_match}]  row_type={resolved_type!r}")
+
+            # RESIDUAL ORPHAN ANALYSIS -- fires for EVERY tab that still has
+            # flagged rows after both production reclassification passes
+            # (not gated to once), unlike the DEEP TRACE above which was
+            # single-purpose (confirm/deny the threading hypothesis on one
+            # tab). Groups the still-flagged rows by their shared (invalid)
+            # parent, prints the group's own sum, and lists every total/
+            # subtotal row already known in this tab with its value --
+            # makes it visible at a glance whether a residual case is (a) a
+            # near-miss just outside the 0.5% tolerance (possible rounding/
+            # different-period issue), (b) genuinely ambiguous between
+            # several total-like candidates, or (c) has no total/subtotal
+            # candidate in this tab at all (needs sourcing from elsewhere,
+            # or is a non-additive relationship like a VAT input/output net).
+            flagged_idx_set = {excel_row - 1 for excel_row, _, _, _, _ in flagged_rows}
+            parent_of_idx: Dict[int, int] = {
+                c: p for p, cs in children_of.items() for c in cs
+            }
+            siblings_by_parent: Dict[int, List[int]] = {}
+            for child_idx in flagged_idx_set:
+                parent_idx = parent_of_idx.get(child_idx)
+                if parent_idx is None:
+                    continue  # this flagged row isn't part of any indent hierarchy group at all
+                siblings_by_parent.setdefault(parent_idx, []).append(child_idx)
+            if siblings_by_parent:
+                total_subtotal_candidates = [
+                    (row_idx, label_by_row_idx.get(row_idx, type_by_row_idx.get(row_idx)), value_by_row_idx.get(row_idx))
+                    for row_idx, rtype in type_by_row_idx.items()
+                    if rtype in ("total", "subtotal") and value_by_row_idx.get(row_idx) is not None
+                ]
+                print(f"\n  --- RESIDUAL ORPHAN ANALYSIS for '{tab_name}' ---")
+                for parent_idx, sib_idxs in siblings_by_parent.items():
+                    sib_vals = [value_by_row_idx.get(i) for i in sib_idxs]
+                    sib_info = [(label_by_row_idx.get(i, "?"), v) for i, v in zip(sib_idxs, sib_vals)]
+                    if any(v is None for v in sib_vals):
+                        print(f"      orphaned group (parent row_idx={parent_idx} {label_by_row_idx.get(parent_idx, '?')!r}): "
+                              f"{sib_info} -- some sibling value(s) missing, can't sum")
+                        continue
+                    sib_sum = sum(sib_vals)
+                    print(f"      orphaned group (parent row_idx={parent_idx} {label_by_row_idx.get(parent_idx, '?')!r}): "
+                          f"siblings={sib_info}  sum={sib_sum:,.2f}")
+                    near = [
+                        (row_idx, label, val) for row_idx, label, val in total_subtotal_candidates
+                        if abs(val - sib_sum) <= max(1.0, abs(sib_sum) * 0.02)
+                    ]
+                    exact = [c for c in near if abs(c[2] - sib_sum) <= max(1.0, abs(sib_sum) * 0.005)]
+                    if exact:
+                        print(f"          {len(exact)} exact-tolerance total/subtotal candidate(s) -- should already be fixed; unexpected: {exact}")
+                    elif near:
+                        print(f"          near-miss (within 2%, but outside the 0.5% production tolerance): {near}")
+                    else:
+                        print(f"          no total/subtotal candidate in this tab is even close -- either sourced "
+                              f"from elsewhere, a non-additive relationship (e.g. VAT input/output net), or genuinely "
+                              f"needs individual review. All total/subtotal rows in this tab: "
+                              f"{[(l, v) for _, l, v in total_subtotal_candidates]}")
 
             if checked and matches == checked:
                 rollup_confirmed_tabs.append(tab_name)
