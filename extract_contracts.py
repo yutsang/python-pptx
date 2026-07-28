@@ -136,26 +136,27 @@ def _schema_prompt_block(letters: Sequence[str]) -> str:
 
 
 def _build_extraction_prompt(filename: str, page_note: str, letters: Sequence[str]) -> str:
+    # No concrete numeric / party / unit examples in the prompt — those become
+    # anchoring / injection risk and can leak into the extracted values.
     core_hint = ""
     if set(letters) <= set(CORE_VALUE_COLUMNS) | {"D", "E", "AC"}:
         core_hint = (
             "特别注意从条款/表格中找：租赁单元、面积、交付日、租期、免租、"
             "租金/物业费合同总额、起始单价、涨幅、保证金、收款账户/账号、含税日单价。\n"
-            "字段口径（易错，必须遵守）:\n"
-            "- F 租赁单元：短名（如B库一层、C库一层），不要整段地址。\n"
-            "- O/P：合同期内租金/物业费总额（含税），通常是较大金额。\n"
-            "- Q/R：起始租金/物业费 单价，单位=元/日/平方米（不含税），通常 < 10。\n"
-            "- AD/AE：含税日租金/含税日物业费，单位同样是元/日/平方米（含税单价），通常 < 10；"
-            "绝不是日租金总价，也绝不是 O/P 合同总额。\n"
-            "- AF 合计：= AD + AE（含税日单价之和），不是 O+P。\n"
-            "- S/T 涨幅：尽量写成短式，如「每年递增4%」；补充协议未另约定则填「未提及」，"
-            "不要从主合同臆测。\n"
-            "- L/M 免租：若有多段免租期，写成完整区间文字"
-            "（如2026年3月2日至2026年3月31日，…），不要只输出起始日列表；无免租填「未提及」。\n"
-            "- N 免租期（月）：只填数字月数（如3）；无免租填「不适用」。\n"
-            "- X 收款账户：填账户户名（公司名），不要填开户行；开户行可忽略或写入备注。\n"
-            "- Y 收款账号：填银行账号数字。\n"
-            "- 甲乙方名称注意形近字（如臻/燊），以合同首页/签章为准。\n"
+            "字段口径（易错，必须遵守；所有数值只许来自页面原文，禁止使用提示中的举例数字——本提示不含举例数字）:\n"
+            "- F 租赁单元：库区/楼层等短名，不要整段地址。\n"
+            "- O/P：合同期内租金/物业费总额（含税），量级通常远大于单价。\n"
+            "- Q/R：起始租金/物业费单价，单位=元/日/平方米（不含税），量级通常远小于总额。\n"
+            "- AD/AE：含税日租金/含税日物业费，单位同样是元/日/平方米（含税单价），"
+            "量级应接近单价而非总额；绝不是日租金总价，也绝不是 O/P 合同总额。\n"
+            "- AF 合计：AD 与 AE 两个含税日单价之和，不是 O+P。\n"
+            "- S/T 涨幅：写成短式百分比递增描述；补充协议未另约定则填「未提及」，"
+            "不要从其他合同或主合同臆测。\n"
+            "- L/M 免租：多段免租写完整区间文字，不要只列起始日；无免租填「未提及」。\n"
+            "- N 免租期（月）：只填月数（纯数字）；无免租填「不适用」。\n"
+            "- X 收款账户：账户户名（公司名），不要填开户行。\n"
+            "- Y 收款账号：银行账号。\n"
+            "- 甲乙方名称以合同首页/签章为准，留意形近字。\n"
         )
     return (
         "你是租赁合同信息抽取助手。根据提供的合同页面内容，填写租赁台账字段。\n"
@@ -163,11 +164,12 @@ def _build_extraction_prompt(filename: str, page_note: str, letters: Sequence[st
         f"{page_note}\n"
         f"{core_hint}\n"
         "规则:\n"
-        "1. 只输出一个 JSON 对象，key 必须是下列 Excel 列字母；不要 markdown，不要解释。\n"
-        f"2. 页面上看不到的字段填 \"{_MISSING}\"；备注没有内容时填 \"无\"。\n"
-        "3. 日期：单日用 YYYY-MM-DD；免租多段保留中文区间原文风格。数字不要加千分位。\n"
-        "4. 长文本字段最多各摘录 120 字；不要整段照抄。\n"
-        "5. 不要输出 JSON 以外的任何文字。\n\n"
+        "- 只输出一个 JSON 对象，key 必须是下列 Excel 列字母；不要 markdown，不要解释。\n"
+        f"- 页面上看不到的字段填 \"{_MISSING}\"；备注没有内容时填 \"无\"。\n"
+        "- 所有金额、日期、比例、账号必须来自页面；禁止编造或沿用任何提示中的示例值。\n"
+        "- 单日日期用 YYYY-MM-DD；免租多段保留中文区间原文风格；数字不加千分位。\n"
+        "- 长文本字段简短摘录关键句，不要整段照抄。\n"
+        "- 不要输出 JSON 以外的任何文字。\n\n"
         "目标字段 (列字母: 含义):\n"
         f"{_schema_prompt_block(letters)}\n"
     )
@@ -187,31 +189,20 @@ def _fixup_rate_fields(row: Dict[str, str]) -> Dict[str, str]:
     ad, ae, af = _f("AD"), _f("AE"), _f("AF")
     o, p = _f("O"), _f("P")
 
-    # If AF was filled with O+P (contract totals), recompute from unit rates.
+    # If AF was filled with O+P (contract totals) but AD/AE look like unit rates,
+    # recompute AF from AD+AE only — never invent tax multipliers.
     if af is not None and o is not None and p is not None and af > 100:
         if abs(af - (o + p)) <= max(1.0, 0.02 * abs(o + p)):
             if ad is not None and ae is not None and ad < 10 and ae < 10:
                 out["AF"] = f"{ad + ae:.6g}"
-            elif q is not None and r is not None and q < 10 and r < 10:
-                # Fallback: derive 含税单价 from 不含税 × common VAT rates in these leases.
-                ad2, ae2 = q * 1.09, r * 1.06
-                out["AD"] = f"{ad2:.6g}"
-                out["AE"] = f"{ae2:.6g}"
-                out["AF"] = f"{ad2 + ae2:.6g}"
 
-    # If AD/AE look like daily totals (>>10) but Q/R are unit rates, derive 含税单价.
-    if q is not None and r is not None and q < 10 and r < 10:
-        if ad is not None and ad > 10:
-            out["AD"] = f"{q * 1.09:.6g}"
-        if ae is not None and ae > 10:
-            out["AE"] = f"{r * 1.06:.6g}"
-        ad2, ae2 = _f("AD"), _f("AE")
-        if ad2 is not None and ae2 is not None and ad2 < 10 and ae2 < 10:
-            af2 = _f("AF")
-            if af2 is None or af2 > 10:
-                out["AF"] = f"{ad2 + ae2:.6g}"
+    # If AD/AE already look like unit rates but AF looks like a total, fix AF only.
+    if ad is not None and ae is not None and ad < 10 and ae < 10:
+        af2 = _f("AF")
+        if af2 is None or af2 > 10:
+            out["AF"] = f"{ad + ae:.6g}"
 
-    # N should be a month count when free-rent exists ("约3个月" → "3").
+    # N should be a bare month count when free-rent exists (strip 约/个月 wording).
     n_raw = str(out.get("N", "") or "").strip()
     m = re.fullmatch(r"(?:约|大約|大约)?\s*(\d+(?:\.\d+)?)\s*个?月?", n_raw)
     if m:
@@ -345,7 +336,7 @@ def _extract_from_vision(
         pages,
         path.name,
         core_letters,
-        page_note_extra=f"共 {n_pages} 页。这是第1遍：只抽核心台账字段。",
+        page_note_extra="本轮只抽核心台账字段。",
     )
     row1, dur1, raw1 = _extract_payload(client, msg1, path.name, letters=core_letters)
     row1 = _fixup_rate_fields(row1)
@@ -358,14 +349,14 @@ def _extract_from_vision(
 
     # Pass 2 — long free-text clauses (best-effort; may still be 未提及)
     long_letters = list(LONG_TEXT_COLUMNS)
-    # Fewer pages for clauses: front 3 + last is usually enough for 支付/违约/续租
+    # Fewer pages for clauses: front block + last is usually enough for 支付/违约/续租
     clause_pages = select_pages(n_pages, max_pages=min(5, max_pages))
     msg2 = _vision_messages(
         path,
         clause_pages,
         path.name,
         long_letters,
-        page_note_extra=f"共 {n_pages} 页。这是第2遍：只抽长文本条款字段。",
+        page_note_extra="本轮只抽长文本条款字段。",
     )
     row2, dur2, raw2 = _extract_payload(client, msg2, path.name, letters=long_letters)
     total_dur += dur2
