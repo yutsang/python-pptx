@@ -27,6 +27,14 @@ except ImportError:
 MAX_REQUEST_BODY_BYTES = 4_194_304
 SAFE_SINGLE_IMAGE_BYTES = 2_800_000
 SAFE_MULTI_IMAGE_BYTES = 450_000
+# Leave ~0.7MB for prompt/JSON envelope inside the 4MB gateway body cap.
+_MULTI_IMAGE_BODY_BUDGET = 3_400_000
+
+
+def multi_image_byte_budget(n_images: int) -> int:
+    """Per-image JPEG budget so n_images fit under the gateway body cap."""
+    n = max(1, int(n_images))
+    return max(180_000, min(SAFE_MULTI_IMAGE_BYTES, _MULTI_IMAGE_BODY_BUDGET // n))
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp"}
 _MIN_TEXT_CHARS_PER_PAGE = 20
@@ -81,18 +89,57 @@ def extract_pdf_text(pdf_path: Path, max_chars: int = 60000) -> str:
     return joined
 
 
-def select_pages(page_count: int, max_pages: int = 6) -> List[int]:
-    """1-indexed page picks: early commercial terms + last signature page(s)."""
+def select_pages(page_count: int, max_pages: int = 10) -> List[int]:
+    """1-indexed page picks for lease contracts.
+
+    Commercial terms (term/rent/deposit/free-rent) are rarely only on the
+    cover + signature page of a 30+ page scan. Bias heavily to the front,
+    sprinkle a few mid-doc pages, and always keep the last page.
+    """
     if page_count <= 0:
         return []
     if page_count <= max_pages:
         return list(range(1, page_count + 1))
-    # Prefer front matter; keep the final page for stamps/signatures.
-    front_n = max_pages - 1
-    pages = list(range(1, front_n + 1))
+
+    front_n = max(3, int(round(max_pages * 0.6)))
+    front_n = min(front_n, max_pages - 1, page_count)
+    pages: List[int] = list(range(1, front_n + 1))
+
+    remaining_slots = max_pages - len(pages) - 1  # reserve last page
+    if remaining_slots > 0 and page_count > front_n + 1:
+        start = front_n + 1
+        end = page_count - 1
+        if end >= start:
+            if remaining_slots == 1:
+                mids = [(start + end) // 2]
+            else:
+                step = (end - start) / (remaining_slots - 1)
+                mids = [int(round(start + i * step)) for i in range(remaining_slots)]
+            for m in mids:
+                if m not in pages and start <= m <= end:
+                    pages.append(m)
+
     if page_count not in pages:
         pages.append(page_count)
-    return pages
+
+    # Dedupe, preserve order; if over budget keep front + last.
+    seen = set()
+    out: List[int] = []
+    for p in pages:
+        if p in seen or p < 1 or p > page_count:
+            continue
+        seen.add(p)
+        out.append(p)
+    if len(out) > max_pages:
+        out = out[: max_pages - 1] + [page_count]
+        seen = set()
+        deduped: List[int] = []
+        for p in out:
+            if p not in seen:
+                seen.add(p)
+                deduped.append(p)
+        out = deduped
+    return out
 
 
 def _pil_to_jpeg_bytes(pil_image, quality: int, max_edge: int) -> bytes:
