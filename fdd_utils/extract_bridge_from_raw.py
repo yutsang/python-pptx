@@ -244,10 +244,18 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
                         best_label, best_overlap, best_size = tag_label, overlap, len(tag_cols)
                 label_text = best_label
 
-        if label_text is None:
-            # No tag-row signal (the common case -- 16 of 17 real entities
-            # have no tag row at all). Try the block's own revenue-row label
-            # text before giving up to a bare positional 'Phase N'.
+        if label_text is None and not tag_labels:
+            # Revenue-text derivation is ONLY safe when this SHEET has no tag
+            # rows at all (the common case -- 16 of 17 real entities). When
+            # tag rows DO exist (e.g. AB-NT1's 干仓/冷库) but this specific
+            # block didn't match one, that's a meaningful signal in itself --
+            # confirmed on real AB-NT1 data, block 2 is genuinely empty/
+            # untagged, and its revenue row's label text STILL says 'Dry'
+            # (static template text, unrelated to whether this block has
+            # real activity) -- using it there would silently relabel a
+            # deliberately-untagged empty block as if it were real. Only
+            # reach for this signal when the tag mechanism was never in play
+            # for this sheet to begin with.
             revenue_text = _label_text_for(labeled, revenue_row, anchor_col, "metric_revenue")
             label_text = _derive_type_label_from_revenue_text(revenue_text)
 
