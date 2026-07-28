@@ -3620,8 +3620,17 @@ def _reclassify_indent_rollup_children(
             and row["values"].get(projection_column_key) is not None
             and abs(row["values"][projection_column_key] - sibling_sum) <= max(1.0, abs(sibling_sum) * 0.005)
         ]
-        if len(candidates) != 1:
-            continue  # no match, or ambiguous between several -- don't guess
+        if not candidates:
+            continue  # no match at all -- don't guess
+        # Multiple candidate ROWS aren't necessarily ambiguous -- e.g. a
+        # "小计"/"合计" pair that coincidentally hold the identical value
+        # this period (real case: a subtotal-before-provision and a
+        # total-after-provision are numerically the same when the provision
+        # is 0 this period) both point to the same reclassification decision
+        # either way. Only bail when candidates disagree on the VALUE itself.
+        distinct_values = {round(row["values"][projection_column_key], 2) for row in candidates}
+        if len(distinct_values) != 1:
+            continue  # candidates genuinely disagree -- don't guess
         for sibling_idx in sibling_idxs:
             sibling_entry = row_entry_by_idx.get(sibling_idx)
             if sibling_entry is not None:

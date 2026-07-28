@@ -998,13 +998,22 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entit
                     sib_sum = sum(sib_vals)
                     print(f"      orphaned group (parent row_idx={parent_idx} {label_by_row_idx.get(parent_idx, '?')!r}): "
                           f"siblings={sib_info}  sum={sib_sum:,.2f}")
+                    if abs(sib_sum) < 1.0:
+                        print(f"          sum is ~0 -- production's zero-sum guard blocks this before candidate "
+                              f"matching even starts (a $0 'match' against any $0 total is not meaningful evidence).")
+                        continue
                     near = [
                         (row_idx, label, val) for row_idx, label, val in total_subtotal_candidates
                         if abs(val - sib_sum) <= max(1.0, abs(sib_sum) * 0.02)
                     ]
                     exact = [c for c in near if abs(c[2] - sib_sum) <= max(1.0, abs(sib_sum) * 0.005)]
-                    if exact:
-                        print(f"          {len(exact)} exact-tolerance total/subtotal candidate(s) -- should already be fixed; unexpected: {exact}")
+                    exact_distinct_values = {round(c[2], 2) for c in exact}
+                    if exact and len(exact_distinct_values) == 1:
+                        print(f"          {len(exact)} exact-tolerance candidate(s), all the SAME value -- "
+                              f"production now reclassifies this (fixed, see [[distinct-value dedup]]): {exact}")
+                    elif exact:
+                        print(f"          {len(exact)} exact-tolerance candidate(s) but with DIFFERENT values -- "
+                              f"genuinely ambiguous, production correctly leaves this alone: {exact}")
                     elif near:
                         print(f"          near-miss (within 2%, but outside the 0.5% production tolerance): {near}")
                     else:
