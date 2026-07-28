@@ -26,9 +26,10 @@ Usage:
     python -m fdd_utils.extract_bridge_from_raw "databooks/xx.xlsx" --tab AB-CD --validate
 """
 import argparse
+import re
 import sys
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -87,6 +88,56 @@ def _block_active_columns(ws_values, rows: "tuple[int | None, ...]", max_col: in
     return cols
 
 
+_REVENUE_SUFFIX_RE = re.compile(r"\s*(rental\s+)?revenue.*$", re.IGNORECASE)
+_GENERIC_TYPE_WORDS = {"gross", "total", "net", ""}
+
+
+def _derive_type_label_from_revenue_text(text: Optional[str]) -> Optional[str]:
+    """Real data (AB-KS1/AB-HK1/AB-SJ, byte-identical row layout) confirmed
+    a block's asset type isn't always in a separate tag row (see
+    find_tag_rows) -- it can be folded straight into the revenue row's own
+    label instead, e.g. 'Dry rental revenue post VAT （不含税）' or 'Cold
+    rental revenue post VAT'. Stripping the '(rental) revenue...' tail
+    (whatever comes after it, incl. VAT qualifiers / Chinese parentheticals)
+    leaves just the type word(s) -- generic string surgery, not a hardcoded
+    lookup of specific type names, so it isn't limited to 'Dry'/'Cold'.
+    Rejects the generic aggregate-row words ('Gross'/'Total'/'Net') that
+    would otherwise leak through if a block's revenue_row ever ends up
+    pointing at a subtotal line instead of a real per-type line."""
+    if not text:
+        return None
+    stripped = _REVENUE_SUFFIX_RE.sub("", text).strip()
+    if stripped.lower() in _GENERIC_TYPE_WORDS:
+        return None
+    return stripped or None
+
+
+def _label_text_for(labeled: Dict[int, List[Tuple[int, str, str]]], row: Optional[int],
+                     col: Optional[int], category: str) -> Optional[str]:
+    if row is None or col is None:
+        return None
+    for c, text, cat in labeled.get(row, []):
+        if c == col and cat == category:
+            return text
+    return None
+
+
+def _disambiguate_labels(blocks: List[PhaseBlock]) -> None:
+    """Same-type blocks are real (a portfolio can have two phases of the
+    SAME warehouse type, confirmed on AB-KS1: rows 17-23 and 26-32 both
+    derive to 'Dry') -- collapsing them to one identical label would make
+    two distinct bridge items indistinguishable in the chart/legend. Appends
+    a plain ' (2)', ' (3)', ... suffix to the 2nd+ occurrence of any label
+    shared by multiple blocks in this sheet, in-place, whatever the label's
+    origin (tag row or derived) -- purely mechanical disambiguation, not a
+    guess at the analyst's own phase-naming convention."""
+    seen: Dict[str, int] = {}
+    for block in blocks:
+        seen[block.label] = seen.get(block.label, 0) + 1
+        if seen[block.label] > 1:
+            block.label = f"{block.label} ({seen[block.label]})"
+
+
 def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
     """Groups labeled metric rows into phase blocks. A block starts at each
     'metric_occupancy' row (confirmed anchor: every real phase block in the
@@ -125,10 +176,18 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
     (including when counts matched) and this REGRESSED AB-CD: a broad tag
     can have a higher raw overlap COUNT against a block than the block's
     own correct, narrower tag simply by being broad, without the block-count-
-    mismatch guard this version adds. Falls back to 'Phase N' whenever no
-    tag rows exist at all, which is the common case, not the exception --
-    tag rows are an ad-hoc analyst convenience for writing formulas, not a
-    guaranteed structural signal."""
+    mismatch guard this version adds.
+
+    Tag rows are an ad-hoc analyst convenience for writing formulas, not a
+    guaranteed structural signal -- confirmed real data shows most entities
+    (16 of 17) have none at all. When no tag-row label is available for a
+    block, falls back to deriving the type name straight from the block's
+    own revenue-row label text (see _derive_type_label_from_revenue_text;
+    confirmed on AB-KS1/AB-HK1/AB-SJ, e.g. 'Dry rental revenue post VAT' ->
+    'Dry'), and only falls all the way back to a bare positional 'Phase N'
+    when neither signal is present. Same-type blocks (two phases of one
+    warehouse type) get a mechanical ' (2)' suffix rather than colliding on
+    an identical label -- see _disambiguate_labels."""
     labeled = find_labeled_rows(ws_values, max_scan_row)
     # {row: {category: column}} -- keeps the column each category was found
     # in, since a row can (rarely) have unrelated labels in other columns.
@@ -167,11 +226,11 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
         # labeled "revenue".
         revenue_row = revenue_rows[-1] if revenue_rows else None
 
-        label_text = f"Phase {i + 1}"
+        label_text = None
         if counts_match:
             # Original, real-data-validated behavior -- unchanged.
             label = tag_labels[i] if i < len(tag_labels) else {}
-            label_text = "/".join(label.keys()) if label else f"Phase {i + 1}"
+            label_text = "/".join(label.keys()) if label else None
         elif tag_label_cols:
             block_cols = _block_active_columns(ws_values, (area_row, revenue_row), max_col)
             if block_cols:
@@ -183,11 +242,21 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
                     if (best_label is None or overlap > best_overlap
                             or (overlap == best_overlap and len(tag_cols) < best_size)):
                         best_label, best_overlap, best_size = tag_label, overlap, len(tag_cols)
-                if best_label is not None:
-                    label_text = best_label
+                label_text = best_label
+
+        if label_text is None:
+            # No tag-row signal (the common case -- 16 of 17 real entities
+            # have no tag row at all). Try the block's own revenue-row label
+            # text before giving up to a bare positional 'Phase N'.
+            revenue_text = _label_text_for(labeled, revenue_row, anchor_col, "metric_revenue")
+            label_text = _derive_type_label_from_revenue_text(revenue_text)
+
+        if label_text is None:
+            label_text = f"Phase {i + 1}"
 
         blocks.append(PhaseBlock(label=label_text, occupancy_row=start, area_row=area_row,
                                   rent_row=rent_row, revenue_row=revenue_row))
+    _disambiguate_labels(blocks)
     return blocks
 
 
