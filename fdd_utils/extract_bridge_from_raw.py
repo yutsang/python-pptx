@@ -33,7 +33,7 @@ from typing import Dict, List, Optional
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from .inspect_ab_tabs_structure import find_labeled_rows, _is_short_text
+from .inspect_ab_tabs_structure import find_labeled_rows, find_tag_rows, _is_short_text
 
 
 @dataclass
@@ -105,19 +105,30 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
     ALL phases. Restricting every row match to the occupancy row's own
     column fixes this without needing a tighter row-range guess.
 
-    Labeling a block: an earlier version assigned the i-th tag row to the
-    i-th occupancy block by pure list position -- confirmed WRONG on real
-    data. A tab had a full-width tag ('干仓', all 42 columns) and a sparse
-    tag ('冷库', only 5 columns where that phase genuinely has data); the
-    positional assumption assigned '冷库' to the WRONG (always-empty)
-    occupancy block, while the block the sparse tag was actually meant for
-    fell through to a generic 'Phase N' name. Now matches each block to
-    whichever tag's columns overlap the MOST with that block's own real
-    (non-zero) data columns, preferring the more specific (fewer total
-    columns) tag on a tie -- a block with zero real activity anywhere gets
-    no tag match at all (honest 'Phase N', not a guessed label). Falls back
-    to 'Phase N' with no match attempt whenever no tag rows exist at all,
-    which is the common case, not the exception."""
+    Labeling a block: assigning the i-th tag row to the i-th occupancy block
+    by pure list position is correct WHEN the tag count and block count
+    match (confirmed against real AB-CD data: 3 tag rows, 3 occupancy
+    blocks, positional assignment reproduces the real bridge tab's own
+    numbers exactly) -- so that exact original behavior is kept, byte-for-
+    byte, whenever counts match. It is NOT reliable when they don't: a real
+    tab had 2 tag rows for 3 occupancy blocks (a full-width '干仓' tag plus
+    a sparse 5-column '冷库' tag), and positional assignment is undefined/
+    guaranteed-wrong in that case regardless of method -- there is no
+    "original correct behavior" to preserve there. ONLY in that mismatched-
+    count case, this falls back to column-overlap matching (each block
+    matched to whichever tag's columns overlap the most with that block's
+    own real non-zero data, preferring the more specific/smaller tag on a
+    tie) -- confirmed to correctly recover '冷库' for the block the sparse
+    tag was actually meant for (verified against the real data: its one
+    non-zero figure exactly matched the entity's own manual reference).
+    An earlier version tried column-overlap matching UNCONDITIONALLY
+    (including when counts matched) and this REGRESSED AB-CD: a broad tag
+    can have a higher raw overlap COUNT against a block than the block's
+    own correct, narrower tag simply by being broad, without the block-count-
+    mismatch guard this version adds. Falls back to 'Phase N' whenever no
+    tag rows exist at all, which is the common case, not the exception --
+    tag rows are an ad-hoc analyst convenience for writing formulas, not a
+    guaranteed structural signal."""
     labeled = find_labeled_rows(ws_values, max_scan_row)
     # {row: {category: column}} -- keeps the column each category was found
     # in, since a row can (rarely) have unrelated labels in other columns.
@@ -131,7 +142,10 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
         return []
 
     max_col = ws_values.max_column
-    tag_label_cols = _tag_label_columns(ws_values)
+    tag_rows_hits = find_tag_rows(ws_values)
+    tag_labels = [labels for _, labels in tag_rows_hits]
+    counts_match = len(tag_labels) == len(occ_hits)
+    tag_label_cols = _tag_label_columns(ws_values) if not counts_match else {}
 
     blocks: List[PhaseBlock] = []
     for i, (start, anchor_col) in enumerate(occ_hits):
@@ -154,7 +168,11 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
         revenue_row = revenue_rows[-1] if revenue_rows else None
 
         label_text = f"Phase {i + 1}"
-        if tag_label_cols:
+        if counts_match:
+            # Original, real-data-validated behavior -- unchanged.
+            label = tag_labels[i] if i < len(tag_labels) else {}
+            label_text = "/".join(label.keys()) if label else f"Phase {i + 1}"
+        elif tag_label_cols:
             block_cols = _block_active_columns(ws_values, (area_row, revenue_row), max_col)
             if block_cols:
                 best_label, best_overlap, best_size = None, 0, None
