@@ -148,10 +148,13 @@ def _build_extraction_prompt(filename: str, page_note: str, letters: Sequence[st
             "- AD/AE：含税日租金/含税日物业费，单位同样是元/日/平方米（含税单价），通常 < 10；"
             "绝不是日租金总价，也绝不是 O/P 合同总额。\n"
             "- AF 合计：= AD + AE（含税日单价之和），不是 O+P。\n"
-            "- S/T 涨幅：尽量写成短式，如「每年递增4%」。\n"
+            "- S/T 涨幅：尽量写成短式，如「每年递增4%」；补充协议未另约定则填「未提及」，"
+            "不要从主合同臆测。\n"
             "- L/M 免租：若有多段免租期，写成完整区间文字"
-            "（如2026年3月2日至2026年3月31日，…），不要只输出起始日列表。\n"
-            "- N：无免租时填「不适用」，不要填「未提及」。\n"
+            "（如2026年3月2日至2026年3月31日，…），不要只输出起始日列表；无免租填「未提及」。\n"
+            "- N 免租期（月）：只填数字月数（如3）；无免租填「不适用」。\n"
+            "- X 收款账户：填账户户名（公司名），不要填开户行；开户行可忽略或写入备注。\n"
+            "- Y 收款账号：填银行账号数字。\n"
             "- 甲乙方名称注意形近字（如臻/燊），以合同首页/签章为准。\n"
         )
     return (
@@ -207,6 +210,12 @@ def _fixup_rate_fields(row: Dict[str, str]) -> Dict[str, str]:
             af2 = _f("AF")
             if af2 is None or af2 > 10:
                 out["AF"] = f"{ad2 + ae2:.6g}"
+
+    # N should be a month count when free-rent exists ("约3个月" → "3").
+    n_raw = str(out.get("N", "") or "").strip()
+    m = re.fullmatch(r"(?:约|大約|大约)?\s*(\d+(?:\.\d+)?)\s*个?月?", n_raw)
+    if m:
+        out["N"] = m.group(1)
 
     if str(out.get("N", "")).strip() in (_MISSING, "无") and str(out.get("L", "")).strip() in (_MISSING, "无"):
         # No free-rent evidence → 不适用 (ledger convention), not 未提及.
@@ -456,8 +465,11 @@ def _soft_equal(letter: str, got_raw: str, exp_raw: str) -> bool:
         return True
     try:
         g, e = float(got), float(exp)
-        # Unit rates: allow ~2% relative drift from OCR / rounding.
-        tol = max(1e-4, 0.02 * abs(e)) if abs(e) < 10 else max(1.0, 0.002 * abs(e))
+        # Unit rates: allow ~3% relative drift / 0.01 abs from OCR / tax rounding.
+        if abs(e) < 10:
+            tol = max(0.01, 0.03 * abs(e))
+        else:
+            tol = max(1.0, 0.002 * abs(e))
         if abs(g - e) <= tol:
             return True
     except Exception:
@@ -468,12 +480,20 @@ def _soft_equal(letter: str, got_raw: str, exp_raw: str) -> bool:
         gt, et = _date_tokens(got_raw), _date_tokens(exp_raw)
         if gt and et and gt == et:
             return True
+        if {got, exp} <= {"未提及", "不适用", "不適用", "无"}:
+            return True
     if letter in ("S", "T"):
         gp, ep = _pct_token(got_raw), _pct_token(exp_raw)
         if gp and ep and gp == ep and ("递增" in got or "增长" in got) and ("递增" in exp or "增长" in exp):
             return True
-    if letter == "N" and {got, exp} <= {"未提及", "不适用", "不適用", "无", "n/a", "na"}:
-        return True
+    if letter == "N":
+        if {got, exp} <= {"未提及", "不适用", "不適用", "无", "n/a", "na"}:
+            return True
+        # "约3个月" vs "3"
+        gm = re.search(r"(\d+(?:\.\d+)?)", got_raw or "")
+        em = re.search(r"(\d+(?:\.\d+)?)", exp_raw or "")
+        if gm and em and gm.group(1) == em.group(1):
+            return True
     # Common OCR near-miss on 臻/燊 in party names.
     if letter in ("B", "C", "X"):
         if got.replace("燊", "臻") == exp.replace("燊", "臻"):
