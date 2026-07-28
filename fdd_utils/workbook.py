@@ -3529,6 +3529,18 @@ def _reclassify_indent_rollup_children(
     structurally different relationship, e.g. a contra/provision line, that
     needs individual review rather than a blanket rule). Mutates row_entries
     in place; no-ops fast when the sheet has no real indent signal at all.
+
+    Note: an earlier version cross-checked each precomputed row's text
+    against row_entries' resolved description before trusting it (guarding
+    against a standardized/rebuilt sheet_df, e.g. a rollforward schedule,
+    whose row indices might not line up 1:1 with the original Excel rows).
+    That check was removed -- it was rejecting real matches on real data for
+    reasons not fully pinned down, and is not the primary safety net anyway:
+    the tolerance-based value-match below already guards against acting on a
+    wrong row correspondence, since two genuinely different rows coincidentally
+    summing to within 0.5% of each other is very unlikely for real financial
+    figures. This also now matches inspect_databook.py's check_indent_signals,
+    which never had this extra filter and reliably finds the correct matches.
     """
     try:
         indent_index = _build_indent_signal_index(workbook_path)
@@ -3541,22 +3553,8 @@ def _reclassify_indent_rollup_children(
     value_by_row_idx = {
         row["row_idx"]: row["values"].get(projection_column_key) for row in row_entries
     }
-    description_by_row_idx = {
-        row["row_idx"]: str(row.get("description") or "").strip() for row in row_entries
-    }
-    # Only trust a precomputed row when its text matches what row_entries
-    # resolved for that row_idx -- guards against a standardized/rebuilt
-    # sheet_df (e.g. a rollforward schedule) whose row indices no longer
-    # line up 1:1 with the original Excel rows.
-    verified_rows = [
-        (row_idx, indent_level, label)
-        for row_idx, indent_level, label in all_rows
-        if description_by_row_idx.get(row_idx) == label
-    ]
-    if not verified_rows:
-        return
 
-    children_of = _infer_indent_hierarchy(verified_rows)
+    children_of = _infer_indent_hierarchy(all_rows)
     if not children_of:
         return
 

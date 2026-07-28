@@ -113,6 +113,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from fdd_utils.workbook import (
+    _build_indent_signal_index,
     _cell_text,
     _coerce_numeric,
     _date_row_index,
@@ -767,6 +768,7 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entit
     rollup_confirmed_tabs: List[str] = []
     rollup_mismatch_tabs: List[str] = []
     no_parent_value_tabs: List[str] = []
+    deep_trace_done = False
     for tab_name in sorted(dfs.keys()):
         df = dfs.get(tab_name)
         if df is None or df.empty:
@@ -905,6 +907,55 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entit
                     child_val = value_by_row_idx.get(child_row_idx)
                     print(f"          child Excel row {child_row_idx + 1} {child_label!r}: "
                           f"value={child_val if child_val is None else f'{child_val:,.2f}'}")
+
+            # DEEP TRACE (fires once, for the first tab where this LOCAL,
+            # unfiltered rollup check found a real match yet the row is
+            # STILL flagged as un-reclassified above) -- calls
+            # _build_indent_signal_index directly (the exact same precomputed
+            # data _reclassify_indent_rollup_children reads in production)
+            # and prints it side-by-side with this function's OWN local
+            # all_rows for the identical sheet, so any divergence between
+            # the two -- which one is missing rows, wrong indent levels, or
+            # wrong labels -- is directly visible instead of guessed at.
+            if not deep_trace_done and matches > 0 and flagged_rows:
+                deep_trace_done = True
+                print(f"\n  --- DEEP TRACE for '{tab_name}' (first tab with a real match still unreclassified) ---")
+                try:
+                    prod_index_rows = _build_indent_signal_index(databook_path).get(sheet_name)
+                except Exception as exc:
+                    prod_index_rows = None
+                    print(f"      _build_indent_signal_index raised: {exc}")
+                print(f"      LOCAL  all_rows ({len(all_rows)} rows): {all_rows[:8]}")
+                if prod_index_rows is None:
+                    print(f"      PROD   _build_indent_signal_index(...).get({sheet_name!r}) -> None (sheet not in index at all)")
+                else:
+                    print(f"      PROD   indent_index rows ({len(prod_index_rows)} rows): {prod_index_rows[:8]}")
+                    if prod_index_rows != all_rows:
+                        print(f"      ⚠️  MISMATCH between LOCAL and PROD row lists for the same sheet -- this is the bug.")
+                    else:
+                        print(f"      ✅ LOCAL and PROD row lists are IDENTICAL -- if rows are still not "
+                              f"reclassified after this, the bug is downstream in "
+                              f"_reclassify_indent_rollup_children's consumption (value_by_row_idx / "
+                              f"projection_column_key / _infer_indent_hierarchy), not in the precomputed index itself.")
+                # Also show what row_entries actually has for the row_idxs
+                # involved -- row_type in particular shows whether
+                # reclassification to 'breakdown' actually happened on this
+                # fresh call, and description shows whether row_idx maps to
+                # the same text row_entries resolved (a text mismatch here
+                # would mean row_idx correspondence itself is off, e.g. a
+                # standardized/rebuilt sheet_df).
+                fresh_row_entries = normalized.get("row_entries") or []
+                fresh_desc_by_idx = {row["row_idx"]: row.get("description") for row in fresh_row_entries}
+                fresh_type_by_idx = {row["row_idx"]: row.get("row_type") for row in fresh_row_entries}
+                sample_row_idxs = sorted({r for r, _, _ in all_rows[:8]})
+                for r_idx in sample_row_idxs:
+                    raw_label = label_by_row_idx.get(r_idx, "?")
+                    resolved_desc = fresh_desc_by_idx.get(r_idx, "<row_idx NOT IN row_entries>")
+                    resolved_type = fresh_type_by_idx.get(r_idx, "?")
+                    text_match = "MATCH" if resolved_desc == raw_label else "MISMATCH"
+                    print(f"      row_idx={r_idx}: raw_label={raw_label!r}  vs  row_entries.description="
+                          f"{resolved_desc!r}  [{text_match}]  row_type={resolved_type!r}")
+
             if checked and matches == checked:
                 rollup_confirmed_tabs.append(tab_name)
             elif mismatches:
