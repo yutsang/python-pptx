@@ -373,6 +373,29 @@ _AB_CD_EXPECTED = {
 }
 
 
+def _trace_year_cells(ws_values, block: PhaseBlock, year: int, cols: List[int], days_row: int) -> None:
+    """Prints the EXACT Excel cell references (row + column letters)
+    contributing to one year's revenue/area/days aggregates for one phase
+    -- so a number that looks wrong can be checked directly against the
+    source file without a separate tool. Area is averaged over only the
+    columns where it's >0 (per extract_annual_series' own convention), so
+    those are called out separately from the full year's column range."""
+    col_letters = [get_column_letter(c) for c in cols]
+    print(f"      revenue: row {block.revenue_row}, cols {col_letters[0]}:{col_letters[-1]} "
+          f"({len(cols)} cols) -- SUM of all, incl. 0/blank")
+    if block.area_row:
+        nonzero_cols = [c for c in cols if isinstance(ws_values.cell(row=block.area_row, column=c).value, (int, float))
+                         and ws_values.cell(row=block.area_row, column=c).value > 0]
+        if nonzero_cols:
+            nz_letters = [get_column_letter(c) for c in nonzero_cols]
+            print(f"      area: row {block.area_row}, cols {','.join(nz_letters)} "
+                  f"({len(nonzero_cols)}/{len(cols)} cols have area>0) -- AVERAGE of only those")
+        else:
+            print(f"      area: row {block.area_row}, cols {col_letters[0]}:{col_letters[-1]} -- none >0, area=0")
+    print(f"      days: row {days_row}, cols {col_letters[0]}:{col_letters[-1]} -- SUM from this "
+          f"phase's own start column onward (see _phase_start_col)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", help="path to the databook .xlsx")
@@ -380,6 +403,10 @@ def main() -> int:
     ap.add_argument("--validate", action="store_true",
                      help="cross-check output against the real 成都-量价桥图 bridge tab's own "
                           "known values (only meaningful for --tab AB-CD)")
+    ap.add_argument("--trace-cells", action="store_true",
+                     help="also print the exact Excel row+column references behind every year's "
+                          "revenue/area/days aggregate, so a number that looks wrong can be checked "
+                          "directly against the source file")
     args = ap.parse_args()
 
     print(f"Loading {args.path!r}...")
@@ -404,6 +431,8 @@ def main() -> int:
         return 1
     print(f"Found {len(blocks)} phase block(s).\n")
 
+    year_cols = _year_col_map(ws, year_row, ws.max_column) if args.trace_cells else {}
+
     all_ok = True
     for block in blocks:
         print(f"--- {block.label} (occupancy row {block.occupancy_row}, area row {block.area_row}, "
@@ -412,6 +441,8 @@ def main() -> int:
         for year, vals in series.items():
             print(f"  {year}: revenue={vals['revenue_k']:,.2f}k  area={vals['area']:,.2f}  "
                   f"days={vals['days']:.0f}  unit_rent={vals['unit_rent']:.4f}")
+            if args.trace_cells and year in year_cols:
+                _trace_year_cells(ws, block, year, year_cols[year], days_row)
 
         if args.validate:
             expected = _AB_CD_EXPECTED.get(block.label)
