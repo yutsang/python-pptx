@@ -3541,6 +3541,21 @@ def _reclassify_indent_rollup_children(
     summing to within 0.5% of each other is very unlikely for real financial
     figures. This also now matches inspect_databook.py's check_indent_signals,
     which never had this extra filter and reliably finds the correct matches.
+
+    Second pass (added after real-file evidence): _infer_indent_hierarchy
+    only looks BACKWARD for a parent (nearest preceding row with strictly
+    lower indent) -- correct for a "total row, then its indented
+    breakdown" layout, but some real supporting schedules instead list
+    components first and put the actual total row LAST (or the true
+    parent is a title/header row outside row_entries entirely, so no
+    value is ever found there). A top-level sibling group orphaned this
+    way (real values, but their assigned "parent" has no value in
+    row_entries) is retried against every row_entries row already
+    classified "total"/"subtotal" by _row_type()'s existing, position-
+    independent textual heuristics -- matched by value, from anywhere in
+    the sheet, not just nearby. Only reclassifies when exactly one such
+    row's value matches the group's sum, so an ambiguous or coincidental
+    match is left alone rather than guessed at.
     """
     try:
         indent_index = _build_indent_signal_index(workbook_path)
@@ -3559,6 +3574,7 @@ def _reclassify_indent_rollup_children(
         return
 
     row_entry_by_idx = {row["row_idx"]: row for row in row_entries}
+    matched_row_idxs: set = set()
     for parent_row_idx, child_row_idxs in children_of.items():
         parent_val = value_by_row_idx.get(parent_row_idx)
         if parent_val is None:
@@ -3573,6 +3589,43 @@ def _reclassify_indent_rollup_children(
             child_entry = row_entry_by_idx.get(child_row_idx)
             if child_entry is not None:
                 child_entry["row_type"] = "breakdown"
+                matched_row_idxs.add(child_row_idx)
+
+    # Second pass: retry orphaned top-level sibling groups (see docstring)
+    # against any already-classified total/subtotal row, by value, from
+    # anywhere in the sheet.
+    parent_of_row_idx: Dict[int, int] = {
+        child_row_idx: parent_row_idx
+        for parent_row_idx, child_row_idxs in children_of.items()
+        for child_row_idx in child_row_idxs
+    }
+    siblings_by_parent: Dict[int, List[int]] = {}
+    for child_row_idx, parent_row_idx in parent_of_row_idx.items():
+        if child_row_idx in matched_row_idxs:
+            continue  # already successfully rolled up in the first pass
+        if value_by_row_idx.get(child_row_idx) is None:
+            continue  # nothing to sum
+        siblings_by_parent.setdefault(parent_row_idx, []).append(child_row_idx)
+
+    total_or_subtotal_rows = [row for row in row_entries if row.get("row_type") in ("total", "subtotal")]
+    for parent_row_idx, sibling_idxs in siblings_by_parent.items():
+        if value_by_row_idx.get(parent_row_idx) is not None:
+            continue  # first pass already handled (or correctly declined) this group
+        sibling_sum = sum(value_by_row_idx[idx] for idx in sibling_idxs)
+        if abs(sibling_sum) < 1.0:
+            continue
+        candidates = [
+            row for row in total_or_subtotal_rows
+            if row["row_idx"] not in sibling_idxs
+            and row["values"].get(projection_column_key) is not None
+            and abs(row["values"][projection_column_key] - sibling_sum) <= max(1.0, abs(sibling_sum) * 0.005)
+        ]
+        if len(candidates) != 1:
+            continue  # no match, or ambiguous between several -- don't guess
+        for sibling_idx in sibling_idxs:
+            sibling_entry = row_entry_by_idx.get(sibling_idx)
+            if sibling_entry is not None:
+                sibling_entry["row_type"] = "breakdown"
 
 
 def _fallback_description(description: str, title: str, last_label: Optional[str]) -> str:
