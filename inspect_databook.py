@@ -105,6 +105,7 @@ import re
 import sys
 import threading
 import time
+from itertools import combinations
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1021,6 +1022,47 @@ def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entit
                               f"from elsewhere, a non-additive relationship (e.g. VAT input/output net), or genuinely "
                               f"needs individual review. All total/subtotal rows in this tab: "
                               f"{[(l, v) for _, l, v in total_subtotal_candidates]}")
+                        # SUBSET AMBIGUITY CHECK (diagnostic-only, never
+                        # reclassifies anything -- production stays
+                        # conservative here per explicit user confirmation).
+                        # The full group's sum didn't match anything above,
+                        # but a PROPER SUBSET of the group might -- and if
+                        # MULTIPLE overlapping subsets each match some
+                        # candidate, that's a real ambiguity (no structural
+                        # signal, e.g. indent, to say which subset is the
+                        # true rollup relationship), worth surfacing
+                        # explicitly rather than leaving it in the generic
+                        # "no candidate" bucket above, which undersells that
+                        # there in fact WAS a match, just not a safe one to
+                        # act on automatically. Bounded to small groups since
+                        # this is 2^n-1 subsets.
+                        if 2 <= len(sib_idxs) <= 8:
+                            subset_hits = []
+                            for size in range(1, len(sib_idxs)):
+                                for subset in combinations(sib_idxs, size):
+                                    subset_sum = sum(value_by_row_idx[i] for i in subset)
+                                    if abs(subset_sum) < 1.0:
+                                        continue
+                                    subset_matches = [
+                                        (row_idx, label, val) for row_idx, label, val in total_subtotal_candidates
+                                        if abs(val - subset_sum) <= max(1.0, abs(subset_sum) * 0.005)
+                                    ]
+                                    if subset_matches:
+                                        subset_labels = [label_by_row_idx.get(i, "?") for i in subset]
+                                        subset_hits.append((subset_labels, subset_sum, subset_matches))
+                            if len(subset_hits) >= 2:
+                                print(f"          ⚠️  SUBSET AMBIGUITY: {len(subset_hits)} different subset(s) of "
+                                      f"this group each independently match a total/subtotal candidate -- no "
+                                      f"structural signal (e.g. indent) to pick between them, correctly left for "
+                                      f"individual review rather than auto-guessing which one is real:")
+                                for subset_labels, subset_sum, subset_matches in subset_hits:
+                                    print(f"              {subset_labels} sum={subset_sum:,.2f} matches {subset_matches}")
+                            elif subset_hits:
+                                subset_labels, subset_sum, subset_matches = subset_hits[0]
+                                print(f"          note: a PROPER SUBSET {subset_labels} (sum={subset_sum:,.2f}) "
+                                      f"matches {subset_matches} on its own, even though the full group doesn't -- "
+                                      f"not auto-applied since production only tries the full sibling group, not "
+                                      f"subsets, but worth a manual look.")
 
             if checked and matches == checked:
                 rollup_confirmed_tabs.append(tab_name)
