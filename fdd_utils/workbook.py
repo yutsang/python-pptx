@@ -4331,9 +4331,22 @@ def normalize_financial_schedule(
     row_types_by_description = {
         row["description"]: row["row_type"] for row in row_entries
     }
+    # A row's projection column (the single period downstream filtering
+    # normally looks at) can be genuinely 0 while an EARLIER period had real,
+    # non-zero activity -- e.g. an account that was active last year but has
+    # gone quiet this period. filter_zero_value_rows only ever sees that one
+    # projection value, so without this it would silently drop the row and
+    # lose the earlier-period history entirely. Computed here while the full
+    # multi-period values dict is still available (row["values"] spans every
+    # detected column, not just the chosen projection one).
+    any_period_nonzero_by_description = {
+        row["description"]: any(v is not None and abs(v) >= 0.01 for v in row["values"].values())
+        for row in row_entries
+    }
     common_attrs = {
         "integrity": shared_attrs,
         "row_types_by_description": row_types_by_description,
+        "any_period_nonzero_by_description": any_period_nonzero_by_description,
         "supporting_notes": supporting_notes,
         "normalized_columns": columns,
         "source_multiplier": multiplier,
@@ -6051,8 +6064,25 @@ def filter_zero_value_rows(df: pd.DataFrame, tolerance: float = 0.01) -> pd.Data
     """
     Remove rows where the numeric value column is zero/insignificant or missing.
 
+    A row is only dropped when its projection-period value AND every other
+    period (per any_period_nonzero_by_description, set by
+    normalize_financial_schedule from the full multi-period row values) are
+    all ~0 -- an account that went quiet this period but had real activity
+    earlier is kept, not silently skipped just because the single column
+    this function can see happens to be 0.
+
     Args:
-        df: DataFrame with description in the first column and value in the second column
+        df: DataFrame with description in the first column and a value column
+            somewhere after it -- NOT necessarily immediately after: the real
+            caller (build_dataframe_variants_from_normalized_results) passes
+            projection_df, whose second column is INTERNAL_ROW_KEY
+            ("__source_row_idx", a bookkeeping row index), with the actual
+            value column third. Blindly taking columns[1] silently checked
+            that row-index column instead -- always a small positive int, so
+            every row passed the "non-zero" test regardless of its real
+            value, making this filter a no-op for genuinely-zero rows in
+            production. Now explicitly skips INTERNAL_ROW_KEY when picking
+            the value column.
         tolerance: Absolute value threshold treated as zero
 
     Returns:
@@ -6063,13 +6093,23 @@ def filter_zero_value_rows(df: pd.DataFrame, tolerance: float = 0.01) -> pd.Data
 
     filtered_df = df.copy()
     desc_col = filtered_df.columns[0]
-    value_col = filtered_df.columns[1]
+    value_col = next((c for c in filtered_df.columns[1:] if c != INTERNAL_ROW_KEY), None)
+    if value_col is None:
+        return filtered_df
     numeric_values = pd.to_numeric(filtered_df[value_col], errors='coerce')
     row_types_by_description = filtered_df.attrs.get("row_types_by_description", {})
+    any_period_nonzero_by_description = filtered_df.attrs.get("any_period_nonzero_by_description", {})
     preserved_zero_rows = filtered_df[desc_col].astype(str).map(
         lambda value: row_types_by_description.get(str(value), "") in {"subtotal", "total"}
     )
-    keep_mask = preserved_zero_rows | (numeric_values.notna() & (numeric_values.abs() >= tolerance))
+    had_activity_some_period = filtered_df[desc_col].astype(str).map(
+        lambda value: bool(any_period_nonzero_by_description.get(str(value), False))
+    )
+    keep_mask = (
+        preserved_zero_rows
+        | had_activity_some_period
+        | (numeric_values.notna() & (numeric_values.abs() >= tolerance))
+    )
     return filtered_df.loc[keep_mask].reset_index(drop=True)
 
 
