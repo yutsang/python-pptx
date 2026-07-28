@@ -40,11 +40,13 @@ Usage:
         # factor values (the "answer key")
 """
 import argparse
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
 from openpyxl import load_workbook, Workbook
+from openpyxl.styles import Font
 
 from .extract_bridge_from_raw import (
     find_phase_blocks, extract_annual_series, extract_ltm_series,
@@ -177,6 +179,60 @@ def dump_transition_detail(blocks: List[PhaseBlock], series_a: List[Dict[str, fl
         items = decompose_transition(block.label, sa, sb)
         for it in items:
             print(f"      -> {it.label}: {it.value:,.2f}k")
+
+
+_INVALID_SHEET_CHARS_RE = re.compile(r"[:\\/?*\[\]]")
+
+
+def _safe_sheet_name(name: str, existing: set) -> str:
+    """Excel sheet names: <=31 chars, no : \\ / ? * [ ], not blank, unique
+    in the workbook -- AB- tab names are already short and clean, but this
+    guards against the rare tab whose name would collide or overflow once
+    the output is one-sheet-per-entity instead of one shared sheet."""
+    cleaned = _INVALID_SHEET_CHARS_RE.sub("_", name).strip() or "Sheet"
+    base = cleaned[:31]
+    candidate = base
+    n = 2
+    while candidate in existing:
+        suffix = f"_{n}"
+        candidate = base[:31 - len(suffix)] + suffix
+        n += 1
+    existing.add(candidate)
+    return candidate
+
+
+def _write_breakdown_table(ws, blocks: List[PhaseBlock], res: "BridgeResult", start_row: int,
+                            start_col: int = 1) -> int:
+    """Writes the same per-phase raw revenue/area/days/unit_rent detail
+    dump_transition_detail prints to the console (both sides of the
+    transition, plus the 3 resulting factor deltas) as an actual table in
+    the deliverable, directly above that transition's chart -- so a number
+    in the chart can be traced back to its raw inputs without a separate
+    --dump-detail run."""
+    bold = Font(bold=True)
+    r = start_row
+    ws.cell(row=r, column=start_col, value=f"{res.title} -- 明細 Breakdown").font = bold
+    r += 1
+    label_a = f"{res.year_a}"
+    label_b = f"LTM {res.year_b}-{res.latest_month:02d}" if res.is_ltm else f"{res.year_b}"
+    headers = ["Phase", "Period", "Revenue (k)", "Area", "Days", "Unit Rent"]
+    for c, h in enumerate(headers):
+        ws.cell(row=r, column=start_col + c, value=h).font = bold
+    r += 1
+    for block, sa, sb in zip(blocks, res.series_a, res.series_b):
+        for period_label, s in ((label_a, sa), (label_b, sb)):
+            ws.cell(row=r, column=start_col, value=block.label)
+            ws.cell(row=r, column=start_col + 1, value=period_label)
+            ws.cell(row=r, column=start_col + 2, value=round(s["revenue_k"], 2))
+            ws.cell(row=r, column=start_col + 3, value=round(s["area"], 2))
+            ws.cell(row=r, column=start_col + 4, value=round(s["days"]))
+            ws.cell(row=r, column=start_col + 5, value=round(s["unit_rent"], 4))
+            r += 1
+        for it in decompose_transition(block.label, sa, sb):
+            ws.cell(row=r, column=start_col, value=f"  -> {it.label}")
+            ws.cell(row=r, column=start_col + 2, value=round(it.value, 2))
+            r += 1
+    return r + 1
 
 
 @dataclass
@@ -318,10 +374,11 @@ def main() -> int:
                           "(e.g. if monthly data isn't available to construct one)")
     ap.add_argument("--out", default="bridge_waterfall_batch_output.pptx", help="output pptx path")
     ap.add_argument("--excel-out", default=None,
-                     help="also write a standalone .xlsx with a native Excel waterfall chart per "
-                          "transition (same 'Bridge_Output' sheet/stacking/title shape the Streamlit "
-                          "Bridge Lab produces, including the '來源 (Source)' traceability column) -- "
-                          "lets you inspect the real deliverable shape without going through the UI")
+                     help="also write a standalone .xlsx, ONE SHEET PER ENTITY (named after its AB- tab) "
+                          "so you can jump straight to whichever entity you want -- each sheet stacks a "
+                          "raw revenue/area/days/unit_rent breakdown table (same detail --dump-detail "
+                          "prints) directly above that transition's native Excel waterfall chart "
+                          "(including the '來源 (Source)' traceability column)")
     args = ap.parse_args()
 
     print(f"Loading {args.path!r}...")
@@ -339,12 +396,11 @@ def main() -> int:
     prs.slide_height = Inches(7.5)
     blank_layout = prs.slide_layouts[6]
 
-    excel_wb = excel_ws = None
-    excel_next_row = 1
+    excel_wb = None
+    used_sheet_names = set()
     if args.excel_out:
         excel_wb = Workbook()
         excel_wb.remove(excel_wb.active)
-        excel_ws = excel_wb.create_sheet("Bridge_Output")
 
     slides_added = 0
     all_ok = True
@@ -353,6 +409,11 @@ def main() -> int:
         blocks, results = build_bridges_for_ab_tab(ws, tab, skip_partial=args.skip_partial, log=print)
         if blocks is None:
             continue  # already logged by the shared builder
+
+        excel_ws = None
+        excel_next_row = 1
+        if excel_wb is not None and results:
+            excel_ws = excel_wb.create_sheet(_safe_sheet_name(tab, used_sheet_names))
 
         for res in results:
             bridge = res.bridge
@@ -379,15 +440,20 @@ def main() -> int:
             slides_added += 1
 
             if excel_ws is not None:
+                excel_next_row = _write_breakdown_table(excel_ws, blocks, res, start_row=excel_next_row)
                 excel_next_row = build_excel_waterfall_chart(excel_ws, bridge, res.title, start_row=excel_next_row)
 
     prs.save(args.out)
     print(f"\nSaved {slides_added} chart(s) to {args.out!r}.")
     if excel_wb is not None:
-        excel_wb.save(args.excel_out)
-        print(f"Saved {slides_added} chart(s) to {args.excel_out!r} "
-              f"(same 'Bridge_Output' sheet shape as the Streamlit Bridge Lab download -- "
-              f"check the '來源 (Source)' column).")
+        if not excel_wb.sheetnames:
+            print(f"⚠️ No entity produced any bridge transition -- skipping {args.excel_out!r} "
+                  f"(nothing to write).")
+        else:
+            excel_wb.save(args.excel_out)
+            print(f"Saved {slides_added} chart(s) across {len(excel_wb.sheetnames)} entity sheet(s) to "
+                  f"{args.excel_out!r} -- one sheet per AB- tab, each with a breakdown table above its "
+                  f"chart(s), check the '來源 (Source)' column.")
     if args.validate:
         print("✅ Factor decomposition matches AB-CD's own real values." if all_ok
               else "❌ MISMATCH -- do not trust this decomposition yet.")
