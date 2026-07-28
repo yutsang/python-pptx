@@ -5,14 +5,17 @@ Extraction alone is not proof — this re-opens each source PDF, sends page
 images to Workbench GPT-5.5, and asks whether each core field value is
 supported by what is visible on the pages (with a short quote as evidence).
 
+With --repair, contradicted fields are re-asked against the PDF and written
+back into the extracted xlsx (LLM fix, not manual Excel edit).
+
 Usage:
     python verify_contracts.py contracts/成都
-        # auto-finds 合同汇总_extracted.xlsx under that folder
-    python verify_contracts.py contracts/成都 --extracted contracts/成都/合同汇总_extracted.xlsx
+    python verify_contracts.py contracts/成都 --repair
+        # verify then LLM-repair contradict fields into the xlsx
+    python verify_contracts.py contracts/成都 --repair --from-json contracts/成都/合同汇总_extracted_verify.json
+        # skip re-verify; repair from an existing verify json
     python verify_contracts.py contracts/成都 --sample 3
-        # randomly verify 3 rows (cheaper)
     python verify_contracts.py contracts/成都 --file "RQBJ-Income-0004"
-        # only rows whose filename contains this substring
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from openpyxl import load_workbook
+from openpyxl.utils import column_index_from_string
 
 from contract_template_schema import CORE_VALUE_COLUMNS, TEMPLATE_COLUMNS, column_map
 from contract_vision import (
@@ -224,6 +228,9 @@ def _print_report(report: Dict[str, Any]) -> None:
     if report.get("skipped"):
         print(f"  skipped: {report.get('reason')}")
         return
+    if report.get("error"):
+        print(f"  ❌ {report.get('error')}")
+        return
     counts = report.get("counts") or {}
     print(
         f"  pages={report.get('pages')}  "
@@ -251,6 +258,128 @@ def _print_report(report: Dict[str, Any]) -> None:
             print(f"      note:  {note}")
 
 
+def _contradict_letters(report: Dict[str, Any]) -> List[str]:
+    fields = report.get("fields") or {}
+    if not isinstance(fields, dict):
+        return []
+    out = []
+    for letter in CORE_VALUE_COLUMNS:
+        item = fields.get(letter) or fields.get(letter.lower())
+        if isinstance(item, dict) and str(item.get("verdict", "")).strip().lower() == "contradict":
+            out.append(letter)
+    return out
+
+
+def _repair_prompt(
+    filename: str,
+    row: Dict[str, str],
+    report: Dict[str, Any],
+    letters: Sequence[str],
+) -> str:
+    cmap = column_map()
+    fields = report.get("fields") or {}
+    lines = []
+    for letter in letters:
+        item = fields.get(letter) or fields.get(letter.lower()) or {}
+        old = row.get(letter, "")
+        quote = item.get("quote", "") if isinstance(item, dict) else ""
+        note = item.get("note", "") if isinstance(item, dict) else ""
+        lines.append(
+            f'- {letter} ({cmap.get(letter, letter)})\n'
+            f'  previous_wrong_value: {json.dumps(old, ensure_ascii=False)}\n'
+            f'  verifier_quote: {json.dumps(quote, ensure_ascii=False)}\n'
+            f'  verifier_note: {json.dumps(note, ensure_ascii=False)}'
+        )
+    issues = "\n".join(lines)
+    return (
+        "你是租赁合同纠错助手。核对方确认下列字段与合同页面矛盾。\n"
+        "请只根据提供的合同页面，输出纠正后的值。\n"
+        f"源文件名: {filename}\n\n"
+        f"需要纠正的字段:\n{issues}\n\n"
+        "规则:\n"
+        "- 只输出一个 JSON 对象，key 仅为需要纠正的列字母。\n"
+        "- 值必须来自页面；可参考 verifier_quote，但要以页面为准。\n"
+        "- 不要 markdown，不要解释，不要输出未列出的字段。\n"
+        "- 若页面确实看不到，该字段填「未提及」。\n"
+        "- 乙方必须是页面明确的「乙方」主体；承继方/丙方不要写成乙方"
+        "（可若需要纠正的字段包含备注类再另说，否则忽略）。\n"
+        "- 租赁单元用库区/楼层短名，不要编造原文没有的字。\n"
+    )
+
+
+def repair_one(
+    client: AIClient,
+    pdf_path: Path,
+    row: Dict[str, str],
+    report: Dict[str, Any],
+    *,
+    max_pages: int,
+) -> Dict[str, str]:
+    letters = _contradict_letters(report)
+    if not letters:
+        return {}
+
+    prompt = _repair_prompt(row.get("A", pdf_path.name), row, report, letters)
+    if pdf_path.suffix.lower() == ".pdf" and pdf_is_digital(pdf_path):
+        text = extract_pdf_text(pdf_path)
+        user_prompt: Any = prompt + f"\n\n===== PDF TEXT =====\n{text}\n"
+    else:
+        n_pages = pdf_page_count(pdf_path) if pdf_path.suffix.lower() == ".pdf" else 1
+        pages = select_pages(n_pages, max_pages=max_pages) if pdf_path.suffix.lower() == ".pdf" else [1]
+        budget = multi_image_byte_budget(len(pages))
+        urls = build_page_data_urls(pdf_path, pages, max_bytes_each=budget)
+        user_prompt = [{"type": "text", "text": prompt}]
+        for page_num, url in urls:
+            user_prompt.append({"type": "text", "text": f"[page {page_num}]"})
+            user_prompt.append({"type": "image_url", "image_url": {"url": url}})
+
+    result = client.get_response(
+        user_prompt=user_prompt,
+        system_prompt="Return only a JSON object of corrected lease fields. No markdown.",
+        max_tokens=_VERIFY_MAX_TOKENS,
+        reasoning_effort=_VERIFY_REASONING,
+    )
+    content = str(result.get("content") or "").strip()
+    if not content:
+        raise ValueError("empty repair response")
+    data = _parse_json_object(content)
+    fixes: Dict[str, str] = {}
+    for key, value in data.items():
+        letter = str(key).strip().upper()
+        if letter not in letters:
+            continue
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            fixes[letter] = text
+    return fixes
+
+
+def _apply_fixes_to_xlsx(xlsx: Path, fixes_by_file: Dict[str, Dict[str, str]]) -> int:
+    """Write repaired cells back into the extracted workbook. Returns cells changed."""
+    wb = load_workbook(xlsx)
+    ws = wb[wb.sheetnames[0]]
+    changed = 0
+    for r in range(1, (ws.max_row or 0) + 1):
+        filename = ws.cell(row=r, column=1).value
+        if not filename:
+            continue
+        name = str(filename).strip()
+        fixes = fixes_by_file.get(name)
+        if not fixes:
+            continue
+        for letter, value in fixes.items():
+            col = column_index_from_string(letter)
+            old = ws.cell(row=r, column=col).value
+            if str(old or "").strip() == value:
+                continue
+            ws.cell(row=r, column=col, value=value)
+            changed += 1
+    wb.save(xlsx)
+    return changed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Verify extracted contract rows against actual PDF page content (GPT-5.5 vision).",
@@ -262,6 +391,21 @@ def main() -> int:
     ap.add_argument("--sample", type=int, default=0, help="verify only N random rows (0 = all)")
     ap.add_argument("--file", default=None, help="only rows whose filename contains this substring")
     ap.add_argument("--seed", type=int, default=0, help="random seed for --sample")
+    ap.add_argument(
+        "--repair",
+        action="store_true",
+        help="after verify (or from --from-json), LLM-repair contradict fields into the xlsx",
+    )
+    ap.add_argument(
+        "--from-json",
+        default=None,
+        help="existing *_verify.json — skip verify and repair from this report",
+    )
+    ap.add_argument(
+        "--reverify",
+        action="store_true",
+        help="with --repair, run verify again on repaired rows only",
+    )
     args = ap.parse_args()
 
     root = Path(args.path)
@@ -278,6 +422,7 @@ def main() -> int:
     if not rows:
         print(f"❌ No data rows in {extracted}")
         return 1
+    rows_by_name = {r["A"]: r for r in rows}
 
     if args.file:
         rows = [r for r in rows if args.file in r.get("A", "")]
@@ -285,14 +430,15 @@ def main() -> int:
             print(f"❌ No rows matching --file {args.file!r}")
             return 1
 
-    if args.sample and args.sample < len(rows):
+    if args.sample and args.sample < len(rows) and not args.from_json:
         rng = random.Random(args.seed)
         rows = rng.sample(rows, args.sample)
 
     print(f"Model: GPT-5.5 (workbench)  |  verify against PDF pages")
     print(f"Extracted: {extracted}")
-    print(f"Rows to verify: {len(rows)}")
     print(f"PDF root: {root}")
+    if args.repair:
+        print("Repair: ON (contradict fields will be LLM-corrected into the xlsx)")
     print()
 
     try:
@@ -304,48 +450,136 @@ def main() -> int:
     reports: List[Dict[str, Any]] = []
     total = {"supported": 0, "contradict": 0, "not_on_pages": 0, "missing_ok": 0, "other": 0}
     fail_n = 0
+    out_json = extracted.with_name(extracted.stem + "_verify.json")
 
-    for i, row in enumerate(rows, 1):
-        name = row.get("A", "")
-        print(f"[{i}/{len(rows)}] locating {name} ...")
-        pdf = _find_pdf(root, name)
-        if not pdf:
-            fail_n += 1
-            report = {"file": name, "error": "pdf not found under path"}
-            reports.append(report)
-            print(f"  ❌ pdf not found")
-            continue
-        try:
-            report = verify_one(
-                client,
-                pdf,
-                row,
-                max_pages=args.max_pages,
-                letters=CORE_VALUE_COLUMNS,
-            )
-            reports.append(report)
+    if args.from_json:
+        reports = json.loads(Path(args.from_json).read_text(encoding="utf-8"))
+        if not isinstance(reports, list):
+            print("❌ --from-json must be a list of verify reports")
+            return 1
+        print(f"Loaded {len(reports)} report(s) from {args.from_json}")
+        for report in reports:
             _print_report(report)
             for k, v in (report.get("counts") or {}).items():
                 total[k] = total.get(k, 0) + int(v)
-        except Exception as exc:
-            fail_n += 1
-            reports.append({"file": name, "pdf": str(pdf), "error": str(exc)})
-            print(f"  ❌ {exc}")
-        print()
+            print()
+    else:
+        print(f"Rows to verify: {len(rows)}")
+        for i, row in enumerate(rows, 1):
+            name = row.get("A", "")
+            print(f"[{i}/{len(rows)}] locating {name} ...")
+            pdf = _find_pdf(root, name)
+            if not pdf:
+                fail_n += 1
+                report = {"file": name, "error": "pdf not found under path"}
+                reports.append(report)
+                print("  ❌ pdf not found")
+                continue
+            try:
+                report = verify_one(
+                    client,
+                    pdf,
+                    row,
+                    max_pages=args.max_pages,
+                    letters=CORE_VALUE_COLUMNS,
+                )
+                reports.append(report)
+                _print_report(report)
+                for k, v in (report.get("counts") or {}).items():
+                    total[k] = total.get(k, 0) + int(v)
+            except Exception as exc:
+                fail_n += 1
+                reports.append({"file": name, "pdf": str(pdf), "error": str(exc)})
+                print(f"  ❌ {exc}")
+            print()
 
-    out_json = extracted.with_name(extracted.stem + "_verify.json")
-    out_json.write_text(json.dumps(reports, ensure_ascii=False, indent=2), encoding="utf-8")
+        out_json.write_text(json.dumps(reports, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("=" * 78)
+        print(
+            f"VERIFY TOTAL: supported={total.get('supported', 0)}  "
+            f"contradict={total.get('contradict', 0)}  "
+            f"not_on_pages={total.get('not_on_pages', 0)}  "
+            f"errors={fail_n}"
+        )
+        print(f"Wrote {out_json}")
+        print("=" * 78)
 
-    print("=" * 78)
-    print(
-        f"VERIFY TOTAL: supported={total.get('supported', 0)}  "
-        f"contradict={total.get('contradict', 0)}  "
-        f"not_on_pages={total.get('not_on_pages', 0)}  "
-        f"errors={fail_n}"
-    )
-    print(f"Wrote {out_json}")
-    print("Paste this summary (or the json) back to review contradictions against the real contracts.")
-    print("=" * 78)
+    if args.repair:
+        print("\n--- REPAIR (LLM) ---")
+        fixes_by_file: Dict[str, Dict[str, str]] = {}
+        repair_fail = 0
+        targets = [r for r in reports if _contradict_letters(r)]
+        if args.file:
+            targets = [r for r in targets if args.file in str(r.get("file") or "")]
+        if not targets:
+            print("No contradict fields to repair.")
+        for i, report in enumerate(targets, 1):
+            name = str(report.get("file") or "")
+            row = rows_by_name.get(name)
+            pdf = _find_pdf(root, name)
+            print(f"[repair {i}/{len(targets)}] {name}  fields={_contradict_letters(report)}")
+            if not row or not pdf:
+                repair_fail += 1
+                print("  ❌ missing row or pdf")
+                continue
+            try:
+                fixes = repair_one(client, pdf, row, report, max_pages=args.max_pages)
+                if not fixes:
+                    print("  ⚠️ model returned no fixes")
+                    continue
+                fixes_by_file[name] = fixes
+                for letter, value in fixes.items():
+                    print(f"  {letter}: {row.get(letter, '')!r}  →  {value!r}")
+                # keep in-memory row updated for optional reverify
+                row.update(fixes)
+            except Exception as exc:
+                repair_fail += 1
+                print(f"  ❌ {exc}")
+
+        if fixes_by_file:
+            n_cells = _apply_fixes_to_xlsx(extracted, fixes_by_file)
+            repair_json = extracted.with_name(extracted.stem + "_repair.json")
+            repair_json.write_text(json.dumps(fixes_by_file, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"\nWrote {n_cells} cell(s) into {extracted}")
+            print(f"Repair log: {repair_json}")
+        else:
+            print("\nNo cells updated.")
+
+        if args.reverify and fixes_by_file:
+            print("\n--- RE-VERIFY repaired rows ---")
+            total = {"supported": 0, "contradict": 0, "not_on_pages": 0, "missing_ok": 0, "other": 0}
+            new_reports = []
+            for name in fixes_by_file:
+                row = rows_by_name[name]
+                pdf = _find_pdf(root, name)
+                assert pdf is not None
+                report = verify_one(
+                    client, pdf, row, max_pages=args.max_pages, letters=CORE_VALUE_COLUMNS
+                )
+                new_reports.append(report)
+                _print_report(report)
+                for k, v in (report.get("counts") or {}).items():
+                    total[k] = total.get(k, 0) + int(v)
+            # merge back into full reports by filename
+            by_name = {str(r.get("file")): r for r in reports}
+            for r in new_reports:
+                by_name[str(r.get("file"))] = r
+            reports = list(by_name.values())
+            out_json.write_text(json.dumps(reports, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(
+                f"RE-VERIFY TOTAL: supported={total.get('supported', 0)}  "
+                f"contradict={total.get('contradict', 0)}  "
+                f"not_on_pages={total.get('not_on_pages', 0)}"
+            )
+            print(f"Updated {out_json}")
+
+        if repair_fail:
+            return 2
+        # recount contradict from latest reports
+        left = sum(len(_contradict_letters(r)) for r in reports)
+        if left:
+            return 3
+        return 0
 
     if fail_n:
         return 2
@@ -356,3 +590,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
