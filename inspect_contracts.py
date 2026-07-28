@@ -78,6 +78,10 @@ def find_template(root: Path) -> Optional[Path]:
     sit alongside or above the per-contract subfolders)."""
     candidates = []
     for path in root.rglob("*.xlsx"):
+        # Excel lock/temp files look like "~$合同汇总模板.xlsx" while the
+        # real workbook is open — never treat those as the template.
+        if path.name.startswith("~$"):
+            continue
         name = path.stem
         if any(hint.lower() in name.lower() for hint in _TEMPLATE_NAME_HINTS):
             candidates.append(path)

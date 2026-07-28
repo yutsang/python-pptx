@@ -39,6 +39,13 @@ from inspect_contracts import find_template
 _DEFAULT_MODEL = "workbench"
 _MISSING = "未提及"
 _COL_LETTERS = [letter for letter, _ in TEMPLATE_COLUMNS]
+# GPT-5.5 spends max_completion_tokens on hidden reasoning first. Contract
+# vision + full A-AF JSON is much heavier than the FDD one-liner smoke test,
+# so Generator's 1400 (floored to workbench min_max_tokens=3000) is often
+# entirely consumed → empty content with HTTP 200. Override per call.
+_EXTRACT_MAX_TOKENS = 16000
+_EXTRACT_REASONING = "low"
+_RETRY_MAX_TOKENS = 32000
 
 
 def _collect_pdfs(path: Path) -> List[Path]:
@@ -138,13 +145,42 @@ def _build_extraction_prompt(filename: str, page_note: str) -> str:
         f"1. 只输出一个 JSON 对象，key 必须是下列 Excel 列字母；不要 markdown，不要解释。\n"
         f"2. 页面上看不到的字段填 \"{_MISSING}\"；备注没有内容时填 \"无\"。\n"
         "3. 日期尽量用 YYYY-MM-DD；数字不要加千分位。\n"
-        "4. 长文本字段（支付方式/提前终止/违约条款/续租条款/特殊条款）按合同原文摘录关键句，"
-        "不要编造；若页面未覆盖则填 "
-        f"\"{_MISSING}\"。\n"
-        "5. 不要输出甲方/乙方以外的额外说明文字。\n\n"
+        "4. 长文本字段 V/W/Z/AA/AB：最多各摘录 120 字关键句；不要整段照抄；"
+        f"页面未覆盖则填 \"{_MISSING}\"。\n"
+        "5. 不要输出 JSON 以外的任何文字。\n\n"
         "目标字段 (列字母: 含义):\n"
         f"{_schema_prompt_block()}\n"
     )
+
+
+def _call_model(client: AIClient, user_prompt: Any, *, max_tokens: int) -> Dict[str, Any]:
+    return client.get_response(
+        user_prompt=user_prompt,
+        system_prompt="Return only a single JSON object for the lease ledger fields. No markdown.",
+        max_tokens=max_tokens,
+        reasoning_effort=_EXTRACT_REASONING,
+    )
+
+
+def _extract_payload(client: AIClient, user_prompt: Any, filename: str) -> Tuple[Dict[str, str], float]:
+    result = _call_model(client, user_prompt, max_tokens=_EXTRACT_MAX_TOKENS)
+    content = str(result.get("content") or "").strip()
+    duration = float(result.get("duration") or 0)
+    if not content:
+        print(
+            f"  ⟳ empty response "
+            f"(completion_tokens={result.get('completion_tokens')}, "
+            f"{duration:.1f}s) — retry with max_tokens={_RETRY_MAX_TOKENS}"
+        )
+        result = _call_model(client, user_prompt, max_tokens=_RETRY_MAX_TOKENS)
+        content = str(result.get("content") or "").strip()
+        duration = float(result.get("duration") or 0)
+    if not content:
+        raise ValueError(
+            f"empty model response after retry "
+            f"(completion_tokens={result.get('completion_tokens')}, duration={duration}s)"
+        )
+    return _normalize_row(_parse_json_object(content), filename), duration
 
 
 def _extract_from_digital(client: AIClient, path: Path) -> Tuple[Dict[str, str], float]:
@@ -153,17 +189,11 @@ def _extract_from_digital(client: AIClient, path: Path) -> Tuple[Dict[str, str],
         path.name,
         "以下是可直接抽取的电子版 PDF 全文（或截断后的首尾）。",
     ) + f"\n\n===== PDF TEXT =====\n{text}\n"
-    result = client.get_response(
-        user_prompt=prompt,
-        system_prompt="Return only valid JSON for the lease ledger fields.",
-    )
-    row = _normalize_row(_parse_json_object(str(result.get("content") or "")), path.name)
-    return row, float(result.get("duration") or 0)
+    return _extract_payload(client, prompt, path.name)
 
 
 def _extract_from_vision(client: AIClient, path: Path, max_pages: int) -> Tuple[Dict[str, str], float]:
     if path.suffix.lower() != ".pdf":
-        # raw image: single-page path via build helper not used; treat as 1-page PDF-like
         from contract_vision import image_file_to_jpeg_bytes, to_data_url
 
         raw = image_file_to_jpeg_bytes(path, max_bytes=SAFE_MULTI_IMAGE_BYTES)
@@ -171,12 +201,7 @@ def _extract_from_vision(client: AIClient, path: Path, max_pages: int) -> Tuple[
             {"type": "text", "text": _build_extraction_prompt(path.name, "单页图片合同。")},
             {"type": "image_url", "image_url": {"url": to_data_url(raw)}},
         ]
-        result = client.get_response(
-            user_prompt=content,
-            system_prompt="Return only valid JSON for the lease ledger fields.",
-        )
-        row = _normalize_row(_parse_json_object(str(result.get("content") or "")), path.name)
-        return row, float(result.get("duration") or 0)
+        return _extract_payload(client, content, path.name)
 
     n_pages = pdf_page_count(path)
     pages = select_pages(n_pages, max_pages=max_pages)
@@ -191,12 +216,7 @@ def _extract_from_vision(client: AIClient, path: Path, max_pages: int) -> Tuple[
         content.append({"type": "text", "text": f"[page {page_num}]"})
         content.append({"type": "image_url", "image_url": {"url": url}})
 
-    result = client.get_response(
-        user_prompt=content,
-        system_prompt="Return only valid JSON for the lease ledger fields.",
-    )
-    row = _normalize_row(_parse_json_object(str(result.get("content") or "")), path.name)
-    return row, float(result.get("duration") or 0)
+    return _extract_payload(client, content, path.name)
 
 
 def extract_one(client: AIClient, path: Path, max_pages: int) -> Tuple[Dict[str, str], float, str]:
@@ -316,7 +336,7 @@ def main() -> int:
     ap.add_argument("path", help="contracts root, one project folder, or a single PDF")
     ap.add_argument("--template", default=None, help="path to 合同汇总模板.xlsx (auto-detected if omitted)")
     ap.add_argument("--out", default=None, help="output xlsx path (default: <path>/合同汇总_extracted.xlsx)")
-    ap.add_argument("--max-pages", type=int, default=6, help="max vision pages per PDF (default: 6)")
+    ap.add_argument("--max-pages", type=int, default=4, help="max vision pages per PDF (default: 4)")
     ap.add_argument(
         "--validate",
         action="store_true",
@@ -346,19 +366,24 @@ def main() -> int:
 
     out_path = Path(args.out) if args.out else (root / "合同汇总_extracted.xlsx")
 
-    print(f"Model: GPT-5.5 (workbench)")
+    print(f"Model: GPT-5.5 (workbench)  |  max_tokens={_EXTRACT_MAX_TOKENS}  |  reasoning={_EXTRACT_REASONING}")
     print(f"Files: {len(files)} under {path}")
     print(f"Vision pages/PDF: up to {args.max_pages}")
     print(f"Output: {out_path}")
     if template_path:
         print(f"Template: {template_path}")
+        if template_path.name.startswith("~$"):
+            print("❌ Template looks like an Excel lock file (~$...). Close the workbook and retry.")
+            return 1
     elif args.validate:
         print("❌ --validate needs a local template with gold rows")
+        print("   Tip: close Excel if 合同汇总模板.xlsx is open (avoids ~$ lock files).")
         return 1
     print()
 
     try:
-        client = AIClient(model_type=_DEFAULT_MODEL, agent_name="subagent_1", language="Chi")
+        # Auditor defaults (low reasoning) — still overridden per-call below.
+        client = AIClient(model_type=_DEFAULT_MODEL, agent_name="subagent_2", language="Chi")
     except Exception as exc:
         print(f"❌ Could not initialize AIClient: {exc}")
         return 1
