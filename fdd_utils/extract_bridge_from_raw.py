@@ -33,7 +33,7 @@ from typing import Dict, List, Optional
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from .inspect_ab_tabs_structure import find_labeled_rows, find_tag_rows
+from .inspect_ab_tabs_structure import find_labeled_rows, _is_short_text
 
 
 @dataclass
@@ -43,6 +43,48 @@ class PhaseBlock:
     area_row: Optional[int] = None
     rent_row: Optional[int] = None
     revenue_row: Optional[int] = None  # the LAST (post-VAT / excl-VAT) revenue row in the block
+
+
+def _tag_label_columns(ws, min_repeat: int = 4, max_scan_row: int = 20) -> Dict[str, set]:
+    """{label: {columns where this exact short-text label appears}}, across
+    every qualifying tag row (see find_tag_rows) combined. Tag rows are a
+    convenience an analyst adds purely to make their OWN Excel formulas
+    easier to write (e.g. a SUMIFS criteria row) -- confirmed (real user
+    feedback) that most raw AB- tabs don't have one at all, and even when
+    present it isn't guaranteed to be one full-width row per phase: real
+    data showed a tab with a full-width 'dry warehouse' tag (42 columns)
+    alongside a SPARSE, PARTIAL 'cold storage' tag covering only 5 specific
+    columns. Returns column sets so a tag can be matched to whichever
+    occupancy block's own real data actually overlaps those columns."""
+    label_cols: Dict[str, set] = {}
+    for row in ws.iter_rows(min_row=1, max_row=min(max_scan_row, ws.max_row)):
+        counts: Dict[str, int] = {}
+        cols_by_label: Dict[str, List[int]] = {}
+        for cell in row:
+            if _is_short_text(cell.value):
+                label = cell.value.strip()
+                counts[label] = counts.get(label, 0) + 1
+                cols_by_label.setdefault(label, []).append(cell.column)
+        for label, n in counts.items():
+            if n >= min_repeat:
+                label_cols.setdefault(label, set()).update(cols_by_label[label])
+    return label_cols
+
+
+def _block_active_columns(ws_values, rows: "tuple[int | None, ...]", max_col: int) -> set:
+    """Columns where ANY of the given rows (a block's own area/revenue rows)
+    has a genuine non-zero value -- i.e. where this specific phase actually
+    has real activity, used to match it against tag columns (or against
+    another block) by overlap instead of by list position."""
+    cols: set = set()
+    for r in rows:
+        if r is None:
+            continue
+        for c in range(1, max_col + 1):
+            v = ws_values.cell(row=r, column=c).value
+            if isinstance(v, (int, float)) and v != 0:
+                cols.add(c)
+    return cols
 
 
 def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
@@ -61,7 +103,21 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
     picked up 'Total Rental Revenue' as if it were the last phase's own
     revenue, producing a number that was actually the grand total across
     ALL phases. Restricting every row match to the occupancy row's own
-    column fixes this without needing a tighter row-range guess."""
+    column fixes this without needing a tighter row-range guess.
+
+    Labeling a block: an earlier version assigned the i-th tag row to the
+    i-th occupancy block by pure list position -- confirmed WRONG on real
+    data. A tab had a full-width tag ('干仓', all 42 columns) and a sparse
+    tag ('冷库', only 5 columns where that phase genuinely has data); the
+    positional assumption assigned '冷库' to the WRONG (always-empty)
+    occupancy block, while the block the sparse tag was actually meant for
+    fell through to a generic 'Phase N' name. Now matches each block to
+    whichever tag's columns overlap the MOST with that block's own real
+    (non-zero) data columns, preferring the more specific (fewer total
+    columns) tag on a tie -- a block with zero real activity anywhere gets
+    no tag match at all (honest 'Phase N', not a guessed label). Falls back
+    to 'Phase N' with no match attempt whenever no tag rows exist at all,
+    which is the common case, not the exception."""
     labeled = find_labeled_rows(ws_values, max_scan_row)
     # {row: {category: column}} -- keeps the column each category was found
     # in, since a row can (rarely) have unrelated labels in other columns.
@@ -74,8 +130,8 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
     if not occ_hits:
         return []
 
-    tag_rows_hits = find_tag_rows(ws_values)
-    tag_labels = [labels for _, labels in tag_rows_hits]
+    max_col = ws_values.max_column
+    tag_label_cols = _tag_label_columns(ws_values)
 
     blocks: List[PhaseBlock] = []
     for i, (start, anchor_col) in enumerate(occ_hits):
@@ -96,8 +152,22 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
         # VAT'), not row 22 ('...含税'/incl-VAT), even though both are
         # labeled "revenue".
         revenue_row = revenue_rows[-1] if revenue_rows else None
-        label = tag_labels[i] if i < len(tag_labels) else {}
-        label_text = "/".join(label.keys()) if label else f"Phase {i + 1}"
+
+        label_text = f"Phase {i + 1}"
+        if tag_label_cols:
+            block_cols = _block_active_columns(ws_values, (area_row, revenue_row), max_col)
+            if block_cols:
+                best_label, best_overlap, best_size = None, 0, None
+                for tag_label, tag_cols in tag_label_cols.items():
+                    overlap = len(tag_cols & block_cols)
+                    if overlap == 0:
+                        continue
+                    if (best_label is None or overlap > best_overlap
+                            or (overlap == best_overlap and len(tag_cols) < best_size)):
+                        best_label, best_overlap, best_size = tag_label, overlap, len(tag_cols)
+                if best_label is not None:
+                    label_text = best_label
+
         blocks.append(PhaseBlock(label=label_text, occupancy_row=start, area_row=area_row,
                                   rent_row=rent_row, revenue_row=revenue_row))
     return blocks
