@@ -268,6 +268,45 @@ def find_phase_blocks(ws_values, max_scan_row: int = 60) -> List[PhaseBlock]:
     return blocks
 
 
+def find_aggregate_revenue_rows(ws_values, blocks: List[PhaseBlock], max_scan_row: int = 60) -> List[Tuple[int, str]]:
+    """Returns [(row, label_text), ...] for every metric_revenue-tagged row
+    BELOW the last phase block -- i.e. a candidate grand-total row (e.g.
+    'Total Rental Revenue(post VAT)', 'Total net revenue') that the
+    analyst's own sheet already computes independently. 16 of 17 real
+    entities have no pre-built '<entity>-量价桥图' answer-key tab to
+    --validate this extractor's revenue/area/days row selection against --
+    but EVERY entity has these aggregate rows, so summing one across a
+    year's columns and comparing to this extractor's own
+    sum-of-every-phase's-revenue for that year is a second, independent
+    check that doesn't require a human to hand-verify each entity (see
+    cross_check_year in generate_bridge_waterfall_batch.py). Returns
+    multiple candidates (there are usually several: incl-VAT, post-VAT,
+    net-of-other-revenue, ...) rather than guessing which one label means
+    'the right total' -- the caller reports the best-matching one."""
+    if not blocks:
+        return []
+    last_block_end = max((b.revenue_row or b.occupancy_row or 0) for b in blocks)
+    labeled = find_labeled_rows(ws_values, max_scan_row)
+    out: List[Tuple[int, str]] = []
+    for r in sorted(labeled):
+        if r <= last_block_end:
+            continue
+        for _col, text, cat in labeled[r]:
+            if cat == "metric_revenue":
+                out.append((r, text))
+                break
+    return out
+
+
+def sum_row_over_cols(ws_values, row: int, cols: List[int]) -> float:
+    total = 0.0
+    for c in cols:
+        v = ws_values.cell(row=row, column=c).value
+        if isinstance(v, (int, float)):
+            total += v
+    return total
+
+
 def _year_col_map(ws_values, year_row: int, max_col: int) -> Dict[int, List[int]]:
     """{year: [columns]} -- from the label-anchored Year row's own values,
     not a guessed column range."""

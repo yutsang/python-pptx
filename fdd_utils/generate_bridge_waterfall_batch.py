@@ -51,6 +51,7 @@ from openpyxl.styles import Font
 from .extract_bridge_from_raw import (
     find_phase_blocks, extract_annual_series, extract_ltm_series,
     find_month_row, format_ltm_label, PhaseBlock,
+    find_aggregate_revenue_rows, sum_row_over_cols, _year_col_map,
 )
 from .inspect_ab_tabs_structure import find_labeled_rows
 from .bridge_chart_prototype import BridgeItem, BridgeBlock, build_waterfall_chart, build_excel_waterfall_chart
@@ -100,6 +101,44 @@ def find_year_days_rows(ws_values) -> Dict[str, Optional[int]]:
         if days_row is None and "period_days" in cats:
             days_row = r
     return {"year_row": year_row, "days_row": days_row}
+
+
+def cross_check_entity(ws_values, tab_name: str, blocks: List[PhaseBlock], year_row: int, days_row: int,
+                        log: Callable[[str], None] = print) -> None:
+    """Independent sanity check for the 16 entities that have no pre-built
+    '<entity>-量价桥图' answer-key tab to run --validate against: sums this
+    extractor's own per-phase revenue for each year and compares it to
+    every candidate grand-total row the analyst's OWN sheet already
+    computes (find_aggregate_revenue_rows) -- a number this tool never
+    derived itself. A close match is real (if indirect) evidence the row/
+    column selection generalized correctly to this entity; a mismatch
+    means it likely picked up the wrong rows for this entity's layout."""
+    agg_rows = find_aggregate_revenue_rows(ws_values, blocks)
+    if not agg_rows:
+        log(f"  ⚠️ {tab_name}: no aggregate/grand-total revenue row found below the phase blocks -- "
+            f"nothing to cross-check against")
+        return
+    years = _year_col_map(ws_values, year_row, ws_values.max_column)
+    all_series = {b.label: extract_annual_series(ws_values, b, year_row, days_row) for b in blocks}
+    for year, cols in sorted(years.items()):
+        my_total = sum(all_series[b.label].get(year, {}).get("revenue_k", 0.0) * 1000 for b in blocks)
+        if abs(my_total) < 1.0:
+            continue  # no real data this year, nothing meaningful to compare
+        scored = []
+        for row, label in agg_rows:
+            agg_total = sum_row_over_cols(ws_values, row, cols)
+            pct = ((agg_total - my_total) / agg_total) if abs(agg_total) > 1.0 else None
+            scored.append((abs(pct) if pct is not None else float("inf"), row, label, agg_total, pct))
+        scored.sort(key=lambda t: t[0])
+        _, row, label, agg_total, pct = scored[0]
+        ok = pct is not None and abs(pct) < 0.01
+        pct_s = f"{pct * 100:+.2f}%" if pct is not None else "n/a"
+        log(f"  {'✅' if ok else '⚠️'} {tab_name} {year}: my sum-of-phases={my_total:,.1f} vs row {row} "
+            f"{label!r}={agg_total:,.1f} ({pct_s})")
+        if not ok:
+            for _, row2, label2, agg_total2, pct2 in scored[1:3]:
+                pct2_s = f"{pct2 * 100:+.2f}%" if pct2 is not None else "n/a"
+                log(f"      other candidate: row {row2} {label2!r}={agg_total2:,.1f} ({pct2_s})")
 
 
 def _assemble_bridge(blocks: List[PhaseBlock], series_a: List[Dict[str, float]], series_b: List[Dict[str, float]],
@@ -372,6 +411,12 @@ def main() -> int:
     ap.add_argument("--skip-partial", action="store_true",
                      help="skip the tail transition entirely instead of building an LTM window for it "
                           "(e.g. if monthly data isn't available to construct one)")
+    ap.add_argument("--cross-check", action="store_true",
+                     help="for every entity (not just AB-CD, which has an answer-key tab to run "
+                          "--validate against), sum this extractor's own per-phase revenue per year "
+                          "and compare it to the entity's own grand-total revenue row(s) -- an "
+                          "independent sanity check using a number this tool never derived itself, "
+                          "for the 16 entities with no answer key to validate against")
     ap.add_argument("--out", default="bridge_waterfall_batch_output.pptx", help="output pptx path")
     ap.add_argument("--excel-out", default=None,
                      help="also write a standalone .xlsx, ONE SHEET PER ENTITY (named after its AB- tab) "
@@ -409,6 +454,11 @@ def main() -> int:
         blocks, results = build_bridges_for_ab_tab(ws, tab, skip_partial=args.skip_partial, log=print)
         if blocks is None:
             continue  # already logged by the shared builder
+
+        if args.cross_check:
+            yd = find_year_days_rows(ws)
+            if yd["year_row"] and yd["days_row"]:
+                cross_check_entity(ws, tab, blocks, yd["year_row"], yd["days_row"], log=print)
 
         excel_ws = None
         excel_next_row = 1
