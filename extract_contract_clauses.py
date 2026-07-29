@@ -268,20 +268,26 @@ def extract_utility(client: AIClient, pdf: Path, max_pages: int) -> List[str]:
 
 
 def extract_payment(client: AIClient, pdf: Path, max_pages: int) -> List[List[str]]:
+    is_digital = pdf.suffix.lower() == ".pdf" and pdf_is_digital(pdf)
     rows = _payment_rows(_call_json(client, _doc_input_hires(_payment_prompt(pdf.name), pdf, max_pages)))
-    if rows or pdf_is_digital(pdf):
+    if rows:
+        return rows
+    if is_digital:
+        print(f"  (debug) digital PDF, {pdf_page_count(pdf)} page(s) — text sent whole, no retry")
         return rows
     # Retry: amount schedules usually sit in the LAST pages (附件); first pass may miss them.
     n_pages = pdf_page_count(pdf)
     tail = list(range(max(1, n_pages - 3), n_pages + 1))
     if not tail:
         return rows
+    print(f"  (retry) first pass 0 rows — re-reading last {len(tail)} page(s) hi-res …")
     retry_prompt = _payment_prompt(pdf.name) + (
         "\n補充：這是合同最後幾頁。如見到『每期應付租賃費與物業服務費明細』表，"
         "請逐行抄出所有數字（租賃費/物業服務費/合計），不要留空。"
     )
     payload = _vision_pages_at_dpi(retry_prompt, pdf, tail, per_image_bytes=900_000, dpi_start=200)
     rows2 = _payment_rows(_call_json(client, payload))
+    print(f"  (retry) got {len(rows2)} row(s)")
     return rows2 if rows2 else rows
 
 
