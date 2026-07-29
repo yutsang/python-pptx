@@ -168,6 +168,86 @@ def _verbatim_ratio(remark_prose: str, output: str) -> float:
     return match.size / max(1, len(remark_prose))
 
 
+def extract_paragraphs(pptx_path: str):
+    """[(slide, shape, text)] for every substantial paragraph in a deck that
+    wasn't produced by this tool -- e.g. a real analyst deck built in
+    PowerPoint/UpSlide, whose commentary sits in ordinary text placeholders
+    with no '■ <account> - ' structure to key off. Boilerplate (titles, nav
+    chrome, source lines) is short, so a length floor removes most of it."""
+    prs = Presentation(pptx_path)
+    out = []
+    for slide_idx, slide in enumerate(prs.slides, 1):
+        for shape in _iter_text_shapes(slide.shapes):
+            for para in (shape.text_frame.text or "").split("\n"):
+                s = para.strip()
+                if len(s) >= 40:
+                    out.append((slide_idx, shape.name, s))
+    return out
+
+
+def prose_mode(args, dfs, diagnostics) -> int:
+    """Reports how a human-written deck talks about each account: which
+    paragraphs mention it, and what the databook had available to say."""
+    paragraphs = extract_paragraphs(args.pptx)
+    print(f"{len(paragraphs)} substantial paragraph(s) in the deck "
+          f"(>=40 chars, excludes titles/navigation).\n")
+    if not paragraphs:
+        print("  Text-bearing shapes found:")
+        for s in diagnostics.get("shapes") or ["    (none)"]:
+            print(f"    {s}")
+        return 1
+
+    matched_accounts, unmatched, used_paras = 0, [], set()
+    for key in sorted(dfs):
+        if args.account and key != args.account:
+            continue
+        df = dfs[key]
+        display = str(df.attrs.get("display_key") or "").strip()
+        needles = {n for n in (key, display) if n}
+        hits = [(i, p) for i, p in enumerate(paragraphs)
+                if any(n in p[2] for n in needles)]
+        notes = _substantive_notes(df.attrs.get("supporting_notes") or [])
+        rhs = df.attrs.get("adjacent_detail_rows") or []
+
+        if not hits:
+            unmatched.append(key)
+            continue
+        matched_accounts += 1
+        print("=" * 78)
+        print(f"{key}")
+        print("=" * 78)
+        print(f"  DATABOOK source material: {len(notes)} substantive note(s), {len(rhs)} RHS row(s)")
+        for n in notes[:4]:
+            print(f"    · {str(n)[:180]}")
+        print(f"\n  HOW THE DECK WRITES IT ({len(hits)} paragraph(s) mentioning this account):")
+        for i, (slide_no, shape_name, text) in hits[:3]:
+            used_paras.add(i)
+            print(f"    [slide {slide_no} / {shape_name}]")
+            for j in range(0, min(len(text), 700), 108):
+                print(f"      {text[j:j + 108]}")
+            if len(text) > 700:
+                print(f"      ... (+{len(text) - 700} chars)")
+        flags = _style_flags(" ".join(p[2] for _i, p in hits))
+        if flags:
+            print(f"\n  STYLE FLAGS in the reference deck ({len(flags)}):")
+            for kind, detail in flags:
+                print(f"    ⚠️ {kind}: {detail}")
+        print()
+
+    print("=" * 78)
+    print("SUMMARY")
+    print("=" * 78)
+    print(f"  accounts named somewhere in the deck : {matched_accounts}")
+    print(f"  accounts never named                 : {len(unmatched)}")
+    if unmatched:
+        print(f"    {', '.join(unmatched[:18])}{' ...' if len(unmatched) > 18 else ''}")
+    print(f"  deck paragraphs matched to an account: {len(used_paras)}/{len(paragraphs)}")
+    print("\n  NOTE: this is a REFERENCE deck (human-written), so the value here is the")
+    print("  target style, not a defect list -- read the paragraphs above to see how the")
+    print("  team actually phrases an account given the same databook.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--databook", required=True, help="path to the source databook .xlsx")
@@ -194,22 +274,11 @@ def main() -> int:
           f"{' ...' if len(order) > 12 else ''}\n")
 
     if not bullets:
-        print("=" * 78)
-        print("❌ NO ACCOUNT BULLETS FOUND -- stopping before the per-account comparison,")
-        print("   which would just report 'not found' for every account and tell you nothing.")
-        print("=" * 78)
-        print("\n  Text-bearing shapes in this deck:")
-        for s in diagnostics.get("shapes") or ["    (none -- the deck has no readable text at all)"]:
-            print(f"    {s}")
-        print("\n  First lines of actual text found:")
-        for line in diagnostics.get("sample_lines") or ["    (none)"]:
-            print(f"    {line}")
-        print("\n  Expected a line starting with one of "
-              f"{', '.join(repr(m) for m in _BULLET_MARKERS)} followed by '<account> - <text>'")
-        print("  (the generator writes '■ <key> - ' -- see pptx.py's key_prefix).")
-        print("  Paste the sample lines above back and the parser can be matched to this")
-        print("  deck's actual shape; the databook side of this tool is unaffected.")
-        return 1
+        print("No '■ <account> - ' bullets found -- this deck was not produced by this tool.")
+        print("Falling back to PROSE mode: matching account names inside the deck's own")
+        print("paragraphs. A human-written reference deck is more useful this way anyway,")
+        print("since it shows the target style rather than our own output.\n")
+        return prose_mode(args, dfs, diagnostics)
 
     # Deck labels are display names; databook keys are mapping keys. Match
     # exactly first, then by containment either way, before giving up --
