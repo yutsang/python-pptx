@@ -208,6 +208,202 @@ _AMOUNT_RE = re.compile(r"(人民币\s*)?([\d,]+(?:\.\d+)?)\s*(万元|亿元|元
 _OPENING_RE = re.compile(r"^(.{2,12}?)\s*[–—-]\s*(.{0,20})")
 
 
+# Claims that assert something was DONE or SAID, as opposed to describing a
+# figure. In a DD report these carry assurance weight -- "we agreed the
+# listing to the tenancy agreements and noted no differences" tells the
+# reader work was performed. If the model writes one that the databook does
+# not support, it has manufactured assurance, which is materially worse than
+# any style问题. These are checked against the source remarks, not counted.
+_CLAIM_PATTERNS = [
+    ("work performed", re.compile(
+        r"[^。；;]*(?:我(?:方|们)(?:已)?(?:获取|取得|核对|检查|查看|复核|比对)|已核对至|核对至|"
+        r"经(?:将|对)[^。；;]{0,20}核对)[^。；;]*")),
+    ("negative assurance", re.compile(
+        r"[^。；;]*(?:未(?:发现|见)(?:明显|显著|重大)?(?:差异|异常)|无重大(?:差异|异常)|未见异常)[^。；;]*")),
+    ("management attribution", re.compile(r"[^。；;]*管理层(?:表示|称|提供|确认|解释)[^。；;]*")),
+]
+# Words whose presence in a source remark supports the corresponding claim.
+_CLAIM_EVIDENCE = {
+    "work performed": ("核对", "检查", "查看", "复核", "比对", "获取", "取得", "对账单", "agreed", "checked"),
+    "negative assurance": ("未发现", "未见", "无重大", "无异常", "未有差异", "no difference", "no material"),
+    "management attribution": ("管理层", "管报", "management"),
+}
+
+
+def table_usage(args, dfs) -> int:
+    """When does the reference deck hand a breakdown to a table instead of
+    narrating it, and what does the databook look like for those accounts?
+
+    Needed before building the feature: the deck uses tables for 18% of its
+    paragraphs while our output uses none, but copying that blindly would be
+    guesswork. This reports, per account, whether the deck tabulated it and
+    how many detail rows the databook holds -- so the rule can be derived
+    from the pairing rather than assumed."""
+    paragraphs = extract_paragraphs(args.pptx)
+    bullets, _order, _diag = extract_bullets(args.pptx)
+    if not bullets:
+        bullets = {}
+        for _s, _n, text in paragraphs:
+            m = re.match(r"^(.{2,14}?)\s*[–—-]\s*(.+)$", text)
+            if m:
+                bullets.setdefault(m.group(1).strip(), "")
+                bullets[m.group(1).strip()] += " " + m.group(2)
+    if not bullets:
+        print("❌ could not extract per-account text from this deck.")
+        return 1
+
+    print("=" * 78)
+    print("TABLE USAGE -- when does this deck tabulate instead of narrating?")
+    print("=" * 78)
+    print(f"{'account':22s} {'tabulated':10s} {'detail rows':12s} {'para chars':11s} statement")
+    print("-" * 88)
+
+    tabulated, narrated = [], []
+    for key in sorted(dfs):
+        df = dfs[key]
+        display = str(df.attrs.get("display_key") or "").strip()
+        text = None
+        for cand in (key, display):
+            if cand and cand in bullets:
+                text = bullets[cand]
+                break
+        if text is None:
+            for label, t in bullets.items():
+                if key and (key in label or label in key):
+                    text = t
+                    break
+        if not text:
+            continue
+        integrity = df.attrs.get("integrity") or {}
+        stmt = str(integrity.get("statement_type") or "?")
+        rhs = df.attrs.get("adjacent_detail_rows") or []
+        # Detail rows the databook holds for this account, excluding total
+        # lines -- the plausible driver of whether a table is warranted.
+        row_types = df.attrs.get("row_types_by_description") or {}
+        detail_rows = sum(1 for _d, t in row_types.items() if str(t).lower() == "detail")
+        is_tab = bool(_TABLE_HANDOFF_RE.search(text))
+        (tabulated if is_tab else narrated).append((key, detail_rows, len(text), stmt))
+        print(f"{key[:22]:22s} {'YES' if is_tab else 'no':10s} "
+              f"{detail_rows:<12d} {len(text):<11d} {stmt}")
+
+    print("-" * 88)
+    print(f"\n  tabulated: {len(tabulated)} account(s)   narrated: {len(narrated)} account(s)")
+
+    def _stats(rows, label):
+        if not rows:
+            print(f"  {label}: none")
+            return
+        dr = sorted(r[1] for r in rows)
+        ln = sorted(r[2] for r in rows)
+        by_stmt = {}
+        for r in rows:
+            by_stmt[r[3]] = by_stmt.get(r[3], 0) + 1
+        print(f"  {label}:")
+        print(f"    detail rows  : min {dr[0]}, median {dr[len(dr) // 2]}, max {dr[-1]}")
+        print(f"    paragraph len: min {ln[0]}, median {ln[len(ln) // 2]}, max {ln[-1]} chars")
+        print(f"    by statement : {', '.join(f'{k}={v}' for k, v in sorted(by_stmt.items()))}")
+
+    _stats(tabulated, "TABULATED accounts")
+    _stats(narrated, "NARRATED accounts")
+
+    if tabulated and narrated:
+        t_dr = sorted(r[1] for r in tabulated)
+        n_dr = sorted(r[1] for r in narrated)
+        t_med, n_med = t_dr[len(t_dr) // 2], n_dr[len(n_dr) // 2]
+        print(f"\n  => tabulated accounts carry a median of {t_med} detail row(s) vs "
+              f"{n_med} for narrated ones.")
+        t_is = sum(1 for r in tabulated if r[3] == "IS")
+        print(f"  => {t_is}/{len(tabulated)} tabulated accounts are income-statement items.")
+        print("     Read those two lines together before setting any rule: if the split")
+        print("     tracks statement type rather than detail-row count, a 'tabulate when")
+        print("     there are N+ components' rule would be fitting the wrong variable.")
+    print("\n  Tabulated paragraphs in full (this is the lead-in style to copy):")
+    for key, _dr, _ln, _st in tabulated[:6]:
+        for label, t in bullets.items():
+            if key in label or label in key:
+                print(f"    [{key}] {t.strip()[:190]}")
+                break
+    return 0
+
+
+def check_claim_grounding(args, dfs) -> int:
+    """For every assurance-bearing claim in the deck, look for support in
+    that account's own databook remarks.
+
+    Raised after a regenerated deck moved work-performed language from 0% of
+    paragraphs to 23% -- above the reference deck's own 10%. That is only an
+    improvement if the statements are true. A sentence saying we checked
+    something and found no differences is an assertion about work performed;
+    if the databook does not say so, the model has invented assurance."""
+    bullets, order, diagnostics = extract_bullets(args.pptx)
+    if not bullets:
+        paragraphs = extract_paragraphs(args.pptx)
+        bullets = {}
+        for _s, _n, text in paragraphs:
+            m = re.match(r"^(.{2,14}?)\s*[–—-]\s*(.+)$", text)
+            if m:
+                label = m.group(1).strip()
+                bullets[label] = bullets.get(label, "") + " " + m.group(2)
+    if not bullets:
+        print("❌ could not extract any per-account text from this deck.")
+        return 1
+
+    print("=" * 78)
+    print("CLAIM GROUNDING -- is each assurance statement backed by the databook?")
+    print("=" * 78)
+
+    total, grounded, ungrounded = 0, 0, []
+    for key in sorted(dfs):
+        df = dfs[key]
+        display = str(df.attrs.get("display_key") or "").strip()
+        text = None
+        for cand in (key, display):
+            if cand and cand in bullets:
+                text = bullets[cand]
+                break
+        if text is None:
+            for label, t in bullets.items():
+                if key and (key in label or label in key):
+                    text = t
+                    break
+        if not text:
+            continue
+
+        notes = _substantive_notes(df.attrs.get("supporting_notes") or [])
+        rhs = df.attrs.get("adjacent_detail_rows") or []
+        source_blob = " ".join([str(n) for n in notes] + [str(r) for r in rhs])
+
+        for kind, pattern in _CLAIM_PATTERNS:
+            for m in pattern.finditer(text):
+                claim = m.group(0).strip()
+                if len(claim) < 6:
+                    continue
+                total += 1
+                evidence = [w for w in _CLAIM_EVIDENCE[kind] if w in source_blob]
+                if evidence:
+                    grounded += 1
+                else:
+                    ungrounded.append((key, kind, claim[:110]))
+
+    print(f"\n  assurance-bearing claims found : {total}")
+    print(f"  backed by the account's remarks: {grounded}")
+    print(f"  NOT backed                     : {len(ungrounded)}")
+    if ungrounded:
+        print(f"\n  ⚠️ These assert work performed or a management statement that the")
+        print(f"     account's own remarks do not support. In a DD deliverable this is")
+        print(f"     manufactured assurance, not a style issue -- check each one:")
+        for key, kind, claim in ungrounded:
+            print(f"    [{kind}] {key}")
+            print(f"        {claim!r}")
+    elif total:
+        print(f"\n  ✅ Every assurance statement traces to something in that account's")
+        print(f"     remarks. The work-performed register is being used on real work,")
+        print(f"     not manufactured.")
+    else:
+        print("\n  (no assurance-bearing claims found in this deck)")
+    return 0
+
+
 def style_profile(args, dfs) -> int:
     """Measures the conventions a human-written reference deck actually
     follows, instead of inferring them by eye.
@@ -416,6 +612,14 @@ def main() -> int:
     ap.add_argument("--entity", default=None, help="entity name (default: derived from the filename)")
     ap.add_argument("--sheet", default=None, help="specific sheet, if needed")
     ap.add_argument("--account", default=None, help="only report this one account")
+    ap.add_argument("--table-usage", action="store_true",
+                     help="report which accounts a deck tabulates instead of narrating, next to "
+                          "how many detail rows the databook holds for them -- use this on the "
+                          "reference deck to derive the rule rather than guess it")
+    ap.add_argument("--check-claims", action="store_true",
+                     help="verify every 'we checked / no differences noted / management advised' "
+                          "statement in the deck against that account's own databook remarks -- "
+                          "an unsupported one is manufactured assurance, not a style issue")
     ap.add_argument("--style-profile", action="store_true",
                      help="measure the conventions a reference deck actually follows (currency "
                           "prefix rate, opening forms, work-performed / management-attribution / "
@@ -434,6 +638,12 @@ def main() -> int:
                                     selected_sheet=args.sheet)
     dfs = result["dfs"]
     print(f"{len(dfs)} account(s) in the databook. Language: {result.get('language')}")
+
+    if args.table_usage:
+        return table_usage(args, dfs)
+
+    if args.check_claims:
+        return check_claim_grounding(args, dfs)
 
     if args.style_profile:
         return style_profile(args, dfs)
