@@ -17,6 +17,7 @@ import argparse
 import json
 import re
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -280,6 +281,28 @@ def _payment_rows(data: Dict[str, Any]) -> List[List[str]]:
     return rows
 
 
+def _amount_decimal(value: str) -> Optional[Decimal]:
+    text = re.sub(r"[^\d.\-]", "", str(value or ""))
+    if not text or text in {"-", ".", "-."}:
+        return None
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        return None
+
+
+def _arithmetic_consistent(row: List[str]) -> Optional[bool]:
+    if len(row) < 7:
+        return None
+    rent = _amount_decimal(row[3])
+    management = _amount_decimal(row[4])
+    total = _amount_decimal(row[6])
+    if rent is None or management is None or total is None:
+        return None
+    other = _amount_decimal(row[5]) or Decimal(0)
+    return abs((rent + management + other) - total) <= Decimal("0.02")
+
+
 def _merge_reviewed_rows(first: List[List[str]], reviewed: List[List[str]]) -> List[List[str]]:
     """Review may correct values, but must never erase populated first-pass cells."""
     if not first:
@@ -293,10 +316,16 @@ def _merge_reviewed_rows(first: List[List[str]], reviewed: List[List[str]]) -> L
         width = max(len(original), len(correction), len(_PAYMENT_HEADERS))
         original = original + [""] * (width - len(original))
         correction = correction + [""] * (width - len(correction))
-        merged.append([
+        merged_row = [
             correction[col].strip() if correction[col].strip() else original[col].strip()
             for col in range(width)
-        ])
+        ]
+        # Do not accept a review that breaks a previously valid visible sum.
+        if _arithmetic_consistent(original) is True and _arithmetic_consistent(merged_row) is False:
+            for col in range(3, 7):
+                if original[col].strip():
+                    merged_row[col] = original[col].strip()
+        merged.append(merged_row)
     return merged
 
 
@@ -319,20 +348,37 @@ def _merge_zoom_rows(base: List[List[str]], zoomed: List[List[str]]) -> List[Lis
     if not zoomed:
         return base
     result = [list(row) for row in base]
+    best_zoomed: Dict[tuple, List[str]] = {}
+    for row in zoomed:
+        identity = _payment_row_identity(row)
+        if not any(identity[1:]):
+            continue
+        existing = best_zoomed.get(identity)
+        score = sum(bool(str(value).strip()) for value in row)
+        old_score = sum(bool(str(value).strip()) for value in existing) if existing else -1
+        if score > old_score:
+            best_zoomed[identity] = row
     by_identity: Dict[tuple, int] = {}
     for index, row in enumerate(result):
         identity = _payment_row_identity(row)
         if any(identity[1:]):
             by_identity[identity] = index
-    for row in zoomed:
+    for identity, row in best_zoomed.items():
         identity = _payment_row_identity(row)
         index = by_identity.get(identity)
         if index is None:
+            if any(str(value).strip() for value in row[3:7]):
+                by_identity[identity] = len(result)
+                result.append(list(row))
             continue
         width = min(len(result[index]), len(row))
         for col in range(width):
             if str(row[col]).strip():
                 result[index][col] = str(row[col]).strip()
+    result.sort(key=lambda row: (
+        re.sub(r"\D", "", str(row[1])) if len(row) > 1 else "",
+        re.sub(r"\D", "", str(row[0])) if row else "",
+    ))
     return result
 
 
@@ -395,24 +441,56 @@ def _extract_payment_page(client: AIClient, pdf: Path, page_num: int) -> List[Li
     reviewed_rows = _payment_rows(reviewed)
     rows = _merge_reviewed_rows(first_rows, reviewed_rows)
     populated, total = _amount_coverage(rows)
-    if total and populated < total:
-        print(f"  (zoom) only {populated}/{total} row(s) have amounts; reading enlarged strips")
+    needs_zoom = total and (populated < total or 8 <= total < 12)
+    if needs_zoom:
+        tile_count = 6 if total >= 8 else 3
+        tile_dpi = 400 if total >= 8 else 300
+        print(
+            f"  (zoom) {populated}/{total} row(s) have amounts; "
+            f"reading {tile_count} enlarged strips at {tile_dpi} DPI"
+        )
         zoomed_rows: List[List[str]] = []
-        for tile_num, tile_raw in rasterize_page_tile_jpegs(pdf, page_num):
+        for tile_num, tile_raw in rasterize_page_tile_jpegs(
+            pdf,
+            page_num,
+            tile_count=tile_count,
+            dpi=tile_dpi,
+        ):
             tile_prompt = (
                 _payment_prompt(pdf.name)
-                + f"\n[page {page_num}, enlarged strip {tile_num}/3]\n"
+                + f"\n[page {page_num}, enlarged strip {tile_num}/{tile_count}]\n"
                 + "这是同一表格页的横向放大片段。只抄录图中完整可见的行；"
                 + "边界处被截断的行不要输出。务必读取租赁费、物业服务费和合计数字。"
             )
+            tile_image = {"type": "image_url", "image_url": {"url": to_data_url(tile_raw)}}
             tile_payload: List[Any] = [
                 {"type": "text", "text": tile_prompt},
-                {"type": "image_url", "image_url": {"url": to_data_url(tile_raw)}},
+                tile_image,
             ]
-            zoomed_rows.extend(_payment_rows(_call_json(client, tile_payload)))
+            tile_first = _call_json(client, tile_payload)
+            tile_rows = _payment_rows(tile_first)
+            if total >= 8 and tile_rows:
+                tile_review_payload: List[Any] = [
+                    {
+                        "type": "text",
+                        "text": _payment_review_prompt(pdf.name, page_num, tile_first)
+                        + f"\n当前图片是放大片段 {tile_num}/{tile_count}。",
+                    },
+                    tile_image,
+                ]
+                tile_rows = _merge_reviewed_rows(
+                    tile_rows,
+                    _payment_rows(_call_json(client, tile_review_payload)),
+                )
+            zoomed_rows.extend(tile_rows)
         rows = _merge_zoom_rows(rows, zoomed_rows)
-        zoom_populated, _ = _amount_coverage(rows)
-        print(f"  (zoom) amount coverage after enlarged strips: {zoom_populated}/{total}")
+        zoom_populated, zoom_total = _amount_coverage(rows)
+        print(f"  (zoom) amount coverage after enlarged strips: {zoom_populated}/{zoom_total}")
+        if zoom_total and zoom_populated == 0:
+            return []
+    inconsistent = sum(_arithmetic_consistent(row) is False for row in rows)
+    if inconsistent:
+        print(f"  (warning) {inconsistent} row(s) fail amount-sum validation")
     return rows
 
 
