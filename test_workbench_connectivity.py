@@ -9,7 +9,7 @@ Prerequisites:
 
 Usage:
     python test_workbench_connectivity.py            # tests every configured model
-    python test_workbench_connectivity.py --model gpt-5-5-2026-04-24-gs-sdc
+    python test_workbench_connectivity.py --model <your-deployment-id>
 """
 from __future__ import annotations
 

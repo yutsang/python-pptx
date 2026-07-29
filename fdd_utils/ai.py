@@ -18,13 +18,14 @@ PROVIDER_REQUIRED_KEYS = {
     "workbench": ["api_key", "api_base", "api_version", "chat_model"],
 }
 
-# Every model the Workbench gateway currently serves, in UI display order.
-# The FIRST entry is the default model when the provider is selected without
-# an explicit override.
-WORKBENCH_AVAILABLE_MODELS = [
-    {"id": "gpt-5-5-2026-04-24-gs-sdc", "label": "GPT-5.5"},
-    {"id": "gpt-5-4-2026-03-05-gs-sdc", "label": "GPT-5.4"},
-]
+# Models the internal gateway serves, in UI display order; the FIRST entry is
+# the default when the provider is selected without an explicit override.
+#
+# Deliberately EMPTY here: deployment ids are environment-specific internal
+# identifiers and this repository is public. Set workbench.available_models in
+# your own config.yml (gitignored), which takes precedence over this list --
+# see config.example.yml for the shape.
+WORKBENCH_AVAILABLE_MODELS: list[dict] = []
 
 SUBAGENT_ALIASES = {
     # subagent_N (UI/pipeline names) and the canonical N_Name forms both resolve

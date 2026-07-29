@@ -19,15 +19,18 @@ deepseek:
   api_base: "https://api.deepseek.com/v1"
   chat_model: "deepseek-chat"
 
-# KPMG Workbench gateway (Azure OpenAI-compatible). api_key doubles as the
-# 'Ocp-Apim-Subscription-Key' header value the gateway requires.
+# Internal enterprise gateway (Azure OpenAI-compatible). api_key doubles as
+# the 'Ocp-Apim-Subscription-Key' header value the gateway requires.
+# This file is committed to a PUBLIC repository -- keep the real hostname,
+# deployment name and any credential in your own config.yml (gitignored),
+# never here.
 workbench:
   api_key: ""
-  api_base: "https://api.workbench.kpmg/genai/azure/openai"
-  api_version: "2024-12-01-preview"
-  chat_model: "gpt-5-5-2026-04-24-gs-sdc"
-  charge_code: "0000"
-  region_override: "westeurope"
+  api_base: ""            # e.g. https://<your-gateway-host>/genai/azure/openai
+  api_version: ""         # e.g. 2024-12-01-preview
+  chat_model: ""          # your Azure deployment name
+  charge_code: ""
+  region_override: ""
   reasoning_effort: "high"           # "high" | "medium" | "low" | "" to omit
   # Model capability flags — confirmed against the real gateway. Flip these
   # if a future model/deployment behaves differently; the client also
@@ -46,11 +49,11 @@ workbench:
   # default (if omitted) is 2 for any non-local provider — raise it only
   # after validating the gateway handles it with test_workbench_concurrency.py.
   max_workers: 4
-  available_models:
-    - id: "gpt-5-5-2026-04-24-gs-sdc"
-      label: "GPT-5.5"
-    - id: "gpt-5-4-2026-03-05-gs-sdc"
-      label: "GPT-5.4"
+  # Deployment ids are environment-specific -- fill these in your own
+  # config.yml (gitignored), not in this public example.
+  available_models: []
+    # - id: "<your-deployment-id>"
+    #   label: "GPT-5.5"
 
 agents:
   # allow_thinking: false sends enable_thinking=false to Qwen3 for structured

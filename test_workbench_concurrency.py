@@ -13,7 +13,7 @@ threads, and checks for:
 Usage:
     python test_workbench_concurrency.py                       # 2 workers x 10 requests (matches prod default)
     python test_workbench_concurrency.py --workers 4 --requests 20
-    python test_workbench_concurrency.py --model gpt-5-4-2026-03-05-gs-sdc
+    python test_workbench_concurrency.py --model <your-deployment-id>
     python test_workbench_concurrency.py --sequential            # single-threaded (workers=1), same call path
 
 Note on max_tokens: GPT-5.x is a REASONING model — max_completion_tokens is a
