@@ -2566,6 +2566,53 @@ def extract_financial_table(
     return result_df
 
 
+# Headers that mark the start of a NON-financial-statement section on a
+# Financials sheet -- operating KPIs, ratio analysis, per-unit metrics.
+# These sit below the P&L on real sheets and must not be read as accounts:
+# their values are rates and percentages, not amounts.
+_POST_IS_SECTION_MARKERS = (
+    "经营指标", "經營指標", "主要经营指标", "主要經營指標", "运营指标", "營運指標",
+    "关键指标", "關鍵指標", "财务比率", "財務比率", "比率分析", "指标分析",
+    "operating metric", "operating indicator", "key metric", "key indicator",
+    "kpi", "ratio analysis", "financial ratio", "key performance",
+)
+# Ratio/per-unit row labels. Used only as a FALLBACK when no section header
+# exists -- several of these appearing consecutively is itself the boundary.
+_RATIO_ROW_MARKERS = (
+    "出租率", "单位租金", "單位租金", "单位物管费", "單位物管費",
+    "毛利率", "净利率", "淨利率", "营业利润率", "營業利潤率", "增长率", "增長率",
+    "ebitda%", "占收入比", "每平方米", "元/平方米",
+)
+
+
+def _find_section_end_row(df: pd.DataFrame, start_row: int) -> int:
+    """Row index at which the section beginning at start_row ends.
+
+    Prefers an explicit section header (see _POST_IS_SECTION_MARKERS). Where
+    a sheet has none, falls back to the first run of consecutive ratio/
+    per-unit rows -- one such label can legitimately appear inside a P&L
+    (e.g. a margin shown as a memo line), so a single hit is not treated as
+    the boundary, but a run of them is a different section.
+    """
+    n = len(df)
+    run_start = None
+    consecutive = 0
+    for idx in range(start_row + 1, n):
+        row_str = " ".join(df.iloc[idx].astype(str).values).lower()
+        if any(marker in row_str for marker in _POST_IS_SECTION_MARKERS):
+            return idx
+        if any(marker in row_str for marker in _RATIO_ROW_MARKERS):
+            if consecutive == 0:
+                run_start = idx
+            consecutive += 1
+            if consecutive >= 3:
+                return run_start
+        elif row_str.strip() and row_str.replace("nan", "").strip():
+            consecutive = 0
+            run_start = None
+    return n
+
+
 def extract_balance_sheet_and_income_statement(
     workbook_path: str,
     sheet_name: str,
@@ -2747,8 +2794,19 @@ def extract_balance_sheet_and_income_statement(
         
         # Extract Income Statement
         if is_start_row is not None:
-            # IS goes to end of sheet
-            df_is = df.iloc[is_start_row:].copy().reset_index(drop=True)
+            # The IS used to run to the end of the sheet, unlike the BS which
+            # is bounded by is_start_row. On a real Financials sheet that
+            # carries an operating-KPI block below the P&L, every one of those
+            # rows was swallowed into the income statement -- a reconciliation
+            # page came back listing EBITDA%, 出租率, 单位租金 and 毛利率 as if
+            # they were accounts, with ratio values (587, 866, -347) read as
+            # amounts, and none of the actual P&L lines. Bound the IS at the
+            # next section header the same way the BS is bounded.
+            is_end_row = _find_section_end_row(df, is_start_row)
+            df_is = df.iloc[is_start_row:is_end_row].copy().reset_index(drop=True)
+            if debug and is_end_row < len(df):
+                print(f"[DEBUG] Income Statement bounded at row {is_end_row}: "
+                      f"{str(df.iloc[is_end_row].values[0])[:60]!r}")
             
             results['income_statement'] = extract_financial_table(
                 df_is, "Income Statement", None, debug, multiply_values
