@@ -90,6 +90,40 @@ def _is_revenue(account: str) -> bool:
     return any(n in low for n in _REVENUE_NEEDLES)
 
 
+# Strings that occupy a note slot without carrying any explanatory content.
+# Confirmed on a real healthy workbook: accounts with no genuine remarks
+# still report exactly one supporting_note whose entire text is "Check" -- a
+# worksheet tie-out label, not commentary. Counting those as "explanatory
+# material available" makes an account look like it has context to draw on
+# when it has none, which would argue for loosening its length cap when the
+# correct conclusion is the opposite: there is nothing there to say.
+_NON_SUBSTANTIVE_NOTES = {"check", "checks", "n/a", "na", "-", "tbc", "tba", "ok", "note", "notes"}
+
+
+def _is_substantive_note(text) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return False
+    if s.lower() in _NON_SUBSTANTIVE_NOTES:
+        return False
+    return len(s) >= 4
+
+
+def _substantive_notes(notes) -> list:
+    return [n for n in (notes or []) if _is_substantive_note(n)]
+
+
+def _substantive_linked(linked) -> list:
+    """table_linked_remarks entries are dicts like
+    {'source': 'row_note', 'summary': 'Check'} -- judge them on the summary."""
+    out = []
+    for item in linked or []:
+        summary = item.get("summary") if isinstance(item, dict) else item
+        if _is_substantive_note(summary):
+            out.append(item)
+    return out
+
+
 def _total_row_values(df):
     """(period_label, value) pairs for the account's total row -- the same
     row build_trend_summary focuses on. Excludes INTERNAL_ROW_KEY, which
@@ -176,6 +210,9 @@ def analyse_one(path: str, entity: str, threshold: float, sheet=None,
         notes = df.attrs.get("supporting_notes") or []
         rhs = df.attrs.get("adjacent_detail_rows") or []
         linked = df.attrs.get("table_linked_remarks") or []
+        sub_notes = _substantive_notes(notes)
+        sub_linked = _substantive_linked(linked)
+        has_expl = bool(sub_notes or rhs or sub_linked)
         cap = _cap_for(key)
         latest_growth = _pct(full[-2][1], full[-1][1], scale) if len(full) >= 2 else None
         if _is_revenue(key):
@@ -184,10 +221,14 @@ def analyse_one(path: str, entity: str, threshold: float, sheet=None,
             "key": key, "series": series, "full": full, "months": months,
             "biggest": biggest, "from_nil": from_nil,
             "notes": len(notes), "rhs": len(rhs), "linked": len(linked),
-            "has_expl": bool(notes or rhs or linked),
+            "sub_notes": len(sub_notes), "sub_linked": len(sub_linked),
+            "has_expl": has_expl,
             "cap": cap, "tightest": cap == _TIGHTEST,
             "latest_growth": latest_growth,
-            "flagged": biggest >= threshold and cap == _TIGHTEST and bool(notes or rhs or linked),
+            "flagged": biggest >= threshold and cap == _TIGHTEST and has_expl,
+            # Big move, tightest cap, but nothing real to explain it with:
+            # loosening the cap here would only create room to invent.
+            "starved": biggest >= threshold and not has_expl,
         })
     return out
 
@@ -207,7 +248,7 @@ def run_batch(args) -> int:
         return 1
 
     print(f"Sweeping {len(paths)} workbook(s) in {args.path!r}\n")
-    all_flagged, per_file, failed, remark_anomalies = [], [], [], []
+    all_flagged, all_starved, per_file, failed, remark_anomalies = [], [], [], [], []
     total_is = 0
 
     for p in paths:
@@ -238,21 +279,30 @@ def run_batch(args) -> int:
         # accounts landing on an identical low count usually means the file's
         # remark columns aren't being picked up and the commentary is being
         # written from figures alone.
-        sigs = {(a["notes"], a["rhs"], a["linked"]) for a in accts}
-        uniform = ""
-        if len(sigs) == 1 and len(accts) >= 4:
-            n, rh, li = next(iter(sigs))
-            uniform = (f"   ⚠️ ALL {len(accts)} accounts report identical remark counts "
-                       f"{n}/{rh}/{li} -- remarks likely NOT being extracted from this file")
-            remark_anomalies.append((name, len(accts), (n, rh, li)))
+        starved = [a for a in accts if a["starved"]]
+        all_starved.extend((name, a) for a in starved)
+        no_material = sum(1 for a in accts if not a["has_expl"])
+        if no_material == len(accts) and len(accts) >= 4:
+            uniform = (f"   ⚠️ NONE of the {len(accts)} accounts has any substantive remark "
+                       f"(only tie-out artefacts like 'Check')")
+            remark_anomalies.append((name, len(accts), no_material))
+        else:
+            uniform = ""
         print(f"--- {name}  [entity={entity!r}, lang={res['language']}]")
-        print(f"    {len(accts)} IS account(s), revenue growth {rg_s}, {len(flagged)} flagged{uniform}")
+        print(f"    {len(accts)} IS account(s), revenue growth {rg_s}, "
+              f"{len(flagged)} flagged, {len(starved)} starved{uniform}")
         for a in sorted(accts, key=lambda x: -x["biggest"]):
             if a["biggest"] < args.threshold:
                 continue
-            mark = "  <-- FLAGGED (tightest cap + has material)" if a["flagged"] else ""
+            if a["flagged"]:
+                mark = "  <-- FLAGGED (tightest cap, real material available)"
+            elif a["starved"]:
+                mark = "  <-- STARVED (big move, NO real material to explain it)"
+            else:
+                mark = ""
             print(f"      {a['key']:32s} {a['biggest']:>9,.0f}%   "
-                  f"notes/rhs/linked={a['notes']}/{a['rhs']}/{a['linked']}"
+                  f"raw={a['notes']}/{a['rhs']}/{a['linked']} "
+                  f"substantive={a['sub_notes']}/{a['rhs']}/{a['sub_linked']}"
                   f"   {'TIGHT' if a['tightest'] else 'wider'} cap{mark}")
         print()
 
@@ -263,10 +313,15 @@ def run_batch(args) -> int:
     if failed:
         print(f"  workbooks skipped (error) : {len(failed)}")
     print(f"  IS accounts total         : {total_is}")
-    print(f"  flagged (big move + material available + tightest cap): {len(all_flagged)}")
+    print(f"  FLAGGED (big move, tightest cap, real material available): {len(all_flagged)}")
+    print(f"  STARVED (big move, but NO substantive material at all)   : {len(all_starved)}")
     if total_is:
-        print(f"  => {len(all_flagged) / total_is * 100:.1f}% of IS accounts are currently")
-        print(f"     capped below what their own data and remarks would support")
+        print(f"\n  => {len(all_flagged) / total_is * 100:.1f}% would genuinely benefit from a looser cap")
+        print(f"  => {len(all_starved) / total_is * 100:.1f}% moved materially with nothing on file to explain it")
+        if len(all_starved) > len(all_flagged):
+            print("\n  Loosening the caps is NOT the binding constraint here: most big movers")
+            print("  have no explanatory material at all, so extra room would only create")
+            print("  space to invent. Getting real remarks into these files comes first.")
 
     if all_flagged:
         print(f"\n  Flagged accounts, largest movement first:")
@@ -281,17 +336,84 @@ def run_batch(args) -> int:
         for key, n in sorted(by_account.items(), key=lambda kv: -kv[1]):
             print(f"    {n:>3d} x  {key}")
     if remark_anomalies:
-        print(f"\n  ⚠️  DATABOOK ISSUE -- {len(remark_anomalies)} workbook(s) where every IS account")
-        print(f"      reports identical remark counts (a healthy file varies widely):")
-        for name, n_acct, sig in remark_anomalies:
-            print(f"    {name}: all {n_acct} accounts at {sig[0]}/{sig[1]}/{sig[2]}")
-        print(f"      If these files really do carry per-account remarks, they are not")
-        print(f"      reaching the pipeline -- so the commentary for them is being written")
-        print(f"      from figures alone, which no prompt change can compensate for.")
+        print(f"\n  ⚠️  DATABOOK ISSUE -- {len(remark_anomalies)} workbook(s) where NOT ONE IS account")
+        print(f"      carries a substantive remark (only tie-out artefacts such as 'Check'):")
+        for name, n_acct, _n in remark_anomalies:
+            print(f"    {name}  ({n_acct} accounts, 0 with real remarks)")
+        print(f"      A healthy workbook mixes both -- real notes like")
+        print(f"      '折旧费 | 2023年11月开始计提固定资产折旧' alongside thin accounts.")
+        print(f"      Commentary for these files is therefore written from figures alone.")
+        print(f"      Either the remark columns aren't being read, or the project team")
+        print(f"      hasn't filled them in -- worth checking one file in Excel before")
+        print(f"      any prompt work, because no prompt change can compensate for this.")
     if failed:
         print(f"\n  Skipped:")
         for name, err in failed:
             print(f"    {name}: {err}")
+    return 0
+
+
+def dump_remarks(args) -> int:
+    """Prints the actual TEXT of every remark the pipeline extracted per IS
+    account, so a uniform remark count can be judged rather than guessed at.
+    Counts alone are ambiguous: 1/0/1 is a perfectly normal value for a
+    genuinely thin account (a real healthy workbook has it for 税金及附加 and
+    营业外收入 while 管理费用 has 3/20/23) -- what makes it suspicious is EVERY
+    account sharing it. If the single note also turns out to be the same
+    boilerplate string for every account, that is conclusive: nothing
+    account-specific is reaching the model."""
+    entity = args.entity or _entity_from_filename(args.path)
+    print(f"Loading {args.path!r} (entity={entity!r})...\n")
+    result = process_workbook_data(temp_path=args.path, entity_name=entity,
+                                    selected_sheet=args.sheet,
+                                    financials_from=args.financials_from,
+                                    financials_sheet=args.financials_sheet)
+    dfs = result["dfs"]
+    first_notes = {}
+    for key in sorted(dfs):
+        df = dfs[key]
+        integrity = df.attrs.get("integrity") or {}
+        if str(integrity.get("statement_type", "")).upper() != "IS":
+            continue
+        if args.account and key != args.account:
+            continue
+        notes = df.attrs.get("supporting_notes") or []
+        rhs = df.attrs.get("adjacent_detail_rows") or []
+        linked = df.attrs.get("table_linked_remarks") or []
+        print("=" * 78)
+        print(f"{key}   (source sheet: {df.attrs.get('source_sheet_name')!r})")
+        print("=" * 78)
+        print(f"  supporting_notes ({len(notes)}):")
+        for i, n in enumerate(notes):
+            print(f"    [{i}] {str(n)[:300]}")
+        print(f"  adjacent_detail_rows ({len(rhs)}):")
+        for i, rrow in enumerate(rhs[:6]):
+            print(f"    [{i}] {str(rrow)[:300]}")
+        if len(rhs) > 6:
+            print(f"    ... and {len(rhs) - 6} more")
+        print(f"  table_linked_remarks ({len(linked)}):")
+        for i, lk in enumerate(linked[:6]):
+            print(f"    [{i}] {str(lk)[:300]}")
+        if len(linked) > 6:
+            print(f"    ... and {len(linked) - 6} more")
+        print()
+        if notes:
+            first_notes[key] = str(notes[0])[:200]
+
+    if len(first_notes) >= 2:
+        distinct = set(first_notes.values())
+        print("=" * 78)
+        print("VERDICT")
+        print("=" * 78)
+        if len(distinct) == 1:
+            print(f"  ❌ All {len(first_notes)} accounts share the SAME first note:")
+            print(f"     {next(iter(distinct))!r}")
+            print("  That is boilerplate, not per-account context -- nothing account-specific")
+            print("  is reaching the model, so its commentary can only restate the figures.")
+        else:
+            print(f"  ✅ {len(distinct)} distinct first-notes across {len(first_notes)} accounts --")
+            print("     the notes ARE account-specific; a low count reflects genuinely thin")
+            print("     source remarks rather than an extraction failure.")
     return 0
 
 
@@ -317,10 +439,17 @@ def main() -> int:
                           "compact line per account plus an aggregate across all files -- use this "
                           "to see how often the cap actually bites across a whole portfolio "
                           "instead of judging from a single entity")
+    ap.add_argument("--dump-remarks", action="store_true",
+                     help="print the actual TEXT of every extracted remark per IS account, and "
+                          "judge whether they're account-specific or one shared boilerplate -- "
+                          "use this on any file --batch flags with a uniform remark count")
     args = ap.parse_args()
 
     if args.batch:
         return run_batch(args)
+
+    if args.dump_remarks:
+        return dump_remarks(args)
 
     if args.list_sheets:
         from openpyxl import load_workbook
@@ -367,7 +496,9 @@ def main() -> int:
         notes = df.attrs.get("supporting_notes") or []
         rhs = df.attrs.get("adjacent_detail_rows") or []
         linked = df.attrs.get("table_linked_remarks") or []
-        has_expl = bool(notes or rhs or linked)
+        sub_notes = _substantive_notes(notes)
+        sub_linked = _substantive_linked(linked)
+        has_expl = bool(sub_notes or rhs or sub_linked)
 
         print("=" * 78)
         print(f"{key}")
@@ -412,10 +543,13 @@ def main() -> int:
                 expense_growth[key] = _pct(full[-2][1], full[-1][1], scale)
 
         cap = _cap_for(key)
-        print(f"\n  explanatory material available:")
-        print(f"    supporting notes    : {len(notes)}")
+        print(f"\n  explanatory material available (raw -> substantive):")
+        print(f"    supporting notes    : {len(notes)} -> {len(sub_notes)}")
         print(f"    RHS remark rows     : {len(rhs)}")
-        print(f"    table-linked remarks: {len(linked)}")
+        print(f"    table-linked remarks: {len(linked)} -> {len(sub_linked)}")
+        if notes and not sub_notes:
+            print(f"    (every note is a tie-out artefact, e.g. {str(notes[0])[:40]!r} -- "
+                  f"no real context)")
         print(f"  prompt length cap for this account type:\n    {cap}")
 
         if biggest >= args.threshold and cap == _TIGHTEST and has_expl:
