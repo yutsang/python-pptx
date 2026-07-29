@@ -14,11 +14,12 @@ def format_number_chinese(value: Union[float, int], language: str = "Chi") -> st
     is_negative = value < 0
     abs_value = abs(value)
 
-    # 万元 (10k unit) rounds to a whole number -- at that scale a decimal
-    # place adds little real precision. 亿元 (100M unit) keeps 1dp: at that
-    # much larger scale, dropping the decimal loses too much (e.g. 1.56亿
-    # -> "2亿" is a ~28% swing), so 亿 keeps SOME sub-unit resolution while
-    # 万 does not.
+    # Precision measured from the real deliverable rather than assumed: its
+    # 万元 figures carry 1dp (1,062.8万元) in 99% of cases and its 亿元
+    # figures 2dp (6.65亿元) in 100%. An earlier comment here reasoned that
+    # 万 "adds little real precision" at whole-number scale -- but a report
+    # that writes 1,062.8万元 while the tool writes 1,063万元 is subtly wrong
+    # on every amount, and the team's own convention is the authority.
     if language == "Chi":
         if abs_value < 10000:
             result = f"{abs_value:,.0f}元"
@@ -26,9 +27,9 @@ def format_number_chinese(value: Union[float, int], language: str = "Chi") -> st
             wan_value = abs_value / 10000
             if wan_value >= 10000:
                 yi_value = wan_value / 10000
-                result = f"{yi_value:.1f}亿元"
+                result = f"{yi_value:.2f}亿元"
             else:
-                result = f"{wan_value:.0f}万元"
+                result = f"{wan_value:.1f}万元"
         # Bare by default, matching the report convention measured from the
         # real deliverable (97% of its amounts carry no 人民币 prefix). This
         # feeds the LLM-unavailable fallback bullet, which would otherwise
@@ -90,12 +91,15 @@ def format_value_by_language(value, language: str, _account_name=None) -> str:
     is_negative = value < 0
     abs_value = abs(value)
 
-    # See format_number_chinese: 万/K stay whole numbers, 亿/million keep 1dp.
+    # Matches format_number_chinese: 万 1dp, 亿 2dp. This function builds the
+    # "_formatted" columns, which are what the MODEL is shown -- so if these
+    # were rounded to whole 万 the model would copy that precision straight
+    # into the report no matter what the prompt asked for.
     if language == "Chi":
         if abs_value >= 100000000:
-            formatted = f"{abs_value / 100000000:.1f}亿"
+            formatted = f"{abs_value / 100000000:.2f}亿"
         elif abs_value >= 10000:
-            formatted = f"{abs_value / 10000:.0f}万"
+            formatted = f"{abs_value / 10000:.1f}万"
         else:
             formatted = f"{abs_value:.0f}"
         return f"-{formatted}" if is_negative else formatted
