@@ -279,7 +279,7 @@ class BridgeResult:
     """One rendered-ready bridge transition. Carries everything BOTH callers
     need: the CLI (main) prints/validates/renders PPTX from it, and the
     Streamlit Bridge Lab renders an Excel chart from `.bridge`."""
-    title: str                          # chart title, e.g. "AB-CD: 2024年→2025年 收入量价桥图"
+    title: str                          # chart title, e.g. "AB-CD2025年收入量价桥图" (matches the real chart's own convention)
     start_label: str
     end_label: str
     bridge: BridgeBlock
@@ -333,8 +333,15 @@ def build_bridges_for_ab_tab(
         )
         if bridge is None:
             continue
+        # Title convention matches the REAL '成都-量价桥图' chart's own title
+        # exactly (confirmed via inspect_bridge_format.py): "{entity}
+        # {end-period label}量价桥图" -- entity name direct-concatenated, no
+        # arrow, no start year (its own chart titles only ever showed
+        # "成都青白江2025年收入量价桥图", never "2024→2025"). tab_name is the raw
+        # AB- code (e.g. 'AB-KS1'), not a Chinese display name -- this
+        # entity has none available in the data this extractor reads.
         results.append(BridgeResult(
-            title=f"{tab_name}: {year_a}年→{year_b}年 收入量价桥图",
+            title=f"{tab_name}{year_b}年收入量价桥图",
             start_label=f"{year_a}年收入", end_label=f"{year_b}年收入", bridge=bridge,
             series_a=[all_series[b.label][year_a] for b in blocks],
             series_b=[all_series[b.label][year_b] for b in blocks],
@@ -367,8 +374,11 @@ def build_bridges_for_ab_tab(
             log(f"    ⚠️ tail year {max_year} is partial ({max_year_days:.0f}d) but LTM window couldn't be "
                 f"built (incomplete monthly data) -- skipping tail transition")
             return blocks, results
+        # format_ltm_label already ends in "收入" (e.g. "2025年7月至2026年6月收入"),
+        # matching the real chart's own LTM title exactly when concatenated
+        # the same way as the regular-transition title above.
         results.append(BridgeResult(
-            title=f"{tab_name}: {last_full_year}年→LTM 收入量价桥图",
+            title=f"{tab_name}{format_ltm_label(max_year, latest_month)}量价桥图",
             start_label=f"{last_full_year}年收入", end_label=format_ltm_label(max_year, latest_month),
             bridge=bridge,
             series_a=[all_series[b.label][last_full_year] for b in blocks],

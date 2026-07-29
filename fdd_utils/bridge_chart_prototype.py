@@ -217,12 +217,14 @@ def build_waterfall_chart(slide, block: BridgeBlock, title: str, left, top, widt
     chart.value_axis.tick_labels.number_format_is_linked = False
 
     plot = chart.plots[0]
-    plot.gap_width = 40  # tighter bars -- default (150) reads as too sparse for 9+ categories
+    plot.gap_width = 50  # matches the REAL 成都-量价桥图 chart's own gapWidth (confirmed via inspect_bridge_format.py)
     colors = {
         "Base": None,  # made invisible below
-        "Total": RGBColor(0x44, 0x54, 0x6A),
-        "Increase": RGBColor(0x2E, 0x8B, 0x57),
-        "Decrease": RGBColor(0xC0, 0x39, 0x2B),
+        # Exact hex values read off the REAL '成都-量价桥图' embedded chart's own
+        # series fills (inspect_bridge_format.py) -- not an approximation.
+        "Total": RGBColor(0x00, 0x33, 0x8D),
+        "Increase": RGBColor(0x6D, 0x20, 0x77),
+        "Decrease": RGBColor(0x00, 0xA3, 0xA1),
     }
     for series in plot.series:
         fill = series.format.fill
@@ -262,18 +264,20 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     inc_vals = [round(v) for v in inc_vals]
     dec_vals = [round(v) for v in dec_vals]
 
-    # Reference-format constants, matched to the analyst-built bridge chart
-    # (photo of the team's real deliverable): navy total bars, dark-purple
-    # increase bars, teal decrease bars; thousands separators, negatives in
-    # parentheses, zeros as a bare "-" dash. Number formats live on the CELLS
-    # (data labels are source-linked, so the cell format is what Excel
+    # Reference-format constants -- exact values read directly off the REAL
+    # '成都-量价桥图' embedded chart object (inspect_bridge_format.py), not an
+    # approximation from a photo like the earlier version of this comment:
+    # navy total bars, dark-purple/teal alternating delta bars; the real
+    # chart's own numFmt is an accounting-style format (thousands separator,
+    # parenthesised negatives, "-" for zero). Number formats live on the
+    # CELLS (data labels are source-linked, so the cell format is what Excel
     # actually renders -- chart-level dLbls numFmt is ignored, see below).
     # The Decrease column stores positive magnitudes (the stacked-bar
     # technique needs positive heights), so its "positive" format section is
     # parenthesised to display them as the negatives they represent.
-    COLOR_TOTAL, COLOR_INC, COLOR_DEC = "1F3864", "4C2170", "00A3A1"
-    NUM_FMT = '#,##0;(#,##0);"-"'
-    NUM_FMT_PARENS = '(#,##0);(#,##0);"-"'
+    COLOR_TOTAL, COLOR_INC, COLOR_DEC = "00338D", "6D2077", "00A3A1"
+    NUM_FMT = r'_(* #,##0_);_(* \(#,##0\);_(* "-"??_);_(@_)'
+    NUM_FMT_PARENS = r'_(* \(#,##0\)_);_(* \(#,##0\);_(* "-"??_);_(@_)'
 
     ws.column_dimensions[get_column_letter(start_col)].width = 22
     for offset in range(1, 5):
@@ -314,7 +318,7 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     chart.overlap = 100
     chart.title = title
     chart.legend = None
-    chart.gapWidth = 130  # reference chart's bars are narrow with visible gaps, not chunky
+    chart.gapWidth = 50  # matches the REAL chart's own gapWidth exactly (was a 130 guess before)
     chart.y_axis.scaling.min = 0
     chart.y_axis.numFmt = NUM_FMT  # axis numFmt DOES carry sourceLinked="0", so this one is honoured
     chart.y_axis.title = "人民币千元"
