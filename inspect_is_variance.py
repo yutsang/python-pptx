@@ -368,6 +368,89 @@ def run_batch(args) -> int:
     return 0
 
 
+def diagnose_statement_type(args) -> int:
+    """Explains, per account, why it did or did not end up classified as IS.
+
+    workbook.py deliberately blanks statement_type for an IS mapping that
+    wasn't resolved via a matched alias or a manual override:
+
+        statement_type = mapping_type
+        if mapping_type == "IS" and not (resolved.get("matched_alias")
+                or str(resolved.get("resolution_method")).startswith("manual_")):
+            statement_type = None
+
+    The guard exists because statement_type=="IS" is what switches on
+    partial-year annualisation, and annualising off a loosely-matched sheet
+    would be worse than not annualising. But it also blanks the field every
+    downstream consumer uses to tell a P&L account from a balance-sheet one,
+    so a whole income statement can silently disappear from any IS-filtered
+    view while the accounts themselves extract perfectly."""
+    entity = args.entity or _entity_from_filename(args.path)
+    print(f"Loading {args.path!r} (entity={entity!r})...\n")
+    result = process_workbook_data(temp_path=args.path, entity_name=entity,
+                                    selected_sheet=args.sheet,
+                                    financials_from=args.financials_from,
+                                    financials_sheet=args.financials_sheet)
+    dfs = result["dfs"]
+    resolved_all = (result.get("resolution") or {}).get("resolved", {}) or {}
+    # `resolution` is keyed by mapping_key ('Cash'), while `dfs` on a Chinese
+    # databook is keyed by the display name ('货币资金') -- index by the sheet
+    # name they both carry so the two line up whichever naming is in play.
+    by_sheet = {}
+    for _mk, entry in resolved_all.items():
+        if isinstance(entry, dict) and entry.get("sheet_name"):
+            by_sheet[str(entry["sheet_name"])] = entry
+
+    print(f"{'account':26s} {'map type':8s} {'final':6s} {'alias':>7s}  resolution_method")
+    print("-" * 92)
+    blanked, is_declared, is_final = [], 0, 0
+    for key in sorted(dfs):
+        df = dfs[key]
+        integrity = df.attrs.get("integrity") or {}
+        final = str(integrity.get("statement_type") or "") or "(none)"
+        sheet = str(df.attrs.get("source_sheet_name") or integrity.get("sheet_name") or "")
+        r = resolved_all.get(key) or by_sheet.get(sheet) or {}
+        map_type = str(r.get("type") or "") or "?"
+        alias = r.get("matched_alias")
+        method = str(r.get("resolution_method") or "?")
+        if map_type == "IS":
+            is_declared += 1
+        if final == "IS":
+            is_final += 1
+        mark = ""
+        if map_type == "IS" and final != "IS":
+            mark = "   <-- BLANKED"
+            blanked.append((key, method, alias))
+        print(f"{key:26s} {map_type:8s} {final:6s} {str(bool(alias)):>7s}  {method}{mark}")
+
+    print("-" * 92)
+    print(f"\n  mappings declaring type=IS      : {is_declared}")
+    print(f"  accounts ending up classified IS: {is_final}")
+    if blanked:
+        print(f"\n  ⚠️  {len(blanked)} IS mapping(s) lost their classification because they were")
+        print(f"      resolved WITHOUT a matched alias and NOT via a manual override:")
+        for key, method, alias in blanked:
+            print(f"    {key:26s} matched_alias={alias!r}  resolution_method={method!r}")
+        print(f"\n      These accounts extract fine -- only the statement_type label is")
+        print(f"      blank, which is why an IS-filtered view reports none of them.")
+        print(f"      Two ways to restore it, depending on what the file needs:")
+        print(f"        (a) add the sheet's actual name/heading as an alias for that")
+        print(f"            mapping key in mappings.yml, so it resolves via alias; or")
+        print(f"        (b) separate the two uses of the field -- keep the confidence")
+        print(f"            gate for the annualisation decision, but still record the")
+        print(f"            declared type for classification. That is a code change in")
+        print(f"            workbook.py and affects every databook, so confirm the")
+        print(f"            intended behaviour before doing it.")
+    elif is_declared == 0:
+        print("\n  ⚠️  No mapping declared type=IS at all -- the income-statement sheets")
+        print("      were never matched to an IS mapping key in the first place. Check")
+        print("      the sheet names against mappings.yml's aliases (run with")
+        print("      --list-sheets to see what this file actually contains).")
+    else:
+        print("\n  ✅ Every IS mapping kept its classification.")
+    return 0
+
+
 def dump_remarks(args) -> int:
     """Prints the actual TEXT of every remark the pipeline extracted per IS
     account, so a uniform remark count can be judged rather than guessed at.
@@ -481,6 +564,9 @@ def main() -> int:
                           "compact line per account plus an aggregate across all files -- use this "
                           "to see how often the cap actually bites across a whole portfolio "
                           "instead of judging from a single entity")
+    ap.add_argument("--diagnose-statement-type", action="store_true",
+                     help="explain per account why it is or isn't classified as IS -- run this "
+                          "when a databook's income statement doesn't show up at all")
     ap.add_argument("--dump-remarks", action="store_true",
                      help="print the actual TEXT of every extracted remark per IS account, and "
                           "judge whether they're account-specific or one shared boilerplate -- "
@@ -492,6 +578,9 @@ def main() -> int:
 
     if args.dump_remarks:
         return dump_remarks(args)
+
+    if args.diagnose_statement_type:
+        return diagnose_statement_type(args)
 
     if args.list_sheets:
         from openpyxl import load_workbook

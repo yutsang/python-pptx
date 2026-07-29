@@ -52,36 +52,76 @@ _TIEOUT_LEAK_RE = re.compile(r"\bcheck\b|对账单|對賬單|差异数|recon(cil
 _CHI_SENTENCE_SPLIT_RE = re.compile(r"[。；;]")
 
 
-def extract_bullets(pptx_path: str):
-    """{account_label: full bullet text} for every '■ <account> - <text>'
-    bullet in the deck. A long account can be split across slots with a
-    '(cont'd)' marker, so fragments are stitched back together under one
-    label -- otherwise a continuation looks like a separate, truncated
-    account and its remark uptake is judged against half the text."""
+def _iter_text_shapes(shapes):
+    """Yields every text-bearing shape, descending into groups -- a shape
+    inside a group is not reachable from slide.shapes directly."""
+    for shape in shapes:
+        if shape.shape_type == 6 and hasattr(shape, "shapes"):  # MSO_SHAPE_TYPE.GROUP
+            yield from _iter_text_shapes(shape.shapes)
+            continue
+        if getattr(shape, "has_text_frame", False):
+            yield shape
+
+
+# The generator writes bullets as "■ <key> - <text>" (see pptx.py's
+# key_prefix), but a deck can arrive with the marker stripped, replaced by
+# PowerPoint's own list formatting, or using a different dash -- so match a
+# family of markers and both dash characters rather than one literal.
+_BULLET_MARKERS = ("■", "●", "▪", "•", "◆", "-")
+_LABEL_SPLIT_RE = re.compile(r"\s+[-–—]\s+")
+
+
+def extract_bullets(pptx_path: str, debug: bool = False):
+    """{account_label: full bullet text} for every account bullet in the
+    deck. A long account can be split across slots with a '(cont'd)' marker,
+    so fragments are stitched back together under one label -- otherwise a
+    continuation looks like a separate, truncated account and its remark
+    uptake is judged against half the text.
+
+    Returns (bullets, order, diagnostics). diagnostics is only populated
+    when nothing matched, so the caller can show what the deck actually
+    contains instead of silently reporting zero accounts."""
     prs = Presentation(pptx_path)
-    bullets = {}
-    order = []
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if not shape.has_text_frame:
-                continue
-            for line in shape.text_frame.text.split("\n"):
+    bullets, order = {}, []
+    sample_lines, shape_names = [], []
+
+    for slide_idx, slide in enumerate(prs.slides, 1):
+        for shape in _iter_text_shapes(slide.shapes):
+            text = shape.text_frame.text or ""
+            if text.strip():
+                shape_names.append(f"slide {slide_idx} / {shape.name!r} ({len(text)} chars)")
+            for line in text.split("\n"):
                 s = line.strip()
-                if not s.startswith("■"):
+                if not s:
                     continue
-                body = s.lstrip("■").strip()
-                if " - " in body:
-                    label, text = body.split(" - ", 1)
+                if len(sample_lines) < 12:
+                    sample_lines.append(f"slide {slide_idx} [{shape.name}] {s[:110]}")
+                marker = next((m for m in _BULLET_MARKERS if s.startswith(m)), None)
+                if marker is None:
+                    continue
+                body = s[len(marker):].strip()
+                parts = _LABEL_SPLIT_RE.split(body, maxsplit=1)
+                if len(parts) == 2:
+                    label, body_text = parts
                 else:
-                    label, text = body, ""
-                label = label.strip()
-                label = re.sub(r"\s*\((cont'd|续|續)\)\s*$", "", label).strip()
+                    # No dash separator: treat a short leading line as a
+                    # label-only bullet rather than dropping it entirely.
+                    label, body_text = body, ""
+                    if len(label) > 30:
+                        continue
+                label = re.sub(r"\s*[(（](cont'd|续|續)[)）]\s*$", "", label.strip()).strip()
+                if not label:
+                    continue
                 if label in bullets:
-                    bullets[label] += " " + text.strip()
+                    bullets[label] += " " + body_text.strip()
                 else:
-                    bullets[label] = text.strip()
+                    bullets[label] = body_text.strip()
                     order.append(label)
-    return bullets, order
+
+    diagnostics = {}
+    if not bullets:
+        diagnostics = {"shapes": shape_names[:20], "sample_lines": sample_lines}
+    return bullets, order, diagnostics
 
 
 def _distinctive_tokens(prose: str):
@@ -149,9 +189,27 @@ def main() -> int:
     dfs = result["dfs"]
     print(f"{len(dfs)} account(s) in the databook. Language: {result.get('language')}")
 
-    bullets, order = extract_bullets(args.pptx)
+    bullets, order, diagnostics = extract_bullets(args.pptx)
     print(f"{len(bullets)} account bullet(s) in the deck: {', '.join(order[:12])}"
           f"{' ...' if len(order) > 12 else ''}\n")
+
+    if not bullets:
+        print("=" * 78)
+        print("❌ NO ACCOUNT BULLETS FOUND -- stopping before the per-account comparison,")
+        print("   which would just report 'not found' for every account and tell you nothing.")
+        print("=" * 78)
+        print("\n  Text-bearing shapes in this deck:")
+        for s in diagnostics.get("shapes") or ["    (none -- the deck has no readable text at all)"]:
+            print(f"    {s}")
+        print("\n  First lines of actual text found:")
+        for line in diagnostics.get("sample_lines") or ["    (none)"]:
+            print(f"    {line}")
+        print("\n  Expected a line starting with one of "
+              f"{', '.join(repr(m) for m in _BULLET_MARKERS)} followed by '<account> - <text>'")
+        print("  (the generator writes '■ <key> - ' -- see pptx.py's key_prefix).")
+        print("  Paste the sample lines above back and the parser can be matched to this")
+        print("  deck's actual shape; the databook side of this tool is unaffected.")
+        return 1
 
     # Deck labels are display names; databook keys are mapping keys. Match
     # exactly first, then by containment either way, before giving up --
