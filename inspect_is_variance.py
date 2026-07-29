@@ -93,6 +93,147 @@ def _fmt_pct(p):
     return "n/a (from nil)" if p is None else f"{p:+,.1f}%"
 
 
+def _entity_from_filename(path: str) -> str:
+    """Best-effort entity name from a databook filename. Real files are named
+    like 'Project Mint.Portfolio I.<entity>.xlsx' or
+    'Project Mint.Portfolio I.databook. <entity>.xlsx', so the last
+    dot-separated component is the entity. entity_name is only a soft filter
+    for per-entity files (verified: passing a wrong name still extracts every
+    account), but it does matter on a roll-up/master workbook where several
+    entities' blocks share one sheet -- pass --entity explicitly for those."""
+    import os
+    stem = os.path.splitext(os.path.basename(path))[0]
+    last = stem.split(".")[-1].strip()
+    return last or stem
+
+
+def analyse_one(path: str, entity: str, threshold: float, sheet=None,
+                 financials_from=None, financials_sheet=None):
+    """Runs the variance analysis for one databook and returns structured
+    results, so the single-file (detailed) and batch (aggregate) modes share
+    exactly one implementation of the measurement itself."""
+    result = process_workbook_data(temp_path=path, entity_name=entity, selected_sheet=sheet,
+                                    financials_from=financials_from,
+                                    financials_sheet=financials_sheet)
+    dfs = result["dfs"]
+    out = {"language": result.get("language"), "accounts": [], "revenue_growth": None}
+    for key, df in dfs.items():
+        integrity = df.attrs.get("integrity") or {}
+        if str(integrity.get("statement_type", "")).upper() != "IS":
+            continue
+        months = integrity.get("annualization_months")
+        series = _total_row_values(df)
+        if len(series) < 2:
+            continue
+        full = series[:-1] if (months and 0 < months < 12) else series
+        biggest, from_nil = 0.0, False
+        for (_p0, v0), (_p1, v1) in zip(full, full[1:]):
+            p = _pct(v0, v1)
+            if p is not None and abs(p) >= threshold:
+                biggest = max(biggest, abs(p))
+            elif p is None and v1 != 0:
+                from_nil = True
+        notes = df.attrs.get("supporting_notes") or []
+        rhs = df.attrs.get("adjacent_detail_rows") or []
+        linked = df.attrs.get("table_linked_remarks") or []
+        cap = _cap_for(key)
+        low = key.lower()
+        latest_growth = _pct(full[-2][1], full[-1][1]) if len(full) >= 2 else None
+        if any(n in low for n in ("operating income", "revenue")) and "non-operating" not in low:
+            out["revenue_growth"] = latest_growth
+        out["accounts"].append({
+            "key": key, "series": series, "full": full, "months": months,
+            "biggest": biggest, "from_nil": from_nil,
+            "notes": len(notes), "rhs": len(rhs), "linked": len(linked),
+            "has_expl": bool(notes or rhs or linked),
+            "cap": cap, "tightest": cap == _TIGHTEST,
+            "latest_growth": latest_growth,
+            "flagged": biggest >= threshold and cap == _TIGHTEST and bool(notes or rhs or linked),
+        })
+    return out
+
+
+def run_batch(args) -> int:
+    """Sweeps every .xlsx in a directory. The point is sample size: deciding
+    how far to loosen a length cap from ONE entity risks tuning to an
+    outlier, so this reports how often the cap actually binds across a whole
+    portfolio, and how much explanatory material is sitting unused."""
+    import glob
+    import os
+
+    paths = sorted(glob.glob(os.path.join(args.path, "*.xlsx")))
+    paths = [p for p in paths if not os.path.basename(p).startswith("~$")]
+    if not paths:
+        print(f"❌ no .xlsx files found in {args.path!r} (for a single file, drop --batch)")
+        return 1
+
+    print(f"Sweeping {len(paths)} workbook(s) in {args.path!r}\n")
+    all_flagged, per_file, failed = [], [], []
+    total_is = 0
+
+    for p in paths:
+        name = os.path.basename(p)
+        entity = args.entity or _entity_from_filename(p)
+        try:
+            res = analyse_one(p, entity, args.threshold, sheet=args.sheet,
+                               financials_from=args.financials_from,
+                               financials_sheet=args.financials_sheet)
+        except Exception as exc:
+            print(f"--- {name}\n    ⚠️ skipped: {type(exc).__name__}: {str(exc)[:120]}")
+            failed.append((name, f"{type(exc).__name__}: {str(exc)[:120]}"))
+            continue
+        accts = res["accounts"]
+        if not accts:
+            print(f"--- {name}\n    (no IS accounts -- BS-only file, or a roll-up needing --entity)")
+            continue
+        total_is += len(accts)
+        flagged = [a for a in accts if a["flagged"]]
+        all_flagged.extend((name, a) for a in flagged)
+        per_file.append((name, len(accts), len(flagged), res["revenue_growth"]))
+        rg = res["revenue_growth"]
+        rg_s = "n/a" if rg is None else f"{rg:+,.1f}%"
+        print(f"--- {name}  [entity={entity!r}, lang={res['language']}]")
+        print(f"    {len(accts)} IS account(s), revenue growth {rg_s}, {len(flagged)} flagged")
+        for a in sorted(accts, key=lambda x: -x["biggest"]):
+            if a["biggest"] < args.threshold:
+                continue
+            mark = "  <-- FLAGGED (tightest cap + has material)" if a["flagged"] else ""
+            print(f"      {a['key']:32s} {a['biggest']:>9,.0f}%   "
+                  f"notes/rhs/linked={a['notes']}/{a['rhs']}/{a['linked']}"
+                  f"   {'TIGHT' if a['tightest'] else 'wider'} cap{mark}")
+        print()
+
+    print("=" * 88)
+    print("AGGREGATE")
+    print("=" * 88)
+    print(f"  workbooks analysed        : {len(per_file)}")
+    if failed:
+        print(f"  workbooks skipped (error) : {len(failed)}")
+    print(f"  IS accounts total         : {total_is}")
+    print(f"  flagged (big move + material available + tightest cap): {len(all_flagged)}")
+    if total_is:
+        print(f"  => {len(all_flagged) / total_is * 100:.1f}% of IS accounts are currently")
+        print(f"     capped below what their own data and remarks would support")
+
+    if all_flagged:
+        print(f"\n  Flagged accounts, largest movement first:")
+        for name, a in sorted(all_flagged, key=lambda t: -t[1]["biggest"]):
+            print(f"    {a['biggest']:>9,.0f}%  {a['key']:30s}  "
+                  f"material={a['notes']}/{a['rhs']}/{a['linked']}  ({name})")
+        by_account = {}
+        for _name, a in all_flagged:
+            by_account.setdefault(a["key"], 0)
+            by_account[a["key"]] += 1
+        print(f"\n  Which account types hit the cap most often:")
+        for key, n in sorted(by_account.items(), key=lambda kv: -kv[1]):
+            print(f"    {n:>3d} x  {key}")
+    if failed:
+        print(f"\n  Skipped:")
+        for name, err in failed:
+            print(f"    {name}: {err}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", help="path to the databook .xlsx")
@@ -110,7 +251,15 @@ def main() -> int:
     ap.add_argument("--financials-sheet", default=None,
                      help="name of the Financials sheet to source from (needed when it lives in "
                           "a master/roll-up sheet rather than a per-entity tab)")
+    ap.add_argument("--batch", action="store_true",
+                     help="treat `path` as a DIRECTORY and sweep every .xlsx in it, printing one "
+                          "compact line per account plus an aggregate across all files -- use this "
+                          "to see how often the cap actually bites across a whole portfolio "
+                          "instead of judging from a single entity")
     args = ap.parse_args()
+
+    if args.batch:
+        return run_batch(args)
 
     if args.list_sheets:
         from openpyxl import load_workbook
@@ -121,8 +270,8 @@ def main() -> int:
         return 0
 
     if not args.entity:
-        print("❌ --entity is required (or use --list-sheets to see what's in this file first).")
-        return 1
+        args.entity = _entity_from_filename(args.path)
+        print(f"(no --entity given; derived {args.entity!r} from the filename)")
 
     print(f"Loading {args.path!r} (entity={args.entity!r})...")
     result = process_workbook_data(temp_path=args.path, entity_name=args.entity,
