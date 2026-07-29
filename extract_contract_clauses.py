@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 
 from contract_vision import (
     build_page_data_urls,
@@ -224,6 +225,100 @@ def _payment_scan_prompt() -> str:
     )
 
 
+def _payment_structure_prompt(filename: str, page_num: int) -> str:
+    return (
+        "你是表格结构识别员。只识别当前付款明细表的结构，不抄数据行。"
+        "按页面从左到右返回所有原始列；多层表头用『上层 / 下层』合并，"
+        "不得省略税率、单价、面积、天数、不含税金额、税额、含税金额、合计、备注等可见列。"
+        f"\n源文件名: {filename}\n页面: {page_num}\n"
+        '输出 JSON：{"table_title":"","unit":"","columns":["原表列一","原表列二"]}。'
+        "列名必须忠实使用图片文字且保持原顺序，只输出 JSON。"
+    )
+
+
+def _payment_dynamic_rows_prompt(
+    filename: str,
+    page_num: int,
+    tile_num: int,
+    tile_count: int,
+    columns: List[str],
+) -> str:
+    return (
+        "你是付款表格逐格抄录员。图片是原表的一段高解像横向切片。"
+        "只抄图中完整可见的数据行，边界被截断的行不要输出。"
+        "每行必须严格按给定原表列顺序输出相同数量的单元格；保留原文、原小数位及数字位数，"
+        "不得计算、补全、改写或省略列。\n"
+        f"源文件名: {filename}\n页面: {page_num}\n切片: {tile_num}/{tile_count}\n"
+        f"原表列（共 {len(columns)} 列）: {json.dumps(columns, ensure_ascii=False)}\n"
+        '输出 JSON：{"rows":[["单元格一","单元格二"]]}。只输出 JSON。'
+    )
+
+
+def _dynamic_columns(data: Dict[str, Any]) -> List[str]:
+    values = data.get("columns")
+    if not isinstance(values, list):
+        return []
+    columns: List[str] = []
+    used: Dict[str, int] = {}
+    for index, value in enumerate(values, 1):
+        name = re.sub(r"\s+", " ", str(value or "")).strip() or f"未命名列{index}"
+        used[name] = used.get(name, 0) + 1
+        if used[name] > 1:
+            name = f"{name}_{used[name]}"
+        columns.append(name)
+    return columns
+
+
+def _dynamic_rows(data: Dict[str, Any], width: int) -> List[List[str]]:
+    values = data.get("rows")
+    if not isinstance(values, list):
+        return []
+    rows: List[List[str]] = []
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        row = [str(cell).strip() if cell is not None else "" for cell in value[:width]]
+        row.extend([""] * (width - len(row)))
+        if any(row):
+            rows.append(row)
+    return rows
+
+
+def _merge_dynamic_review(first: List[List[str]], reviewed: List[List[str]], width: int) -> List[List[str]]:
+    if not reviewed:
+        return first
+    merged: List[List[str]] = []
+    for index in range(max(len(first), len(reviewed))):
+        original = first[index] if index < len(first) else [""] * width
+        correction = reviewed[index] if index < len(reviewed) else [""] * width
+        merged.append([
+            correction[col] if correction[col] else original[col]
+            for col in range(width)
+        ])
+    return merged
+
+
+def _dynamic_row_key(columns: List[str], row: List[str]) -> tuple:
+    preferred = [
+        index for index, name in enumerate(columns)
+        if any(token in name for token in ("期次", "序号", "期间", "开始", "结束", "日期"))
+    ]
+    indices = preferred[:3] or list(range(min(3, len(row))))
+    key = tuple(re.sub(r"[\s年月日./\-]", "", row[index]) for index in indices)
+    return key if any(key) else tuple(row)
+
+
+def _payment_dynamic_review_prompt(columns: List[str], first: Dict[str, Any]) -> str:
+    return (
+        "逐格复核同一张高解像表格切片及第一次抄录。重点核对每个数字字符、"
+        "小数点、零、日期和横向列位置。只能依据图片更正，不得计算。"
+        "不得用空白删除第一次已有值。\n"
+        f"原表列: {json.dumps(columns, ensure_ascii=False)}\n"
+        f"第一次抄录: {json.dumps(first, ensure_ascii=False)}\n"
+        '按相同格式输出 JSON：{"rows":[["..."]]}，每行列数必须一致。'
+    )
+
+
 def _payment_review_prompt(filename: str, page_num: int, first_pass: Dict[str, Any]) -> str:
     return (
         "你是金额抄录复核员。对照同一张高解像表格图片，逐行、逐字符核对下面第一次抄录。"
@@ -417,114 +512,111 @@ def _scan_payment_pages(client: AIClient, pdf: Path, batch_size: int) -> List[in
     return sorted(candidates)
 
 
-def _extract_payment_page(client: AIClient, pdf: Path, page_num: int) -> List[List[str]]:
-    """Transcribe and independently review one table page at full resolution."""
+def _extract_payment_page(client: AIClient, pdf: Path, page_num: int) -> Dict[str, Any]:
+    """Recover the source table's full schema and rows at row-level resolution."""
     raw = rasterize_page_jpeg(
         pdf,
         page_num,
         max_bytes=2_450_000,
-        dpi_start=220,
-        max_edge_start=3200,
+        dpi_start=240,
+        max_edge_start=3400,
     )
     image = {"type": "image_url", "image_url": {"url": to_data_url(raw)}}
-    first_payload: List[Any] = [
-        {"type": "text", "text": _payment_prompt(pdf.name) + f"\n[page {page_num}]"},
+    structure_payload: List[Any] = [
+        {"type": "text", "text": _payment_structure_prompt(pdf.name, page_num)},
         image,
     ]
-    first = _call_json(client, first_payload)
-    review_payload: List[Any] = [
-        {"type": "text", "text": _payment_review_prompt(pdf.name, page_num, first)},
-        image,
-    ]
-    reviewed = _call_json(client, review_payload)
-    first_rows = _payment_rows(first)
-    reviewed_rows = _payment_rows(reviewed)
-    rows = _merge_reviewed_rows(first_rows, reviewed_rows)
-    populated, total = _amount_coverage(rows)
-    needs_zoom = total and (populated < total or 8 <= total < 12)
-    if needs_zoom:
-        tile_count = 6 if total >= 8 else 3
-        tile_dpi = 400 if total >= 8 else 300
-        print(
-            f"  (zoom) {populated}/{total} row(s) have amounts; "
-            f"reading {tile_count} enlarged strips at {tile_dpi} DPI"
-        )
-        zoomed_rows: List[List[str]] = []
-        for tile_num, tile_raw in rasterize_page_tile_jpegs(
-            pdf,
+    structure = _call_json(client, structure_payload)
+    columns = _dynamic_columns(structure)
+    if not columns:
+        columns = list(_PAYMENT_HEADERS)
+    print(f"  (schema page {page_num}) {len(columns)} source column(s)")
+
+    tile_count = 8
+    collected: Dict[tuple, List[str]] = {}
+    order: List[tuple] = []
+    for tile_num, tile_raw in rasterize_page_tile_jpegs(
+        pdf,
+        page_num,
+        tile_count=tile_count,
+        dpi=450,
+    ):
+        tile_image = {"type": "image_url", "image_url": {"url": to_data_url(tile_raw)}}
+        prompt = _payment_dynamic_rows_prompt(
+            pdf.name,
             page_num,
-            tile_count=tile_count,
-            dpi=tile_dpi,
-        ):
-            tile_prompt = (
-                _payment_prompt(pdf.name)
-                + f"\n[page {page_num}, enlarged strip {tile_num}/{tile_count}]\n"
-                + "这是同一表格页的横向放大片段。只抄录图中完整可见的行；"
-                + "边界处被截断的行不要输出。务必读取租赁费、物业服务费和合计数字。"
-            )
-            tile_image = {"type": "image_url", "image_url": {"url": to_data_url(tile_raw)}}
-            tile_payload: List[Any] = [
-                {"type": "text", "text": tile_prompt},
-                tile_image,
-            ]
-            tile_first = _call_json(client, tile_payload)
-            tile_rows = _payment_rows(tile_first)
-            if total >= 8 and tile_rows:
-                tile_review_payload: List[Any] = [
-                    {
-                        "type": "text",
-                        "text": _payment_review_prompt(pdf.name, page_num, tile_first)
-                        + f"\n当前图片是放大片段 {tile_num}/{tile_count}。",
-                    },
-                    tile_image,
-                ]
-                tile_rows = _merge_reviewed_rows(
-                    tile_rows,
-                    _payment_rows(_call_json(client, tile_review_payload)),
-                )
-            zoomed_rows.extend(tile_rows)
-        rows = _merge_zoom_rows(rows, zoomed_rows)
-        zoom_populated, zoom_total = _amount_coverage(rows)
-        print(f"  (zoom) amount coverage after enlarged strips: {zoom_populated}/{zoom_total}")
-        if zoom_total and zoom_populated == 0:
-            return []
-    inconsistent = sum(_arithmetic_consistent(row) is False for row in rows)
-    if inconsistent:
-        print(f"  (warning) {inconsistent} row(s) fail amount-sum validation")
-    return rows
+            tile_num,
+            tile_count,
+            columns,
+        )
+        first_payload: List[Any] = [{"type": "text", "text": prompt}, tile_image]
+        first = _call_json(client, first_payload)
+        first_rows = _dynamic_rows(first, len(columns))
+        if not first_rows:
+            continue
+        review_payload: List[Any] = [
+            {"type": "text", "text": _payment_dynamic_review_prompt(columns, first)},
+            tile_image,
+        ]
+        reviewed = _call_json(client, review_payload)
+        tile_rows = _merge_dynamic_review(
+            first_rows,
+            _dynamic_rows(reviewed, len(columns)),
+            len(columns),
+        )
+        for row in tile_rows:
+            key = _dynamic_row_key(columns, row)
+            existing = collected.get(key)
+            if existing is None:
+                collected[key] = row
+                order.append(key)
+            elif sum(bool(cell) for cell in row) > sum(bool(cell) for cell in existing):
+                collected[key] = row
+
+    rows = [collected[key] for key in order]
+    return {
+        "title": _get_str(structure, "table_title", "title"),
+        "unit": _get_str(structure, "unit", "金额单位"),
+        "columns": columns,
+        "rows": rows,
+        "source_page": page_num,
+    }
 
 
-def extract_payment(client: AIClient, pdf: Path, max_pages: int) -> List[List[str]]:
+def extract_payment(client: AIClient, pdf: Path, max_pages: int) -> List[Dict[str, Any]]:
     pages = _scan_payment_pages(client, pdf, batch_size=max_pages)
     if not pages:
         print(f"  (scan) checked all {pdf_page_count(pdf)} page(s); no payment table found")
         return []
     print(f"  (scan) payment table page(s): {pages}")
-    rows: List[List[str]] = []
-    seen = set()
+    tables: List[Dict[str, Any]] = []
     for page_num in pages:
-        page_rows = _extract_payment_page(client, pdf, page_num)
-        print(f"  (page {page_num}) transcribed + reviewed: {len(page_rows)} row(s)")
-        for row in page_rows:
-            key = tuple(row[:7])
-            if key in seen:
-                continue
-            seen.add(key)
-            rows.append(row)
-    return rows
+        table = _extract_payment_page(client, pdf, page_num)
+        row_count = len(table.get("rows", []))
+        print(f"  (page {page_num}) complete-table transcription: {row_count} row(s)")
+        if row_count:
+            tables.append(table)
+    return tables
 
 
-def _write_utility_wb(rows_by_file: List[tuple], out_path: Path) -> None:
+def _write_utility_wb(rows_by_folder: List[tuple], out_path: Path) -> None:
+    """One global workbook: one sheet per folder, all folder PDFs as rows."""
     wb = Workbook()
     wb.remove(wb.active)
     used = set()
-    for filename, row in rows_by_file:
-        ws = wb.create_sheet(title=_safe_sheet_name(Path(filename).stem, used))
+    for folder_name, rows in rows_by_folder:
+        ws = wb.create_sheet(title=_safe_sheet_name(folder_name, used))
         ws.append(_UTILITY_HEADERS)
-        ws.append(row)
+        for row in rows:
+            ws.append(row)
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
         ws.column_dimensions["A"].width = 40
         for col in "BCDEFGHI":
             ws.column_dimensions[col].width = 26
+    if not wb.worksheets:
+        ws = wb.create_sheet("水电约定")
+        ws.append(_UTILITY_HEADERS)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
 
@@ -533,16 +625,43 @@ def _write_payment_wb(rows_by_file: List[tuple], out_path: Path) -> None:
     wb = Workbook()
     wb.remove(wb.active)
     used = set()
-    for filename, rows in rows_by_file:
+    for filename, tables in rows_by_file:
         ws = wb.create_sheet(title=_safe_sheet_name(Path(filename).stem, used))
-        ws.append(_PAYMENT_HEADERS)
-        for r in rows:
-            ws.append(r)
-        ws.column_dimensions["A"].width = 12
-        for col in "BCDEFGHIJ":
-            ws.column_dimensions[col].width = 20
+        ws.append(["来源文件", filename])
+        if not tables:
+            ws.append(["状态", "未识别到付款明细表"])
+            continue
+        for table_index, table in enumerate(tables, 1):
+            if table_index > 1:
+                ws.append([])
+            columns = list(table.get("columns") or [])
+            rows = list(table.get("rows") or [])
+            ws.append(["表格标题", table.get("title") or f"付款明细表 {table_index}"])
+            ws.append(["金额单位", table.get("unit") or "", "来源页码", table.get("source_page") or ""])
+            ws.append(columns)
+            for row in rows:
+                ws.append(row)
+            header_row = ws.max_row - len(rows)
+            ws.freeze_panes = f"A{header_row + 1}"
+            for index, column in enumerate(columns, 1):
+                values = [str(column)] + [
+                    str(row[index - 1]) for row in rows if index <= len(row)
+                ]
+                width = min(35, max(10, max(len(value) for value in values) + 2))
+                letter = get_column_letter(index)
+                ws.column_dimensions[letter].width = max(ws.column_dimensions[letter].width or 0, width)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
+
+
+def _utility_output_path(root: Path) -> Path:
+    if root.is_file():
+        base = root.parent.parent
+    elif any(root.glob("*.pdf")):
+        base = root.parent
+    else:
+        base = root
+    return base / "合同_水电约定.xlsx"
 
 
 def main() -> int:
@@ -552,7 +671,7 @@ def main() -> int:
         epilog=(
             "Examples:\n"
             "  python extract_contract_clauses.py contracts/成都\n"
-            "      # writes 合同_水电约定.xlsx + 合同_每期支付明细.xlsx into contracts/成都/\n"
+            "      # writes one global utility workbook + one folder payment workbook\n"
             "  python extract_contract_clauses.py contracts --max-files 5\n"
             "      # every project folder, limit 5 PDFs each (trial run)\n"
         ),
@@ -590,6 +709,7 @@ def main() -> int:
         print(f"❌ Could not initialize AIClient: {exc}")
         return 1
 
+    utility_by_folder: List[tuple] = []
     for folder in folders:
         pdfs = _collect_pdfs(folder)
         if args.max_files and args.max_files > 0:
@@ -610,31 +730,41 @@ def main() -> int:
             print(f"\n[{i}/{len(pdfs)}] {pdf.name}")
             if not args.skip_utility:
                 try:
-                    utility_rows.append((pdf.name, extract_utility(client, pdf, args.max_pages)))
+                    utility_rows.append(extract_utility(client, pdf, args.max_pages))
                     print("  ✅ 水电约定")
                 except Exception as exc:
                     fail += 1
-                    utility_rows.append((pdf.name, [pdf.name] + [f"抽取失败: {exc}"] + [""] * 7))
+                    utility_rows.append([pdf.name] + [f"抽取失败: {exc}"] + [""] * 7)
                     print(f"  ❌ 水电约定: {exc}")
             if not args.skip_payment:
                 try:
-                    rows = extract_payment(client, pdf, args.max_pages)
-                    payment_rows.append((pdf.name, rows))
-                    print(f"  ✅ 支付明细 ({len(rows)} 行)")
+                    tables = extract_payment(client, pdf, args.max_pages)
+                    payment_rows.append((pdf.name, tables))
+                    row_count = sum(len(table.get("rows", [])) for table in tables)
+                    print(f"  ✅ 支付明细 ({len(tables)} 表 / {row_count} 行)")
                 except Exception as exc:
                     fail += 1
-                    payment_rows.append((pdf.name, [[""] * 9 + [f"抽取失败: {exc}"]]))
+                    payment_rows.append((pdf.name, [{
+                        "title": "抽取失败",
+                        "unit": "",
+                        "columns": ["错误"],
+                        "rows": [[str(exc)]],
+                        "source_page": "",
+                    }]))
                     print(f"  ❌ 支付明细: {exc}")
 
         if not args.skip_utility:
-            out_u = folder / "合同_水电约定.xlsx"
-            _write_utility_wb(utility_rows, out_u)
-            print(f"\nWrote {out_u}")
+            utility_by_folder.append((folder.name, utility_rows))
         if not args.skip_payment:
             out_p = folder / "合同_每期支付明细.xlsx"
             _write_payment_wb(payment_rows, out_p)
             print(f"Wrote {out_p}")
         print(f"FOLDER SUMMARY: {len(pdfs) - min(fail, len(pdfs))} ok / {fail} failed")
+
+    if not args.skip_utility:
+        out_u = _utility_output_path(root)
+        _write_utility_wb(utility_by_folder, out_u)
+        print(f"\nWrote global utility workbook: {out_u}")
 
     print("\nDone. Open the xlsx files above and paste back any rows that look wrong.")
     return 0
