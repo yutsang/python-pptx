@@ -1681,8 +1681,9 @@ class PromptStylePack:
         if self.language == "Chi":
             return (
                 "使用自然段落表达，不要使用要点、粗体或元评论。"
-                "金额格式：人民币<数字>万元 / 人民币<数字>亿元（1位小数），"
-                "金额前缀'人民币'与数字之间不留空格，例如'人民币59.3万元'、'人民币1.6亿元'。"
+                "金额格式：<数字>万元 / <数字>亿元（1位小数），默认**不写**'人民币'前缀，例如'59.3万元'、'1.6亿元'。"
+                "'人民币'仅在需要与外币区分时使用（如'7,000万美元（折合人民币4.88亿元）'），全篇通常不超过1-2次；"
+                "同一句话内绝不允许出现两次或以上'人民币'。"
                 "换算量级门槛（必须遵守，不可仅凭习惯判断）：金额达到1亿（100,000,000）或以上必须使用'亿元'，"
                 "不可写成四位数以上的'万元'（例如人民币30,650.0万元是错误写法，因为30,650万=3.065亿，"
                 "正确写法为'人民币3.07亿元'）；金额在1万至9,999.9万之间使用'万元'；金额低于1万直接写原数（如'人民币5,930元'）。"
@@ -1708,9 +1709,11 @@ class PromptStylePack:
                 "禁止无信息量的同义重复句：如某科目没有真正意义上的多项构成（只有单一金额），不要为了'交代构成'硬写"
                 "出'全部为XX明细余额'、'均为单项XX明细'这类等于重复科目名称、没有新增信息的句子——应直接省略构成说明，"
                 "仅陈述金额即可。"
-                "篇幅控制：资产负债表科目每条评论约30-70字（最多3-4句），但投资性房地产、其他应付款等多构成项科目"
-                "应相应放宽至约150-280字，不得因追求'简洁'把多构成项科目压缩到与货币资金等简单科目相同的篇幅；"
-                "利润表科目约80-150字，营业收入/营业成本须保留每一重要构成项的多期金额，篇幅可达约180字。"
+                "篇幅控制（这些是**上限，不是需要写满的配额**）：资产负债表科目每条评论最多约70字（3-4句）；"
+                "投资性房地产、其他应付款等确有多个实质构成项的科目可放宽至约280字；利润表科目最多约150字，"
+                "营业收入/营业成本可达约180字。**重要**：若该科目本身没有值得说明的内容（余额小、构成单一、"
+                "无异常、无调整），一到两句即为正确答案，不得为了接近上限而铺陈——凑字数正是评论读起来像"
+                "机器生成的主因。真实交付稿中最短的评论仅40余字，最长约280字，长短由重要性决定。"
                 "日期格式统一为'yyyy年mm月dd日'。"
             )
         return (
@@ -1732,13 +1735,97 @@ class PromptStylePack:
             "('mainly comprised A, B') is only appropriate when that sub-stream is zero in EVERY period — that is a "
             "different case from a single zero period within an otherwise-active multi-period trend, and the two "
             "must not be conflated. "
-            "Length cap: balance-sheet bullets 30-70 words (max 3-4 sentences), except multi-component accounts "
-            "(e.g. investment properties, other payables) which should extend to roughly 150-280 words — do not "
-            "compress a multi-component account down to the same length as a simple one just to be 'concise'; "
-            "income-statement bullets 80-150 words, with operating income/operating costs preserving every "
-            "material component's multi-period figures even if that extends the bullet to roughly 180 words. "
+            "Length (these are CEILINGS, not quotas to fill): balance-sheet bullets up to 70 words (3-4 "
+            "sentences); accounts with genuinely multiple material components (investment properties, other "
+            "payables) may extend to roughly 280 words; income-statement bullets up to 150 words, with "
+            "operating income/costs up to roughly 180. **Important**: where an account has nothing worth "
+            "saying (small balance, single component, no anomaly, no adjustment), one or two sentences IS the "
+            "correct answer — do not pad towards the ceiling. Padding is the main reason commentary reads as "
+            "machine-generated. In a real deliverable the shortest bullet ran ~40 characters and the longest "
+            "~280; the spread is driven by materiality. "
             "Dates in 'dd mmmm yyyy' format. "
             "Keep a professional finance due diligence tone."
+        )
+
+    def fdd_judgement_rules(self) -> str:
+        """What deserves analysis and what doesn't, plus the register an FDD
+        report is actually written in.
+
+        Measured against a real analyst deliverable for the same databook:
+        its paragraphs run 41-282 characters (median 91) while ours run
+        103-544 (median 248). The variation is not by account type -- it
+        tracks whether the account matters to a buyer. An immaterial balance
+        gets one line even when the databook has plenty of rows for it;
+        revenue gets several paragraphs because it is what is being bought.
+        Fixed per-account-type length caps cannot express that, and forcing
+        every account to fill its quota is the main source of the mechanical
+        feel the project team flagged -- padding reads as machine-written
+        even when each individual sentence is correct.
+
+        The same deck also uses registers ours never does: first-person work
+        performed (10% of paragraphs) and handing detail to a table (18%),
+        while over-mentioning proforma adjustments far less than we do
+        (20% vs our 57%).
+        """
+        if self.language == "Chi":
+            return (
+                "【尽调判断力——决定写多少】篇幅由该科目对买方的重要性决定，不由科目类型决定。"
+                "余额小、构成单一、无异常、无调整的科目，即使数据表里有很多行，也只写一到两句即可"
+                "（例如'截至<DATE>，预付款项无余额。以前年度余额主要为预付保险费'——这样一句就是完整且合格的评论）。"
+                "反之，涉及交易对价、盈利可持续性、关联方、一次性损益、示意性调整、承诺或或有事项的科目，"
+                "才值得展开。宁可简短而有信息量，不要为了凑篇幅而铺陈。"
+                "**判断标准**：这句话是否让买方知道了他原本不知道、且会影响其判断的事？"
+                "如果只是复述数据表里读者自己看得见的数字，就不要写。"
+                "\n【应当分析的】收入的可持续性与驱动（租户集中度、出租率、单价趋势、爬坡期）；"
+                "关联方交易的定价与条款；一次性或非经常性项目；会计政策及其影响（折旧年限、收入确认方法）；"
+                "我方提出的示意性调整及其理由；重大合同条款（租期、利率、抵押、还款计划）；"
+                "费用与收入变动不成比例之处；重大且原因不明的波动（应明说原因待确认）。"
+                "\n【不需要分析的】逐期逐项复述数据表已列示的金额变动；对无实质影响的小额科目做趋势描述；"
+                "把'占总变动额的X%'这类机械比例当作分析；为每一期变动都造一个原因。"
+                "\n【行文语气】使用尽调报告的实际语体：'系'、'主要为'、'主要包括'表述构成；"
+                "以第一人称说明所执行的工作与结论（'我方获取并核对了截至<DATE>的银行对账单，未发现显著差异'、"
+                "'我们将账面保证金明细核对至租约，未见明显差异'）——这是尽调报告区别于普通财务摘要的核心特征，"
+                "在数据或备注支持时应当使用；归因于管理层用'管理层表示...'；"
+                "如明细项目较多且已有表格列示，用简短一两句说明构成后以'明细如下：'带出表格，不要在正文逐项罗列。"
+                "\n【避免的语气】不要使用'呈现显著波动'、'呈现剧烈波动'、'急剧下降'、'大幅跃升'这类戏剧化描述——"
+                "尽调报告陈述事实与判断，不渲染。不要用'这一剧增主要源于X从零增加至Y'这种复述表格的句式。"
+            )
+        return (
+            "[DD JUDGEMENT -- HOW MUCH TO WRITE] Length follows how much the account matters to a "
+            "buyer, not what type of account it is. A small, single-component balance with no "
+            "anomaly and no adjustment gets one or two sentences even when the databook has many "
+            "rows for it (e.g. 'Prepayments had no balance as at <DATE>; prior-period balances "
+            "mainly represented prepaid insurance' is a complete and adequate bullet). Accounts "
+            "touching consideration, sustainability of earnings, related parties, one-off items, "
+            "proforma adjustments, commitments or contingencies are the ones worth expanding. "
+            "Prefer short and informative over padded. "
+            "**The test**: does this sentence tell the buyer something they did not already know "
+            "and that affects their view? If it merely restates a figure the reader can see in the "
+            "table, leave it out. "
+            "\n[WORTH ANALYSING] Sustainability and drivers of revenue (tenant concentration, "
+            "occupancy, unit rate trends, ramp-up); related-party pricing and terms; one-off or "
+            "non-recurring items; accounting policies and their effect (useful lives, revenue "
+            "recognition); our own proforma adjustments and the reason for them; material contract "
+            "terms (lease tenor, interest rate, security, repayment schedule); expenses moving out "
+            "of proportion to revenue; large movements whose cause is unclear (say the cause is "
+            "unconfirmed). "
+            "\n[NOT WORTH ANALYSING] Restating period-by-period figures already visible in the "
+            "table; narrating trends for immaterial balances; treating a mechanical ratio such as "
+            "'accounted for X% of the total movement' as analysis; manufacturing a cause for every "
+            "movement. "
+            "\n[REGISTER] Write as a DD report does: state composition with 'represented', "
+            "'mainly comprised', 'mainly entailed'; describe work performed and its conclusion in "
+            "the first person ('we obtained and checked the bank statements as at <DATE> and noted "
+            "no significant differences'; 'we agreed the deposit listing to the tenancy agreements "
+            "and noted no material differences') -- this is what distinguishes a DD report from an "
+            "ordinary financial summary, and should be used wherever the data or remarks support "
+            "it; attribute to management with 'management advised that...'; where a breakdown is "
+            "already tabulated, give one or two sentences of composition and hand off with 'the "
+            "breakdown is set out below' rather than reciting every line in prose. "
+            "\n[TONE TO AVOID] No dramatised description ('showed dramatic volatility', 'surged', "
+            "'plummeted', 'skyrocketed') -- a DD report states facts and judgements, it does not "
+            "editorialise. Avoid table-narrating constructions such as 'this sharp increase mainly "
+            "resulted from X rising from zero to Y'."
         )
 
     def common_data_rules(self, data_format: str) -> str:
@@ -2598,6 +2685,7 @@ class PromptEngine:
             ),
             "language_instruction": style_pack.language_instruction(),
             "common_formatting": style_pack.common_formatting_rules(),
+            "fdd_judgement": style_pack.fdd_judgement_rules(),
             "common_data_rules": style_pack.common_data_rules(data_format),
             "period_reference_guidance": self._period_reference_guidance(df, language),
             "variance_analysis_guidance": self._variance_analysis_guidance(
