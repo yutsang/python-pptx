@@ -48,7 +48,15 @@ _SOURCE_META_RE = re.compile(
     r"(as|per)\s+(stated|noted)\s+in\s+the\s+(supplementary\s+)?remarks?\b",
     re.IGNORECASE,
 )
-_TIEOUT_LEAK_RE = re.compile(r"\bcheck\b|对账单|對賬單|差异数|recon(ciliation)?\s+row", re.IGNORECASE)
+# A bare "Check"/"对账单" is NOT enough to call something an artefact: the
+# reference deck legitimately writes 我方获取并核对了截至2026年3月31日的银行
+# 对账单 (we obtained and checked the bank statement), which is exactly the
+# work-performed language the report is supposed to contain. Only flag a
+# marker that stands alone as a label, i.e. followed by a separator and
+# figures rather than embedded in a sentence.
+_TIEOUT_LEAK_RE = re.compile(
+    r"(?:^|[\s。；;])(?:check|对帐单)\s*[|｜:：]\s*-?[\d,]+", re.IGNORECASE
+)
 _CHI_SENTENCE_SPLIT_RE = re.compile(r"[。；;]")
 
 
@@ -185,6 +193,138 @@ def extract_paragraphs(pptx_path: str):
     return out
 
 
+# A paragraph that hands off to a table instead of narrating the detail.
+_TABLE_HANDOFF_RE = re.compile(r"明细如下|明细详见|详见下表|如下表|汇总如下|列示如下|详见附件")
+# Work-performed language: what the consultant did, as opposed to what the
+# numbers are. This is the register the reference deck uses constantly.
+_WORK_PERFORMED_RE = re.compile(
+    r"我(?:方|们)(?:已)?(?:获取|取得|核对|检查|查看|复核|比对)|未(?:发现|见)(?:明显|显著|重大)?(?:差异|异常)|"
+    r"无重大(?:差异|异常)|未见异常|已核对至|核对至"
+)
+_MGMT_ATTRIB_RE = re.compile(r"管理层(?:表示|称|提供|确认|解释)")
+_ADJUSTMENT_RE = re.compile(r"示意性调整|补计提|重分类")
+_AMOUNT_RE = re.compile(r"(人民币\s*)?([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+_OPENING_RE = re.compile(r"^(.{2,12}?)\s*[–—-]\s*(.{0,20})")
+
+
+def style_profile(args, dfs) -> int:
+    """Measures the conventions a human-written reference deck actually
+    follows, instead of inferring them by eye.
+
+    The point is calibration: the project's own prompts encode assumptions
+    about currency prefixes, opening sentences and how much narrative an
+    account should carry. This counts what the real deliverable does, so
+    those assumptions can be checked against evidence rather than memory."""
+    paragraphs = extract_paragraphs(args.pptx)
+    if not paragraphs:
+        print("❌ no substantial paragraphs found in this deck.")
+        return 1
+    texts = [t for _s, _n, t in paragraphs]
+    joined = "\n".join(texts)
+
+    print("=" * 78)
+    print(f"STYLE PROFILE -- {args.pptx}")
+    print("=" * 78)
+    print(f"  paragraphs analysed: {len(texts)}")
+    lens = sorted(len(t) for t in texts)
+    print(f"  paragraph length: min {lens[0]}, median {lens[len(lens) // 2]}, max {lens[-1]} chars")
+
+    amounts = _AMOUNT_RE.findall(joined)
+    with_prefix = sum(1 for pfx, _n, _u in amounts if pfx)
+    print(f"\n  AMOUNTS: {len(amounts)} figure(s) found")
+    if amounts:
+        print(f"    with a 人民币 prefix : {with_prefix} ({with_prefix / len(amounts) * 100:.0f}%)")
+        print(f"    bare (no prefix)    : {len(amounts) - with_prefix} "
+              f"({(len(amounts) - with_prefix) / len(amounts) * 100:.0f}%)")
+        units = {}
+        for _p, _n, u in amounts:
+            units[u] = units.get(u, 0) + 1
+        print(f"    units used          : {', '.join(f'{u} x{n}' for u, n in sorted(units.items(), key=lambda kv: -kv[1]))}")
+        if with_prefix / len(amounts) < 0.25:
+            print("    => the reference deck states amounts BARE by default and reserves")
+            print("       人民币 for disambiguation (e.g. a figure converted from USD).")
+
+    per_sentence = []
+    for t in texts:
+        for sent in re.split(r"[。；;]", t):
+            n = sent.count("人民币")
+            if n >= 2:
+                per_sentence.append((n, sent.strip()[:80]))
+    print(f"    sentences repeating 人民币 2+ times: {len(per_sentence)}")
+    for n, s in per_sentence[:3]:
+        print(f"      x{n}: {s!r}")
+
+    openings = []
+    for t in texts:
+        m = _OPENING_RE.match(t)
+        if m:
+            openings.append(m.group(2).strip()[:18])
+    print(f"\n  OPENINGS: {len(openings)} paragraph(s) use the '<account> – <text>' form")
+    starts = {}
+    for o in openings:
+        key = o[:6]
+        starts[key] = starts.get(key, 0) + 1
+    for k, n in sorted(starts.items(), key=lambda kv: -kv[1])[:6]:
+        print(f"    {n:>3d} x  starts '{k}...'")
+
+    def _count(rx, label):
+        hits = [t for t in texts if rx.search(t)]
+        print(f"    {len(hits):>3d} paragraph(s) ({len(hits) / len(texts) * 100:.0f}%)  {label}")
+        return hits
+
+    print(f"\n  REGISTER:")
+    table_paras = _count(_TABLE_HANDOFF_RE, "hand off to a table ('明细如下' / '详见下表')")
+    _count(_WORK_PERFORMED_RE, "state work performed ('我方核对了...未发现差异')")
+    _count(_MGMT_ATTRIB_RE, "attribute to management ('管理层表示...')")
+    _count(_ADJUSTMENT_RE, "mention an adjustment ('示意性调整' / '补计提')")
+
+    if table_paras:
+        print(f"\n  TABLE-INSTEAD-OF-PROSE (the POC you asked about):")
+        print(f"    {len(table_paras)} paragraph(s) stop and defer to a table. Their length:")
+        tl = sorted(len(t) for t in table_paras)
+        print(f"      min {tl[0]}, median {tl[len(tl) // 2]}, max {tl[-1]} chars")
+        others = [len(t) for t in texts if t not in table_paras]
+        if others:
+            others.sort()
+            print(f"    vs paragraphs that narrate in full: median {others[len(others) // 2]} chars")
+            print(f"    => a table-backed account gets a SHORT lead-in, not a long narrative.")
+        print(f"    Examples:")
+        for t in table_paras[:4]:
+            print(f"      · {t[:150]}")
+
+    # How close is the deck's prose to the databook's own remark text?
+    print(f"\n  REMARK REUSE (databook remark -> deck sentence):")
+    verbatim, paraphrased, absent = 0, 0, 0
+    examples = []
+    for key in sorted(dfs):
+        df = dfs[key]
+        for note in _substantive_notes(df.attrs.get("supporting_notes") or []):
+            prose = _note_prose(note)
+            if len(prose) < 12:
+                continue
+            best = max((_verbatim_ratio(prose, t) for t in texts), default=0.0)
+            if best >= 0.6:
+                verbatim += 1
+                if len(examples) < 4:
+                    examples.append((key, best, prose[:90]))
+            elif best >= 0.2:
+                paraphrased += 1
+            else:
+                absent += 1
+    total_notes = verbatim + paraphrased + absent
+    if total_notes:
+        print(f"    {verbatim} reproduced near-verbatim ({verbatim / total_notes * 100:.0f}%)")
+        print(f"    {paraphrased} partially reused ({paraphrased / total_notes * 100:.0f}%)")
+        print(f"    {absent} not visible in the deck ({absent / total_notes * 100:.0f}%)")
+        for key, ratio, prose in examples:
+            print(f"      {ratio:.0%}  {key}: {prose!r}")
+        if verbatim and verbatim >= paraphrased:
+            print("    => the analyst writes the finished sentence INTO the databook remark")
+            print("       column and the deck reproduces it. Near-verbatim reuse is the")
+            print("       intended workflow here, not a defect to rewrite away.")
+    return 0
+
+
 def prose_mode(args, dfs, diagnostics) -> int:
     """Reports how a human-written deck talks about each account: which
     paragraphs mention it, and what the databook had available to say."""
@@ -255,6 +395,11 @@ def main() -> int:
     ap.add_argument("--entity", default=None, help="entity name (default: derived from the filename)")
     ap.add_argument("--sheet", default=None, help="specific sheet, if needed")
     ap.add_argument("--account", default=None, help="only report this one account")
+    ap.add_argument("--style-profile", action="store_true",
+                     help="measure the conventions a reference deck actually follows (currency "
+                          "prefix rate, opening forms, work-performed / management-attribution / "
+                          "table-handoff frequency, and how much databook remark text is reused "
+                          "verbatim) -- use this on a human-written deck to calibrate the prompts")
     ap.add_argument("--verbatim-threshold", type=float, default=0.5,
                      help="share of a remark appearing as one unbroken run in the output above "
                           "which it's called near-verbatim (default 0.5)")
@@ -268,6 +413,9 @@ def main() -> int:
                                     selected_sheet=args.sheet)
     dfs = result["dfs"]
     print(f"{len(dfs)} account(s) in the databook. Language: {result.get('language')}")
+
+    if args.style_profile:
+        return style_profile(args, dfs)
 
     bullets, order, diagnostics = extract_bullets(args.pptx)
     print(f"{len(bullets)} account bullet(s) in the deck: {', '.join(order[:12])}"
