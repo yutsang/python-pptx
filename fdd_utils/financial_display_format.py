@@ -29,7 +29,11 @@ def format_number_chinese(value: Union[float, int], language: str = "Chi") -> st
                 result = f"{yi_value:.1f}亿元"
             else:
                 result = f"{wan_value:.0f}万元"
-        return f"人民币-{result}" if is_negative else f"人民币{result}"
+        # Bare by default, matching the report convention measured from the
+        # real deliverable (97% of its amounts carry no 人民币 prefix). This
+        # feeds the LLM-unavailable fallback bullet, which would otherwise
+        # emit a form every prompt now forbids.
+        return f"-{result}" if is_negative else result
 
     if abs_value < 1000000:
         result = f"{abs_value:,.0f}"
