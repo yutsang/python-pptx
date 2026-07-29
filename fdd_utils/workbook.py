@@ -3688,6 +3688,35 @@ def _looks_like_working_remark(text: str) -> bool:
     return any(keyword in lowered for keyword in _WORKING_REMARK_KEYWORDS)
 
 
+def _is_pure_working_artifact(note: str, block_title: str = "") -> bool:
+    """True when a note is nothing but a bookkeeping tie-out marker.
+
+    A blanket "contains 'check'" test would be wrong -- real analyst prose
+    can mention it ('待check VAT to be certified是否需要计入RPT' is a genuine
+    working question from a real databook). What distinguishes an artefact is
+    that once the keyword, the account/block title, and any figures or dates
+    are removed, nothing is left ('Check | 55095.750019',
+    'Check | Taxes and surcharges'). Those carry no explanatory content and
+    should not reach the model as if they were context; on real files they
+    were frequently an account's ONLY note."""
+    text = str(note or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if not any(keyword in lowered for keyword in _WORKING_REMARK_KEYWORDS):
+        return False
+    residue = lowered
+    for keyword in _WORKING_REMARK_KEYWORDS:
+        residue = residue.replace(keyword, " ")
+    title = str(block_title or "").strip().lower()
+    if title:
+        residue = residue.replace(title, " ")
+    residue = re.sub(r"\d{4}-\d{2}-\d{2}", " ", residue)
+    residue = re.sub(r"-?[\d,]+\.?\d*", " ", residue)
+    residue = re.sub(r"[|:;,()\[\]/\\.\-_+*%&#@!?'\"]+", " ", residue)
+    return len(residue.strip()) < 2
+
+
 def _build_working_remark_note(description: str, values: Dict[str, Optional[float]]) -> Optional[str]:
     label = str(description or "").strip()
     if not _looks_like_working_remark(label):
@@ -4246,10 +4275,19 @@ def normalize_financial_schedule(
     )
     trend_summary = build_trend_summary(prompt_analysis_df)
     significant_movements = build_significant_movements(prompt_analysis_df)
-    supporting_notes = _extract_supporting_notes(df, desc_col_idx, columns, data_start_row, data_end_row)
-    for note in working_remark_notes:
-        if note not in supporting_notes:
-            supporting_notes.append(note)
+    supporting_notes = [
+        note
+        for note in _extract_supporting_notes(df, desc_col_idx, columns, data_start_row, data_end_row)
+        if not _is_pure_working_artifact(note, block_title)
+    ]
+    # Working-remark rows ("Check", "对账单", "差异", ...) are correctly kept out
+    # of row_entries above, but they used to be appended to supporting_notes as
+    # well -- i.e. handed to the model as explanatory context. Confirmed with
+    # the databook owner that these are bookkeeping tie-out figures with no
+    # explanatory value. On real files they were frequently an account's ONLY
+    # "note", so the model was being given pure noise and nothing else. Kept in
+    # their own attrs key so diagnostics can still see them, just not fed to
+    # the prompt as if they explained anything.
     annualization = infer_partial_year_annualization(
         statement_type=statement_type or "",
         available_dates=[column["date"] for column in columns],
@@ -4373,6 +4411,7 @@ def normalize_financial_schedule(
         "row_types_by_description": row_types_by_description,
         "any_period_nonzero_by_description": any_period_nonzero_by_description,
         "supporting_notes": supporting_notes,
+        "working_remark_notes": working_remark_notes,
         "normalized_columns": columns,
         "source_multiplier": multiplier,
         "sheet_kind": profile.get("sheet_kind"),
