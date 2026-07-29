@@ -17,10 +17,34 @@ import argparse
 import sys
 
 from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, column_index_from_string
 
 sys.path.insert(0, ".")
 from fdd_utils.bridge_chart_prototype import find_bridge_blocks
+
+
+def dump_cols(ws_values, ws_formulas, col_spec: str, row_spec: str):
+    """Raw values+formulas for a column-letter range across a row range --
+    e.g. col_spec='AM-AR', row_spec='11-23' -- for tracing what a hidden
+    staging area actually contains without guessing from a chart's series
+    colors alone. Takes plain Excel column LETTERS (not numbers) so this
+    can be copied straight from what you see in Excel."""
+    lo_letter, hi_letter = col_spec.split("-")
+    lo_col, hi_col = column_index_from_string(lo_letter), column_index_from_string(hi_letter)
+    lo_row, hi_row = (int(x) for x in row_spec.split("-"))
+    for r in range(lo_row, hi_row + 1):
+        cells = []
+        for c in range(lo_col, hi_col + 1):
+            v = ws_values.cell(row=r, column=c).value
+            f = ws_formulas.cell(row=r, column=c).value
+            addr = get_column_letter(c)
+            if v is None and f is None:
+                continue
+            if isinstance(f, str) and f.startswith("="):
+                cells.append(f"{addr}={f!r} -> {v!r}")
+            else:
+                cells.append(f"{addr}={v!r}")
+        print(f"row {r}: " + (" | ".join(cells) if cells else "(empty)"))
 
 
 def _fmt_color(color) -> str:
@@ -136,6 +160,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", help="path to the databook .xlsx")
     ap.add_argument("--sheet", required=True, help="the pre-built bridge tab to inspect, e.g. '成都-量价桥图'")
+    ap.add_argument("--dump-cols", default=None, metavar="LETTER-LETTER",
+                     help="skip the format/chart scan and just dump raw values+formulas for this "
+                          "column-letter range (e.g. --dump-cols AM-AR), requires --dump-rows too")
+    ap.add_argument("--dump-rows", default=None, metavar="N-N",
+                     help="row range for --dump-cols, e.g. --dump-rows 11-23")
     args = ap.parse_args()
 
     print(f"Loading {args.path!r} (styles preserved, not data_only)...")
@@ -144,6 +173,14 @@ def main() -> int:
         print(f"❌ sheet {args.sheet!r} not found. Available: {wb.sheetnames}")
         return 1
     ws = wb[args.sheet]
+
+    if args.dump_cols:
+        if not args.dump_rows:
+            print("❌ --dump-cols requires --dump-rows too")
+            return 1
+        wb_values_only = load_workbook(args.path, data_only=True)
+        dump_cols(wb_values_only[args.sheet], ws, args.dump_cols, args.dump_rows)
+        return 0
 
     wb_values = load_workbook(args.path, data_only=True)
     blocks = find_bridge_blocks(wb_values[args.sheet])
