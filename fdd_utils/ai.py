@@ -1914,6 +1914,27 @@ class PromptEngine:
             return data.get(component) if component else resolved_key
         return None
 
+    def _patterns_enabled(self) -> bool:
+        """Whether mappings.yml example sentences go into the Generator prompt.
+
+        The examples date from a much weaker local model that needed a
+        concrete template to imitate. An audit found 57% are fill-in-the-blanks
+        templates (see inspect_mapping_patterns.py), which can constrain a
+        capable model rather than guide it. Whether they still earn their
+        place is an empirical question, so it is switchable
+        (processing.inject_mapping_patterns) rather than argued about.
+        """
+        try:
+            from .financial_common import load_yaml_file
+            for candidate in ("fdd_utils/config.yml", "fdd_utils/config.example.yml"):
+                cfg = load_yaml_file(candidate)
+                if cfg:
+                    value = (cfg.get("processing") or {}).get("inject_mapping_patterns")
+                    return True if value is None else bool(value)
+        except Exception:
+            pass
+        return True
+
     def resolve_mapping_key(self, mapping_key: str) -> str:
         return self.get_mapping_component(mapping_key) or mapping_key
 
@@ -2740,8 +2761,8 @@ class PromptEngine:
             patterns = self.get_mapping_component(
                 resolved_mapping_key,
                 component="patterns",
-            )
-            if patterns is None:
+            ) if self._patterns_enabled() else None
+            if patterns is None and self._patterns_enabled():
                 fallback_section = self._fallback_mapping_section(mapping_key)
                 if fallback_section:
                     patterns = self.mappings_data.get(fallback_section, {}).get("patterns")
@@ -2760,10 +2781,18 @@ class PromptEngine:
             # as a style anchor without letting them decide what is true.
             if isinstance(patterns, dict):
                 examples = []
-                for idx, (_, v) in enumerate(patterns.items(), 1):
+                for idx, (pname, v) in enumerate(patterns.items(), 1):
                     text = str(v or "").strip()
                     if text and text.upper() != "N/A":
-                        examples.append(f"Example {idx}: {text}")
+                        # The KEY carries the precondition where an account's
+                        # variants genuinely conflict -- Cash reads differently
+                        # depending on whether the bank statements were
+                        # obtained. Rendering only the value dropped that, and
+                        # left the model choosing between contradictory
+                        # sentences with nothing to choose on.
+                        cond = re.search(r"[（(](.+)[)）]\s*$", str(pname).strip())
+                        suffix = f" [{cond.group(1).strip()}]" if cond else ""
+                        examples.append(f"Example {idx}{suffix}: {text}")
                 patterns = "\n".join(examples) if examples else ""
             patterns_text = str(patterns or "").strip()
             if patterns_text:

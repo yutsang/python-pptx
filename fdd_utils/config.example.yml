@@ -85,6 +85,15 @@ agents:
 
 processing:
   data_format_for_ai: "json"
+  # Per-account example sentences from mappings.yml go into the Generator
+  # prompt. They were written when a much weaker local model needed a concrete
+  # template to imitate; an audit (inspect_mapping_patterns.py) found 57% are
+  # fill-in-the-blanks templates, which can constrain a capable model rather
+  # than guide it. Set false to generate WITHOUT them and compare, rather than
+  # arguing the point:
+  #   python inspect_databook_to_pptx.py --databook X --pptx Y --style-profile
+  #   python inspect_databook_to_pptx.py --databook X --pptx Y --check-claims
+  inject_mapping_patterns: true
   debug_mode: false
   feedback_loop:
     enabled: true

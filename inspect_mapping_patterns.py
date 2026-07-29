@@ -111,7 +111,14 @@ def main() -> int:
                 for kind, _d in flags:
                     by_flag[kind] = by_flag.get(kind, 0) + 1
                 acct_flags.append((pname, text, flags))
-        if acct_pos and acct_neg:
+        # A contradiction only matters when the variants are UNLABELLED. Where
+        # each pattern's key states its precondition ("only where the remarks
+        # show the statements were not obtained"), the conflict is deliberate
+        # and useful -- it teaches the model to select on the data instead of
+        # copying one arbitrarily. render_prompt passes those conditions
+        # through to the example line.
+        labelled = all(re.search(r"[（(].+[)）]\s*$", str(pn).strip()) for pn, _t in items)
+        if acct_pos and acct_neg and not labelled:
             contradictions.append(key)
         if acct_flags:
             worst.append((key, acct_flags))

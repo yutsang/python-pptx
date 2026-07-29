@@ -240,10 +240,12 @@ Cash:
         **语言**: 输出必须100%为中文。
         仅输出最终文本, 不包含模式名称。
   patterns:
-    Pattern 1: |
+    Pattern 1 (ONLY where the remarks show the bank statements have NOT been obtained): |
       the balance as at <DATE> represented <AMT> of cash at bank with no restricted use. We have not obtained the bank statements yet
-    Pattern 2: |
-      截至<DATE>，<ENTITY>存款<AMT>。<ENTITY>对账单金额，未发现明显差异。<ENTITY>存款不存在使用受限情况
+    Pattern 2 (仅当备注载明已取得并核对银行对账单时使用): |
+      截至<DATE>，存款<AMT>，均为银行存款。我方获取并核对了截至<DATE>的银行对账单，未发现显著差异；该等存款不存在使用受限情况
+    Pattern 3 (备注既未说明已核对、也未说明未取得时使用——两种说法都不要写): |
+      截至<DATE>，存款<AMT>，均为银行存款，不存在使用受限情况
 AR:
   type: BS
   category: Current assets
@@ -768,10 +770,12 @@ Capital:
         **语言**: 输出必须100%为中文。
         仅输出最终文本，不包含模式名称。
   patterns:
-    Pattern 1: |
-      the registered capital was <AMT>. All registered capital had been paid up and verified. The balance at the consolidated level as at <DATE> represented <AMT> paid-in capital. We checked the audit report and found no differences in respect of this amount
-    Pattern 2: |
-      <ENTITY>的注册资本为<AMT>美元，等值人民币<AMT>。我们了解实收资本系由境外股东出资形成。我们检查了验资报告，未发现差异
+    Pattern 1 (keep the verification sentence ONLY where the remarks say a report was checked; drop it otherwise): |
+      the registered capital was <AMT>. All registered capital had been paid up. The balance at the consolidated level as at <DATE> represented <AMT> paid-in capital. We checked the audit report and found no differences in respect of this amount
+    Pattern 2 (最后一句仅在备注载明已检查验资报告时保留；未载明则删去该句): |
+      <ENTITY>的注册资本为<AMT>美元（折合人民币<AMT>）。实收资本系由境外股东出资形成。我们检查了验资报告，未发现差异
+    Pattern 3 (备注载明「未经验资」时使用): |
+      截至<DATE>，注册资本为<AMT>，已全额实缴。该实收资本未经验资，我方查看了相关外汇FDI登记凭证，未发现异常
 Reserve:
   type: BS
   category: Equity
