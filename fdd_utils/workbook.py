@@ -175,6 +175,25 @@ _TOTAL_KEYWORDS = [
 ]
 
 
+def _period_analysis_columns(analysis_df: pd.DataFrame) -> List[Any]:
+    """The genuine PERIOD columns of a prompt-analysis df, in order.
+
+    Column 0 is the description/block title, and column 1 is ALWAYS the
+    INTERNAL_ROW_KEY bookkeeping column (`__source_row_idx`, the row's
+    position in the source sheet) -- see _build_prompt_analysis_df, which
+    constructs every row as {block_title, INTERNAL_ROW_KEY, *dates}. A bare
+    `columns[1:]` therefore treats that row index as if it were the FIRST
+    reporting period: confirmed live on real data, where an account's
+    trend_summary came back with `start_period="__source_row_idx"` and
+    `start_value=14.0` (literally the sheet row number), and every derived
+    figure -- net_change, series_direction, the first delta -- was computed
+    against that non-financial baseline before being handed to the LLM as
+    trend evidence. Same class of bug as the one fixed in
+    filter_zero_value_rows (which had assumed columns[1] was a value column).
+    """
+    return [col for col in analysis_df.columns[1:] if str(col) != INTERNAL_ROW_KEY]
+
+
 def _trend_direction(values: List[float]) -> str:
     deltas = [curr - prev for prev, curr in zip(values, values[1:])]
     positive = any(delta > 0 for delta in deltas)
@@ -207,8 +226,11 @@ def build_trend_summary(analysis_df: pd.DataFrame) -> Dict[str, Any]:
     if focus_row is None or len(analysis_df.columns) < 3:
         return {}
 
-    periods = [str(col) for col in analysis_df.columns[1:]]
-    values = [float(focus_row[col] or 0) for col in analysis_df.columns[1:]]
+    period_cols = _period_analysis_columns(analysis_df)
+    if len(period_cols) < 2:
+        return {}
+    periods = [str(col) for col in period_cols]
+    values = [float(focus_row[col] or 0) for col in period_cols]
     deltas = [
         {
             "from_period": periods[idx],
@@ -254,11 +276,14 @@ def build_significant_movements(analysis_df: pd.DataFrame, max_items: int = 3) -
     if analysis_df is None or analysis_df.empty or len(analysis_df.columns) < 3:
         return []
 
-    periods = [str(col) for col in analysis_df.columns[1:]]
+    period_cols = _period_analysis_columns(analysis_df)
+    if len(period_cols) < 2:
+        return []
+    periods = [str(col) for col in period_cols]
     movement_candidates: List[Dict[str, Any]] = []
     for _, row in analysis_df.iterrows():
         description = str(row.iloc[0]).strip()
-        row_values = [float(row[col] or 0) for col in analysis_df.columns[1:]]
+        row_values = [float(row[col] or 0) for col in period_cols]
         best_movement = None
         for idx in range(len(row_values) - 1):
             prev_value = row_values[idx]
