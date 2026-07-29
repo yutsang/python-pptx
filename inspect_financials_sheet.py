@@ -64,6 +64,8 @@ def main() -> int:
     ap.add_argument("--sheet", default=None,
                      help="sheet holding the statements (default: auto-detect a 'Financial'-named sheet)")
     ap.add_argument("--rows", type=int, default=40, help="max rows to print per block (default 40)")
+    ap.add_argument("--entity", default=None,
+                     help="entity name for the pipeline comparison in section [5]")
     args = ap.parse_args()
 
     xl = pd.ExcelFile(args.path)
@@ -179,6 +181,47 @@ def main() -> int:
         for v in d.iloc[:, 0].tolist()[:25]:
             t = str(v)
             print(f"    {t[:70]}" + ("   <-- ratio-like" if _looks_ratio(t) else ""))
+
+    # The reconciliation page is built from process_workbook_data's own
+    # bs_is_results, which selects its Financials sheet through the full
+    # pipeline rather than this tool's auto-detection. If the two disagree,
+    # the direct call above is not what the app is actually reconciling --
+    # so compare them explicitly instead of assuming they match.
+    print("\n" + "=" * 78)
+    print("[5] WHAT THE PIPELINE ITSELF USES (this is what reconciliation reads)")
+    print("=" * 78)
+    try:
+        from fdd_utils.workbook import process_workbook_data
+        pr = process_workbook_data(temp_path=args.path, entity_name=args.entity or "x",
+                                    selected_sheet=None)
+    except Exception as exc:
+        print(f"  ❌ process_workbook_data raised {type(exc).__name__}: {str(exc)[:160]}")
+        return 1
+    pipe = pr.get("bs_is_results") or {}
+    for key in ("balance_sheet", "income_statement"):
+        d = pipe.get(key)
+        if d is None or getattr(d, "empty", True):
+            print(f"  {key}: None/empty")
+            continue
+        rows = [str(v) for v in d.iloc[:, 0].tolist()]
+        ratio_rows = [t for t in rows if _looks_ratio(t)]
+        print(f"  {key}: {d.shape[0]} rows x {d.shape[1]} cols"
+              f"   ({len(ratio_rows)} ratio-like)")
+        for t in rows[:30]:
+            print(f"    {t[:70]}" + ("   <-- RATIO, should not be here" if _looks_ratio(t) else ""))
+        if ratio_rows:
+            print(f"  ⚠️ these ratio rows are what surface on the reconciliation page as")
+            print(f"     accounts with rate values read as amounts.")
+
+    direct_is = (res or {}).get("income_statement")
+    pipe_is = pipe.get("income_statement")
+    if direct_is is not None and pipe_is is not None:
+        same = list(direct_is.iloc[:, 0]) == list(pipe_is.iloc[:, 0])
+        print(f"\n  direct call vs pipeline income statement: "
+              f"{'IDENTICAL' if same else 'DIFFERENT -- the pipeline is reading something else'}")
+        if not same:
+            print(f"    direct  : {[str(v)[:18] for v in direct_is.iloc[:, 0]][:12]}")
+            print(f"    pipeline: {[str(v)[:18] for v in pipe_is.iloc[:, 0]][:12]}")
     return 0
 
 
