@@ -323,11 +323,12 @@ def build_excel_waterfall_chart(ws, block: BridgeBlock, title: str, start_row: i
     chart.y_axis.numFmt = NUM_FMT  # axis numFmt DOES carry sourceLinked="0", so this one is honoured
     chart.y_axis.title = "人民币千元"
     chart.y_axis.majorGridlines = ChartLines()  # reference has light horizontal gridlines
-    # Default openpyxl chart size (~15x7.5cm) is far too small once there are
-    # 8-11 categories with Chinese labels -- everything overlaps and reads as
-    # one dense blob. Size it closer to a full slide so bars/labels breathe.
-    chart.width = 30
-    chart.height = 15
+    # Matches the REAL '成都-量价桥图' chart's own size exactly (confirmed via
+    # inspect_bridge_format.py) -- the real chart handles the same 8-11
+    # rotated Chinese category labels fine at this size (an earlier version
+    # of this code doubled it on an untested legibility assumption).
+    chart.width = 15
+    chart.height = 7.5
     # Category labels are long Chinese phrases ("综合楼运营天数增加") -- at
     # default horizontal orientation with 8-11 of them they overlap into an
     # unreadable strip. Rotate -45 degrees (rot is in 60,000ths of a degree)
