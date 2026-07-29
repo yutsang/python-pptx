@@ -47,6 +47,13 @@ _IS_KEYWORDS = [
     "Indicative adjusted income statement", "Income statement",
     "profit and loss", "statement of comprehensive income",
 ]
+# workbook.py falls back to these looser terms when no primary keyword hits.
+# The first version of this tool only tested the primary list, so a real file
+# whose headings are plain 资产负债表 / 利润表 was reported as "NO MATCH" even
+# though the extractor located both blocks perfectly -- misleading, since it
+# suggested the blocks could not be found when only the strict pass had failed.
+_BS_KEYWORDS_RELAXED = ["资产负债表", "資產負債表", "balance sheet"]
+_IS_KEYWORDS_RELAXED = ["利润表", "利潤表", "income statement", "profit and loss"]
 
 
 def _row_text(df, idx) -> str:
@@ -87,22 +94,32 @@ def main() -> int:
     print("=" * 78)
     print("[1] SECTION MARKER MATCHES  (the FIRST match becomes the block start)")
     print("=" * 78)
-    bs_hits, is_hits = [], []
-    for idx in range(len(df)):
-        row_str = " ".join(df.iloc[idx].astype(str).values).lower()
-        for kw in _BS_KEYWORDS:
-            if kw.lower() in row_str:
-                bs_hits.append((idx, kw))
-                break
-        for kw in _IS_KEYWORDS:
-            if kw.lower() in row_str:
-                is_hits.append((idx, kw))
-                break
+    def _scan(keywords):
+        hits = []
+        for idx in range(len(df)):
+            row_str = " ".join(df.iloc[idx].astype(str).values).lower()
+            for kw in keywords:
+                if kw.lower() in row_str:
+                    hits.append((idx, kw))
+                    break
+        return hits
 
-    def _report(hits, label):
+    bs_hits, is_hits = _scan(_BS_KEYWORDS), _scan(_IS_KEYWORDS)
+    bs_relaxed = _scan(_BS_KEYWORDS_RELAXED) if not bs_hits else []
+    is_relaxed = _scan(_IS_KEYWORDS_RELAXED) if not is_hits else []
+    if bs_relaxed:
+        bs_hits = bs_relaxed
+    if is_relaxed:
+        is_hits = is_relaxed
+
+    def _report(hits, label, used_relaxed=False):
         if not hits:
-            print(f"  {label}: NO MATCH -- this block cannot be located at all")
+            print(f"  {label}: NO MATCH on either the strict or the relaxed keywords "
+                  f"-- this block genuinely cannot be located")
             return None
+        if used_relaxed:
+            print(f"  {label}: no strict-keyword match; located via the RELAXED fallback "
+                  f"(this is normal, not a fault)")
         print(f"  {label}: {len(hits)} matching row(s)")
         for i, (idx, kw) in enumerate(hits):
             mark = "  <-- CHOSEN (first match)" if i == 0 else ""
@@ -114,9 +131,9 @@ def main() -> int:
             print(f"       wrong place.")
         return hits[0][0]
 
-    bs_start = _report(bs_hits, "BALANCE SHEET")
+    bs_start = _report(bs_hits, "BALANCE SHEET", bool(bs_relaxed))
     print()
-    is_start = _report(is_hits, "INCOME STATEMENT")
+    is_start = _report(is_hits, "INCOME STATEMENT", bool(is_relaxed))
 
     print("\n" + "=" * 78)
     print("[2] RESOLVED BOUNDARIES")
