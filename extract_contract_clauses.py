@@ -226,7 +226,8 @@ def _payment_review_prompt(filename: str, page_num: int, first_pass: Dict[str, A
     return (
         "你是金额抄录复核员。对照同一张高解像表格图片，逐行、逐字符核对下面第一次抄录。"
         "重点检查四位/五位数混淆、重复数字、漏零、小数点、跨行错位，以及合计是否与可见分项一致。"
-        "只能按图片纠正；看不清就留空，禁止推算或沿用第一次结果。"
+        "只能按图片纠正，禁止推算。复核结果不得用空白删除第一次已有的日期或金额；"
+        "若无法确认某个已有值，就保留该值并在备注注明『待人工确认』。"
         f"\n源文件名: {filename}\n页面: {page_num}\n第一次抄录:\n"
         f"{json.dumps(first_pass, ensure_ascii=False)}\n"
         "请按原有 periods JSON schema 返回完整复核结果，只输出 JSON。"
@@ -278,6 +279,26 @@ def _payment_rows(data: Dict[str, Any]) -> List[List[str]]:
     return rows
 
 
+def _merge_reviewed_rows(first: List[List[str]], reviewed: List[List[str]]) -> List[List[str]]:
+    """Review may correct values, but must never erase populated first-pass cells."""
+    if not first:
+        return reviewed
+    if not reviewed:
+        return first
+    merged: List[List[str]] = []
+    for idx in range(max(len(first), len(reviewed))):
+        original = first[idx] if idx < len(first) else [""] * len(_PAYMENT_HEADERS)
+        correction = reviewed[idx] if idx < len(reviewed) else [""] * len(_PAYMENT_HEADERS)
+        width = max(len(original), len(correction), len(_PAYMENT_HEADERS))
+        original = original + [""] * (width - len(original))
+        correction = correction + [""] * (width - len(correction))
+        merged.append([
+            correction[col].strip() if correction[col].strip() else original[col].strip()
+            for col in range(width)
+        ])
+    return merged
+
+
 def extract_utility(client: AIClient, pdf: Path, max_pages: int) -> List[str]:
     payload = _doc_input(_utility_prompt(pdf.name), pdf, max_pages)
     data = _call_json(client, payload)
@@ -288,7 +309,7 @@ def _scan_payment_pages(client: AIClient, pdf: Path, batch_size: int) -> List[in
     """Scan every page at moderate resolution and return actual table pages."""
     n_pages = pdf_page_count(pdf)
     candidates: set[int] = set()
-    size = max(2, min(7, batch_size))
+    size = max(2, min(4, batch_size))
     for start in range(1, n_pages + 1, size):
         pages = list(range(start, min(n_pages, start + size - 1) + 1))
         payload = _vision_pages_at_dpi(
@@ -296,8 +317,8 @@ def _scan_payment_pages(client: AIClient, pdf: Path, batch_size: int) -> List[in
             pdf,
             pages,
             per_image_bytes=multi_image_byte_budget(len(pages)),
-            dpi_start=110,
-            max_edge_start=1400,
+            dpi_start=140,
+            max_edge_start=1800,
         )
         data = _call_json(client, payload)
         found = data.get("candidate_pages", [])
@@ -333,9 +354,9 @@ def _extract_payment_page(client: AIClient, pdf: Path, page_num: int) -> List[Li
         image,
     ]
     reviewed = _call_json(client, review_payload)
-    if isinstance(reviewed.get("periods"), list):
-        return _payment_rows(reviewed)
-    return _payment_rows(first)
+    first_rows = _payment_rows(first)
+    reviewed_rows = _payment_rows(reviewed)
+    return _merge_reviewed_rows(first_rows, reviewed_rows)
 
 
 def extract_payment(client: AIClient, pdf: Path, max_pages: int) -> List[List[str]]:
@@ -421,7 +442,7 @@ def main() -> int:
     folders = _project_folders(root)
     print(
         f"Model: GPT-5.5 (workbench)  |  utility pages <= {args.max_pages}"
-        f"  |  payment: scan every page in batches of <= {min(7, max(2, args.max_pages))}"
+        f"  |  payment: scan every page in batches of <= {min(4, max(2, args.max_pages))}"
     )
     print(f"Project folder(s) with top-level PDFs: {len(folders)}")
     for f in folders:
