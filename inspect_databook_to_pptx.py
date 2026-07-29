@@ -437,6 +437,26 @@ def style_profile(args, dfs) -> int:
         for _p, _n, u in amounts:
             units[u] = units.get(u, 0) + 1
         print(f"    units used          : {', '.join(f'{u} x{n}' for u, n in sorted(units.items(), key=lambda kv: -kv[1]))}")
+
+        # Decimal places actually used, per unit. Worth measuring rather than
+        # assuming: the project's own rules call for integer 万元 and 1dp 亿元,
+        # while a real deliverable writes 1,062.8万元 and 6.65亿元 -- 1dp and
+        # 2dp respectively. A rule that disagrees with the deliverable makes
+        # every amount subtly wrong.
+        dp_by_unit = {}
+        for _pfx, num, unit in amounts:
+            frac = num.split(".")
+            dp = len(frac[1]) if len(frac) == 2 else 0
+            dp_by_unit.setdefault(unit, {}).setdefault(dp, 0)
+            dp_by_unit[unit][dp] += 1
+        print(f"    decimal places actually used:")
+        for unit in sorted(dp_by_unit, key=lambda u: -sum(dp_by_unit[u].values())):
+            counts = dp_by_unit[unit]
+            total_u = sum(counts.values())
+            spread = ", ".join(f"{dp}dp x{n}" for dp, n in sorted(counts.items()))
+            dominant = max(counts.items(), key=lambda kv: kv[1])
+            print(f"      {unit:>4s}: {spread}   -> dominant {dominant[0]}dp "
+                  f"({dominant[1]}/{total_u} = {dominant[1] / total_u * 100:.0f}%)")
         if with_prefix / len(amounts) < 0.25:
             print("    => the reference deck states amounts BARE by default and reserves")
             print("       人民币 for disambiguation (e.g. a figure converted from USD).")
