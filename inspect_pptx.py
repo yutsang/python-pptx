@@ -492,6 +492,21 @@ def _find_zero_currency_mentions(text: str) -> List[str]:
     return hits
 
 
+# Phrases that cite the SOURCE of a fact rather than stating the fact.
+# Found 5x in one real exported deck ("根据备注信息，该科目在2023年已全部转入
+# 固定资产"). No prompt rule currently mentions them, unlike the repeated-人民币
+# and zero-wording conventions above. They leak the pipeline's own data
+# structure -- the databook's remarks column -- into a client deliverable,
+# where an FDD consultant would simply assert the fact, or attribute it to
+# management ("管理层表示...") which IS an established convention here.
+_SOURCE_META_RE = re.compile(
+    r"(根据|依据|按照)\s*(补充)?备注(信息|内容|说明)?|备注(显示|表明|提到|中提及)|"
+    r"(as|per)\s+(stated\s+in|noted\s+in|the)\s+(the\s+)?(supplementary\s+)?remarks?\b|"
+    r"according\s+to\s+the\s+(supplementary\s+)?(remarks?|notes?)\b",
+    re.IGNORECASE,
+)
+
+
 def _check_number_formatting_and_zero_wording(result: dict) -> int:
     """Scans every '■ '-led bullet for three classes of issue flagged from
     real reports: (1) English sub-million CNY amounts more precise than the
@@ -548,6 +563,12 @@ def _check_number_formatting_and_zero_wording(result: dict) -> int:
                                 f"'人民币' repeated {count}x in one sentence (state it once for the "
                                 f"whole list): {sentence.strip()[:150]!r}"
                             )
+
+                for m in _SOURCE_META_RE.finditer(stripped):
+                    issues.append(
+                        f"source meta-reference {m.group(0)!r} -- state the fact directly; "
+                        f"a deliverable shouldn't cite the databook's own remarks column"
+                    )
 
                 if issues:
                     flagged += 1
