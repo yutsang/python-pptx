@@ -2747,6 +2747,17 @@ class PromptEngine:
                     patterns = self.mappings_data.get(fallback_section, {}).get("patterns")
             # Format the patterns dict into clean numbered examples so the
             # LLM sees readable text rather than a Python dict repr.
+            #
+            # These examples are the strongest signal in the prompt, and an
+            # audit of all 80 of them (inspect_mapping_patterns.py) found 46
+            # are complete sentences with only <SLOT> gaps, 4 assert facts
+            # outright, and Cash's two contradict each other -- one says the
+            # bank statements have NOT been obtained while the other says no
+            # differences were noted. A real databook states they WERE
+            # checked, so an unframed example can teach the opposite of the
+            # data. Framing them explicitly as structure-and-register only,
+            # with facts reserved to the data and remarks, keeps their value
+            # as a style anchor without letting them decide what is true.
             if isinstance(patterns, dict):
                 examples = []
                 for idx, (_, v) in enumerate(patterns.items(), 1):
@@ -2754,7 +2765,30 @@ class PromptEngine:
                     if text and text.upper() != "N/A":
                         examples.append(f"Example {idx}: {text}")
                 patterns = "\n".join(examples) if examples else ""
-            format_params["patterns"] = str(patterns or "").strip()
+            patterns_text = str(patterns or "").strip()
+            if patterns_text:
+                if language == "Chi":
+                    framing = (
+                        "以下示例仅用于说明**句式结构与用语风格**（开篇方式、动词选择、构成的表述顺序），"
+                        "**不是可以照抄的事实**。示例中出现的任何具体情况——例如是否已取得银行对账单、"
+                        "是否已执行核对、是否未发现差异、是否已验资——都必须以本科目的实际数据与备注为准；"
+                        "若备注未提及，就不要写入该说法。示例之间如有矛盾（同一科目一个说已核对、"
+                        "另一个说尚未取得），说明它们只是不同项目的历史写法，不代表本项目的事实。"
+                        "请按本科目的真实情况撰写，只借用其行文方式：\n"
+                    )
+                else:
+                    framing = (
+                        "The examples below illustrate SENTENCE STRUCTURE AND REGISTER only -- how to "
+                        "open, which verbs to use, the order in which composition is stated. They are "
+                        "NOT facts to copy. Anything specific they assert -- whether bank statements "
+                        "were obtained, whether a check was performed, whether no differences were "
+                        "found, whether capital was verified -- must come from THIS account's own data "
+                        "and remarks; if the remarks do not say it, do not write it. Where two examples "
+                        "contradict each other, that only reflects different past engagements, not this "
+                        "one. Write what is true here, borrowing only the phrasing:\n"
+                    )
+                patterns_text = framing + patterns_text
+            format_params["patterns"] = patterns_text
 
         rendered_system_prompt = self._safe_format(system_prompt, format_params)
         rendered_user_prompt = self._safe_format(user_prompt_template, format_params)
