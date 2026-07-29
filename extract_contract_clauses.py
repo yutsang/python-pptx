@@ -28,7 +28,9 @@ from contract_vision import (
     multi_image_byte_budget,
     pdf_is_digital,
     pdf_page_count,
+    rasterize_page_jpeg,
     select_pages,
+    to_data_url,
 )
 from fdd_utils.ai import AIClient
 
@@ -112,6 +114,22 @@ def _vision_pages(client_prompt_text: str, pdf_path: Path, max_pages: int) -> Li
     return content
 
 
+def _vision_pages_at_dpi(
+    client_prompt_text: str,
+    pdf_path: Path,
+    pages: Sequence[int],
+    per_image_bytes: int,
+    dpi_start: int,
+) -> List[Any]:
+    """Higher-fidelity images for dense amount tables (payment details)."""
+    content: List[Any] = [{"type": "text", "text": client_prompt_text + f"\n提供页面: {list(pages)}\n"}]
+    for page_num in pages:
+        raw = rasterize_page_jpeg(pdf_path, page_num, max_bytes=per_image_bytes, dpi_start=dpi_start)
+        content.append({"type": "text", "text": f"[page {page_num}]"})
+        content.append({"type": "image_url", "image_url": {"url": to_data_url(raw)}})
+    return content
+
+
 def _call_json(client: AIClient, user_prompt: Any) -> Dict[str, Any]:
     result = client.get_response(
         user_prompt=user_prompt,
@@ -130,6 +148,18 @@ def _doc_input(client_prompt_text: str, pdf_path: Path, max_pages: int) -> List[
         text = extract_pdf_text(pdf_path)
         return client_prompt_text + f"\n\n===== PDF TEXT =====\n{text}\n"
     return _vision_pages(client_prompt_text, pdf_path, max_pages)
+
+
+def _doc_input_hires(client_prompt_text: str, pdf_path: Path, max_pages: int) -> List[Any] | str:
+    """Payment tables need readable digits — send fewer pages at higher DPI."""
+    if pdf_path.suffix.lower() == ".pdf" and pdf_is_digital(pdf_path):
+        text = extract_pdf_text(pdf_path)
+        return client_prompt_text + f"\n\n===== PDF TEXT =====\n{text}\n"
+    n_pages = pdf_page_count(pdf_path)
+    # Cap harder: hi-res images are bigger, and one table is usually 1-3 pages.
+    pages = select_pages(n_pages, max_pages=min(max_pages, 6))
+    per_image = max(600_000, multi_image_byte_budget(len(pages)))
+    return _vision_pages_at_dpi(client_prompt_text, pdf_path, pages, per_image, dpi_start=180)
 
 
 def _utility_prompt(filename: str) -> str:
@@ -156,7 +186,8 @@ def _utility_prompt(filename: str) -> str:
 
 def _payment_prompt(filename: str) -> str:
     return (
-        "你是租赁合同支付明细抽取助手。只根据提供的内容，抽取该合同里每一期应付金额明细。\n"
+        "你是租赁合同支付明细抽取助手。页面上应有『每期应付租赁费与物业管理服务费明细』"
+        "（附件/表格）。请把表中每一行原样读出来。\n"
         f"源文件名: {filename}\n\n"
         "输出一个 JSON 对象：\n"
         "{\n"
@@ -176,9 +207,11 @@ def _payment_prompt(filename: str) -> str:
         "  ]\n"
         "}\n"
         "规则:\n"
-        "- 按期间/期次一行一行列；找不到明细表就 periods 为空数组。\n"
+        "- 金额必须逐格抄表，不要因为文字提到附件就只写说明。\n"
+        "- 找不到明细表 → periods = []；找到但数字看不清 → 也不要编，宁可留空该行金额。\n"
+        "- 期次：用表内编号或第N期，不要写成日期。\n"
         "- 日期尽量 YYYY-MM-DD；金额不要加千分位。\n"
-        "- 每行原文摘录一句（可选，最长约160字）。\n"
+        "- 原文摘录：该行最关键的一句（约120字内），不要整段附件说明。\n"
         "- 只输出 JSON，不要 markdown。\n"
     )
 
@@ -235,9 +268,21 @@ def extract_utility(client: AIClient, pdf: Path, max_pages: int) -> List[str]:
 
 
 def extract_payment(client: AIClient, pdf: Path, max_pages: int) -> List[List[str]]:
-    payload = _doc_input(_payment_prompt(pdf.name), pdf, max_pages)
-    data = _call_json(client, payload)
-    return _payment_rows(data)
+    rows = _payment_rows(_call_json(client, _doc_input_hires(_payment_prompt(pdf.name), pdf, max_pages)))
+    if rows or pdf_is_digital(pdf):
+        return rows
+    # Retry: amount schedules usually sit in the LAST pages (附件); first pass may miss them.
+    n_pages = pdf_page_count(pdf)
+    tail = list(range(max(1, n_pages - 3), n_pages + 1))
+    if not tail:
+        return rows
+    retry_prompt = _payment_prompt(pdf.name) + (
+        "\n補充：這是合同最後幾頁。如見到『每期應付租賃費與物業服務費明細』表，"
+        "請逐行抄出所有數字（租賃費/物業服務費/合計），不要留空。"
+    )
+    payload = _vision_pages_at_dpi(retry_prompt, pdf, tail, per_image_bytes=900_000, dpi_start=200)
+    rows2 = _payment_rows(_call_json(client, payload))
+    return rows2 if rows2 else rows
 
 
 def _write_utility_wb(rows_by_file: List[tuple], out_path: Path) -> None:
