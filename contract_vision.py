@@ -27,8 +27,9 @@ except ImportError:
 MAX_REQUEST_BODY_BYTES = 4_194_304
 SAFE_SINGLE_IMAGE_BYTES = 2_800_000
 SAFE_MULTI_IMAGE_BYTES = 450_000
-# Leave ~0.7MB for prompt/JSON envelope inside the 4MB gateway body cap.
-_MULTI_IMAGE_BODY_BUDGET = 3_400_000
+# Data URLs expand JPEG bytes by roughly 4/3 due to base64. Keep the raw-image
+# budget below 2.5MB so the encoded images plus prompt stay under the 4MB cap.
+_MULTI_IMAGE_BODY_BUDGET = 2_450_000
 
 
 def multi_image_byte_budget(n_images: int) -> int:
@@ -159,6 +160,7 @@ def rasterize_page_jpeg(
     *,
     max_bytes: int = SAFE_SINGLE_IMAGE_BYTES,
     dpi_start: int = 140,
+    max_edge_start: int = 1800,
 ) -> bytes:
     """Rasterize one PDF page to JPEG under max_bytes."""
     if pdfium is None:
@@ -169,7 +171,9 @@ def rasterize_page_jpeg(
     page = pdf[page_num - 1]
 
     attempts = [
-        (dpi_start, 80, 1800),
+        (dpi_start, 88, max_edge_start),
+        (dpi_start, 82, min(max_edge_start, 2800)),
+        (160, 76, min(max_edge_start, 2400)),
         (120, 70, 1400),
         (100, 60, 1200),
         (85, 50, 1000),

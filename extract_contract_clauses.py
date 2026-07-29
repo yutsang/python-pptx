@@ -120,11 +120,18 @@ def _vision_pages_at_dpi(
     pages: Sequence[int],
     per_image_bytes: int,
     dpi_start: int,
+    max_edge_start: int = 1800,
 ) -> List[Any]:
     """Higher-fidelity images for dense amount tables (payment details)."""
     content: List[Any] = [{"type": "text", "text": client_prompt_text + f"\n提供页面: {list(pages)}\n"}]
     for page_num in pages:
-        raw = rasterize_page_jpeg(pdf_path, page_num, max_bytes=per_image_bytes, dpi_start=dpi_start)
+        raw = rasterize_page_jpeg(
+            pdf_path,
+            page_num,
+            max_bytes=per_image_bytes,
+            dpi_start=dpi_start,
+            max_edge_start=max_edge_start,
+        )
         content.append({"type": "text", "text": f"[page {page_num}]"})
         content.append({"type": "image_url", "image_url": {"url": to_data_url(raw)}})
     return content
@@ -148,18 +155,6 @@ def _doc_input(client_prompt_text: str, pdf_path: Path, max_pages: int) -> List[
         text = extract_pdf_text(pdf_path)
         return client_prompt_text + f"\n\n===== PDF TEXT =====\n{text}\n"
     return _vision_pages(client_prompt_text, pdf_path, max_pages)
-
-
-def _doc_input_hires(client_prompt_text: str, pdf_path: Path, max_pages: int) -> List[Any] | str:
-    """Payment tables need readable digits — send fewer pages at higher DPI."""
-    if pdf_path.suffix.lower() == ".pdf" and pdf_is_digital(pdf_path):
-        text = extract_pdf_text(pdf_path)
-        return client_prompt_text + f"\n\n===== PDF TEXT =====\n{text}\n"
-    n_pages = pdf_page_count(pdf_path)
-    # Cap harder: hi-res images are bigger, and one table is usually 1-3 pages.
-    pages = select_pages(n_pages, max_pages=min(max_pages, 6))
-    per_image = max(600_000, multi_image_byte_budget(len(pages)))
-    return _vision_pages_at_dpi(client_prompt_text, pdf_path, pages, per_image, dpi_start=180)
 
 
 def _utility_prompt(filename: str) -> str:
@@ -186,8 +181,8 @@ def _utility_prompt(filename: str) -> str:
 
 def _payment_prompt(filename: str) -> str:
     return (
-        "你是租赁合同支付明细抽取助手。页面上应有『每期应付租赁费与物业管理服务费明细』"
-        "（附件/表格）。请把表中每一行原样读出来。\n"
+        "你是租赁合同支付明细逐格抄录助手。当前只提供一张已定位的表格页。"
+        "请按视觉中的行列逐格抄录，不要结合其他页面推算。\n"
         f"源文件名: {filename}\n\n"
         "输出一个 JSON 对象：\n"
         "{\n"
@@ -207,12 +202,34 @@ def _payment_prompt(filename: str) -> str:
         "  ]\n"
         "}\n"
         "规则:\n"
-        "- 金额必须逐格抄表，不要因为文字提到附件就只写说明。\n"
+        "- 金额必须逐字符抄表；特别检查位数、小数点和每个零，禁止根据相邻行补全。\n"
+        "- 每一视觉行只对应一条 periods 记录，不要跨行拼接。\n"
         "- 找不到明细表 → periods = []；找到但数字看不清 → 也不要编，宁可留空该行金额。\n"
         "- 期次：用表内编号或第N期，不要写成日期。\n"
-        "- 日期尽量 YYYY-MM-DD；金额不要加千分位。\n"
+        "- 日期忠实抄录后尽量 YYYY-MM-DD；金额保留原值但不要加千分位符号。\n"
         "- 原文摘录：该行最关键的一句（约120字内），不要整段附件说明。\n"
         "- 只输出 JSON，不要 markdown。\n"
+    )
+
+
+def _payment_scan_prompt() -> str:
+    return (
+        "逐页检查所提供的合同扫描页，只定位包含付款金额明细的页面。"
+        "目标包括：每期应付租赁费/租金/物业服务费明细表，或明确列出期间与应付金额的修订表格。"
+        "仅提到『详见附件』、付款规则、银行账户、签字页，不算目标。\n"
+        '输出 JSON：{"candidate_pages": [页码整数], "evidence": {"页码": "短证据"}}。\n'
+        "页码必须使用每张图片前的 [page N] 标签。没有目标页就返回空数组。"
+    )
+
+
+def _payment_review_prompt(filename: str, page_num: int, first_pass: Dict[str, Any]) -> str:
+    return (
+        "你是金额抄录复核员。对照同一张高解像表格图片，逐行、逐字符核对下面第一次抄录。"
+        "重点检查四位/五位数混淆、重复数字、漏零、小数点、跨行错位，以及合计是否与可见分项一致。"
+        "只能按图片纠正；看不清就留空，禁止推算或沿用第一次结果。"
+        f"\n源文件名: {filename}\n页面: {page_num}\n第一次抄录:\n"
+        f"{json.dumps(first_pass, ensure_ascii=False)}\n"
+        "请按原有 periods JSON schema 返回完整复核结果，只输出 JSON。"
     )
 
 
@@ -267,28 +284,78 @@ def extract_utility(client: AIClient, pdf: Path, max_pages: int) -> List[str]:
     return _utility_row(pdf.name, data)
 
 
-def extract_payment(client: AIClient, pdf: Path, max_pages: int) -> List[List[str]]:
-    is_digital = pdf.suffix.lower() == ".pdf" and pdf_is_digital(pdf)
-    rows = _payment_rows(_call_json(client, _doc_input_hires(_payment_prompt(pdf.name), pdf, max_pages)))
-    if rows:
-        return rows
-    if is_digital:
-        print(f"  (debug) digital PDF, {pdf_page_count(pdf)} page(s) — text sent whole, no retry")
-        return rows
-    # Retry: amount schedules usually sit in the LAST pages (附件); first pass may miss them.
+def _scan_payment_pages(client: AIClient, pdf: Path, batch_size: int) -> List[int]:
+    """Scan every page at moderate resolution and return actual table pages."""
     n_pages = pdf_page_count(pdf)
-    tail = list(range(max(1, n_pages - 3), n_pages + 1))
-    if not tail:
-        return rows
-    print(f"  (retry) first pass 0 rows — re-reading last {len(tail)} page(s) hi-res …")
-    retry_prompt = _payment_prompt(pdf.name) + (
-        "\n補充：這是合同最後幾頁。如見到『每期應付租賃費與物業服務費明細』表，"
-        "請逐行抄出所有數字（租賃費/物業服務費/合計），不要留空。"
+    candidates: set[int] = set()
+    size = max(2, min(7, batch_size))
+    for start in range(1, n_pages + 1, size):
+        pages = list(range(start, min(n_pages, start + size - 1) + 1))
+        payload = _vision_pages_at_dpi(
+            _payment_scan_prompt(),
+            pdf,
+            pages,
+            per_image_bytes=multi_image_byte_budget(len(pages)),
+            dpi_start=110,
+            max_edge_start=1400,
+        )
+        data = _call_json(client, payload)
+        found = data.get("candidate_pages", [])
+        if not isinstance(found, list):
+            continue
+        for value in found:
+            try:
+                page_num = int(value)
+            except (TypeError, ValueError):
+                continue
+            if page_num in pages:
+                candidates.add(page_num)
+    return sorted(candidates)
+
+
+def _extract_payment_page(client: AIClient, pdf: Path, page_num: int) -> List[List[str]]:
+    """Transcribe and independently review one table page at full resolution."""
+    raw = rasterize_page_jpeg(
+        pdf,
+        page_num,
+        max_bytes=2_450_000,
+        dpi_start=220,
+        max_edge_start=3200,
     )
-    payload = _vision_pages_at_dpi(retry_prompt, pdf, tail, per_image_bytes=900_000, dpi_start=200)
-    rows2 = _payment_rows(_call_json(client, payload))
-    print(f"  (retry) got {len(rows2)} row(s)")
-    return rows2 if rows2 else rows
+    image = {"type": "image_url", "image_url": {"url": to_data_url(raw)}}
+    first_payload: List[Any] = [
+        {"type": "text", "text": _payment_prompt(pdf.name) + f"\n[page {page_num}]"},
+        image,
+    ]
+    first = _call_json(client, first_payload)
+    review_payload: List[Any] = [
+        {"type": "text", "text": _payment_review_prompt(pdf.name, page_num, first)},
+        image,
+    ]
+    reviewed = _call_json(client, review_payload)
+    if isinstance(reviewed.get("periods"), list):
+        return _payment_rows(reviewed)
+    return _payment_rows(first)
+
+
+def extract_payment(client: AIClient, pdf: Path, max_pages: int) -> List[List[str]]:
+    pages = _scan_payment_pages(client, pdf, batch_size=max_pages)
+    if not pages:
+        print(f"  (scan) checked all {pdf_page_count(pdf)} page(s); no payment table found")
+        return []
+    print(f"  (scan) payment table page(s): {pages}")
+    rows: List[List[str]] = []
+    seen = set()
+    for page_num in pages:
+        page_rows = _extract_payment_page(client, pdf, page_num)
+        print(f"  (page {page_num}) transcribed + reviewed: {len(page_rows)} row(s)")
+        for row in page_rows:
+            key = tuple(row[:7])
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+    return rows
 
 
 def _write_utility_wb(rows_by_file: List[tuple], out_path: Path) -> None:
@@ -336,7 +403,12 @@ def main() -> int:
     )
     ap.add_argument("path", help="contracts root or one project folder")
     ap.add_argument("--max-files", type=int, default=0, help="max PDFs per folder (0 = all)")
-    ap.add_argument("--max-pages", type=int, default=8, help="max vision pages per PDF")
+    ap.add_argument(
+        "--max-pages",
+        type=int,
+        default=6,
+        help="utility-page limit and payment scan batch size (payment still scans every page)",
+    )
     ap.add_argument("--skip-utility", action="store_true", help="skip 水电约定 workbook")
     ap.add_argument("--skip-payment", action="store_true", help="skip 每期支付明细 workbook")
     args = ap.parse_args()
@@ -347,7 +419,10 @@ def main() -> int:
         return 1
 
     folders = _project_folders(root)
-    print(f"Model: GPT-5.5 (workbench)  |  pages/PDF <= {args.max_pages}")
+    print(
+        f"Model: GPT-5.5 (workbench)  |  utility pages <= {args.max_pages}"
+        f"  |  payment: scan every page in batches of <= {min(7, max(2, args.max_pages))}"
+    )
     print(f"Project folder(s) with top-level PDFs: {len(folders)}")
     for f in folders:
         print(f"  - {f}  ({len(_collect_pdfs(f))} pdf(s))")
