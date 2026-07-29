@@ -83,10 +83,131 @@ def _dump_cells(ws, row, cols, mode, label):
     return total / used
 
 
+def _silent_recompute(ws, block, cols, days_row, start_col):
+    """Same aggregation the [3] section prints, without printing -- used by
+    --audit-all to re-derive every figure independently and compare."""
+    rev = 0.0
+    for c in cols:
+        v = ws.cell(row=block.revenue_row, column=c).value if block.revenue_row else None
+        if isinstance(v, (int, float)):
+            rev += v
+    area_vals = []
+    for c in cols:
+        v = ws.cell(row=block.area_row, column=c).value if block.area_row else None
+        if isinstance(v, (int, float)) and v > 0:
+            area_vals.append(v)
+    area = sum(area_vals) / len(area_vals) if area_vals else 0.0
+    days = 0.0
+    for c in cols:
+        if start_col is None or c < start_col:
+            continue
+        v = ws.cell(row=days_row, column=c).value
+        if isinstance(v, (int, float)):
+            days += v
+    return rev, area, days
+
+
+def audit_all(wb, path: str, residual_pct_limit: float) -> int:
+    """Runs every tab x every transition through the same independent
+    re-computation the detailed mode prints, but reports only the verdicts
+    -- so all 17 entities can be checked at once instead of reading 17
+    separate full dumps. Two independent checks per transition:
+    (a) does a fresh re-derivation of revenue/area/days from the raw cells
+    match what the extractor produced, and (b) does start + every factor
+    reconcile to the end total."""
+    ab_tabs = [s for s in wb.sheetnames if s.startswith("AB")]
+    print(f"Auditing {len(ab_tabs)} AB- tab(s) in {path!r}\n")
+    print(f"{'tab':16s} {'transition':34s} {'recompute':11s} {'residual':>11s}  verdict")
+    print("-" * 92)
+
+    problems, checked = [], 0
+    for tab in ab_tabs:
+        ws = wb[tab]
+        blocks, results = build_bridges_for_ab_tab(ws, tab, log=lambda m: None)
+        if blocks is None or not results:
+            print(f"{tab:16s} {'(no transitions produced)':34s} {'-':11s} {'-':>11s}  ⚠️ skipped")
+            problems.append((tab, "produced no bridge transitions"))
+            continue
+
+        yd = find_year_days_rows(ws)
+        year_row, days_row = yd["year_row"], yd["days_row"]
+        max_col = ws.max_column
+        year_cols = _year_col_map(ws, year_row, max_col)
+
+        month_row = None
+        labeled = find_labeled_rows(ws)
+        for r in sorted(labeled):
+            if any(cat == "period_month" for _, _, cat in labeled[r]):
+                month_row = r
+                break
+
+        for res in results:
+            checked += 1
+            arrow = f"{res.year_a} -> {'LTM' if res.is_ltm else res.year_b}"
+            # Rebuild both sides' column sets exactly as the extractor did.
+            cols_a = year_cols.get(res.year_a, [])
+            if res.is_ltm and month_row:
+                ym = _month_col_map(ws, year_row, month_row, max_col)
+                keys, y, m = [], res.year_b, res.latest_month
+                for _ in range(12):
+                    keys.append((y, m))
+                    m -= 1
+                    if m == 0:
+                        m, y = 12, y - 1
+                keys.reverse()
+                cols_b = [ym[k] for k in keys if k in ym]
+            else:
+                cols_b = year_cols.get(res.year_b, [])
+
+            mismatches = []
+            for block, sa, sb in zip(blocks, res.series_a, res.series_b):
+                start_col = _phase_start_col(ws, block, max_col)
+                for side, cols, s in (("A", cols_a, sa), ("B", cols_b, sb)):
+                    rev, area, days = _silent_recompute(ws, block, cols, days_row, start_col)
+                    if (abs(rev - s["revenue_k"] * 1000) > 1.0 or abs(area - s["area"]) > 0.01
+                            or abs(days - s["days"]) > 0.5):
+                        mismatches.append(f"{block.label}/{side}")
+
+            items = res.bridge.items
+            reconstructed = items[0].value + sum(it.value for it in items[1:-1])
+            end_v = items[-1].value
+            resid_pct = ((reconstructed - end_v) / end_v * 100) if end_v else 0.0
+
+            recompute_s = "✅ match" if not mismatches else f"❌ {len(mismatches)}"
+            resid_ok = abs(resid_pct) <= residual_pct_limit
+            verdict = "✅" if (not mismatches and resid_ok) else "❌ CHECK"
+            print(f"{tab:16s} {arrow:34s} {recompute_s:11s} {resid_pct:>+10.3f}%  {verdict}")
+            if mismatches:
+                problems.append((tab, f"{arrow}: recompute mismatch on {', '.join(mismatches)}"))
+            if not resid_ok:
+                problems.append((tab, f"{arrow}: residual {resid_pct:+.3f}% exceeds "
+                                      f"±{residual_pct_limit}%"))
+
+    print("-" * 92)
+    print(f"\n{checked} transition(s) checked across {len(ab_tabs)} tab(s).")
+    if not problems:
+        print("✅ No anomalies: every figure re-derives from the raw cells, and every")
+        print("   bridge reconciles start + factors to its end total.")
+        return 0
+    print(f"\n❌ {len(problems)} item(s) need a closer look "
+          f"(re-run with --tab <name> for the full cell-level trail):")
+    for tab, msg in problems:
+        print(f"  - {tab}: {msg}")
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", help="path to the operational-report .xlsx")
-    ap.add_argument("--tab", required=True, help="the AB- tab to audit, e.g. AB-CD")
+    ap.add_argument("--tab", default=None, help="the AB- tab to audit, e.g. AB-CD")
+    ap.add_argument("--audit-all", action="store_true",
+                     help="check EVERY tab and transition at once, printing only the verdicts "
+                          "(independent re-computation + reconciliation) instead of the full "
+                          "cell-level trail -- use this to sweep all entities, then drill into "
+                          "anything it flags with --tab")
+    ap.add_argument("--residual-limit", type=float, default=2.0,
+                     help="residual %% of the end total above which a transition is flagged "
+                          "(default 2.0; a small residual is expected, see the note in --tab mode)")
     ap.add_argument("--transition", type=int, default=-1,
                      help="which transition to audit (0=first, -1=last/LTM, the default)")
     ap.add_argument("--phase", default=None, help="only dump cells for this phase label")
@@ -94,6 +215,13 @@ def main() -> int:
 
     print(f"Loading {args.path!r}...")
     wb = load_workbook(args.path, data_only=True)
+
+    if args.audit_all:
+        return audit_all(wb, args.path, args.residual_limit)
+
+    if not args.tab:
+        print("❌ provide --tab <name>, or --audit-all to sweep every tab at once.")
+        return 1
     if args.tab not in wb.sheetnames:
         print(f"❌ tab {args.tab!r} not found. Available: {wb.sheetnames}")
         return 1
