@@ -163,7 +163,20 @@ def _validate_block(ws_values, header_row: int, end_row: int, items: List[Bridge
 def _compute_waterfall_series(block: BridgeBlock):
     """Shared series math for both renderers (PPTX and Excel): decomposes
     the block's items into the classic invisible-base-series stacked-bar
-    layout -- one non-zero value per category across 4 series."""
+    layout -- one non-zero value per category across 4 series.
+
+    The REAL '成都-量价桥图' chart's own hidden staging area (AM:AR, dumped
+    via inspect_bridge_format.py --dump-cols) uses 6 series instead of 4:
+    'Clear'/'Standalone'/'Positive'/'Negative' map 1:1 to this function's
+    base/total/increase/decrease, plus 'Positive cross'/'Negative cross' --
+    a defensive pair (always 0 in every real row checked) for when a
+    SINGLE bar's running total crosses zero mid-bar, needed because their
+    CHOOSE(...)-formula chain computes each cell independently and can't
+    otherwise tell which side of zero a bar's OWN span falls on. Not
+    replicated here: this function derives base/height directly from
+    `running`/`running + it.value` (can legitimately be negative), so a
+    zero-crossing bar's span is already correct by construction -- there's
+    no equivalent blind spot for this approach to defend against."""
     categories = [it.label for it in block.items]
     base_vals, total_vals, inc_vals, dec_vals = [], [], [], []
     running = 0.0
