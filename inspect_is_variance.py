@@ -43,18 +43,36 @@ from fdd_utils.workbook import process_workbook_data, INTERNAL_ROW_KEY
 # Mirrors the caps in prompts.yml 2_Auditor (Eng + Chi). Kept as data here
 # purely so this tool can REPORT which cap an account will hit -- it does
 # not drive any generation.
+# Needles must cover BOTH languages: a Chinese databook's mapping keys are
+# Chinese (营业收入 / 管理费用 / ...), and an English-only table silently
+# matched nothing on them -- every account fell through to "no explicit
+# tier", so nothing was ever classified as capped and a real 19-workbook
+# sweep reported 0 flagged accounts purely as a matching artefact.
+# Ordered MOST-SPECIFIC FIRST: 所得税费用 and 营业外收入 both contain 收入,
+# and "income tax expense" contains "income", so a looser revenue rule
+# placed earlier would swallow them.
 _CAP_TIERS = [
-    (("cash", "ar", "receivable", "prepayment", "oci", "reserve", "dta", "ncl"),
-     "1-3 sentences / 25-80 words (Chi 2-3 句 / 40-90 字)"),
-    (("investment propert", "op", "other payable"),
-     "4-7 sentences / 100-200 words (Chi 4-7 句 / 150-280 字)"),
-    (("operating income", "revenue", "cogs", "operating cost"),
-     "2-3 sentences / 60-100 words (Chi 3-5 句 / 100-180 字)"),
-    (("financial expense", "tax", "g&a", "general and admin", "s&d", "selling",
-      "income tax", "non-operating"),
+    (("financial expense", "g&a", "general and admin", "s&d", "selling",
+      "income tax", "non-operating", "tax and surcharge", "taxes and surcharge",
+      "财务费用", "管理费用", "销售费用", "所得税费用", "税金及附加",
+      "营业外收入", "营业外支出", "其他收益"),
      "1-3 sentences / 30-80 words (Chi 2-3 句 / 60-130 字)  <-- tightest tier"),
+    (("operating income", "revenue", "cogs", "operating cost",
+      "营业收入", "营业成本"),
+     "2-3 sentences / 60-100 words (Chi 3-5 句 / 100-180 字)"),
+    (("investment propert", "other payable", "投资性房地产", "其他应付款"),
+     "4-7 sentences / 100-200 words (Chi 4-7 句 / 150-280 字)"),
+    (("cash", "receivable", "prepayment", "oci", "reserve", "dta", "ncl",
+      "货币资金", "应收账款", "预付款项", "其他综合收益", "盈余公积"),
+     "1-3 sentences / 25-80 words (Chi 2-3 句 / 40-90 字)"),
 ]
-_TIGHTEST = _CAP_TIERS[-1][1]
+_TIGHTEST = _CAP_TIERS[0][1]
+
+# Revenue, for the expense-vs-revenue asymmetry check. Same bilingual
+# problem: an English-only match reported "revenue growth n/a" on every
+# Chinese workbook. 营业外收入 (non-operating income) is NOT revenue.
+_REVENUE_NEEDLES = ("operating income", "revenue", "营业收入")
+_NOT_REVENUE_NEEDLES = ("non-operating", "营业外", "cost", "成本")
 
 
 def _cap_for(account: str) -> str:
@@ -63,6 +81,13 @@ def _cap_for(account: str) -> str:
         if any(n in low for n in needles):
             return cap
     return "(no explicit tier -- falls back to general rules)"
+
+
+def _is_revenue(account: str) -> bool:
+    low = account.lower()
+    if any(n in low for n in _NOT_REVENUE_NEEDLES):
+        return False
+    return any(n in low for n in _REVENUE_NEEDLES)
 
 
 def _total_row_values(df):
@@ -83,14 +108,28 @@ def _total_row_values(df):
     return [(str(c), float(df.loc[total_idx, c] or 0)) for c in period_cols]
 
 
-def _pct(prev, curr):
+def _pct(prev, curr, scale=None):
+    """Percentage move, or None when the base is too small for one to mean
+    anything. A real workbook produced '财务费用 +31,838,208%' -- arithmetically
+    correct, but it only says the prior period was a rounding-error residue,
+    not that the account moved 30 million percent. Anything under 1% of the
+    account's own largest period is treated as a negligible base, so these
+    don't dominate the ranking and crowd out genuine movements."""
     if prev == 0:
+        return None
+    if scale and abs(prev) < abs(scale) * 0.01:
         return None
     return (curr - prev) / abs(prev) * 100
 
 
+def _series_scale(series):
+    """Largest absolute period value -- the yardstick for whether a given
+    period's value is a meaningful base to measure a move against."""
+    return max((abs(v) for _p, v in series), default=0.0)
+
+
 def _fmt_pct(p):
-    return "n/a (from nil)" if p is None else f"{p:+,.1f}%"
+    return "n/a (negligible base)" if p is None else f"{p:+,.1f}%"
 
 
 def _entity_from_filename(path: str) -> str:
@@ -126,9 +165,10 @@ def analyse_one(path: str, entity: str, threshold: float, sheet=None,
         if len(series) < 2:
             continue
         full = series[:-1] if (months and 0 < months < 12) else series
+        scale = _series_scale(full)
         biggest, from_nil = 0.0, False
         for (_p0, v0), (_p1, v1) in zip(full, full[1:]):
-            p = _pct(v0, v1)
+            p = _pct(v0, v1, scale)
             if p is not None and abs(p) >= threshold:
                 biggest = max(biggest, abs(p))
             elif p is None and v1 != 0:
@@ -137,9 +177,8 @@ def analyse_one(path: str, entity: str, threshold: float, sheet=None,
         rhs = df.attrs.get("adjacent_detail_rows") or []
         linked = df.attrs.get("table_linked_remarks") or []
         cap = _cap_for(key)
-        low = key.lower()
-        latest_growth = _pct(full[-2][1], full[-1][1]) if len(full) >= 2 else None
-        if any(n in low for n in ("operating income", "revenue")) and "non-operating" not in low:
+        latest_growth = _pct(full[-2][1], full[-1][1], scale) if len(full) >= 2 else None
+        if _is_revenue(key):
             out["revenue_growth"] = latest_growth
         out["accounts"].append({
             "key": key, "series": series, "full": full, "months": months,
@@ -168,7 +207,7 @@ def run_batch(args) -> int:
         return 1
 
     print(f"Sweeping {len(paths)} workbook(s) in {args.path!r}\n")
-    all_flagged, per_file, failed = [], [], []
+    all_flagged, per_file, failed, remark_anomalies = [], [], [], []
     total_is = 0
 
     for p in paths:
@@ -192,8 +231,22 @@ def run_batch(args) -> int:
         per_file.append((name, len(accts), len(flagged), res["revenue_growth"]))
         rg = res["revenue_growth"]
         rg_s = "n/a" if rg is None else f"{rg:+,.1f}%"
+
+        # A workbook where EVERY account reports the same remark counts is a
+        # data-extraction signal, not a coincidence: a healthy databook shows
+        # a wide spread (one real file ranged from 1/1/2 up to 3/20/23). All
+        # accounts landing on an identical low count usually means the file's
+        # remark columns aren't being picked up and the commentary is being
+        # written from figures alone.
+        sigs = {(a["notes"], a["rhs"], a["linked"]) for a in accts}
+        uniform = ""
+        if len(sigs) == 1 and len(accts) >= 4:
+            n, rh, li = next(iter(sigs))
+            uniform = (f"   ⚠️ ALL {len(accts)} accounts report identical remark counts "
+                       f"{n}/{rh}/{li} -- remarks likely NOT being extracted from this file")
+            remark_anomalies.append((name, len(accts), (n, rh, li)))
         print(f"--- {name}  [entity={entity!r}, lang={res['language']}]")
-        print(f"    {len(accts)} IS account(s), revenue growth {rg_s}, {len(flagged)} flagged")
+        print(f"    {len(accts)} IS account(s), revenue growth {rg_s}, {len(flagged)} flagged{uniform}")
         for a in sorted(accts, key=lambda x: -x["biggest"]):
             if a["biggest"] < args.threshold:
                 continue
@@ -227,6 +280,14 @@ def run_batch(args) -> int:
         print(f"\n  Which account types hit the cap most often:")
         for key, n in sorted(by_account.items(), key=lambda kv: -kv[1]):
             print(f"    {n:>3d} x  {key}")
+    if remark_anomalies:
+        print(f"\n  ⚠️  DATABOOK ISSUE -- {len(remark_anomalies)} workbook(s) where every IS account")
+        print(f"      reports identical remark counts (a healthy file varies widely):")
+        for name, n_acct, sig in remark_anomalies:
+            print(f"    {name}: all {n_acct} accounts at {sig[0]}/{sig[1]}/{sig[2]}")
+        print(f"      If these files really do carry per-account remarks, they are not")
+        print(f"      reaching the pipeline -- so the commentary for them is being written")
+        print(f"      from figures alone, which no prompt change can compensate for.")
     if failed:
         print(f"\n  Skipped:")
         for name, err in failed:
@@ -322,11 +383,12 @@ def main() -> int:
         # against a full year would report a ~-92% "collapse" that is
         # purely a period-length artefact, not a real movement.
         full = series[:-1] if (months and 0 < months < 12) else series
+        scale = _series_scale(full)
         print(f"\n  period-over-period movement (full periods only):")
         biggest = 0.0          # largest real measurable % move
         from_nil = False       # a nil -> non-nil start, which has no meaningful %
         for (p0, v0), (p1, v1) in zip(full, full[1:]):
-            p = _pct(v0, v1)
+            p = _pct(v0, v1, scale)
             mark = ""
             if p is not None and abs(p) >= args.threshold:
                 mark = "   <-- HIGH VARIANCE"
@@ -341,12 +403,13 @@ def main() -> int:
             print(f"    {p0} -> {p1}: {v0:>16,.2f} -> {v1:>16,.2f}  {_fmt_pct(p)}{mark}")
 
         low = key.lower()
-        if any(n in low for n in ("operating income", "revenue")) and "non-operating" not in low:
+        if _is_revenue(key):
             if len(full) >= 2:
-                revenue_growth = _pct(full[-2][1], full[-1][1])
-        elif any(n in low for n in ("expense", "cost", "cogs", "tax")):
+                revenue_growth = _pct(full[-2][1], full[-1][1], scale)
+        elif any(n in low for n in ("expense", "cost", "cogs", "tax",
+                                     "费用", "成本", "税金", "所得税")):
             if len(full) >= 2:
-                expense_growth[key] = _pct(full[-2][1], full[-1][1])
+                expense_growth[key] = _pct(full[-2][1], full[-1][1], scale)
 
         cap = _cap_for(key)
         print(f"\n  explanatory material available:")
