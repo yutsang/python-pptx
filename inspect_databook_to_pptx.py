@@ -255,6 +255,26 @@ def style_profile(args, dfs) -> int:
     for n, s in per_sentence[:3]:
         print(f"      x{n}: {s!r}")
 
+    # Bare-by-default is right, but the one case the convention keeps 人民币
+    # for is a sentence that also names a foreign currency -- '注册资本为
+    # 7,000万美元（折合人民币4.88亿元）'. A bare figure there is genuinely
+    # ambiguous, so flag it rather than treat 0% as unambiguously ideal.
+    ambiguous = []
+    for t in texts:
+        for sent in re.split(r"[。；;]", t):
+            if not re.search(r"美元|港元|港币|欧元|日元|USD|HKD|EUR", sent):
+                continue
+            bare = [m for m in _AMOUNT_RE.finditer(sent) if not m.group(1)]
+            if bare:
+                ambiguous.append(sent.strip()[:110])
+    if ambiguous:
+        print(f"\n    ⚠️ {len(ambiguous)} sentence(s) name a FOREIGN currency yet leave a figure")
+        print(f"       bare -- this is the case where 人民币 should be kept, for clarity:")
+        for s in ambiguous[:3]:
+            print(f"         {s!r}")
+    elif amounts:
+        print(f"    (no sentence mixes a foreign currency with a bare figure)")
+
     openings = []
     for t in texts:
         m = _OPENING_RE.match(t)
