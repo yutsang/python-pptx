@@ -61,15 +61,26 @@ def _safe_sheet_name(name: str, used: set) -> str:
 
 
 def _collect_pdfs(folder: Path) -> List[Path]:
+    """PDFs in this folder only — project folders should not inherit code/
+    tooling folders that happen to sit beside the contracts."""
     if folder.is_file():
         return [folder] if folder.suffix.lower() == ".pdf" else []
-    return sorted(p for p in folder.rglob("*.pdf") if p.is_file())
+    return sorted(p for p in folder.glob("*.pdf") if p.is_file())
 
 
 def _project_folders(root: Path) -> List[Path]:
+    """Folders that actually contain PDFs at their top level.
+
+    If `root` itself holds PDFs (e.g. contracts/成都/*.pdf), treat root as the
+    project — not any code subfolders like fdd_utils/ or font_metrics/ that may
+    live alongside the contracts. Otherwise (contracts/ with no loose PDFs),
+    use each direct subfolder.
+    """
     if root.is_file():
         return [root.parent]
-    subs = [p for p in root.iterdir() if p.is_dir()]
+    if any(p.is_file() for p in root.glob("*.pdf")):
+        return [root]
+    subs = [p for p in sorted(root.iterdir()) if p.is_dir() and any(p.glob("*.pdf"))]
     return subs if subs else [root]
 
 
@@ -286,9 +297,9 @@ def main() -> int:
 
     folders = _project_folders(root)
     print(f"Model: GPT-5.5 (workbench)  |  pages/PDF <= {args.max_pages}")
-    print(f"Folders: {len(folders)}")
+    print(f"Project folder(s) with top-level PDFs: {len(folders)}")
     for f in folders:
-        print(f"  - {f}")
+        print(f"  - {f}  ({len(_collect_pdfs(f))} pdf(s))")
     print()
 
     try:
