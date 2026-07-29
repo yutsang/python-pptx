@@ -96,16 +96,39 @@ def _fmt_pct(p):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", help="path to the databook .xlsx")
-    ap.add_argument("--entity", required=True, help="entity name, as you'd type it in the app")
+    ap.add_argument("--entity", default=None, help="entity name, as you'd type it in the app")
     ap.add_argument("--sheet", default=None, help="specific sheet, if the app asks you to pick one")
     ap.add_argument("--account", default=None, help="only report this one account")
     ap.add_argument("--threshold", type=float, default=50.0,
                      help="movement %% above which an account is called high-variance (default 50)")
+    ap.add_argument("--list-sheets", action="store_true",
+                     help="just list this workbook's sheets and exit -- use this first when you "
+                          "don't know what to pass for --entity / --financials-sheet")
+    ap.add_argument("--financials-from", default=None,
+                     help="path to a separate roll-up/master workbook holding the Financials "
+                          "sheet, when this entity's own file doesn't carry one")
+    ap.add_argument("--financials-sheet", default=None,
+                     help="name of the Financials sheet to source from (needed when it lives in "
+                          "a master/roll-up sheet rather than a per-entity tab)")
     args = ap.parse_args()
+
+    if args.list_sheets:
+        from openpyxl import load_workbook
+        wb = load_workbook(args.path, read_only=True)
+        print(f"{len(wb.sheetnames)} sheet(s) in {args.path!r}:")
+        for name in wb.sheetnames:
+            print(f"  {name}")
+        return 0
+
+    if not args.entity:
+        print("❌ --entity is required (or use --list-sheets to see what's in this file first).")
+        return 1
 
     print(f"Loading {args.path!r} (entity={args.entity!r})...")
     result = process_workbook_data(temp_path=args.path, entity_name=args.entity,
-                                    selected_sheet=args.sheet)
+                                    selected_sheet=args.sheet,
+                                    financials_from=args.financials_from,
+                                    financials_sheet=args.financials_sheet)
     dfs = result["dfs"]
     print(f"{len(dfs)} account(s) processed. Language detected: {result.get('language')}\n")
 
