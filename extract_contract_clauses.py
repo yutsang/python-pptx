@@ -29,6 +29,7 @@ from contract_vision import (
     pdf_is_digital,
     pdf_page_count,
     rasterize_page_jpeg,
+    rasterize_page_tile_jpegs,
     select_pages,
     to_data_url,
 )
@@ -299,6 +300,42 @@ def _merge_reviewed_rows(first: List[List[str]], reviewed: List[List[str]]) -> L
     return merged
 
 
+def _amount_coverage(rows: List[List[str]]) -> tuple[int, int]:
+    """Rows with at least one visible payment amount versus total rows."""
+    return sum(1 for row in rows if any(str(value).strip() for value in row[3:7])), len(rows)
+
+
+def _payment_row_identity(row: List[str]) -> tuple:
+    period = re.sub(r"\D", "", str(row[0])) if row else ""
+    start = re.sub(r"\D", "", str(row[1])) if len(row) > 1 else ""
+    end = re.sub(r"\D", "", str(row[2])) if len(row) > 2 else ""
+    if start or end:
+        return ("dates", start, end)
+    return ("period", period)
+
+
+def _merge_zoom_rows(base: List[List[str]], zoomed: List[List[str]]) -> List[List[str]]:
+    """Use zoomed values to fill/correct matching rows without creating duplicates."""
+    if not zoomed:
+        return base
+    result = [list(row) for row in base]
+    by_identity: Dict[tuple, int] = {}
+    for index, row in enumerate(result):
+        identity = _payment_row_identity(row)
+        if any(identity[1:]):
+            by_identity[identity] = index
+    for row in zoomed:
+        identity = _payment_row_identity(row)
+        index = by_identity.get(identity)
+        if index is None:
+            continue
+        width = min(len(result[index]), len(row))
+        for col in range(width):
+            if str(row[col]).strip():
+                result[index][col] = str(row[col]).strip()
+    return result
+
+
 def extract_utility(client: AIClient, pdf: Path, max_pages: int) -> List[str]:
     payload = _doc_input(_utility_prompt(pdf.name), pdf, max_pages)
     data = _call_json(client, payload)
@@ -356,7 +393,27 @@ def _extract_payment_page(client: AIClient, pdf: Path, page_num: int) -> List[Li
     reviewed = _call_json(client, review_payload)
     first_rows = _payment_rows(first)
     reviewed_rows = _payment_rows(reviewed)
-    return _merge_reviewed_rows(first_rows, reviewed_rows)
+    rows = _merge_reviewed_rows(first_rows, reviewed_rows)
+    populated, total = _amount_coverage(rows)
+    if total and populated < total:
+        print(f"  (zoom) only {populated}/{total} row(s) have amounts; reading enlarged strips")
+        zoomed_rows: List[List[str]] = []
+        for tile_num, tile_raw in rasterize_page_tile_jpegs(pdf, page_num):
+            tile_prompt = (
+                _payment_prompt(pdf.name)
+                + f"\n[page {page_num}, enlarged strip {tile_num}/3]\n"
+                + "这是同一表格页的横向放大片段。只抄录图中完整可见的行；"
+                + "边界处被截断的行不要输出。务必读取租赁费、物业服务费和合计数字。"
+            )
+            tile_payload: List[Any] = [
+                {"type": "text", "text": tile_prompt},
+                {"type": "image_url", "image_url": {"url": to_data_url(tile_raw)}},
+            ]
+            zoomed_rows.extend(_payment_rows(_call_json(client, tile_payload)))
+        rows = _merge_zoom_rows(rows, zoomed_rows)
+        zoom_populated, _ = _amount_coverage(rows)
+        print(f"  (zoom) amount coverage after enlarged strips: {zoom_populated}/{total}")
+    return rows
 
 
 def extract_payment(client: AIClient, pdf: Path, max_pages: int) -> List[List[str]]:

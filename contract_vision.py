@@ -190,6 +190,50 @@ def rasterize_page_jpeg(
     return last
 
 
+def rasterize_page_tile_jpegs(
+    pdf_path: Path,
+    page_num: int,
+    *,
+    tile_count: int = 3,
+    dpi: int = 300,
+    max_bytes_each: int = 2_450_000,
+) -> List[Tuple[int, bytes]]:
+    """Render one page as overlapping horizontal strips for dense tables."""
+    if pdfium is None:
+        raise RuntimeError("pypdfium2 not installed -- run `pip install pypdfium2`")
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    if page_num < 1 or page_num > len(pdf):
+        raise ValueError(f"Page {page_num} out of range ({len(pdf)} page(s)).")
+    page = pdf[page_num - 1]
+    image = page.render(scale=dpi / 72.0).to_pil().convert("RGB")
+    width, height = image.size
+    # Remove scanner margins, then split vertically with enough overlap to
+    # avoid losing a table row exactly at a tile boundary.
+    page_crop = image.crop((
+        int(width * 0.015),
+        int(height * 0.015),
+        int(width * 0.985),
+        int(height * 0.985),
+    ))
+    width, height = page_crop.size
+    count = max(2, int(tile_count))
+    overlap = max(30, int(height * 0.025))
+    out: List[Tuple[int, bytes]] = []
+    for index in range(count):
+        top = max(0, int(index * height / count) - overlap)
+        bottom = min(height, int((index + 1) * height / count) + overlap)
+        tile = page_crop.crop((0, top, width, bottom))
+        last: Optional[bytes] = None
+        for quality, max_edge in [(90, 3400), (84, 3000), (76, 2600), (68, 2200)]:
+            raw = _pil_to_jpeg_bytes(tile, quality=quality, max_edge=max_edge)
+            last = raw
+            if len(raw) <= max_bytes_each:
+                break
+        assert last is not None
+        out.append((index + 1, last))
+    return out
+
+
 def image_file_to_jpeg_bytes(path: Path, max_bytes: int = SAFE_SINGLE_IMAGE_BYTES) -> bytes:
     from PIL import Image
 
