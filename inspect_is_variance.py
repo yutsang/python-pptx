@@ -31,6 +31,7 @@ Usage:
     python inspect_is_variance.py "for_test/xxx.xlsx" --entity "Name" --account "G&A expenses"
 """
 import argparse
+import re
 import sys
 import warnings
 
@@ -100,13 +101,27 @@ def _is_revenue(account: str) -> bool:
 _NON_SUBSTANTIVE_NOTES = {"check", "checks", "n/a", "na", "-", "tbc", "tba", "ok", "note", "notes"}
 
 
+def _note_prose(text) -> str:
+    """A note stripped down to its actual PROSE -- artefact keywords, dates,
+    numbers and separators removed. Real data showed tie-out rows carrying
+    their own discrepancy figures ('Check | 2023-12-31: -3,550,183 |
+    2024-12-31: 615,037'), which differ per account and per period. Comparing
+    raw strings therefore made ten pure-artefact notes look like ten distinct
+    account-specific remarks. What distinguishes a real remark is prose that
+    survives this stripping, e.g. '折旧费 | 2023年11月开始计提固定资产折旧'."""
+    s = str(text or "")
+    for word in _NON_SUBSTANTIVE_NOTES:
+        s = re.sub(word, " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\d{4}-\d{2}-\d{2}", " ", s)          # ISO dates
+    s = re.sub(r"-?[\d,]+\.?\d*", " ", s)              # numbers incl. negatives/thousands
+    s = re.sub(r"[|:;,()\[\]/\\.\-_+*%&#@!?'\"]+", " ", s)
+    return " ".join(s.split()).strip()
+
+
 def _is_substantive_note(text) -> bool:
-    s = str(text or "").strip()
-    if not s:
-        return False
-    if s.lower() in _NON_SUBSTANTIVE_NOTES:
-        return False
-    return len(s) >= 4
+    """Substantive = at least a couple of characters of real prose survive
+    the artefact/date/number stripping above."""
+    return len(_note_prose(text)) >= 2
 
 
 def _substantive_notes(notes) -> list:
@@ -369,7 +384,7 @@ def dump_remarks(args) -> int:
                                     financials_from=args.financials_from,
                                     financials_sheet=args.financials_sheet)
     dfs = result["dfs"]
-    first_notes = {}
+    first_notes, tie_out_issues = {}, []
     for key in sorted(dfs):
         df = dfs[key]
         integrity = df.attrs.get("integrity") or {}
@@ -399,21 +414,48 @@ def dump_remarks(args) -> int:
         print()
         if notes:
             first_notes[key] = str(notes[0])[:200]
+        # A tie-out ("Check") row that carries its own non-zero figures means
+        # that tab does not reconcile. Surfaced because it is a real data
+        # issue in its own right, independent of the commentary question.
+        for n in notes:
+            raw = str(n)
+            if raw.lower().lstrip().startswith("check") and re.search(r"-?[\d,]{4,}", raw):
+                tie_out_issues.append((key, raw[:160]))
+                break
 
     if len(first_notes) >= 2:
-        distinct = set(first_notes.values())
         print("=" * 78)
         print("VERDICT")
         print("=" * 78)
-        if len(distinct) == 1:
-            print(f"  ❌ All {len(first_notes)} accounts share the SAME first note:")
-            print(f"     {next(iter(distinct))!r}")
-            print("  That is boilerplate, not per-account context -- nothing account-specific")
-            print("  is reaching the model, so its commentary can only restate the figures.")
+        # Compare PROSE, not raw text: tie-out rows embed their own per-period
+        # discrepancy figures, so raw strings differ even when every note is
+        # the same artefact carrying nothing account-specific.
+        prose = {k: _note_prose(v) for k, v in first_notes.items()}
+        with_prose = {k: v for k, v in prose.items() if len(v) >= 2}
+        if not with_prose:
+            print(f"  ❌ NONE of the {len(first_notes)} accounts has a note with any real prose.")
+            print("     Every one is a tie-out artefact -- the differing text is just each")
+            print("     account's own check figures, not commentary. Nothing account-specific")
+            print("     is reaching the model, so its output can only restate the numbers.")
+        elif len(set(with_prose.values())) == 1 and len(with_prose) == len(first_notes):
+            print(f"  ❌ All {len(first_notes)} accounts share one boilerplate note:")
+            print(f"     {next(iter(set(with_prose.values())))!r}")
         else:
-            print(f"  ✅ {len(distinct)} distinct first-notes across {len(first_notes)} accounts --")
-            print("     the notes ARE account-specific; a low count reflects genuinely thin")
+            print(f"  ✅ {len(with_prose)}/{len(first_notes)} accounts carry a note with real prose")
+            print("     -- these ARE account-specific; a low count reflects genuinely thin")
             print("     source remarks rather than an extraction failure.")
+
+    if tie_out_issues:
+        print()
+        print("=" * 78)
+        print(f"SEPARATE DATA ISSUE -- {len(tie_out_issues)} tab(s) with a NON-ZERO tie-out row")
+        print("=" * 78)
+        print("  These 'Check' rows carry their own figures, which normally means the tab")
+        print("  does not reconcile to the financials. Worth confirming the convention in")
+        print("  Excel, but if so this is a databook problem to raise with the project team")
+        print("  and it is unrelated to (and more serious than) the commentary question:")
+        for key, raw in tie_out_issues:
+            print(f"    {key:16s} {raw}")
     return 0
 
 
