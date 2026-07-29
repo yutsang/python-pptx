@@ -43,7 +43,8 @@ from inspect_is_variance import (
 )
 
 _SOURCE_META_RE = re.compile(
-    r"(根据|依据|按照)\s*(补充)?备注(信息|内容|说明)?|备注(显示|表明|提到|中提及)|"
+    r"(根据|依据|按照)\s*(补充|管理层)?(备注|说明|备注信息)(信息|内容|说明)?|"
+    r"(备注|说明)(显示|表明|提到|中提及|仅说明|未说明|未进一步说明)|"
     r"according\s+to\s+the\s+(supplementary\s+)?(remarks?|notes?)\b|"
     r"(as|per)\s+(stated|noted)\s+in\s+the\s+(supplementary\s+)?remarks?\b",
     re.IGNORECASE,

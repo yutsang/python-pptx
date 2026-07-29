@@ -500,7 +500,8 @@ def _find_zero_currency_mentions(text: str) -> List[str]:
 # where an FDD consultant would simply assert the fact, or attribute it to
 # management ("管理层表示...") which IS an established convention here.
 _SOURCE_META_RE = re.compile(
-    r"(根据|依据|按照)\s*(补充)?备注(信息|内容|说明)?|备注(显示|表明|提到|中提及)|"
+    r"(根据|依据|按照)\s*(补充|管理层)?(备注|说明|备注信息)(信息|内容|说明)?|"
+    r"(备注|说明)(显示|表明|提到|中提及|仅说明|未说明|未进一步说明)|"
     r"(as|per)\s+(stated\s+in|noted\s+in|the)\s+(the\s+)?(supplementary\s+)?remarks?\b|"
     r"according\s+to\s+the\s+(supplementary\s+)?(remarks?|notes?)\b",
     re.IGNORECASE,

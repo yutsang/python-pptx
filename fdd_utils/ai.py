@@ -2293,6 +2293,25 @@ class PromptEngine:
         notes = attrs.get("supporting_notes") or []
         rhs = attrs.get("adjacent_detail_rows") or []
         has_material = bool(notes or rhs)
+        # A latest period of zero is the case the opening-sentence rule keeps
+        # losing: a real run opened 预付款项 with "截至2025年12月31日，余额为17万"
+        # and only mentioned the (zero) latest period afterwards, even after a
+        # feedback retry. Stating the required opening explicitly, with the
+        # computed dates, is more reliable than restating the rule.
+        zero_latest_chi = zero_latest_eng = ""
+        if abs(v_curr) < 1e-9 and abs(v_prev) > 0:
+            zero_latest_chi = (
+                f"【首句强制】最新一期（{p_curr}）余额为零。首句主体必须是{p_curr}且写明无余额"
+                f"（如'截至{p_curr}，该科目无余额'），随后才补充{p_prev}的余额及其构成。"
+                f"绝不可用{p_prev}的非零余额作为首句主体——那会让读者误以为那是当期数据。"
+            )
+            zero_latest_eng = (
+                f"[REQUIRED OPENING] The latest period ({p_curr}) is nil. The first sentence must "
+                f"be about {p_curr} and say there is no balance, with the {p_prev} balance and its "
+                f"composition following afterwards. Never open on the non-nil {p_prev} figure -- a "
+                "reader will take it for the current period."
+            )
+
         direction_chi = "增长" if pct > 0 else "下降"
         direction_eng = "increase" if pct > 0 else "decrease"  # both read correctly after "an"
 
@@ -2334,7 +2353,7 @@ class PromptEngine:
                 body = (
                     "备注中没有可解释此变动的信息。请简要点出该变动的规模与方向即可，不得臆造原因。"
                 )
-            return " ".join(part for part in (head, body, peer_line_chi) if part)
+            return " ".join(part for part in (zero_latest_chi, head, body, peer_line_chi) if part)
 
         head = (
             f"[MATERIAL MOVEMENT] This account's total moved from {v_prev:,.0f} at {p_prev} to "
@@ -2362,7 +2381,7 @@ class PromptEngine:
                 "The notes contain nothing that explains this movement. Note its size and direction "
                 "briefly. Do not invent a cause."
             )
-        return " ".join(part for part in (head, body, peer_line_eng) if part)
+        return " ".join(part for part in (zero_latest_eng, head, body, peer_line_eng) if part)
 
     @staticmethod
     def _period_reference_guidance(df: Optional[pd.DataFrame], language: str) -> str:
