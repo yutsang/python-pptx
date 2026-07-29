@@ -2137,6 +2137,147 @@ class PromptEngine:
         )
 
     @staticmethod
+    def _variance_analysis_guidance(
+        df: Optional[pd.DataFrame],
+        language: str,
+        peer_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Guidance for an account whose own figures moved materially.
+
+        Project-team asks this implements: explain WHY a large income-
+        statement movement happened (reasoning from remarks where they
+        exist, flagged as such); call out an expense line growing out of
+        proportion to revenue; and mention material balance-sheet swings.
+
+        The movement is computed HERE, deterministically, and handed to the
+        model as a stated fact -- rather than asking it to eyeball the table
+        and derive a percentage itself, which would be both unreliable and
+        ungrounded (a self-derived figure has no source to match against, so
+        the hallucination check would flag it).
+
+        Partial tail periods are excluded from the comparison: a one-month
+        period against a full year reads as a ~90% collapse that is an
+        artefact of period length, not a real movement.
+        """
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return ""
+        attrs = df.attrs or {}
+        integrity = attrs.get("integrity") or {}
+        statement_type = str(integrity.get("statement_type") or "").strip().upper()
+        if statement_type not in ("BS", "IS"):
+            return ""
+
+        internal_key = "__source_row_idx"
+        period_cols = [
+            c for c in list(df.columns)[1:]
+            if str(c) != internal_key and not str(c).endswith("_formatted")
+        ]
+        if len(period_cols) < 2:
+            return ""
+
+        row_types = attrs.get("row_types_by_description") or {}
+        desc_col = df.columns[0]
+        total_idx = None
+        for idx, row in df.iterrows():
+            if str(row_types.get(str(row[desc_col]), "")).lower() in ("total", "subtotal"):
+                total_idx = idx
+        try:
+            if total_idx is None:
+                series = [(str(c), float(df[c].fillna(0).sum())) for c in period_cols]
+            else:
+                series = [(str(c), float(df.loc[total_idx, c] or 0)) for c in period_cols]
+        except Exception:
+            return ""
+
+        months = attrs.get("annualization_months") or integrity.get("annualization_months")
+        if isinstance(months, (int, float)) and 0 < months < 12 and len(series) > 2:
+            series = series[:-1]
+        if len(series) < 2:
+            return ""
+
+        scale = max((abs(v) for _p, v in series), default=0.0)
+        (p_prev, v_prev), (p_curr, v_curr) = series[-2], series[-1]
+        if scale <= 0 or abs(v_prev) < scale * 0.01:
+            return ""  # base too small for a percentage to mean anything
+        pct = (v_curr - v_prev) / abs(v_prev) * 100
+        if abs(pct) < 30:
+            return ""
+
+        notes = attrs.get("supporting_notes") or []
+        rhs = attrs.get("adjacent_detail_rows") or []
+        has_material = bool(notes or rhs)
+        direction_chi = "增长" if pct > 0 else "下降"
+        direction_eng = "increase" if pct > 0 else "decrease"  # both read correctly after "an"
+
+        peer_line_chi = peer_line_eng = ""
+        if peer_context and peer_context.get("revenue_growth_pct") is not None and statement_type == "IS":
+            rev_pct = float(peer_context["revenue_growth_pct"])
+            gap = pct - rev_pct
+            if abs(gap) >= 30:
+                peer_line_chi = (
+                    f"同期营业收入变动为{rev_pct:+.0f}%，本科目为{pct:+.0f}%，两者相差{gap:+.0f}个百分点，"
+                    "属于费用与收入变动不成比例的情形，请在评论中明确指出这一不对称，并在有依据时说明原因。"
+                )
+                peer_line_eng = (
+                    f"Revenue moved {rev_pct:+.0f}% over the same period against this account's "
+                    f"{pct:+.0f}%, a gap of {gap:+.0f} percentage points. State that disproportion "
+                    "explicitly and, where supported, why it arose."
+                )
+
+        if language == "Chi":
+            head = (
+                f"【重大变动提示】本科目合计由{p_prev}的{v_prev:,.0f}变动至{p_curr}的{v_curr:,.0f}，"
+                f"{direction_chi}约{abs(pct):.0f}%。此变动幅度重大，不可只陈述金额而不作说明。"
+            )
+            if has_material:
+                body = (
+                    "请结合备注/右侧说明推断并说明变动原因：可以在备注所述事实的基础上作合理推理"
+                    "（例如备注说明某项目于某期完工转固，则可据此解释折旧上升），"
+                    "但推理必须以备注或数据为起点，不得凭空假设市场、竞争、宏观等外部原因。"
+                    "凡属推断而非备注原文直述的部分，须用'预计'、'推测'、'主要系...所致'等措辞明确标示其为判断，"
+                    "使读者能区分事实与分析。"
+                )
+            elif statement_type == "IS":
+                body = (
+                    "备注中没有可解释此变动的信息。此时请如实说明变动幅度与方向，"
+                    "并指出未取得进一步解释（如'变动原因尚待与管理层确认'），"
+                    "不得臆造原因。"
+                )
+            else:
+                body = (
+                    "备注中没有可解释此变动的信息。请简要点出该变动的规模与方向即可，不得臆造原因。"
+                )
+            return " ".join(part for part in (head, body, peer_line_chi) if part)
+
+        head = (
+            f"[MATERIAL MOVEMENT] This account's total moved from {v_prev:,.0f} at {p_prev} to "
+            f"{v_curr:,.0f} at {p_curr}, an {direction_eng} of about {abs(pct):.0f}%. A movement this "
+            "size must be addressed, not merely stated as a figure."
+        )
+        if has_material:
+            body = (
+                "Use the notes / side-column remarks to explain it. You may reason from what the "
+                "remarks state (e.g. if a remark says a phase was completed and transferred to fixed "
+                "assets in a period, that can explain a rise in depreciation), but the reasoning must "
+                "start from the remarks or the data -- never assume market, competitive or macro causes. "
+                "Where a point is your inference rather than something the remarks state outright, mark "
+                "it as judgement ('mainly attributable to...', 'expected to...') so the reader can tell "
+                "analysis from fact."
+            )
+        elif statement_type == "IS":
+            body = (
+                "The notes contain nothing that explains this movement. State its size and direction "
+                "accurately and note that no further explanation has been obtained (e.g. 'the driver "
+                "remains to be confirmed with management'). Do not invent a cause."
+            )
+        else:
+            body = (
+                "The notes contain nothing that explains this movement. Note its size and direction "
+                "briefly. Do not invent a cause."
+            )
+        return " ".join(part for part in (head, body, peer_line_eng) if part)
+
+    @staticmethod
     def _period_reference_guidance(df: Optional[pd.DataFrame], language: str) -> str:
         integrity = (df.attrs if isinstance(df, pd.DataFrame) else {}).get("integrity") or {}
         attrs = df.attrs if isinstance(df, pd.DataFrame) else {}
@@ -2152,7 +2293,7 @@ class PromptEngine:
             if statement_type == "BS":
                 return (
                     f"这是资产负债表科目。首句必须仅说明截至{effective_date}的最新期末余额（单一期间，不要罗列所有期间），"
-                    f"并描述其构成（如：'截至{effective_date}余额为人民币X万元，主要为[构成项]'或'截至{effective_date}余额合计人民币X万元，主要包括[各组成项]'）。"
+                    f"并描述其构成（如：'截至{effective_date}余额为X万元，主要为[构成项]'或'截至{effective_date}余额合计X万元，主要包括[各组成项]'）。"
                     "首句不得罗列所有报告期间余额（避免'截至A、B、C日余额分别为X、Y、Z'式开篇），"
                     "也不得以年度对比句开篇（不得以'X较上年增加/减少'或'X同比上升/下降'作为首句）。"
                     "首句之后，再描述构成项目、对手方/集中度、合同条款及重要备注说明。"
@@ -2459,6 +2600,9 @@ class PromptEngine:
             "common_formatting": style_pack.common_formatting_rules(),
             "common_data_rules": style_pack.common_data_rules(data_format),
             "period_reference_guidance": self._period_reference_guidance(df, language),
+            "variance_analysis_guidance": self._variance_analysis_guidance(
+                df, language, peer_context=kwargs.get("peer_context"),
+            ),
             "rhs_guidance_block": self._rhs_guidance_block(
                 self.filter_adjacent_detail_rows(df) if isinstance(df, pd.DataFrame) else [],
                 language,
@@ -3561,6 +3705,65 @@ def _agent_prompt_kwargs(
     return {}
 
 
+_REVENUE_KEY_NEEDLES = ("operating income", "revenue", "营业收入")
+_NOT_REVENUE_KEY_NEEDLES = ("non-operating", "营业外", "cost", "成本")
+
+
+def _build_peer_context(dfs: Optional[Dict[str, pd.DataFrame]]) -> Optional[Dict[str, Any]]:
+    """Revenue growth for the latest comparable period, so an expense
+    account's prompt can point out that it grew out of proportion to
+    revenue. Every account is otherwise generated in isolation from its own
+    DataFrame, so no single account's commentary can currently make that
+    observation at all -- which is one of the project team's asks.
+
+    Computed once from whichever account looks like operating revenue, and
+    only over FULL periods: a partial tail period against a full year would
+    read as a collapse that is purely an artefact of period length.
+    """
+    if not dfs:
+        return None
+    for key, df in dfs.items():
+        low = str(key).lower()
+        if any(n in low for n in _NOT_REVENUE_KEY_NEEDLES):
+            continue
+        if not any(n in low for n in _REVENUE_KEY_NEEDLES):
+            continue
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            continue
+        attrs = df.attrs or {}
+        integrity = attrs.get("integrity") or {}
+        cols = [
+            c for c in list(df.columns)[1:]
+            if str(c) != "__source_row_idx" and not str(c).endswith("_formatted")
+        ]
+        if len(cols) < 2:
+            continue
+        row_types = attrs.get("row_types_by_description") or {}
+        desc_col = df.columns[0]
+        total_idx = None
+        for idx, row in df.iterrows():
+            if str(row_types.get(str(row[desc_col]), "")).lower() in ("total", "subtotal"):
+                total_idx = idx
+        try:
+            if total_idx is None:
+                vals = [float(df[c].fillna(0).sum()) for c in cols]
+            else:
+                vals = [float(df.loc[total_idx, c] or 0) for c in cols]
+        except Exception:
+            continue
+        months = attrs.get("annualization_months") or integrity.get("annualization_months")
+        if isinstance(months, (int, float)) and 0 < months < 12 and len(vals) > 2:
+            vals = vals[:-1]
+        if len(vals) < 2:
+            continue
+        scale = max((abs(v) for v in vals), default=0.0)
+        prev, curr = vals[-2], vals[-1]
+        if scale <= 0 or abs(prev) < scale * 0.01:
+            continue
+        return {"revenue_growth_pct": (curr - prev) / abs(prev) * 100, "revenue_key": key}
+    return None
+
+
 def process_single_agent_item(
     agent_name: str,
     mapping_key: str,
@@ -3584,6 +3787,7 @@ def process_single_agent_item(
             df=df,
             data_format=ai_helper.data_format,
             user_comment=user_comment,
+            peer_context=_build_peer_context(dfs),
             **_agent_prompt_kwargs(agent_name, mapping_key, prompt_manager, previous_output, agent_config=agent_cfg),
         )
 

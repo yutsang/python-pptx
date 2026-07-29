@@ -75,6 +75,7 @@ common:
           - {common_data_rules}
           - {common_formatting}
           - {period_reference_guidance}
+          {variance_analysis_guidance}
       
       **CRITICAL LANGUAGE REQUIREMENT**:
       THIS IS AN ENGLISH DATABOOK. Your output MUST be 100% in ENGLISH.
@@ -153,7 +154,7 @@ common:
          - 亿元格式: X.X亿 (1位小数, 例如: 1.2亿, 12.3亿)
          - 只需验证格式化的值与源数据匹配 - 请勿重新计算或重新转换
          - 千万不要再次进行数字转换!
-         - **同句列举多期金额时"人民币"只出现一次**：重写"分别为人民币2,216万元、人民币2,421万元及人民币968万元"（重复3次）为"分别为人民币2,216万元、2,421万元及968万元"（只出现一次，后续数字直接接万元/亿元）。
+         - **金额默认不写"人民币"前缀**：改写"人民币2,216万元"为"2,216万元"。经统计真实交付稿，其金额97%为裸写，仅3%带前缀；本工具此前输出则有95%带前缀，这正是项目组反映"重复的人民币"的来源。"人民币"仅用于与外币区分（如"7,000万美元（折合人民币4.88亿元）"），全篇通常不超过1-2次。**任何一句话内绝不允许出现两次或以上"人民币"**，无论是多期列举还是多构成项列举。
          - **零余额不得写成"余额为人民币0元"或"为0"**：改写为"无余额"/"未形成余额"（资产负债表科目）或"未发生"（利润表/期间性科目，已是标准写法）。仅最新一期为零、之前期间有余额时，首句说明最新期无余额，再补充前期余额。
       5. 按科目类型验证日期格式：资产负债表科目为单一时点余额，格式为"截至yyyy年mm月dd日"（例如"截至2022年9月30日"）；利润表科目描述的是一段期间，不是单一日期，格式为"yyyy年m至m月"或"于yyyy年度"（例如"2026年1至6月"、"于2025年度"），不得把期间硬套成单一日期。
       6. 验证列表项目: 仅列出>=总额10%的项目，且最多3个重点；低于总额10%的数字一般无需提及，除非对结论必不可少。
@@ -187,6 +188,7 @@ common:
          - {common_data_rules}
          - {common_formatting}
          - {period_reference_guidance}
+          {variance_analysis_guidance}
       
       **关键语言要求**:
       这是一个中文数据簿。您的输出必须100%为中文。
@@ -215,7 +217,7 @@ common:
       
       验证清单:
       1. 与原始数据相比, 所有数字是否准确? 是否使用了总计金额?
-      2. 所有金额是否格式正确 (XX万整数不带小数, X.X亿1位小数)？同句多期列举中"人民币"是否只出现一次？零余额是否避免了"为人民币0元"这种机械写法？
+      2. 所有金额是否格式正确 (XX万整数不带小数, X.X亿1位小数)？金额是否已去掉多余的"人民币"前缀（默认裸写，仅外币换算时保留）？同一句内是否绝无两次"人民币"？零余额是否避免了"为0元"这种机械写法？
       3. 日期是否为"yyyy年mm月dd日"格式?
       4. 是否审阅了所有示意性调整后期间，并且趋势描述有完整期间数据支持?
       5. 是否仅单独列出重要项目 (>= 总额10%)，且最多3个重点，并省略低于总额10%的非关键数字?
@@ -279,6 +281,7 @@ common:
           - {common_data_rules}
           - {common_formatting}
           - {period_reference_guidance}
+          {variance_analysis_guidance}
 
       Goal: tighten to reference style. If the previous output already runs >150% of the cap, cut it down to the cap by removing PoP filler and operational drill-down first, then collapse fee-by-fee breakdowns to composition-level summaries.
       
@@ -362,6 +365,7 @@ common:
          - {common_data_rules}
          - {common_formatting}
          - {period_reference_guidance}
+          {variance_analysis_guidance}
       
       格式规则:
       - **禁止使用要点/列表形式**。请使用完整的句子和段落。
@@ -454,6 +458,7 @@ common:
          - {common_data_rules}
          - {common_formatting}
          - {period_reference_guidance}
+          {variance_analysis_guidance}
       
       KEY CHECKS:
       
@@ -623,6 +628,7 @@ common:
          - {common_data_rules}
          - {common_formatting}
          - {period_reference_guidance}
+          {variance_analysis_guidance}
       
       关键检查:
       
