@@ -127,7 +127,9 @@ def main() -> int:
             print(f"  block title : {table['title']}")
         print(f"  located at  : sheet row {table['header_row'] + 1}, "
               f"label column index {table['label_col']}")
-        print(f"  components  : {len(rows)}  {[r['label'] for r in rows][:8]}")
+        nested_count = sum(len(r["children"]) for r in rows if r.get("children"))
+        nested_note = f"  (+{nested_count} nested under {sum(1 for r in rows if r.get('children'))} of them)" if nested_count else ""
+        print(f"  components  : {len(rows)}  {[r['label'] for r in rows][:8]}{nested_note}")
 
         print(f"\n  TIE-OUT against this account's indicative-adjusted totals:")
         tied, differed = [], []
@@ -179,6 +181,9 @@ def main() -> int:
             for r in rows:
                 vals = "  ".join(f"{p}={r['values'].get(p, 0):,.1f}" for p in periods)
                 print(f"    {r['label'][:22]:24s} {vals}")
+                for c in (r.get("children") or []):
+                    cvals = "  ".join(f"{p}={c['values'].get(p, 0):,.1f}" for p in periods)
+                    print(f"      └ {c['label'][:20]:22s} {cvals}")
             if total_row:
                 vals = "  ".join(f"{p}={total_row['values'].get(p, 0):,.1f}" for p in periods)
                 print(f"    {'合计 / total':24s} {vals}")

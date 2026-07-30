@@ -3889,6 +3889,51 @@ def _is_composition_label(label: str) -> bool:
     return not any(m in low for m in _NON_COMPOSITION_ROW_MARKERS)
 
 
+# A real breakdown can be two-level -- a real 营业成本 table has 折旧与摊销
+# broken further into 房屋建筑物/土地使用权/租赁服务费/其他, and 物业管理费 into
+# 第三方/上海熙麦 (rendered indented and in a different colour in the deck).
+# openpyxl indent/colour don't survive pd.read_excel, and even if they did,
+# a preparer's indent choice is a formatting decision, not a structural one
+# to depend on. The reliable signal is the same one the block's OVERALL tie-
+# out already uses: a parent row's own value is the SUM of the rows right
+# after it, across every period it has a value for. That is what nesting
+# actually means numerically, and it costs nothing to check since these
+# blocks are capped at max_rows to begin with.
+_MAX_NEST_WINDOW = 8
+
+
+def _nest_component_rows(rows: List[Dict[str, Any]], tie_tolerance: float) -> List[Dict[str, Any]]:
+    nested: List[Dict[str, Any]] = []
+    i = 0
+    while i < len(rows):
+        parent = rows[i]
+        parent_values = parent.get("values") or {}
+        children = None
+        if parent_values:
+            max_window = min(_MAX_NEST_WINDOW, len(rows) - i - 1)
+            for window in range(2, max_window + 1):
+                candidates = rows[i + 1 : i + 1 + window]
+                if all(
+                    abs(
+                        sum(c["values"].get(period, 0.0) for c in candidates)
+                        - parent_values[period]
+                    )
+                    <= max(1.0, abs(parent_values[period]) * tie_tolerance)
+                    for period in parent_values
+                ):
+                    children = candidates
+                    break
+        entry = dict(parent)
+        if children:
+            entry["children"] = children
+            i += 1 + len(children)
+        else:
+            entry["children"] = None
+            i += 1
+        nested.append(entry)
+    return nested
+
+
 def extract_presentation_detail_table(
     df: pd.DataFrame,
     desc_col_idx: int,
@@ -4124,7 +4169,7 @@ def extract_presentation_detail_table(
             "header_row": header_row,
             "label_col": unit_col,
             "periods": [_norm(p) for _i, p in period_cols],
-            "rows": rows,
+            "rows": _nest_component_rows(rows, tie_tolerance),
             "total_row": total_row,
             "tie_status": tie_status,
             "title": title,
