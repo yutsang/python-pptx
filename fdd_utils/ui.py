@@ -2405,13 +2405,36 @@ def render_bridge_lab_toggle() -> None:
 
 
 def _bridge_lab_show_block(index: int, block, note: str = "") -> bool:
-    """Renders one detected bridge block in an expander and returns whether
-    it's usable (check passed or only unverified, never a hard mismatch)."""
-    with st.expander(f"區塊 {index + 1}：{block.items[0].label} → {block.items[-1].label}", expanded=True):
+    """Renders one detected bridge block as a table plus a chart, and returns
+    whether it's usable (check passed, or unverified -- never a hard mismatch).
+
+    Previously printed one st.write per item, which for 11 items across
+    several transitions filled the page with lines nobody reads. A table and
+    the chart itself are what actually get checked, so that is all this shows;
+    the per-item source notes still travel into the downloaded workbook."""
+    header = f"區塊 {index + 1}：{block.items[0].label} → {block.items[-1].label}"
+    with st.expander(header, expanded=True):
         if note:
             st.caption(note)
+
+        rows = []
+        running = 0.0
         for it in block.items:
-            st.write(f"[{it.kind}] {it.label}：{it.value:,.2f}")
+            if it.kind == "total":
+                running = it.value
+                rows.append({"項目": it.label, "類型": "合計", "金額 (千元)": round(it.value, 1),
+                             "累計": round(running, 1)})
+            else:
+                running += it.value
+                rows.append({"項目": it.label, "類型": "變動", "金額 (千元)": round(it.value, 1),
+                             "累計": round(running, 1)})
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+        try:
+            _bridge_lab_render_preview_chart(block, header)
+        except Exception as exc:  # a preview failure must not block the download
+            st.caption(f"（圖表預覽無法產生：{exc}）")
+
         if block.check_ok is True:
             st.success("✅ 核對一致")
             return True
@@ -2420,6 +2443,25 @@ def _bridge_lab_show_block(index: int, block, note: str = "") -> bool:
             return False
         st.warning("⚠️ 無法核對一致性，仍會生成圖表，請自行核對數字")
         return True
+
+
+def _bridge_lab_render_preview_chart(block, title: str) -> None:
+    """On-screen waterfall preview using the same invisible-base-series maths
+    as the downloaded Excel chart, so what is checked here is what ships."""
+    from .bridge_chart_prototype import _compute_waterfall_series
+
+    categories, base_vals, total_vals, inc_vals, dec_vals = _compute_waterfall_series(block)
+    frame = pd.DataFrame(
+        {
+            "（基準）": base_vals,
+            "合計": total_vals,
+            "增加": inc_vals,
+            "減少": dec_vals,
+        },
+        index=categories,
+    )
+    st.bar_chart(frame, stack=True, height=340,
+                 color=("#00000000", "#00338D", "#6D2077", "#00A3A1"))
 
 
 def render_bridge_lab() -> None:
