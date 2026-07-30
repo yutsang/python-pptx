@@ -81,13 +81,20 @@ def main() -> int:
     is_items = payloads["IS"]
     bs_items = payloads["BS"]
     print(f"  BS items: {len(bs_items)}  IS items: {len(is_items)}")
+    # Matched by account_name (the original dfs/ai_results key, e.g. "营业成本")
+    # NOT mapping_key -- mappings.yml's canonical mapping_key for these
+    # accounts turned out to be the English short form (OC, GA, Fin Exp, Tax
+    # and Surcharges), confirmed by a real run where this matched on
+    # mapping_key wrongly reported all 4 "missing" even though stage 3 (which
+    # goes through the real production lookup) found them correctly -- this
+    # was a bug in this diagnostic's own matching, not in the pipeline.
     for item in is_items:
-        if item["mapping_key"] in TARGET_ACCOUNTS:
+        if item["account_name"] in TARGET_ACCOUNTS:
             fd = item.get("financial_data")
             has_attrs = hasattr(fd, "attrs") and bool((fd.attrs or {}).get("presentation_detail_table", {}).get("rows"))
-            print(f"  {item['mapping_key']:12s}: in IS payload, financial_data is "
-                  f"{type(fd).__name__}, presentation_detail_table survives={has_attrs}")
-    found_keys = {item["mapping_key"] for item in is_items}
+            print(f"  {item['account_name']:12s} (mapping_key={item['mapping_key']!r}): in IS payload, "
+                  f"financial_data is {type(fd).__name__}, presentation_detail_table survives={has_attrs}")
+    found_keys = {item["account_name"] for item in is_items}
     missing = [a for a in TARGET_ACCOUNTS if a not in found_keys]
     if missing:
         print(f"  ^^ MISSING from IS payload entirely: {missing} -- these never reached "
