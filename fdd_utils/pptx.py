@@ -1861,6 +1861,367 @@ class PowerPointGenerator:
         pPr.set('marL', str(int(left_indent_emu)))
         pPr.set('indent', '0')
 
+    # -- Presentation-detail tables (per-account report-ready breakdowns) --
+    # workbook.py's extract_presentation_detail_table finds a small,
+    # human-readable breakdown table some account sheets carry alongside
+    # their GL-coded main schedule (e.g. 管理费用's 会计服务费/审计费/...). This
+    # renders it as a native PowerPoint table next to that account's own
+    # commentary bullet. Config-gated (pptx_settings.presentation_tables.
+    # enabled), off by default until verified against a real export.
+    #
+    # Reuses the generic table primitives above (add_table, _fit_table_
+    # columns, _format_table_value, _set_paragraph_left_indent,
+    # _resolve_table_style_id) rather than _embed_statement_table/
+    # _fill_table_placeholder -- those are hard-coupled to the full BS/IS
+    # overview grid (category-header rows, row-role tiering by keyword) that
+    # a flat ~3-15 row account breakdown doesn't have and doesn't need.
+    _TABLE_TITLE_ROW_PT = 16.0
+    _TABLE_HEADER_ROW_PT = 14.0
+    _TABLE_DATA_ROW_PT = 12.0
+    _TABLE_CHILD_ROW_PT = 11.0
+    _TABLE_TOTAL_ROW_PT = 14.0
+    _TABLE_SOURCE_LINE_PT = 12.0
+    _TABLE_GAP_ABOVE_PT = 6.0
+    _TABLE_GAP_BELOW_PT = 4.0
+
+    def _presentation_tables_enabled(self) -> bool:
+        try:
+            return bool((self.pptx_settings.get("presentation_tables") or {}).get("enabled", False))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _presentation_table_for_account(account_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        financial_data = (account_data or {}).get("financial_data")
+        if not isinstance(financial_data, pd.DataFrame):
+            return None
+        try:
+            table = (financial_data.attrs or {}).get("presentation_detail_table")
+        except Exception:
+            return None
+        if not table or not table.get("rows"):
+            return None
+        return table
+
+    @classmethod
+    def _presentation_table_height_pt(cls, table: Dict[str, Any]) -> float:
+        """Total table height in points, from the SAME row-height constants
+        _render_presentation_table sets as real row heights -- so the space
+        reserved during packing and the space actually drawn can't drift
+        apart from each other."""
+        rows = table.get("rows") or []
+        pts = cls._TABLE_TITLE_ROW_PT + cls._TABLE_HEADER_ROW_PT
+        for row in rows:
+            pts += cls._TABLE_DATA_ROW_PT
+            pts += len(row.get("children") or []) * cls._TABLE_CHILD_ROW_PT
+        if table.get("total_row"):
+            pts += cls._TABLE_TOTAL_ROW_PT
+        return pts
+
+    @staticmethod
+    def _truncate_for_table_lead_in(commentary: str, is_chinese: bool) -> str:
+        """Safety net for the short lead-in ai.py's _detail_table_guidance
+        asks the model for when an account has a presentation table -- a
+        prompt instruction, not a guarantee. A table-bearing account gets a
+        whole slot to itself (see _append_table_accounts_to_distribution),
+        so an over-length lead-in can't overlap another account, but it
+        could still push the table below the bottom of its own slot -- caps
+        it hard at a sentence boundary rather than trusting compliance."""
+        text = (commentary or "").strip()
+        limit = 220 if is_chinese else 340
+        if len(text) <= limit:
+            return text
+        boundary_chars = "。；;.!?！？"
+        cut = text[:limit]
+        best = max((cut.rfind(ch) for ch in boundary_chars), default=-1)
+        if best >= int(limit * 0.4):
+            return cut[: best + 1]
+        return cut.rstrip() + ("…" if is_chinese else "...")
+
+    def _slot_names_for_actual_slide(self, actual_slide_idx: int, start_slide: int) -> List[str]:
+        """Which slot names this slide's OWN template shapes actually
+        support. Mirrors _distribute_content_across_slots's own identically
+        -named local closure (slot_names_for_actual_slide) exactly,
+        including its "first slide of statement -> single" fallback rule --
+        this MUST agree with that closure's notion of what a slide offers,
+        or a table account could be "placed" onto a slot name the packer's
+        own accounting disagrees with, silently overlapping real content.
+        `actual_slide_idx` is an absolute index into self.presentation.
+        slides, NOT the slide_idx slot_distribution tuples carry (those are
+        0-based from start_slide -- see _append_table_accounts_to_distribution).
+        """
+        if self.presentation is not None and 0 <= actual_slide_idx < len(self.presentation.slides):
+            slide = self.presentation.slides[actual_slide_idx]
+            has_left = self.find_shape_by_name(slide.shapes, "textMainBullets_L") is not None
+            has_right = self.find_shape_by_name(slide.shapes, "textMainBullets_R") is not None
+            has_single = self.find_shape_by_name(slide.shapes, "textMainBullets") is not None
+            if has_left and has_right:
+                return ["L", "R"]
+            if has_single:
+                return ["single"]
+        return ["single"] if actual_slide_idx == start_slide - 1 else ["L", "R"]
+
+    def _append_table_accounts_to_distribution(
+        self, table_items: List[Dict[str, Any]],
+        slot_distribution: List[Tuple[int, str, List[Dict[str, Any]]]],
+        *, max_slides: int, start_slide: int,
+    ) -> List[Tuple[int, str, List[Dict[str, Any]]]]:
+        """Assigns each table-bearing account the next (slide_idx,
+        slot_name) the normal packer's own output didn't already use --
+        guaranteed no overlap by construction, since the packer's
+        splitting/rebalancing never runs on these accounts at all.
+
+        slide_idx here is 0-based FROM start_slide, matching exactly what
+        _distribute_content_across_slots itself returns (its caller,
+        apply_structured_data_to_slides, converts to an absolute slide via
+        `start_slide - 1 + slide_idx` when it actually renders) -- using an
+        absolute index here instead double-applies that offset downstream.
+        """
+        used = {(slide_idx, slot_name) for slide_idx, slot_name, _ in slot_distribution}
+        result = list(slot_distribution)
+        for item in table_items:
+            placed = False
+            for slide_idx in range(max_slides):
+                actual_slide_idx = start_slide - 1 + slide_idx
+                for slot_name in self._slot_names_for_actual_slide(actual_slide_idx, start_slide):
+                    if (slide_idx, slot_name) in used:
+                        continue
+                    used.add((slide_idx, slot_name))
+                    result.append((slide_idx, slot_name, [item]))
+                    placed = True
+                    break
+                if placed:
+                    break
+            if not placed:
+                logger.warning(
+                    "No free slot for presentation-table account %s within %s slides -- not rendered.",
+                    item.get("mapping_key"), max_slides,
+                )
+        return result
+
+    def _add_presentation_detail_table_below_text(
+        self, slide, bullets_shape, category: str, mapping_key: str, commentary: str,
+        is_chinese: bool, is_chinese_databook: bool, table: Dict[str, Any],
+    ) -> None:
+        """Places the table below wherever the just-written short lead-in
+        text is estimated to end within bullets_shape, using the same
+        _calculate_content_lines measurement the packer itself trusts to
+        convert that estimate to real points/EMU. Pixel-perfect positioning
+        isn't achievable from python-pptx alone -- PowerPoint itself does
+        the actual text layout, not this library -- so this is a reasoned
+        estimate with the same margins already reserved, not a
+        ground-truth read-back.
+
+        Also shrinks bullets_shape itself down to that same estimated
+        height. Left at its full template height (meant for a whole slot's
+        worth of ordinary commentary), a real export flagged this shape's
+        now-mostly-empty bounding box as overlapping the table by
+        inspect_pptx.py's geometry check -- harmless in practice since the
+        text is top-anchored and the box has no fill, but a real future
+        overlap bug in this code path would be masked by an already-flagged
+        "expected" warning instead of standing out. A table account is
+        always alone in its slot (see _append_table_accounts_to_distribution),
+        so shrinking it can't cut into another account's own space.
+        """
+        try:
+            used_units = self._calculate_content_lines(
+                category, mapping_key, commentary, slot_name="single",
+                shape=bullets_shape, is_chinese=is_chinese,
+            )
+            # Converts used_units back to points with the SAME points-per-
+            # unit ratio this shape's own capacity was measured in -- not
+            # the font*spacing+gap heuristic formula, which a real export
+            # showed runs meaningfully smaller than the real-metrics figure
+            # _calculate_content_lines itself used to produce used_units
+            # (confirmed by inspect_pptx.py then reporting the shrunk shape
+            # as 130% full: the heuristic under-priced a unit, so shrinking
+            # by it made the box smaller than the text it was sized for).
+            capacity_units = self._calculate_max_lines_for_textbox(
+                bullets_shape, is_chinese=is_chinese, slot_name="single",
+            )
+            shape_height_pt = int(bullets_shape.height) / 12700
+            if capacity_units > 0:
+                std_lh_pt = shape_height_pt / capacity_units
+            else:
+                std_lh_pt = (
+                    self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
+                    + self._real_para_gap_pt(is_chinese)
+                )
+            # inspect_pptx.py re-derives capacity/usage independently from
+            # the exported XML rather than sharing this instance's live
+            # measurement state, and a real export still showed a residual
+            # ~10% gap after the fix above -- rather than chase exact parity
+            # between two independently-implemented measurers, a deliberate
+            # margin errs the safe direction (box a touch taller than the
+            # strict minimum) instead of the unsafe one (real overflow risk).
+            offset_pt = max(used_units, 1.0) * std_lh_pt * 1.3 + self._TABLE_GAP_ABOVE_PT
+            offset_emu = int(offset_pt * 12700)  # 1 pt = 12700 EMU
+            top = int(bullets_shape.top) + offset_emu
+            left = int(bullets_shape.left)
+            width = int(bullets_shape.width)
+            try:
+                bullets_shape.height = offset_emu
+            except Exception:
+                pass
+            self._render_presentation_table(slide, left, top, width, table, is_chinese_databook)
+        except Exception as exc:
+            logger.warning("Could not render presentation-detail table for %s: %s", mapping_key, exc)
+
+    def _render_presentation_table(
+        self, slide, left: int, top: int, width: int, table: Dict[str, Any],
+        is_chinese_databook: bool,
+    ) -> int:
+        """Renders `table` (extract_presentation_detail_table's return
+        shape) as a native table at the given EMU position, plus a
+        source-line caption beneath it. Returns the bottom EMU position.
+        """
+        periods = table.get("periods") or []
+        period_labels = table.get("period_labels") or {}
+        rows = table.get("rows") or []
+        total_row = table.get("total_row")
+
+        # Flatten rows -> children (indented) -> total, into one render plan.
+        plan: List[Dict[str, Any]] = []
+        for row in rows:
+            plan.append({"label": row.get("label", ""), "values": row.get("values") or {}, "kind": "data"})
+            for child in (row.get("children") or []):
+                plan.append({"label": child.get("label", ""), "values": child.get("values") or {}, "kind": "child"})
+        if total_row:
+            plan.append({"label": total_row.get("label", "合计" if is_chinese_databook else "Total"),
+                         "values": total_row.get("values") or {}, "kind": "total"})
+
+        n_cols = 1 + len(periods)
+        n_rows = 2 + len(plan)  # title + header + plan rows
+        height = int(self._presentation_table_height_pt(table) * 12700)
+
+        graphic_frame = slide.shapes.add_table(n_rows, n_cols, left, top, width, height)
+        table_shape = graphic_frame.table
+        style_id = self._resolve_table_style_id()
+        if style_id:
+            try:
+                self._set_table_style_id(table_shape._tbl, style_id)
+            except Exception as exc:
+                logger.debug("Could not apply table style %s: %s", style_id, exc)
+
+        DARK_BLUE = RGBColor(0x00, 0x33, 0x8D)
+        WHITE = RGBColor(255, 255, 255)
+        BLACK = RGBColor(0, 0, 0)
+        GREY_TOTAL_FILL = RGBColor(0xD9, 0xD9, 0xD9)
+        CHILD_BLUE = RGBColor(0x1F, 0x4E, 0x96)
+
+        def _set_cell(cell, text, *, bold=False, color=BLACK, fill=None, size_pt=7.0,
+                      align=PP_ALIGN.LEFT, indent_emu=0):
+            cell.text = text
+            if not cell.text_frame.paragraphs:
+                cell.text_frame.add_paragraph()
+            p = cell.text_frame.paragraphs[0]
+            if not p.runs:
+                p.add_run()
+            for run in p.runs:
+                run.font.name = 'Arial'
+                run.font.size = Pt(size_pt)
+                run.font.bold = bold
+                try:
+                    run.font.color.rgb = color
+                except Exception:
+                    pass
+            try:
+                p.line_spacing = 1.0
+                p.alignment = align
+                if indent_emu:
+                    self._set_paragraph_left_indent(p, indent_emu)
+            except Exception:
+                pass
+            try:
+                cell.margin_left = Inches(0.04)
+                cell.margin_right = Inches(0.04)
+                cell.margin_top = Inches(0.01)
+                cell.margin_bottom = Inches(0.01)
+                if fill is not None:
+                    cell.fill.solid()
+                    cell.fill.fore_color.rgb = fill
+                else:
+                    cell.fill.solid()
+                    cell.fill.fore_color.rgb = WHITE
+            except Exception:
+                pass
+
+        # Row 0: title band, merged across every column.
+        table_shape.rows[0].height = Pt(self._TABLE_TITLE_ROW_PT)
+        if n_cols > 1:
+            table_shape.cell(0, 0).merge(table_shape.cell(0, n_cols - 1))
+        title_text = table.get("title") or ""
+        _set_cell(table_shape.cell(0, 0), title_text, bold=True, color=WHITE, fill=DARK_BLUE, size_pt=8.0)
+
+        # Row 1: period header -- white bg, bold black text (company-format
+        # reference: only the title band above is filled navy).
+        table_shape.rows[1].height = Pt(self._TABLE_HEADER_ROW_PT)
+        unit_label = "人民币千元" if is_chinese_databook else "CNY'000"
+        _set_cell(table_shape.cell(1, 0), unit_label, bold=True, size_pt=7.5)
+        for j, period in enumerate(periods, start=1):
+            _set_cell(table_shape.cell(1, j), period_labels.get(period, period),
+                      bold=True, size_pt=7.5, align=PP_ALIGN.CENTER)
+
+        # Data / child / total rows.
+        for row_idx, entry in enumerate(plan, start=2):
+            kind = entry["kind"]
+            is_total = kind == "total"
+            is_child = kind == "child"
+            row_h = (self._TABLE_TOTAL_ROW_PT if is_total
+                     else self._TABLE_CHILD_ROW_PT if is_child
+                     else self._TABLE_DATA_ROW_PT)
+            table_shape.rows[row_idx].height = Pt(row_h)
+            label_color = CHILD_BLUE if is_child else BLACK
+            label_fill = GREY_TOTAL_FILL if is_total else None
+            _set_cell(table_shape.cell(row_idx, 0), entry["label"], bold=is_total,
+                      color=label_color, fill=label_fill, size_pt=7.0,
+                      indent_emu=int(Inches(0.12)) if is_child else 0)
+            for j, period in enumerate(periods, start=1):
+                value = entry["values"].get(period)
+                text_val = self._format_table_value(value, is_numeric_column=True) if value is not None else ""
+                _set_cell(table_shape.cell(row_idx, j), text_val, bold=is_total,
+                          color=label_color, fill=label_fill, size_pt=7.0, align=PP_ALIGN.RIGHT)
+
+        # Thin vertical borders between columns, a rule under the header
+        # row, and top+bottom rules bracketing the total row -- matches the
+        # BS/IS grid table's own convention (no rule on every data row).
+        try:
+            for r in range(n_rows):
+                for c in range(n_cols):
+                    cell = table_shape.cell(r, c)
+                    if c > 0:
+                        self._set_cell_border(cell, 'left', color_rgb=RGBColor(0xBF, 0xBF, 0xBF), width=Pt(0.5))
+            for c in range(n_cols):
+                self._set_cell_border(table_shape.cell(1, c), 'bottom', color_rgb=BLACK, width=Pt(1))
+            total_row_idx = next((i for i, e in enumerate(plan, start=2) if e["kind"] == "total"), None)
+            if total_row_idx is not None:
+                for c in range(n_cols):
+                    self._set_cell_border(table_shape.cell(total_row_idx, c), 'top', color_rgb=BLACK, width=Pt(1))
+                    self._set_cell_border(table_shape.cell(total_row_idx, c), 'bottom', color_rgb=BLACK, width=Pt(1.25))
+        except Exception as exc:
+            logger.debug("Could not apply presentation-table borders: %s", exc)
+
+        try:
+            self._fit_table_columns(table_shape, pd.DataFrame(columns=["label"] + periods))
+        except Exception as exc:
+            logger.debug("Could not fit presentation-table columns: %s", exc)
+
+        bottom = top + height
+        source_box = slide.shapes.add_textbox(left, bottom, width, Pt(self._TABLE_SOURCE_LINE_PT + 4))
+        source_tf = source_box.text_frame
+        source_tf.word_wrap = True
+        source_p = source_tf.paragraphs[0]
+        source_run = source_p.add_run()
+        source_run.text = "资料来源：管理层信息；毕马威分析" if is_chinese_databook else "Source: Management information; KPMG analysis"
+        source_run.font.name = 'Arial'
+        source_run.font.size = Pt(7.0)
+        source_run.font.italic = True
+        try:
+            source_run.font.color.rgb = RGBColor(0x59, 0x59, 0x59)
+        except Exception:
+            pass
+        return bottom + int(Pt(self._TABLE_SOURCE_LINE_PT + 4))
+
     @staticmethod
     def _insert_category_header_rows(df, mappings: Optional[Dict[str, Any]], is_chinese_mode: bool):
         """Insert a blank-figures header row ("流动资产" / "Current assets"
@@ -2637,21 +2998,11 @@ class PowerPointGenerator:
             logger.info("Estimated capacity: %s lines", max_lines_per_textbox)
         logger.info("%s\n", '='*80)
         
+        # _slot_names_for_actual_slide is the single source of truth for
+        # this (also used by _append_table_accounts_to_distribution) --
+        # see its docstring for why the two must never diverge.
         def slot_names_for_actual_slide(actual_slide_idx: int) -> List[str]:
-            if 0 <= actual_slide_idx < len(self.presentation.slides):
-                slide = self.presentation.slides[actual_slide_idx]
-                has_left = self.find_shape_by_name(slide.shapes, "textMainBullets_L") is not None
-                has_right = self.find_shape_by_name(slide.shapes, "textMainBullets_R") is not None
-                has_single = self.find_shape_by_name(slide.shapes, "textMainBullets") is not None
-                if has_left and has_right:
-                    return ["L", "R"]
-                if has_single:
-                    return ["single"]
-            # First slide of EACH statement (BS and IS) is single-column
-            # (table on left, one commentary box on right). All other slides
-            # are two-column. `start_slide - 1` is the 0-based index of the
-            # first slide of the current statement.
-            return ["single"] if actual_slide_idx == start_slide - 1 else ["L", "R"]
+            return self._slot_names_for_actual_slide(actual_slide_idx, start_slide)
 
         # Define slot structure: (slide_idx, slot_name)
         slots: List[Tuple[int, str]] = []
@@ -5008,14 +5359,46 @@ class PowerPointGenerator:
                 break
             self._expand_commentary_to_cover_summary(self.presentation.slides[cont_idx])
 
+        # Presentation-table accounts are pulled out of the packing pool
+        # entirely rather than fed to the DP/greedy packer with an inflated
+        # cost. A first attempt padded commentary cost to make a table
+        # account "claim" its whole slot -- verified against a real render
+        # that this does NOT work: the packer still placed a second account
+        # in the same slot, then SPLIT it across two slides when the
+        # combined cost overflowed (the overflow-split logic works purely
+        # off the commentary text, with no concept of "this text is padding
+        # for a table, do not cut it"). Two tables ended up drawn at the
+        # exact same on-slide position. Removing them before packing runs
+        # sidesteps that entirely -- the packer never knows they exist, so
+        # its own sharing/splitting behaviour can't touch them.
+        tables_enabled = self._presentation_tables_enabled()
+        table_items: List[Dict[str, Any]] = []
+        normal_items: List[Dict[str, Any]] = []
+        for item in structured_data:
+            table = self._presentation_table_for_account(item) if tables_enabled else None
+            if table:
+                item = dict(item)
+                item["commentary"] = self._truncate_for_table_lead_in(
+                    item.get("commentary", ""), bool(item.get("is_chinese")),
+                )
+                item["_presentation_table"] = table
+                table_items.append(item)
+            else:
+                normal_items.append(item)
+
         # Distribute content across textbox slots based on capacity
         slot_distribution = self._distribute_content_across_slots(
-            structured_data,
+            normal_items,
             max_slides=max_slides,
             start_slide=start_slide,
             statement_type=statement_type,
         )
-        
+
+        if table_items:
+            slot_distribution = self._append_table_accounts_to_distribution(
+                table_items, slot_distribution, max_slides=max_slides, start_slide=start_slide,
+            )
+
         # Group slot distribution by slide for easier processing
         slides_content = {}  # {slide_idx: {'single': [...], 'L': [...], 'R': [...]}}
         for slot_slide_idx, slot_name, account_list in slot_distribution:
@@ -5237,6 +5620,13 @@ class PowerPointGenerator:
                         font_size_pt=slot_font_size,
                         clause_reviews=clause_reviews,
                     )
+
+                    presentation_table = account_data.get("_presentation_table")
+                    if presentation_table:
+                        self._add_presentation_detail_table_below_text(
+                            slide, bullets_shape, category, mapping_key, commentary,
+                            is_chinese, is_chinese_databook, presentation_table,
+                        )
 
                 if _leading_empty_p.getparent() is not None and not (_leading_empty_p.text or "").strip():
                     _leading_empty_p.getparent().remove(_leading_empty_p)

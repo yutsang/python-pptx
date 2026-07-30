@@ -111,6 +111,18 @@ pptx:
   # styled table already in the template (e.g. your UpSlide style). Find GUIDs
   # with: python list_table_styles.py <file>.pptx
   table_style_id: ""
+  presentation_tables:
+    # Renders a native PowerPoint table next to an account's commentary when
+    # workbook.py's extract_presentation_detail_table finds a report-ready
+    # breakdown on that account's sheet (e.g. 管理费用's 会计服务费/审计费/...).
+    # Off by default until verified against a real export -- an account with
+    # a table is pulled out of the normal commentary-packing pool entirely
+    # and given a whole slot to itself (see
+    # _append_table_accounts_to_distribution in pptx.py), which is a new
+    # interaction with the existing slot-packing system and should be
+    # turned on deliberately, not by default, the same way
+    # inject_mapping_patterns above was A/B-gated.
+    enabled: false
   commentary_packing:
     # Client-font-aware line fitting. metrics json files are committed IN the repo
     # (font_metrics/) so a deployment server needs no fonts installed at all.
