@@ -60,6 +60,25 @@ def _classify(label: str):
     return text, None
 
 
+def _read_check_row(ws, block, scan: int = 6):
+    """The value of the tab's own 'check' cell just below a bridge block.
+
+    That cell compares the bridge's summed end against the ACTUAL revenue
+    (e.g. '=E8-N39'), which is the only non-circular test of whether the
+    hand-built bridge ties out -- unlike start+factors, where the end cell
+    is itself that sum."""
+    end_row = block.header_row + len(block.items)
+    for r in range(end_row, end_row + scan):
+        for c in range(max(1, block.label_col - 1), block.change_col + 2):
+            text = ws.cell(row=r, column=c).value
+            if isinstance(text, str) and "check" in text.lower():
+                for cc in range(c + 1, block.change_col + 2):
+                    v = ws.cell(row=r, column=cc).value
+                    if isinstance(v, (int, float)):
+                        return float(v)
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path")
@@ -93,20 +112,31 @@ def main() -> int:
         print(f"MANUAL BLOCK {bi + 1}: {start_label} -> {end_label}")
         print("=" * 78)
 
-        # 1. Does the manual tab close against itself?
+        # 1. Does the manual tab agree with the ACTUAL revenue?
         m_start = mblock.items[0].value
         m_end = mblock.items[-1].value
-        m_recon = m_start + sum(it.value for it in mblock.items[1:-1])
-        m_resid = m_recon - m_end
-        print(f"  [1] MANUAL TAB'S OWN CHECK")
-        print(f"      start {m_start:>14,.2f}  + factors = {m_recon:>14,.2f}")
-        print(f"      stated end                      {m_end:>14,.2f}")
-        print(f"      residual                        {m_resid:>14,.2f}"
-              f"   {'✅ closes' if abs(m_resid) <= args.tol else '❌ DOES NOT CLOSE'}")
-        if abs(m_resid) > args.tol:
-            print(f"      => the hand-built tab already carries this residual BEFORE any")
-            print(f"         comparison with us. Fix it there first; comparing a tab that")
-            print(f"         does not close against ours cannot tell you which side is right.")
+        print(f"  [1] MANUAL TAB'S OWN CHECK ROW")
+        # Recomputing start+factors and comparing it to the stated end is
+        # circular: the tab's end cell IS that sum (=SUM(N29:O38)), so it
+        # always closes and says nothing. The real test is the tab's own
+        # 'check' row, which compares that sum against the ACTUAL revenue --
+        # and on real data it read 60.06 while the tautological version
+        # reported a clean zero.
+        check_value = _read_check_row(wb[args.manual], mblock)
+        if check_value is None:
+            m_recon = m_start + sum(it.value for it in mblock.items[1:-1])
+            print(f"      no 'check' row found; falling back to start+factors vs stated end")
+            print(f"      (this is circular -- the end cell is usually that same sum)")
+            print(f"      residual {m_recon - m_end:>+14,.2f}")
+        else:
+            print(f"      the tab's own check cell reads {check_value:>+14,.2f}")
+            if abs(check_value) <= args.tol:
+                print(f"      ✅ the hand-built bridge ties to the actual revenue")
+            else:
+                print(f"      ❌ the hand-built bridge does NOT tie to the actual revenue --")
+                print(f"         it is short by this amount BEFORE any comparison with us.")
+                print(f"         Whatever gap appears below, this is the tab's own residual;")
+                print(f"         fix it there rather than treating our figure as the outlier.")
 
         # 2. Match to the computed transition with the closest end total.
         best = min(computed, key=lambda r: abs(r.bridge.items[-1].value - m_end))
