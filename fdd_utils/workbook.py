@@ -3950,6 +3950,22 @@ def extract_presentation_detail_table(
     # caused the original miss.
     main_cols = [c.get("col_idx") for c in (columns or []) if c.get("col_idx") is not None]
     main_col_max = max(main_cols) if main_cols else None
+
+    # Collected up front so a sheet with NO unit-marker cell anywhere can be
+    # told apart from one where a marker exists but never lands in an accepted
+    # position -- both looked identical (silent None, zero rejections) before
+    # this, which is why two of four real summaries vanished from --explain
+    # with no reason shown at all.
+    marker_hits: List[Tuple[int, int, str]] = []
+    for scan_row in range(len(df)):
+        for i, v in enumerate(df.iloc[scan_row].tolist()):
+            t = _cell_text(v)
+            if t and any(m in t.lower() for m in UNIT_THOUSAND_MARKERS):
+                marker_hits.append((scan_row, i, t))
+    if not marker_hits:
+        _reject(0, None, "no currency-unit marker (" + ", ".join(UNIT_THOUSAND_MARKERS) +
+                ") found anywhere on this sheet")
+
     for header_row in range(len(df)):
         cells = [(i, _cell_text(v)) for i, v in enumerate(df.iloc[header_row].tolist())]
         unit_col = None
@@ -3962,6 +3978,15 @@ def extract_presentation_detail_table(
                 unit_col = i
                 break
         if unit_col is None:
+            row_hits = [(c, t) for r, c, t in marker_hits if r == header_row]
+            if row_hits:
+                c, t = row_hits[0]
+                _reject(
+                    header_row, c,
+                    f"unit marker {t!r} at col {c} is neither right of the main table's "
+                    f"rightmost column ({main_col_max}) nor at/below its last row "
+                    f"(sheet row {main_block_end_row + 1})"
+                )
             continue
         period_cols: List[Tuple[int, Any]] = []
         for i, t in cells:
