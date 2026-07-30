@@ -66,6 +66,43 @@ def _cell(t, r, c):
 _XLSX_MAGIC = b"PK\x03\x04"
 
 
+def _diagnose_ole(shape):
+    """Why a given OLE embed could not be read, specifically.
+
+    Lumping every failure into 'linked, or legacy .xls' made the result
+    undiagnosable -- a real deck reported 7 unreadable embeds with no way to
+    tell which reason applied, and therefore no way to know whether the data
+    was reachable at all. prog_id alone usually settles it."""
+    info = {"prog_id": None, "reason": None, "bytes": 0, "magic": None}
+    try:
+        ole = shape.ole_format
+    except Exception as exc:
+        info["reason"] = f"no ole_format ({type(exc).__name__})"
+        return info
+    try:
+        info["prog_id"] = ole.prog_id
+    except Exception:
+        pass
+    try:
+        blob = ole.blob
+    except Exception as exc:
+        info["reason"] = (f"LINKED, not embedded -- the source workbook lives outside the deck "
+                          f"({type(exc).__name__})")
+        return info
+    if not blob:
+        info["reason"] = "embedded blob is empty"
+        return info
+    info["bytes"] = len(blob)
+    info["magic"] = blob[:4].hex()
+    if blob[:4] == _XLSX_MAGIC:
+        info["reason"] = "xlsx blob present but no sheet yielded usable labels"
+    elif blob[:4] == b"\xd0\xcf\x11\xe0":
+        info["reason"] = "legacy .xls (OLE compound) -- needs conversion to .xlsx to read"
+    else:
+        info["reason"] = f"unrecognised signature {info['magic']}"
+    return info
+
+
 def _read_ole_table(shape, slide_no, tmp_dir):
     """An embedded Excel range as {labels, rows} so it can be traced like a
     native table.
@@ -120,10 +157,12 @@ def extract_deck_tables(pptx_path, tmp_dir=None):
     for idx, slide in enumerate(prs.slides, 1):
         for slide_no, shape, kind in _walk(slide.shapes, idx):
             if kind == "ole":
-                ole.append((slide_no, shape.name))
                 parsed = _read_ole_table(shape, slide_no, tmp_dir)
                 if parsed:
                     tables.append(parsed)
+                    ole.append((slide_no, shape.name, None))
+                else:
+                    ole.append((slide_no, shape.name, _diagnose_ole(shape)))
                 continue
             if kind == "picture":
                 pictures.append((slide_no, shape.name))
@@ -191,21 +230,37 @@ def main() -> int:
     print(f"Deck: {args.pptx!r}")
     print(f"  readable tables: {len(tables)}"
           + (f"   ({n_from_ole} of them extracted from OLE embeds)" if n_from_ole else ""))
+    n_unreadable = sum(1 for _s, _n, d in ole if d)
     print(f"  OLE embeds    : {len(ole)}"
-          + (f"   ({len(ole) - n_from_ole} not readable -- linked, or legacy .xls)"
-             if len(ole) > n_from_ole else "   (all read)"))
+          + (f"   ({n_unreadable} unreadable -- reasons below)" if n_unreadable else "   (all read)"))
     print(f"  pictures      : {len(pictures)}"
           + ("   <-- a table flattened to an image cannot be read structurally" if pictures else ""))
     print()
+    unreadable = [(s, n, d) for s, n, d in ole if d]
+    if unreadable:
+        print("\n  WHY EACH OLE EMBED COULD NOT BE READ:")
+        for s, n, d in unreadable:
+            print(f"    slide {s} {n!r}")
+            print(f"      prog_id : {d['prog_id']!r}")
+            print(f"      bytes   : {d['bytes']:,}" + (f"   magic {d['magic']}" if d["magic"] else ""))
+            print(f"      reason  : {d['reason']}")
+        if all("LINKED" in (d["reason"] or "") for _s, _n, d in unreadable):
+            print("\n  All of them are LINKED rather than embedded: the deck holds only a")
+            print("  reference to an external workbook, so the figures are not inside the")
+            print("  .pptx at all and no tool can read them from it. To get the ground")
+            print("  truth either (a) open the deck in PowerPoint, right-click a table and")
+            print("  'Convert to embedded'/copy it into a fresh file, or (b) tell me which")
+            print("  databook sheet each slide's table is linked to and I will read it from")
+            print("  the databook side, which is where the numbers actually live.")
+
     if not tables:
-        print("No native tables. If the deck visibly HAS tables they are OLE embeds or")
-        print("images -- see the counts above; this tool can only trace native ones.")
-        if ole:
-            for s, n in ole[:10]:
-                print(f"    OLE on slide {s}: {n!r}")
+        print("\nNo readable tables. See the reasons above -- this is not the same as the")
+        print("deck having no tables; it means their contents are not stored inside it.")
         if pictures:
+            print(f"\n  {len(pictures)} picture(s) -- a table flattened to an image is also")
+            print(f"  unreadable structurally:")
             for s, n in pictures[:10]:
-                print(f"    picture on slide {s}: {n!r}")
+                print(f"    slide {s}: {n!r}")
         return 1
 
     for i, t in enumerate(tables, 1):
