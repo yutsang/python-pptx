@@ -80,12 +80,28 @@ venv.bak/
 /old_ver
 old_ver/
 
-# Reference screenshots/photos pasted into the working directory for review
-IMG_*.JPG
-IMG_*.jpg
-IMG_*.PNG
-IMG_*.png
-IMG_*.HEIC
+# Reference screenshots/photos dropped into the working directory for review.
+# These routinely show real client data, and this repository is public, so the
+# rule is by EXTENSION rather than by filename -- an IMG_* pattern missed
+# anything saved as Screenshot..., a pasted image, or a phone default name.
+# The repo tracks no images of its own (verified), so a blanket ignore costs
+# nothing. Force-add with `git add -f` if a diagram ever genuinely belongs here.
+*.JPG
+*.jpg
+*.JPEG
+*.jpeg
+*.PNG
+*.png
+*.GIF
+*.gif
+*.WEBP
+*.webp
+*.HEIC
+*.heic
+*.tif
+*.tiff
+*.bmp
+*.pdf
 
 # System files
 .DS_Store

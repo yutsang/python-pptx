@@ -3852,6 +3852,15 @@ _NON_COMPOSITION_ROW_MARKERS = (
     "ebitda/noi", "ebitda%", "出租率", "单价（", "單價（", "元/平方米",
 )
 _GL_CODE_RE = re.compile(r"^\d{4,}$")
+# A report-ready block is TITLED the way the report titles it -- '示意性调整后
+# 管理费用 - <entity>', mirroring the Financials sheet's own
+# '经示意性调整后资产负债表 - <entity>'. Checked across every sheet of a real
+# databook this marked exactly the four accounts the reference deck tabulates
+# (营业成本, 税金及附加, 管理费用, 财务费用) and correctly did NOT mark 营业收入,
+# whose block is titled without the proforma prefix and which that deck
+# narrates rather than tabulates. A far more direct signal than inferring
+# report-worthiness from a block's shape.
+_REPORT_TITLE_RE = re.compile(r"(经|經)?示意性(调整|調整)(后|後)")
 
 
 def _is_composition_label(label: str) -> bool:
@@ -4010,6 +4019,17 @@ def extract_presentation_detail_table(
                 continue  # ties to nothing -- not this account's breakdown
             tie_status = f"ties on {tied} period(s), differs on {mismatched}"
 
+        # The block's own title, from the rows just above its header. Where it
+        # follows the report-title convention that is a direct statement by
+        # the preparer that this block is the reported view.
+        title = ""
+        for back in (1, 2, 3):
+            if header_row - back < 0:
+                break
+            candidate = _cell_text(df.iloc[header_row - back, unit_col])
+            if candidate and not parse_date(candidate):
+                title = candidate
+                break
         return {
             "header_row": header_row,
             "label_col": unit_col,
@@ -4017,6 +4037,8 @@ def extract_presentation_detail_table(
             "rows": rows,
             "total_row": total_row,
             "tie_status": tie_status,
+            "title": title,
+            "titled_as_report_view": bool(_REPORT_TITLE_RE.search(title)),
         }
     return None
 
