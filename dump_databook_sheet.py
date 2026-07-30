@@ -80,11 +80,21 @@ def _period_header_spans(df, r):
 
 def find_blocks(df, max_rows=250):
     """Periodised blocks, each anchored to its own COLUMN range so tables laid
-    out side by side are reported separately."""
+    out side by side are reported separately.
+
+    Overlapping detections are suppressed. On a journal-style sheet where every
+    row carries dates, scanning each row independently re-detected the same
+    region starting one row lower each time -- a real sheet produced 31
+    "blocks" that were one table, with a bookkeeper's name as the title. A
+    region already claimed for a given column range is not re-entered.
+    """
     blocks = []
+    claimed = []  # (label_col, first_row, last_row) already inside a block
     n = min(len(df), max_rows)
     for r in range(n):
         for label_col, period_cols in _period_header_spans(df, r):
+            if any(lc == label_col and lo <= r <= hi for lc, lo, hi in claimed):
+                continue
             data_rows, labels, blank = 0, [], 0
             j = r + 1
             while j < n and blank < 3:
@@ -112,6 +122,7 @@ def find_blocks(df, max_rows=250):
                         if cand and not _DATE_HDR_RE.search(cand):
                             title = cand
                             break
+                claimed.append((label_col, r, j))
                 blocks.append({
                     "header_row": r, "end_row": j, "data_rows": data_rows,
                     "labels": labels, "title": title,
