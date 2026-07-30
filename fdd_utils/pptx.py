@@ -2002,6 +2002,7 @@ class PowerPointGenerator:
     def _add_presentation_detail_table_below_text(
         self, slide, bullets_shape, category: str, mapping_key: str, commentary: str,
         is_chinese: bool, is_chinese_databook: bool, table: Dict[str, Any],
+        source_multiplier: float = 1,
     ) -> None:
         """Places the table below wherever the just-written short lead-in
         text is estimated to end within bullets_shape, using the same
@@ -2063,18 +2064,38 @@ class PowerPointGenerator:
                 bullets_shape.height = offset_emu
             except Exception:
                 pass
-            self._render_presentation_table(slide, left, top, width, table, is_chinese_databook)
+            self._render_presentation_table(
+                slide, left, top, width, table, is_chinese_databook,
+                source_multiplier=source_multiplier,
+            )
         except Exception as exc:
             logger.warning("Could not render presentation-detail table for %s: %s", mapping_key, exc)
 
     def _render_presentation_table(
         self, slide, left: int, top: int, width: int, table: Dict[str, Any],
-        is_chinese_databook: bool,
+        is_chinese_databook: bool, source_multiplier: float = 1,
     ) -> int:
         """Renders `table` (extract_presentation_detail_table's return
         shape) as a native table at the given EMU position, plus a
         source-line caption beneath it. Returns the bottom EMU position.
+
+        table["rows"]/["total_row"] hold values in the SAME raw-yuan
+        internal scale every account's df uses (normalize_financial_schedule
+        multiplies by source_multiplier -- 1000 whenever the sheet's own
+        header says CNY'000/千元 -- so cross-account math and the block's
+        own tie-out against the account total both work in one consistent
+        unit). The table itself is rendered under its own "人民币千元"/
+        "CNY'000" header for a human to read directly, so those raw-yuan
+        figures are divided back down here, at render time only -- dividing
+        upstream in extract_presentation_detail_table would break its own
+        tie-out against the (also raw-yuan-scale) account total.
         """
+        divisor = source_multiplier if source_multiplier and source_multiplier != 0 else 1
+
+        def _scaled(values: Dict[str, float]) -> Dict[str, float]:
+            return {period: (v / divisor if isinstance(v, (int, float)) else v)
+                    for period, v in (values or {}).items()}
+
         periods = table.get("periods") or []
         period_labels = table.get("period_labels") or {}
         rows = table.get("rows") or []
@@ -2083,12 +2104,12 @@ class PowerPointGenerator:
         # Flatten rows -> children (indented) -> total, into one render plan.
         plan: List[Dict[str, Any]] = []
         for row in rows:
-            plan.append({"label": row.get("label", ""), "values": row.get("values") or {}, "kind": "data"})
+            plan.append({"label": row.get("label", ""), "values": _scaled(row.get("values")), "kind": "data"})
             for child in (row.get("children") or []):
-                plan.append({"label": child.get("label", ""), "values": child.get("values") or {}, "kind": "child"})
+                plan.append({"label": child.get("label", ""), "values": _scaled(child.get("values")), "kind": "child"})
         if total_row:
             plan.append({"label": total_row.get("label", "合计" if is_chinese_databook else "Total"),
-                         "values": total_row.get("values") or {}, "kind": "total"})
+                         "values": _scaled(total_row.get("values")), "kind": "total"})
 
         n_cols = 1 + len(periods)
         n_rows = 2 + len(plan)  # title + header + plan rows
@@ -5623,9 +5644,28 @@ class PowerPointGenerator:
 
                     presentation_table = account_data.get("_presentation_table")
                     if presentation_table:
+                        # The account's own numbers are stored internally in
+                        # RAW YUAN -- normalize_financial_schedule multiplies
+                        # by source_multiplier (1000 whenever the sheet's own
+                        # header says CNY'000/千元) so every account shares one
+                        # consistent internal unit for cross-account math and
+                        # tie-outs. presentation_detail_table's values go
+                        # through that SAME multiplication (needed so its
+                        # tie-out against the account's raw-yuan-scale total
+                        # still lines up) -- but the table is rendered under
+                        # its own "人民币千元" header for a human to read
+                        # directly, so displaying the raw-yuan figure verbatim
+                        # was showing every number ~1000x too large. Dividing
+                        # back out here, at display time only, leaves the
+                        # stored/tie-out values untouched.
+                        table_source_multiplier = 1
+                        table_financial_data = account_data.get("financial_data")
+                        if hasattr(table_financial_data, "attrs"):
+                            table_source_multiplier = table_financial_data.attrs.get("source_multiplier") or 1
                         self._add_presentation_detail_table_below_text(
                             slide, bullets_shape, category, mapping_key, commentary,
                             is_chinese, is_chinese_databook, presentation_table,
+                            source_multiplier=table_source_multiplier,
                         )
 
                 if _leading_empty_p.getparent() is not None and not (_leading_empty_p.text or "").strip():

@@ -2277,11 +2277,19 @@ class PromptEngine:
         rows = table["rows"]
         periods = table.get("periods") or []
         latest = periods[-1] if periods else None
+        # table's values are in the SAME raw-yuan internal scale every
+        # account's df uses (source_multiplier -- 1000 whenever the sheet's
+        # own header says 千元 -- applied so cross-account math and the
+        # table's own tie-out against the account total work); divide back
+        # out for this prompt-facing figure the same way pptx.py's renderer
+        # does, so a model that ignores the "don't repeat figures" ban below
+        # isn't shown a number ~1000x the real one.
+        divisor = (df.attrs or {}).get("source_multiplier") or 1
 
         def _fmt(entry):
             values = entry.get("values") or {}
-            if latest and latest in values:
-                return f"{entry['label']} {values[latest]:,.1f}"
+            if latest and latest in values and isinstance(values[latest], (int, float)):
+                return f"{entry['label']} {values[latest] / divisor:,.1f}"
             return str(entry["label"])
 
         listed = "、".join(_fmt(r) for r in rows[:10])
