@@ -4058,20 +4058,25 @@ def extract_presentation_detail_table(
                     f"(sheet row {main_block_end_row + 1})"
                 )
             continue
-        period_cols: List[Tuple[int, Any]] = []
+        # The raw header text (e.g. "2026年1-3月") is kept alongside the
+        # parsed date, not just for comparison -- it is the only place a
+        # stub/interim period's real label lives; the normalised YYYY-MM-DD
+        # alone can't distinguish a fiscal-year-end date from an interim
+        # cutoff, so a renderer with only "periods" would have to guess.
+        period_cols: List[Tuple[int, Any, str]] = []
         for i, t in cells:
             if i <= unit_col or not t:
                 continue
             parsed = parse_date(t)
             if parsed:
-                period_cols.append((i, parsed))
+                period_cols.append((i, parsed, t))
         if len(period_cols) < 2:
             _reject(header_row, unit_col, f"only {len(period_cols)} parseable period header(s)")
             continue
         # One stage only: the main table repeats its periods once per stage, so
         # a repeated period here means this is another multi-stage block, not
         # the presentation summary.
-        seen = [_norm(p) for _i, p in period_cols]
+        seen = [_norm(p) for _i, p, _t in period_cols]
         if len(seen) != len(set(seen)):
             _reject(header_row, unit_col, f"periods repeat ({seen}) -- multi-stage block")
             continue
@@ -4087,12 +4092,12 @@ def extract_presentation_detail_table(
             if not label:
                 # A blank label with blank values ends the table; a blank label
                 # with values is a continuation artefact, so keep scanning.
-                if not any(_coerce_numeric(df.iloc[r, i]) is not None for i, _p in period_cols):
+                if not any(_coerce_numeric(df.iloc[r, i]) is not None for i, _p, _t in period_cols):
                     if rows:
                         break
                     continue
             values = {}
-            for i, period in period_cols:
+            for i, period, _t in period_cols:
                 num = _coerce_numeric(df.iloc[r, i])
                 if num is not None:
                     values[_norm(period)] = round(num * multiplier, 2)
@@ -4168,7 +4173,8 @@ def extract_presentation_detail_table(
         return {
             "header_row": header_row,
             "label_col": unit_col,
-            "periods": [_norm(p) for _i, p in period_cols],
+            "periods": [_norm(p) for _i, p, _t in period_cols],
+            "period_labels": {_norm(p): t for _i, p, t in period_cols},
             "rows": _nest_component_rows(rows, tie_tolerance),
             "total_row": total_row,
             "tie_status": tie_status,
