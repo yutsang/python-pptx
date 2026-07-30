@@ -94,12 +94,31 @@ def _diagnose_ole(shape):
         return info
     info["bytes"] = len(blob)
     info["magic"] = blob[:4].hex()
-    if blob[:4] == _XLSX_MAGIC:
+    prog = str(info["prog_id"] or "")
+    # d0cf11e0 is the generic OLE compound-file signature. .xls uses it, but so
+    # does any structured-storage object -- so the signature alone must not be
+    # read as "legacy Excel". A real deck reported seven such blobs, all
+    # exactly 4,096 bytes, whose prog_id was TCLayout.ActiveDocument.1: those
+    # are think-cell state objects, not workbooks, and the tables they belong
+    # to are rendered into the slide as PICTURES.
+    if prog.startswith("TCLayout") or "think-cell" in prog.lower():
+        info["reason"] = (f"think-cell object ({prog}) -- not a workbook. Its blob holds "
+                          f"add-in state; the visible table is rendered as a picture.")
+        info["kind"] = "think-cell"
+    elif blob[:4] == _XLSX_MAGIC:
         info["reason"] = "xlsx blob present but no sheet yielded usable labels"
+        info["kind"] = "xlsx"
     elif blob[:4] == b"\xd0\xcf\x11\xe0":
-        info["reason"] = "legacy .xls (OLE compound) -- needs conversion to .xlsx to read"
+        if prog.lower().startswith("excel"):
+            info["reason"] = "legacy .xls (OLE compound) -- convert to .xlsx to read"
+            info["kind"] = "xls"
+        else:
+            info["reason"] = (f"OLE compound storage from {prog!r} -- an add-in object, not a "
+                              f"workbook, so there is no cell data to read")
+            info["kind"] = "other-ole"
     else:
         info["reason"] = f"unrecognised signature {info['magic']}"
+        info["kind"] = "unknown"
     return info
 
 
@@ -244,7 +263,21 @@ def main() -> int:
             print(f"      prog_id : {d['prog_id']!r}")
             print(f"      bytes   : {d['bytes']:,}" + (f"   magic {d['magic']}" if d["magic"] else ""))
             print(f"      reason  : {d['reason']}")
-        if all("LINKED" in (d["reason"] or "") for _s, _n, d in unreadable):
+        kinds = {d.get("kind") for _s, _n, d in unreadable}
+        if kinds == {"think-cell"}:
+            print("\n  Every one is a think-cell object, so this deck's tables were built with")
+            print("  the think-cell add-in rather than as PowerPoint tables or pasted Excel")
+            print("  ranges. The figures live in think-cell's own store, which is proprietary")
+            print("  and not readable here -- and the visible table is one of the pictures")
+            print("  listed below, which cannot be read structurally either.")
+            print("\n  What this means for the build:")
+            print("    * There is no Excel range to trace, so the ground truth for WHICH")
+            print("      accounts get a table has to come from you naming them, or from")
+            print("      reading the slide text around each picture.")
+            print("    * think-cell's exact rendering cannot be reproduced. A generated deck")
+            print("      would carry a native PowerPoint table instead -- same numbers and")
+            print("      same layout, but not a pixel match. Worth agreeing before building.")
+        elif all("LINKED" in (d["reason"] or "") for _s, _n, d in unreadable):
             print("\n  All of them are LINKED rather than embedded: the deck holds only a")
             print("  reference to an external workbook, so the figures are not inside the")
             print("  .pptx at all and no tool can read them from it. To get the ground")
@@ -252,6 +285,11 @@ def main() -> int:
             print("  'Convert to embedded'/copy it into a fresh file, or (b) tell me which")
             print("  databook sheet each slide's table is linked to and I will read it from")
             print("  the databook side, which is where the numbers actually live.")
+        if len({d["bytes"] for _s, _n, d in unreadable if d["bytes"]}) == 1 and len(unreadable) > 2:
+            size = next(d["bytes"] for _s, _n, d in unreadable if d["bytes"])
+            print(f"\n  All {len(unreadable)} blobs are exactly {size:,} bytes -- identical size")
+            print(f"  across different slides means they carry add-in state, not table data,")
+            print(f"  which corroborates the reading above.")
 
     if not tables:
         print("\nNo readable tables. See the reasons above -- this is not the same as the")
