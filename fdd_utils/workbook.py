@@ -3805,14 +3805,25 @@ def _trim_block_end_row(
     data_start_row: int,
     data_end_row: int,
     stage_row_idx: Optional[int],
+    max_col_idx: Optional[int] = None,
 ) -> int:
+    """max_col_idx, when given, bounds the has-numeric/has-text scan to the
+    main block's own columns. Without it, a presentation table sitting a
+    dozen rows below the main block but a few columns to the right (a real,
+    confirmed layout) still has numbers on the sheet's last row, so the
+    backward scan hits that row first, sees numeric content, and stops
+    immediately -- reporting the main block as running all the way to the
+    sheet's own last row and swallowing the presentation table into it
+    (confirmed on a real file: two accounts' data_end_row came out exactly
+    equal to len(df), which is what let their report tables go undetected)."""
     trimmed_end_row = int(data_end_row or len(df))
     if trimmed_end_row <= data_start_row:
         return trimmed_end_row
 
     while trimmed_end_row > data_start_row:
         row_idx = trimmed_end_row - 1
-        row_values = df.iloc[row_idx].tolist()
+        row_values = (df.iloc[row_idx].tolist() if max_col_idx is None
+                      else df.iloc[row_idx, :max_col_idx + 1].tolist())
         text_values = [_cell_text(value) for value in row_values if _cell_text(value)]
         if not text_values:
             trimmed_end_row -= 1
@@ -4518,12 +4529,24 @@ def normalize_financial_schedule(
     stage_map = _forward_fill_stage_row(df.iloc[stage_row_idx])
     data_start_row = max(stage_row_idx, date_row_idx) + 1
     raw_data_end_row = int(selected_block.get("data_end_row") or len(df))
+    # The rightmost column carrying a real date on the main block's OWN date
+    # row. stage_map is unusable for this bound -- it forward-fills, so a
+    # presentation table's blank columns on this same row would silently
+    # keep reading as "still the last stage" -- but a presentation table's
+    # own header sits several rows further down, so its columns are
+    # genuinely blank here. Bounds the trim below to the main block's real
+    # width so a numeric table elsewhere on the sheet cannot drag
+    # data_end_row all the way to the sheet's last row.
+    date_row_values = df.iloc[date_row_idx].tolist()
+    dated_cols = [i for i, v in enumerate(date_row_values) if i > desc_col_idx and parse_date(v)]
+    main_col_bound = max(dated_cols) if dated_cols else None
     data_end_row = _trim_block_end_row(
         df=df,
         desc_col_idx=desc_col_idx,
         data_start_row=data_start_row,
         data_end_row=raw_data_end_row,
         stage_row_idx=raw_data_end_row if raw_data_end_row < len(df) else None,
+        max_col_idx=main_col_bound,
     )
     columns: List[Dict[str, Any]] = []
     for col_idx in range(desc_col_idx + 1, len(df.columns)):
