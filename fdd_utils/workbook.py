@@ -3926,6 +3926,16 @@ def extract_presentation_detail_table(
 
     main_periods = {_norm(c.get("date")) for c in (columns or []) if c.get("date")}
 
+    # Why a candidate was turned away, collected for the caller. Without this
+    # a sheet that visibly HAS a summary just returns None with no way to tell
+    # which of the six tests rejected it -- which is exactly what happened on a
+    # real file where two of four summaries went missing.
+    rejections: List[Dict[str, Any]] = []
+
+    def _reject(row_idx: int, col_idx: Optional[int], why: str) -> None:
+        if len(rejections) < 40:
+            rejections.append({"row": row_idx + 1, "col": col_idx, "reason": why})
+
     # The summary sits to the RIGHT of the main schedule, so their ROW ranges
     # overlap and scanning only from main_block_end_row onward missed it.
     # Confirmed on a real databook: 税金及附加's summary header is at row 12
@@ -3961,14 +3971,18 @@ def extract_presentation_detail_table(
             if parsed:
                 period_cols.append((i, parsed))
         if len(period_cols) < 2:
+            _reject(header_row, unit_col, f"only {len(period_cols)} parseable period header(s)")
             continue
         # One stage only: the main table repeats its periods once per stage, so
         # a repeated period here means this is another multi-stage block, not
         # the presentation summary.
         seen = [_norm(p) for _i, p in period_cols]
         if len(seen) != len(set(seen)):
+            _reject(header_row, unit_col, f"periods repeat ({seen}) -- multi-stage block")
             continue
         if main_periods and not set(seen) & main_periods:
+            _reject(header_row, unit_col,
+                    f"no period shared with the account ({seen} vs {sorted(main_periods)})")
             continue
 
         rows: List[Dict[str, Any]] = []
@@ -3999,6 +4013,7 @@ def extract_presentation_detail_table(
             # blank caption -- it is a spacer or a spill-over from a merged
             # cell, not a component.
         if len(rows) < 2:
+            _reject(header_row, unit_col, f"only {len(rows)} labelled numeric row(s)")
             continue
 
         # Every row must plausibly NAME a component. A single GL code, date or
@@ -4007,6 +4022,8 @@ def extract_presentation_detail_table(
         # workpaper that happens to be periodised.
         non_composition = [r["label"] for r in rows if not _is_composition_label(r["label"])]
         if non_composition:
+            _reject(header_row, unit_col,
+                    f"row label(s) are not component names: {non_composition[:4]}")
             continue
 
         # The decisive test. A breakdown that belongs in a report SUMS TO the
@@ -4037,6 +4054,8 @@ def extract_presentation_detail_table(
                 else:
                     mismatched += 1
             if tied == 0:
+                _reject(header_row, unit_col,
+                        f"ties to no period (checked {sorted(normalised_totals)[:5]})")
                 continue  # ties to nothing -- not this account's breakdown
             tie_status = f"ties on {tied} period(s), differs on {mismatched}"
 
@@ -4060,8 +4079,9 @@ def extract_presentation_detail_table(
             "tie_status": tie_status,
             "title": title,
             "titled_as_report_view": bool(_REPORT_TITLE_RE.search(title)),
+            "rejections": rejections,
         }
-    return None
+    return {"rows": [], "rejections": rejections} if rejections else None
 
 
 def _extract_supporting_notes(

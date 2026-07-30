@@ -45,6 +45,8 @@ def main() -> int:
     ap.add_argument("--entity", default="x", help="entity name (soft filter for most files)")
     ap.add_argument("--sheet", default=None)
     ap.add_argument("--account", default=None, help="only this account")
+    ap.add_argument("--explain", action="store_true",
+                     help="for accounts with no candidate, print why each block was rejected")
     ap.add_argument("--show-values", action="store_true",
                      help="print every component's figures, not just the labels")
     ap.add_argument("--tolerance", type=float, default=0.02,
@@ -97,8 +99,21 @@ def main() -> int:
                 continue
             norm_totals[k] = value
 
-        if not table:
+        if not table or not table.get("rows"):
             no_table.append((key, stmt))
+            # A sheet that visibly HAS a summary but yields none needs the
+            # reason, not silence -- two of four went missing on a real file
+            # with no way to tell which test rejected them.
+            why = (table or {}).get("rejections") or []
+            if why and (args.account or args.explain):
+                print("=" * 78)
+                print(f"{key}   [{stmt}]   NO CANDIDATE")
+                print("=" * 78)
+                for item in why[:12]:
+                    col = item["col"]
+                    col_s = f"col idx {col}" if col is not None else "col ?"
+                    print(f"    rejected at sheet row {item['row']:>4} ({col_s}): {item['reason']}")
+                print()
             continue
 
         rows = table["rows"]
