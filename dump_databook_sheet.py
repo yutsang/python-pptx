@@ -128,10 +128,57 @@ def main() -> int:
     ap.add_argument("--rows", default=None, metavar="N-N",
                      help="Excel row range to dump in full (1-indexed, inclusive)")
     ap.add_argument("--list", action="store_true", help="list sheet names and exit")
+    ap.add_argument("--all-sheets", action="store_true",
+                     help="scan EVERY sheet and report its periodised blocks -- one pass to see "
+                          "which sheets carry a report-ready table and where")
+    ap.add_argument("--only-multi", action="store_true",
+                     help="with --all-sheets, show only sheets with more than one block")
     ap.add_argument("--max-cols", type=int, default=14, help="columns to show per row")
     args = ap.parse_args()
 
     xl = pd.ExcelFile(args.path)
+
+    if args.all_sheets:
+        print(f"Scanning every sheet in {args.path!r}\n")
+        print(f"{'sheet':22s} {'blocks':6s} block detail")
+        print("-" * 100)
+        multi = 0
+        for name in xl.sheet_names:
+            if any(h in name.lower() for h in ("-->", ">>", "_tm_", "upslide")):
+                continue
+            try:
+                df = pd.read_excel(args.path, sheet_name=name, header=None)
+            except Exception as exc:
+                print(f"{name[:22]:22s} {'-':6s} unreadable ({type(exc).__name__})")
+                continue
+            blocks = find_blocks(df)
+            if not blocks:
+                if not args.only_multi:
+                    print(f"{name[:22]:22s} {0:<6d} (no periodised block)")
+                continue
+            if args.only_multi and len(blocks) < 2:
+                continue
+            if len(blocks) > 1:
+                multi += 1
+            print(f"{name[:22]:22s} {len(blocks):<6d}")
+            for i, b in enumerate(blocks, 1):
+                cols = [b["label_col"]] + b["period_cols"]
+                rng = f"{get_column_letter(cols[0] + 1)}-{get_column_letter(cols[-1] + 1)}"
+                n_per = len(b["period_cols"])
+                # One period set means a single reporting stage, which is the
+                # shape a report-ready summary has; the main schedule repeats
+                # its periods once per stage.
+                shape = "1 stage" if n_per <= 6 else f"{n_per} period cols (multi-stage)"
+                print(f"    [{i}] rows {b['header_row'] + 1}-{b['end_row']}, cols {rng}, "
+                      f"{b['data_rows']} rows, {shape}")
+                if b["title"]:
+                    print(f"        title : {b['title'][:60]}")
+                print(f"        labels: {b['labels'][:8]}")
+        print("-" * 100)
+        print(f"\n{multi} sheet(s) carry more than one block -- those are where a")
+        print("report-ready summary can live alongside the main schedule.")
+        return 0
+
     if args.list or not args.sheet:
         print(f"{len(xl.sheet_names)} sheet(s) in {args.path!r}:")
         for name in xl.sheet_names:
