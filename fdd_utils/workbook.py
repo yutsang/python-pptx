@@ -3839,6 +3839,114 @@ def _trim_block_end_row(
     return trimmed_end_row
 
 
+def extract_presentation_detail_table(
+    df: pd.DataFrame,
+    desc_col_idx: int,
+    main_block_end_row: int,
+    columns: List[Dict[str, Any]],
+    multiplier: int = 1,
+    max_rows: int = 40,
+) -> Optional[Dict[str, Any]]:
+    """The report-ready breakdown table an account sheet carries BELOW its
+    main schedule, if it has one.
+
+    Real databooks hold two tables per account sheet. The main one is keyed by
+    GL codes (660202, 660203, ...) across several reporting stages
+    (管理层数 / 审定数 / 示意性调整后), and it is the one normalize_financial_
+    schedule parses. Below it sits a second table with the SAME periods but
+    only one stage, and human-readable labels -- 会计服务费, 审计费,
+    法律咨询费 for 管理费用; 利息支出, 利息收入, 汇兑损益, 银行手续费 for
+    财务费用. That second table is what the analyst's own deck references
+    when a paragraph ends '明细如下：', and it is why a deck can describe
+    composition in real words while commentary generated from the first
+    table can only cite account codes.
+
+    _select_entity_block never finds it because it looks for a stage row and
+    this table has none -- so it was not mis-mapped, it was never scanned.
+
+    Returns {header, periods, rows: [{label, values}], total_row} or None.
+    Deliberately conservative: requires a currency-unit label, at least two
+    period headers matching the account's own, and at least two labelled
+    numeric rows, so a stray note block is not mistaken for a table.
+    """
+    if df is None or df.empty or main_block_end_row >= len(df):
+        return None
+
+    def _norm(value) -> str:
+        """Both sides to 'YYYY-MM-DD'. The main block stores its dates already
+        formatted that way, while parse_date here returns a datetime whose
+        str() carries a ' 00:00:00' tail -- comparing the two raw never
+        matches, which silently made this function return None for every
+        sheet including ones that do have the table."""
+        parsed = parse_date(value) if not hasattr(value, "strftime") else value
+        if parsed is not None and hasattr(parsed, "strftime"):
+            return parsed.strftime("%Y-%m-%d")
+        return str(value or "").strip()
+
+    main_periods = {_norm(c.get("date")) for c in (columns or []) if c.get("date")}
+
+    for header_row in range(main_block_end_row, min(len(df), main_block_end_row + 60)):
+        cells = [(i, _cell_text(v)) for i, v in enumerate(df.iloc[header_row].tolist())]
+        unit_col = next((i for i, t in cells
+                         if t and any(m in t.lower() for m in UNIT_THOUSAND_MARKERS)), None)
+        if unit_col is None:
+            continue
+        period_cols: List[Tuple[int, Any]] = []
+        for i, t in cells:
+            if i <= unit_col or not t:
+                continue
+            parsed = parse_date(t)
+            if parsed:
+                period_cols.append((i, parsed))
+        if len(period_cols) < 2:
+            continue
+        # One stage only: the main table repeats its periods once per stage, so
+        # a repeated period here means this is another multi-stage block, not
+        # the presentation summary.
+        seen = [_norm(p) for _i, p in period_cols]
+        if len(seen) != len(set(seen)):
+            continue
+        if main_periods and not set(seen) & main_periods:
+            continue
+
+        rows: List[Dict[str, Any]] = []
+        total_row = None
+        for r in range(header_row + 1, min(len(df), header_row + 1 + max_rows)):
+            label = _cell_text(df.iloc[r, unit_col])
+            if not label:
+                # A blank label with blank values ends the table; a blank label
+                # with values is a continuation artefact, so keep scanning.
+                if not any(_coerce_numeric(df.iloc[r, i]) is not None for i, _p in period_cols):
+                    if rows:
+                        break
+                    continue
+            values = {}
+            for i, period in period_cols:
+                num = _coerce_numeric(df.iloc[r, i])
+                if num is not None:
+                    values[_norm(period)] = round(num * multiplier, 2)
+            if not values:
+                continue
+            entry = {"label": label, "values": values}
+            if any(k in label for k in _TOTAL_KEYWORDS):
+                total_row = entry
+            elif label:
+                rows.append(entry)
+            # A row with figures but no label cannot be shown in a table or
+            # named in a sentence, so it is skipped rather than emitted with a
+            # blank caption -- it is a spacer or a spill-over from a merged
+            # cell, not a component.
+        if len(rows) >= 2:
+            return {
+                "header_row": header_row,
+                "label_col": unit_col,
+                "periods": [_norm(p) for _i, p in period_cols],
+                "rows": rows,
+                "total_row": total_row,
+            }
+    return None
+
+
 def _extract_supporting_notes(
     df: pd.DataFrame,
     desc_col_idx: int,
@@ -4470,6 +4578,16 @@ def normalize_financial_schedule(
         "any_period_nonzero_by_description": any_period_nonzero_by_description,
         "supporting_notes": supporting_notes,
         "working_remark_notes": working_remark_notes,
+        # The report-ready breakdown below the main schedule, when the sheet
+        # has one -- human-readable labels rather than GL codes. See
+        # extract_presentation_detail_table.
+        "presentation_detail_table": extract_presentation_detail_table(
+            df=df,
+            desc_col_idx=desc_col_idx,
+            main_block_end_row=data_end_row,
+            columns=columns,
+            multiplier=multiplier,
+        ),
         "normalized_columns": columns,
         "source_multiplier": multiplier,
         "sheet_kind": profile.get("sheet_kind"),
