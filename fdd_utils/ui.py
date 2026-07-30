@@ -2428,7 +2428,7 @@ def _bridge_lab_show_block(index: int, block, note: str = "") -> bool:
                 running += it.value
                 rows.append({"項目": it.label, "類型": "變動", "金額 (千元)": round(it.value, 1),
                              "累計": round(running, 1)})
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
         try:
             _bridge_lab_render_preview_chart(block, header)
