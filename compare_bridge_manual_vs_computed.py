@@ -116,8 +116,14 @@ def main() -> int:
               f"{'LTM' if best.is_ltm else best.year_b})")
         print(f"      start : manual {m_start:>13,.2f}   computed {c_start:>13,.2f}   "
               f"diff {m_start - c_start:>+12,.2f}")
+        # Absolute tolerance alone is misleading at these magnitudes: a 1.01
+        # gap on an 18,746 total is 0.005% -- rounding in the hand-built tab,
+        # not a data problem -- yet it exceeds any sensible absolute floor.
+        # Report the relative size so the reader can tell the two apart.
+        end_rel = abs(m_end - c_end) / abs(c_end) if c_end else None
+        rel_note = f"  ({end_rel * 100:.3f}% of total)" if end_rel is not None else ""
         print(f"      end   : manual {m_end:>13,.2f}   computed {c_end:>13,.2f}   "
-              f"diff {m_end - c_end:>+12,.2f}")
+              f"diff {m_end - c_end:>+12,.2f}{rel_note}")
         totals_agree = abs(m_start - c_start) <= args.tol and abs(m_end - c_end) <= args.tol
 
         # 3. Factor-by-factor.
@@ -157,28 +163,80 @@ def main() -> int:
             mark = "" if abs(d) <= args.tol else "   <-- DIFFERS"
             print(f"      {phase:10s} {factor:6s} {mv:>14,.2f} {cv:>14,.2f} {d:>+12,.2f}{mark}")
 
-        print(f"\n  [4] VERDICT")
+        # Per PHASE, do that phase's three factor differences cancel? If they
+        # do, both sides agree on the phase's total movement and differ only
+        # in how it is attributed between price, area and days -- a
+        # substitution-order question, not a data one. If they do not cancel,
+        # that phase's INPUTS differ and its residual is real. Judging this
+        # per phase matters: a bridge can be pure attribution on one phase and
+        # a genuine input gap on another, and a single verdict for the whole
+        # block hides which.
+        print(f"\n  [4] PER-PHASE: attribution or input?")
+        phases = sorted({p for p, _f in set(m_items) | set(c_items)})
+        input_phases, attribution_phases = [], []
+        for phase in phases:
+            diffs = []
+            complete = True
+            for factor in ("price", "area", "days"):
+                mv = m_items.get((phase, factor), (None, None))[1]
+                cv = c_items.get((phase, factor), (None, None))[1]
+                if mv is None or cv is None:
+                    complete = False
+                    continue
+                diffs.append(mv - cv)
+            if not diffs:
+                # Present on one side only -- worth saying so rather than
+                # skipping, since a phase missing entirely is a bigger problem
+                # than any numeric gap (it usually means the two sides label
+                # their phases differently and nothing lined up).
+                side = "manual only" if any(k[0] == phase for k in m_items) else "computed only"
+                print(f"      {phase:10s} ⚠️ present in {side} -- no counterpart to compare")
+                continue
+            net = sum(diffs)
+            spread = sum(abs(d) for d in diffs)
+            if not complete:
+                print(f"      {phase:10s} ⚠️ only {len(diffs)}/3 factors present on both sides "
+                      f"-- partial net {net:+,.2f}, treat with care")
+                continue
+            if spread <= args.tol:
+                print(f"      {phase:10s} ✅ identical on all three factors")
+            elif abs(net) <= args.tol:
+                print(f"      {phase:10s} ⇄ ATTRIBUTION ONLY -- factors differ by up to "
+                      f"{max(abs(d) for d in diffs):,.2f} but net {net:+,.2f} cancels")
+                attribution_phases.append(phase)
+            else:
+                print(f"      {phase:10s} ❌ INPUT DIFFERENCE -- net {net:+,.2f} does NOT cancel")
+                input_phases.append((phase, net))
+
+        print(f"\n  [5] VERDICT")
         m_factor_sum = sum(v for _l, v in m_items.values())
         c_factor_sum = sum(v for _l, v in c_items.values())
-        print(f"      sum of manual factors  : {m_factor_sum:>14,.2f}")
-        print(f"      sum of computed factors: {c_factor_sum:>14,.2f}")
-        print(f"      difference             : {m_factor_sum - c_factor_sum:>+14,.2f}")
-        if totals_agree and abs(m_factor_sum - c_factor_sum) <= args.tol and total_abs_diff > args.tol:
-            print(f"      => Totals AND the factor sum agree, but individual factors do not.")
-            print(f"         Neither side is wrong about the movement -- only about how it is")
-            print(f"         SPLIT between price, area and days. That comes from the order of")
-            print(f"         sequential substitution, so check which order the manual tab uses")
-            print(f"         (its own formulas) against price->area->days.")
-        elif not totals_agree:
-            print(f"      => The TOTALS differ, so this is an input problem, not attribution.")
-            print(f"         Compare the inputs behind the disagreeing side -- unit rent, area")
-            print(f"         and days per phase. A stale cross-sheet reference in the manual")
-            print(f"         tab produces exactly this (one was already found on another tab).")
-        elif biggest and abs(biggest[2]) > args.tol:
-            print(f"      => Largest single gap: {biggest[0]} {biggest[1]} "
-                  f"{biggest[2]:+,.2f}. Start there.")
+        net_all = m_factor_sum - c_factor_sum
+        print(f"      manual factors {m_factor_sum:>13,.2f}   computed {c_factor_sum:>13,.2f}"
+              f"   net {net_all:>+12,.2f}")
+        if end_rel is not None:
+            print(f"      end-total gap: {m_end - c_end:+,.2f} "
+                  f"({end_rel * 100:.3f}% of the end total)")
+        if input_phases:
+            print(f"      => The gap is REAL and localised to: "
+                  f"{', '.join(f'{p} ({n:+,.2f})' for p, n in input_phases)}")
+            print(f"         Those phases' INPUTS differ -- unit rent, area or days. Where the")
+            print(f"         days effect is zero on one side and not the other, the two are")
+            print(f"         using different day counts for the same window (an LTM window and")
+            print(f"         a full year both being ~365 makes that effect zero by definition).")
+            if attribution_phases:
+                print(f"         {', '.join(attribution_phases)} differ only in attribution and")
+                print(f"         need no fix -- do not chase those.")
+        elif attribution_phases:
+            print(f"      => Every difference is ATTRIBUTION only ({', '.join(attribution_phases)}).")
+            print(f"         Both sides agree on each phase's total movement and disagree only")
+            print(f"         on how it splits between price, area and days -- that follows from")
+            print(f"         the order of sequential substitution (ours is price->area->days).")
+            print(f"         Nothing here is wrong; pick one order and apply it consistently.")
+        elif end_rel is not None and end_rel > 0.001:
+            print(f"      => No single phase accounts for it; the totals themselves differ.")
         else:
-            print(f"      => Manual and computed agree within ±{args.tol}.")
+            print(f"      => Manual and computed agree.")
         print()
     return 0
 
