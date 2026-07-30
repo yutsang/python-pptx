@@ -63,13 +63,67 @@ def _cell(t, r, c):
         return ""
 
 
-def extract_deck_tables(pptx_path):
+_XLSX_MAGIC = b"PK\x03\x04"
+
+
+def _read_ole_table(shape, slide_no, tmp_dir):
+    """An embedded Excel range as {labels, rows} so it can be traced like a
+    native table.
+
+    A real reference deck turned out to carry every one of its tables this
+    way -- 7 OLE embeds, 0 native tables -- because the analyst pastes an
+    Excel range through UpSlide. Reporting them as merely 'present' would
+    have left the actual question unanswered."""
+    import os
+    try:
+        blob = shape.ole_format.blob
+    except Exception:
+        return None  # linked rather than embedded: the source file is external
+    if not blob or blob[:4] != _XLSX_MAGIC:
+        return None  # legacy .xls or not a workbook
+    path = os.path.join(tmp_dir, f"ole_slide{slide_no}_{shape.shape_id}.xlsx")
+    try:
+        with open(path, "wb") as f:
+            f.write(blob)
+        frames = pd.read_excel(path, sheet_name=None, header=None)
+    except Exception:
+        return None
+    best = None
+    for name, df in frames.items():
+        if df is None or df.empty:
+            continue
+        labels, rows = [], []
+        for r in range(len(df)):
+            first = str(df.iloc[r, 0]).strip()
+            if first in ("", "nan"):
+                first = ""
+            values = [str(v).strip() for v in df.iloc[r].tolist()[1:6]
+                      if str(v).strip() not in ("", "nan")]
+            if first and not _NUMERIC_RE.match(first):
+                labels.append(first)
+            if first or values:
+                rows.append({"label": first, "values": values})
+        if labels and (best is None or len(labels) > len(best["labels"])):
+            best = {"slide": slide_no, "shape": f"{shape.name} [OLE:{name}]",
+                    "header": [str(v).strip() for v in df.iloc[0].tolist()[:6]],
+                    "labels": labels, "rows": rows,
+                    "n_rows": len(df), "n_cols": len(df.columns),
+                    "source_file": path}
+    return best
+
+
+def extract_deck_tables(pptx_path, tmp_dir=None):
+    import tempfile
+    tmp_dir = tmp_dir or tempfile.mkdtemp(prefix="ole_tables_")
     prs = Presentation(pptx_path)
     tables, ole, pictures = [], [], []
     for idx, slide in enumerate(prs.slides, 1):
         for slide_no, shape, kind in _walk(slide.shapes, idx):
             if kind == "ole":
                 ole.append((slide_no, shape.name))
+                parsed = _read_ole_table(shape, slide_no, tmp_dir)
+                if parsed:
+                    tables.append(parsed)
                 continue
             if kind == "picture":
                 pictures.append((slide_no, shape.name))
@@ -133,10 +187,13 @@ def main() -> int:
     args = ap.parse_args()
 
     tables, ole, pictures = extract_deck_tables(args.pptx)
+    n_from_ole = sum(1 for t in tables if "[OLE:" in t["shape"])
     print(f"Deck: {args.pptx!r}")
-    print(f"  native tables : {len(tables)}")
+    print(f"  readable tables: {len(tables)}"
+          + (f"   ({n_from_ole} of them extracted from OLE embeds)" if n_from_ole else ""))
     print(f"  OLE embeds    : {len(ole)}"
-          + ("   <-- pasted Excel ranges; extract with inspect_pptx_tables.py --save-ole" if ole else ""))
+          + (f"   ({len(ole) - n_from_ole} not readable -- linked, or legacy .xls)"
+             if len(ole) > n_from_ole else "   (all read)"))
     print(f"  pictures      : {len(pictures)}"
           + ("   <-- a table flattened to an image cannot be read structurally" if pictures else ""))
     print()
