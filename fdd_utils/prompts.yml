@@ -75,7 +75,7 @@ common:
           - {common_data_rules}
           - {common_formatting} {fdd_judgement}
           - {period_reference_guidance}
-          {variance_analysis_guidance}
+          {variance_analysis_guidance} {detail_table_guidance}
       
       **CRITICAL LANGUAGE REQUIREMENT**:
       THIS IS AN ENGLISH DATABOOK. Your output MUST be 100% in ENGLISH.
@@ -188,7 +188,7 @@ common:
          - {common_data_rules}
          - {common_formatting} {fdd_judgement}
          - {period_reference_guidance}
-          {variance_analysis_guidance}
+          {variance_analysis_guidance} {detail_table_guidance}
       
       **关键语言要求**:
       这是一个中文数据簿。您的输出必须100%为中文。
@@ -281,7 +281,7 @@ common:
           - {common_data_rules}
           - {common_formatting} {fdd_judgement}
           - {period_reference_guidance}
-          {variance_analysis_guidance}
+          {variance_analysis_guidance} {detail_table_guidance}
 
       Goal: tighten to reference style. If the previous output already runs >150% of the cap, cut it down to the cap by removing PoP filler and operational drill-down first, then collapse fee-by-fee breakdowns to composition-level summaries.
       
@@ -365,7 +365,7 @@ common:
          - {common_data_rules}
          - {common_formatting} {fdd_judgement}
          - {period_reference_guidance}
-          {variance_analysis_guidance}
+          {variance_analysis_guidance} {detail_table_guidance}
       
       格式规则:
       - **禁止使用要点/列表形式**。请使用完整的句子和段落。
@@ -458,7 +458,7 @@ common:
          - {common_data_rules}
          - {common_formatting} {fdd_judgement}
          - {period_reference_guidance}
-          {variance_analysis_guidance}
+          {variance_analysis_guidance} {detail_table_guidance}
       
       KEY CHECKS:
       
@@ -628,7 +628,7 @@ common:
          - {common_data_rules}
          - {common_formatting} {fdd_judgement}
          - {period_reference_guidance}
-          {variance_analysis_guidance}
+          {variance_analysis_guidance} {detail_table_guidance}
       
       关键检查:
       

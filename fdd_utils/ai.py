@@ -2255,6 +2255,82 @@ class PromptEngine:
         )
 
     @staticmethod
+    def _detail_table_guidance(df: Optional[pd.DataFrame], language: str) -> str:
+        """The account's report-ready breakdown, named component by component.
+
+        Where a sheet carries one (see workbook.py's
+        extract_presentation_detail_table), the main schedule the model
+        otherwise works from is keyed by GL codes -- 660202, 660203 -- so it
+        can only write "660202 increased", never "会计服务费". This hands over
+        the human-readable component names and their figures.
+
+        It also states the convention the real deliverable follows for these
+        accounts: one or two sentences naming the composition, then hand off
+        to the table rather than reciting every line in prose. Measured on a
+        real deck, 18% of its paragraphs do that and 0% of ours did.
+        """
+        if not isinstance(df, pd.DataFrame):
+            return ""
+        table = (df.attrs or {}).get("presentation_detail_table")
+        if not table or not table.get("rows"):
+            return ""
+        rows = table["rows"]
+        periods = table.get("periods") or []
+        latest = periods[-1] if periods else None
+
+        def _fmt(entry):
+            values = entry.get("values") or {}
+            if latest and latest in values:
+                return f"{entry['label']} {values[latest]:,.1f}"
+            return str(entry["label"])
+
+        listed = "、".join(_fmt(r) for r in rows[:10])
+        names_only = "、".join(str(r["label"]) for r in rows[:10])
+
+        # The illustrative sentence should name the LARGEST component, not
+        # whichever happens to be listed first -- on real data the first row
+        # was zero in the latest period, which would model a sentence leading
+        # on a component that did not occur.
+        def _latest_abs(entry):
+            values = entry.get("values") or {}
+            v = values.get(latest) if latest else None
+            return abs(v) if isinstance(v, (int, float)) else 0.0
+
+        # A catch-all bucket can easily be the largest line, but leading a
+        # sentence on "Other" models the opposite of naming a composition, so
+        # prefer the largest named component and only fall back if all are
+        # generic.
+        _generic = ("其他", "其它", "other", "others", "misc")
+        named = [r for r in rows
+                 if not any(g in str(r["label"]).lower() for g in _generic)]
+        lead = max(named or rows, key=_latest_abs)["label"] if rows else ""
+
+        if language == "Chi":
+            return (
+                f"【本科目已有做好的明细表】构成项（按最新一期{latest or ''}）："
+                f"{listed}。"
+                "撰写时**必须使用这些构成项名称**，不得使用会计科目代码（如660202）或笼统的"
+                "'其他明细'来代替。"
+                "本科目在真实交付稿中的写法是：用一到两句说明主要构成"
+                f"（例如'主要包括{lead}等'），"
+                "必要时补充服务提供方、计费方式或合同条款，"
+                "然后以'明细如下：'收尾交由表格列示，**不要在正文逐项罗列每个构成项的每期金额**——"
+                "那些数字表格里已经有了，正文重复只会把段落撑长而不增加信息。"
+            )
+        return (
+            f"[A READY-MADE BREAKDOWN EXISTS FOR THIS ACCOUNT] Components (latest period "
+            f"{latest or ''}): {listed}. "
+            "You MUST use these component names -- never an account code (660202) or a vague "
+            "'other details'. The real deliverable handles this account by naming the main "
+            f"components in one or two sentences (e.g. 'mainly comprised {lead} "
+            "and others'), adding the service provider, charging basis or contract terms where "
+            "relevant, and then handing off with 'the breakdown is set out below' -- do NOT "
+            "recite every component's figure for every period in prose. The table already "
+            "carries those, and repeating them only lengthens the paragraph without adding "
+            "anything."
+        )
+
+    @staticmethod
     def _variance_analysis_guidance(
         df: Optional[pd.DataFrame],
         language: str,
@@ -2741,6 +2817,7 @@ class PromptEngine:
             "variance_analysis_guidance": self._variance_analysis_guidance(
                 df, language, peer_context=kwargs.get("peer_context"),
             ),
+            "detail_table_guidance": self._detail_table_guidance(df, language),
             "rhs_guidance_block": self._rhs_guidance_block(
                 self.filter_adjacent_detail_rows(df) if isinstance(df, pd.DataFrame) else [],
                 language,
