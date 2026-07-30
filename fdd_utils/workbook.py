@@ -3839,6 +3839,36 @@ def _trim_block_end_row(
     return trimmed_end_row
 
 
+# Row labels that mean a block is NOT a composition breakdown, however
+# well-formed it looks. Confirmed against a real databook where the second
+# block on a sheet was, variously, a bank-account listing (100204, 100206), a
+# fee-rate workpaper (费率, EBITDA/NOI, 测算数), a rollforward (调整前上年年末,
+# 本年增加, 本年摊销), a verification-report log, and a set of operating KPIs.
+# Putting any of those in a report as "the breakdown" would be wrong.
+_NON_COMPOSITION_ROW_MARKERS = (
+    "本年增加", "本年摊销", "本年減少", "本年减少", "年初", "年末", "期初", "期末余额",
+    "调整前", "調整前", "调整后年初", "费率", "費率", "测算", "測算", "预算", "預算",
+    "验资报告", "驗資報告", "工程进度", "工程進度", "占预算", "占預算",
+    "ebitda/noi", "ebitda%", "出租率", "单价（", "單價（", "元/平方米",
+)
+_GL_CODE_RE = re.compile(r"^\d{4,}$")
+
+
+def _is_composition_label(label: str) -> bool:
+    """A label that could name a component of an account balance.
+
+    Excludes GL codes (660202), bare dates, and the movement/ratio/workpaper
+    vocabulary above -- a report breakdown names WHAT the balance consists of,
+    not how it moved or how a rate was derived."""
+    text = str(label or "").strip()
+    if not text or _GL_CODE_RE.match(text):
+        return False
+    if parse_date(text):
+        return False
+    low = text.lower()
+    return not any(m in low for m in _NON_COMPOSITION_ROW_MARKERS)
+
+
 def extract_presentation_detail_table(
     df: pd.DataFrame,
     desc_col_idx: int,
@@ -3846,6 +3876,8 @@ def extract_presentation_detail_table(
     columns: List[Dict[str, Any]],
     multiplier: int = 1,
     max_rows: int = 40,
+    account_totals_by_date: Optional[Dict[str, float]] = None,
+    tie_tolerance: float = 0.02,
 ) -> Optional[Dict[str, Any]]:
     """The report-ready breakdown table an account sheet carries BELOW its
     main schedule, if it has one.
@@ -3936,14 +3968,56 @@ def extract_presentation_detail_table(
             # named in a sentence, so it is skipped rather than emitted with a
             # blank caption -- it is a spacer or a spill-over from a merged
             # cell, not a component.
-        if len(rows) >= 2:
-            return {
-                "header_row": header_row,
-                "label_col": unit_col,
-                "periods": [_norm(p) for _i, p in period_cols],
-                "rows": rows,
-                "total_row": total_row,
-            }
+        if len(rows) < 2:
+            continue
+
+        # Every row must plausibly NAME a component. A single GL code, date or
+        # rollforward caption is enough to disqualify the block: real
+        # breakdowns are uniformly descriptive, and a mixed block is a
+        # workpaper that happens to be periodised.
+        non_composition = [r["label"] for r in rows if not _is_composition_label(r["label"])]
+        if non_composition:
+            continue
+
+        # The decisive test. A breakdown that belongs in a report SUMS TO the
+        # account balance; a fee-rate workpaper, a rollforward or a
+        # bank-account listing does not, however descriptive its labels. Only
+        # applied when the caller supplies the account's own totals, since
+        # without them there is nothing to tie against.
+        tie_status = "not checked"
+        if account_totals_by_date:
+            # Caller keys these by column LABEL, which may carry a stage or an
+            # "annualised" suffix; normalise to the same YYYY-MM-DD the block
+            # uses so the two can be compared at all.
+            normalised_totals = {}
+            for label, value in account_totals_by_date.items():
+                key = _norm(label)
+                if key and key not in normalised_totals:
+                    normalised_totals[key] = value
+            tied = mismatched = 0
+            for period, account_total in normalised_totals.items():
+                if not isinstance(account_total, (int, float)) or abs(account_total) < 1e-9:
+                    continue
+                if total_row and period in (total_row.get("values") or {}):
+                    block_total = total_row["values"][period]
+                else:
+                    block_total = sum(r["values"].get(period, 0.0) for r in rows)
+                if abs(block_total - account_total) <= max(1.0, abs(account_total) * tie_tolerance):
+                    tied += 1
+                else:
+                    mismatched += 1
+            if tied == 0:
+                continue  # ties to nothing -- not this account's breakdown
+            tie_status = f"ties on {tied} period(s), differs on {mismatched}"
+
+        return {
+            "header_row": header_row,
+            "label_col": unit_col,
+            "periods": [_norm(p) for _i, p in period_cols],
+            "rows": rows,
+            "total_row": total_row,
+            "tie_status": tie_status,
+        }
     return None
 
 
@@ -4587,6 +4661,10 @@ def normalize_financial_schedule(
             main_block_end_row=data_end_row,
             columns=columns,
             multiplier=multiplier,
+            # The account's own period totals, so the candidate block can be
+            # required to SUM TO them. Without this the descriptive-label test
+            # alone still admits a fee-rate workpaper or a rollforward.
+            account_totals_by_date=projection_totals_by_date,
         ),
         "normalized_columns": columns,
         "source_multiplier": multiplier,
