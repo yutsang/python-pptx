@@ -3910,8 +3910,32 @@ def extract_presentation_detail_table(
     period headers matching the account's own, and at least two labelled
     numeric rows, so a stray note block is not mistaken for a table.
     """
-    if df is None or df.empty or main_block_end_row >= len(df):
+    # Why a candidate was turned away, collected for the caller. Without this
+    # a sheet that visibly HAS a summary just returns None with no way to tell
+    # which of the six tests rejected it -- which is exactly what happened on a
+    # real file where two of four summaries went missing.
+    rejections: List[Dict[str, Any]] = []
+
+    def _reject(row_idx: int, col_idx: Optional[int], why: str) -> None:
+        if len(rejections) < 40:
+            rejections.append({"row": row_idx + 1, "col": col_idx, "reason": why})
+
+    if df is None or df.empty:
         return None
+    if main_block_end_row >= len(df):
+        # This guard used to return bare None here too -- indistinguishable,
+        # under --explain, from every other silent path. main_block_end_row is
+        # the caller's belief about where the main schedule ends; if it is at
+        # or past this sheet's own row count, there is no row left for a
+        # summary to occupy, which is either genuinely true (short sheet, no
+        # second table) or a sign main_block_end_row itself was computed wrong
+        # for this account.
+        _reject(
+            max(len(df) - 1, 0), None,
+            f"main_block_end_row ({main_block_end_row}) is at or past this sheet's own "
+            f"row count ({len(df)}), leaving no row for a summary below or beside it"
+        )
+        return {"rows": [], "rejections": rejections}
 
     def _norm(value) -> str:
         """Both sides to 'YYYY-MM-DD'. The main block stores its dates already
@@ -3925,16 +3949,6 @@ def extract_presentation_detail_table(
         return str(value or "").strip()
 
     main_periods = {_norm(c.get("date")) for c in (columns or []) if c.get("date")}
-
-    # Why a candidate was turned away, collected for the caller. Without this
-    # a sheet that visibly HAS a summary just returns None with no way to tell
-    # which of the six tests rejected it -- which is exactly what happened on a
-    # real file where two of four summaries went missing.
-    rejections: List[Dict[str, Any]] = []
-
-    def _reject(row_idx: int, col_idx: Optional[int], why: str) -> None:
-        if len(rejections) < 40:
-            rejections.append({"row": row_idx + 1, "col": col_idx, "reason": why})
 
     # The summary sits to the RIGHT of the main schedule, so their ROW ranges
     # overlap and scanning only from main_block_end_row onward missed it.
