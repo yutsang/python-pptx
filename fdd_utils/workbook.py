@@ -3926,10 +3926,31 @@ def extract_presentation_detail_table(
 
     main_periods = {_norm(c.get("date")) for c in (columns or []) if c.get("date")}
 
-    for header_row in range(main_block_end_row, min(len(df), main_block_end_row + 60)):
+    # The summary sits to the RIGHT of the main schedule, so their ROW ranges
+    # overlap and scanning only from main_block_end_row onward missed it.
+    # Confirmed on a real databook: 税金及附加's summary header is at row 12
+    # while its main block runs to row 13, and 财务费用's is at row 21 against a
+    # main block ending at 21 -- both were skipped entirely, so only 2 of that
+    # file's 4 summaries were found. The right exclusion is by COLUMN: scan
+    # every row, but ignore candidates whose label column falls inside the main
+    # table's own span.
+    # Accept EITHER layout: to the right of the main table's columns, or below
+    # its last row in the same columns. Requiring "to the right" alone would
+    # have missed a sheet that stacks them, and requiring "below" alone is what
+    # caused the original miss.
+    main_cols = [c.get("col_idx") for c in (columns or []) if c.get("col_idx") is not None]
+    main_col_max = max(main_cols) if main_cols else None
+    for header_row in range(len(df)):
         cells = [(i, _cell_text(v)) for i, v in enumerate(df.iloc[header_row].tolist())]
-        unit_col = next((i for i, t in cells
-                         if t and any(m in t.lower() for m in UNIT_THOUSAND_MARKERS)), None)
+        unit_col = None
+        for i, t in cells:
+            if not t or not any(m in t.lower() for m in UNIT_THOUSAND_MARKERS):
+                continue
+            to_the_right = main_col_max is not None and i > main_col_max
+            below_main = header_row >= main_block_end_row
+            if to_the_right or below_main:
+                unit_col = i
+                break
         if unit_col is None:
             continue
         period_cols: List[Tuple[int, Any]] = []
