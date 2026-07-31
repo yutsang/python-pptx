@@ -171,6 +171,64 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
         if not commentary_shapes:
             continue
 
+        # A presentation-table account (_render_table_accounts_stack in
+        # pptx.py) writes its lead-in and post-table explanation into fresh,
+        # auto-named textboxes (python-pptx assigns "TextBox N") rather than
+        # the well-known textMainBullets*/coSummaryShape names this file
+        # otherwise matches by -- so without this, those two boxes (exactly
+        # the ones sized against real AI text, i.e. exactly the ones that
+        # can actually overflow) were invisible to this check entirely; only
+        # this instance's OWN sizing math was ever "verifying" them.
+        #
+        # Matched by geometry, not name: same column (left) as a table AND
+        # vertically touching it -- either ending right where the table
+        # starts (the lead-in) or starting shortly after the table ends
+        # (the explanation, offset by the source-line box's own height,
+        # which is why the "below" tolerance is looser than the "above"
+        # one). A same-column-only check (no vertical constraint) first
+        # tried here also matched the slide title and the small fixed
+        # "Commentary" header label purely because they happen to share the
+        # table's left -- both sit far above the table, nowhere near
+        # touching it, so the vertical check excludes them.
+        # Dedup/identity is keyed on shape_id (the stable id python-pptx
+        # stores in the XML itself), NOT Python's id() -- shape objects are
+        # freshly re-wrapped on every separate `slide.shapes` iteration, so
+        # two accesses of "the same" shape are different Python objects
+        # with different id()s (confirmed empirically); id()-based tracking
+        # silently failed to prevent a shape from being matched twice when
+        # it happened to sit within tolerance of two different tables (e.g.
+        # one account's lead-in sitting just below a PRECEDING account's
+        # table in a shared slot, close enough to also look like that
+        # table's own trailing explanation).
+        LEFT_TOLERANCE_EMU = int(0.05 * 914400)
+        ABOVE_TOLERANCE_EMU = int(2 * 12700)    # lead-in's bottom == table's top, ~exactly
+        BELOW_TOLERANCE_EMU = int(20 * 12700)   # table's bottom -> source line -> explanation
+        table_stack_shapes = []
+        _seen_ids = {s.shape_id for s in commentary_shapes}
+        for _t in table_shapes:
+            if _t.left is None or _t.top is None or _t.height is None:
+                continue
+            t_bottom = _t.top + _t.height
+            for s in slide.shapes:
+                if s.shape_id in _seen_ids or s.shape_id == _t.shape_id:
+                    continue
+                if not getattr(s, "has_text_frame", False) or getattr(s, "has_table", False):
+                    continue
+                if s.left is None or s.top is None or s.height is None:
+                    continue
+                if abs(s.left - _t.left) > LEFT_TOLERANCE_EMU:
+                    continue
+                s_bottom = s.top + s.height
+                is_lead_in = 0 <= (_t.top - s_bottom) <= ABOVE_TOLERANCE_EMU
+                is_below = 0 <= (s.top - t_bottom) <= BELOW_TOLERANCE_EMU
+                if not (is_lead_in or is_below):
+                    continue
+                _text = (s.text_frame.text or "").strip()
+                if not _text or _text.startswith(("资料来源", "Source:")):
+                    continue
+                _seen_ids.add(s.shape_id)
+                table_stack_shapes.append(s)
+
         _print(f"=== Slide {slide_idx + 1} ===  (table={bool(table_shapes)}  coSummaryShape={has_summary})")
         for s_shape in summary_shapes:
             s_text = s_shape.text_frame.text.strip()
@@ -188,9 +246,15 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 total_warnings += 1
                 warning_details.append(f"Slide {slide_idx + 1}: executive summary ({s_shape.name}) is empty")
 
+        all_checked_shapes = list(commentary_shapes) + table_stack_shapes
         infos: List[ShapeInfo] = []
-        for shape in commentary_shapes:
-            slot = _slot_of(shape.name)
+        for shape in all_checked_shapes:
+            if shape in table_stack_shapes:
+                # No name to key off of -- fall back to which half of the
+                # slide it's positioned in, purely for a readable label.
+                slot = "tblL" if shape.left < prs.slide_width / 2 else "tblR"
+            else:
+                slot = _slot_of(shape.name)
             text = shape.text_frame.text
             box = text_box_from_shape(shape)
             is_chi = _is_chinese_text(text)
@@ -281,7 +345,9 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
         # 2. Table/commentary bounding-box overlap.
         for table_shape in table_shapes:
             t_box = (table_shape.left, table_shape.top, table_shape.width, table_shape.height)
-            for info, shape in zip(infos, commentary_shapes):
+            for info, shape in zip(infos, all_checked_shapes):
+                if shape is table_shape:
+                    continue
                 if info.n_chars == 0:
                     continue
                 c_box = (shape.left, shape.top, shape.width, shape.height)
