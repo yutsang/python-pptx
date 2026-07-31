@@ -1881,7 +1881,16 @@ class PowerPointGenerator:
     _TABLE_CHILD_ROW_PT = 11.0
     _TABLE_TOTAL_ROW_PT = 14.0
     _TABLE_SOURCE_LINE_PT = 12.0
-    _TABLE_GAP_ABOVE_PT = 6.0
+    # Pure whitespace, not text-safety margin -- trimmed 2026-07-31 (6->4,
+    # and the source-line box's own "+4" padding at its two call sites ->
+    # "+2") to buy back a few points of bottom-of-slide margin on the
+    # tallest real stack (营业成本: 16-row table + long lead-in + long
+    # explanation measured at only 0.313in/22.6pt clear of the slide's
+    # bottom edge on a real Crescent export). Safe to shrink because
+    # neither is sized against variable AI text -- the source line is a
+    # single fixed short string, and this gap is pure spacing between two
+    # already-independently-sized shapes.
+    _TABLE_GAP_ABOVE_PT = 4.0
     _TABLE_GAP_BELOW_PT = 4.0
     # Shared margin for both text blocks sized against a table (lead-in
     # above it, explanatory bullets below it): inspect_pptx.py re-derives
@@ -1892,6 +1901,13 @@ class PowerPointGenerator:
     # export -- raised rather than chasing exact parity between two
     # independently-implemented measurers, since the safe direction here
     # is a touch more headroom, not exact agreement.
+    #
+    # NOT the lever for a stack running close to the SLIDE's own bottom
+    # edge (as opposed to text overflowing its own box) -- raising this
+    # makes every box it sizes (lead-in, explanation) TALLER, which pushes
+    # whatever comes after it further DOWN the slide. For a single tall
+    # stack like 营业成本 that's already tight against the slide bottom,
+    # raising this shrinks that margin further, not the other way round.
     _TEXT_HEIGHT_SAFETY_FACTOR = 1.6
 
     def _presentation_tables_enabled(self) -> bool:
@@ -2439,7 +2455,7 @@ class PowerPointGenerator:
             logger.debug("Could not fit presentation-table columns: %s", exc)
 
         bottom = top + height
-        source_box = slide.shapes.add_textbox(left, bottom, width, Pt(self._TABLE_SOURCE_LINE_PT + 4))
+        source_box = slide.shapes.add_textbox(left, bottom, width, Pt(self._TABLE_SOURCE_LINE_PT + 2))
         source_tf = source_box.text_frame
         source_tf.word_wrap = True
         source_p = source_tf.paragraphs[0]
@@ -2452,7 +2468,7 @@ class PowerPointGenerator:
             source_run.font.color.rgb = RGBColor(0x59, 0x59, 0x59)
         except Exception:
             pass
-        after_source = bottom + int(Pt(self._TABLE_SOURCE_LINE_PT + 4))
+        after_source = bottom + int(Pt(self._TABLE_SOURCE_LINE_PT + 2))
 
         if not post_table_text:
             return after_source
