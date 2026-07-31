@@ -1883,6 +1883,16 @@ class PowerPointGenerator:
     _TABLE_SOURCE_LINE_PT = 12.0
     _TABLE_GAP_ABOVE_PT = 6.0
     _TABLE_GAP_BELOW_PT = 4.0
+    # Shared margin for both text blocks sized against a table (lead-in
+    # above it, explanatory bullets below it): inspect_pptx.py re-derives
+    # capacity/usage independently from the exported XML rather than
+    # sharing this instance's live measurement state, so its verdict can
+    # disagree with what was used to size the shape. 1.3x still left a
+    # real generated lead-in at 104% (⚠️ OVERFLOW RISK) on a real Crescent
+    # export -- raised rather than chasing exact parity between two
+    # independently-implemented measurers, since the safe direction here
+    # is a touch more headroom, not exact agreement.
+    _TEXT_HEIGHT_SAFETY_FACTOR = 1.6
 
     def _presentation_tables_enabled(self) -> bool:
         try:
@@ -2096,14 +2106,10 @@ class PowerPointGenerator:
                     self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
                     + self._real_para_gap_pt(is_chinese)
                 )
-            # inspect_pptx.py re-derives capacity/usage independently from
-            # the exported XML rather than sharing this instance's live
-            # measurement state, and a real export still showed a residual
-            # ~10% gap after the fix above -- rather than chase exact parity
-            # between two independently-implemented measurers, a deliberate
-            # margin errs the safe direction (box a touch taller than the
-            # strict minimum) instead of the unsafe one (real overflow risk).
-            offset_pt = max(used_units, 1.0) * std_lh_pt * 1.3 + self._TABLE_GAP_ABOVE_PT
+            offset_pt = (
+                max(used_units, 1.0) * std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
+                + self._TABLE_GAP_ABOVE_PT
+            )
             offset_emu = int(offset_pt * 12700)  # 1 pt = 12700 EMU
             top = int(bullets_shape.top) + offset_emu
             left = int(bullets_shape.left)
@@ -2338,7 +2344,7 @@ class PowerPointGenerator:
                 self._real_font_size_pt(is_chinese_databook) * self._real_line_spacing(is_chinese_databook)
                 + self._real_para_gap_pt(is_chinese_databook)
             )
-            explain_height_pt = max(used_units, 1.0) * std_lh_pt * 1.3
+            explain_height_pt = max(used_units, 1.0) * std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
             explain_box.height = int(explain_height_pt * 12700)
         except Exception as exc:
             logger.debug("Could not size presentation-table explanatory text: %s", exc)
