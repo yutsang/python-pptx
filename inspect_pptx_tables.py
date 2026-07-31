@@ -430,6 +430,17 @@ def main() -> int:
             print(f"    - name={shape.name!r:30} type={_shape_type_name(shape):35} "
                   f"pos=({_emu_to_in(shape.left)}in, {_emu_to_in(shape.top)}in) "
                   f"size=({_emu_to_in(shape.width)}in x {_emu_to_in(shape.height)}in)")
+            # Plain text shapes (not tables -- those get their own cell-by-cell
+            # dump below) were previously invisible here beyond name/position,
+            # which meant a dynamically-added textbox (e.g. the presentation-
+            # detail table's lead-in / source-line / post-table "➢" bullets --
+            # none of them named "textMainBullets*", so inspect_pptx.py's own
+            # commentary-focused dump doesn't see them either) had NO text-only
+            # way to check what it actually said; only a screenshot could.
+            if (getattr(shape, "has_text_frame", False) and not getattr(shape, "has_table", False)):
+                text = (shape.text_frame.text or "").strip()
+                if text:
+                    print(f"        text: {text!r}")
 
         for shape in all_shapes:
             if getattr(shape, "has_table", False):
