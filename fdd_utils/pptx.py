@@ -2019,15 +2019,94 @@ class PowerPointGenerator:
                 return ["single"]
         return ["single"] if actual_slide_idx == start_slide - 1 else ["L", "R"]
 
+    # Planning-time-only assumption (no real shape exists yet for a slot a
+    # table account hasn't been placed into) of how much vertical room a
+    # slot has, used purely to decide whether a SECOND table account can
+    # join one that already has a first -- render time positions every
+    # account's own block at a running offset regardless of this estimate
+    # (see _render_table_accounts_stack), so getting this exactly right
+    # isn't load-bearing for correctness, only for how good the packing
+    # decision is. ~331pt (single) to ~360pt (L/R) measured directly from
+    # the real template (scratchpad/measure_slot_capacity.py); table
+    # accounts land in L/R far more often than single (single is usually
+    # claimed by the statement's own first/executive-summary slide), so
+    # this leans toward that number rather than splitting the difference.
+    _TABLE_SLOT_CAPACITY_PT = 355.0
+    # Real accounts were only ADDED to a slot's already-claimed footprint at
+    # 90% of the assumed capacity, not 100% -- deliberate margin for the
+    # planning estimate (heuristic, no real font metrics) to disagree with
+    # the real-metrics render-time measurement without the combined result
+    # actually overflowing the slot. Not tighter than this: each account's
+    # OWN estimate already carries the full _TEXT_HEIGHT_SAFETY_FACTOR
+    # margin individually, so stacking a second, separate margin on top of
+    # that here would mostly just suppress legitimate packing rather than
+    # add real safety -- confirmed against a real Crescent export that two
+    # of the four real accounts (税金及附加 ~167pt, 财务费用 ~222pt once its
+    # own real, fairly long variance-flagging explanation is counted) don't
+    # fit together at ANY reasonable threshold (389pt combined vs a
+    # 331-360pt slot) -- that's a genuine size fact, not a threshold this
+    # constant should be tuned to paper over.
+    _TABLE_SLOT_PACK_THRESHOLD = 0.90
+
+    def _estimate_table_account_block_height_pt(
+        self, item: Dict[str, Any], table: Dict[str, Any], is_chinese_databook: bool,
+    ) -> float:
+        """Heuristic (no real shape) estimate of one table-bearing account's
+        whole block -- lead-in + table + source line + explanation -- for
+        the bin-packing decision in _append_table_accounts_to_distribution.
+        Mirrors the real render-time formula (_add_presentation_detail_
+        table_below_text / _render_presentation_table) closely enough to be
+        directionally right, without needing a real shape to measure
+        against (none exists yet at planning time)."""
+        is_chinese = bool(item.get("is_chinese"))
+        lead_in_units = self._calculate_content_lines(
+            item.get("category") or "", item.get("mapping_key", item.get("account_name", "")),
+            item.get("commentary", ""), slot_name="single", shape=None, is_chinese=is_chinese,
+        )
+        lead_std_lh_pt = (
+            self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
+            + self._real_para_gap_pt(is_chinese)
+        )
+        lead_in_pt = lead_in_units * lead_std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
+
+        table_pt = (
+            self._presentation_table_height_pt(table)
+            + self._TABLE_SOURCE_LINE_PT + self._TABLE_GAP_ABOVE_PT + self._TABLE_GAP_BELOW_PT
+        )
+
+        post_table_text = item.get("_post_table_text", "")
+        explain_pt = 0.0
+        if post_table_text:
+            explain_units = self._calculate_content_lines(
+                "", "", post_table_text, slot_name="single", shape=None, is_chinese=is_chinese_databook,
+            )
+            explain_std_lh_pt = (
+                self._real_font_size_pt(is_chinese_databook) * self._real_line_spacing(is_chinese_databook)
+                + self._real_para_gap_pt(is_chinese_databook)
+            )
+            explain_pt = explain_units * explain_std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
+
+        return lead_in_pt + table_pt + explain_pt
+
     def _append_table_accounts_to_distribution(
         self, table_items: List[Dict[str, Any]],
         slot_distribution: List[Tuple[int, str, List[Dict[str, Any]]]],
-        *, max_slides: int, start_slide: int,
+        *, max_slides: int, start_slide: int, is_chinese_databook: bool = False,
     ) -> List[Tuple[int, str, List[Dict[str, Any]]]]:
-        """Assigns each table-bearing account the next (slide_idx,
-        slot_name) the normal packer's own output didn't already use --
-        guaranteed no overlap by construction, since the packer's
-        splitting/rebalancing never runs on these accounts at all.
+        """Assigns each table-bearing account to a (slide_idx, slot_name),
+        preferring to join an EARLIER table account's own slot when there's
+        room (see _TABLE_SLOT_CAPACITY_PT/_TABLE_SLOT_PACK_THRESHOLD) rather
+        than always claiming a fresh one -- a small table (e.g. 税金及附加,
+        3 components) claiming a WHOLE column regardless of the normal
+        packer's own output left most of that column empty; multiple small
+        table accounts can share a column exactly the way multiple ordinary
+        accounts already share one, just via a running EMU offset instead
+        of shared-textframe paragraphs (see _render_table_accounts_stack).
+
+        Still never shares with a NON-table account, and never touches the
+        normal packer's own pool -- both of those are what caused the
+        original two-tables-on-top-of-each-other bug this design replaced;
+        only table accounts are ever candidates to join each other.
 
         slide_idx here is 0-based FROM start_slide, matching exactly what
         _distribute_content_across_slots itself returns (its caller,
@@ -2037,8 +2116,27 @@ class PowerPointGenerator:
         """
         used = {(slide_idx, slot_name) for slide_idx, slot_name, _ in slot_distribution}
         result = list(slot_distribution)
+        slot_fill_pt: Dict[Tuple[int, str], float] = {}
+        cap = self._TABLE_SLOT_CAPACITY_PT * self._TABLE_SLOT_PACK_THRESHOLD
+
         for item in table_items:
+            table = item.get("_presentation_table") or {}
+            block_pt = self._estimate_table_account_block_height_pt(item, table, is_chinese_databook)
             placed = False
+
+            for key, fill in slot_fill_pt.items():
+                if fill + block_pt <= cap:
+                    slide_idx, slot_name = key
+                    for i, (s, n, accounts) in enumerate(result):
+                        if s == slide_idx and n == slot_name:
+                            result[i] = (s, n, accounts + [item])
+                            break
+                    slot_fill_pt[key] = fill + block_pt
+                    placed = True
+                    break
+            if placed:
+                continue
+
             for slide_idx in range(max_slides):
                 actual_slide_idx = start_slide - 1 + slide_idx
                 for slot_name in self._slot_names_for_actual_slide(actual_slide_idx, start_slide):
@@ -2046,6 +2144,7 @@ class PowerPointGenerator:
                         continue
                     used.add((slide_idx, slot_name))
                     result.append((slide_idx, slot_name, [item]))
+                    slot_fill_pt[(slide_idx, slot_name)] = block_pt
                     placed = True
                     break
                 if placed:
@@ -2057,73 +2156,127 @@ class PowerPointGenerator:
                 )
         return result
 
-    def _add_presentation_detail_table_below_text(
-        self, slide, bullets_shape, category: str, mapping_key: str, commentary: str,
-        is_chinese: bool, is_chinese_databook: bool, table: Dict[str, Any],
-        source_multiplier: float = 1, post_table_text: str = "",
+    def _render_table_accounts_stack(
+        self, slide, bullets_shape, account_data_list: List[Dict[str, Any]],
+        is_chinese_databook: bool, statement_type: Optional[str] = None,
     ) -> None:
-        """Places the table below wherever the just-written short lead-in
-        text is estimated to end within bullets_shape, using the same
-        _calculate_content_lines measurement the packer itself trusts to
-        convert that estimate to real points/EMU. Pixel-perfect positioning
-        isn't achievable from python-pptx alone -- PowerPoint itself does
-        the actual text layout, not this library -- so this is a reasoned
-        estimate with the same margins already reserved, not a
-        ground-truth read-back.
+        """Renders one or more table-bearing accounts stacked within a
+        single slot -- one or more, since _append_table_accounts_to_
+        distribution now packs multiple small ones into the same column
+        when there's room, rather than always giving every table account a
+        whole column regardless of how little of it real content needs (a
+        real Crescent export showed 税金及附加 -- 3 components, one short
+        explanation -- leaving most of its column empty).
 
-        Also shrinks bullets_shape itself down to that same estimated
-        height. Left at its full template height (meant for a whole slot's
-        worth of ordinary commentary), a real export flagged this shape's
-        now-mostly-empty bounding box as overlapping the table by
-        inspect_pptx.py's geometry check -- harmless in practice since the
-        text is top-anchored and the box has no fill, but a real future
-        overlap bug in this code path would be masked by an already-flagged
-        "expected" warning instead of standing out. A table account is
-        always alone in its slot (see _append_table_accounts_to_distribution),
-        so shrinking it can't cut into another account's own space.
+        Each account gets its own dedicated lead-in textbox (mimicking the
+        "■ key - text" bullet style via _fill_text_main_bullets_with_
+        category_and_key, but writing into a FRESH text frame rather than
+        the slot's shared one), sized to its own measured content, followed
+        immediately by its table and any post-table explanation
+        (_render_presentation_table), at a running vertical offset. This is
+        deliberately NOT the shared-text-frame/paragraph-flow mechanism
+        ordinary accounts use below -- that assumes a slot's whole content
+        lives in one text frame with nothing else interleaved, which
+        doesn't hold once a table (a separate shape) sits between one
+        account's lead-in and the next account's own lead-in: writing a
+        second account's lead-in as another paragraph in the same shared
+        frame would render it flowing directly under the FIRST account's
+        lead-in, ignoring that account's table sitting (as a different
+        shape) in between.
+
+        bullets_shape's own text frame is left empty (matches how an
+        intentionally-unused slot is already handled elsewhere) -- every
+        real line of content here lives in a shape this method creates.
+        Pixel-perfect positioning isn't achievable from python-pptx alone
+        -- PowerPoint itself does the actual text layout, not this library
+        -- so each account's own height is a reasoned estimate with the
+        same margin the rest of this feature uses, not a ground-truth
+        read-back.
         """
+        left = int(bullets_shape.left)
+        width = int(bullets_shape.width)
+        current_top = int(bullets_shape.top)
+        current_category = None
+
         try:
-            used_units = self._calculate_content_lines(
-                category, mapping_key, commentary, slot_name="single",
-                shape=bullets_shape, is_chinese=is_chinese,
+            bullets_shape.text_frame.clear()
+        except Exception:
+            pass
+
+        for account_data in account_data_list:
+            table = account_data.get("_presentation_table")
+            if not table:
+                continue  # this dispatch only ever sees table-bearing accounts
+            category = account_data.get('category', '')
+            mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
+            display_name = (
+                account_data.get('display_name_zh') or account_data.get('display_name', mapping_key)
+                if is_chinese_databook
+                else account_data.get('display_name', mapping_key)
             )
-            # Converts used_units back to points with the SAME points-per-
-            # unit ratio this shape's own capacity was measured in -- not
-            # the font*spacing+gap heuristic formula, which a real export
-            # showed runs meaningfully smaller than the real-metrics figure
-            # _calculate_content_lines itself used to produce used_units
-            # (confirmed by inspect_pptx.py then reporting the shrunk shape
-            # as 130% full: the heuristic under-priced a unit, so shrinking
-            # by it made the box smaller than the text it was sized for).
-            capacity_units = self._calculate_max_lines_for_textbox(
-                bullets_shape, is_chinese=is_chinese, slot_name="single",
-            )
-            shape_height_pt = int(bullets_shape.height) / 12700
-            if capacity_units > 0:
-                std_lh_pt = shape_height_pt / capacity_units
-            else:
+            commentary = account_data.get('commentary', '')
+            clause_reviews = account_data.get('clause_reviews', [])
+            is_chinese = account_data.get('is_chinese', False)
+
+            category_to_write = category if (category and category != current_category) else None
+            if category:
+                current_category = category
+
+            try:
+                lead_box = slide.shapes.add_textbox(left, current_top, width, Pt(200))
+                lead_tf = lead_box.text_frame
+                lead_tf.word_wrap = True
+                leading_empty_p = lead_tf.paragraphs[0]._p
+                self._fill_text_main_bullets_with_category_and_key(
+                    lead_tf, category_to_write, display_name, commentary, is_chinese,
+                    is_chinese_databook=is_chinese_databook, needs_continuation=False,
+                    font_size_pt=9, clause_reviews=clause_reviews,
+                )
+                if leading_empty_p.getparent() is not None and not (leading_empty_p.text or "").strip():
+                    leading_empty_p.getparent().remove(leading_empty_p)
+                self._force_no_autofit(lead_tf)
+                from pptx.enum.text import MSO_VERTICAL_ANCHOR
+                lead_tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
+
+                used_units = self._calculate_content_lines(
+                    category_to_write or "", mapping_key, commentary, slot_name="single",
+                    shape=lead_box, is_chinese=is_chinese,
+                )
+                capacity_units = self._calculate_max_lines_for_textbox(
+                    lead_box, is_chinese=is_chinese, slot_name="single",
+                )
+                shape_height_pt = int(lead_box.height) / 12700
                 std_lh_pt = (
+                    (shape_height_pt / capacity_units) if capacity_units > 0 else
                     self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
                     + self._real_para_gap_pt(is_chinese)
                 )
-            offset_pt = (
-                max(used_units, 1.0) * std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
-                + self._TABLE_GAP_ABOVE_PT
-            )
-            offset_emu = int(offset_pt * 12700)  # 1 pt = 12700 EMU
-            top = int(bullets_shape.top) + offset_emu
-            left = int(bullets_shape.left)
-            width = int(bullets_shape.width)
+                lead_height_pt = (
+                    max(used_units, 1.0) * std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
+                    + self._TABLE_GAP_ABOVE_PT
+                )
+                lead_box.height = int(lead_height_pt * 12700)
+                table_top = int(lead_box.top) + int(lead_box.height)
+            except Exception as exc:
+                logger.warning("Could not render lead-in for table account %s: %s", mapping_key, exc)
+                table_top = current_top
+
+            table_source_multiplier = 1
+            table_financial_data = account_data.get("financial_data")
+            if hasattr(table_financial_data, "attrs"):
+                table_source_multiplier = table_financial_data.attrs.get("source_multiplier") or 1
+
             try:
-                bullets_shape.height = offset_emu
-            except Exception:
-                pass
-            self._render_presentation_table(
-                slide, left, top, width, table, is_chinese_databook,
-                source_multiplier=source_multiplier, post_table_text=post_table_text,
-            )
-        except Exception as exc:
-            logger.warning("Could not render presentation-detail table for %s: %s", mapping_key, exc)
+                bottom = self._render_presentation_table(
+                    slide, left, table_top, width, table, is_chinese_databook,
+                    source_multiplier=table_source_multiplier,
+                    post_table_text=account_data.get("_post_table_text", ""),
+                )
+            except Exception as exc:
+                logger.warning("Could not render presentation table for %s: %s", mapping_key, exc)
+                bottom = table_top
+
+            current_top = bottom + int(Pt(self._TABLE_GAP_BELOW_PT))
 
     def _render_presentation_table(
         self, slide, left: int, top: int, width: int, table: Dict[str, Any],
@@ -2311,8 +2464,8 @@ class PowerPointGenerator:
         lines = [ln if ln.startswith(("➢", "-", "•")) else f"{marker}{ln}" for ln in raw_lines]
 
         # Placeholder height, resized below via the same real-metrics
-        # measurement _add_presentation_detail_table_below_text uses for the
-        # lead-in -- needs a real shape to measure against first.
+        # measurement _render_table_accounts_stack uses for the lead-in --
+        # needs a real shape to measure against first.
         explain_box = slide.shapes.add_textbox(left, after_source, width, Pt(200))
         explain_tf = explain_box.text_frame
         explain_tf.word_wrap = True
@@ -5528,6 +5681,7 @@ class PowerPointGenerator:
         if table_items:
             slot_distribution = self._append_table_accounts_to_distribution(
                 table_items, slot_distribution, max_slides=max_slides, start_slide=start_slide,
+                is_chinese_databook=is_chinese_databook,
             )
 
         # Group slot distribution by slide for easier processing
@@ -5624,7 +5778,23 @@ class PowerPointGenerator:
                     logger.warning("Slide %s: Shape for slot '%s' has no text frame", actual_slide_idx + 1, slot_name)
                     continue
                 used_slot_shape_ids.add(id(bullets_shape))
-                
+
+                # A table-only slot (every account in it carries a
+                # presentation_detail_table -- _append_table_accounts_to_
+                # distribution never mixes a table account into a normal
+                # one's slot) renders via its own dedicated-shape-per-
+                # account path instead of the shared-text-frame one below,
+                # since that one assumes all of a slot's content lives in
+                # one text frame with nothing else interleaved -- not true
+                # once a table (a separate shape) sits between one
+                # account's lead-in and the next account's own lead-in.
+                if account_data_list and all(a.get("_presentation_table") for a in account_data_list):
+                    self._render_table_accounts_stack(
+                        slide, bullets_shape, account_data_list, is_chinese_databook,
+                        statement_type=statement_type,
+                    )
+                    continue
+
                 # Fill this slot
                 tf = bullets_shape.text_frame
                 tf.clear()
@@ -5751,33 +5921,9 @@ class PowerPointGenerator:
                         font_size_pt=slot_font_size,
                         clause_reviews=clause_reviews,
                     )
-
-                    presentation_table = account_data.get("_presentation_table")
-                    if presentation_table:
-                        # The account's own numbers are stored internally in
-                        # RAW YUAN -- normalize_financial_schedule multiplies
-                        # by source_multiplier (1000 whenever the sheet's own
-                        # header says CNY'000/千元) so every account shares one
-                        # consistent internal unit for cross-account math and
-                        # tie-outs. presentation_detail_table's values go
-                        # through that SAME multiplication (needed so its
-                        # tie-out against the account's raw-yuan-scale total
-                        # still lines up) -- but the table is rendered under
-                        # its own "人民币千元" header for a human to read
-                        # directly, so displaying the raw-yuan figure verbatim
-                        # was showing every number ~1000x too large. Dividing
-                        # back out here, at display time only, leaves the
-                        # stored/tie-out values untouched.
-                        table_source_multiplier = 1
-                        table_financial_data = account_data.get("financial_data")
-                        if hasattr(table_financial_data, "attrs"):
-                            table_source_multiplier = table_financial_data.attrs.get("source_multiplier") or 1
-                        self._add_presentation_detail_table_below_text(
-                            slide, bullets_shape, category, mapping_key, commentary,
-                            is_chinese, is_chinese_databook, presentation_table,
-                            source_multiplier=table_source_multiplier,
-                            post_table_text=account_data.get("_post_table_text", ""),
-                        )
+                    # Table-bearing accounts never reach this loop -- they're
+                    # intercepted by the table-only-slot dispatch above and
+                    # rendered via _render_table_accounts_stack instead.
 
                 if _leading_empty_p.getparent() is not None and not (_leading_empty_p.text or "").strip():
                     _leading_empty_p.getparent().remove(_leading_empty_p)
