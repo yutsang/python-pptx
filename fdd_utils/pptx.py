@@ -1918,17 +1918,20 @@ class PowerPointGenerator:
             pts += cls._TABLE_TOTAL_ROW_PT
         return pts
 
+    # The literal handoff phrase ai.py's _detail_table_guidance asks the
+    # model to end its short lead-in with -- the one point in the real
+    # convention's two-part structure (lead-in, then optional "-"/"➢"
+    # explanatory bullets) that's reliably the SAME string every time,
+    # so it's what _split_table_commentary splits on.
+    _TABLE_HANDOFF_CHI = "明细如下："
+    _TABLE_HANDOFF_ENG = "the breakdown is set out below"
+
     @staticmethod
-    def _truncate_for_table_lead_in(commentary: str, is_chinese: bool) -> str:
-        """Safety net for the short lead-in ai.py's _detail_table_guidance
-        asks the model for when an account has a presentation table -- a
-        prompt instruction, not a guarantee. A table-bearing account gets a
-        whole slot to itself (see _append_table_accounts_to_distribution),
-        so an over-length lead-in can't overlap another account, but it
-        could still push the table below the bottom of its own slot -- caps
-        it hard at a sentence boundary rather than trusting compliance."""
-        text = (commentary or "").strip()
-        limit = 220 if is_chinese else 340
+    def _truncate_text_at_boundary(text: str, limit: int, is_chinese: bool) -> str:
+        """Cuts `text` to at most `limit` chars at a sentence boundary where
+        possible. Shared by the lead-in and the post-table explanation --
+        same safety-net shape, different caps (see _split_table_commentary)."""
+        text = (text or "").strip()
         if len(text) <= limit:
             return text
         boundary_chars = "。；;.!?！？"
@@ -1937,6 +1940,51 @@ class PowerPointGenerator:
         if best >= int(limit * 0.4):
             return cut[: best + 1]
         return cut.rstrip() + ("…" if is_chinese else "...")
+
+    def _split_table_commentary(self, commentary: str, is_chinese: bool) -> Tuple[str, str]:
+        """Splits an account's raw commentary into (lead_in, post_table_text)
+        at the handoff phrase ai.py's _detail_table_guidance asks the model
+        to end its short lead-in with. Everything up to and including that
+        phrase is the lead-in (rendered above the table); anything after it
+        is the optional "-"/"➢" explanatory bullets a real deliverable puts
+        BELOW the table (provider, charging basis, contract terms) -- a real
+        photo comparison against the project team's own Crescent deck showed
+        this second part entirely missing before: the whole commentary was
+        being treated as lead-in and hard-capped at ~220/340 chars, silently
+        dropping any such bullets the model had written past that point with
+        nowhere for them to ever render.
+
+        Each side is truncated separately and more generously than the old
+        single whole-commentary cap, since each now has its own dedicated
+        vertical space (lead-in above the table, explanation below it) --
+        see _presentation_table_extra_text_height_pt, which sizes both.
+
+        Falls back to (whole commentary, '') if the model didn't include the
+        handoff phrase -- exactly the old behaviour, so a non-compliant
+        generation degrades to "no post-table text" rather than misplacing
+        content."""
+        handoff = self._TABLE_HANDOFF_CHI if is_chinese else self._TABLE_HANDOFF_ENG
+        text = (commentary or "").strip()
+        idx = text.lower().find(handoff.lower())
+        if idx < 0:
+            lead_limit = 220 if is_chinese else 340
+            return self._truncate_text_at_boundary(text, lead_limit, is_chinese), ""
+        split_at = idx + len(handoff)
+        lead_in = text[:split_at].strip()
+        post_table = text[split_at:].strip()
+        lead_limit = 140 if is_chinese else 220
+        # The real, confirmed-fitting Crescent example (营业成本, the TALLEST
+        # of the 4 known tables -- 15 rows) carried ~250 chars of "-"/"➢"
+        # explanation. This cap allows meaningfully more room than that
+        # observed-good case without being open-ended -- a table already
+        # near the tallest slot capacity plus an unbounded explanation is
+        # the one real overflow risk this feature has, since it's genuinely
+        # new vertical space that wasn't being claimed before.
+        post_limit = 450 if is_chinese else 700
+        return (
+            self._truncate_text_at_boundary(lead_in, lead_limit, is_chinese),
+            self._truncate_text_at_boundary(post_table, post_limit, is_chinese),
+        )
 
     def _slot_names_for_actual_slide(self, actual_slide_idx: int, start_slide: int) -> List[str]:
         """Which slot names this slide's OWN template shapes actually
@@ -2002,7 +2050,7 @@ class PowerPointGenerator:
     def _add_presentation_detail_table_below_text(
         self, slide, bullets_shape, category: str, mapping_key: str, commentary: str,
         is_chinese: bool, is_chinese_databook: bool, table: Dict[str, Any],
-        source_multiplier: float = 1,
+        source_multiplier: float = 1, post_table_text: str = "",
     ) -> None:
         """Places the table below wherever the just-written short lead-in
         text is estimated to end within bullets_shape, using the same
@@ -2066,18 +2114,22 @@ class PowerPointGenerator:
                 pass
             self._render_presentation_table(
                 slide, left, top, width, table, is_chinese_databook,
-                source_multiplier=source_multiplier,
+                source_multiplier=source_multiplier, post_table_text=post_table_text,
             )
         except Exception as exc:
             logger.warning("Could not render presentation-detail table for %s: %s", mapping_key, exc)
 
     def _render_presentation_table(
         self, slide, left: int, top: int, width: int, table: Dict[str, Any],
-        is_chinese_databook: bool, source_multiplier: float = 1,
+        is_chinese_databook: bool, source_multiplier: float = 1, post_table_text: str = "",
     ) -> int:
         """Renders `table` (extract_presentation_detail_table's return
-        shape) as a native table at the given EMU position, plus a
-        source-line caption beneath it. Returns the bottom EMU position.
+        shape) as a native table at the given EMU position, a source-line
+        caption beneath it, and -- when the model wrote any (see ai.py's
+        _detail_table_guidance and _split_table_commentary above) -- the
+        "-"/"➢" explanatory bullets a real deliverable places below that,
+        naming each named component's provider/charging basis/contract
+        terms. Returns the bottom EMU position.
 
         table["rows"]/["total_row"] hold values in the SAME raw-yuan
         internal scale every account's df uses (normalize_financial_schedule
@@ -2241,7 +2293,57 @@ class PowerPointGenerator:
             source_run.font.color.rgb = RGBColor(0x59, 0x59, 0x59)
         except Exception:
             pass
-        return bottom + int(Pt(self._TABLE_SOURCE_LINE_PT + 4))
+        after_source = bottom + int(Pt(self._TABLE_SOURCE_LINE_PT + 4))
+
+        if not post_table_text:
+            return after_source
+
+        marker = "➢ " if is_chinese_databook else "- "
+        raw_lines = [ln.strip() for ln in post_table_text.split("\n") if ln.strip()]
+        if not raw_lines:
+            raw_lines = [post_table_text.strip()]
+        lines = [ln if ln.startswith(("➢", "-", "•")) else f"{marker}{ln}" for ln in raw_lines]
+
+        # Placeholder height, resized below via the same real-metrics
+        # measurement _add_presentation_detail_table_below_text uses for the
+        # lead-in -- needs a real shape to measure against first.
+        explain_box = slide.shapes.add_textbox(left, after_source, width, Pt(200))
+        explain_tf = explain_box.text_frame
+        explain_tf.word_wrap = True
+        for i, line_text in enumerate(lines):
+            p = explain_tf.paragraphs[0] if i == 0 else explain_tf.add_paragraph()
+            run = p.add_run()
+            run.text = line_text
+            run.font.name = 'Arial'
+            run.font.size = Pt(7.0)
+            try:
+                run.font.color.rgb = BLACK
+            except Exception:
+                pass
+            p.line_spacing = 1.0
+            p.space_after = Pt(2)
+
+        try:
+            combined = "\n".join(lines)
+            used_units = self._calculate_content_lines(
+                "", "", combined, slot_name="single", shape=explain_box,
+                is_chinese=is_chinese_databook,
+            )
+            capacity_units = self._calculate_max_lines_for_textbox(
+                explain_box, is_chinese=is_chinese_databook, slot_name="single",
+            )
+            shape_height_pt = int(explain_box.height) / 12700
+            std_lh_pt = (
+                (shape_height_pt / capacity_units) if capacity_units > 0 else
+                self._real_font_size_pt(is_chinese_databook) * self._real_line_spacing(is_chinese_databook)
+                + self._real_para_gap_pt(is_chinese_databook)
+            )
+            explain_height_pt = max(used_units, 1.0) * std_lh_pt * 1.3
+            explain_box.height = int(explain_height_pt * 12700)
+        except Exception as exc:
+            logger.debug("Could not size presentation-table explanatory text: %s", exc)
+
+        return after_source + int(explain_box.height)
 
     @staticmethod
     def _insert_category_header_rows(df, mappings: Optional[Dict[str, Any]], is_chinese_mode: bool):
@@ -5399,10 +5501,12 @@ class PowerPointGenerator:
             table = self._presentation_table_for_account(item) if tables_enabled else None
             if table:
                 item = dict(item)
-                item["commentary"] = self._truncate_for_table_lead_in(
+                lead_in, post_table_text = self._split_table_commentary(
                     item.get("commentary", ""), bool(item.get("is_chinese")),
                 )
+                item["commentary"] = lead_in
                 item["_presentation_table"] = table
+                item["_post_table_text"] = post_table_text
                 table_items.append(item)
             else:
                 normal_items.append(item)
@@ -5666,6 +5770,7 @@ class PowerPointGenerator:
                             slide, bullets_shape, category, mapping_key, commentary,
                             is_chinese, is_chinese_databook, presentation_table,
                             source_multiplier=table_source_multiplier,
+                            post_table_text=account_data.get("_post_table_text", ""),
                         )
 
                 if _leading_empty_p.getparent() is not None and not (_leading_empty_p.text or "").strip():
