@@ -7574,6 +7574,31 @@ Draft summary:
             return draft_summary
 
     @classmethod
+    def strip_table_detail_for_summary(cls, text: str, is_chinese: bool) -> str:
+        """Truncates one account's commentary to its lead-in only, at the
+        same "明细如下："/"the breakdown is set out below" handoff phrase
+        _split_table_commentary already splits on for PPTX rendering --
+        callers building a page/section-level summary blob (ui.py, both the
+        single-file and batch paths) should use ONLY this lead-in, never
+        the per-component "-"/"➢" bullets after it.
+
+        Root cause this exists to prevent: the non-AI fallback summary
+        (_generate_page_summary) picks each account's "first sentence" via
+        a naive splitter that doesn't know "明细如下：" isn't a real sentence
+        end -- for a table account's RAW (unsplit) commentary, that made
+        its "first sentence" run straight through the handoff phrase and
+        into the whole first "➢" bullet, producing a summary that visibly
+        spliced in the table's own detail bullets and cut off mid-sentence
+        (confirmed against a real Crescent export's coSummaryShape). Safe
+        to call on every account unconditionally, table-bearing or not --
+        _split_table_commentary already falls back to the whole text
+        unchanged when the handoff phrase isn't present.
+        """
+        generator = cls.__new__(cls)
+        lead_in, _post = generator._split_table_commentary(text, is_chinese)
+        return lead_in
+
+    @classmethod
     def generate_section_summary(
         cls,
         commentary: str,

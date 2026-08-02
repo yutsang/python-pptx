@@ -925,6 +925,15 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                             )
                             if not text.strip():
                                 continue
+                            # A page/section summary needs each account's
+                            # lead-in theme only, never a table account's
+                            # per-component "-"/"➢" detail bullets after
+                            # "明细如下：" -- see strip_table_detail_for_
+                            # summary's own docstring for the real
+                            # corrupted-coSummaryShape bug this prevents.
+                            text = PowerPointGenerator.strip_table_detail_for_summary(
+                                text, session_state.language == "Chn",
+                            )
                             if atype == "BS":
                                 bs_blob.append(text)
                             elif atype == "IS":
@@ -2170,6 +2179,12 @@ def batch_run_ai_for_entity(
             )
             if not text.strip():
                 continue
+            # A page/section summary needs each account's lead-in theme
+            # only, never a table account's per-component "-"/"➢" detail
+            # bullets after "明细如下：" -- see strip_table_detail_for_
+            # summary's own docstring for the real corrupted-coSummaryShape
+            # bug this prevents.
+            text = PowerPointGenerator.strip_table_detail_for_summary(text, is_chinese_db)
             if atype == "BS":
                 bs_blob.append(text)
             elif atype == "IS":
