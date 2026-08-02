@@ -2533,11 +2533,19 @@ class PromptEngine:
                     "separate paragraph.)"
                 )
 
+        # Self-carrying cap exception: the Auditor/Refiner/Validator length
+        # caps are enforced in prompts.yml, a completely separate file from
+        # this one -- stating the exception HERE too, inside the guidance
+        # text itself, means it travels with the instruction that needs it
+        # and can't go stale if prompts.yml's own wording drifts later.
+        cap_note_chi = "（此说明的1-2句不计入本科目篇幅上限，仅限于此说明本身。）"
+        cap_note_eng = "(This explanation's 1-2 sentences are exempt from this account's length cap -- for this explanation only.)"
+
         if language == "Chi":
             parts = [zero_latest_chi]
             if is_material:
                 head = (
-                    f"【重大变动提示】本科目合计由{p_prev}的{v_prev:,.0f}变动至{p_curr}的{v_curr:,.0f}，"
+                    f"【重大变动提示】{cap_note_chi}本科目合计由{p_prev}的{v_prev:,.0f}变动至{p_curr}的{v_curr:,.0f}，"
                     f"{'增长' if pct > 0 else '下降'}约{abs(pct):.0f}%。此变动幅度重大，不可只陈述金额而不作说明。"
                 )
                 if has_material_support:
@@ -2561,19 +2569,22 @@ class PromptEngine:
                 parts += [head, body]
             elif flipped:
                 parts.append(
-                    f"【重大变动提示】本科目由{p_prev}的{v_prev:,.0f}转为{p_curr}的{v_curr:,.0f}，"
+                    f"【重大变动提示】{cap_note_chi}本科目由{p_prev}的{v_prev:,.0f}转为{p_curr}的{v_curr:,.0f}，"
                     "正负性质发生转变（例如由净收益转为净支出，或相反），此变动不可只陈述金额而不作说明；"
                     "如备注/右侧说明有支持依据可据此推理并标示为判断，否则如实说明性质转变但不得臆造原因。"
                 )
             if peer_line_chi:
-                parts.append(peer_line_chi if (is_material or flipped) else "【费用与收入变动不成比例提示】" + peer_line_chi)
+                parts.append(
+                    peer_line_chi if (is_material or flipped)
+                    else "【费用与收入变动不成比例提示】" + cap_note_chi + peer_line_chi
+                )
             parts.extend(earlier_lines_chi)
             return " ".join(part for part in parts if part)
 
         parts = [zero_latest_eng]
         if is_material:
             head = (
-                f"[MATERIAL MOVEMENT] This account's total moved from {v_prev:,.0f} at {p_prev} to "
+                f"[MATERIAL MOVEMENT] {cap_note_eng} This account's total moved from {v_prev:,.0f} at {p_prev} to "
                 f"{v_curr:,.0f} at {p_curr}, an {'increase' if pct > 0 else 'decrease'} of about "
                 f"{abs(pct):.0f}%. A movement this size must be addressed, not merely stated as a figure."
             )
@@ -2601,14 +2612,17 @@ class PromptEngine:
             parts += [head, body]
         elif flipped:
             parts.append(
-                f"[MATERIAL MOVEMENT] This account moved from {v_prev:,.0f} at {p_prev} to {v_curr:,.0f} "
+                f"[MATERIAL MOVEMENT] {cap_note_eng} This account moved from {v_prev:,.0f} at {p_prev} to {v_curr:,.0f} "
                 f"at {p_curr}, crossing from one sign to the other (e.g. a net gain turning into a net "
                 "cost, or vice versa) -- this must be addressed, not merely stated as a figure. Reason "
                 "from the notes/remarks if they support it, marking inference as judgement; otherwise "
                 "state the shift accurately without inventing a cause."
             )
         if peer_line_eng:
-            parts.append(peer_line_eng if (is_material or flipped) else "[DISPROPORTIONATE TO REVENUE] " + peer_line_eng)
+            parts.append(
+                peer_line_eng if (is_material or flipped)
+                else "[DISPROPORTIONATE TO REVENUE] " + cap_note_eng + " " + peer_line_eng
+            )
         parts.extend(earlier_lines_eng)
         return " ".join(part for part in parts if part)
 
