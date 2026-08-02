@@ -2064,6 +2064,25 @@ class PowerPointGenerator:
     # constant should be tuned to paper over.
     _TABLE_SLOT_PACK_THRESHOLD = 0.90
 
+    def _estimate_lead_in_pt(self, item: Dict[str, Any]) -> float:
+        """Heuristic (no real shape) estimate of one account's lead-in block
+        alone -- category header + "key - commentary" bullet -- in points.
+        Shared by _estimate_table_account_block_height_pt (as its lead-in
+        arm) and directly by trailing plain-text accounts appended to a
+        table slot's leftover space (see _append_table_accounts_to_
+        distribution's trailing_items), which have no table/source/
+        explanation arms at all."""
+        is_chinese = bool(item.get("is_chinese"))
+        lead_in_units = self._calculate_content_lines(
+            item.get("category") or "", item.get("mapping_key", item.get("account_name", "")),
+            item.get("commentary", ""), slot_name="single", shape=None, is_chinese=is_chinese,
+        )
+        lead_std_lh_pt = (
+            self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
+            + self._real_para_gap_pt(is_chinese)
+        )
+        return lead_in_units * lead_std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
+
     def _estimate_table_account_block_height_pt(
         self, item: Dict[str, Any], table: Dict[str, Any], is_chinese_databook: bool,
     ) -> float:
@@ -2074,16 +2093,7 @@ class PowerPointGenerator:
         table_below_text / _render_presentation_table) closely enough to be
         directionally right, without needing a real shape to measure
         against (none exists yet at planning time)."""
-        is_chinese = bool(item.get("is_chinese"))
-        lead_in_units = self._calculate_content_lines(
-            item.get("category") or "", item.get("mapping_key", item.get("account_name", "")),
-            item.get("commentary", ""), slot_name="single", shape=None, is_chinese=is_chinese,
-        )
-        lead_std_lh_pt = (
-            self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
-            + self._real_para_gap_pt(is_chinese)
-        )
-        lead_in_pt = lead_in_units * lead_std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
+        lead_in_pt = self._estimate_lead_in_pt(item)
 
         table_pt = (
             self._presentation_table_height_pt(table)
@@ -2108,6 +2118,7 @@ class PowerPointGenerator:
         self, table_items: List[Dict[str, Any]],
         slot_distribution: List[Tuple[int, str, List[Dict[str, Any]]]],
         *, max_slides: int, start_slide: int, is_chinese_databook: bool = False,
+        trailing_items: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Tuple[int, str, List[Dict[str, Any]]]]:
         """Assigns each table-bearing account to a (slide_idx, slot_name),
         preferring to join an EARLIER table account's own slot when there's
@@ -2119,10 +2130,25 @@ class PowerPointGenerator:
         accounts already share one, just via a running EMU offset instead
         of shared-textframe paragraphs (see _render_table_accounts_stack).
 
-        Still never shares with a NON-table account, and never touches the
-        normal packer's own pool -- both of those are what caused the
-        original two-tables-on-top-of-each-other bug this design replaced;
-        only table accounts are ever candidates to join each other.
+        Never shares a slot with a NON-table account from the normal
+        packer's own pool, and never touches that pool's already-finished
+        distribution -- both of those are what caused the original
+        two-tables-on-top-of-each-other bug this design replaced.
+
+        trailing_items (optional) are ordinary accounts that come AFTER the
+        LAST table account in the statement's own reading order -- e.g. 投资
+        收益/营业外支出 following 财务费用 in a real Crescent IS deck. The
+        caller (apply_structured_data_to_slides) excludes these from the
+        normal packer's input pool entirely before it ever runs, precisely
+        so this function can try them here instead: each is placed AFTER all
+        table_items have claimed their slots, using ONLY its own lead-in
+        height (no table/source/explanation arms -- it's plain commentary),
+        against the exact same slot_fill_pt pool table_items just filled --
+        which is exactly the empty space below a table that prompted this
+        whole feature. A trailing item that fits into no existing slot
+        claims a fresh one via the identical fallback table_items already
+        use below, so it always renders somewhere; this function still never
+        reopens or second-guesses the normal pool's own finished output.
 
         slide_idx here is 0-based FROM start_slide, matching exactly what
         _distribute_content_across_slots itself returns (its caller,
@@ -2135,11 +2161,7 @@ class PowerPointGenerator:
         slot_fill_pt: Dict[Tuple[int, str], float] = {}
         cap = self._TABLE_SLOT_CAPACITY_PT * self._TABLE_SLOT_PACK_THRESHOLD
 
-        for item in table_items:
-            table = item.get("_presentation_table") or {}
-            block_pt = self._estimate_table_account_block_height_pt(item, table, is_chinese_databook)
-            placed = False
-
+        def place(item: Dict[str, Any], block_pt: float) -> None:
             for key, fill in slot_fill_pt.items():
                 if fill + block_pt <= cap:
                     slide_idx, slot_name = key
@@ -2148,10 +2170,7 @@ class PowerPointGenerator:
                             result[i] = (s, n, accounts + [item])
                             break
                     slot_fill_pt[key] = fill + block_pt
-                    placed = True
-                    break
-            if placed:
-                continue
+                    return
 
             for slide_idx in range(max_slides):
                 actual_slide_idx = start_slide - 1 + slide_idx
@@ -2161,44 +2180,56 @@ class PowerPointGenerator:
                     used.add((slide_idx, slot_name))
                     result.append((slide_idx, slot_name, [item]))
                     slot_fill_pt[(slide_idx, slot_name)] = block_pt
-                    placed = True
-                    break
-                if placed:
-                    break
-            if not placed:
-                logger.warning(
-                    "No free slot for presentation-table account %s within %s slides -- not rendered.",
-                    item.get("mapping_key"), max_slides,
-                )
+                    return
+
+            logger.warning(
+                "No free slot for account %s within %s slides -- not rendered.",
+                item.get("mapping_key"), max_slides,
+            )
+
+        for item in table_items:
+            table = item.get("_presentation_table") or {}
+            block_pt = self._estimate_table_account_block_height_pt(item, table, is_chinese_databook)
+            place(item, block_pt)
+
+        for item in (trailing_items or []):
+            place(item, self._estimate_lead_in_pt(item))
+
         return result
 
     def _render_table_accounts_stack(
         self, slide, bullets_shape, account_data_list: List[Dict[str, Any]],
         is_chinese_databook: bool, statement_type: Optional[str] = None,
     ) -> None:
-        """Renders one or more table-bearing accounts stacked within a
-        single slot -- one or more, since _append_table_accounts_to_
-        distribution now packs multiple small ones into the same column
-        when there's room, rather than always giving every table account a
-        whole column regardless of how little of it real content needs (a
-        real Crescent export showed 税金及附加 -- 3 components, one short
-        explanation -- leaving most of its column empty).
+        """Renders one or more accounts stacked within a single slot -- one
+        or more, since _append_table_accounts_to_distribution now packs
+        multiple small table accounts into the same column when there's
+        room, rather than always giving every table account a whole column
+        regardless of how little of it real content needs (a real Crescent
+        export showed 税金及附加 -- 3 components, one short explanation --
+        leaving most of its column empty), AND now also flows plain
+        (non-table) trailing accounts into a table's own leftover space --
+        e.g. 投资收益/营业外支出 after 财务费用, matching how the real deck's
+        own last IS page reads (table, then more prose, same column).
 
         Each account gets its own dedicated lead-in textbox (mimicking the
         "■ key - text" bullet style via _fill_text_main_bullets_with_
         category_and_key, but writing into a FRESH text frame rather than
-        the slot's shared one), sized to its own measured content, followed
-        immediately by its table and any post-table explanation
-        (_render_presentation_table), at a running vertical offset. This is
-        deliberately NOT the shared-text-frame/paragraph-flow mechanism
-        ordinary accounts use below -- that assumes a slot's whole content
-        lives in one text frame with nothing else interleaved, which
-        doesn't hold once a table (a separate shape) sits between one
-        account's lead-in and the next account's own lead-in: writing a
-        second account's lead-in as another paragraph in the same shared
-        frame would render it flowing directly under the FIRST account's
-        lead-in, ignoring that account's table sitting (as a different
-        shape) in between.
+        the slot's shared one), sized to its own measured content. A
+        table-bearing account then gets its table and any post-table
+        explanation immediately below (_render_presentation_table); a plain
+        trailing account (no `_presentation_table`) stops after its own
+        lead-in -- there is nothing else to render for it. Either way the
+        next account in account_data_list starts at a running vertical
+        offset below whatever the previous one drew. This is deliberately
+        NOT the shared-text-frame/paragraph-flow mechanism ordinary
+        accounts use below -- that assumes a slot's whole content lives in
+        one text frame with nothing else interleaved, which doesn't hold
+        once a table (a separate shape) sits between one account's lead-in
+        and the next account's own lead-in: writing a second account's
+        lead-in as another paragraph in the same shared frame would render
+        it flowing directly under the FIRST account's lead-in, ignoring
+        that account's table sitting (as a different shape) in between.
 
         bullets_shape's own text frame is left empty (matches how an
         intentionally-unused slot is already handled elsewhere) -- every
@@ -2221,8 +2252,6 @@ class PowerPointGenerator:
 
         for account_data in account_data_list:
             table = account_data.get("_presentation_table")
-            if not table:
-                continue  # this dispatch only ever sees table-bearing accounts
             category = account_data.get('category', '')
             mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
             display_name = (
@@ -2274,8 +2303,15 @@ class PowerPointGenerator:
                 lead_box.height = int(lead_height_pt * 12700)
                 table_top = int(lead_box.top) + int(lead_box.height)
             except Exception as exc:
-                logger.warning("Could not render lead-in for table account %s: %s", mapping_key, exc)
+                logger.warning("Could not render lead-in for account %s: %s", mapping_key, exc)
                 table_top = current_top
+
+            if not table:
+                # Plain trailing account (e.g. 投资收益/营业外支出 flowed in
+                # after 财务费用's table) -- nothing more to draw, its own
+                # lead-in IS the whole account.
+                current_top = table_top + int(Pt(self._TABLE_GAP_BELOW_PT))
+                continue
 
             table_source_multiplier = 1
             table_financial_data = account_data.get("financial_data")
@@ -5672,7 +5708,9 @@ class PowerPointGenerator:
         tables_enabled = self._presentation_tables_enabled()
         table_items: List[Dict[str, Any]] = []
         normal_items: List[Dict[str, Any]] = []
-        for item in structured_data:
+        last_table_pos: Optional[int] = None
+        tagged_normal: List[Tuple[int, Dict[str, Any]]] = []
+        for pos, item in enumerate(structured_data):
             table = self._presentation_table_for_account(item) if tables_enabled else None
             if table:
                 item = dict(item)
@@ -5683,8 +5721,31 @@ class PowerPointGenerator:
                 item["_presentation_table"] = table
                 item["_post_table_text"] = post_table_text
                 table_items.append(item)
+                last_table_pos = pos
             else:
-                normal_items.append(item)
+                tagged_normal.append((pos, item))
+
+        # Accounts positioned AFTER the LAST table account in the
+        # statement's own reading order (e.g. 投资收益/营业外支出 following
+        # 财务费用 on a real Crescent IS) are withheld from the normal
+        # packer's input pool and instead flowed into the table slots'
+        # own leftover space below -- see _append_table_accounts_to_
+        # distribution's trailing_items. Excluding them BEFORE the packer
+        # ever runs (rather than trying to reopen its finished output
+        # afterwards) mirrors exactly how table_items themselves have
+        # always been excluded from this same pool. Accounts BEFORE or
+        # BETWEEN table accounts are untouched -- only the true reading-
+        # order tail is eligible, so this can't reorder anything the
+        # packer would otherwise have placed earlier.
+        trailing_items: List[Dict[str, Any]] = []
+        if last_table_pos is not None:
+            for pos, item in tagged_normal:
+                if pos > last_table_pos:
+                    trailing_items.append(item)
+                else:
+                    normal_items.append(item)
+        else:
+            normal_items = [item for _pos, item in tagged_normal]
 
         # Distribute content across textbox slots based on capacity
         slot_distribution = self._distribute_content_across_slots(
@@ -5694,10 +5755,10 @@ class PowerPointGenerator:
             statement_type=statement_type,
         )
 
-        if table_items:
+        if table_items or trailing_items:
             slot_distribution = self._append_table_accounts_to_distribution(
                 table_items, slot_distribution, max_slides=max_slides, start_slide=start_slide,
-                is_chinese_databook=is_chinese_databook,
+                is_chinese_databook=is_chinese_databook, trailing_items=trailing_items,
             )
 
         # Group slot distribution by slide for easier processing
@@ -5795,16 +5856,19 @@ class PowerPointGenerator:
                     continue
                 used_slot_shape_ids.add(id(bullets_shape))
 
-                # A table-only slot (every account in it carries a
-                # presentation_detail_table -- _append_table_accounts_to_
-                # distribution never mixes a table account into a normal
-                # one's slot) renders via its own dedicated-shape-per-
-                # account path instead of the shared-text-frame one below,
-                # since that one assumes all of a slot's content lives in
-                # one text frame with nothing else interleaved -- not true
-                # once a table (a separate shape) sits between one
-                # account's lead-in and the next account's own lead-in.
-                if account_data_list and all(a.get("_presentation_table") for a in account_data_list):
+                # A slot containing at least one table account (possibly
+                # followed by plain trailing accounts flowed into its
+                # leftover space -- see _append_table_accounts_to_
+                # distribution's trailing_items) renders via its own
+                # dedicated-shape-per-account path instead of the
+                # shared-text-frame one below, since that one assumes all of
+                # a slot's content lives in one text frame with nothing else
+                # interleaved -- not true once a table (a separate shape)
+                # sits between one account's lead-in and the next account's
+                # own lead-in. A slot with ONLY plain accounts (no table at
+                # all) still goes through the normal shared-text-frame path
+                # unchanged -- that's the common case and needs none of this.
+                if account_data_list and any(a.get("_presentation_table") for a in account_data_list):
                     self._render_table_accounts_stack(
                         slide, bullets_shape, account_data_list, is_chinese_databook,
                         statement_type=statement_type,
