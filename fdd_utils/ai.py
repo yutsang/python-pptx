@@ -2362,6 +2362,7 @@ class PromptEngine:
         language: str,
         peer_context: Optional[Dict[str, Any]] = None,
         mapping_key: Optional[str] = None,
+        thresholds: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Guidance for an account whose own figures moved materially, an
         IS line that moved out of proportion to revenue EVEN WITHOUT a
@@ -2389,9 +2390,19 @@ class PromptEngine:
         Partial tail periods are excluded from every comparison: a
         one-month period against a full year reads as a ~90% collapse that
         is an artefact of period length, not a real movement.
+
+        thresholds (optional, from config.yml's analysis: block --
+        variance_threshold_pct/disproportion_gap_pp/max_extra_pairs) fall
+        back to this function's own long-standing defaults (30/30/2) when
+        absent, so an unconfigured deployment behaves exactly as before
+        this parameter existed.
         """
         if not isinstance(df, pd.DataFrame) or df.empty:
             return ""
+        thresholds = thresholds or {}
+        variance_threshold_pct = float(thresholds.get("variance_threshold_pct", 30) or 30)
+        disproportion_gap_pp = float(thresholds.get("disproportion_gap_pp", 30) or 30)
+        max_extra_pairs = int(thresholds.get("max_extra_pairs", 2) or 2)
         attrs = df.attrs or {}
         integrity = attrs.get("integrity") or {}
         statement_type = str(integrity.get("statement_type") or "").strip().upper()
@@ -2445,7 +2456,7 @@ class PromptEngine:
 
         (p_prev, v_prev), (p_curr, v_curr) = series[-2], series[-1]
         pct, flipped = _pair(v_prev, v_curr)
-        is_material = pct is not None and abs(pct) >= 30
+        is_material = pct is not None and abs(pct) >= variance_threshold_pct
 
         notes = attrs.get("supporting_notes") or []
         rhs = attrs.get("adjacent_detail_rows") or []
@@ -2486,7 +2497,7 @@ class PromptEngine:
         ):
             rev_pct = float(peer_context["revenue_growth_pct"])
             gap = pct - rev_pct
-            if abs(gap) >= 30:
+            if abs(gap) >= disproportion_gap_pp:
                 peer_line_chi = (
                     f"同期营业收入变动为{rev_pct:+.0f}%，本科目为{pct:+.0f}%，两者相差{gap:+.0f}个百分点，"
                     "属于费用与收入变动不成比例的情形，请在评论中明确指出这一不对称，并在有依据时说明原因。"
@@ -2499,13 +2510,13 @@ class PromptEngine:
 
         # Earlier adjacent full-period pairs the latest-pair check alone
         # would miss (e.g. 2023->2024 when the latest pair is 2025->1Q26).
-        # Capped at 2 -- these are one-line mentions, not full
-        # explanations; the latest pair (and the disproportion line above)
-        # carry the real weight.
+        # Capped at max_extra_pairs -- these are one-line mentions, not
+        # full explanations; the latest pair (and the disproportion line
+        # above) carry the real weight.
         earlier_lines_chi: List[str] = []
         earlier_lines_eng: List[str] = []
         for i in range(len(series) - 2):
-            if len(earlier_lines_chi) >= 2:
+            if len(earlier_lines_chi) >= max_extra_pairs:
                 break
             e_prev_p, e_prev_v = series[i]
             e_curr_p, e_curr_v = series[i + 1]
@@ -2520,7 +2531,7 @@ class PromptEngine:
                     f"{e_prev_v:,.0f} to {e_curr_v:,.0f}, crossing from one sign to the other -- "
                     "note this shift briefly if the data supports why, do not invent a cause.)"
                 )
-            elif e_pct is not None and abs(e_pct) >= 30:
+            elif e_pct is not None and abs(e_pct) >= variance_threshold_pct:
                 e_dir_chi = "增长" if e_pct > 0 else "下降"
                 e_dir_eng = "increased" if e_pct > 0 else "decreased"
                 earlier_lines_chi.append(
@@ -3019,6 +3030,7 @@ class PromptEngine:
             "period_reference_guidance": self._period_reference_guidance(df, language),
             "variance_analysis_guidance": self._variance_analysis_guidance(
                 df, language, peer_context=kwargs.get("peer_context"), mapping_key=mapping_key,
+                thresholds=kwargs.get("analysis_thresholds"),
             ),
             "analytical_lens_guidance": self._analytical_lens_guidance(df, language),
             "detail_table_guidance": self._detail_table_guidance(df, language),
@@ -4249,6 +4261,7 @@ def process_single_agent_item(
             data_format=ai_helper.data_format,
             user_comment=user_comment,
             peer_context=_build_peer_context(dfs),
+            analysis_thresholds=(getattr(ai_helper, "full_config", None) or {}).get("analysis"),
             **_agent_prompt_kwargs(agent_name, mapping_key, prompt_manager, previous_output, agent_config=agent_cfg),
         )
 

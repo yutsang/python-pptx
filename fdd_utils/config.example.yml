@@ -103,6 +103,15 @@ processing:
     max_retries: 2
     unsupported_threshold: 0.3
 
+# Thresholds for _variance_analysis_guidance (ai.py) — the deterministic
+# movement/disproportion checks fed into the Generator+Auditor prompts.
+# Omitting this block (or any key in it) falls back to these same values,
+# so this section is documentation, not a required override.
+analysis:
+  variance_threshold_pct: 30   # an account's own period-over-period move at/above this is "material"
+  disproportion_gap_pp: 30     # percentage-point gap vs revenue growth that counts as disproportionate
+  max_extra_pairs: 2           # cap on how many EARLIER (non-latest) period pairs get a one-line mention
+
 logging:
   suppress_http_logs: true
 
