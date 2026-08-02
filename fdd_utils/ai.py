@@ -2627,6 +2627,73 @@ class PromptEngine:
         return " ".join(part for part in parts if part)
 
     @staticmethod
+    def _analytical_lens_guidance(df: Optional[pd.DataFrame], language: str) -> str:
+        """A short, static set of interpretive frames -- the analytical
+        vocabulary the project's own real deliverables actually use, rather
+        than a generic "analyse this deeply" instruction. Unlike
+        _variance_analysis_guidance (which computes a real movement from
+        this account's own data), this is the same text for every account
+        of a given statement type -- it exists to prime the model with the
+        right CONCEPTS (which cost is rigid vs revenue-linked, when a sign
+        flip is ordinary, how to read a BS reclassification) so it can spot
+        and reason about a situation the deterministic checks above don't
+        cover, e.g. a variable cost quietly diverging from revenue without
+        crossing the >=30pp gap _variance_analysis_guidance flags.
+
+        Still subject to every existing grounding rule -- this adds
+        interpretive FRAMES, not license to invent facts; an inference
+        drawn using one of these frames still needs a remark/data anchor
+        and still must be marked as judgement, exactly like
+        _variance_analysis_guidance's own reasoning requirement.
+
+        Deliberately short: this is injected into EVERY account's prompt
+        (Generator + Auditor only, not Refiner/Validator -- drafting and
+        auditing are where analytical framing matters; final polish does
+        not need to re-derive it), so every extra line here is a real,
+        recurring prompt-budget cost, not a one-time one."""
+        statement_type = str(
+            ((df.attrs if isinstance(df, pd.DataFrame) else {}).get("integrity") or {}).get("statement_type") or ""
+        ).strip().upper()
+        if statement_type not in ("BS", "IS"):
+            return ""
+
+        if language == "Chi":
+            if statement_type == "IS":
+                return (
+                    "【分析视角】折旧、房产税、专业服务费等属于刚性成本，通常不随收入同比例变动，这是正常现象，"
+                    "无需强行解释；水电费净额、外包物业费等收入关联型成本若与收入趋势明显背离，则值得指出。"
+                    "区分一次性事项（罚款、滞纳金）与经常性项目；汇兑损益方向转变属正常波动，除非备注另有说明。"
+                    "涉及关联方的条款（计价公式、是否免息、是否于交割前结清）应说明并列明交易对手名称。"
+                    "跨期（如1-3月）与全年数据比较仅可通过年化处理或与上年同期等长区间比较，不可直接比较绝对值。"
+                )
+            return (
+                "【分析视角】应收账款/预收款项与营业收入趋势的联动关系值得关注；在建工程转固定资产会同时影响两个"
+                "科目余额，可据此解释双向变动；一年内到期的非流动负债与长期借款之间的重分类是正常信号，未必是异常。"
+                "涉及关联方的条款（计价公式、是否免息、是否于交割前结清）应说明并列明交易对手名称。"
+            )
+
+        if statement_type == "IS":
+            return (
+                "[ANALYTICAL LENS] Rigid/fixed costs (depreciation, property tax, professional-service fees) "
+                "normally don't track revenue proportionally -- that's expected, not something to force an "
+                "explanation for; revenue-linked costs (net utilities, outsourced property management fees) "
+                "diverging from the revenue trend IS worth flagging. Distinguish one-off items (penalties, "
+                "late fees) from recurring ones. An FX gain/loss flipping direction is ordinary volatility "
+                "unless the remarks say otherwise. Related-party terms (pricing formula, interest-free or "
+                "not, settled before close or not) should be stated with the counterparty named. Comparing a "
+                "stub period (e.g. Jan-Mar) against a full year is only valid via annualisation or against an "
+                "equal-length prior stub -- never a raw absolute comparison."
+            )
+        return (
+            "[ANALYTICAL LENS] AR/advance receipts moving with the revenue trend is a normal working-capital "
+            "link worth noting; a CIP-to-fixed-assets transfer moves both accounts' balances together and can "
+            "explain a swing in either one; a reclassification between current-portion-of-long-term-debt and "
+            "long-term loans is a normal signal, not necessarily a red flag. Related-party terms (pricing "
+            "formula, interest-free or not, settled before close or not) should be stated with the "
+            "counterparty named."
+        )
+
+    @staticmethod
     def _period_reference_guidance(df: Optional[pd.DataFrame], language: str) -> str:
         integrity = (df.attrs if isinstance(df, pd.DataFrame) else {}).get("integrity") or {}
         attrs = df.attrs if isinstance(df, pd.DataFrame) else {}
@@ -2953,6 +3020,7 @@ class PromptEngine:
             "variance_analysis_guidance": self._variance_analysis_guidance(
                 df, language, peer_context=kwargs.get("peer_context"), mapping_key=mapping_key,
             ),
+            "analytical_lens_guidance": self._analytical_lens_guidance(df, language),
             "detail_table_guidance": self._detail_table_guidance(df, language),
             "rhs_guidance_block": self._rhs_guidance_block(
                 self.filter_adjacent_detail_rows(df) if isinstance(df, pd.DataFrame) else [],

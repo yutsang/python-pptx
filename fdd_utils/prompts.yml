@@ -76,8 +76,8 @@ common:
           - {common_data_rules}
           - {common_formatting} {fdd_judgement}
           - {period_reference_guidance}
-          {variance_analysis_guidance} {detail_table_guidance}
-      
+          {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance}
+
       **CRITICAL LANGUAGE REQUIREMENT**:
       THIS IS AN ENGLISH DATABOOK. Your output MUST be 100% in ENGLISH.
       {language_instruction}
@@ -191,7 +191,7 @@ common:
          - {common_data_rules}
          - {common_formatting} {fdd_judgement}
          - {period_reference_guidance}
-          {variance_analysis_guidance} {detail_table_guidance}
+          {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance}
       
       **关键语言要求**:
       这是一个中文数据簿。您的输出必须100%为中文。
