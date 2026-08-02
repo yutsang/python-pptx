@@ -2361,23 +2361,34 @@ class PromptEngine:
         df: Optional[pd.DataFrame],
         language: str,
         peer_context: Optional[Dict[str, Any]] = None,
+        mapping_key: Optional[str] = None,
     ) -> str:
-        """Guidance for an account whose own figures moved materially.
+        """Guidance for an account whose own figures moved materially, an
+        IS line that moved out of proportion to revenue EVEN WITHOUT a
+        large movement of its own, and earlier period-over-period
+        movements the latest-pair check alone would miss.
 
         Project-team asks this implements: explain WHY a large income-
         statement movement happened (reasoning from remarks where they
         exist, flagged as such); call out an expense line growing out of
-        proportion to revenue; and mention material balance-sheet swings.
+        proportion to revenue -- including a FLAT cost against
+        collapsing/surging revenue, which is itself the disproportion (this
+        used to be gated behind the account's own >=30% movement, which
+        made that exact case -- e.g. flat G&A against collapsing revenue --
+        impossible to ever flag); mention material balance-sheet swings;
+        and surface earlier movements (e.g. 2023->2024) a check that only
+        ever looks at the latest two periods would silently miss, without
+        letting the prompt balloon -- capped at two one-line mentions.
 
-        The movement is computed HERE, deterministically, and handed to the
-        model as a stated fact -- rather than asking it to eyeball the table
-        and derive a percentage itself, which would be both unreliable and
-        ungrounded (a self-derived figure has no source to match against, so
-        the hallucination check would flag it).
+        Every movement is computed HERE, deterministically, and handed to
+        the model as a stated fact -- rather than asking it to eyeball the
+        table and derive a percentage itself, which would be both
+        unreliable and ungrounded (a self-derived figure has no source to
+        match against, so the hallucination check would flag it).
 
-        Partial tail periods are excluded from the comparison: a one-month
-        period against a full year reads as a ~90% collapse that is an
-        artefact of period length, not a real movement.
+        Partial tail periods are excluded from every comparison: a
+        one-month period against a full year reads as a ~90% collapse that
+        is an artefact of period length, not a real movement.
         """
         if not isinstance(df, pd.DataFrame) or df.empty:
             return ""
@@ -2416,16 +2427,29 @@ class PromptEngine:
             return ""
 
         scale = max((abs(v) for _p, v in series), default=0.0)
-        (p_prev, v_prev), (p_curr, v_curr) = series[-2], series[-1]
-        if scale <= 0 or abs(v_prev) < scale * 0.01:
-            return ""  # base too small for a percentage to mean anything
-        pct = (v_curr - v_prev) / abs(v_prev) * 100
-        if abs(pct) < 30:
+        if scale <= 0:
             return ""
+
+        def _pair(prev_v: float, curr_v: float) -> Tuple[Optional[float], bool]:
+            """(pct, is_flip). pct is None when the base is too small for a
+            percentage to mean anything OR the value crosses zero (a raw %
+            across a sign change is nonsense -- e.g. -2,049 to +4,844 is not
+            "a 336% increase"); is_flip marks that second case specifically
+            so callers can describe it qualitatively instead of with a
+            percentage."""
+            if abs(prev_v) < scale * 0.01:
+                return None, False
+            if prev_v * curr_v < 0:
+                return None, True
+            return (curr_v - prev_v) / abs(prev_v) * 100, False
+
+        (p_prev, v_prev), (p_curr, v_curr) = series[-2], series[-1]
+        pct, flipped = _pair(v_prev, v_curr)
+        is_material = pct is not None and abs(pct) >= 30
 
         notes = attrs.get("supporting_notes") or []
         rhs = attrs.get("adjacent_detail_rows") or []
-        has_material = bool(notes or rhs)
+        has_material_support = bool(notes or rhs)
         # A latest period of zero is the case the opening-sentence rule keeps
         # losing: a real run opened 预付款项 with "截至2025年12月31日，余额为17万"
         # and only mentioned the (zero) latest period afterwards, even after a
@@ -2445,11 +2469,21 @@ class PromptEngine:
                 "reader will take it for the current period."
             )
 
-        direction_chi = "增长" if pct > 0 else "下降"
-        direction_eng = "increase" if pct > 0 else "decrease"  # both read correctly after "an"
-
+        # Revenue-disproportion is checked INDEPENDENTLY of whether the
+        # account's OWN movement is itself large -- a fixed/flat cost that
+        # simply doesn't track a collapsing or surging revenue line IS the
+        # disproportion the project team asks about; gating it behind the
+        # account's own >=30% move meant that exact case could never fire.
+        # Skipped for the revenue account comparing against itself, and
+        # when the account's own pct couldn't be computed (tiny base or a
+        # sign flip -- the flip already gets its own treatment below).
         peer_line_chi = peer_line_eng = ""
-        if peer_context and peer_context.get("revenue_growth_pct") is not None and statement_type == "IS":
+        revenue_key = (peer_context or {}).get("revenue_key") if peer_context else None
+        is_revenue_account = bool(revenue_key) and bool(mapping_key) and revenue_key == mapping_key
+        if (
+            pct is not None and not is_revenue_account and statement_type == "IS"
+            and peer_context and peer_context.get("revenue_growth_pct") is not None
+        ):
             rev_pct = float(peer_context["revenue_growth_pct"])
             gap = pct - rev_pct
             if abs(gap) >= 30:
@@ -2463,58 +2497,120 @@ class PromptEngine:
                     "explicitly and, where supported, why it arose."
                 )
 
+        # Earlier adjacent full-period pairs the latest-pair check alone
+        # would miss (e.g. 2023->2024 when the latest pair is 2025->1Q26).
+        # Capped at 2 -- these are one-line mentions, not full
+        # explanations; the latest pair (and the disproportion line above)
+        # carry the real weight.
+        earlier_lines_chi: List[str] = []
+        earlier_lines_eng: List[str] = []
+        for i in range(len(series) - 2):
+            if len(earlier_lines_chi) >= 2:
+                break
+            e_prev_p, e_prev_v = series[i]
+            e_curr_p, e_curr_v = series[i + 1]
+            e_pct, e_flipped = _pair(e_prev_v, e_curr_v)
+            if e_flipped:
+                earlier_lines_chi.append(
+                    f"（另外，{e_prev_p}至{e_curr_p}期间本科目由{e_prev_v:,.0f}转为{e_curr_v:,.0f}，"
+                    "正负性质发生转变，如有支持依据可一并简述，不得臆造原因。）"
+                )
+                earlier_lines_eng.append(
+                    f"(Separately, between {e_prev_p} and {e_curr_p} this account moved from "
+                    f"{e_prev_v:,.0f} to {e_curr_v:,.0f}, crossing from one sign to the other -- "
+                    "note this shift briefly if the data supports why, do not invent a cause.)"
+                )
+            elif e_pct is not None and abs(e_pct) >= 30:
+                e_dir_chi = "增长" if e_pct > 0 else "下降"
+                e_dir_eng = "increased" if e_pct > 0 else "decreased"
+                earlier_lines_chi.append(
+                    f"（另外，{e_prev_p}至{e_curr_p}期间本科目{e_dir_chi}约{abs(e_pct):.0f}%，"
+                    "如有支持依据可一并简述，无需展开为独立段落。）"
+                )
+                earlier_lines_eng.append(
+                    f"(Separately, this account {e_dir_eng} about {abs(e_pct):.0f}% between "
+                    f"{e_prev_p} and {e_curr_p} -- mention briefly if supported, no need for a "
+                    "separate paragraph.)"
+                )
+
         if language == "Chi":
+            parts = [zero_latest_chi]
+            if is_material:
+                head = (
+                    f"【重大变动提示】本科目合计由{p_prev}的{v_prev:,.0f}变动至{p_curr}的{v_curr:,.0f}，"
+                    f"{'增长' if pct > 0 else '下降'}约{abs(pct):.0f}%。此变动幅度重大，不可只陈述金额而不作说明。"
+                )
+                if has_material_support:
+                    body = (
+                        "请结合备注/右侧说明推断并说明变动原因：可以在备注所述事实的基础上作合理推理"
+                        "（例如备注说明某项目于某期完工转固，则可据此解释折旧上升），"
+                        "但推理必须以备注或数据为起点，不得凭空假设市场、竞争、宏观等外部原因。"
+                        "凡属推断而非备注原文直述的部分，须用'预计'、'推测'、'主要系...所致'等措辞明确标示其为判断，"
+                        "使读者能区分事实与分析。"
+                    )
+                elif statement_type == "IS":
+                    body = (
+                        "备注中没有可解释此变动的信息。此时请如实说明变动幅度与方向，"
+                        "并指出未取得进一步解释（如'变动原因尚待与管理层确认'），"
+                        "不得臆造原因。"
+                    )
+                else:
+                    body = (
+                        "备注中没有可解释此变动的信息。请简要点出该变动的规模与方向即可，不得臆造原因。"
+                    )
+                parts += [head, body]
+            elif flipped:
+                parts.append(
+                    f"【重大变动提示】本科目由{p_prev}的{v_prev:,.0f}转为{p_curr}的{v_curr:,.0f}，"
+                    "正负性质发生转变（例如由净收益转为净支出，或相反），此变动不可只陈述金额而不作说明；"
+                    "如备注/右侧说明有支持依据可据此推理并标示为判断，否则如实说明性质转变但不得臆造原因。"
+                )
+            if peer_line_chi:
+                parts.append(peer_line_chi if (is_material or flipped) else "【费用与收入变动不成比例提示】" + peer_line_chi)
+            parts.extend(earlier_lines_chi)
+            return " ".join(part for part in parts if part)
+
+        parts = [zero_latest_eng]
+        if is_material:
             head = (
-                f"【重大变动提示】本科目合计由{p_prev}的{v_prev:,.0f}变动至{p_curr}的{v_curr:,.0f}，"
-                f"{direction_chi}约{abs(pct):.0f}%。此变动幅度重大，不可只陈述金额而不作说明。"
+                f"[MATERIAL MOVEMENT] This account's total moved from {v_prev:,.0f} at {p_prev} to "
+                f"{v_curr:,.0f} at {p_curr}, an {'increase' if pct > 0 else 'decrease'} of about "
+                f"{abs(pct):.0f}%. A movement this size must be addressed, not merely stated as a figure."
             )
-            if has_material:
+            if has_material_support:
                 body = (
-                    "请结合备注/右侧说明推断并说明变动原因：可以在备注所述事实的基础上作合理推理"
-                    "（例如备注说明某项目于某期完工转固，则可据此解释折旧上升），"
-                    "但推理必须以备注或数据为起点，不得凭空假设市场、竞争、宏观等外部原因。"
-                    "凡属推断而非备注原文直述的部分，须用'预计'、'推测'、'主要系...所致'等措辞明确标示其为判断，"
-                    "使读者能区分事实与分析。"
+                    "Use the notes / side-column remarks to explain it. You may reason from what the "
+                    "remarks state (e.g. if a remark says a phase was completed and transferred to fixed "
+                    "assets in a period, that can explain a rise in depreciation), but the reasoning must "
+                    "start from the remarks or the data -- never assume market, competitive or macro causes. "
+                    "Where a point is your inference rather than something the remarks state outright, mark "
+                    "it as judgement ('mainly attributable to...', 'expected to...') so the reader can tell "
+                    "analysis from fact."
                 )
             elif statement_type == "IS":
                 body = (
-                    "备注中没有可解释此变动的信息。此时请如实说明变动幅度与方向，"
-                    "并指出未取得进一步解释（如'变动原因尚待与管理层确认'），"
-                    "不得臆造原因。"
+                    "The notes contain nothing that explains this movement. State its size and direction "
+                    "accurately and note that no further explanation has been obtained (e.g. 'the driver "
+                    "remains to be confirmed with management'). Do not invent a cause."
                 )
             else:
                 body = (
-                    "备注中没有可解释此变动的信息。请简要点出该变动的规模与方向即可，不得臆造原因。"
+                    "The notes contain nothing that explains this movement. Note its size and direction "
+                    "briefly. Do not invent a cause."
                 )
-            return " ".join(part for part in (zero_latest_chi, head, body, peer_line_chi) if part)
-
-        head = (
-            f"[MATERIAL MOVEMENT] This account's total moved from {v_prev:,.0f} at {p_prev} to "
-            f"{v_curr:,.0f} at {p_curr}, an {direction_eng} of about {abs(pct):.0f}%. A movement this "
-            "size must be addressed, not merely stated as a figure."
-        )
-        if has_material:
-            body = (
-                "Use the notes / side-column remarks to explain it. You may reason from what the "
-                "remarks state (e.g. if a remark says a phase was completed and transferred to fixed "
-                "assets in a period, that can explain a rise in depreciation), but the reasoning must "
-                "start from the remarks or the data -- never assume market, competitive or macro causes. "
-                "Where a point is your inference rather than something the remarks state outright, mark "
-                "it as judgement ('mainly attributable to...', 'expected to...') so the reader can tell "
-                "analysis from fact."
+            parts += [head, body]
+        elif flipped:
+            parts.append(
+                f"[MATERIAL MOVEMENT] This account moved from {v_prev:,.0f} at {p_prev} to {v_curr:,.0f} "
+                f"at {p_curr}, crossing from one sign to the other (e.g. a net gain turning into a net "
+                "cost, or vice versa) -- this must be addressed, not merely stated as a figure. Reason "
+                "from the notes/remarks if they support it, marking inference as judgement; otherwise "
+                "state the shift accurately without inventing a cause."
             )
-        elif statement_type == "IS":
-            body = (
-                "The notes contain nothing that explains this movement. State its size and direction "
-                "accurately and note that no further explanation has been obtained (e.g. 'the driver "
-                "remains to be confirmed with management'). Do not invent a cause."
-            )
-        else:
-            body = (
-                "The notes contain nothing that explains this movement. Note its size and direction "
-                "briefly. Do not invent a cause."
-            )
-        return " ".join(part for part in (zero_latest_eng, head, body, peer_line_eng) if part)
+        if peer_line_eng:
+            parts.append(peer_line_eng if (is_material or flipped) else "[DISPROPORTIONATE TO REVENUE] " + peer_line_eng)
+        parts.extend(earlier_lines_eng)
+        return " ".join(part for part in parts if part)
 
     @staticmethod
     def _period_reference_guidance(df: Optional[pd.DataFrame], language: str) -> str:
@@ -2841,7 +2937,7 @@ class PromptEngine:
             "common_data_rules": style_pack.common_data_rules(data_format),
             "period_reference_guidance": self._period_reference_guidance(df, language),
             "variance_analysis_guidance": self._variance_analysis_guidance(
-                df, language, peer_context=kwargs.get("peer_context"),
+                df, language, peer_context=kwargs.get("peer_context"), mapping_key=mapping_key,
             ),
             "detail_table_guidance": self._detail_table_guidance(df, language),
             "rhs_guidance_block": self._rhs_guidance_block(
