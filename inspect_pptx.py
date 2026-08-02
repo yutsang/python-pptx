@@ -178,18 +178,27 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
         # otherwise matches by -- so without this, those two boxes (exactly
         # the ones sized against real AI text, i.e. exactly the ones that
         # can actually overflow) were invisible to this check entirely; only
-        # this instance's OWN sizing math was ever "verifying" them.
+        # this instance's OWN sizing math was ever "verifying" them. Plain
+        # ordinary accounts flowed into a table's own leftover space (e.g.
+        # 投资收益/营业外支出 after 财务费用's table -- see pptx.py's
+        # _append_table_accounts_to_distribution trailing_items) are the
+        # same blind spot one level further down the column.
         #
         # Matched by geometry, not name: same column (left) as a table AND
         # vertically touching it -- either ending right where the table
-        # starts (the lead-in) or starting shortly after the table ends
-        # (the explanation, offset by the source-line box's own height,
-        # which is why the "below" tolerance is looser than the "above"
-        # one). A same-column-only check (no vertical constraint) first
-        # tried here also matched the slide title and the small fixed
-        # "Commentary" header label purely because they happen to share the
-        # table's left -- both sit far above the table, nowhere near
-        # touching it, so the vertical check excludes them.
+        # starts (the lead-in, single check against the table's own top) or
+        # part of an unbroken chain starting at the table's own bottom
+        # (source line -> explanation -> any number of trailing plain
+        # accounts, each one's top touching the PREVIOUS shape's bottom).
+        # The first hop of that chain uses a looser tolerance (the
+        # source-line box's own height sits between the table and the
+        # explanation); every hop after that uses the tight fixed gap
+        # _TABLE_GAP_BELOW_PT actually renders with. A same-column-only
+        # check (no vertical constraint) first tried here also matched the
+        # slide title and the small fixed "Commentary" header label purely
+        # because they happen to share the table's left -- both sit far
+        # above the table, nowhere near touching it, so the vertical check
+        # excludes them.
         # Dedup/identity is keyed on shape_id (the stable id python-pptx
         # stores in the XML itself), NOT Python's id() -- shape objects are
         # freshly re-wrapped on every separate `slide.shapes` iteration, so
@@ -201,14 +210,35 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
         # table in a shared slot, close enough to also look like that
         # table's own trailing explanation).
         LEFT_TOLERANCE_EMU = int(0.05 * 914400)
-        ABOVE_TOLERANCE_EMU = int(2 * 12700)    # lead-in's bottom == table's top, ~exactly
-        BELOW_TOLERANCE_EMU = int(20 * 12700)   # table's bottom -> source line -> explanation
+        ABOVE_TOLERANCE_EMU = int(2 * 12700)      # lead-in's bottom == table's top, ~exactly
+        FIRST_BELOW_TOLERANCE_EMU = int(20 * 12700)   # table's bottom -> source line -> explanation
+        CHAIN_TOLERANCE_EMU = int(6 * 12700)          # explanation/account bottom -> next trailing account
         table_stack_shapes = []
         _seen_ids = {s.shape_id for s in commentary_shapes}
+
+        def _find_touching(reference_left, floor_bottom, tolerance):
+            for s in slide.shapes:
+                if s.shape_id in _seen_ids:
+                    continue
+                if not getattr(s, "has_text_frame", False) or getattr(s, "has_table", False):
+                    continue
+                if s.left is None or s.top is None or s.height is None:
+                    continue
+                if abs(s.left - reference_left) > LEFT_TOLERANCE_EMU:
+                    continue
+                if not (0 <= (s.top - floor_bottom) <= tolerance):
+                    continue
+                _text = (s.text_frame.text or "").strip()
+                if not _text or _text.startswith(("资料来源", "Source:")):
+                    continue
+                return s
+            return None
+
         for _t in table_shapes:
             if _t.left is None or _t.top is None or _t.height is None:
                 continue
             t_bottom = _t.top + _t.height
+
             for s in slide.shapes:
                 if s.shape_id in _seen_ids or s.shape_id == _t.shape_id:
                     continue
@@ -219,15 +249,23 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 if abs(s.left - _t.left) > LEFT_TOLERANCE_EMU:
                     continue
                 s_bottom = s.top + s.height
-                is_lead_in = 0 <= (_t.top - s_bottom) <= ABOVE_TOLERANCE_EMU
-                is_below = 0 <= (s.top - t_bottom) <= BELOW_TOLERANCE_EMU
-                if not (is_lead_in or is_below):
-                    continue
-                _text = (s.text_frame.text or "").strip()
-                if not _text or _text.startswith(("资料来源", "Source:")):
-                    continue
-                _seen_ids.add(s.shape_id)
-                table_stack_shapes.append(s)
+                if 0 <= (_t.top - s_bottom) <= ABOVE_TOLERANCE_EMU:
+                    _text = (s.text_frame.text or "").strip()
+                    if _text:
+                        _seen_ids.add(s.shape_id)
+                        table_stack_shapes.append(s)
+                    break
+
+            frontier_bottom = t_bottom
+            tolerance = FIRST_BELOW_TOLERANCE_EMU
+            while True:
+                found = _find_touching(_t.left, frontier_bottom, tolerance)
+                if found is None:
+                    break
+                _seen_ids.add(found.shape_id)
+                table_stack_shapes.append(found)
+                frontier_bottom = found.top + found.height
+                tolerance = CHAIN_TOLERANCE_EMU
 
         _print(f"=== Slide {slide_idx + 1} ===  (table={bool(table_shapes)}  coSummaryShape={has_summary})")
         for s_shape in summary_shapes:
