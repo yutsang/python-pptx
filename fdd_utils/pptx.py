@@ -1916,6 +1916,81 @@ class PowerPointGenerator:
         except Exception:
             return False
 
+    def _presentation_table_style(self) -> str:
+        """"table" (default, native PPTX table + dedicated stack shapes,
+        see _render_table_accounts_stack) or "sublist" (config-gated
+        fallback: the table dict is converted to plain indented text lines
+        appended to the account's own commentary, and the account is NEVER
+        pulled out of the normal packing pool at all -- it inherits every
+        existing text module -- packing, splitting, cross-column
+        continuation, overflow handling -- for free, at the cost of losing
+        the native-table look and per-period-per-component detail). See
+        _sublist_text_for_table."""
+        try:
+            value = (self.pptx_settings.get("presentation_tables") or {}).get("style", "table")
+        except Exception:
+            value = "table"
+        value = str(value or "table").strip().lower()
+        return value if value in ("table", "sublist") else "table"
+
+    def _sublist_text_for_table(
+        self, table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float = 1,
+    ) -> str:
+        """Converts a presentation_detail_table dict (extract_presentation_
+        detail_table's return shape) into plain text lines for "sublist"
+        style. Component lines show ONLY the LATEST period's figure -- a
+        full table's worth of per-period, per-component detail written out
+        as prose would be worse than the empty space this whole feature
+        exists to fill. The total line keeps every period inline, matching
+        how OI/OC accounts already state multi-year figures in this
+        project's own reference style. Top-level rows only: nested children
+        are already rolled into their own parent's total, and a plain-text
+        bullet list is not the place for two levels of indentation.
+
+        Values are in the same raw-yuan internal scale every account's df
+        uses (see _render_presentation_table's own docstring) -- divided
+        back down by source_multiplier here, at text-building time only,
+        same as the native-table path does at render time (cadbce8)."""
+        divisor = source_multiplier if source_multiplier and source_multiplier != 0 else 1
+
+        def _scaled(v):
+            return v / divisor if isinstance(v, (int, float)) else v
+
+        periods = table.get("periods") or []
+        period_labels = table.get("period_labels") or {}
+        rows = table.get("rows") or []
+        total_row = table.get("total_row") or {}
+        if not periods or not rows:
+            return ""
+
+        latest_period = periods[-1]
+        marker = "- "
+        lines: List[str] = []
+        for row in rows:
+            label = row.get("label", "")
+            value = _scaled((row.get("values") or {}).get(latest_period))
+            if value is None or not label:
+                continue
+            lines.append(f"{marker}{label}：{self._format_table_value(value, is_numeric_column=True)}")
+
+        if total_row:
+            total_label = total_row.get("label") or ("合计" if is_chinese_databook else "Total")
+            total_values = total_row.get("values") or {}
+            parts = []
+            for period in periods:
+                v = _scaled(total_values.get(period))
+                if v is None:
+                    continue
+                label = period_labels.get(period, period)
+                text_val = self._format_table_value(v, is_numeric_column=True)
+                parts.append(f"{label}{text_val}" if is_chinese_databook else f"{text_val} in {label}")
+            if parts:
+                joiner = "，" if is_chinese_databook else ", "
+                sep = "：" if is_chinese_databook else ": "
+                lines.append(f"{marker}{total_label}{sep}{joiner.join(parts)}")
+
+        return "\n".join(lines)
+
     @staticmethod
     def _presentation_table_for_account(account_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         financial_data = (account_data or {}).get("financial_data")
@@ -5706,13 +5781,34 @@ class PowerPointGenerator:
         # sidesteps that entirely -- the packer never knows they exist, so
         # its own sharing/splitting behaviour can't touch them.
         tables_enabled = self._presentation_tables_enabled()
+        table_style = self._presentation_table_style() if tables_enabled else "table"
         table_items: List[Dict[str, Any]] = []
         normal_items: List[Dict[str, Any]] = []
         last_table_pos: Optional[int] = None
         tagged_normal: List[Tuple[int, Dict[str, Any]]] = []
         for pos, item in enumerate(structured_data):
             table = self._presentation_table_for_account(item) if tables_enabled else None
-            if table:
+            if table and table_style == "sublist":
+                # Fallback style: the account is NEVER pulled out of the
+                # normal packing pool -- the table dict becomes plain text
+                # appended to its own commentary, so it inherits the whole
+                # existing text pipeline (packing, splitting, cross-column
+                # continuation, overflow handling) instead of the dedicated
+                # native-table rendering path below.
+                item = dict(item)
+                is_chinese = bool(item.get("is_chinese"))
+                lead_in, post_table_text = self._split_table_commentary(
+                    item.get("commentary", ""), is_chinese,
+                )
+                source_multiplier = 1
+                financial_data = item.get("financial_data")
+                if hasattr(financial_data, "attrs"):
+                    source_multiplier = financial_data.attrs.get("source_multiplier") or 1
+                sublist_text = self._sublist_text_for_table(table, is_chinese, source_multiplier)
+                parts = [p for p in (lead_in, sublist_text, post_table_text) if p]
+                item["commentary"] = "\n".join(parts)
+                tagged_normal.append((pos, item))
+            elif table:
                 item = dict(item)
                 lead_in, post_table_text = self._split_table_commentary(
                     item.get("commentary", ""), bool(item.get("is_chinese")),
