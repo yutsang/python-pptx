@@ -1892,22 +1892,6 @@ class PowerPointGenerator:
     # already-independently-sized shapes.
     _TABLE_GAP_ABOVE_PT = 4.0
     _TABLE_GAP_BELOW_PT = 4.0
-    # A presentation table is sized to its OWN content, not stretched to
-    # fill the slot -- confirmed by direct photo comparison against the
-    # project team's own real Crescent deck (same "利润表概览" template):
-    # a short-label account (税金及附加, labels up to 5 characters) renders
-    # at roughly 2/3 of its column's width with visible space beside it,
-    # while a long-label account (营业成本, labels up to 9 characters, e.g.
-    # "建筑物维修及保养费") renders close to the full column width. These are
-    # heuristic per-character widths for that content-based estimate, not a
-    # real glyph measurer (no shape exists yet at render time for a table,
-    # same planning-time constraint _estimate_table_account_block_height_pt
-    # already has) -- directionally right, not pixel-exact; PowerPoint does
-    # the real layout. See _render_presentation_table's own width_pt calc.
-    _TABLE_LABEL_CHAR_WIDTH_PT = 7.0   # CJK label glyph, ~1em at the table's own 7pt font
-    _TABLE_DIGIT_CHAR_WIDTH_PT = 4.2   # Arial digit/comma/paren, ~0.6em at 7pt
-    _TABLE_CELL_PADDING_PT = 5.76      # 0.04in left + 0.04in right margin, matches _set_cell below
-    _TABLE_CHILD_INDENT_PT = 8.64      # 0.12in child-row left indent, matches this method's indent_emu
     # Shared margin for both text blocks sized against a table (lead-in
     # above it, explanatory bullets below it): inspect_pptx.py re-derives
     # capacity/usage independently from the exported XML rather than
@@ -2469,39 +2453,7 @@ class PowerPointGenerator:
         n_rows = 2 + len(plan)  # title + header + plan rows
         height = int(self._presentation_table_height_pt(table) * 12700)
 
-        # Content-based width (see _TABLE_LABEL_CHAR_WIDTH_PT's own comment
-        # for why this table is deliberately NOT stretched to fill `width`
-        # the way it used to be): longest label vs. longest formatted value/
-        # period-header string, from the SAME already-scaled `plan` this
-        # method is about to render -- no separate re-derivation of
-        # scaling or child indentation needed. Floored at what the label
-        # column alone needs (a very short table shouldn't collapse to
-        # near-nothing) and capped at the full slot width `width` (a
-        # long-label table, e.g. 营业成本, is allowed to use all of it --
-        # confirmed that one DOES render close to full width in the real
-        # deck too).
-        has_child_row = any(row.get("children") for row in rows)
-        label_texts = [str(table.get("title") or ""), "人民币千元" if is_chinese_databook else "CNY'000"]
-        label_texts.extend(str(entry["label"]) for entry in plan)
-        max_label_len = max((len(t) for t in label_texts if t), default=4)
-        label_width_pt = (
-            max_label_len * self._TABLE_LABEL_CHAR_WIDTH_PT
-            + self._TABLE_CELL_PADDING_PT
-            + (self._TABLE_CHILD_INDENT_PT if has_child_row else 0.0)
-        )
-        value_texts = [str(period_labels.get(p, p)) for p in periods]
-        for entry in plan:
-            for v in entry["values"].values():
-                if v is not None:
-                    value_texts.append(self._format_table_value(v, is_numeric_column=True))
-        max_value_len = max((len(t) for t in value_texts if t), default=6)
-        period_width_pt = max_value_len * self._TABLE_DIGIT_CHAR_WIDTH_PT + self._TABLE_CELL_PADDING_PT
-        natural_width_pt = label_width_pt + len(periods) * period_width_pt
-        natural_width_emu = int(natural_width_pt * 12700)
-        min_width_emu = int(label_width_pt * 12700)
-        table_width = max(min_width_emu, min(width, natural_width_emu))
-
-        graphic_frame = slide.shapes.add_table(n_rows, n_cols, left, top, table_width, height)
+        graphic_frame = slide.shapes.add_table(n_rows, n_cols, left, top, width, height)
         table_shape = graphic_frame.table
         style_id = self._resolve_table_style_id()
         if style_id:
