@@ -1909,6 +1909,22 @@ class PowerPointGenerator:
     # stack like 营业成本 that's already tight against the slide bottom,
     # raising this shrinks that margin further, not the other way round.
     _TEXT_HEIGHT_SAFETY_FACTOR = 1.6
+    # Render-time-ONLY counterpart for the two ACTUAL shape heights this
+    # feature sets directly (table lead-in, table explanation) -- NOT used
+    # for the PLANNING-time estimates above (_estimate_lead_in_pt /
+    # _estimate_table_account_block_height_pt), which stay at the full
+    # 1.6x since those decide whether content fits in a slot at all and
+    # inflating a real Crescent export's account count wrong is worse than
+    # a few points of unused space. The full 1.6x applied to an ACTUAL
+    # rendered box instead (as it was until 2026-08-03) creates VISIBLE
+    # blank space below the real text and before the table -- confirmed
+    # against a real Crescent export where a ~3-line lead-in got sized for
+    # ~4.8 "line units", roughly 2 blank lines, matching a real user report
+    # ("表格頂部有一些空白...大約2-3行"). 1.6x's own history (raised from 1.3x
+    # after THAT still read 104% overflow-risk on inspect_pptx.py's
+    # independent re-check) means this can't just be zeroed out -- some
+    # margin is real. Split the difference rather than re-trying 1.3x blind.
+    _TABLE_RENDER_HEIGHT_SAFETY_FACTOR = 1.35
 
     def _presentation_tables_enabled(self) -> bool:
         try:
@@ -2399,7 +2415,7 @@ class PowerPointGenerator:
                     + self._real_para_gap_pt(is_chinese)
                 )
                 lead_height_pt = (
-                    max(used_units, 1.0) * std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
+                    max(used_units, 1.0) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
                     + self._TABLE_GAP_ABOVE_PT
                 )
                 lead_box.height = int(lead_height_pt * 12700)
@@ -2698,7 +2714,7 @@ class PowerPointGenerator:
             run = p.add_run()
             run.text = line_text
             run.font.name = 'Arial'
-            run.font.size = Pt(7.0)
+            run.font.size = Pt(9.0)
             try:
                 run.font.color.rgb = BLACK
             except Exception:
@@ -2721,7 +2737,7 @@ class PowerPointGenerator:
                 self._real_font_size_pt(is_chinese_databook) * self._real_line_spacing(is_chinese_databook)
                 + self._real_para_gap_pt(is_chinese_databook)
             )
-            explain_height_pt = max(used_units, 1.0) * std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
+            explain_height_pt = max(used_units, 1.0) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
             explain_box.height = int(explain_height_pt * 12700)
         except Exception as exc:
             logger.debug("Could not size presentation-table explanatory text: %s", exc)
