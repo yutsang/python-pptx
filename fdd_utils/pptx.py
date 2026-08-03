@@ -1909,29 +1909,40 @@ class PowerPointGenerator:
     # stack like 营业成本 that's already tight against the slide bottom,
     # raising this shrinks that margin further, not the other way round.
     _TEXT_HEIGHT_SAFETY_FACTOR = 1.6
-    # Render-time-ONLY counterpart for the two ACTUAL shape heights this
-    # feature sets directly (table lead-in, table explanation) -- NOT used
-    # for the PLANNING-time estimates above (_estimate_lead_in_pt /
-    # _estimate_table_account_block_height_pt), which stay at the full
-    # 1.6x since those decide whether content fits in a slot at all and
-    # inflating a real Crescent export's account count wrong is worse than
-    # a few points of unused space. The full 1.6x applied to an ACTUAL
-    # rendered box instead (as it was until 2026-08-03) creates VISIBLE
-    # blank space below the real text and before the table -- confirmed
-    # against a real Crescent export where a ~3-line lead-in got sized for
-    # ~4.8 "line units", roughly 2 blank lines, matching a real user report
-    # ("表格頂部有一些空白...大約2-3行"). 1.6x's own history (raised from 1.3x
-    # after THAT still read 104% overflow-risk on inspect_pptx.py's
-    # independent re-check) means this can't just be zeroed out -- some
-    # margin is real. Iteratively tuned (1.35 -> 1.15 -> 1.25) against TWO
-    # real texts from an actual Crescent export (营业成本's and 财务费用's own
-    # lead-in/explanation) via inspect_pptx.py's independent re-check each
-    # time -- 1.15 looked fine on the first (98%/94% fill) but the SECOND,
-    # shorter-but-differently-wrapping explanation hit 101% (⚠️ OVERFLOW
-    # RISK), proving a single real sample isn't enough evidence to land on
-    # a value. 1.25 clears both with real margin (85-91% fill, not
-    # razor-thin) -- if a future real case still overflows at 1.25, that's
-    # a real, reproducible data point to retune from, not a guess.
+    # Render-time counterpart for the two ACTUAL shape heights this feature
+    # sets directly (table lead-in, table explanation). The full 1.6x
+    # applied to an ACTUAL rendered box instead (as it was until
+    # 2026-08-03) creates VISIBLE blank space below the real text and
+    # before the table -- confirmed against a real Crescent export where a
+    # ~3-line lead-in got sized for ~4.8 "line units", roughly 2 blank
+    # lines, matching a real user report ("表格頂部有一些空白...大約2-3行").
+    # 1.6x's own history (raised from 1.3x after THAT still read 104%
+    # overflow-risk on inspect_pptx.py's independent re-check) means this
+    # can't just be zeroed out -- some margin is real. Iteratively tuned
+    # (1.35 -> 1.15 -> 1.25) against TWO real texts from an actual Crescent
+    # export (营业成本's and 财务费用's own lead-in/explanation) via
+    # inspect_pptx.py's independent re-check each time -- 1.15 looked fine
+    # on the first (98%/94% fill) but the SECOND, shorter-but-differently-
+    # wrapping explanation hit 101% (⚠️ OVERFLOW RISK), proving a single
+    # real sample isn't enough evidence to land on a value. 1.25 clears
+    # both with real margin (85-91% fill, not razor-thin) -- if a future
+    # real case still overflows at 1.25, that's a real, reproducible data
+    # point to retune from, not a guess.
+    #
+    # ALSO used (2026-08-03, same day) by the PLANNING-time estimates
+    # below (_estimate_lead_in_pt / _estimate_table_account_block_height_
+    # pt) -- these used to stay at the full 1.6x on the theory that a more
+    # conservative planning estimate is the safe direction (better to
+    # under-pack than overflow). That theory stopped holding once render
+    # itself moved to 1.25x: planning at 1.6x now systematically believes
+    # LESS room remains after a table block than render will actually
+    # need, so a trailing account that would genuinely have fit was never
+    # even tried -- confirmed against two real Crescent table pages
+    # showing 1.5-2.2in of real, measured, unexplained blank column below
+    # a finished table+explanation(+trailing account) stack. Planning and
+    # render now use the SAME factor so the estimate that drives "does
+    # this fit" decisions actually predicts what render will produce,
+    # instead of two different numbers pulling in opposite directions.
     _TABLE_RENDER_HEIGHT_SAFETY_FACTOR = 1.25
 
     def _presentation_tables_enabled(self) -> bool:
@@ -2207,7 +2218,16 @@ class PowerPointGenerator:
             self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
             + self._real_para_gap_pt(is_chinese)
         )
-        return lead_in_units * lead_std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
+        # Matches the RENDER-time factor (2026-08-03), not the planning-only
+        # 1.6x above -- this estimate's whole job is to predict what render
+        # will actually produce, so a different (more conservative) factor
+        # here just makes the prediction systematically wrong in the other
+        # direction: real Crescent exports showed 1.5-2in of genuinely
+        # empty column below a table+trailing-account stack, because this
+        # estimate (still at 1.6x after the render side moved to 1.25x)
+        # believed less room remained than truly did, so a trailing account
+        # that would have fit was never even tried.
+        return lead_in_units * lead_std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
 
     def _estimate_table_account_block_height_pt(
         self, item: Dict[str, Any], table: Dict[str, Any], is_chinese_databook: bool,
@@ -2236,7 +2256,10 @@ class PowerPointGenerator:
                 self._real_font_size_pt(is_chinese_databook) * self._real_line_spacing(is_chinese_databook)
                 + self._real_para_gap_pt(is_chinese_databook)
             )
-            explain_pt = explain_units * explain_std_lh_pt * self._TEXT_HEIGHT_SAFETY_FACTOR
+            # Matches _render_presentation_table's own render-time factor --
+            # see _estimate_lead_in_pt's comment for why planning and render
+            # need to agree here, not diverge.
+            explain_pt = explain_units * explain_std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
 
         return lead_in_pt + table_pt + explain_pt
 
