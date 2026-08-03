@@ -284,6 +284,82 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 total_warnings += 1
                 warning_details.append(f"Slide {slide_idx + 1}: executive summary ({s_shape.name}) is empty")
 
+        # Presentation-table (subtable) width + wrap-risk check. Reports
+        # each native table's own width against the widest sibling
+        # commentary column on the same slide (so "is this full-width or
+        # content-width" is a printable number, not something you have to
+        # open PowerPoint to eyeball), and cross-checks every cell's REAL
+        # measured text width (same glyph-metrics measurer everything else
+        # in this file uses) against its assigned column's available width.
+        # A cell that fails this WILL wrap when PowerPoint actually opens
+        # the file and auto-grow its row past the nominal height set in the
+        # XML -- this predicts that deterministically from the saved file
+        # alone, without needing PowerPoint itself to render it.
+        for _t in table_shapes:
+            if _t.left is None or _t.width is None:
+                continue
+            tbl = _t.table
+            n_rows, n_cols = len(tbl.rows), len(tbl.columns)
+            col_widths_in = [round(Emu(c.width).inches, 3) for c in tbl.columns]
+            table_width_in = round(Emu(_t.width).inches, 3)
+
+            # Excluded tokens mirror pptx.py's _is_commentary_text_shape --
+            # without this, the slide TITLE (which often shares the same
+            # left edge as a table sitting under it) gets picked up as the
+            # "sibling slot", reporting a nonsense full-slide-width ratio.
+            _excluded_sibling_tokens = ("title", "summary", "table", "subtitle")
+            sibling_widths_in = [
+                round(Emu(s.width).inches, 3) for s in slide.shapes
+                if s.shape_id != _t.shape_id and getattr(s, "has_text_frame", False)
+                and not getattr(s, "has_table", False)
+                and not any(tok in (s.name or "").lower() for tok in _excluded_sibling_tokens)
+                and abs((s.left or 0) - _t.left) <= LEFT_TOLERANCE_EMU
+                and s.width
+            ]
+            ratio_note = ""
+            if sibling_widths_in:
+                slot_w = max(sibling_widths_in)
+                ratio_note = f"  (slot width ~{slot_w}in, table/slot={table_width_in / slot_w:.0%})"
+
+            _print(f"  [table {_t.name!r}] left={Emu(_t.left).inches:.2f}in width={table_width_in}in "
+                   f"{n_rows}x{n_cols} columns(in)={col_widths_in}{ratio_note}")
+
+            all_text = " ".join(tbl.cell(r, 0).text for r in range(n_rows))
+            table_is_chi = _is_chinese_text(all_text)
+            fam = family_chi if table_is_chi else family_eng
+            mpath = metrics_chi if table_is_chi else metrics_eng
+            m_title = get_measurer(fam, 8.0, is_cjk=table_is_chi, metrics_path=mpath)
+            m_header = get_measurer(fam, 7.5, is_cjk=table_is_chi, metrics_path=mpath)
+            m_data = get_measurer(fam, 7.0, is_cjk=table_is_chi, metrics_path=mpath)
+            CELL_PADDING_PT = 5.76  # matches _TABLE_CELL_PADDING_PT in pptx.py
+
+            title_avail_pt = sum(col_widths_in) * 72 - CELL_PADDING_PT  # title spans ALL columns (merged)
+            wrap_risks = []
+            for r in range(n_rows):
+                measurer_r = m_title if r == 0 else (m_header if r == 1 else m_data)
+                for c in range(n_cols):
+                    if r == 0 and c > 0:
+                        continue  # title row is merged across all columns
+                    text = tbl.cell(r, c).text
+                    if not text:
+                        continue
+                    needed_pt = measurer_r.text_width_pt(text)
+                    avail_pt = title_avail_pt if r == 0 else (col_widths_in[c] * 72 - CELL_PADDING_PT)
+                    if needed_pt > avail_pt + 0.5:
+                        wrap_risks.append((r, c, text[:30], round(needed_pt, 1), round(avail_pt, 1)))
+
+            if wrap_risks:
+                _print(f"  ⚠️  {len(wrap_risks)} cell(s) will likely WRAP (real text width exceeds its "
+                       f"column's width) -- PowerPoint will auto-grow that row past its nominal height:")
+                for r, c, text, needed_pt, avail_pt in wrap_risks[:10]:
+                    _print(f"      row={r} col={c} text={text!r} needs={needed_pt}pt has={avail_pt}pt")
+                total_warnings += 1
+                warning_details.append(
+                    f"Slide {slide_idx + 1}: table {_t.name!r} has {len(wrap_risks)} wrap-risk cell(s)"
+                )
+            else:
+                _print(f"  ✅ table {_t.name!r}: no cell wrap risk detected.")
+
         all_checked_shapes = list(commentary_shapes) + table_stack_shapes
         infos: List[ShapeInfo] = []
         for shape in all_checked_shapes:
