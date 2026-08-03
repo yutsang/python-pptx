@@ -8130,16 +8130,56 @@ Original content:
         is resolved, and name-matching here leaves that text (and thus
         that fallback) completely alone until this runs, right before
         save, after every slide's content/tables are already finalized.
+
+        Deleting the band alone leaves a blank gap where it used to sit --
+        confirmed on a real export (the user described it as page 1/3
+        "looking blank"): every content shape below the band starts
+        EXACTLY at the band's own bottom edge (template geometry, e.g.
+        textMainBullets top=1.985in == Text-commentary bottom=1.709in+
+        0.276in), so removing the band without moving anything else just
+        turns that 0.276in strip into empty white space instead of
+        reclaiming it. On table-bearing slides the shape sitting there
+        isn't even textMainBullets by name (it's a fresh auto-named
+        TextBox from _render_table_accounts_stack), so the fix matches by
+        GEOMETRY -- same left edge, top touching the label's bottom edge --
+        not by a fixed name list, the same approach inspect_pptx.py's own
+        table-stack matching already uses for this exact "auto-named
+        shape, no reliable name" problem. Only the TOP moves up (to the
+        label's own top) and height grows to match -- the bottom edge
+        never moves, so this only ever ADDS headroom to a box already
+        sized/packed against its old, smaller height, never removes any --
+        safe with respect to CLAUDE.md's overflow requirement by
+        construction, not just by testing.
         """
         if not getattr(self, "_is_chinese_mode", False):
             return
         label_names = {"Text-commentary", "Text-commentary_L", "Text-commentary_R"}
+        tolerance_emu = int(Inches(0.05))
         for slide in self.presentation.slides:
-            for shape in list(slide.shapes):
-                if self._shape_name(shape) not in label_names:
-                    continue
+            label_shapes = [s for s in slide.shapes if self._shape_name(s) in label_names]
+            if not label_shapes:
+                continue
+            for label in label_shapes:
+                label_left, label_top, label_height = label.left, label.top, label.height
+                label_bottom = label_top + label_height
+                for shape in slide.shapes:
+                    if shape is label or not hasattr(shape, "left"):
+                        continue
+                    same_column = abs(shape.left - label_left) <= tolerance_emu
+                    touches_bottom = abs(shape.top - label_bottom) <= tolerance_emu
+                    if same_column and touches_bottom:
+                        # Grow from the shape's own original bottom edge,
+                        # not label_top + label_height -- the template's
+                        # own label-bottom/content-top values aren't
+                        # always pixel-identical (seen: ~0.004in gap on
+                        # Text-commentary_R), and anchoring off the
+                        # content shape's OWN bottom guarantees that edge
+                        # truly never moves, regardless of that slack.
+                        original_bottom = shape.top + shape.height
+                        shape.top = label_top
+                        shape.height = original_bottom - label_top
                 try:
-                    sp = shape._element
+                    sp = label._element
                     sp.getparent().remove(sp)
                 except Exception as exc:
                     logger.debug("Could not remove Commentary label band: %s", exc)
