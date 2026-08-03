@@ -2432,6 +2432,73 @@ class PowerPointGenerator:
 
             current_top = bottom + int(Pt(self._TABLE_GAP_BELOW_PT))
 
+    # Cell padding (0.04in left + 0.04in right, matching _set_cell's
+    # margin_left/margin_right) and the child-row left indent (0.12in,
+    # matching _set_cell's indent_emu for kind=="child") -- both added on
+    # top of the raw measured text width below.
+    _TABLE_CELL_PADDING_PT = 5.76
+    _TABLE_CHILD_INDENT_PT = 8.64
+    _TABLE_MIN_COLUMN_PT = 25.2  # 0.35in floor, guards a pathologically short column
+
+    def _measure_presentation_table_column_widths_pt(
+        self, plan: List[Dict[str, Any]], periods: List[str], period_labels: Dict[str, str],
+        unit_label: str, is_chinese_databook: bool, available_pt: float,
+    ) -> List[float]:
+        """Real-glyph-metrics column widths for a presentation (subtable)
+        breakdown -- guarantees every cell's content fits on ONE line at its
+        real rendered font size, rather than 2c6e2b1's crude per-character-
+        count estimate. That estimate is what actually broke: it under-
+        guessed real glyph width, a column ended up narrower than its
+        content needed, PowerPoint wrapped the cell to a second line, and
+        the row auto-grew past the fixed _TABLE_*_ROW_PT height that
+        assumed one line -- text looked shrunk/cramped and the table's
+        actual rendered height stopped matching _presentation_table_height_
+        pt's estimate (the two symptoms that got 2c6e2b1 reverted).
+        Reuses the SAME text_metrics measurer commentary sizing already
+        trusts instead of a second, separate heuristic, so "guaranteed
+        no-wrap" is a real guarantee, not another guess.
+
+        Returns one width in points per column (label column first),
+        summing to at most `available_pt` -- when content genuinely needs
+        less than that (the common case, and the whole point: the real
+        deck's own subtables don't fill their column either), the returned
+        widths sum to LESS, and the caller renders a narrower, left-aligned
+        table rather than stretching to fill the slot."""
+        from fdd_utils.text_metrics import get_measurer
+
+        packing = self._packing_settings()
+        family = self._measurer_family(is_chinese_databook, packing)
+        metrics_path = self._resolve_font_metrics_path(is_chinese_databook, packing)
+        measurer_header = get_measurer(family, 7.5, is_cjk=is_chinese_databook, metrics_path=metrics_path)
+        measurer_data = get_measurer(family, 7.0, is_cjk=is_chinese_databook, metrics_path=metrics_path)
+
+        # Column 0 (label): widest of the unit-label header and every row's
+        # own label text (plus child indent when that row is indented).
+        label_candidates_pt = [measurer_header.text_width_pt(unit_label)]
+        for entry in plan:
+            indent_pt = self._TABLE_CHILD_INDENT_PT if entry.get("kind") == "child" else 0.0
+            label_candidates_pt.append(measurer_data.text_width_pt(entry.get("label", "")) + indent_pt)
+        widths_pt = [max(label_candidates_pt) + self._TABLE_CELL_PADDING_PT]
+
+        # One column per period: widest of its header label and every row's
+        # own formatted value in that column.
+        for period in periods:
+            candidates_pt = [measurer_header.text_width_pt(period_labels.get(period, period))]
+            for entry in plan:
+                value = entry.get("values", {}).get(period)
+                text_val = self._format_table_value(value, is_numeric_column=True) if value is not None else ""
+                candidates_pt.append(measurer_data.text_width_pt(text_val))
+            widths_pt.append(max(candidates_pt) + self._TABLE_CELL_PADDING_PT)
+
+        widths_pt = [max(self._TABLE_MIN_COLUMN_PT, w) for w in widths_pt]
+
+        total_pt = sum(widths_pt)
+        if total_pt > available_pt and total_pt > 0:
+            scale = available_pt / total_pt
+            widths_pt = [w * scale for w in widths_pt]
+
+        return widths_pt
+
     def _render_presentation_table(
         self, slide, left: int, top: int, width: int, table: Dict[str, Any],
         is_chinese_databook: bool, source_multiplier: float = 1, post_table_text: str = "",
@@ -2480,8 +2547,17 @@ class PowerPointGenerator:
         n_rows = 2 + len(plan)  # title + header + plan rows
         height = int(self._presentation_table_height_pt(table) * 12700)
 
-        graphic_frame = slide.shapes.add_table(n_rows, n_cols, left, top, width, height)
+        unit_label = "人民币千元" if is_chinese_databook else "CNY'000"
+        available_pt = width / 12700.0
+        column_widths_pt = self._measure_presentation_table_column_widths_pt(
+            plan, periods, period_labels, unit_label, is_chinese_databook, available_pt,
+        )
+        table_width = max(int(Inches(0.7)), int(sum(column_widths_pt) * 12700))
+
+        graphic_frame = slide.shapes.add_table(n_rows, n_cols, left, top, table_width, height)
         table_shape = graphic_frame.table
+        for col_idx, col_width_pt in enumerate(column_widths_pt):
+            table_shape.columns[col_idx].width = Pt(col_width_pt)
         style_id = self._resolve_table_style_id()
         if style_id:
             try:
@@ -2542,7 +2618,6 @@ class PowerPointGenerator:
         # Row 1: period header -- white bg, bold black text (company-format
         # reference: only the title band above is filled navy).
         table_shape.rows[1].height = Pt(self._TABLE_HEADER_ROW_PT)
-        unit_label = "人民币千元" if is_chinese_databook else "CNY'000"
         _set_cell(table_shape.cell(1, 0), unit_label, bold=True, size_pt=7.5)
         for j, period in enumerate(periods, start=1):
             _set_cell(table_shape.cell(1, j), period_labels.get(period, period),
@@ -2586,11 +2661,6 @@ class PowerPointGenerator:
                     self._set_cell_border(table_shape.cell(total_row_idx, c), 'bottom', color_rgb=BLACK, width=Pt(1.25))
         except Exception as exc:
             logger.debug("Could not apply presentation-table borders: %s", exc)
-
-        try:
-            self._fit_table_columns(table_shape, pd.DataFrame(columns=["label"] + periods))
-        except Exception as exc:
-            logger.debug("Could not fit presentation-table columns: %s", exc)
 
         bottom = top + height
         source_box = slide.shapes.add_textbox(left, bottom, width, Pt(self._TABLE_SOURCE_LINE_PT + 2))

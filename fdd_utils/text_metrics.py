@@ -649,6 +649,15 @@ class Measurer:
         return (POWERPOINT_LINE_PITCH_FACTOR * self.size_pt * self.line_spacing
                 + extra_leading_pt)
 
+    def text_width_pt(self, text: str) -> float:
+        """Rendered width of `text` on ONE line (no wrapping), in points --
+        for callers that need to size a container to its content (e.g. a
+        table column) rather than wrap content into a fixed container.
+        Dispatches to whichever backend this Measurer holds, same as wrap()."""
+        if self._metrics is None:
+            return _measure(self._font, str(text or ""))
+        return self._metrics.text_width_pt(str(text or ""), self.size_pt)
+
     def wrap(self, text: str, max_width_pt: float, *, first_line_width_pt: Optional[float] = None) -> List[str]:
         if self._metrics is None:
             return wrap_text(text, self._font, max_width_pt, first_line_width_pt=first_line_width_pt)
