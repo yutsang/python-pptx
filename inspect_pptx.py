@@ -117,6 +117,26 @@ class ShapeInfo:
     content_units: float
     fill_ratio: float
     overflow: bool
+    font_sizes_pt: tuple
+
+
+def _actual_font_sizes_pt(shape) -> tuple:
+    """Every DISTINCT font size actually set on a run in this shape's text,
+    in points, sorted. Reads the real saved XML rather than assuming the
+    nominal size a caller intended -- the only way a report like "the text
+    size looks wrong" is verifiable from pasted text output instead of a
+    screenshot. `None` (a run with no explicit size, inheriting from the
+    placeholder/theme) is reported as the string 'inherited' rather than
+    silently dropped, since an unexpectedly-inherited size is itself
+    sometimes the actual bug."""
+    sizes = set()
+    try:
+        for para in shape.text_frame.paragraphs:
+            for run in para.runs:
+                sizes.add(run.font.size.pt if run.font.size is not None else "inherited")
+    except Exception:
+        pass
+    return tuple(sorted(sizes, key=lambda v: (isinstance(v, str), v)))
 
 
 def _bbox_overlap(a, b) -> bool:
@@ -333,20 +353,39 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
             m_data = get_measurer(fam, 7.0, is_cjk=table_is_chi, metrics_path=mpath)
             CELL_PADDING_PT = 5.76  # matches _TABLE_CELL_PADDING_PT in pptx.py
 
+            # Font sizes actually used are measured AT (not asserted to
+            # equal) -- the overview grid table (_fill_table_placeholder)
+            # and the presentation/subtable (_render_presentation_table)
+            # legitimately use DIFFERENT font-size schemes (the overview
+            # table density-tiers by row count, 7-8pt; the subtable is a
+            # fixed 8.0/7.5/7.0 by row role) and this check can't reliably
+            # tell which kind of table it's looking at from the saved file
+            # alone. So rather than assert a specific expected value (which
+            # produced a false positive against the overview table's own
+            # legitimate 8pt header when first tried), measure with THIS
+            # table's own row-0/row-1/data sizes and flag only INTERNAL
+            # inconsistency -- e.g. some data-row cells at 7.0pt and others
+            # at 6.5pt -- which is a real signal (partial shrink, a stray
+            # style) regardless of what the "correct" absolute value is for
+            # this particular table's own convention.
             title_avail_pt = sum(col_widths_in) * 72 - CELL_PADDING_PT  # title spans ALL columns (merged)
             wrap_risks = []
+            sizes_by_role = {"title": set(), "header": set(), "data": set()}
             for r in range(n_rows):
+                role = "title" if r == 0 else ("header" if r == 1 else "data")
                 measurer_r = m_title if r == 0 else (m_header if r == 1 else m_data)
                 for c in range(n_cols):
                     if r == 0 and c > 0:
                         continue  # title row is merged across all columns
-                    text = tbl.cell(r, c).text
+                    cell = tbl.cell(r, c)
+                    text = cell.text
                     if not text:
                         continue
                     needed_pt = measurer_r.text_width_pt(text)
                     avail_pt = title_avail_pt if r == 0 else (col_widths_in[c] * 72 - CELL_PADDING_PT)
                     if needed_pt > avail_pt + 0.5:
                         wrap_risks.append((r, c, text[:30], round(needed_pt, 1), round(avail_pt, 1)))
+                    sizes_by_role[role].update(_actual_font_sizes_pt(cell))
 
             if wrap_risks:
                 _print(f"  ⚠️  {len(wrap_risks)} cell(s) will likely WRAP (real text width exceeds its "
@@ -359,6 +398,19 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 )
             else:
                 _print(f"  ✅ table {_t.name!r}: no cell wrap risk detected.")
+
+            _print(f"  [table {_t.name!r}] font sizes actually used -- "
+                   f"title={sorted(sizes_by_role['title'], key=str)} "
+                   f"header={sorted(sizes_by_role['header'], key=str)} "
+                   f"data={sorted(sizes_by_role['data'], key=str)}")
+            inconsistent_roles = [role for role, sizes in sizes_by_role.items() if len(sizes) > 1]
+            if inconsistent_roles:
+                _print(f"  ⚠️  font size is INCONSISTENT within the same row role: {inconsistent_roles} "
+                       f"-- some cells that should match are rendering at different sizes.")
+                total_warnings += 1
+                warning_details.append(
+                    f"Slide {slide_idx + 1}: table {_t.name!r} has inconsistent font size within {inconsistent_roles}"
+                )
 
         all_checked_shapes = list(commentary_shapes) + table_stack_shapes
         infos: List[ShapeInfo] = []
@@ -428,6 +480,7 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 text=text, n_chars=len(text), capacity_lines=capacity,
                 wrapped_lines=n_lines, content_units=content_units, fill_ratio=fill_ratio,
                 overflow=content_units > capacity,
+                font_sizes_pt=_actual_font_sizes_pt(shape),
             ))
 
         for i, info in enumerate(infos):
@@ -443,7 +496,7 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 warning_details.append(f"Slide {slide_idx + 1} [{info.slot}] {info.name}: {', '.join(flags)}")
             _print(f"  [{info.slot:6s}] {info.name:24s} left={info.left_in:5.2f}in width={info.width_in:5.2f}in "
                    f"chars={info.n_chars:4d} capacity={info.capacity_lines:5.1f}L used={info.content_units:5.1f}L "
-                   f"fill={info.fill_ratio:.0%} "
+                   f"fill={info.fill_ratio:.0%} font_pt={list(info.font_sizes_pt)} "
                    f"(raw wraps_to={info.wrapped_lines:3d}L, NOT comparable to capacity){flag_str}")
 
         # 1. L/R collision: a page with no table/summary (i.e. NOT the
