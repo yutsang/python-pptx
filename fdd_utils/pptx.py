@@ -1923,8 +1923,16 @@ class PowerPointGenerator:
     # ("表格頂部有一些空白...大約2-3行"). 1.6x's own history (raised from 1.3x
     # after THAT still read 104% overflow-risk on inspect_pptx.py's
     # independent re-check) means this can't just be zeroed out -- some
-    # margin is real. Split the difference rather than re-trying 1.3x blind.
-    _TABLE_RENDER_HEIGHT_SAFETY_FACTOR = 1.35
+    # margin is real. Iteratively tuned (1.35 -> 1.15 -> 1.25) against TWO
+    # real texts from an actual Crescent export (营业成本's and 财务费用's own
+    # lead-in/explanation) via inspect_pptx.py's independent re-check each
+    # time -- 1.15 looked fine on the first (98%/94% fill) but the SECOND,
+    # shorter-but-differently-wrapping explanation hit 101% (⚠️ OVERFLOW
+    # RISK), proving a single real sample isn't enough evidence to land on
+    # a value. 1.25 clears both with real margin (85-91% fill, not
+    # razor-thin) -- if a future real case still overflows at 1.25, that's
+    # a real, reproducible data point to retune from, not a guess.
+    _TABLE_RENDER_HEIGHT_SAFETY_FACTOR = 1.25
 
     def _presentation_tables_enabled(self) -> bool:
         try:
