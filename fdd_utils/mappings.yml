@@ -259,8 +259,8 @@ AR:
         Write in the project's reference style. Hard cap: 2-3 sentences, 40-80 words (ageing/collectability, and — only when it fires — the quantified recommendation below, may each add 1 short clause beyond this if needed).
         Opening (lowercase): "the balance as at <DATE> totalled CNY<X> million, mainly entailing the receivables of actual rental and property management income with issued fapiao from <ENTITY>, which were in line with the payment terms in the leasing agreements."
         Ageing/collectability — ALWAYS address in one clause, this is a standing AR-specific analytical dimension, not optional: "Management said that accounts receivable were all aged within 1-3 months and no bad debt had been incurred historically" (or the equivalent stated in remarks/data) WHEN supported; if no ageing breakdown or bad-debt assessment was provided, say so plainly (e.g. "no ageing breakdown was provided by management") rather than omitting the topic. Either way, never invent an ageing profile, a specific ageing bucket, or a bad-debt conclusion the data/remarks don't state.
-        Quantified recommendation — ONLY when the data/remarks identify a SPECIFIC long-aged or questionable receivable amount: you may close with ONE clause recommending that exact amount be deducted from net assets (e.g. "it is recommended that the CNY<X> long-aged receivable be deducted from net assets"). This is the one narrow exception to the project's no-advisory-language rule — allowed only for a specific, quantified, data-grounded amount, never a generic call to action ("you should confirm..."), and never included at all when the data does not identify such an amount.
-        BANNED: bracketed sub-figures by income type ("Rental income accounted for CNY 412.9K, management fees..."); period-on-period filler; verbose provision narratives; a recommendation clause not tied to a specific amount actually stated in the data/remarks.
+        Quantified recommendation — ONLY when the data/remarks state a SINGLE amount EXPLICITLY LABELLED as the specific figure at risk (e.g. a line item literally captioned as a provision, write-off, or impairment amount for a named counterparty): you may close with ONE clause recommending that exact amount be deducted from net assets (e.g. "it is recommended that the CNY<X> long-aged receivable be deducted from net assets"). Do NOT sum, estimate, or select among several raw, unlabelled per-tenant or per-period balances to construct a figure yourself — that is inventing a number the data doesn't actually state, even if every input digit is real. When the data only shows ambiguous raw balances (e.g. one tenant's figure repeated or varying across several periods with no line explicitly identified as the impairment/write-off amount), name the tenant and the aging fact WITHOUT stating a deduction amount (e.g. "a specific aging risk was noted for <ENTITY>, though no impairment amount was stated in the data"). This is the one narrow exception to the project's no-advisory-language rule — allowed only for a specific, quantified, EXPLICITLY LABELLED, data-grounded amount, never a generic call to action ("you should confirm..."), and never a number derived by you rather than stated in the source.
+        BANNED: bracketed sub-figures by income type ("Rental income accounted for CNY 412.9K, management fees..."); period-on-period filler; verbose provision narratives; a recommendation amount that is summed, estimated, or selected by you from multiple raw figures rather than explicitly labelled in the data/remarks as the figure at risk.
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
         {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance}
         **LANGUAGE**: 100% English.
@@ -271,7 +271,7 @@ AR:
         {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
-        ONE bullet, 2-3 sentences, 40-80 words. Latest balance + counterparty + payment-terms context. Ageing/collectability clause is REQUIRED every time: the fact if supported, otherwise a plain "no ageing breakdown was provided" statement — never silently skip this dimension. If, and only if, the data/remarks identify a specific long-aged or questionable receivable AMOUNT, you may close with one clause recommending that amount be deducted from net assets — never a generic advisory sentence, never invented when no such amount is identified. NO sub-component breakdown by rent/mgmt-fee/utility, NO PoP filler.
+        ONE bullet, 2-3 sentences, 40-80 words. Latest balance + counterparty + payment-terms context. Ageing/collectability clause is REQUIRED every time: the fact if supported, otherwise a plain "no ageing breakdown was provided" statement — never silently skip this dimension. If, and only if, the data/remarks state a SINGLE amount EXPLICITLY LABELLED as the specific figure at risk (not one you summed/estimated/selected from several raw unlabelled balances), you may close with one clause recommending that amount be deducted from net assets — otherwise name the aging fact without a dollar figure, never a generic advisory sentence. NO sub-component breakdown by rent/mgmt-fee/utility, NO PoP filler.
         Output final text only.
     Chi:
       system_prompt: |
@@ -280,7 +280,7 @@ AR:
         首句规则：仅说明最新期末余额——单一期间、单一金额——如"截至<DATE>，余额合计X万元，主要为[构成]"。不得在首句罗列多个期间。不得以变动句开篇。
         首句之后，描述构成（对手方/租户分布）、付款条款背景（如"与租赁协议付款条款一致"）。
         **账龄与坏账风险——这是应收账款科目固定的分析维度，每次都必须提及，不可省略**：若数据/备注提供账龄或坏账信息，据实说明（如"账龄一般在半年之内，且不存在坏账风险"）；若数据未提供账龄细分或坏账评估，也要明确写出"数据未提供账龄细分"这一事实，而不是完全不提这个维度。无论哪种情况，都不得编造具体账龄区间或坏账结论。
-        **量化建议——仅当数据/备注明确指出具体长账龄或存疑应收金额时才可使用**：可在结尾加一句具体建议，如"建议将上述长账龄应收账款人民币X万元于净资产中予以扣除"。这是本项目"不得有顾问式建议"规则的唯一例外，仅限有具体金额依据的情况；不得是"建议与管理层确认"这类泛泛建议，数据未指出具体金额时，完全不得加这句话。
+        **量化建议——仅当数据/备注明确以单一、有标签的金额指出具体风险金额时才可使用**（例如某笔明确标注为"计提减值"或"应核销"的金额，对应具体交易对手）：可在结尾加一句具体建议，如"建议将上述长账龄应收账款人民币X万元于净资产中予以扣除"。**不得**从多笔未标签的原始余额（如某租户跨多期出现的数字）中自行加总、估算或挑选出一个金额——即使每个数字本身都真实存在，自行推算出的金额仍等同于编造。若数据只提供这类模糊的原始余额，只需具体点出交易对手与账龄风险这个事实，**不得**附上扣除金额（如"XX公司存在具体账龄风险，但数据未列示具体减值金额"）。这是本项目"不得有顾问式建议"规则的唯一例外，仅限有明确标签依据的金额；不得是"建议与管理层确认"这类泛泛建议，也不得是自行推算出的金额。
         如前期余额变动重大，可在后续一句中简略提及。
         **防止臆造**：不得编造催收原因、账龄假设或减值变动，除非数据/备注明确说明。"历史上未发生坏账"等标准注脚需有数据支持——不得假设。
         整体约2-4句（账龄/坏账说明，以及仅在触发时的量化建议，如需要可各额外增加1个短分句）。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance}
@@ -293,7 +293,7 @@ AR:
         {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
-        以单一期间陈述最新应收账款余额及其构成开篇。不得在首句罗列所有期间。对手方/付款条款仅在数据支持时说明。账龄与坏账风险这个维度每次都必须提及——有数据就据实说明，没有数据就写"未提供账龄细分"，不得整段跳过不提。若且仅若数据/备注指出具体长账龄或存疑应收金额，结尾可加一句量化建议（扣除净资产）；否则不得添加任何建议性语句。约2-4句。
+        以单一期间陈述最新应收账款余额及其构成开篇。不得在首句罗列所有期间。对手方/付款条款仅在数据支持时说明。账龄与坏账风险这个维度每次都必须提及——有数据就据实说明，没有数据就写"未提供账龄细分"，不得整段跳过不提。若且仅若数据/备注以单一、有标签的金额明确指出具体风险金额（不是从多笔未标签原始余额自行加总或估算出来的），结尾可加一句量化建议（扣除净资产）；数据只有模糊原始余额时，只点出交易对手与账龄事实，不附金额；否则不得添加任何建议性语句。约2-4句。
         **语言**: 输出必须100%为中文。
         仅输出最终文本, 不包含模式名称。
   patterns:
