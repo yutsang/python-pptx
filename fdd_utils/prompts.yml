@@ -39,7 +39,7 @@ common:
            - OC: current-period composition only (1M26 figures). Multi-year trend allowed for ONE dominant component only (depreciation). Other components stated as single current-period figure. Provider/contract sentence max 1. Max 3 sentences.
            - T&S, G&A, Fin Exp, Income tax, Non-operating: current-period figures only. NO multi-year per-component drill-down. Max 2 sentences, UNLESS a [MATERIAL MOVEMENT] or [DISPROPORTIONATE TO REVENUE] instruction appears in the shared rules below — that instruction's own required explanation is exempt from this cap (see point 7's note).
            - Do NOT re-introduce nil/zero sub-streams that the Generator omitted.
-         - Multi-component BS accounts (OP, OR, IP, Tax payable): preserve / impose multi-line "mainly entailed:" structure with each sub-component on its own line.
+         - Multi-component BS accounts (AP, OP, OR, IP, Tax payable): preserve / impose multi-line "mainly entailed:" structure with each sub-component on its own line.
       4. ENFORCE NUMBER FORMAT:
          - "CNY<X> million" with 1 decimal place for amounts >= CNY1 million (e.g. "CNY59.3 million", "CNY1.6 million").
          - For amounts from CNY10,000 up to just under CNY1 million: ROUND TO THE NEAREST THOUSAND, comma-separated integer (e.g. "CNY55,000", NOT "CNY54,950") — matches the Chinese report's own 万-unit (nearest-thousand) precision, so an English bullet is never more granular than its Chinese counterpart for the same figure.
@@ -52,7 +52,7 @@ common:
       7. ENFORCE LENGTH CAPS (these are HARD ceilings — usually shorter is correct):
          - Cash, AR, Prepayments, OCI, Reserve, DTA, NCL-due-within-1yr: 1-3 sentences, 25-80 words.
          - OR, Capital, Long-term loans, Deferred income, CIP: 2-4 sentences, 40-130 words.
-         - IP, OP (multi-component): 4-7 sentences, 100-200 words; multi-line "mainly entailed:" allowed.
+         - IP, OP, AP (multi-component): 4-7 sentences, 100-200 words; multi-line "mainly entailed:" allowed.
          - OI, OC: 2-3 sentences, 60-100 words. One tight paragraph only; no second paragraph.
          - Fin Exp, Tax & Surcharges, GA, Selling cost, Income tax: 1-3 sentences, 30-80 words.
          - EXCEPTION: if a [MATERIAL MOVEMENT] or [DISPROPORTIONATE TO REVENUE] instruction is present in the shared rules below (point 12), its required explanation — including the two figures it compares — is exempt from the cap above; add up to 1-2 sentences for THAT explanation specifically. This is not a general length increase for the account — everything else in the bullet still obeys the cap.
@@ -67,7 +67,7 @@ common:
          - A whole account's own zero balance written mechanically as "the balance was CNY0" / "represented CNY0" — REWRITE to "there was no balance as at <DATE>" (BS) or the equivalent nil-period phrasing (IS), matching reference style.
       9. PRESERVE consultant voice:
          - Use stock factual FDD phrases when supported: "Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"; "We have not obtained the bank statements yet"; "We checked the audit report for [year] and found no differences in respect of this amount"; "no bad debt had been incurred historically"; "in line with the payment terms in the leasing agreements".
-         - REMOVE consultant advisory ("You should confirm with management...", "You should consider the funding sources..."). Bullets are factual reporting — do NOT direct the reader's actions.
+         - REMOVE generic consultant advisory ("You should confirm with management...", "You should consider the funding sources..."). Bullets are factual reporting — do NOT direct the reader's actions. EXCEPTION: a single, narrow recommendation tied to a specific, quantified, data-grounded finding already stated earlier in the same bullet (e.g., recommending that a specific aged/questionable receivable amount be deducted from net assets) may be PRESERVED — this states a concrete consequence of an established fact, not generic advisory boilerplate. Never rewrite a factual bullet to ADD such a recommendation yourself; only preserve one the Generator already produced from the account-specific prompt.
          - Use exact entity names from the data — never generalise to "a related party" or "a bank".
          - Use FDD verbs: "represented", "totalled", "mainly entailed", "mainly comprised", "mainly arose from", "mainly generated revenue from".
       10. CROSS-CHECK trend wording: if the commentary says "increased" or "decreased", verify the direction matches the numeric values.
@@ -115,7 +115,7 @@ common:
       6. Length caps (HARD ceilings — usually shorter is correct):
          - Cash, AR, Prepayments, OCI, Reserve, DTA, NCL-due-1yr: 1-3 sentences, 25-80 words.
          - OR, Capital, LT loans, Deferred income, CIP: 2-4 sentences, 40-130 words.
-         - IP, OP: 4-7 sentences, 100-200 words; multi-line "mainly entailed:" allowed.
+         - IP, OP, AP: 4-7 sentences, 100-200 words; multi-line "mainly entailed:" allowed.
          - OI, OC: 2-3 sentences, 60-100 words. ONE tight paragraph only; no second paragraph.
          - Fin Exp, Tax & Surcharges, GA, Selling cost, Income tax: 1-2 sentences, 30-80 words.
          - EXCEPTION: a [MATERIAL MOVEMENT] or [DISPROPORTIONATE TO REVENUE] instruction's own required explanation is exempt from the cap above (+1-2 sentences for that explanation only, not a general increase).
@@ -127,8 +127,8 @@ common:
          - Bracketed supplemental figures.
          - A sub-stream/component that is zero in EVERY period (not a single zero period within an active multi-period trend — that must stay and read as "nil", never be silently dropped).
          - Annualisation math ("annualised at CNY...").
-      8. Preserve stock factual FDD phrases when supported by data: "Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"; "We have not obtained the bank statements yet"; "no bad debt had been incurred historically"; "in line with the payment terms in the leasing agreements"; "We checked the audit report for [year] and found no differences in respect of this amount". STRIP every "You should..." advisory — bullets are factual reporting only.
-      9. Multi-component BS (OP/OR/IP/Tax payable) → multi-line "mainly entailed:" structure with each sub-component on its own line.
+      8. Preserve stock factual FDD phrases when supported by data: "Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"; "We have not obtained the bank statements yet"; "no bad debt had been incurred historically"; "in line with the payment terms in the leasing agreements"; "We checked the audit report for [year] and found no differences in respect of this amount". STRIP every generic "You should..." advisory — bullets are factual reporting only. EXCEPTION: keep a narrow, quantified recommendation tied to a specific material finding already stated in the bullet (e.g., recommending a specific aged-receivable amount be deducted from net assets) — that is a concrete consequence of an established fact, not generic advisory boilerplate. Do not add one yourself; only preserve one already present.
+      9. Multi-component BS (AP/OP/OR/IP/Tax payable) → multi-line "mainly entailed:" structure with each sub-component on its own line.
       10. Output paragraphs only — no bullets, no bold, no markdown, no "**Key**: value".
 
       CRITICAL: Output ONLY the corrected financial text. No "Verified:", no "Corrections made:", no meta-commentary.
@@ -170,8 +170,8 @@ common:
          - 使用自然的尽调动词，且在全篇内适度轮换，不要每条都用同一个词："余额为"、"主要为"、"主要包括"、"主要源于"、"系"、"代表"。
          - 保留数据中具体的对手方/项目/贷款行/租户/服务方名称（如"新宜上海"、"京东"、"招商银行"），不得替换为"某关联方"、"某银行"等通用表述。
          - 保留事实性语句："管理层表示关联方往来款均为无息借款，并将于交易交割前结清"；"我方尚未取得银行对账单"；"我方核对了<年份>年的审计报告，未发现差异"。精炼时不得删除。
-         - 删除所有顾问建议性语句（"建议贵公司..."、"建议贵公司关注..."）。评论为事实报告，不应给读者建议。
-         - 对包含多个子项的资产负债表科目（其他应付款、其他应收款、应交税费、投资性房地产），如Generator使用了多行"主要包括："结构，应保留——每个子项独立成行。
+         - 删除泛泛的顾问建议性语句（"建议贵公司关注..."、"建议贵公司与管理层确认..."）。评论为事实报告，不应给读者笼统建议。**例外**：若该建议针对评论中已明确列出的具体、有量化依据的重大发现（如建议将某笔具体金额的长账龄/存疑应收账款从净资产中扣除），可保留——这是对已确立事实的具体后果陈述，不同于笼统的顾问式建议。不得自行新增这类建议，只能保留Generator已生成的。
+         - 对包含多个子项的资产负债表科目（应付账款、其他应付款、其他应收款、应交税费、投资性房地产），如Generator使用了多行"主要包括："结构，应保留——每个子项独立成行。
       11. 尽量去除括号中的补充数字或补充说明，让数字自然写入段落正文。
       12. 精炼要求（合并自原Refiner阶段）：
          - 在保留事实、数字、有支持的推理及BS/IS结构（资产负债表单期开篇；利润表构成开篇并保留每一重要构成项的多期金额）的前提下，明显压缩篇幅。
@@ -180,7 +180,7 @@ common:
          - 篇幅上限按科目类型分级（**这些是上限，不是要写满的配额**——通常越短越好，但不要为压缩而丢失有支持的构成明细）。若该科目本身无值得说明的内容（余额小、构成单一、无异常、无调整），一到两句即为正确答案，不得为接近上限而铺陈；真实交付稿中最短评论仅40余字。篇幅长短应由该科目对买方的重要性决定，而非由科目类型机械套用：
            * 货币资金、应收账款、预付款项、其他综合收益、盈余公积、递延所得税资产、一年内到期非流动负债：2-3句，约40-90字。
            * 其他应收款、实收资本、长期借款、递延收益、在建工程：3-4句，约70-150字。
-           * 投资性房地产、其他应付款（多构成项科目）：4-7句，约150-280字；允许多行"主要包括："结构，每个子项独立成行。
+           * 投资性房地产、应付账款、其他应付款（多构成项科目）：4-7句，约150-280字；允许多行"主要包括："结构，每个子项独立成行。
            * 营业收入、营业成本：3-5句，约100-180字（须保留每一重要构成项的多期金额，不可省略为单期）。
            * 财务费用、税金及附加、管理费用、销售费用、所得税费用：2-3句，约60-130字。
            * 未列出的科目：参照结构最相近的类别，禁止不论科目复杂度一律套用同一篇幅。
