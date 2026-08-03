@@ -1935,6 +1935,7 @@ class PowerPointGenerator:
 
     def _sublist_text_for_table(
         self, table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float = 1,
+        max_items: int = 5,
     ) -> str:
         """Converts a presentation_detail_table dict (extract_presentation_
         detail_table's return shape) into plain text lines for "sublist"
@@ -1944,8 +1945,20 @@ class PowerPointGenerator:
         exists to fill. The total line keeps every period inline, matching
         how OI/OC accounts already state multi-year figures in this
         project's own reference style. Top-level rows only: nested children
-        are already rolled into their own parent's total, and a plain-text
-        bullet list is not the place for two levels of indentation.
+        are already rolled into their own parent's total (e.g. 物业管理费's
+        第三方/上海熙麦 sub-vendors), and a plain-text bullet list is not the
+        place for two levels of indentation -- this already keeps
+        same-nature items merged under their shared parent.
+
+        When there are more than max_items top-level rows, only the
+        max_items-1 largest (by the latest period's absolute value) are
+        shown individually, ranked descending; everything past that is
+        rolled into one final "其他"/"Other" line (summed, not dropped --
+        the account's own real total still fully accounts for it even
+        though this specific line doesn't itemise it). Keeps a long
+        component list (e.g. 管理费用's 8 rows) from producing an equally
+        long, table-like bullet list -- exactly what "sublist" style trades
+        the native table's own per-component precision for.
 
         Values are in the same raw-yuan internal scale every account's df
         uses (see _render_presentation_table's own docstring) -- divided
@@ -1965,13 +1978,27 @@ class PowerPointGenerator:
 
         latest_period = periods[-1]
         marker = "- "
-        lines: List[str] = []
+        items: List[Tuple[str, float]] = []
         for row in rows:
             label = row.get("label", "")
             value = _scaled((row.get("values") or {}).get(latest_period))
             if value is None or not label:
                 continue
-            lines.append(f"{marker}{label}：{self._format_table_value(value, is_numeric_column=True)}")
+            items.append((label, value))
+
+        lines: List[str] = []
+        if len(items) > max(1, max_items):
+            ranked = sorted(items, key=lambda item: abs(item[1]), reverse=True)
+            shown, rest = ranked[: max(1, max_items - 1)], ranked[max(1, max_items - 1):]
+            for label, value in shown:
+                lines.append(f"{marker}{label}：{self._format_table_value(value, is_numeric_column=True)}")
+            if rest:
+                other_label = "其他" if is_chinese_databook else "Other"
+                other_value = sum(v for _l, v in rest)
+                lines.append(f"{marker}{other_label}：{self._format_table_value(other_value, is_numeric_column=True)}")
+        else:
+            for label, value in items:
+                lines.append(f"{marker}{label}：{self._format_table_value(value, is_numeric_column=True)}")
 
         if total_row:
             total_label = total_row.get("label") or ("合计" if is_chinese_databook else "Total")
