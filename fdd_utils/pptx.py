@@ -2617,6 +2617,12 @@ class PowerPointGenerator:
         BLACK = RGBColor(0, 0, 0)
         GREY_TOTAL_FILL = RGBColor(0xD9, 0xD9, 0xD9)
         CHILD_BLUE = RGBColor(0x1F, 0x4E, 0x96)
+        # Company-format reference (IMG_0229, real KPMG deliverable): the
+        # period-header row (unit label + date columns) is filled a
+        # medium/royal blue -- distinctly brighter than the navy title band
+        # above it -- with white bold text and white column-separator
+        # lines, not the white-fill/black-text this row previously used.
+        HEADER_ROW_BLUE = RGBColor(0x1F, 0x4E, 0x96)
 
         def _set_cell(cell, text, *, bold=False, color=BLACK, fill=None, size_pt=7.0,
                       align=PP_ALIGN.LEFT, indent_emu=0):
@@ -2662,13 +2668,13 @@ class PowerPointGenerator:
         title_text = table.get("title") or ""
         _set_cell(table_shape.cell(0, 0), title_text, bold=True, color=WHITE, fill=DARK_BLUE, size_pt=8.0)
 
-        # Row 1: period header -- white bg, bold black text (company-format
-        # reference: only the title band above is filled navy).
+        # Row 1: period header -- medium-blue fill, bold white text (see
+        # HEADER_ROW_BLUE above for the reference this matches).
         table_shape.rows[1].height = Pt(self._TABLE_HEADER_ROW_PT)
-        _set_cell(table_shape.cell(1, 0), unit_label, bold=True, size_pt=7.5)
+        _set_cell(table_shape.cell(1, 0), unit_label, bold=True, color=WHITE, fill=HEADER_ROW_BLUE, size_pt=7.5)
         for j, period in enumerate(periods, start=1):
             _set_cell(table_shape.cell(1, j), period_labels.get(period, period),
-                      bold=True, size_pt=7.5, align=PP_ALIGN.CENTER)
+                      bold=True, color=WHITE, fill=HEADER_ROW_BLUE, size_pt=7.5, align=PP_ALIGN.CENTER)
 
         # Data / child / total rows.
         for row_idx, entry in enumerate(plan, start=2):
@@ -2698,7 +2704,11 @@ class PowerPointGenerator:
                 for c in range(n_cols):
                     cell = table_shape.cell(r, c)
                     if c > 0:
-                        self._set_cell_border(cell, 'left', color_rgb=RGBColor(0xBF, 0xBF, 0xBF), width=Pt(0.5))
+                        # Header row's own column separators read as white
+                        # against its blue fill in the reference photo;
+                        # every other row keeps the plain grey rule.
+                        sep_color = WHITE if r == 1 else RGBColor(0xBF, 0xBF, 0xBF)
+                        self._set_cell_border(cell, 'left', color_rgb=sep_color, width=Pt(0.5))
             for c in range(n_cols):
                 self._set_cell_border(table_shape.cell(1, c), 'bottom', color_rgb=BLACK, width=Pt(1))
             total_row_idx = next((i for i, e in enumerate(plan, start=2) if e["kind"] == "total"), None)
@@ -5894,6 +5904,13 @@ class PowerPointGenerator:
         if not self.presentation:
             self.load_template()
 
+        # Remembered so save() can decide, once for the whole deck, whether
+        # to strip the template's static English "Commentary" label bands
+        # (see _remove_localized_label_bands) -- both statement passes
+        # (BS then IS) report the same databook language, so whichever
+        # runs last simply re-confirms the same value.
+        self._is_chinese_mode = is_chinese_databook
+
         stage_started_at = time.perf_counter()
         logger.info("Applying %s accounts to slides starting at %s", len(structured_data), start_slide)
 
@@ -6700,12 +6717,17 @@ class PowerPointGenerator:
                 except:
                     pass
                     
-                # A touch more saturated than a bare tint (#DCE6F1) so the
-                # highlighted column is unmistakable at a glance, not just
-                # visible on close inspection -- a user photo of a fresh
-                # export still read as "hasn't taken effect" at the lighter
-                # shade.
-                LIGHT_BLUE_HIGHLIGHT = RGBColor(0xBD, 0xD7, 0xEE)
+                # Company-format reference (IMG_0224, real KPMG deliverable):
+                # the date/header row is filled a medium blue across EVERY
+                # column, bold white text, with white column-separator
+                # lines -- same convention _render_presentation_table's own
+                # period-header row uses (HEADER_ROW_BLUE there). The real
+                # deck's dual 审定数/示意性调整后 column groups use two
+                # slightly different blue tints to tell the groups apart;
+                # this table currently renders only one column group, so a
+                # single consistent blue is the direct equivalent, not a
+                # per-column highlight.
+                HEADER_ROW_BLUE = RGBColor(0x1F, 0x4E, 0x96)
 
                 for col_idx, col_name in enumerate(df.columns[:max_cols]):
                     if col_idx < len(table.columns):
@@ -6715,13 +6737,10 @@ class PowerPointGenerator:
                             cell.text = currency_unit
                         else:
                             cell.text = str(col_name)
-                        # Company-format reference: the date/header row sits
-                        # directly under the navy title band with NO fill of
-                        # its own (white bg, dark bold text) -- only the title
-                        # row above it is filled navy. The first column's own
-                        # header ("Description"/currency unit) is left-aligned
-                        # like a row label; the date/period columns stay
-                        # centered above their right-aligned numeric data.
+                        # The first column's own header ("Description"/
+                        # currency unit) is left-aligned like a row label;
+                        # the date/period columns stay centered above their
+                        # right-aligned numeric data.
                         if cell.text_frame.paragraphs:
                             p = cell.text_frame.paragraphs[0]
                             p.alignment = PP_ALIGN.LEFT if col_idx == 0 else PP_ALIGN.CENTER
@@ -6734,23 +6753,18 @@ class PowerPointGenerator:
                             run.font.name = 'Arial'
                             run.font.size = header_font_size
                             run.font.bold = True
-                            run.font.color.rgb = BLACK
+                            run.font.color.rgb = WHITE
                             p.line_spacing = 1.0
 
-                        # Only the LAST column is highlighted light blue
-                        # (matches the company-format reference's "adjusted
-                        # figures" column) -- every other column is
-                        # EXPLICITLY set to solid white, not left unset.
-                        # Leaving fill untouched makes the cell "inherit"
+                        # EXPLICITLY set on every cell, not left unset --
+                        # leaving fill untouched makes the cell "inherit"
                         # from the table's built-in style GUID (still
                         # referenced even with first_row/horz_banding
                         # disabled), which can be a themed/tinted colour --
                         # confirmed via inspect_pptx_tables.py showing
                         # fill=inherited on every un-highlighted cell.
                         cell.fill.solid()
-                        cell.fill.fore_color.rgb = (
-                            LIGHT_BLUE_HIGHLIGHT if col_idx == max_cols - 1 else WHITE
-                        )
+                        cell.fill.fore_color.rgb = HEADER_ROW_BLUE
 
                         # Vertical (column-separating) borders plus ONE
                         # bottom rule under the header row -- horizontal
@@ -6758,8 +6772,12 @@ class PowerPointGenerator:
                         # table has 20+ rows; the total/subtotal rows below
                         # get their own explicit top/bottom rule so those
                         # separators are still there where they matter.
-                        for _side in ("left", "right", "bottom"):
-                            self._set_cell_border(cell, _side, color_rgb="000000", width=Pt(0.5))
+                        # left/right read as white against this row's own
+                        # blue fill (matches the reference); bottom stays
+                        # black to rule off the white data rows beneath.
+                        self._set_cell_border(cell, 'left', color_rgb="FFFFFF", width=Pt(0.5))
+                        self._set_cell_border(cell, 'right', color_rgb="FFFFFF", width=Pt(0.5))
+                        self._set_cell_border(cell, 'bottom', color_rgb="000000", width=Pt(0.5))
 
                         try:
                             cell.margin_left = Inches(0.04)
@@ -8095,10 +8113,43 @@ Original content:
             logger.error("Error embedding financial tables: %s", e)
             logger.error(traceback.format_exc())
 
+    def _remove_localized_label_bands(self):
+        """Delete the template's static "Commentary" label band (Text-
+        commentary / _L / _R, present on every slide) when the deliverable
+        is Chinese. The template never had a Chinese translation for this
+        text, and the real reference deck (checked across BS/IS overview
+        AND continuation-page photos) has no equivalent generic section-
+        label band at all -- content runs directly from the slide title
+        into the commentary. English mode is left untouched: there's no
+        reference evidence either way for it, so it keeps the template's
+        original label rather than guessing.
+
+        Matched by SHAPE NAME, not by its text content -- the label's own
+        text ("Commentary") is also what _calculate_table_bounds' fallback
+        path uses to anchor table position when no explicit target shape
+        is resolved, and name-matching here leaves that text (and thus
+        that fallback) completely alone until this runs, right before
+        save, after every slide's content/tables are already finalized.
+        """
+        if not getattr(self, "_is_chinese_mode", False):
+            return
+        label_names = {"Text-commentary", "Text-commentary_L", "Text-commentary_R"}
+        for slide in self.presentation.slides:
+            for shape in list(slide.shapes):
+                if self._shape_name(shape) not in label_names:
+                    continue
+                try:
+                    sp = shape._element
+                    sp.getparent().remove(sp)
+                except Exception as exc:
+                    logger.debug("Could not remove Commentary label band: %s", exc)
+
     def save(self, output_path: str):
         """Save the presentation"""
         if not self.presentation:
             raise ValueError("No presentation loaded")
+
+        self._remove_localized_label_bands()
 
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
