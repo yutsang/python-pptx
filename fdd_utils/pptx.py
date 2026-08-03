@@ -2446,7 +2446,7 @@ class PowerPointGenerator:
                     + self._real_para_gap_pt(is_chinese)
                 )
                 lead_height_pt = (
-                    max(used_units, 1.0) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+                    max(used_units, 1.5) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
                     + self._TABLE_GAP_ABOVE_PT
                 )
                 lead_box.height = int(lead_height_pt * 12700)
@@ -2768,7 +2768,7 @@ class PowerPointGenerator:
                 self._real_font_size_pt(is_chinese_databook) * self._real_line_spacing(is_chinese_databook)
                 + self._real_para_gap_pt(is_chinese_databook)
             )
-            explain_height_pt = max(used_units, 1.0) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+            explain_height_pt = max(used_units, 1.5) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
             explain_box.height = int(explain_height_pt * 12700)
         except Exception as exc:
             logger.debug("Could not size presentation-table explanatory text: %s", exc)
