@@ -2310,17 +2310,15 @@ class PowerPointGenerator:
         slot_fill_pt: Dict[Tuple[int, str], float] = {}
         cap = self._TABLE_SLOT_CAPACITY_PT * self._TABLE_SLOT_PACK_THRESHOLD
 
-        def place(item: Dict[str, Any], block_pt: float) -> None:
-            for key, fill in slot_fill_pt.items():
-                if fill + block_pt <= cap:
-                    slide_idx, slot_name = key
-                    for i, (s, n, accounts) in enumerate(result):
-                        if s == slide_idx and n == slot_name:
-                            result[i] = (s, n, accounts + [item])
-                            break
-                    slot_fill_pt[key] = fill + block_pt
-                    return
+        def _append_to_slot(key: Tuple[int, str], item: Dict[str, Any], block_pt: float) -> None:
+            slide_idx, slot_name = key
+            for i, (s, n, accounts) in enumerate(result):
+                if s == slide_idx and n == slot_name:
+                    result[i] = (s, n, accounts + [item])
+                    break
+            slot_fill_pt[key] = slot_fill_pt.get(key, 0.0) + block_pt
 
+        def _open_new_slot(item: Dict[str, Any], block_pt: float) -> Optional[Tuple[int, str]]:
             for slide_idx in range(max_slides):
                 actual_slide_idx = start_slide - 1 + slide_idx
                 for slot_name in self._slot_names_for_actual_slide(actual_slide_idx, start_slide):
@@ -2329,22 +2327,114 @@ class PowerPointGenerator:
                     used.add((slide_idx, slot_name))
                     result.append((slide_idx, slot_name, [item]))
                     slot_fill_pt[(slide_idx, slot_name)] = block_pt
-                    return
-
+                    return (slide_idx, slot_name)
             logger.warning(
                 "No free slot for account %s within %s slides -- not rendered.",
                 item.get("mapping_key"), max_slides,
             )
+            return None
+
+        # Content flows in READING ORDER through one column at a time, the
+        # way a document does -- fill the current column, then move to the
+        # next. This replaces a first-fit search over every open slot,
+        # which could place a LATER account into an EARLIER column that
+        # still had room: a real export had 投资收益 (last in the income
+        # statement) rendered on slide 4 between 税金及附加 and 管理费用,
+        # because it happened to fit there. Sequential flow makes that
+        # impossible by construction rather than by an extra ordering
+        # check, and is also what makes the lead/table split below safe --
+        # nothing can ever land between a lead-in and its own table.
+        cursor: Optional[Tuple[int, str]] = None
+
+        def _fits(key: Optional[Tuple[int, str]], block_pt: float) -> bool:
+            return key is not None and slot_fill_pt.get(key, 0.0) + block_pt <= cap
+
+        def flow(item: Dict[str, Any], block_pt: float, lead_pt: Optional[float] = None) -> None:
+            """Places one account at the flow cursor, splitting its lead-in
+            text away from its table when the whole block won't fit in the
+            current column but the intro sentence alone still will.
+
+            This is the user-requested "表格前如果這個point有文字 而這一邊
+            放不下表格 那表格可以放下一個" behaviour: the intro sentence
+            finishes the current column and the table starts the next one,
+            instead of the whole account jumping to a fresh column and
+            leaving the current one short. Deliberately the ONLY split
+            supported -- the table itself is never divided (no repeated
+            header) and the post-table explanation always travels with its
+            own table, both per explicit user instruction. lead_pt=None
+            marks an account with no table to split off (a plain trailing
+            account), which simply flows whole."""
+            nonlocal cursor
+            if _fits(cursor, block_pt):
+                _append_to_slot(cursor, item, block_pt)
+                return
+
+            if (lead_pt is not None and self._TABLE_ALLOW_LEAD_TABLE_SPLIT
+                    and _fits(cursor, lead_pt)):
+                # The continuation heading replaces the lead-in above the
+                # table, so the table isn't left unlabelled in its column.
+                rest_pt = max(0.0, block_pt - lead_pt) + self._TABLE_CONTINUATION_HEADING_PT
+                _append_to_slot(cursor, dict(item, _render_parts=("lead",)), lead_pt)
+                cursor = _open_new_slot(dict(item, _render_parts=("table",)), rest_pt)
+                return
+
+            cursor = _open_new_slot(item, block_pt)
 
         for item in table_items:
             table = item.get("_presentation_table") or {}
             block_pt = self._estimate_table_account_block_height_pt(item, table, is_chinese_databook)
-            place(item, block_pt)
+            flow(item, block_pt, lead_pt=self._estimate_lead_in_pt(item))
 
         for item in (trailing_items or []):
-            place(item, self._estimate_lead_in_pt(item))
+            flow(item, self._estimate_lead_in_pt(item))
 
         return result
+
+    def _render_continuation_heading(
+        self, slide, left: int, top: int, width: int, display_name: str,
+        is_chinese_databook: bool,
+    ) -> int:
+        """Draws the compact "科目名（续）" / "name (cont'd)" line that stands
+        in for an account's intro sentence when only its TABLE renders in
+        this slot (the intro finished the previous column -- see
+        place_table_item). Returns the bottom EMU position.
+
+        Deliberately its own small renderer rather than reusing
+        _fill_text_main_bullets_with_category_and_key with empty
+        commentary: that path always writes a " - " separator after the
+        account name, which would render as a dangling dash here."""
+        suffix = "（续）" if is_chinese_databook else " (cont'd)"
+        box = slide.shapes.add_textbox(left, top, width, Pt(self._TABLE_CONTINUATION_HEADING_PT))
+        tf = box.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        try:
+            p.left_indent = Inches(0.15)
+            p.first_line_indent = Inches(-0.15)
+            p.space_before = Pt(0)
+            p.space_after = Pt(0)
+            p.line_spacing = 1.0
+        except Exception:
+            pass
+        run_bullet = p.add_run()
+        run_bullet.text = '■ '
+        run_bullet.font.size = Pt(9)
+        run_bullet.font.name = 'Arial'
+        try:
+            run_bullet.font.color.rgb = RGBColor(128, 128, 128)
+        except Exception:
+            pass
+        run_name = p.add_run()
+        run_name.text = f"{display_name}{suffix}"
+        run_name.font.size = Pt(9)
+        run_name.font.name = 'Arial'
+        run_name.font.bold = True
+        try:
+            run_name.font.color.rgb = RGBColor(0, 0, 0)
+        except Exception:
+            pass
+        self._force_no_autofit(tf)
+        return top + int(Pt(self._TABLE_CONTINUATION_HEADING_PT))
 
     def _render_table_accounts_stack(
         self, slide, bullets_shape, account_data_list: List[Dict[str, Any]],
@@ -2412,9 +2502,42 @@ class PowerPointGenerator:
             clause_reviews = account_data.get('clause_reviews', [])
             is_chinese = account_data.get('is_chinese', False)
 
+            # Which parts of this account render HERE. Absent (the normal
+            # case) means the whole account. ("lead",) means only its intro
+            # sentence -- its table continues in the next slot; ("table",)
+            # means the table half of an account whose intro sentence
+            # already rendered at the end of the previous slot. Set by
+            # _append_table_accounts_to_distribution's place_table_item.
+            render_parts = account_data.get("_render_parts")
+            wants_lead = render_parts is None or "lead" in render_parts
+            wants_table = render_parts is None or "table" in render_parts
+
             category_to_write = category if (category and category != current_category) else None
             if category:
                 current_category = category
+
+            if not wants_lead:
+                # Continued table: a compact "科目名（续）" heading stands in
+                # for the intro sentence, so the table isn't left unlabelled
+                # at the top of a fresh column.
+                try:
+                    table_top = self._render_continuation_heading(
+                        slide, left, current_top, width, display_name, is_chinese_databook,
+                    )
+                except Exception as exc:
+                    logger.warning("Could not render continuation heading for %s: %s", mapping_key, exc)
+                    table_top = current_top
+                try:
+                    bottom = self._render_presentation_table(
+                        slide, left, table_top, width, table, is_chinese_databook,
+                        source_multiplier=self._table_source_multiplier(account_data),
+                        post_table_text=account_data.get("_post_table_text", ""),
+                    )
+                except Exception as exc:
+                    logger.warning("Could not render continued table for %s: %s", mapping_key, exc)
+                    bottom = table_top
+                current_top = bottom + int(Pt(self._TABLE_GAP_BELOW_PT))
+                continue
 
             try:
                 lead_box = slide.shapes.add_textbox(left, current_top, width, Pt(200))
@@ -2455,10 +2578,12 @@ class PowerPointGenerator:
                 logger.warning("Could not render lead-in for account %s: %s", mapping_key, exc)
                 table_top = current_top
 
-            if not table:
-                # Plain trailing account (e.g. 投资收益/营业外支出 flowed in
-                # after 财务费用's table) -- nothing more to draw, its own
-                # lead-in IS the whole account.
+            if not table or not wants_table:
+                # Either a plain trailing account (e.g. 投资收益/营业外支出
+                # flowed in after 财务费用's table), whose own lead-in IS
+                # the whole account -- or a table account whose intro
+                # sentence ends this column while its table continues in
+                # the next one. Nothing more to draw here either way.
                 current_top = table_top + int(Pt(self._TABLE_GAP_BELOW_PT))
                 continue
 
@@ -2483,6 +2608,16 @@ class PowerPointGenerator:
     _TABLE_CELL_PADDING_PT = 5.76
     _TABLE_CHILD_INDENT_PT = 8.64
     _TABLE_MIN_COLUMN_PT = 25.2  # 0.35in floor, guards a pathologically short column
+
+    # Lets a table account's intro sentence finish one column while its
+    # table starts the next (see place_table_item). Flip to False to fall
+    # straight back to the previous whole-block-only behaviour without
+    # touching anything else.
+    _TABLE_ALLOW_LEAD_TABLE_SPLIT = True
+    # Budget for the "科目名（续）" heading drawn above a continued table --
+    # one 9pt line plus its paragraph gap, with the same render margin the
+    # rest of the stack uses.
+    _TABLE_CONTINUATION_HEADING_PT = 16.0
 
     @staticmethod
     def _table_unit_label(is_chinese_databook: bool) -> str:
