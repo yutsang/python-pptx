@@ -2394,6 +2394,35 @@ class PowerPointGenerator:
         current_top = int(bullets_shape.top)
         current_category = None
 
+        # Vertically centre the whole stack within the column instead of
+        # always starting at the top and leaving every leftover pt at the
+        # bottom -- a real Crescent export showed this reading as "the
+        # table looks stranded near the top of an otherwise-empty column"
+        # once a run's content was short enough to leave real headroom
+        # (confirmed: no two of the real 4 table accounts ever sum under
+        # one column's capacity, so that headroom is unavoidable content-
+        # volume shortfall, not a packing bug -- see project memory).
+        # Reuses the SAME planning-time estimators
+        # _append_table_accounts_to_distribution already trusts to decide
+        # what fits here in the first place, so this doesn't introduce a
+        # second, divergent height guess -- it's the identical one, just
+        # also used to find a starting offset instead of only a yes/no.
+        try:
+            total_estimated_pt = 0.0
+            for _item in account_data_list:
+                _table = _item.get("_presentation_table")
+                if _table:
+                    total_estimated_pt += self._estimate_table_account_block_height_pt(
+                        _item, _table, is_chinese_databook,
+                    )
+                else:
+                    total_estimated_pt += self._estimate_lead_in_pt(_item) + self._TABLE_GAP_BELOW_PT
+            column_capacity_pt = int(bullets_shape.height) / 12700
+            leftover_pt = max(0.0, column_capacity_pt - total_estimated_pt)
+            current_top += int((leftover_pt / 2) * 12700)
+        except Exception as exc:
+            logger.debug("Could not compute vertical-centering offset for table stack: %s", exc)
+
         try:
             bullets_shape.text_frame.clear()
         except Exception:
