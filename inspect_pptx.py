@@ -476,6 +476,14 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 )) * line_h + para_gap
                 for p in paras
             )
+            # Same correction as fdd_utils/pptx.py's _calculate_content_lines:
+            # the final paragraph's trailing space_after is invisible padding
+            # at the bottom of the frame, not occupied height. Counting it
+            # produced false OVERFLOW warnings -- a real 27-line box that
+            # PowerPoint's own BoundHeight puts at 93.5% full was reported
+            # here as 102%.
+            if paras:
+                content_pt -= para_gap
             content_units = (content_pt / std_lh) if std_lh > 0 else 0.0
 
             fill_ratio = (content_units / capacity) if capacity > 0 else 0.0

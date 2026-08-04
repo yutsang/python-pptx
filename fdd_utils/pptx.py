@@ -3913,6 +3913,18 @@ class PowerPointGenerator:
                 else:
                     total_pt += line_h + para_gap
 
+                # Drop the LAST paragraph's trailing gap: space_after on the
+                # final paragraph renders as invisible padding at the
+                # bottom of the frame and pushes nothing, so counting it
+                # inflates every block by one para_gap. Confirmed against
+                # PowerPoint's own BoundHeight on a real export -- a
+                # 27-line, 8-paragraph box measured 309.6pt where this
+                # function claimed ~327pt, and inspect_pptx.py's matching
+                # copy of the same over-count was reporting a false
+                # "102% OVERFLOW RISK" on a box that is really 93.5% full.
+                if paras:
+                    total_pt -= para_gap
+
                 # Return float -- no ceil so actual physical proportion is preserved.
                 result = total_pt / std_lh
                 self._content_lines_cache[cache_key] = result
