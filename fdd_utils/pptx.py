@@ -3741,7 +3741,7 @@ class PowerPointGenerator:
         cross-check on the render side too -- see the commit message this
         shipped in for the full reasoning and what still needs re-verifying.
         """
-        return 2.2
+        return 3.0
 
     def _calculate_max_lines_for_textbox(
         self,

@@ -35,7 +35,7 @@ from fdd_utils.text_metrics import get_measurer, text_box_from_shape
 
 FONT_SIZE_PT = 9.0
 LINE_SPACING = 1.0
-PARA_GAP_PT = 2.2  # keep in lockstep with fdd_utils/pptx.py's _real_para_gap_pt
+PARA_GAP_PT = 3.0  # keep in lockstep with fdd_utils/pptx.py's _real_para_gap_pt
 
 
 def _is_chinese(text: str) -> bool:

@@ -69,8 +69,8 @@ LINE_SPACING_CHI = 1.0
 # real 3pt render) -- if pptx.py's value ever moves again, update this one
 # in the SAME commit, not a follow-up, or this tool starts silently
 # reporting fill%/overflow against a formula generation no longer uses.
-PARA_GAP_ENG = 2.2
-PARA_GAP_CHI = 2.2
+PARA_GAP_ENG = 3.0
+PARA_GAP_CHI = 3.0
 MIN_FILL_RATIO_WARN = 0.40  # below this on a non-last slot -> utilisation flag
 
 
