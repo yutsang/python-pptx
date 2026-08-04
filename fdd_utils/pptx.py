@@ -2226,8 +2226,11 @@ class PowerPointGenerator:
         # empty column below a table+trailing-account stack, because this
         # estimate (still at 1.6x after the render side moved to 1.25x)
         # believed less room remained than truly did, so a trailing account
-        # that would have fit was never even tried.
-        return lead_in_units * lead_std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+        # that would have fit was never even tried. Same reason the box's
+        # own insets are added here: render adds them on top of the text
+        # height, so omitting them would under-estimate every lead-in.
+        return (lead_in_units * lead_std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+                + self._TEXTBOX_INSET_PT)
 
     def _estimate_table_account_block_height_pt(
         self, item: Dict[str, Any], table: Dict[str, Any], is_chinese_databook: bool,
@@ -2268,7 +2271,8 @@ class PowerPointGenerator:
             # Matches _render_presentation_table's own render-time factor --
             # see _estimate_lead_in_pt's comment for why planning and render
             # need to agree here, not diverge.
-            explain_pt = explain_units * explain_std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+            explain_pt = (explain_units * explain_std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+                          + self._TEXTBOX_INSET_PT)
 
         return lead_in_pt, table_pt, explain_pt
 
@@ -2602,15 +2606,20 @@ class PowerPointGenerator:
                 capacity_units = self._calculate_max_lines_for_textbox(
                     lead_box, is_chinese=is_chinese, slot_name="single",
                 )
-                shape_height_pt = int(lead_box.height) / 12700
+                # capacity_units was measured against the box's USABLE
+                # height (insets already subtracted), so std_lh must be
+                # derived from that same usable height -- and the insets
+                # then added back on top of the text's own height, or the
+                # box comes out exactly one inset too short for its content.
+                usable_pt, inset_pt = self._textbox_usable_and_inset_pt(lead_box)
                 std_lh_pt = (
-                    (shape_height_pt / capacity_units) if capacity_units > 0 else
+                    (usable_pt / capacity_units) if capacity_units > 0 else
                     self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
                     + self._real_para_gap_pt(is_chinese)
                 )
                 lead_height_pt = (
                     max(used_units, 1.5) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
-                    + self._TABLE_GAP_ABOVE_PT
+                    + inset_pt + self._TABLE_GAP_ABOVE_PT
                 )
                 lead_box.height = int(lead_height_pt * 12700)
                 table_top = int(lead_box.top) + int(lead_box.height)
@@ -2651,6 +2660,14 @@ class PowerPointGenerator:
     _TABLE_CHILD_INDENT_PT = 8.64
     _TABLE_MIN_COLUMN_PT = 25.2  # 0.35in floor, guards a pathologically short column
 
+    # A textbox's own top+bottom insets (OOXML default 0.05in each = 7.2pt
+    # total). Height formulas that size a box from its TEXT's measured
+    # height must add this back, or the box ends up exactly one inset
+    # short of holding its own content -- the direct cause of lead-in and
+    # explanation boxes sitting at 88-101% fill (and a real 101% OVERFLOW
+    # RISK on a real export) instead of the intended ~80%.
+    _TEXTBOX_INSET_PT = 7.2
+
     # Lets a table account's intro sentence finish one column while its
     # table starts the next (see place_table_item). Flip to False to fall
     # straight back to the previous whole-block-only behaviour without
@@ -2664,6 +2681,19 @@ class PowerPointGenerator:
     # those insets zeroed (see _render_continuation_heading) so this budget
     # is available to the text itself.
     _TABLE_CONTINUATION_HEADING_PT = 18.0
+
+    @staticmethod
+    def _textbox_usable_and_inset_pt(shape) -> Tuple[float, float]:
+        """(usable text height, total top+bottom inset) in points for a
+        shape, read from its real bodyPr insets. Falls back to the OOXML
+        default when they aren't declared."""
+        raw_pt = int(shape.height) / 12700
+        try:
+            from fdd_utils.text_metrics import text_box_from_shape
+            usable_pt = text_box_from_shape(shape).height_pt
+        except Exception:
+            usable_pt = max(1.0, raw_pt - PowerPointGenerator._TEXTBOX_INSET_PT)
+        return usable_pt, max(0.0, raw_pt - usable_pt)
 
     @staticmethod
     def _table_unit_label(is_chinese_databook: bool) -> str:
@@ -3051,13 +3081,18 @@ class PowerPointGenerator:
             capacity_units = self._calculate_max_lines_for_textbox(
                 explain_box, is_chinese=is_chinese_databook, slot_name="single",
             )
-            shape_height_pt = int(explain_box.height) / 12700
+            # See _render_table_accounts_stack's lead-in sizing: derive
+            # std_lh from the USABLE height capacity was measured against,
+            # then add the insets back on top of the text's own height.
+            usable_pt, inset_pt = self._textbox_usable_and_inset_pt(explain_box)
             std_lh_pt = (
-                (shape_height_pt / capacity_units) if capacity_units > 0 else
+                (usable_pt / capacity_units) if capacity_units > 0 else
                 self._real_font_size_pt(is_chinese_databook) * self._real_line_spacing(is_chinese_databook)
                 + self._real_para_gap_pt(is_chinese_databook)
             )
-            explain_height_pt = max(used_units, 1.5) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+            explain_height_pt = (
+                max(used_units, 1.5) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR + inset_pt
+            )
             explain_box.height = int(explain_height_pt * 12700)
         except Exception as exc:
             logger.debug("Could not size presentation-table explanatory text: %s", exc)
