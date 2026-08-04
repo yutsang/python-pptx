@@ -1945,6 +1945,28 @@ class PowerPointGenerator:
     # instead of two different numbers pulling in opposite directions.
     _TABLE_RENDER_HEIGHT_SAFETY_FACTOR = 1.25
 
+    # Narrower factor for the LEAD-IN block specifically (2026-08-04) --
+    # user reported a visible extra blank line between the lead-in text
+    # and the table start. _TABLE_RENDER_HEIGHT_SAFETY_FACTOR's own 1.25x
+    # was tuned against a real EXPLANATION box failing at 1.15x (free-form
+    # AI bullets, genuinely unpredictable length/wrap) -- lead-in text is a
+    # much narrower, templated shape ("■ [name] - [short intro]，明细如下：",
+    # always short, always machine-composed, never AI free-form), so the
+    # same margin that explanation needs is more than lead-in does. Surveyed
+    # every real lead-in sentence pasted this session (7 samples, all 4
+    # table accounts): every one sits at exactly 80% fill at 1.25x (20%
+    # headroom) -- consistent, not a fluke of one sample. 1.10 lands at 91%
+    # fill (9% headroom) -- a real, visible reduction while still keeping
+    # a genuine margin, not zero. Used for BOTH the render-time calculation
+    # here AND the matching planning-time estimate (_estimate_lead_in_pt)
+    # -- deliberately NOT just render, since 0acefb3 already found once
+    # that letting planning and render disagree on the same box's height
+    # silently under-packs trailing accounts (planning believes less room
+    # remains than render will actually leave). Does NOT touch the
+    # explanation box's own factor or estimate -- that one has its own,
+    # separately-earned 1.25x from a real failure at 1.15x and stays as is.
+    _TABLE_LEADIN_HEIGHT_SAFETY_FACTOR = 1.10
+
     def _presentation_tables_enabled(self) -> bool:
         try:
             return bool((self.pptx_settings.get("presentation_tables") or {}).get("enabled", False))
@@ -2218,6 +2240,19 @@ class PowerPointGenerator:
             self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
             + self._real_para_gap_pt(is_chinese)
         )
+        # A table-bearing account's own "lead-in" is a short, templated
+        # intro sentence ("■ name - ...，明细如下：") -- the narrower
+        # _TABLE_LEADIN_HEIGHT_SAFETY_FACTOR applies. A PLAIN trailing
+        # account flowed into a table's leftover space (no
+        # _presentation_table of its own) has its FULL free-form AI
+        # commentary living in this same "lead-in" box instead -- same
+        # variability class as the explanation box, not the templated
+        # case the narrower factor was surveyed against, so it keeps the
+        # wider, separately-earned factor.
+        lead_in_factor = (
+            self._TABLE_LEADIN_HEIGHT_SAFETY_FACTOR if item.get("_presentation_table")
+            else self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+        )
         # Matches the RENDER-time factor (2026-08-03), not the planning-only
         # 1.6x above -- this estimate's whole job is to predict what render
         # will actually produce, so a different (more conservative) factor
@@ -2227,7 +2262,7 @@ class PowerPointGenerator:
         # estimate (still at 1.6x after the render side moved to 1.25x)
         # believed less room remained than truly did, so a trailing account
         # that would have fit was never even tried.
-        return lead_in_units * lead_std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+        return lead_in_units * lead_std_lh_pt * lead_in_factor
 
     def _estimate_table_account_block_height_pt(
         self, item: Dict[str, Any], table: Dict[str, Any], is_chinese_databook: bool,
@@ -2445,8 +2480,17 @@ class PowerPointGenerator:
                     self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
                     + self._real_para_gap_pt(is_chinese)
                 )
+                # Table-bearing account: short, templated intro sentence ->
+                # narrower factor. Plain trailing account (no table of its
+                # own): its FULL free-form commentary lives in this same
+                # box -> keep the wider, separately-earned factor. See
+                # _TABLE_LEADIN_HEIGHT_SAFETY_FACTOR's own comment.
+                lead_in_factor = (
+                    self._TABLE_LEADIN_HEIGHT_SAFETY_FACTOR if table
+                    else self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+                )
                 lead_height_pt = (
-                    max(used_units, 1.5) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+                    max(used_units, 1.5) * std_lh_pt * lead_in_factor
                     + self._TABLE_GAP_ABOVE_PT
                 )
                 lead_box.height = int(lead_height_pt * 12700)
