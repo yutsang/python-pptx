@@ -1943,7 +1943,20 @@ class PowerPointGenerator:
     # render now use the SAME factor so the estimate that drives "does
     # this fit" decisions actually predicts what render will produce,
     # instead of two different numbers pulling in opposite directions.
-    _TABLE_RENDER_HEIGHT_SAFETY_FACTOR = 1.25
+    # 1.25 -> 1.10 (2026-08-04). At 1.25 EVERY box rendered at exactly
+    # 1/1.25 = 78-80% fill -- the user saw that constant 20-25% tail as
+    # "無論當中的字是多少行 下面都會有一行的空間". An earlier attempt at 1.10
+    # DID overflow (103-154% on real client metrics) and had to be
+    # reverted, but that was before the missing-inset bug was found: each
+    # box was silently 7.2pt short of its own content, and this factor was
+    # the only thing covering it. With insets now added properly, 1.10 was
+    # re-validated by sweeping every real lead-in AND explanation text
+    # from a real export, each scored with inspect_pptx.py's own
+    # independent formula rather than the renderer's: worst case 87%
+    # (lead) / 91% (explanation), i.e. real margin. The same sweep shows
+    # 1.05 reaching 95% and 1.00 hitting 100% -- so 1.10 is the last value
+    # with genuine headroom, not merely the first that happens to pass.
+    _TABLE_RENDER_HEIGHT_SAFETY_FACTOR = 1.10
 
     def _presentation_tables_enabled(self) -> bool:
         try:
