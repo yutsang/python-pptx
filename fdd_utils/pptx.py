@@ -2617,6 +2617,7 @@ class PowerPointGenerator:
         BLACK = RGBColor(0, 0, 0)
         GREY_TOTAL_FILL = RGBColor(0xD9, 0xD9, 0xD9)
         CHILD_BLUE = RGBColor(0x1F, 0x4E, 0x96)
+        CHILD_ROW_FILL = RGBColor(0xF2, 0xF2, 0xF2)
         # Company-format reference (IMG_0229, real KPMG deliverable): the
         # period-header row (unit label + date columns) is filled a
         # medium/royal blue -- distinctly brighter than the navy title band
@@ -2686,7 +2687,13 @@ class PowerPointGenerator:
                      else self._TABLE_DATA_ROW_PT)
             table_shape.rows[row_idx].height = Pt(row_h)
             label_color = CHILD_BLUE if is_child else BLACK
-            label_fill = GREY_TOTAL_FILL if is_total else None
+            # Reference deck (IMG_0229, pixel-sampled): indented child
+            # rows carry a light NEUTRAL-grey band (~5-7% darker than
+            # the white parent rows, no blue cast) on top of their blue
+            # text; parent/plain rows stay white.
+            label_fill = (GREY_TOTAL_FILL if is_total
+                          else CHILD_ROW_FILL if is_child
+                          else None)
             _set_cell(table_shape.cell(row_idx, 0), entry["label"], bold=is_total,
                       color=label_color, fill=label_fill, size_pt=7.0,
                       indent_emu=int(Inches(0.12)) if is_child else 0)
@@ -5906,7 +5913,7 @@ class PowerPointGenerator:
 
         # Remembered so save() can decide, once for the whole deck, whether
         # to strip the template's static English "Commentary" label bands
-        # (see _remove_localized_label_bands) -- both statement passes
+        # (see _localize_label_bands) -- both statement passes
         # (BS then IS) report the same databook language, so whichever
         # runs last simply re-confirms the same value.
         self._is_chinese_mode = is_chinese_databook
@@ -8113,43 +8120,65 @@ Original content:
             logger.error("Error embedding financial tables: %s", e)
             logger.error(traceback.format_exc())
 
-    def _remove_localized_label_bands(self):
-        """Delete the template's static "Commentary" label band (Text-
-        commentary / _L / _R, present on every slide) when the deliverable
-        is Chinese. The template never had a Chinese translation for this
-        text, and the real reference deck (checked across BS/IS overview
-        AND continuation-page photos) has no equivalent generic section-
-        label band at all -- content runs directly from the slide title
-        into the commentary. English mode is left untouched: there's no
-        reference evidence either way for it, so it keeps the template's
-        original label rather than guessing.
+    # Chinese text shown in the Commentary label band in Chinese mode --
+    # a single word, easy to change if the team prefers another term.
+    _COMMENTARY_LABEL_ZH = "评述"
 
-        Matched by SHAPE NAME, not by its text content -- the label's own
-        text ("Commentary") is also what _calculate_table_bounds' fallback
-        path uses to anchor table position when no explicit target shape
-        is resolved, and name-matching here leaves that text (and thus
-        that fallback) completely alone until this runs, right before
-        save, after every slide's content/tables are already finalized.
+    def _localize_label_bands(self):
+        """Translate the template's static English "Commentary" label band
+        (Text-commentary / _L / _R, present on every slide) to Chinese
+        when the deliverable is Chinese. English mode is left untouched.
+
+        History -- why this TRANSLATES instead of deleting: ebf2179
+        DELETED these shapes outright (the real reference deck has no
+        such band at all), but the next two real Chinese exports both
+        came back with the two statement-first pages (BS/IS page 1)
+        rendering COMPLETELY BLANK in real PowerPoint, with abnormally
+        slow file-open -- while python-pptx still saw every shape and
+        all text intact in the same files, and the continuation pages
+        kept rendering fine. Those two blank pages are exactly the two
+        where the production template's band is a native PLACEHOLDER
+        shape (the _L/_R variants on continuation pages are plain text
+        boxes there); deleting a placeholder from a slide whose layout
+        still defines it is the prime suspect for PowerPoint's renderer
+        choking. Not reproducible on this Mac (no real PowerPoint, and
+        the local template uses plain text boxes throughout), so the
+        deletion was replaced by this strictly-safer in-place text swap:
+        shape, placeholder wiring, fill and geometry all stay untouched
+        -- only the literal run text changes, run-by-run so the run's
+        own font formatting is preserved. If the blank-page symptom
+        somehow survives even this, the one remaining suspect from the
+        same commit on those two pages is the grid-table header restyle
+        in _fill_table_placeholder.
+
+        Matched by SHAPE NAME, at save time, so _calculate_table_bounds'
+        text-based label-anchor fallback (matches the literal word
+        "commentary" during layout) has long since finished by the time
+        the text changes.
         """
         if not getattr(self, "_is_chinese_mode", False):
             return
         label_names = {"Text-commentary", "Text-commentary_L", "Text-commentary_R"}
         for slide in self.presentation.slides:
-            for shape in list(slide.shapes):
+            for shape in slide.shapes:
                 if self._shape_name(shape) not in label_names:
                     continue
+                if not getattr(shape, "has_text_frame", False):
+                    continue
                 try:
-                    sp = shape._element
-                    sp.getparent().remove(sp)
+                    for para in shape.text_frame.paragraphs:
+                        for run in para.runs:
+                            if (run.text or "").strip().lower() == "commentary":
+                                run.text = self._COMMENTARY_LABEL_ZH
                 except Exception as exc:
-                    logger.debug("Could not remove Commentary label band: %s", exc)
+                    logger.debug("Could not localize Commentary label band: %s", exc)
 
     def save(self, output_path: str):
         """Save the presentation"""
         if not self.presentation:
             raise ValueError("No presentation loaded")
 
-        self._remove_localized_label_bands()
+        self._localize_label_bands()
 
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)

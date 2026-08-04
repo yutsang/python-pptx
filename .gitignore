@@ -22,6 +22,12 @@ archive/
 *template*.pptx
 *databook*.pptx
 
+# Real client databooks staged for testing -- never commit these.
+# for_test/ is the designated drop folder on any machine; the Crescent
+# pattern additionally catches the file wherever it's placed.
+for_test/
+*Crescent*
+
 # Add any other input/output file types as needed
 fdd_utils/config.json
 fdd_utils/config.yml
