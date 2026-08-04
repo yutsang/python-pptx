@@ -2201,7 +2201,7 @@ class PowerPointGenerator:
     # constant should be tuned to paper over.
     _TABLE_SLOT_PACK_THRESHOLD = 0.90
 
-    def _estimate_lead_in_pt(self, item: Dict[str, Any]) -> float:
+    def _estimate_lead_in_pt(self, item: Dict[str, Any], is_chinese_databook: bool = False) -> float:
         """Heuristic (no real shape) estimate of one account's lead-in block
         alone -- category header + "key - commentary" bullet -- in points.
         Shared by _estimate_table_account_block_height_pt (as its lead-in
@@ -2211,7 +2211,10 @@ class PowerPointGenerator:
         explanation arms at all."""
         is_chinese = bool(item.get("is_chinese"))
         lead_in_units = self._calculate_content_lines(
-            item.get("category") or "", item.get("mapping_key", item.get("account_name", "")),
+            # The rendered label, NOT the raw mapping_key -- see
+            # _rendered_bullet_label for why that difference is a whole
+            # wrapped line on real Chinese content.
+            item.get("category") or "", self._rendered_bullet_label(item, is_chinese_databook),
             item.get("commentary", ""), slot_name="single", shape=None, is_chinese=is_chinese,
         )
         lead_std_lh_pt = (
@@ -2251,7 +2254,7 @@ class PowerPointGenerator:
         parts -- (lead-in, table+source, explanation) -- so flow() can try
         splitting an account at either boundary rather than only
         accepting or rejecting it whole."""
-        lead_in_pt = self._estimate_lead_in_pt(item)
+        lead_in_pt = self._estimate_lead_in_pt(item, is_chinese_databook)
 
         table_pt = (
             self._presentation_table_height_pt(table)
@@ -2411,7 +2414,7 @@ class PowerPointGenerator:
             flow(item, sum(parts_pt), parts_pt=parts_pt)
 
         for item in (trailing_items or []):
-            flow(item, self._estimate_lead_in_pt(item))
+            flow(item, self._estimate_lead_in_pt(item, is_chinese_databook))
 
         return result
 
@@ -2600,7 +2603,10 @@ class PowerPointGenerator:
                 lead_tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
 
                 used_units = self._calculate_content_lines(
-                    category_to_write or "", mapping_key, commentary, slot_name="single",
+                    # display_name, NOT mapping_key -- this must measure the
+                    # label that actually renders above (see
+                    # _rendered_bullet_label).
+                    category_to_write or "", display_name, commentary, slot_name="single",
                     shape=lead_box, is_chinese=is_chinese,
                 )
                 capacity_units = self._calculate_max_lines_for_textbox(
@@ -2681,6 +2687,23 @@ class PowerPointGenerator:
     # those insets zeroed (see _render_continuation_heading) so this budget
     # is available to the text itself.
     _TABLE_CONTINUATION_HEADING_PT = 18.0
+
+    @staticmethod
+    def _rendered_bullet_label(account_data: Dict[str, Any], is_chinese_databook: bool) -> str:
+        """The label a bullet ACTUALLY renders with ("■ <label> - ...").
+
+        Cost estimates must measure this, not the raw mapping_key: in a
+        Chinese deck the mapping_key is the English short code
+        ("Tax and Surcharges"), which is far wider than the Chinese name
+        that really renders ("税金及附加") -- 352pt vs 315pt against a
+        329.8pt box for one real lead-in, i.e. the estimate believed the
+        line wrapped when it doesn't. Every such lead-in box came out one
+        whole line too tall, which is exactly the "height 似乎是固定的...
+        表格不是緊貼comments" the user reported."""
+        mapping_key = account_data.get("mapping_key", account_data.get("account_name", ""))
+        if is_chinese_databook:
+            return account_data.get("display_name_zh") or account_data.get("display_name", mapping_key)
+        return account_data.get("display_name", mapping_key)
 
     @staticmethod
     def _textbox_usable_and_inset_pt(shape) -> Tuple[float, float]:
