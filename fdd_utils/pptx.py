@@ -2462,10 +2462,7 @@ class PowerPointGenerator:
                 current_top = table_top + int(Pt(self._TABLE_GAP_BELOW_PT))
                 continue
 
-            table_source_multiplier = 1
-            table_financial_data = account_data.get("financial_data")
-            if hasattr(table_financial_data, "attrs"):
-                table_source_multiplier = table_financial_data.attrs.get("source_multiplier") or 1
+            table_source_multiplier = self._table_source_multiplier(account_data)
 
             try:
                 bottom = self._render_presentation_table(
@@ -2487,9 +2484,104 @@ class PowerPointGenerator:
     _TABLE_CHILD_INDENT_PT = 8.64
     _TABLE_MIN_COLUMN_PT = 25.2  # 0.35in floor, guards a pathologically short column
 
+    @staticmethod
+    def _table_unit_label(is_chinese_databook: bool) -> str:
+        return "人民币千元" if is_chinese_databook else "CNY'000"
+
+    @staticmethod
+    def _table_source_multiplier(account_data: Dict[str, Any]) -> float:
+        """The account's own raw-yuan -> display-unit divisor. Single
+        definition, since the renderer, the width precompute and the
+        AI-prompt side all need the identical value (an earlier 1000x
+        display bug came from exactly this being derived twice)."""
+        financial_data = (account_data or {}).get("financial_data")
+        if hasattr(financial_data, "attrs"):
+            return financial_data.attrs.get("source_multiplier") or 1
+        return 1
+
+    @classmethod
+    def _build_presentation_table_plan(
+        cls, table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float,
+    ) -> List[Dict[str, Any]]:
+        """Flattens a presentation table's rows -> children (indented) ->
+        total into the single ordered render plan both the renderer and
+        the uniform-width precompute measure against. Values are divided
+        back down to display units here (see _render_presentation_table's
+        docstring for why that division belongs at display time)."""
+        divisor = source_multiplier if source_multiplier and source_multiplier != 0 else 1
+
+        def _scaled(values: Dict[str, float]) -> Dict[str, float]:
+            return {period: (v / divisor if isinstance(v, (int, float)) else v)
+                    for period, v in (values or {}).items()}
+
+        plan: List[Dict[str, Any]] = []
+        for row in (table.get("rows") or []):
+            plan.append({"label": row.get("label", ""), "values": _scaled(row.get("values")), "kind": "data"})
+            for child in (row.get("children") or []):
+                plan.append({"label": child.get("label", ""), "values": _scaled(child.get("values")), "kind": "child"})
+        total_row = table.get("total_row")
+        if total_row:
+            plan.append({"label": total_row.get("label", "合计" if is_chinese_databook else "Total"),
+                         "values": _scaled(total_row.get("values")), "kind": "total"})
+        return plan
+
+    def _clamp_column_widths_to_available(
+        self, widths_pt: List[float], available_pt: Optional[float],
+    ) -> List[float]:
+        """Floors each column at the legibility minimum, then scales the
+        whole set down proportionally if it would overflow the slot."""
+        widths_pt = [max(self._TABLE_MIN_COLUMN_PT, w) for w in widths_pt]
+        total_pt = sum(widths_pt)
+        if available_pt is not None and total_pt > available_pt and total_pt > 0:
+            scale = available_pt / total_pt
+            widths_pt = [w * scale for w in widths_pt]
+        return widths_pt
+
+    def _precompute_uniform_table_column_widths(
+        self, table_items: List[Dict[str, Any]], is_chinese_databook: bool,
+    ) -> None:
+        """Computes one shared set of column widths per column-count, as
+        the element-wise MAX of every table's own measured need, and
+        caches it on the instance for _render_presentation_table.
+
+        Sizing each subtable independently (80e7a70) correctly guaranteed
+        no cell ever wraps, but made two subtables on the SAME page render
+        at visibly different widths whenever their longest label differed
+        -- flagged by the user as "表格要固定一種format 不要一個大一個細".
+        Taking the max (rather than, say, a fixed width) keeps the
+        no-wrap guarantee intact by construction: every table gets at
+        least the width its own content needed.
+
+        Deliberately grouped by column count -- tables with different
+        period counts aren't visually comparable side by side anyway, and
+        forcing them to a shared width would mean padding or squeezing
+        columns that have no counterpart."""
+        by_cols: Dict[int, List[float]] = {}
+        for item in (table_items or []):
+            table = item.get("_presentation_table")
+            if not table:
+                continue
+            periods = table.get("periods") or []
+            try:
+                plan = self._build_presentation_table_plan(
+                    table, is_chinese_databook, self._table_source_multiplier(item),
+                )
+                widths = self._measure_presentation_table_column_widths_pt(
+                    plan, periods, table.get("period_labels") or {},
+                    self._table_unit_label(is_chinese_databook), is_chinese_databook,
+                    available_pt=None,   # raw need; the per-slot clamp happens at render
+                )
+            except Exception as exc:
+                logger.debug("Could not measure uniform width for %s: %s", item.get("mapping_key"), exc)
+                continue
+            n_cols = len(widths)
+            existing = by_cols.get(n_cols)
+            by_cols[n_cols] = widths if existing is None else [max(a, b) for a, b in zip(existing, widths)]
+        self._uniform_table_col_widths_pt = by_cols
+
     def _measure_presentation_table_column_widths_pt(
         self, plan: List[Dict[str, Any]], periods: List[str], period_labels: Dict[str, str],
-        unit_label: str, is_chinese_databook: bool, available_pt: float,
+        unit_label: str, is_chinese_databook: bool, available_pt: Optional[float] = None,
     ) -> List[float]:
         """Real-glyph-metrics column widths for a presentation (subtable)
         breakdown -- guarantees every cell's content fits on ONE line at its
@@ -2537,14 +2629,10 @@ class PowerPointGenerator:
                 candidates_pt.append(measurer_data.text_width_pt(text_val))
             widths_pt.append(max(candidates_pt) + self._TABLE_CELL_PADDING_PT)
 
-        widths_pt = [max(self._TABLE_MIN_COLUMN_PT, w) for w in widths_pt]
-
-        total_pt = sum(widths_pt)
-        if total_pt > available_pt and total_pt > 0:
-            scale = available_pt / total_pt
-            widths_pt = [w * scale for w in widths_pt]
-
-        return widths_pt
+        # available_pt=None returns the RAW measured need with no slot
+        # clamp -- used by _precompute_uniform_table_column_widths, which
+        # needs comparable per-table numbers before any per-slot scaling.
+        return self._clamp_column_widths_to_available(widths_pt, available_pt)
 
     def _render_presentation_table(
         self, slide, left: int, top: int, width: int, table: Dict[str, Any],
@@ -2569,36 +2657,30 @@ class PowerPointGenerator:
         upstream in extract_presentation_detail_table would break its own
         tie-out against the (also raw-yuan-scale) account total.
         """
-        divisor = source_multiplier if source_multiplier and source_multiplier != 0 else 1
-
-        def _scaled(values: Dict[str, float]) -> Dict[str, float]:
-            return {period: (v / divisor if isinstance(v, (int, float)) else v)
-                    for period, v in (values or {}).items()}
-
         periods = table.get("periods") or []
         period_labels = table.get("period_labels") or {}
-        rows = table.get("rows") or []
-        total_row = table.get("total_row")
-
-        # Flatten rows -> children (indented) -> total, into one render plan.
-        plan: List[Dict[str, Any]] = []
-        for row in rows:
-            plan.append({"label": row.get("label", ""), "values": _scaled(row.get("values")), "kind": "data"})
-            for child in (row.get("children") or []):
-                plan.append({"label": child.get("label", ""), "values": _scaled(child.get("values")), "kind": "child"})
-        if total_row:
-            plan.append({"label": total_row.get("label", "合计" if is_chinese_databook else "Total"),
-                         "values": _scaled(total_row.get("values")), "kind": "total"})
+        plan = self._build_presentation_table_plan(table, is_chinese_databook, source_multiplier)
 
         n_cols = 1 + len(periods)
         n_rows = 2 + len(plan)  # title + header + plan rows
         height = int(self._presentation_table_height_pt(table) * 12700)
 
-        unit_label = "人民币千元" if is_chinese_databook else "CNY'000"
+        unit_label = self._table_unit_label(is_chinese_databook)
         available_pt = width / 12700.0
-        column_widths_pt = self._measure_presentation_table_column_widths_pt(
-            plan, periods, period_labels, unit_label, is_chinese_databook, available_pt,
-        )
+        # Prefer the deck-wide uniform widths when they've been precomputed
+        # (see _precompute_uniform_table_column_widths): sizing each table
+        # to its OWN content made otherwise-identical subtables render at
+        # visibly different widths on the same page (2.94in vs 2.586in on
+        # a real export), which the user flagged as "一個大一個細". The
+        # uniform set is the element-wise MAX across every table sharing
+        # this column count, so no table's own content can wrap under it.
+        uniform = (getattr(self, "_uniform_table_col_widths_pt", None) or {}).get(n_cols)
+        if uniform:
+            column_widths_pt = self._clamp_column_widths_to_available(list(uniform), available_pt)
+        else:
+            column_widths_pt = self._measure_presentation_table_column_widths_pt(
+                plan, periods, period_labels, unit_label, is_chinese_databook, available_pt,
+            )
         table_width = max(int(Inches(0.7)), int(sum(column_widths_pt) * 12700))
 
         graphic_frame = slide.shapes.add_table(n_rows, n_cols, left, top, table_width, height)
@@ -6030,6 +6112,10 @@ class PowerPointGenerator:
             start_slide=start_slide,
             statement_type=statement_type,
         )
+
+        # One shared column-width set for every subtable in this statement,
+        # computed before any of them render (see the method's docstring).
+        self._precompute_uniform_table_column_widths(table_items, is_chinese_databook)
 
         if table_items or trailing_items:
             slot_distribution = self._append_table_accounts_to_distribution(
