@@ -2199,7 +2199,19 @@ class PowerPointGenerator:
     # fit together at ANY reasonable threshold (389pt combined vs a
     # 331-360pt slot) -- that's a genuine size fact, not a threshold this
     # constant should be tuned to paper over.
-    _TABLE_SLOT_PACK_THRESHOLD = 0.90
+    #
+    # 0.90 -> 0.92 (2026-08-04), a deliberately small raise. Two errors
+    # this threshold had been quietly absorbing were fixed the same day:
+    # the planning estimates were ~14% low (font x 1.0 instead of
+    # PowerPoint's real 1.2 line pitch -- see _planning_std_lh_pt) and it
+    # multiplied one shared capacity constant instead of each slot's real
+    # height (see _slot_capacity_pt). Measured after both fixes, the
+    # estimate still runs ~5% under what render produces, so the SAFE
+    # ceiling is about 0.95/1.05 ~= 0.90; 0.92 takes the small genuine
+    # gain and no more. A first attempt at 0.96 was rejected on this
+    # arithmetic alone -- it works out to ~101% of a column's real
+    # capacity, i.e. overflow by construction.
+    _TABLE_SLOT_PACK_THRESHOLD = 0.92
 
     def _estimate_lead_in_pt(self, item: Dict[str, Any], is_chinese_databook: bool = False) -> float:
         """Heuristic (no real shape) estimate of one account's lead-in block
@@ -2217,10 +2229,7 @@ class PowerPointGenerator:
             item.get("category") or "", self._rendered_bullet_label(item, is_chinese_databook),
             item.get("commentary", ""), slot_name="single", shape=None, is_chinese=is_chinese,
         )
-        lead_std_lh_pt = (
-            self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
-            + self._real_para_gap_pt(is_chinese)
-        )
+        lead_std_lh_pt = self._planning_std_lh_pt(is_chinese)
         # Matches the RENDER-time factor (2026-08-03), not the planning-only
         # 1.6x above -- this estimate's whole job is to predict what render
         # will actually produce, so a different (more conservative) factor
@@ -2267,10 +2276,7 @@ class PowerPointGenerator:
             explain_units = self._calculate_content_lines(
                 "", "", post_table_text, slot_name="single", shape=None, is_chinese=is_chinese_databook,
             )
-            explain_std_lh_pt = (
-                self._real_font_size_pt(is_chinese_databook) * self._real_line_spacing(is_chinese_databook)
-                + self._real_para_gap_pt(is_chinese_databook)
-            )
+            explain_std_lh_pt = self._planning_std_lh_pt(is_chinese_databook)
             # Matches _render_presentation_table's own render-time factor --
             # see _estimate_lead_in_pt's comment for why planning and render
             # need to agree here, not diverge.
@@ -2324,7 +2330,12 @@ class PowerPointGenerator:
         used = {(slide_idx, slot_name) for slide_idx, slot_name, _ in slot_distribution}
         result = list(slot_distribution)
         slot_fill_pt: Dict[Tuple[int, str], float] = {}
-        cap = self._TABLE_SLOT_CAPACITY_PT * self._TABLE_SLOT_PACK_THRESHOLD
+        def _cap_for(key: Tuple[int, str]) -> float:
+            # Per-slot real capacity, not one shared constant -- a "single"
+            # first-page slot and an L/R continuation slot differ by ~8%.
+            return (self._slot_capacity_pt(key[0], key[1], start_slide)
+                    * self._TABLE_SLOT_PACK_THRESHOLD)
+
 
         def _append_to_slot(key: Tuple[int, str], item: Dict[str, Any], block_pt: float) -> None:
             slide_idx, slot_name = key
@@ -2363,7 +2374,7 @@ class PowerPointGenerator:
         cursor: Optional[Tuple[int, str]] = None
 
         def _fits(key: Optional[Tuple[int, str]], block_pt: float) -> bool:
-            return key is not None and slot_fill_pt.get(key, 0.0) + block_pt <= cap
+            return key is not None and slot_fill_pt.get(key, 0.0) + block_pt <= _cap_for(key)
 
         def flow(item: Dict[str, Any], block_pt: float,
                  parts_pt: Optional[Tuple[float, float, float]] = None) -> None:
@@ -2687,6 +2698,43 @@ class PowerPointGenerator:
     # those insets zeroed (see _render_continuation_heading) so this budget
     # is available to the text itself.
     _TABLE_CONTINUATION_HEADING_PT = 18.0
+
+    def _planning_std_lh_pt(self, is_chinese: bool) -> float:
+        """One std_lh unit as RENDER actually produces it, for the
+        shape-less planning estimates.
+
+        The estimates used to compute font_size x line_spacing + para_gap
+        (9 x 1.0 + 2.2 = 11.2pt), but PowerPoint's real line pitch is
+        1.2 x the point size (POWERPOINT_LINE_PITCH_FACTOR -- researched
+        and confirmed separately, see project memory), so render uses
+        10.8 + 2.2 = 13.0pt. Planning was therefore under-estimating every
+        block by ~14%, which _TABLE_SLOT_PACK_THRESHOLD was quietly
+        absorbing -- two compensating errors that together left real
+        columns filled to only ~60% of their true capacity."""
+        from fdd_utils.text_metrics import POWERPOINT_LINE_PITCH_FACTOR
+        return (self._real_font_size_pt(is_chinese) * POWERPOINT_LINE_PITCH_FACTOR
+                * self._real_line_spacing(is_chinese) + self._real_para_gap_pt(is_chinese))
+
+    def _slot_capacity_pt(self, slide_idx: int, slot_name: str, start_slide: int) -> float:
+        """The REAL usable height of one commentary slot, read from the
+        template shape it will actually render into. Falls back to the
+        shared constant when the shape can't be resolved.
+
+        A single shared constant can't be right for both slot types -- a
+        real template's first-page "single" slot is ~330pt while its
+        continuation L/R slots are ~359pt, so one number is either 8%
+        too small for one or too large for the other."""
+        try:
+            slide = self.presentation.slides[start_slide - 1 + slide_idx]
+            shape = self._resolve_commentary_slot_shape(slide, slot_name)
+            if shape is not None:
+                usable_pt, _inset_pt = self._textbox_usable_and_inset_pt(shape)
+                if usable_pt > 1.0:
+                    return usable_pt
+        except Exception as exc:
+            logger.debug("Could not resolve real capacity for slot %s/%s: %s",
+                         slide_idx, slot_name, exc)
+        return self._TABLE_SLOT_CAPACITY_PT
 
     @staticmethod
     def _rendered_bullet_label(account_data: Dict[str, Any], is_chinese_databook: bool) -> str:
