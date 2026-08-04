@@ -1890,7 +1890,13 @@ class PowerPointGenerator:
     # neither is sized against variable AI text -- the source line is a
     # single fixed short string, and this gap is pure spacing between two
     # already-independently-sized shapes.
-    _TABLE_GAP_ABOVE_PT = 4.0
+    # 4.0 -> 2.0 (2026-08-04). Real PowerPoint BoundHeight measurements
+    # decomposed the visible gap under a lead-in exactly: 2.2pt of
+    # paragraph spacing we count but BoundHeight doesn't show, 3.5pt from
+    # the safety factor, and this 4pt spacer -- 9.7pt total, matching the
+    # measured 9.7pt to the decimal. 2pt still reads as a deliberate
+    # separation between the text and the table below it.
+    _TABLE_GAP_ABOVE_PT = 2.0
     _TABLE_GAP_BELOW_PT = 4.0
     # Shared margin for both text blocks sized against a table (lead-in
     # above it, explanatory bullets below it): inspect_pptx.py re-derives
@@ -2647,8 +2653,13 @@ class PowerPointGenerator:
                     self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
                     + self._real_para_gap_pt(is_chinese)
                 )
+                # Floor 1.5 -> 1.0: the 1.5 floor was added for a real
+                # 129% overflow on a one-line explanation, but that
+                # predates the missing-inset fix that actually caused it.
+                # Real BoundHeight data shows it was forcing ~7pt of dead
+                # space into every single-line box.
                 lead_height_pt = (
-                    max(used_units, 1.5) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
+                    max(used_units, 1.0) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
                     + inset_pt + self._TABLE_GAP_ABOVE_PT
                 )
                 lead_box.height = int(lead_height_pt * 12700)
@@ -3175,7 +3186,7 @@ class PowerPointGenerator:
                 + self._real_para_gap_pt(is_chinese_databook)
             )
             explain_height_pt = (
-                max(used_units, 1.5) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR + inset_pt
+                max(used_units, 1.0) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR + inset_pt
             )
             explain_box.height = int(explain_height_pt * 12700)
         except Exception as exc:
