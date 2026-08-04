@@ -2239,6 +2239,15 @@ class PowerPointGenerator:
         table_below_text / _render_presentation_table) closely enough to be
         directionally right, without needing a real shape to measure
         against (none exists yet at planning time)."""
+        return sum(self._estimate_table_account_parts_pt(item, table, is_chinese_databook))
+
+    def _estimate_table_account_parts_pt(
+        self, item: Dict[str, Any], table: Dict[str, Any], is_chinese_databook: bool,
+    ) -> Tuple[float, float, float]:
+        """The same estimate broken into its three independently-placeable
+        parts -- (lead-in, table+source, explanation) -- so flow() can try
+        splitting an account at either boundary rather than only
+        accepting or rejecting it whole."""
         lead_in_pt = self._estimate_lead_in_pt(item)
 
         table_pt = (
@@ -2261,7 +2270,7 @@ class PowerPointGenerator:
             # need to agree here, not diverge.
             explain_pt = explain_units * explain_std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
 
-        return lead_in_pt + table_pt + explain_pt
+        return lead_in_pt, table_pt, explain_pt
 
     def _append_table_accounts_to_distribution(
         self, table_items: List[Dict[str, Any]],
@@ -2349,41 +2358,53 @@ class PowerPointGenerator:
         def _fits(key: Optional[Tuple[int, str]], block_pt: float) -> bool:
             return key is not None and slot_fill_pt.get(key, 0.0) + block_pt <= cap
 
-        def flow(item: Dict[str, Any], block_pt: float, lead_pt: Optional[float] = None) -> None:
-            """Places one account at the flow cursor, splitting its lead-in
-            text away from its table when the whole block won't fit in the
-            current column but the intro sentence alone still will.
+        def flow(item: Dict[str, Any], block_pt: float,
+                 parts_pt: Optional[Tuple[float, float, float]] = None) -> None:
+            """Places one account at the flow cursor, splitting it at a
+            natural boundary when the whole block won't fit in the current
+            column but a leading portion of it still will.
 
-            This is the user-requested "表格前如果這個point有文字 而這一邊
-            放不下表格 那表格可以放下一個" behaviour: the intro sentence
-            finishes the current column and the table starts the next one,
-            instead of the whole account jumping to a fresh column and
-            leaving the current one short. Deliberately the ONLY split
-            supported -- the table itself is never divided (no repeated
-            header) and the post-table explanation always travels with its
-            own table, both per explicit user instruction. lead_pt=None
-            marks an account with no table to split off (a plain trailing
-            account), which simply flows whole."""
+            Two split points, tried widest-first so as much as possible
+            stays in the current column:
+              1. lead-in + table here, explanation continues next column
+              2. lead-in here, table + explanation continue next column
+
+            (1) is the real reference deck's own convention -- its
+            营业成本 bullets continue in the next column under a
+            "营业成本（续）" heading. (2) is what the user described:
+            "表格前如果這個point有文字 而這一邊放不下表格 那表格可以放下一個".
+            The table itself is never divided (no repeated header) per
+            explicit user instruction. parts_pt=None marks an account with
+            nothing to split (a plain trailing account), which flows whole."""
             nonlocal cursor
             if _fits(cursor, block_pt):
                 _append_to_slot(cursor, item, block_pt)
                 return
 
-            if (lead_pt is not None and self._TABLE_ALLOW_LEAD_TABLE_SPLIT
-                    and _fits(cursor, lead_pt)):
-                # The continuation heading replaces the lead-in above the
-                # table, so the table isn't left unlabelled in its column.
-                rest_pt = max(0.0, block_pt - lead_pt) + self._TABLE_CONTINUATION_HEADING_PT
-                _append_to_slot(cursor, dict(item, _render_parts=("lead",)), lead_pt)
-                cursor = _open_new_slot(dict(item, _render_parts=("table",)), rest_pt)
-                return
+            if parts_pt is not None and self._TABLE_ALLOW_LEAD_TABLE_SPLIT:
+                lead_pt, table_pt, explain_pt = parts_pt
+                heading = self._TABLE_CONTINUATION_HEADING_PT
+                # 1. Keep the lead-in AND table here; only the explanation
+                #    moves. Worth it only if there IS an explanation to move.
+                if explain_pt > 0 and _fits(cursor, lead_pt + table_pt):
+                    _append_to_slot(cursor, dict(item, _render_parts=("lead", "table")),
+                                    lead_pt + table_pt)
+                    cursor = _open_new_slot(dict(item, _render_parts=("expl",)),
+                                            explain_pt + heading)
+                    return
+                # 2. Keep only the lead-in here; table + explanation move.
+                if _fits(cursor, lead_pt):
+                    _append_to_slot(cursor, dict(item, _render_parts=("lead",)), lead_pt)
+                    cursor = _open_new_slot(dict(item, _render_parts=("table", "expl")),
+                                            table_pt + explain_pt + heading)
+                    return
 
             cursor = _open_new_slot(item, block_pt)
 
         for item in table_items:
             table = item.get("_presentation_table") or {}
-            block_pt = self._estimate_table_account_block_height_pt(item, table, is_chinese_databook)
-            flow(item, block_pt, lead_pt=self._estimate_lead_in_pt(item))
+            parts_pt = self._estimate_table_account_parts_pt(item, table, is_chinese_databook)
+            flow(item, sum(parts_pt), parts_pt=parts_pt)
 
         for item in (trailing_items or []):
             flow(item, self._estimate_lead_in_pt(item))
@@ -2407,6 +2428,13 @@ class PowerPointGenerator:
         box = slide.shapes.add_textbox(left, top, width, Pt(self._TABLE_CONTINUATION_HEADING_PT))
         tf = box.text_frame
         tf.word_wrap = True
+        # Zero the default 3.6pt top/bottom insets -- a one-line heading is
+        # tight enough that they alone pushed it over its own box height.
+        try:
+            tf.margin_top = 0
+            tf.margin_bottom = 0
+        except Exception:
+            pass
         p = tf.paragraphs[0]
         try:
             p.left_indent = Inches(0.15)
@@ -2511,31 +2539,43 @@ class PowerPointGenerator:
             render_parts = account_data.get("_render_parts")
             wants_lead = render_parts is None or "lead" in render_parts
             wants_table = render_parts is None or "table" in render_parts
+            wants_expl = render_parts is None or "expl" in render_parts
+            post_table_text = account_data.get("_post_table_text", "")
 
             category_to_write = category if (category and category != current_category) else None
             if category:
                 current_category = category
 
             if not wants_lead:
-                # Continued table: a compact "科目名（续）" heading stands in
-                # for the intro sentence, so the table isn't left unlabelled
-                # at the top of a fresh column.
+                # A continued fragment: a compact "科目名（续）" heading
+                # stands in for the intro sentence that already rendered at
+                # the end of the previous column, so this fragment isn't
+                # left unlabelled at the top of a fresh one.
                 try:
-                    table_top = self._render_continuation_heading(
+                    frag_top = self._render_continuation_heading(
                         slide, left, current_top, width, display_name, is_chinese_databook,
                     )
                 except Exception as exc:
                     logger.warning("Could not render continuation heading for %s: %s", mapping_key, exc)
-                    table_top = current_top
+                    frag_top = current_top
                 try:
-                    bottom = self._render_presentation_table(
-                        slide, left, table_top, width, table, is_chinese_databook,
-                        source_multiplier=self._table_source_multiplier(account_data),
-                        post_table_text=account_data.get("_post_table_text", ""),
-                    )
+                    if wants_table:
+                        bottom = self._render_presentation_table(
+                            slide, left, frag_top, width, table, is_chinese_databook,
+                            source_multiplier=self._table_source_multiplier(account_data),
+                            post_table_text=post_table_text if wants_expl else "",
+                        )
+                    elif post_table_text:
+                        # Explanation-only continuation: its own table
+                        # stayed in the previous column.
+                        bottom = self._render_post_table_explanation(
+                            slide, left, frag_top, width, post_table_text, is_chinese_databook,
+                        )
+                    else:
+                        bottom = frag_top
                 except Exception as exc:
-                    logger.warning("Could not render continued table for %s: %s", mapping_key, exc)
-                    bottom = table_top
+                    logger.warning("Could not render continued fragment for %s: %s", mapping_key, exc)
+                    bottom = frag_top
                 current_top = bottom + int(Pt(self._TABLE_GAP_BELOW_PT))
                 continue
 
@@ -2593,7 +2633,9 @@ class PowerPointGenerator:
                 bottom = self._render_presentation_table(
                     slide, left, table_top, width, table, is_chinese_databook,
                     source_multiplier=table_source_multiplier,
-                    post_table_text=account_data.get("_post_table_text", ""),
+                    # Withheld when the explanation was split into the next
+                    # column (_render_parts=("lead","table")).
+                    post_table_text=post_table_text if wants_expl else "",
                 )
             except Exception as exc:
                 logger.warning("Could not render presentation table for %s: %s", mapping_key, exc)
@@ -2614,10 +2656,14 @@ class PowerPointGenerator:
     # straight back to the previous whole-block-only behaviour without
     # touching anything else.
     _TABLE_ALLOW_LEAD_TABLE_SPLIT = True
-    # Budget for the "科目名（续）" heading drawn above a continued table --
-    # one 9pt line plus its paragraph gap, with the same render margin the
-    # rest of the stack uses.
-    _TABLE_CONTINUATION_HEADING_PT = 16.0
+    # Budget for the "科目名（续）" heading drawn above a continued fragment.
+    # Must hold one full 9pt std_lh line (font x 1.2 pitch + paragraph gap
+    # ~= 13pt) with the render safety margin -- a first attempt at 16pt
+    # measured 148% full on real client metrics, because the textbox's own
+    # default 3.6pt top/bottom insets eat into it. The heading renders with
+    # those insets zeroed (see _render_continuation_heading) so this budget
+    # is available to the text itself.
+    _TABLE_CONTINUATION_HEADING_PT = 18.0
 
     @staticmethod
     def _table_unit_label(is_chinese_databook: bool) -> str:
@@ -2957,6 +3003,20 @@ class PowerPointGenerator:
         if not post_table_text:
             return after_source
 
+        return self._render_post_table_explanation(
+            slide, left, after_source, width, post_table_text, is_chinese_databook,
+        )
+
+    def _render_post_table_explanation(
+        self, slide, left: int, top: int, width: int, post_table_text: str,
+        is_chinese_databook: bool,
+    ) -> int:
+        """Draws the "➢"/"-" explanatory bullets that follow a presentation
+        table. Extracted from _render_presentation_table so the same
+        rendering can also be used on its own, when the explanation is
+        carried into the NEXT column while its table stays behind (see
+        _append_table_accounts_to_distribution's flow()). Returns the
+        bottom EMU position."""
         marker = "➢ " if is_chinese_databook else "- "
         raw_lines = [ln.strip() for ln in post_table_text.split("\n") if ln.strip()]
         if not raw_lines:
@@ -2966,7 +3026,7 @@ class PowerPointGenerator:
         # Placeholder height, resized below via the same real-metrics
         # measurement _render_table_accounts_stack uses for the lead-in --
         # needs a real shape to measure against first.
-        explain_box = slide.shapes.add_textbox(left, after_source, width, Pt(200))
+        explain_box = slide.shapes.add_textbox(left, top, width, Pt(200))
         explain_tf = explain_box.text_frame
         explain_tf.word_wrap = True
         for i, line_text in enumerate(lines):
@@ -2976,7 +3036,7 @@ class PowerPointGenerator:
             run.font.name = 'Arial'
             run.font.size = Pt(9.0)
             try:
-                run.font.color.rgb = BLACK
+                run.font.color.rgb = RGBColor(0, 0, 0)
             except Exception:
                 pass
             p.line_spacing = 1.0
@@ -3002,7 +3062,7 @@ class PowerPointGenerator:
         except Exception as exc:
             logger.debug("Could not size presentation-table explanatory text: %s", exc)
 
-        return after_source + int(explain_box.height)
+        return top + int(explain_box.height)
 
     @staticmethod
     def _insert_category_header_rows(df, mappings: Optional[Dict[str, Any]], is_chinese_mode: bool):
