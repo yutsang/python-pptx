@@ -123,7 +123,7 @@ PPTX_DEFAULT_SETTINGS: Dict[str, Any] = {
         # than before), this relax tier goes back to being a small genuine
         # second-chance buffer instead of a compensating hack for an
         # undersized first tier.
-        "shape_height_utilization": 1.05,
+        "shape_height_utilization": 1.00,
         "minimum_slot_lines": 22,
         "split_min_remaining_lines": 3,
         "split_min_content_lines": 5,
@@ -154,7 +154,7 @@ PPTX_DEFAULT_SETTINGS: Dict[str, Any] = {
         },
         "statement_overrides": {
             "BS": {
-                "shape_height_utilization": 1.05,
+                "shape_height_utilization": 1.00,
                 "line_height_padding_pt": 1.3,
                 "chars_per_line": {
                     "single": {"eng": 106},
@@ -2230,7 +2230,18 @@ class PowerPointGenerator:
     # gain and no more. A first attempt at 0.96 was rejected on this
     # arithmetic alone -- it works out to ~101% of a column's real
     # capacity, i.e. overflow by construction.
-    _TABLE_SLOT_PACK_THRESHOLD = 0.92
+    # 0.92 -> 0.98 (2026-08-04). Every reason this sat below 1.0 has now
+    # been removed one at a time: the shared-capacity constant (now each
+    # slot's real height, _slot_capacity_pt), the ~14% planning line-pitch
+    # error (_planning_std_lh_pt), and finally the trailing-paragraph-gap
+    # over-count -- the cost model now reproduces PowerPoint's own
+    # BoundHeight exactly, so there is no measurement bias left for this
+    # threshold to absorb. 0.98 keeps a 2% cushion for the render-time
+    # rounding this estimate can't see, while letting a table's own block
+    # actually use the column it was measured against; the user's
+    # standing preference after seeing a slot land at exactly 0pt spare
+    # is "用盡空間 比較好".
+    _TABLE_SLOT_PACK_THRESHOLD = 0.98
 
     def _estimate_lead_in_pt(self, item: Dict[str, Any], is_chinese_databook: bool = False) -> float:
         """Heuristic (no real shape) estimate of one account's lead-in block
@@ -5970,7 +5981,18 @@ class PowerPointGenerator:
         # shape_height_utilization is the "natural" first relaxation because
         # PPT auto-fit can absorb that much overflow at render time.
         _packing_relax = self._packing_settings(statement_type)
-        _shape_util = float(_packing_relax.get("shape_height_utilization", 1.15) or 1.15)
+        # Default 1.15 -> 1.00 (2026-08-04). This relax lets the packer
+        # treat a slot as N% taller than it is, to avoid dropping content
+        # or adding a page. It was safe only because the cost model used
+        # to OVER-count height (a trailing paragraph gap per block), so a
+        # "105% full" slot really rendered at ~100%. Now that the model
+        # reproduces PowerPoint's own BoundHeight exactly, that hidden
+        # buffer is gone and the same relax produced a real, measured
+        # 6.6pt overflow (slide 2 L: 366.6pt of text in a 358.9pt box).
+        # 1.00 means "fill the slot completely, never past it", which is
+        # exactly the behaviour the user asked for after seeing slide 1
+        # land at precisely 0pt spare: "可以用盡空間 比較好".
+        _shape_util = float(_packing_relax.get("shape_height_utilization", 1.00) or 1.00)
         _relax_factors: List[float] = [1.0, max(1.05, _shape_util), 1.35, 1.6, 10.0]
 
         # Front-loading target: slots before the LAST used one should be packed
