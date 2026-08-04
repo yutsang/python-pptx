@@ -3316,8 +3316,25 @@ class PowerPointGenerator:
         get_space_before_for_text at all; those getters' 4-9pt values
         belong to the separate legacy _fill_content_shape path. See
         _real_line_spacing's docstring for how this was actually caught.
+
+        2.2, not 3.0 (2026-08-04): the requested space_after XML value is
+        still literally Pt(3) at render time, unchanged -- this is not a
+        claim that PowerPoint renders less than what's asked for. It's a
+        correction to how much of that requested space this codebase's
+        OWN capacity/content-cost formula should count against a box's
+        available room, back-solved from real, empirical spare-capacity
+        measurements the user made in real PowerPoint on two independent,
+        differently-sized, differently-shaped boxes (a single-column table
+        page's textMainBullets and a plain L-column continuation page) --
+        both independently implied a real std_lh of ~13.0pt against this
+        formula's previous 13.8pt (line_h 10.8, PROVEN correct separately,
+        see POWERPOINT_LINE_PITCH_FACTOR's own history -- so the gap
+        isolates to para_gap specifically: implied ~2.2pt, not 3.0pt).
+        Deliberately not landing exactly on 2.2 without a second real
+        cross-check on the render side too -- see the commit message this
+        shipped in for the full reasoning and what still needs re-verifying.
         """
-        return 3.0
+        return 2.2
 
     def _calculate_max_lines_for_textbox(
         self,

@@ -92,7 +92,7 @@ def main() -> int:
 
     box = text_box_from_shape(shape)
     line_h = measurer.line_height_pt()
-    para_gap = 3.0
+    para_gap = 2.2  # keep in lockstep with fdd_utils/pptx.py's _real_para_gap_pt (2026-08-04)
     std_lh = line_h + para_gap
     # Float, not int(...) floored -- matches fdd_utils/pptx.py's
     # _calculate_max_lines_for_textbox (fixed in 5bbec43). This diagnostic
@@ -116,7 +116,7 @@ def main() -> int:
         p_is_chi = _is_chinese_text(text)
         p_measurer = chi_measurer if p_is_chi else eng_measurer
         p_line_h = p_measurer.line_height_pt()
-        p_para_gap = 3.0
+        p_para_gap = 2.2  # keep in lockstep with fdd_utils/pptx.py's _real_para_gap_pt (2026-08-04)
         # "■ key - ..." paragraphs (p_key) hang-indent: line 1 is FULL box
         # width (first_line_indent=-0.15" cancels left_indent=0.15"), only
         # WRAPPED lines (2+) are 10.8pt narrower. Continuation paragraphs

@@ -61,8 +61,16 @@ FONT_SIZE_ENG = 9.0
 FONT_SIZE_CHI = 9.0
 LINE_SPACING_ENG = 1.0
 LINE_SPACING_CHI = 1.0
-PARA_GAP_ENG = 3.0
-PARA_GAP_CHI = 3.0
+# 2.2, not 3.0 (2026-08-04) -- kept in lockstep with fdd_utils/pptx.py's
+# _real_para_gap_pt, which moved to 2.2 the same day (back-solved from real
+# empirical spare-capacity measurements on 2 independent real boxes). This
+# file already carries a scar from the OPPOSITE class of drift (see the
+# comment above: an old 9pt copy here overstated fill by ~30% against a
+# real 3pt render) -- if pptx.py's value ever moves again, update this one
+# in the SAME commit, not a follow-up, or this tool starts silently
+# reporting fill%/overflow against a formula generation no longer uses.
+PARA_GAP_ENG = 2.2
+PARA_GAP_CHI = 2.2
 MIN_FILL_RATIO_WARN = 0.40  # below this on a non-last slot -> utilisation flag
 
 
