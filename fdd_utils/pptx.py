@@ -2457,6 +2457,24 @@ class PowerPointGenerator:
         for item in (trailing_items or []):
             flow(item, self._estimate_lead_in_pt(item, is_chinese_databook))
 
+        # Represent every OTHER slot on a slide this pass wrote to, as an
+        # explicit empty entry. The render loop fills and clears purely by
+        # walking the distribution, so a slot that simply never appears in
+        # it is visited by neither branch and keeps whatever raw text the
+        # template shipped with -- a real export leaked a literal
+        # "Placeholder - placeholder" into slide 5's empty right column
+        # this way. _distribute_content_across_slots already does exactly
+        # this for the ordinary packing pool; the table pass needed its
+        # own copy because it can leave a slot untouched that the ordinary
+        # pass never saw either.
+        touched_slides = {slide_idx for slide_idx, _slot, accounts in result if accounts}
+        present = {(slide_idx, slot) for slide_idx, slot, _accounts in result}
+        for slide_idx in sorted(touched_slides):
+            actual_slide_idx = start_slide - 1 + slide_idx
+            for slot_name in self._slot_names_for_actual_slide(actual_slide_idx, start_slide):
+                if (slide_idx, slot_name) not in present:
+                    result.append((slide_idx, slot_name, []))
+
         return result
 
     def _render_continuation_heading(
