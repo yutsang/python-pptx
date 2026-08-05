@@ -6011,6 +6011,16 @@ class PowerPointGenerator:
         # exactly the behaviour the user asked for after seeing slide 1
         # land at precisely 0pt spare: "可以用盡空間 比較好".
         _shape_util = float(_packing_relax.get("shape_height_utilization", 1.00) or 1.00)
+        # NOTE: the second tier is a hardcoded 1.05 FLOOR, so configuring
+        # shape_height_utilization BELOW 1.05 has no effect. Removing the
+        # floor was tried (2026-08-05) and made things materially worse:
+        # with it gone the next tier is 1.35, and a real 6-account export
+        # front-loaded slide 1 to 109% while slide 2 sat at 63%/0%. The
+        # 1.05 tier is what keeps a near-fit from falling all the way to
+        # 1.35. Residual effect: a slot can still render ~1.05x full (a
+        # real export measured -3.6pt, about a third of a line). Closing
+        # that properly means making the DP add a slot instead of
+        # relaxing -- i.e. the S_min expansion logic, not this ladder.
         _relax_factors: List[float] = [1.0, max(1.05, _shape_util), 1.35, 1.6, 10.0]
 
         # Front-loading target: slots before the LAST used one should be packed
