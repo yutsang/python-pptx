@@ -6166,13 +6166,19 @@ class PowerPointGenerator:
 
         _used_slots = int(dp[S - 1][N - 1][0]) if _dp_solved else S
         _final_penalty = dp[S - 1][N - 1][1] if _dp_solved else INF
+        # logger.warning, not info: inspect_databook.py's export-log
+        # analysis only surfaces WARNING/ERROR, so at INFO this line was
+        # captured but never shown -- which is exactly the number needed
+        # to tell "the DP thinks it packed tight but render disagrees"
+        # apart from "the DP had to relax". Cheap to emit (once per
+        # statement) and directly actionable, so it earns the level.
         if _solved_factor > 1.0:
-            logger.info(
+            logger.warning(
                 "  DP feasible with relax × %.2f; using %s of %s slots, underfill penalty %.2f (target_min=%.0f%%)",
                 _solved_factor, _used_slots, _S_orig, _final_penalty, _target_min_fill * 100,
             )
         else:
-            logger.info(
+            logger.warning(
                 "  DP tight-pack: using %s of %s slots (min=%s), underfill penalty %.2f (target_min=%.0f%%)",
                 _used_slots, _S_orig, S_min, _final_penalty, _target_min_fill * 100,
             )
