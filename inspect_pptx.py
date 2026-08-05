@@ -469,11 +469,20 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
             # and produced false OVERFLOW RISK flags on ordinary multi-line
             # paragraphs before this was unit-matched.
             paras = [p for p in text.split("\n") if p.strip()] if text.strip() else []
+            # A CATEGORY HEADER ("Expenses" / "流动资产") renders with
+            # space_after = Pt(0), not Pt(3) -- see
+            # _fill_text_main_bullets_with_category_and_key. fdd_utils/
+            # pptx.py's own cost function already accounts for that by
+            # handling the category separately; this file charged a gap
+            # for every paragraph uniformly, so it over-counted every
+            # lead-in box carrying a category line by a full 3pt.
+            # A category line is one with no bullet/arrow marker.
+            _MARKERS = ("■", "➢", "-", "•")
             content_pt = sum(
                 len(measurer.wrap(
                     p, hang_w,
                     first_line_width_pt=box.width_pt if p.lstrip().startswith("■") else None,
-                )) * line_h + para_gap
+                )) * line_h + (para_gap if p.lstrip().startswith(_MARKERS) else 0.0)
                 for p in paras
             )
             # Same correction as fdd_utils/pptx.py's _calculate_content_lines:
@@ -482,7 +491,9 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
             # produced false OVERFLOW warnings -- a real 27-line box that
             # PowerPoint's own BoundHeight puts at 93.5% full was reported
             # here as 102%.
-            if paras:
+            # Only if the LAST paragraph actually received a gap above --
+            # a box ending on a category line never had one to remove.
+            if paras and paras[-1].lstrip().startswith(_MARKERS):
                 content_pt -= para_gap
             content_units = (content_pt / std_lh) if std_lh > 0 else 0.0
 
