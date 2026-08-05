@@ -141,4 +141,7 @@ export_selected_tabs.ipynb
 PORT_MANAGEMENT_GUIDE.md
 LOGGING_ENHANCEMENT_README.md
 *.md
-!README.mddp_packing_report.txt
+!README.md
+
+# Diagnostic output (see fdd_utils/pptx.py's DP packing report)
+dp_packing_report.txt
