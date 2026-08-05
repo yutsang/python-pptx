@@ -6172,6 +6172,24 @@ class PowerPointGenerator:
         # to tell "the DP thinks it packed tight but render disagrees"
         # apart from "the DP had to relax". Cheap to emit (once per
         # statement) and directly actionable, so it earns the level.
+        # Also written straight to a file next to the export. Two
+        # successive attempts to surface this through logging (INFO, then
+        # WARNING) produced nothing on the user's machine -- something in
+        # their logging setup filters it -- and this one number is what
+        # decides between two opposite fixes for the residual overflow.
+        # A file write can't be filtered by a handler or level.
+        try:
+            _msg = ("tight-pack at 1.0" if _solved_factor <= 1.0
+                    else f"RELAXED to x{_solved_factor:.2f}")
+            with open("dp_packing_report.txt", "a", encoding="utf-8") as _fh:
+                _fh.write(
+                    f"{statement_type}: {_msg} | slots used {_used_slots} of {_S_orig} "
+                    f"(min {S_min}) | underfill penalty {_final_penalty:.2f} "
+                    f"| target_min {_target_min_fill*100:.0f}%\n"
+                )
+        except Exception:
+            pass
+
         if _solved_factor > 1.0:
             logger.warning(
                 "  DP feasible with relax × %.2f; using %s of %s slots, underfill penalty %.2f (target_min=%.0f%%)",
