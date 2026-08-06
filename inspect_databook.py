@@ -1841,6 +1841,11 @@ def export_and_inspect_pptx(
     else:
         print("  ✅ No WARNING/ERROR log lines during export.")
 
+    # The .pptx is KEPT on disk, not written to a temp file -- print where, so
+    # it can actually be opened and eyeballed. Every automated check below is a
+    # geometry/metrics check; none of them substitute for looking at the deck.
+    print(f"\n  📄 PPTX SAVED: {Path(out_path).resolve()}")
+
     _hr("9. PPTX LAYOUT INSPECTION (L/R collision, table overlap, overflow, fill ratio)")
     pptx_config = _inspect_pptx._load_config(None)
     layout = _inspect_pptx.inspect_pptx(out_path, pptx_config)
@@ -2178,6 +2183,9 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                     model_type, out_path,
                 )
                 summary["pptx"] = pptx_summary
+                # Repeated dead-last: section 9/10 print a lot after the export,
+                # and the path is useless if it's buried thousands of lines up.
+                print(f"\n📄 Open this to eyeball-check the deck:\n   {Path(out_path).resolve()}\n")
             except Exception as exc:
                 print(f"\n❌ PPTX export/inspect FAILED: {type(exc).__name__}: {exc}")
                 import traceback
