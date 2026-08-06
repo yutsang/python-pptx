@@ -223,6 +223,16 @@ class FDDConfig:
     def get_debug_mode(self) -> bool:
         return bool(self.get_processing_config().get("debug_mode", False))
 
+    def get_validator_mode(self) -> str:
+        """"selective" (default) runs the LLM Validator only on accounts that
+        assert a causal claim -- the one thing verify_commentary's
+        deterministic number-grounding cannot judge -- and grounds the rest
+        for free. "always" restores the previous behaviour of running it on
+        every account. Measured: the Validator was 59% of a 964s run, and on
+        real data ~80% of accounts had no causal claim for it to review."""
+        mode = str(self.get_processing_config().get("validator_mode", "selective") or "selective").lower()
+        return mode if mode in {"selective", "always"} else "selective"
+
     def get_feedback_loop_config(self) -> Dict[str, Any]:
         processing = self.get_processing_config()
         # enabled by default since the gate became specific: it now fires
@@ -4630,11 +4640,35 @@ def run_ai_pipeline_with_progress(
         use_multithreading,
     )
 
+    validator_mode = fdd_config.get_validator_mode()
     for agent_name, agent_label in SUBAGENT_SEQUENCE:
+        stage_keys = mapping_keys
+        if agent_name == "subagent_4" and validator_mode == "selective":
+            # The Validator is the pipeline's most expensive stage (59% of a
+            # measured 964s run) because it re-emits the whole bullet PLUS a
+            # per-clause review array -- most of which verify_commentary then
+            # overwrites with its own deterministic number-grounding (174
+            # stored clauses vs the model's own 73 on a real run).
+            #
+            # The one thing it can do that determinism cannot is judge a
+            # CAUSAL claim. So run it only where there is a causal claim to
+            # judge, and let the deterministic verifier handle the rest.
+            stage_keys = [
+                k for k in mapping_keys
+                if commentary_asserts_inference(get_pipeline_result_text(results.get(k) or {}))
+            ]
+            skipped = len(mapping_keys) - len(stage_keys)
+            logger.logger.info(
+                "Validator (selective): %s of %s account(s) assert a causal claim; "
+                "%s handled by deterministic verification only",
+                len(stage_keys), len(mapping_keys), skipped,
+            )
+        if not stage_keys:
+            continue
         logger.logger.info("Running %s stage", agent_label)
         run_agent_stage(
             agent_name=agent_name,
-            mapping_keys=mapping_keys,
+            mapping_keys=stage_keys,
             dfs=dfs,
             results=results,
             ai_helper=ai_helper,
@@ -4645,6 +4679,15 @@ def run_ai_pipeline_with_progress(
             progress_callback=progress_callback,
             total_items=total_items,
             user_comments=user_comments,
+        )
+
+    if validator_mode == "selective":
+        # Every account the Validator skipped still needs clause_reviews, both
+        # for the deck's hallucination highlighting and for the feedback
+        # loop's own gate. This is the deterministic half of the old
+        # Validator -- number-grounding only, no LLM call, no rewrite.
+        _apply_deterministic_verification(
+            results=results, dfs=dfs, prompt_manager=prompt_manager, logger=logger,
         )
 
     # --- Feedback loop: re-run generator+validator for accounts with too many unsupported clauses ---
@@ -4795,6 +4838,45 @@ def _ensure_clause_reviews_on_final(
 #: spending another generation pass.
 RETRIABLE_CLAUSE_CATEGORIES = ("hallucination",)
 
+#: Wording that asserts a CAUSE, DRIVER or EXPECTATION rather than restating
+#: a figure. These are the only clauses the LLM Validator can judge that
+#: verify_commentary's deterministic number-grounding cannot: numbers either
+#: tie to the data or they don't, but "主要系X所致" is a claim about WHY.
+#: Measured on a real 23-account run, only these accounts produced any
+#: reasoning flag at all, so gating the Validator on this marker set keeps
+#: the whole capability while skipping the ~80% of accounts it had nothing
+#: to say about.
+#: NOTE "主要为" / "主要包括" are deliberately ABSENT. They introduce a
+#: COMPOSITION ("主要为银行存款"), not a cause, and including them selected
+#: 48% of a real 21-account set instead of 33% for no additional flag.
+_INFERENCE_MARKERS_CHI = (
+    "主要系", "主要由于", "所致", "导致", "预计", "推测", "预期",
+    "反映", "结合其性质", "表明", "拉低", "带动", "归因", "驱动",
+    "原因", "系.*所致", "受.*影响",
+)
+_INFERENCE_MARKERS_ENG = (
+    "mainly due to", "driven by", "attributable to", "reflecting", "as a result of",
+    "expected to", "indicates that", "suggests that", "because of", "owing to",
+)
+
+
+def commentary_asserts_inference(text: str) -> bool:
+    """Does this commentary make a causal/forward-looking claim?
+
+    Cheap, deterministic pre-filter deciding whether an account is worth an
+    LLM validation call at all. Deliberately over-inclusive: a false
+    positive costs one avoidable call, a false negative loses a real
+    reasoning flag from the deck's orange highlighting.
+    """
+    body = str(text or "")
+    if not body.strip():
+        return False
+    lowered = body.lower()
+    return (
+        any(m in body for m in _INFERENCE_MARKERS_CHI)
+        or any(m in lowered for m in _INFERENCE_MARKERS_ENG)
+    )
+
 
 def count_defective_clauses(clause_reviews: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The unsupported clauses worth re-generating for.
@@ -4817,6 +4899,55 @@ def count_defective_clauses(clause_reviews: List[Dict[str, Any]]) -> List[Dict[s
         and not r.get("supported")
         and str(r.get("category", "")).strip().lower() in RETRIABLE_CLAUSE_CATEGORIES
     ]
+
+
+def _apply_deterministic_verification(
+    *,
+    results: Dict[str, Dict[str, str]],
+    dfs: Dict[str, pd.DataFrame],
+    prompt_manager: PromptEngine,
+    logger: PipelineRunLogger,
+) -> None:
+    """Attach clause_reviews to every account the LLM Validator skipped.
+
+    Pure `verify_commentary` -- the same deterministic number-grounding that
+    is ALREADY authoritative over the Validator's own judgement on the
+    accounts it does run (see process_single_agent_item's subagent_4 branch).
+    Free, no LLM call, and it produces the identical clause_reviews shape the
+    deck's highlighting and the feedback loop's gate both read.
+    """
+    done = 0
+    for key, result in results.items():
+        if not isinstance(result, dict):
+            continue
+        validation = result.get("agent_4_validation") or {}
+        if isinstance(validation, dict) and validation.get("clause_reviews"):
+            continue  # the LLM Validator already ran for this account
+        content = get_pipeline_result_text(result)
+        df = dfs.get(key)
+        if not str(content or "").strip() or df is None:
+            continue
+        try:
+            statement_type = prompt_manager.get_mapping_component(key, component="type")
+            sibling_dfs = [
+                other_df for other_key, other_df in dfs.items()
+                if other_key != key
+                and prompt_manager.get_mapping_component(other_key, component="type") == statement_type
+            ] if statement_type else None
+            reviews = verify_commentary(content, df, None, sibling_dfs=sibling_dfs)
+        except Exception as exc:
+            logger.logger.warning("[DeterministicVerify] %s: %s", key, exc)
+            continue
+        result["agent_4_validation"] = {"final_content": content, "clause_reviews": reviews}
+        # Downstream (set_final_fallbacks, the feedback loop, the PPTX
+        # payload builder) all read subagent_4 as "the validated text".
+        # Nothing rewrote it here, so it is the Auditor's own output.
+        result.setdefault("subagent_4", content)
+        done += 1
+    if done:
+        logger.logger.info(
+            "[DeterministicVerify] grounded %s account(s) with no LLM call", done,
+        )
 
 
 def _evaluate_feedback_needed(
