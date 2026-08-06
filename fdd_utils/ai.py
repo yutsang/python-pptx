@@ -225,7 +225,13 @@ class FDDConfig:
 
     def get_feedback_loop_config(self) -> Dict[str, Any]:
         processing = self.get_processing_config()
-        defaults: Dict[str, Any] = {"enabled": False, "max_retries": 2, "unsupported_threshold": 0.3}
+        # enabled by default since the gate became specific: it now fires
+        # only on a hallucinated figure, never on a supportable inference
+        # (see count_defective_clauses). Two real 23-account runs produced
+        # ZERO hallucinations, so the expected extra cost of leaving this on
+        # is zero -- it only spends tokens on the runs that need it. Total
+        # attempts = 1 + max_retries.
+        defaults: Dict[str, Any] = {"enabled": True, "max_retries": 2, "unsupported_threshold": 0.3}
         loop_config = processing.get("feedback_loop") or {}
         merged = dict(defaults)
         merged.update(loop_config)
@@ -704,8 +710,18 @@ def _normalize_clause_review(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def format_validator_feedback_for_reprompt(clause_reviews: List[Dict[str, Any]], language: str) -> str:
-    """Format unsupported clause reasons into concise feedback for the generator reprompt."""
-    unsupported = [r for r in (clause_reviews or []) if isinstance(r, dict) and not r.get("supported")]
+    """Format the clause problems worth re-generating for into concise
+    feedback for the generator reprompt.
+
+    Hallucinations first and, when there are any, ONLY those: telling the
+    generator to also "fix" a supportable inference it was asked to make
+    just trains it to write blander commentary. Falls back to every
+    unsupported clause when the retry was triggered by a broad
+    unsupported RATIO rather than a specific hallucination."""
+    defective = count_defective_clauses(clause_reviews)
+    unsupported = defective or [
+        r for r in (clause_reviews or []) if isinstance(r, dict) and not r.get("supported")
+    ]
     if not unsupported:
         return ""
     if language == "Chi":
@@ -4774,19 +4790,59 @@ def _ensure_clause_reviews_on_final(
             _run_one(key)
 
 
+#: Clause categories that mean the model got a FACT wrong, as opposed to
+#: drawing an inference the data doesn't spell out. Only these justify
+#: spending another generation pass.
+RETRIABLE_CLAUSE_CATEGORIES = ("hallucination",)
+
+
+def count_defective_clauses(clause_reviews: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The unsupported clauses worth re-generating for.
+
+    NOT simply "every clause the validator marked unsupported". A real run
+    flagged 3 clauses across 23 accounts and every one was
+    category="reasoning" -- e.g. "预计主要系待抵扣进项税逐步抵扣所致". That is
+    an FDD consultant drawing a supportable inference, which the deliverable
+    explicitly wants and which the deck renders in orange as marked
+    reasoning. Retrying on those would spend real tokens punishing good
+    output and would push the model toward blander commentary.
+
+    A "hallucination" is different in kind: a number, direction or fact that
+    cannot be tied to the data at all. That is the only thing a re-run can
+    actually fix.
+    """
+    return [
+        r for r in (clause_reviews or [])
+        if isinstance(r, dict)
+        and not r.get("supported")
+        and str(r.get("category", "")).strip().lower() in RETRIABLE_CLAUSE_CATEGORIES
+    ]
+
+
 def _evaluate_feedback_needed(
     results: Dict[str, Dict[str, str]],
     key: str,
     unsupported_threshold: float,
 ) -> tuple[bool, float, List[Dict[str, Any]]]:
-    """Check if a mapping_key's validator result warrants a feedback retry."""
+    """Whether this mapping_key's validator result warrants a retry.
+
+    Gate is "any hallucination at all", not "a high enough RATIO of
+    unsupported clauses". A ratio is the wrong shape of test here: one
+    fabricated figure in a long, otherwise-correct bullet is a reportable
+    error, but it dilutes to a ratio far below any sane threshold, so the
+    old 0.30 gate could never fire on exactly the case it existed for.
+    `unsupported_threshold` is still honoured as an ADDITIONAL trigger for
+    output that is broadly unsupported rather than specifically wrong.
+    """
     validation = (results.get(key) or {}).get("agent_4_validation") or {}
     clause_reviews = validation.get("clause_reviews") or []
     if not clause_reviews:
         return False, 0.0, []
+    defective = count_defective_clauses(clause_reviews)
     unsupported = [r for r in clause_reviews if isinstance(r, dict) and not r.get("supported")]
     ratio = len(unsupported) / len(clause_reviews)
-    return ratio > unsupported_threshold, ratio, unsupported
+    needed = bool(defective) or ratio > unsupported_threshold
+    return needed, ratio, (defective or unsupported)
 
 
 def _run_feedback_loop_for_key(
@@ -4803,6 +4859,22 @@ def _run_feedback_loop_for_key(
     """Run feedback loop for a single key. Returns number of retries performed."""
     max_retries = int(feedback_config.get("max_retries", 2))
     threshold = float(feedback_config.get("unsupported_threshold", 0.3))
+
+    def _snapshot(label: str) -> Dict[str, Any]:
+        """One attempt, with the score the arbiter below ranks it by."""
+        import copy  # module-scope import isn't available in this file section
+        entry = results.get(key) or {}
+        validation = entry.get("agent_4_validation") or {}
+        reviews = validation.get("clause_reviews") or []
+        return {
+            "label": label,
+            "content": entry.get("subagent_4") or entry.get("subagent_2") or entry.get("subagent_1") or "",
+            "validation": copy.deepcopy(validation),
+            "defects": len(count_defective_clauses(reviews)),
+            "reviewed": len(reviews),
+        }
+
+    attempts: List[Dict[str, Any]] = [_snapshot("original")]
 
     for retry_num in range(1, max_retries + 1):
         needs_feedback, ratio, unsupported = _evaluate_feedback_needed(results, key, threshold)
@@ -4858,12 +4930,43 @@ def _run_feedback_loop_for_key(
         _store_agent_result(results, key, "subagent_4", val_content, val_metadata)
         results[key]["feedback_retry_%s_agent_4" % retry_num] = val_content
         results[key]["feedback_retries"] = retry_num
+        attempts.append(_snapshot("retry_%s" % retry_num))
 
         if progress_callback:
             try:
                 progress_callback(5, "FeedbackLoop-%s" % retry_num, 0, 0, 0, key)
             except Exception:
                 pass
+
+    # --- Final arbiter -----------------------------------------------------
+    # Retries are exhausted and the output is STILL defective. Leaving
+    # whatever the last pass happened to produce is wrong: a re-generation
+    # is not monotonically better, and the last attempt can easily be the
+    # worst of the three. Pick the attempt with the fewest hallucinated
+    # clauses -- the deterministic number-grounding check in
+    # verify_commentary, not an LLM judgment -- and break ties toward the
+    # LATEST, which has had the most correction feedback applied.
+    still_bad, _ratio, _unsupported = _evaluate_feedback_needed(results, key, threshold)
+    if still_bad and attempts:
+        best = min(attempts, key=lambda a: (a["defects"], -attempts.index(a)))
+        results[key]["feedback_arbiter"] = {
+            "chosen": best["label"],
+            "scores": {a["label"]: a["defects"] for a in attempts},
+        }
+        if best["label"] != attempts[-1]["label"] and best["content"]:
+            results[key]["subagent_4"] = best["content"]
+            results[key]["agent_4_validation"] = best["validation"]
+            logger.logger.warning(
+                "[FeedbackLoop] %s: %s retries did not clear all hallucinations; "
+                "kept '%s' (%s defect(s)) over the final attempt (%s defect(s))",
+                key, max_retries, best["label"], best["defects"], attempts[-1]["defects"],
+            )
+        else:
+            logger.logger.warning(
+                "[FeedbackLoop] %s: %s retries did not clear all hallucinations; "
+                "keeping the final attempt (%s defect(s)) — needs human review",
+                key, max_retries, attempts[-1]["defects"],
+            )
 
     return max_retries
 
