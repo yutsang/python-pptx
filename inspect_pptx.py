@@ -195,20 +195,42 @@ _FULL_LEGAL_NAME_MARKERS = (
 #: render, and any future attempt must be verified there.
 
 
+#: A name ends where prose does. Walking back to one of these gives the
+#: actual party rather than a window that bleeds into the previous clause.
+#: Brackets are deliberately NOT boundaries: place-of-registration brackets
+#: are part of the name itself (（上海）/（中国）/（平湖）), and treating them
+#: as boundaries made every such company invisible to this check -- the walk
+#: stopped inside the name and the leftover was a bare suffix, which is then
+#: discarded as a false positive.
+_NAME_BOUNDARY = "。，、；：！？ \t\n及和与或"
+#: Cap the backward walk so a name-less clause can't swallow a whole
+#: sentence into the label.
+_NAME_MAX_CHARS = 28
+
+
 def _full_legal_names(text: str) -> List[str]:
-    """Distinct full-legal-name occurrences, with a little context so the
-    report names the actual party rather than just the suffix."""
-    found = []
+    """Distinct full-legal-name occurrences, each trimmed back to the start
+    of the name so the report says WHICH party rather than just the suffix."""
+    body = text or ""
+    found: List[str] = []
     for marker in _FULL_LEGAL_NAME_MARKERS:
         start = 0
         while True:
-            i = (text or "").find(marker, start)
+            i = body.find(marker, start)
             if i < 0:
                 break
-            snippet = (text[max(0, i - 12):i + len(marker)]).strip()
-            if snippet not in found:
-                found.append(snippet)
-            start = i + 1
+            end = i + len(marker)
+            j = i
+            floor = max(0, i - _NAME_MAX_CHARS)
+            while j > floor and body[j - 1] not in _NAME_BOUNDARY:
+                j -= 1
+            name = body[j:end].strip()
+            # A bare suffix with no name in front of it is a false positive
+            # (e.g. the phrase "等有限公司" or a sentence that merely uses the
+            # words); require something to actually be named.
+            if len(name) > len(marker) and name not in found:
+                found.append(name)
+            start = end
     return found
 
 

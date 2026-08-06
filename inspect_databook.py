@@ -1734,6 +1734,29 @@ def run_ai_checks(
     else:
         print("✅ No numbers found that only match ground truth at a non-1x scale factor.")
 
+    # Full legal names in the commentary. Checked HERE as well as on the
+    # exported deck, because it is a property of the generated text, not of
+    # the layout -- reporting it at this stage says whether a prompt change
+    # took effect without needing an export at all. The reference deck writes
+    # the short form throughout and reserves the legal name for the first
+    # mention of a specific contract counterparty; a repeated full name costs
+    # most of a line each time.
+    from inspect_pptx import _full_legal_names
+    legal_hits = {}
+    for key in mapping_keys:
+        text = str((results.get(key) or {}).get("final") or "")
+        names = _full_legal_names(text)
+        if names:
+            legal_hits[key] = names
+    print()
+    if legal_hits:
+        total = sum(len(v) for v in legal_hits.values())
+        print(f"📛 {total} full legal name(s) still written out, in {len(legal_hits)} account(s):")
+        for key, names in legal_hits.items():
+            print(f"    {key}: " + "; ".join(repr(n) for n in names[:4]))
+    else:
+        print("✅ No full legal names in the commentary — every party is written in short form.")
+
     return {
         "skipped": False,
         "total_mapped": total_mapped,
