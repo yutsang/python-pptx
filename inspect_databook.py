@@ -1741,21 +1741,32 @@ def run_ai_checks(
     # the short form throughout and reserves the legal name for the first
     # mention of a specific contract counterparty; a repeated full name costs
     # most of a line each time.
+    # Report what will SHIP, not what the model first wrote. The raw `final`
+    # text is pre-normalisation; shorten_company_names runs on the way into
+    # the deck. Checking the raw text said "8 still written out" on a run
+    # whose exported deck contained none -- a false alarm about my own fix.
     from inspect_pptx import _full_legal_names
-    legal_hits = {}
+    from fdd_utils.pptx import shorten_company_names
+    raw_hits, shipped_hits = {}, {}
     for key in mapping_keys:
         text = str((results.get(key) or {}).get("final") or "")
-        names = _full_legal_names(text)
-        if names:
-            legal_hits[key] = names
+        if _full_legal_names(text):
+            raw_hits[key] = _full_legal_names(text)
+        survived = _full_legal_names(shorten_company_names(text))
+        if survived:
+            shipped_hits[key] = survived
     print()
-    if legal_hits:
-        total = sum(len(v) for v in legal_hits.values())
-        print(f"📛 {total} full legal name(s) still written out, in {len(legal_hits)} account(s):")
-        for key, names in legal_hits.items():
+    if shipped_hits:
+        total = sum(len(v) for v in shipped_hits.values())
+        print(f"📛 {total} full legal name(s) SURVIVE into the deck, in {len(shipped_hits)} account(s):")
+        for key, names in shipped_hits.items():
             print(f"    {key}: " + "; ".join(repr(n) for n in names[:4]))
     else:
-        print("✅ No full legal names in the commentary — every party is written in short form.")
+        print("✅ No full legal names survive into the deck.")
+    if raw_hits:
+        stripped = sum(len(v) for v in raw_hits.values()) - sum(len(v) for v in shipped_hits.values())
+        print(f"   ({stripped} written by the model, removed automatically by "
+              f"shorten_company_names — the prompt does not have to win this argument.)")
 
     return {
         "skipped": False,
