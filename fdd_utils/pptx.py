@@ -2665,6 +2665,7 @@ class PowerPointGenerator:
         run_bullet.font.size = Pt(9)
         run_bullet.font.name = 'Arial'
         self._set_east_asian_typeface(run_bullet)
+        self._declare_run_language(run_bullet)
         try:
             run_bullet.font.color.rgb = RGBColor(128, 128, 128)
         except Exception:
@@ -2674,6 +2675,7 @@ class PowerPointGenerator:
         run_name.font.size = Pt(9)
         run_name.font.name = 'Arial'
         self._set_east_asian_typeface(run_name)
+        self._declare_run_language(run_name)
         run_name.font.bold = True
         try:
             run_name.font.color.rgb = RGBColor(0, 0, 0)
@@ -2819,6 +2821,7 @@ class PowerPointGenerator:
                 blank_run.font.size = Pt(font_pt)
                 blank_run.font.name = 'Arial'
                 self._set_east_asian_typeface(blank_run)
+                self._declare_run_language(blank_run)
 
         def _reserve_exact(needed_pt: float) -> float:
             """Reserve `needed_pt` almost exactly, and return what was
@@ -3260,6 +3263,7 @@ class PowerPointGenerator:
         run.font.size = Pt(9)
         run.font.name = 'Arial'
         self._set_east_asian_typeface(run)
+        self._declare_run_language(run)
         run.font.bold = True
         try:
             run.font.color.rgb = RGBColor(0, 0, 0)
@@ -3307,6 +3311,7 @@ class PowerPointGenerator:
             run.font.size = Pt(9)
             run.font.name = 'Arial'
             self._set_east_asian_typeface(run)
+            self._declare_run_language(run)
             try:
                 run.font.color.rgb = RGBColor(0, 0, 0)
             except Exception:
@@ -3395,6 +3400,7 @@ class PowerPointGenerator:
             for run in p.runs:
                 run.font.name = 'Arial'
                 self._set_east_asian_typeface(run)
+                self._declare_run_language(run)
                 run.font.size = Pt(size_pt)
                 run.font.bold = bold
                 try:
@@ -3506,6 +3512,7 @@ class PowerPointGenerator:
         source_run.text = "资料来源：管理层信息；毕马威分析" if is_chinese_databook else "Source: Management information; KPMG analysis"
         source_run.font.name = 'Arial'
         self._set_east_asian_typeface(source_run)
+        self._declare_run_language(source_run)
         source_run.font.size = Pt(7.0)
         source_run.font.italic = True
         try:
@@ -3556,6 +3563,7 @@ class PowerPointGenerator:
             run.text = line_text
             run.font.name = 'Arial'
             self._set_east_asian_typeface(run)
+            self._declare_run_language(run)
             run.font.size = Pt(9.0)
             try:
                 run.font.color.rgb = RGBColor(0, 0, 0)
@@ -7429,6 +7437,7 @@ class PowerPointGenerator:
                         run_category.font.size = Pt(slot_font_size)
                         run_category.font.name = 'Arial'
                         self._set_east_asian_typeface(run_category)
+                        self._declare_run_language(run_category)
                         run_category.font.bold = False
                         try:
                             from pptx.dml.color import RGBColor
@@ -7890,6 +7899,7 @@ class PowerPointGenerator:
                                 run = p.add_run()
                             run.font.name = 'Arial'
                             self._set_east_asian_typeface(run)
+                            self._declare_run_language(run)
                             run.font.size = title_font_size
                             run.font.bold = True
                             run.font.color.rgb = WHITE
@@ -7973,6 +7983,7 @@ class PowerPointGenerator:
 
                             run.font.name = 'Arial'
                             self._set_east_asian_typeface(run)
+                            self._declare_run_language(run)
                             run.font.size = header_font_size
                             run.font.bold = True
                             run.font.color.rgb = BLACK
@@ -8202,6 +8213,7 @@ class PowerPointGenerator:
                         for run in p.runs:
                             run.font.name = 'Arial'
                             self._set_east_asian_typeface(run)
+                            self._declare_run_language(run)
                             run.font.size = data_font_size
                             try:
                                 run.font.color.rgb = BLACK
@@ -8372,6 +8384,35 @@ class PowerPointGenerator:
         regardless of language or content. Any per-slot adjustment here
         reintroduces size drift between slides."""
         return 9
+
+    _CJK_RANGE = ("一", "鿿")
+
+    def _declare_run_language(self, run) -> None:
+        """Declare the run's LANGUAGE, which is what selects the
+        line-breaking algorithm.
+
+        Third attempt at the "。 starts a line" defect, and the first at this
+        mechanism. The previous two targeted the RULE (paragraph eaLnBrk /
+        hangingPunct) and the FONT (<a:ea> typeface); both are set correctly
+        and neither changed the render. The missing piece is that our runs
+        declared no language at all -- <a:rPr> carried no lang -- so
+        PowerPoint fell back to the document default, and this template is an
+        English one. Latin line-breaking has no 禁则处理, which is exactly the
+        behaviour observed: a line beginning with 。
+
+        lang is set from the run's own text so this is correct in an English
+        deck too; altLang says what to do with East Asian characters inside
+        an otherwise-Latin run, which is the common case here ("■ ", " - ",
+        and a Chinese sentence are separate runs of one bullet).
+        """
+        try:
+            text = run.text or ""
+            has_cjk = any(self._CJK_RANGE[0] <= ch <= self._CJK_RANGE[1] for ch in text)
+            rPr = run._r.get_or_add_rPr()
+            rPr.set("lang", "zh-CN" if has_cjk else "en-US")
+            rPr.set("altLang", "zh-CN")
+        except Exception as exc:
+            logger.debug("Could not declare run language: %s", exc)
 
     def _set_east_asian_typeface(self, run) -> None:
         """Declare the East Asian typeface on a run, alongside the Latin one.
@@ -8662,6 +8703,7 @@ class PowerPointGenerator:
             run.font.size = Pt(font_size_pt)
             run.font.name = 'Arial'
             self._set_east_asian_typeface(run)
+            self._declare_run_language(run)
             run.font.bold = False
             try:
                 if color_rgb is not None:
@@ -8765,6 +8807,7 @@ class PowerPointGenerator:
             run_category.font.size = Pt(font_size_pt)
             run_category.font.name = 'Arial'
             self._set_east_asian_typeface(run_category)
+            self._declare_run_language(run_category)
             run_category.font.bold = False
             try:
                 run_category.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue
@@ -8792,6 +8835,7 @@ class PowerPointGenerator:
         run_bullet.font.size = Pt(font_size_pt)
         run_bullet.font.name = 'Arial'
         self._set_east_asian_typeface(run_bullet)
+        self._declare_run_language(run_bullet)
         run_bullet.font.bold = False
         try:
             run_bullet.font.color.rgb = RGBColor(128, 128, 128)  # Grey
@@ -8804,6 +8848,7 @@ class PowerPointGenerator:
         run_key.font.size = Pt(font_size_pt)
         run_key.font.name = 'Arial'
         self._set_east_asian_typeface(run_key)
+        self._declare_run_language(run_key)
         run_key.font.bold = True
         try:
             run_key.font.color.rgb = RGBColor(0, 0, 0)  # Black
@@ -8816,6 +8861,7 @@ class PowerPointGenerator:
         run_dash.font.size = Pt(font_size_pt)
         run_dash.font.name = 'Arial'
         self._set_east_asian_typeface(run_dash)
+        self._declare_run_language(run_dash)
         run_dash.font.bold = False
         try:
             run_dash.font.color.rgb = RGBColor(0, 0, 0)  # Black
