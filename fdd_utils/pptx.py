@@ -243,6 +243,47 @@ def _build_compact_summary_text(
     return summary.strip()
 
 
+#: Legal-form tails and place-of-registration brackets carry NO identifying
+#: information -- they say what kind of company it is and where it was
+#: registered, not which company. The reference deck strips both throughout
+#: (浙江卓圣, not 浙江卓圣物业管理有限公司) and only writes a full legal name
+#: when first naming a specific contract counterparty.
+_LEGAL_FORM_TAILS = (
+    "股份有限责任公司", "股份有限公司", "有限责任公司", "私人有限公司",
+    "有限合伙企业", "会计师事务所", "律师事务所", "有限公司",
+)
+#: Removed only when the bracket holds a short place name. A long bracket is
+#: usually a real qualifier and gets left alone.
+_REGISTRATION_BRACKET = re.compile(r"[（(][一-鿿]{2,4}[）)](?=[一-鿿]*(?:%s))"
+                                   % "|".join(_LEGAL_FORM_TAILS))
+
+
+def shorten_company_names(text: str) -> str:
+    """Strip legal-form tails and registration brackets from company names.
+
+    Done deterministically, NOT by prompt. Two separate prompt attempts
+    failed outright: the databook's own row labels ARE the full legal names
+    (e.g. a row literally reading *某某咨询管理有限公司), and the prompts
+    carry a much older, much stronger instruction to reproduce entity names
+    from the data exactly. The model correctly followed the stronger rule.
+    Shortening a name is a mechanical string operation, so it belongs here
+    rather than in an instruction that has to win an argument.
+
+    Deliberately conservative: only the legal form and the registration
+    bracket are removed, because neither identifies the party. Trailing
+    business descriptors (物业管理 / 企业管理) are NOT stripped -- that would
+    reach the reference deck's brevity but risks making two counterparties
+    read the same.
+    """
+    body = str(text or "")
+    if not body:
+        return body
+    body = _REGISTRATION_BRACKET.sub("", body)
+    for tail in _LEGAL_FORM_TAILS:
+        body = body.replace(tail, "")
+    return body
+
+
 def _normalize_slide_commentary_text(text: str) -> str:
     normalized = clean_content_quotes(str(text or ""))
     if not normalized:
@@ -250,6 +291,7 @@ def _normalize_slide_commentary_text(text: str) -> str:
     normalized = normalized.replace("\r\n", "\n")
     normalized = re.sub(r"[ \t]+", " ", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    normalized = shorten_company_names(normalized)
     return normalized.strip()
 
 
