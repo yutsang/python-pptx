@@ -277,7 +277,7 @@ common:
          - Zero/nil mentions.
          - Annualisation ("annualised at...").
       6. PRESERVE stock factual FDD phrases when supported: "Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"; "We have not obtained the bank statements yet"; "no bad debt had been incurred historically"; "in line with the payment terms in the leasing agreements"; "We checked the audit report for [year] and found no differences in respect of this amount". STRIP every "You should..." advisory.
-      7. PRESERVE exact entity names (counterparties, lenders, tenants, service providers).
+      7. PRESERVE exact entity names (counterparties, lenders, tenants, service providers), but SHORTEN them: write the short form (「某某物业」/「某某咨询」), not the full legal name (「某某物业管理有限公司」/「某某（上海）管理咨询有限公司」). Drop 有限公司 / 有限责任公司 / 股份有限公司 / （地名） and similar legal-form suffixes, keeping enough to identify the party. A repeated full legal name costs most of a line each time.
       8. LISTING: max 3 sub-points; only items >= 10% of total. Single-value lines as total only.
       9. FORMAT: paragraphs only — no bullets, no bold, no markdown, no "**Key**: value". Multi-line "mainly entailed:" structure allowed for OP/OR/IP/Tax payable only.
       10. APPLY shared alignment rules:
@@ -335,7 +335,7 @@ common:
          g) Zero/nil mentions.
          h) Annualisation projections.
       5. Preserve stock FDD phrases when supported: related-party "interest-free... settled prior to the proposed transaction"; "We have not obtained the bank statements yet"; "no bad debt had been incurred historically"; "in line with the payment terms in the leasing agreements"; "We checked the audit report for [year] and found no differences"; CAPEX advice.
-      6. Preserve exact entity names. Preserve multi-year per-component figures for OI and OC items only.
+      6. Preserve exact entity names, but in SHORT form (「某某物业」, not 「某某物业管理有限公司」) — drop 有限公司/有限责任公司/（地名） suffixes. Preserve multi-year per-component figures for OI and OC items only.
       7. Listing: max 3 points; items >= 10% of total only.
       8. Format: paragraphs only — no bullets, no bold, no markdown. Multi-line "mainly entailed:" allowed for OP/OR/IP/Tax payable.
 
@@ -355,7 +355,7 @@ common:
       2. 过滤项目: 仅列出值>=总额10%的项目。
       3. 简化: 如果只有一个重要值存在, 则仅显示总计而不列出。
       4. 在保留核心内容的前提下将篇幅压缩到上一版本的大约{reduction_target_pct}%，同时保留重要事实、趋势、数据依据和结论。
-      5. 确保准确保留所有日期、金额和实体名称。
+      5. 确保准确保留所有日期、金额和实体名称；公司名称一律使用简称（如「某某物业」「某某咨询」），不要写全称（如「某某物业管理有限公司」「某某（上海）管理咨询有限公司」），删去「有限公司/有限责任公司/股份有限公司/（地名）」等法律形式后缀。全称仅在首次提及具体合同对手方且需明确法律主体时使用。
       6. 保持专业语气和清晰度。
       7. 确保使用总计金额而非明细项目金额。
       8. **清除英文内容**: 删除所有英文技术字段名称和占位符。

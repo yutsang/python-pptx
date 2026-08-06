@@ -2615,6 +2615,7 @@ class PowerPointGenerator:
             p.space_before = Pt(0)
             p.space_after = Pt(0)
             p.line_spacing = 1.0
+            self._apply_east_asian_line_breaking(p)
         except Exception:
             pass
         run_bullet = p.add_run()
@@ -2766,6 +2767,7 @@ class PowerPointGenerator:
                     blank_p.space_before = Pt(0)
                     blank_p.space_after = Pt(0)
                     blank_p.line_spacing = 1.0
+                    self._apply_east_asian_line_breaking(blank_p)
                 except Exception:
                     pass
                 blank_run = blank_p.add_run()
@@ -3205,6 +3207,7 @@ class PowerPointGenerator:
             para.space_before = Pt(0)
             para.space_after = Pt(3)
             para.line_spacing = 1.0
+            self._apply_east_asian_line_breaking(para)
         except Exception:
             pass
         run = para.add_run()
@@ -3250,6 +3253,7 @@ class PowerPointGenerator:
                 para.space_before = Pt(0)
                 para.space_after = Pt(3)
                 para.line_spacing = 1.0
+                self._apply_east_asian_line_breaking(para)
             except Exception:
                 pass
             run = para.add_run()
@@ -3351,6 +3355,7 @@ class PowerPointGenerator:
                     pass
             try:
                 p.line_spacing = 1.0
+                self._apply_east_asian_line_breaking(p)
                 p.alignment = align
                 if indent_emu:
                     self._set_paragraph_left_indent(p, indent_emu)
@@ -3377,18 +3382,24 @@ class PowerPointGenerator:
         title_text = table.get("title") or ""
         _set_cell(table_shape.cell(0, 0), title_text, bold=True, color=WHITE, fill=DARK_BLUE, size_pt=8.0)
 
-        # Row 1: period header -- white bg, bold black text (company-format
-        # reference: only the title band above is filled navy).
-        # TEMPORARILY REVERTED 2026-08-04 (was HEADER_ROW_BLUE fill/white
-        # text) while isolating the real BS/IS overview-table blank-page
-        # bug -- see _fill_table_placeholder's own revert note, same day,
-        # same suspicion. Re-apply once the real cause is confirmed
-        # elsewhere.
+        # Row 1: period header -- navy fill, white bold text, matching the
+        # reference deck (its "人民币千元 | 2023年 | ..." row is filled navy,
+        # not white).
+        #
+        # This was reverted on 2026-08-04 as a PRECAUTION while isolating a
+        # blank-page bug, not because it was implicated: those blank pages
+        # were the BS/IS overview pages, which this function never draws on
+        # -- they come from _fill_table_placeholder, whose own revert note
+        # names the same two slides and which stays reverted. Slides 4-5,
+        # the only ones this function touches, never went blank. Re-applied
+        # here alone so the two can be told apart if it ever recurs.
         table_shape.rows[1].height = Pt(self._TABLE_HEADER_ROW_PT)
-        _set_cell(table_shape.cell(1, 0), unit_label, bold=True, size_pt=7.5)
+        _set_cell(table_shape.cell(1, 0), unit_label, bold=True,
+                  color=WHITE, fill=DARK_BLUE, size_pt=7.5)
         for j, period in enumerate(periods, start=1):
             _set_cell(table_shape.cell(1, j), period_labels.get(period, period),
-                      bold=True, size_pt=7.5, align=PP_ALIGN.CENTER)
+                      bold=True, color=WHITE, fill=DARK_BLUE, size_pt=7.5,
+                      align=PP_ALIGN.CENTER)
 
         # Data / child / total rows.
         for row_idx, entry in enumerate(plan, start=2):
@@ -3501,6 +3512,7 @@ class PowerPointGenerator:
             except Exception:
                 pass
             p.line_spacing = 1.0
+            self._apply_east_asian_line_breaking(p)
             p.space_after = Pt(2)
 
         try:
@@ -5007,6 +5019,7 @@ class PowerPointGenerator:
         min_fill_ratio: float = 0.5,
         key_prefix: str = "",
         min_available_visual: float = 1.0,
+        overflow_allowance_units: Optional[float] = None,
     ) -> Optional[Tuple[str, str]]:
         """Find a clean split point (paragraph boundary, else sentence
         boundary, else word boundary) so the head of `commentary` fits
@@ -5297,8 +5310,16 @@ class PowerPointGenerator:
                 # reported "能夠再放1-2行才滿". Callers re-validate with the
                 # same tolerance (see _try_partial_split_into_gap), so an
                 # overshoot chosen here survives rather than being trimmed.
-                tol_pt = (self._tail_overflow_tolerance_units(statement_type)
-                          * (line_h + para_gap))
+                # Callers that already widened their own budget by the
+                # protrusion allowance pass 0 here; adding it a second time
+                # let the search run to capacity + 2x the allowance, which
+                # overshot every real boundary and fell back to a raw
+                # character cut (measured: one appeared the moment
+                # _try_partial_split_into_gap started pre-inflating its gap).
+                _allow = (self._tail_overflow_tolerance_units(statement_type)
+                          if overflow_allowance_units is None
+                          else float(overflow_allowance_units))
+                tol_pt = _allow * (line_h + para_gap)
 
                 def _head_pt(pos: int) -> Optional[float]:
                     head_txt = para[:pos].strip()
@@ -5629,7 +5650,15 @@ class PowerPointGenerator:
         # real deck. 1.0 is the meaningful floor -- below one rendered line
         # there is nothing worth moving, and _split_commentary_at_boundary's
         # own min_available_visual already refuses smaller budgets.
-        gap = cur_cap - cur_used
+        # Budget against capacity PLUS the protrusion allowance, not capacity
+        # alone. The acceptance test below already lets a candidate exceed
+        # cur_cap by that much, so gating entry on the strict gap made the
+        # two disagree: a real deck left a slot at 25.6/26.0 -- a 0.4-line
+        # gap, under the 1.0 floor -- so nothing was even attempted, while a
+        # ~2-line sentence from the next column would have been accepted had
+        # it been offered. "小小溢出其實問題也不大" is exactly this case.
+        tail_tol = self._tail_overflow_tolerance_units(statement_type)
+        gap = (cur_cap + tail_tol) - cur_used
         if gap < float(self._packing_settings(statement_type).get("min_gap_to_split_lines", 1.0) or 1.0):
             return False
 
@@ -5660,6 +5689,8 @@ class PowerPointGenerator:
                 shape=cur_shape,
                 statement_type=statement_type,
                 key_prefix=f"■ {self._account_cost_key(head_acct)} - ",
+                # `gap` above is already capacity + allowance.
+                overflow_allowance_units=0.0,
             )
             if not split_result:
                 return False
@@ -6131,6 +6162,13 @@ class PowerPointGenerator:
         _back = max((combined.rfind(c, 0, best_len + 1) for c in _marks), default=-1)
         if _back >= 0 and _back + 1 > len(head_commentary):
             best_len = _back + 1
+        else:
+            # No clause boundary anywhere inside the text this pass wanted to
+            # pull forward. Extending anyway would keep the binary search's
+            # raw character offset -- a mid-word cut, which is what showed up
+            # the moment the gap gate started admitting smaller gaps. There
+            # is nothing here worth a bad cut, so decline the extension.
+            return False
 
         best_len = self._snap_split_before_number(combined, best_len)
         if best_len <= len(head_commentary):
@@ -7329,6 +7367,7 @@ class PowerPointGenerator:
                             p_category.space_before = Pt(3) if current_category else Pt(0)
                             p_category.space_after = Pt(0)
                             p_category.line_spacing = 1.0
+                            self._apply_east_asian_line_breaking(p_category)
                         except:
                             pass
                         
@@ -7885,6 +7924,7 @@ class PowerPointGenerator:
                             run.font.bold = True
                             run.font.color.rgb = BLACK
                             p.line_spacing = 1.0
+                            self._apply_east_asian_line_breaking(p)
 
                         # Only the LAST column is highlighted light blue
                         # (matches the company-format reference's "adjusted
@@ -8116,6 +8156,7 @@ class PowerPointGenerator:
                             run.font.bold = is_special_row
                         try:
                             p.line_spacing = 1.0
+                            self._apply_east_asian_line_breaking(p)
                         except Exception:
                             pass
 
@@ -8277,6 +8318,37 @@ class PowerPointGenerator:
         regardless of language or content. Any per-slot adjustment here
         reintroduces size drift between slides."""
         return 9
+
+    @staticmethod
+    def _apply_east_asian_line_breaking(paragraph) -> None:
+        """Turn on East Asian line-breaking (禁则处理) and hanging punctuation
+        for one paragraph.
+
+        Without this a real deck put a full stop at the START of a line, and
+        in the worst case a lone "。" on its own line under a paragraph that
+        otherwise ended cleanly. Chinese typography forbids a line beginning
+        with closing punctuation (。，）」etc.); the rule that prevents it is
+        a PARAGRAPH property, and the template declares no <a:pPr> at all, so
+        nothing was asserting it.
+
+        eaLnBrk       -- apply East Asian line-break rules rather than Latin
+                         ones. Our runs carry font.name='Arial' (a Latin
+                         typeface) even for Chinese text, which is exactly
+                         the case where PowerPoint may otherwise fall back to
+                         Latin breaking.
+        hangingPunct  -- let trailing punctuation hang past the right margin
+                         instead of being pushed onto the next line, which is
+                         what keeps "米。" together.
+
+        Set explicitly rather than relied on as a schema default -- the
+        observed render proves the default was not being applied here.
+        """
+        try:
+            pPr = paragraph._p.get_or_add_pPr()
+            pPr.set("eaLnBrk", "1")
+            pPr.set("hangingPunct", "1")
+        except Exception as exc:
+            logger.debug("Could not set East Asian line-breaking: %s", exc)
 
     @staticmethod
     def _force_no_autofit(text_frame) -> None:
@@ -8595,6 +8667,7 @@ class PowerPointGenerator:
                 p_category.space_before = Pt(0)
                 p_category.space_after = Pt(0)
                 p_category.line_spacing = 1.0
+                self._apply_east_asian_line_breaking(p_category)
             except:
                 pass
             
@@ -8618,6 +8691,7 @@ class PowerPointGenerator:
             p_key.space_before = Pt(0)
             p_key.space_after = Pt(3)  # Matches _PARA_SPACE_AFTER (cost estimator)
             p_key.line_spacing = 1.0
+            self._apply_east_asian_line_breaking(p_key)
         except Exception as e:
             logger.warning("Could not set paragraph formatting: %s", e)
             pass
@@ -8676,6 +8750,7 @@ class PowerPointGenerator:
                     p_text.space_before = Pt(0)
                     p_text.space_after = Pt(3)
                     p_text.line_spacing = 1.0
+                    self._apply_east_asian_line_breaking(p_text)
                 except:
                     pass
                 target_paragraph = p_text
@@ -8745,6 +8820,7 @@ class PowerPointGenerator:
                     p.space_before = Pt(0)
                     p.space_after = Pt(0)
                     p.line_spacing = 1.0
+                    self._apply_east_asian_line_breaking(p)
                 elif level == 3:
                     # Level 3 - most indented
                     p.left_indent = Inches(0.6)
@@ -8752,6 +8828,7 @@ class PowerPointGenerator:
                     p.space_before = Pt(0)
                     p.space_after = Pt(0)
                     p.line_spacing = 1.0
+                    self._apply_east_asian_line_breaking(p)
             except:
                 pass  # Silently handle formatting errors
             
