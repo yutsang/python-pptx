@@ -6214,12 +6214,65 @@ class PowerPointGenerator:
             if i < 0:
                 break
 
-        self._rebalance_lopsided_lr_pairs(assignment, slots, statement_type)
-        self._consolidate_tiny_stub_lr_pairs(assignment, slots, statement_type)
-        self._rebalance_underfilled_boundaries(assignment, slots, statement_type)
-        self._rebalance_overflowing_boundaries(assignment, slots, statement_type)
-        self._maximize_forward_fill(assignment, slots, statement_type)
-        self._consolidate_trailing_near_empty_slot(assignment, slots, statement_type)
+        # The DP's own result is only the starting point -- six passes
+        # below mutate it, so the "tight-pack at 1.0" figure reported above
+        # describes the DP, NOT what finally renders. A real export showed
+        # the DP at 99% and the rendered slot at 110%; the difference is
+        # necessarily introduced here. Record each pass's effect on every
+        # slot's cost so the responsible one is identifiable from a single
+        # run instead of by elimination.
+        def _slot_fill_snapshot() -> List[Tuple[float, float]]:
+            out: List[Tuple[float, float]] = []
+            for _s_i, _slot in enumerate(slots):
+                _used = 0.0
+                _prev = None
+                for _a in assignment[_s_i]:
+                    _c = str(_a.get("category", "") or "")
+                    if _c and _c != _prev:
+                        _used += 1.0
+                    _prev = _c
+                    _is_chi = bool(_a.get("is_chinese"))
+                    _used += self._calculate_content_lines(
+                        "", self._rendered_bullet_label(_a, _is_chi),
+                        _a.get("commentary", ""), slot_name=_slot["slot_name"],
+                        shape=_slot["shape"], is_chinese=_is_chi,
+                    )
+                out.append((_used, float(_slot["capacity"])))
+            return out
+
+        _pass_trace: List[Tuple[str, List[Tuple[float, float]]]] = [
+            ("after DP", _slot_fill_snapshot())
+        ]
+        for _pass_name, _pass_fn in (
+            ("rebalance_lopsided_lr_pairs", self._rebalance_lopsided_lr_pairs),
+            ("consolidate_tiny_stub_lr_pairs", self._consolidate_tiny_stub_lr_pairs),
+            ("rebalance_underfilled_boundaries", self._rebalance_underfilled_boundaries),
+            ("rebalance_overflowing_boundaries", self._rebalance_overflowing_boundaries),
+            ("maximize_forward_fill", self._maximize_forward_fill),
+            ("consolidate_trailing_near_empty_slot", self._consolidate_trailing_near_empty_slot),
+        ):
+            _pass_fn(assignment, slots, statement_type)
+            _pass_trace.append((_pass_name, _slot_fill_snapshot()))
+
+        try:
+            with open("dp_packing_report.txt", "a", encoding="utf-8") as _fh:
+                _fh.write(f"\n--- {statement_type}: per-pass slot fill (used/capacity) ---\n")
+                _prev_snap = None
+                for _name, _snap in _pass_trace:
+                    _cells = []
+                    for _k, (_u, _c) in enumerate(_snap):
+                        _pct = (_u / _c * 100) if _c else 0.0
+                        _mark = "!" if _u > _c else " "
+                        _chg = ""
+                        if _prev_snap and abs(_prev_snap[_k][0] - _u) > 0.01:
+                            _chg = f"({_prev_snap[_k][0]:.1f}->{_u:.1f})"
+                        _cells.append(f"s{_k}:{_pct:5.1f}%{_mark}{_chg}")
+                    _fh.write(f"  {_name:<38} " + "  ".join(_cells) + "\n")
+                    _prev_snap = _snap
+                _fh.write("  ('!' = over capacity. The first pass where a '!' appears "
+                          "is the one that caused the overflow.)\n")
+        except Exception as _exc:
+            logger.debug("Could not write per-pass fill trace: %s", _exc)
 
         for s_i, slot in enumerate(slots):
             lines = slot_cost(s_i, 0, -1) if not assignment[s_i] else self._compute_slot_used_lines(
