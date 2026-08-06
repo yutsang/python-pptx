@@ -2432,18 +2432,16 @@ class PowerPointGenerator:
             natural boundary when the whole block won't fit in the current
             column but a leading portion of it still will.
 
-            Two split points, tried widest-first so as much as possible
-            stays in the current column:
-              1. lead-in + table here, explanation continues next column
-              2. lead-in here, table + explanation continue next column
+            ONE split point: lead-in + table stay here, and only the
+            trailing explanation continues in the next column under a
+            "（续）" heading. That is the real reference deck's own
+            convention for its 营业成本 bullets.
 
-            (1) is the real reference deck's own convention -- its
-            营业成本 bullets continue in the next column under a
-            "营业成本（续）" heading. (2) is what the user described:
-            "表格前如果這個point有文字 而這一邊放不下表格 那表格可以放下一個".
-            The table itself is never divided (no repeated header) per
-            explicit user instruction. parts_pt=None marks an account with
-            nothing to split (a plain trailing account), which flows whole."""
+            A lead-in never separates from its own table -- see the removed
+            branch below for why. The table itself is never divided (no
+            repeated header) per explicit user instruction. parts_pt=None
+            marks an account with nothing to split (a plain trailing
+            account), which flows whole."""
             nonlocal cursor
             if _fits(cursor, block_pt):
                 _append_to_slot(cursor, item, block_pt)
@@ -2461,11 +2459,21 @@ class PowerPointGenerator:
                                             explain_pt + heading)
                     return
                 # 2. Keep only the lead-in here; table + explanation move.
-                if _fits(cursor, lead_pt):
-                    _append_to_slot(cursor, dict(item, _render_parts=("lead",)), lead_pt)
-                    cursor = _open_new_slot(dict(item, _render_parts=("table", "expl")),
-                                            table_pt + explain_pt + heading)
-                    return
+                #    REMOVED after reviewing a real deck. This was built to
+                #    the letter of "表格前如果這個point有文字 而這一邊放不下表格
+                #    那表格可以放下一個", but rendered it is the worst of the
+                #    three outcomes and it fired on EVERY table account:
+                #      - the column ends on "...明细如下：" with no 明细 under
+                #        it, which simply reads as broken;
+                #      - the table then needs a "（续）" heading in the next
+                #        column -- the repeated header the same instruction
+                #        asked us to avoid;
+                #      - and the stranded lead-in leaves the rest of its own
+                #        column empty (one real column sat ~50% blank).
+                #    Falling through to _open_new_slot moves the whole
+                #    lead+table+explanation block together instead. On the
+                #    reviewed deck that is exactly one account per column
+                #    with no continuation headings at all.
 
             cursor = _open_new_slot(item, block_pt)
 
@@ -4849,22 +4857,21 @@ class PowerPointGenerator:
                 para.rfind('；', 0, _cut), para.rfind(';', 0, _cut),
                 para.rfind('、', 0, _cut),
             )
-            if comma_end > 0 and comma_end >= min_fill:
-                best_split = comma_end + 1
-            elif comma_end > 0:
-                # A clause boundary EARLIER than min_fill still beats a cut
-                # through the middle of a name; the slot just ends up less
-                # full than the fill target would like.
+            if comma_end > 0:
+                # Accept a clause boundary even BELOW min_fill: it still
+                # beats a cut through the middle of a name.
+                #
+                # An earlier version returned None here instead, on the
+                # theory that "no split, let the box protrude" was the
+                # project team's stated preference. Measured, that made
+                # things WORSE (per-slot fill 96.9% -> 93.6%): returning
+                # None doesn't make the account protrude, it makes the
+                # caller decline to pull it in at all, so the slot is left
+                # emptier than before -- the reported "放少了1-2行". The
+                # tolerance only helps where content STAYS PUT, which is
+                # _rebalance_overflowing_boundaries, not here.
                 best_split = comma_end + 1
             else:
-                # No clause boundary at all. The project team would rather a
-                # box protrude a line or two than carry a mid-name cut, so
-                # refuse to split when the overflow is within that tolerance
-                # and let the caller keep the account whole. Beyond the
-                # tolerance a hard cut is still better than losing text.
-                overflow_lines = (len(para) - chars_available) / max(1, chars_per_line)
-                if overflow_lines <= self._tail_overflow_tolerance_units(statement_type):
-                    return None
                 hard_end = _cut
                 if hard_end >= min_fill:
                     best_split = hard_end
@@ -5031,11 +5038,14 @@ class PowerPointGenerator:
                         # [best_split, true_max]. Falling straight through to
                         # true_max means cutting at a raw character offset --
                         # which is how a cut lands mid-word or, worse, inside
-                        # a company name. Any boundary at or before true_max
-                        # necessarily still fits, so look backwards too and
-                        # take the last one, as long as the slot stays at
-                        # least min_fill full. A slightly emptier slot reads
-                        # far better than a cut through the middle of a name.
+                        # a company name.
+                        #
+                        # Any boundary at or before true_max necessarily still
+                        # fits, so snap back to the last one. Overshooting
+                        # FORWARD past true_max was tried and does not
+                        # survive: the accurate-measurer validation above
+                        # rejects an over-budget head and the char-trim
+                        # fallback puts it straight back to a raw offset.
                         back = max(
                             (para.rfind(c, 0, true_max + 1)
                              for c in ('。', '！', '？', '，', '；', '、')),
@@ -5094,6 +5104,47 @@ class PowerPointGenerator:
         '进一步', '未发生', '无余额', '未形成',
     )
 
+    # Organisation-name tails. A split anywhere inside a company name reads
+    # as a mistake even though every generic protection above passes it:
+    # jieba tokenizes 某某系统|工程|第四|建设|有限公司 into legitimate words,
+    # so a cut between any two of them looks like a clean word boundary.
+    # Detecting the name's START is unreliable; detecting that pos is
+    # heading INTO one of these tails is not.
+    _ORG_NAME_TAILS = (
+        '有限公司', '有限责任公司', '股份有限公司', '公司', '银行', '集团',
+        '事务所', '研究院', '设计院', '工程局', '合伙企业', '分行', '支行',
+    )
+    _SENTENCE_PUNCT = '。，；、：！？,;.:!?'
+
+    @classmethod
+    def _snap_before_org_name(cls, text: str, pos: int) -> int:
+        """Back `pos` up to before an organisation name it would cut into.
+
+        Fires only when the text between `pos` and an org-name tail ahead of
+        it contains no punctuation -- i.e. pos really is inside one name, not
+        merely before a sentence that happens to mention a company. Backs up
+        to just after the previous punctuation (where the name can only have
+        started), and declines when that would throw away most of the head:
+        losing the whole slot is a worse outcome than the cut it avoids.
+        Only ever moves `pos` earlier, so it can't invalidate a capacity
+        check that already passed.
+        """
+        if pos <= 0 or pos >= len(text):
+            return pos
+        window = text[pos:pos + 24]
+        hits = [window.find(s) for s in cls._ORG_NAME_TAILS]
+        hits = [h for h in hits if h >= 0]
+        if not hits:
+            return pos
+        # Punctuation before the tail means pos isn't inside that name.
+        if any(ch in cls._SENTENCE_PUNCT for ch in window[:min(hits)]):
+            return pos
+        prev = max((text.rfind(ch, 0, pos) for ch in cls._SENTENCE_PUNCT), default=-1)
+        if prev < 0:
+            return pos
+        snapped = prev + 1
+        return snapped if snapped >= pos * 0.3 else pos
+
     @classmethod
     def _jieba_word_boundary_snap(cls, text: str, pos: int) -> Optional[int]:
         """If jieba is installed, segment `text` and return the start index
@@ -5145,6 +5196,15 @@ class PowerPointGenerator:
         moves pos earlier, so it can't undo a capacity check that already
         accepted this position."""
         if pos <= 0 or pos >= len(text):
+            return pos
+        # Organisation names first: this is the one case jieba actively
+        # MASKS rather than merely misses, because every internal boundary of
+        # a company name is a real word boundary to it. Applied before the
+        # other snaps (and not at the end) because this function has several
+        # early returns; each snap only ever moves pos earlier, so running
+        # this first is safe and covers every exit path.
+        pos = cls._snap_before_org_name(text, pos)
+        if pos <= 0:
             return pos
         numeric_chars = set('0123456789,.')
         jieba_snap = cls._jieba_word_boundary_snap(text, pos)
@@ -5741,16 +5801,13 @@ class PowerPointGenerator:
         # raw character offset -- and _snap_split_before_number below only
         # rescues numbers and jieba tokens, not names (系统|工程 is a valid
         # token boundary, which is how a real deck ended up cutting
-        # 某某系统 | 工程第四建设有限公司). Prefer the last natural
-        # sentence/clause boundary at or before best_len; it necessarily
+        # 某某系统 | 工程第四建设有限公司). Snap back to the last natural
+        # sentence/clause boundary at or before best_len -- it necessarily
         # still fits, and it must still be a real extension of the head.
-        _natural = max(
-            (combined.rfind(c, 0, best_len + 1)
-             for c in ('。', '！', '？', '，', '；', '、', '.', ',', ';')),
-            default=-1,
-        )
-        if _natural >= 0 and _natural + 1 > len(head_commentary):
-            best_len = _natural + 1
+        _marks = ('。', '！', '？', '，', '；', '、', '.', ',', ';')
+        _back = max((combined.rfind(c, 0, best_len + 1) for c in _marks), default=-1)
+        if _back >= 0 and _back + 1 > len(head_commentary):
+            best_len = _back + 1
 
         best_len = self._snap_split_before_number(combined, best_len)
         if best_len <= len(head_commentary):
