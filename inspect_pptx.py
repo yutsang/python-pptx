@@ -173,6 +173,45 @@ def _leaked_placeholder(text: str) -> Optional[str]:
     return None
 
 
+#: Legal-form suffixes the reference deck never writes in running prose --
+#: it uses the short form and reserves the full legal name for the first
+#: mention of a specific contract counterparty. A repeated full name costs
+#: most of a line each time, which is why this is worth flagging rather
+#: than leaving to the eye.
+_FULL_LEGAL_NAME_MARKERS = (
+    "有限公司", "有限责任公司", "股份有限公司", "会计师事务所",
+    "Co., Ltd", "Co.,Ltd", "Company Limited",
+)
+
+#: NOTE: a "line would start with punctuation" check was written here and
+#: REMOVED. It could never fire: text_metrics' own wrapper already avoids
+#: putting closing punctuation at a line start, so the check was a
+#: permanently-green light while the real deck showed the defect.
+#:
+#: That difference is itself worth recording -- OUR line counts assume
+#: 禁则处理 is applied, and PowerPoint's render (before eaLnBrk/hangingPunct/
+#: <a:ea> were set) did not apply it. So this class of defect is NOT
+#: observable from the exported file at all; it can only be seen in a real
+#: render, and any future attempt must be verified there.
+
+
+def _full_legal_names(text: str) -> List[str]:
+    """Distinct full-legal-name occurrences, with a little context so the
+    report names the actual party rather than just the suffix."""
+    found = []
+    for marker in _FULL_LEGAL_NAME_MARKERS:
+        start = 0
+        while True:
+            i = (text or "").find(marker, start)
+            if i < 0:
+                break
+            snippet = (text[max(0, i - 12):i + len(marker)]).strip()
+            if snippet not in found:
+                found.append(snippet)
+            start = i + 1
+    return found
+
+
 def _bbox_overlap(a, b) -> bool:
     """True if two (left, top, width, height) EMU boxes overlap by area."""
     ax1, ay1, ax2, ay2 = a[0], a[1], a[0] + a[2], a[1] + a[3]
@@ -599,6 +638,9 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
             _leak = _leaked_placeholder(info.text)
             if _leak:
                 flags.append(f"❌ TEMPLATE PLACEHOLDER LEAKED ({_leak!r})")
+            _legal = _full_legal_names(info.text)
+            if _legal:
+                flags.append(f"📛 FULL LEGAL NAME x{len(_legal)}")
             if info.n_chars > 0 and info.fill_ratio < MIN_FILL_RATIO_WARN and not is_last_slot_on_slide:
                 flags.append(f"📉 under-filled ({info.fill_ratio:.0%})")
             flag_str = ("  " + "  ".join(flags)) if flags else ""
