@@ -5558,8 +5558,15 @@ class PowerPointGenerator:
         summed underfill penalty and both fragments clear a minimum-fill
         safeguard -- never overflows a box, never drops text.
         """
+        # This floor is what caps the achievable fill: refusing to act below
+        # it leaves exactly that much of every slot empty. At the old
+        # hardcoded 1.5 a 23.9-line slot could never exceed
+        # (23.9-1.5)/23.9 = 94%, which is precisely the fill reported on a
+        # real deck. 1.0 is the meaningful floor -- below one rendered line
+        # there is nothing worth moving, and _split_commentary_at_boundary's
+        # own min_available_visual already refuses smaller budgets.
         gap = cur_cap - cur_used
-        if gap < 1.5:
+        if gap < float(self._packing_settings(statement_type).get("min_gap_to_split_lines", 1.0) or 1.0):
             return False
 
         head_acct = nxt_accts[0]
