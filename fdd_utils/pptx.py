@@ -2698,6 +2698,16 @@ class PowerPointGenerator:
         # removes both: text simply resumes below the table, in the same box.
         tf = bullets_shape.text_frame
         try:
+            # MUST come first. The template ships these slots carrying
+            # "Placeholder – placeholder"; the previous per-account-textbox
+            # renderer cleared it and the shared-frame rewrite dropped that
+            # call. Left in, it is a real rendered LINE that every table's
+            # position was then computed without: a real deck put the table
+            # 10.8pt (exactly one line) above where the text actually
+            # started, so it clipped the lead-in by 5.8pt on every table
+            # column. It also leaks the literal placeholder text into the
+            # deliverable.
+            tf.clear()
             tf.word_wrap = True
             self._force_no_autofit(tf)
             from pptx.enum.text import MSO_VERTICAL_ANCHOR

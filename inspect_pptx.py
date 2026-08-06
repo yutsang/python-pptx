@@ -150,6 +150,29 @@ def _actual_font_sizes_pt(shape) -> tuple:
     return tuple(sorted(sizes, key=lambda v: (isinstance(v, str), v)))
 
 
+#: Template boilerplate that must never survive into a deliverable. A real
+#: export leaked "Placeholder – placeholder" into every table column: the
+#: renderer had stopped clearing the slot's frame, so the text both showed
+#: in the deck AND occupied a full line that the table floated over it was
+#: positioned without -- clipping the real lead-in by 5.8pt. The template is
+#: gitignored and per-machine, so a local template without this text cannot
+#: reproduce it; only a check on the exported file can.
+_PLACEHOLDER_PATTERNS = (
+    "placeholder – placeholder",
+    "placeholder - placeholder",
+    "click to edit",
+    "lorem ipsum",
+)
+
+
+def _leaked_placeholder(text: str) -> Optional[str]:
+    low = (text or "").lower()
+    for pat in _PLACEHOLDER_PATTERNS:
+        if pat in low:
+            return pat
+    return None
+
+
 def _bbox_overlap(a, b) -> bool:
     """True if two (left, top, width, height) EMU boxes overlap by area."""
     ax1, ay1, ax2, ay2 = a[0], a[1], a[0] + a[2], a[1] + a[3]
@@ -573,6 +596,9 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
             flags = []
             if info.overflow:
                 flags.append("⚠️ OVERFLOW RISK")
+            _leak = _leaked_placeholder(info.text)
+            if _leak:
+                flags.append(f"❌ TEMPLATE PLACEHOLDER LEAKED ({_leak!r})")
             if info.n_chars > 0 and info.fill_ratio < MIN_FILL_RATIO_WARN and not is_last_slot_on_slide:
                 flags.append(f"📉 under-filled ({info.fill_ratio:.0%})")
             flag_str = ("  " + "  ".join(flags)) if flags else ""
