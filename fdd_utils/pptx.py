@@ -2717,6 +2717,32 @@ class PowerPointGenerator:
         cursor_pt = 0.0
         deferred_tables: List[Tuple[Dict[str, Any], Dict[str, Any], float]] = []
 
+        def _measured_content_pt() -> float:
+            """Height of everything CURRENTLY in the frame, measured from the
+            frame's own paragraphs.
+
+            Deliberately re-measures the whole frame instead of accumulating
+            per-block estimates. A block estimate and the frame's real
+            rendered height only have to disagree by one wrapped line for the
+            table floated over the band below to land on top of real text --
+            and the two are measured by different code paths, on different
+            machines, with different font metrics (this repo's own checker
+            falls back to system fonts where production uses client metrics),
+            so they WILL drift. Measuring what is actually in the frame is
+            the only version that can't. Same walk inspect_pptx.py and
+            inspect_table_bands.py perform, so all three agree by
+            construction."""
+            total = 0.0
+            for para in tf.paragraphs:
+                ptext = para.text or ""
+                sizes = [r.font.size.pt for r in para.runs if r.font.size is not None]
+                gap = para.space_after.pt if para.space_after is not None else 0.0
+                if not ptext.strip():
+                    total += (max(sizes) if sizes else 9.0) * POWERPOINT_LINE_PITCH_FACTOR + gap
+                    continue
+                total += self._measure_paragraph_pt(ptext, bullets_shape, is_chinese_databook) + gap
+            return total
+
         from fdd_utils.text_metrics import POWERPOINT_LINE_PITCH_FACTOR
 
         def _reserve_blank_lines(count: int, font_pt: float = 9.0) -> None:
@@ -2791,24 +2817,24 @@ class PowerPointGenerator:
                         is_chinese_databook=is_chinese_databook, needs_continuation=False,
                         font_size_pt=9, clause_reviews=clause_reviews,
                     )
-                    # display_name, NOT mapping_key -- this must measure the
-                    # label that actually renders (see _rendered_bullet_label).
-                    # whole_box is left False: more content follows in this
-                    # same frame, so this block really does carry its own
-                    # trailing paragraph gap.
-                    cursor_pt += self._calculate_content_lines(
-                        category_to_write or "", display_name, commentary,
-                        slot_name=slot_name, shape=bullets_shape, is_chinese=is_chinese,
-                        statement_type=statement_type,
-                    ) * std_lh_pt
+                    # The template ships one empty paragraph; drop it as soon
+                    # as real content exists so every measurement below sees
+                    # only what will render.
+                    if (template_empty_p is not None
+                            and template_empty_p.getparent() is not None
+                            and not (template_empty_p.text or "").strip()):
+                        template_empty_p.getparent().remove(template_empty_p)
+                        template_empty_p = None
+                    cursor_pt = _measured_content_pt()
                 except Exception as exc:
                     logger.warning("Could not render lead-in for account %s: %s", mapping_key, exc)
             else:
                 # Continued fragment: a compact "科目名（续）" line stands in
                 # for the intro sentence that ended the previous column.
-                cursor_pt += self._append_continuation_line_to_frame(
+                self._append_continuation_line_to_frame(
                     tf, display_name, is_chinese_databook, std_lh_pt,
                 )
+                cursor_pt = _measured_content_pt()
 
             if table and wants_table:
                 deferred_tables.append(
@@ -2819,16 +2845,19 @@ class PowerPointGenerator:
                 )
 
             if post_table_text and wants_expl:
-                cursor_pt += self._append_explanation_to_frame(
+                self._append_explanation_to_frame(
                     tf, post_table_text, is_chinese_databook, std_lh_pt,
                     shape=bullets_shape, slot_name=slot_name, statement_type=statement_type,
                 )
+                cursor_pt = _measured_content_pt()
 
         # The frame's own template paragraph was never counted in cursor_pt,
         # so it has to go before the tables are positioned against it -- one
         # stray empty line at the top would shift every reserved band down.
         try:
-            if template_empty_p.getparent() is not None and not (template_empty_p.text or "").strip():
+            if (template_empty_p is not None
+                    and template_empty_p.getparent() is not None
+                    and not (template_empty_p.text or "").strip()):
                 template_empty_p.getparent().remove(template_empty_p)
         except Exception:
             pass
@@ -3126,6 +3155,31 @@ class PowerPointGenerator:
         # clamp -- used by _precompute_uniform_table_column_widths, which
         # needs comparable per-table numbers before any per-slot scaling.
         return self._clamp_column_widths_to_available(widths_pt, available_pt)
+
+    def _measure_paragraph_pt(self, text: str, shape, is_chinese: bool) -> float:
+        """Rendered height of ONE paragraph's own lines (excluding its
+        space_after), measured with the same wrap rules the renderer uses:
+        a "■ ..." bullet hangs, so its FIRST line spans the full box width
+        and only continuation lines are narrower."""
+        try:
+            from fdd_utils.text_metrics import get_measurer, text_box_from_shape
+            packing = self._packing_settings()
+            measurer = get_measurer(
+                self._measurer_family(is_chinese, packing),
+                self._real_font_size_pt(is_chinese), is_cjk=is_chinese,
+                line_spacing=self._real_line_spacing(is_chinese),
+                metrics_path=self._resolve_font_metrics_path(is_chinese, packing),
+            )
+            box = text_box_from_shape(shape)
+            hang_w = max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT)
+            n = max(1, len(measurer.wrap(
+                text, hang_w,
+                first_line_width_pt=box.width_pt if text.lstrip().startswith("■") else None,
+            )))
+            return n * measurer.line_height_pt()
+        except Exception as exc:
+            logger.debug("Could not measure paragraph: %s", exc)
+            return self._planning_std_lh_pt(is_chinese)
 
     def _append_continuation_line_to_frame(
         self, text_frame, display_name: str, is_chinese_databook: bool, std_lh_pt: float,
