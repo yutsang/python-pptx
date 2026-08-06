@@ -1182,6 +1182,56 @@ class PowerPointGenerator:
     def _summary_settings(self) -> Dict[str, Any]:
         return dict(self.pptx_settings.get("executive_summary") or {})
 
+    def _summary_length_targets(self, is_chinese: bool) -> Tuple[int, int]:
+        """(target_chars_chi, target_words_eng) sized to the REAL summary box
+        rather than to a static config number.
+
+        The static values had to be re-tuned by hand for every template and
+        were consistently short -- a real deck filled about 2 of the 4 lines
+        the box can hold. Measuring the actual `coSummaryShape` width and
+        multiplying by `target_lines` self-corrects, and keeps the AI's own
+        length instruction honest about the space it is writing into.
+
+        Falls back to the configured values whenever the shape can't be
+        resolved or measured."""
+        settings = self._summary_settings()
+        static_chi = int(settings.get("target_chars_chi", 144))
+        static_eng = int(settings.get("target_words_eng", 110))
+        target_lines = max(1, int(settings.get("target_lines", 4) or 4))
+        try:
+            shape = None
+            for slide in self.presentation.slides:
+                shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
+                if shape is not None:
+                    break
+            if shape is None:
+                return static_chi, static_eng
+            from fdd_utils.text_metrics import get_measurer, text_box_from_shape
+            box = text_box_from_shape(shape)
+            packing = self._packing_settings()
+            font_pt = self._real_font_size_pt(is_chinese)
+            measurer = get_measurer(
+                self._measurer_family(is_chinese, packing), font_pt, is_cjk=is_chinese,
+                line_spacing=self._real_line_spacing(is_chinese),
+                metrics_path=self._resolve_font_metrics_path(is_chinese, packing),
+            )
+            probe = ("财务尽职调查评述示例文字内容测算每行可容纳字数上限" * 12) if is_chinese else (
+                "financial due diligence commentary sample text measuring how many words fit " * 6)
+            wrapped = measurer.wrap(probe, box.width_pt)
+            if not wrapped:
+                return static_chi, static_eng
+            per_line = max(1.0, len(probe) / len(wrapped))
+            # 0.92: aim just under a full box so a slightly long sentence
+            # doesn't push a whole extra line past the table beneath it.
+            chars = int(per_line * target_lines * 0.92)
+            if is_chinese:
+                return max(static_chi, chars), static_eng
+            # English targets are in WORDS; ~6 chars per word including space.
+            return static_chi, max(static_eng, int(chars / 6))
+        except Exception as exc:
+            logger.debug("Could not size summary targets from the real shape: %s", exc)
+            return static_chi, static_eng
+
     def _packing_settings(self, statement_type: Optional[str] = None) -> Dict[str, Any]:
         packing = dict(self.pptx_settings.get("commentary_packing") or {})
         if not statement_type:
@@ -2310,6 +2360,27 @@ class PowerPointGenerator:
         against (none exists yet at planning time)."""
         return sum(self._estimate_table_account_parts_pt(item, table, is_chinese_databook))
 
+    def _table_block_reserved_pt(self, table: Dict[str, Any]) -> float:
+        """Vertical space one table block occupies inside the column's shared
+        frame: the gap above it, the table itself, and the source caption
+        _render_presentation_table draws underneath (whose box is
+        _TABLE_SOURCE_LINE_PT + 2 tall).
+
+        Single definition on purpose -- the renderer reserves this and the
+        planner charges it, and the two silently drifting is exactly the
+        class of bug that produced a table overhanging its column.
+
+        No _TABLE_GAP_BELOW_PT: separation from the paragraph that follows
+        is already provided by that paragraph's own space_before/after in
+        the shared frame, and adding it here was pushing the reservation
+        over a line boundary -- the extra blank line reported under every
+        subtable."""
+        return (
+            self._TABLE_GAP_ABOVE_PT
+            + self._presentation_table_height_pt(table)
+            + self._TABLE_SOURCE_LINE_PT + 2.0
+        )
+
     def _estimate_table_account_parts_pt(
         self, item: Dict[str, Any], table: Dict[str, Any], is_chinese_databook: bool,
     ) -> Tuple[float, float, float]:
@@ -2319,26 +2390,21 @@ class PowerPointGenerator:
         accepting or rejecting it whole."""
         lead_in_pt = self._estimate_lead_in_pt(item, is_chinese_databook)
 
-        # The renderer reserves the table's space as WHOLE blank paragraphs
-        # inside the shared frame, so the cost it really imposes is rounded
-        # up to a line pitch. Estimating the raw height instead would leave
-        # the planner believing a fraction of a line more room exists than
-        # the renderer will actually leave.
-        raw_table_pt = (
-            self._presentation_table_height_pt(table)
-            + self._TABLE_SOURCE_LINE_PT + self._TABLE_GAP_ABOVE_PT + self._TABLE_GAP_BELOW_PT
-        )
-        line_pitch_pt = max(1.0, self._planning_std_lh_pt(is_chinese_databook)
-                            - self._real_para_gap_pt(is_chinese_databook))
-        _whole = int(raw_table_pt // line_pitch_pt)
-        table_pt = (_whole + (1 if raw_table_pt > _whole * line_pitch_pt else 0)) * line_pitch_pt
+        # Exactly what the renderer reserves -- single definition, so the two
+        # can't drift (see _table_block_reserved_pt).
+        table_pt = self._table_block_reserved_pt(table)
 
         post_table_text = item.get("_post_table_text", "")
         explain_pt = 0.0
         if post_table_text:
             explain_units = self._calculate_content_lines(
-                "", "", post_table_text, slot_name="single",
-                shape=self._measurement_slot_shape(),
+                # Measure the marker-prefixed text the renderer actually
+                # writes (_append_explanation_to_frame), not the bare text --
+                # "➢ " is two more characters and on a full line that is
+                # enough to force one extra wrap, measured at 10.8pt (a whole
+                # line) of under-estimate on a real-shaped account.
+                "", "", self._explanation_render_text(post_table_text, is_chinese_databook),
+                slot_name="single", shape=self._measurement_slot_shape(),
                 is_chinese=is_chinese_databook, whole_box=False,
             )
             # Like _estimate_lead_in_pt: no safety factor, no insets. The
@@ -2651,10 +2717,12 @@ class PowerPointGenerator:
         cursor_pt = 0.0
         deferred_tables: List[Tuple[Dict[str, Any], Dict[str, Any], float]] = []
 
-        def _reserve_blank_lines(count: int) -> None:
-            """`count` paragraphs of exactly one line pitch each -- no
+        from fdd_utils.text_metrics import POWERPOINT_LINE_PITCH_FACTOR
+
+        def _reserve_blank_lines(count: int, font_pt: float = 9.0) -> None:
+            """`count` blank paragraphs of exactly font_pt * 1.2 each -- no
             paragraph gap and no text, so the reserved height is simply
-            count * line_pitch and the table dropped on top of it lands
+            count * that pitch and the table dropped on top of it lands
             where the arithmetic says it will."""
             for _ in range(max(0, int(count))):
                 blank_p = tf.add_paragraph()
@@ -2666,8 +2734,29 @@ class PowerPointGenerator:
                     pass
                 blank_run = blank_p.add_run()
                 blank_run.text = " "
-                blank_run.font.size = Pt(9)
+                blank_run.font.size = Pt(font_pt)
                 blank_run.font.name = 'Arial'
+
+        def _reserve_exact(needed_pt: float) -> float:
+            """Reserve `needed_pt` almost exactly, and return what was
+            actually reserved.
+
+            Rounding every reservation UP to a whole 9pt line left up to a
+            full blank line visible under a table -- reported and manually
+            confirmed on a real deck. A line's height is just its font size
+            x 1.2, so the leftover fraction gets its own blank paragraph at
+            whatever font size makes it come out right (floored at
+            PowerPoint's own 1pt minimum). Over-reservation drops from up to
+            10.8pt to at most ~1.2pt."""
+            full = int(needed_pt // line_pitch_pt)
+            _reserve_blank_lines(full)
+            reserved = full * line_pitch_pt
+            remainder = needed_pt - reserved
+            if remainder > 0.05:
+                font_pt = max(1.0, remainder / POWERPOINT_LINE_PITCH_FACTOR)
+                _reserve_blank_lines(1, font_pt)
+                reserved += font_pt * POWERPOINT_LINE_PITCH_FACTOR
+            return reserved
 
         for account_data in account_data_list:
             table = account_data.get("_presentation_table")
@@ -2722,18 +2811,12 @@ class PowerPointGenerator:
                 )
 
             if table and wants_table:
-                table_pt = (
-                    self._presentation_table_height_pt(table)
-                    + self._TABLE_SOURCE_LINE_PT
-                    + self._TABLE_GAP_ABOVE_PT + self._TABLE_GAP_BELOW_PT
-                )
-                whole = int(table_pt // line_pitch_pt)
-                n_blank = whole + (1 if table_pt > whole * line_pitch_pt else 0)
                 deferred_tables.append(
                     (table, account_data, cursor_pt + self._TABLE_GAP_ABOVE_PT)
                 )
-                _reserve_blank_lines(n_blank)
-                cursor_pt += n_blank * line_pitch_pt
+                cursor_pt += _reserve_exact(
+                    self._table_block_reserved_pt(table)
+                )
 
             if post_table_text and wants_expl:
                 cursor_pt += self._append_explanation_to_frame(
@@ -3071,6 +3154,20 @@ class PowerPointGenerator:
             pass
         return std_lh_pt
 
+    @staticmethod
+    def _explanation_render_text(post_table_text: str, is_chinese_databook: bool) -> str:
+        """The post-table explanation exactly as it RENDERS -- one marker-
+        prefixed line per source line. Single definition so the planner
+        measures the same string the renderer writes; the two-character
+        "➢ " prefix is worth a whole wrapped line on a full-width line."""
+        marker = "➢ " if is_chinese_databook else "- "
+        raw_lines = [ln.strip() for ln in (post_table_text or "").split("\n") if ln.strip()]
+        if not raw_lines:
+            raw_lines = [(post_table_text or "").strip()]
+        return "\n".join(
+            ln if ln.startswith(("➢", "-", "•")) else f"{marker}{ln}" for ln in raw_lines
+        )
+
     def _append_explanation_to_frame(
         self, text_frame, post_table_text: str, is_chinese_databook: bool, std_lh_pt: float,
         *, shape=None, slot_name: str = "single", statement_type: Optional[str] = None,
@@ -3081,11 +3178,7 @@ class PowerPointGenerator:
         draws into its own textbox -- but as flowing text, so the next
         account's lead-in continues underneath instead of needing a whole
         new column."""
-        marker = "➢ " if is_chinese_databook else "- "
-        raw_lines = [ln.strip() for ln in post_table_text.split("\n") if ln.strip()]
-        if not raw_lines:
-            raw_lines = [post_table_text.strip()]
-        lines = [ln if ln.startswith(("➢", "-", "•")) else f"{marker}{ln}" for ln in raw_lines]
+        lines = self._explanation_render_text(post_table_text, is_chinese_databook).split("\n")
 
         for line_text in lines:
             para = text_frame.add_paragraph()
@@ -5128,44 +5221,83 @@ class PowerPointGenerator:
                     else:
                         hi = mid - 1
 
-                if true_max > best_split:
-                    natural = None
-                    for end_char in ('. ', '。', '! ', '！', '? ', '？'):
-                        found = para.rfind(end_char, best_split, true_max + len(end_char))
-                        if found >= 0:
-                            cand = found + len(end_char)
-                            if cand <= true_max and (natural is None or cand > natural):
-                                natural = cand
-                    if natural is None:
-                        found = max(
-                            para.rfind('，', best_split, true_max + 1),
-                            para.rfind(',', best_split, true_max + 1),
-                            para.rfind('；', best_split, true_max + 1),
-                            para.rfind('、', best_split, true_max + 1),
-                        )
-                        if found >= 0:
-                            natural = found + 1
-                    if natural is None:
-                        # No boundary anywhere in the FORWARD window
-                        # [best_split, true_max]. Falling straight through to
-                        # true_max means cutting at a raw character offset --
-                        # which is how a cut lands mid-word or, worse, inside
-                        # a company name.
-                        #
-                        # Any boundary at or before true_max necessarily still
-                        # fits, so snap back to the last one. Overshooting
-                        # FORWARD past true_max was tried and does not
-                        # survive: the accurate-measurer validation above
-                        # rejects an over-budget head and the char-trim
-                        # fallback puts it straight back to a raw offset.
-                        back = max(
-                            (para.rfind(c, 0, true_max + 1)
-                             for c in ('。', '！', '？', '，', '；', '、')),
-                            default=-1,
-                        )
-                        if back >= 0 and back + 1 >= min_fill:
-                            natural = back + 1
-                    best_split = natural if natural is not None else true_max
+                # Choose the split point that best FILLS the budget, out of
+                # every real sentence/clause boundary within reach.
+                #
+                # The old rule -- "take any boundary that fits" -- silently
+                # wasted space: measured on the reviewed deck's own 应付账款
+                # text, a 1.5-line budget stopped at a 1.00-line boundary and
+                # left half a line empty, because the next boundary needed
+                # 1.78 lines, i.e. 0.28 over. That is nowhere near the ~2
+                # lines of protrusion the project team accepts, and it is the
+                # reported "能夠再放1-2行才滿". Callers re-validate with the
+                # same tolerance (see _try_partial_split_into_gap), so an
+                # overshoot chosen here survives rather than being trimmed.
+                tol_pt = (self._tail_overflow_tolerance_units(statement_type)
+                          * (line_h + para_gap))
+
+                def _head_pt(pos: int) -> Optional[float]:
+                    head_txt = para[:pos].strip()
+                    if not head_txt:
+                        return None
+                    return len(measurer.wrap(
+                        key_prefix + head_txt,
+                        max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT),
+                        first_line_width_pt=box.width_pt,
+                    )) * line_h + para_gap
+
+                # Largest position still within budget+tolerance, so the
+                # boundary scan below never has to look further than useful.
+                lo2, hi2, tol_max = best_split, len(para) - 1, best_split
+                while lo2 <= hi2:
+                    mid2 = (lo2 + hi2) // 2
+                    cand_pt = _head_pt(mid2)
+                    if cand_pt is None:
+                        lo2 = mid2 + 1
+                        continue
+                    if cand_pt <= budget_pt + tol_pt:
+                        tol_max = mid2
+                        lo2 = mid2 + 1
+                    else:
+                        hi2 = mid2 - 1
+
+                positions = set()
+                for end_char in ('. ', '。', '! ', '！', '? ', '？',
+                                 '，', ',', '；', ';', '、'):
+                    scan = min_fill
+                    while True:
+                        found = para.find(end_char, scan, tol_max + 1)
+                        if found < 0:
+                            break
+                        cand = found + len(end_char)
+                        if min_fill <= cand < len(para):
+                            positions.add(cand)
+                        scan = found + 1
+
+                best_under = best_over = None
+                under_pt = over_pt = 0.0
+                for cand in sorted(positions):
+                    cand_pt = _head_pt(cand)
+                    if cand_pt is None:
+                        continue
+                    if cand_pt <= budget_pt:
+                        if best_under is None or cand > best_under:
+                            best_under, under_pt = cand, cand_pt
+                    elif cand_pt <= budget_pt + tol_pt:
+                        if best_over is None or cand < best_over:
+                            best_over, over_pt = cand, cand_pt
+                # Only spend the protrusion when staying inside the budget
+                # would actually waste something -- half a line is the point
+                # at which the gap is visible in a rendered deck.
+                _WASTE_PT = 0.5 * (line_h + para_gap)
+                if best_under is not None and (budget_pt - under_pt) < _WASTE_PT:
+                    best_split = best_under
+                elif best_over is not None:
+                    best_split = best_over
+                elif best_under is not None:
+                    best_split = best_under
+                elif true_max > best_split:
+                    best_split = true_max
         except Exception:
             pass  # measurer unavailable -- fall through with the crude best_split
 
@@ -5471,7 +5603,15 @@ class PowerPointGenerator:
             candidate_used = self._compute_slot_used_lines(
                 cur_accts + [candidate], cur_name, slot_shape=cur_shape, statement_type=statement_type,
             )
-            if candidate_used <= cur_cap:
+            # The tail tolerance belongs HERE, on the acceptance test, not
+            # inside the splitter. This pass PULLS content into an underfilled
+            # slot, so letting the result protrude a line or two fills the box
+            # -- which is what "能夠再放1-2行才滿" asks for. (An earlier attempt
+            # put the tolerance inside _split_commentary_at_boundary as a
+            # "refuse to split" branch; that made the caller decline the pull
+            # entirely and left the slot EMPTIER. Accepting more content and
+            # declining to split are opposite things.)
+            if candidate_used <= cur_cap + self._tail_overflow_tolerance_units(statement_type):
                 part1, trial_cur_used = candidate, candidate_used
                 break
             overage = candidate_used - cur_cap
@@ -8586,8 +8726,9 @@ class PowerPointGenerator:
             validation_max_tokens = int(summary_settings.get("validation_max_tokens", 90))
             max_numeric_sentences = int(summary_settings.get("max_numeric_sentences", 1))
             validation_timeout_seconds = float(summary_settings.get("validation_timeout_seconds", 25) or 25)
-            target_chars_chi = int(summary_settings.get("target_chars_chi", 120))
-            target_words_eng = int(summary_settings.get("target_words_eng", 95))
+            # Sized to the real summary box, not a static config number --
+            # see _summary_length_targets.
+            target_chars_chi, target_words_eng = self._summary_length_targets(is_chinese)
             max_sentences_chi = int(summary_settings.get("max_sentences_chi", 4))
             max_sentences_eng = int(summary_settings.get("max_sentences_eng", 4))
 
@@ -8736,8 +8877,9 @@ Draft summary:
                 if _is_local else
                 summary_settings.get("generation_timeout_seconds", 20)
             )
-            target_chars_chi = int(summary_settings.get("target_chars_chi", 120))
-            target_words_eng = int(summary_settings.get("target_words_eng", 95))
+            # Sized to the real summary box, not a static config number --
+            # see _summary_length_targets.
+            target_chars_chi, target_words_eng = self._summary_length_targets(is_chinese)
             max_sentences_chi = int(summary_settings.get("max_sentences_chi", 4))
             max_sentences_eng = int(summary_settings.get("max_sentences_eng", 4))
             source_text = str(commentary or summary_source or "").strip()
@@ -8829,11 +8971,8 @@ Original content:
         max_sentences = int(summary_settings.get(
             "max_sentences_chi" if is_chinese_text else "max_sentences_eng", 4
         ))
-        max_chars = (
-            int(summary_settings.get("target_chars_chi", 130))
-            if is_chinese_text
-            else int(summary_settings.get("target_words_eng", 100)) * 6
-        )
+        _t_chi, _t_eng = self._summary_length_targets(is_chinese_text)
+        max_chars = _t_chi if is_chinese_text else _t_eng * 6
 
         # Each account block is separated by "\n\n".  Take the first sentence
         # from each block so the summary spans all accounts on the page.
