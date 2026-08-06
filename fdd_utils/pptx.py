@@ -2258,6 +2258,7 @@ class PowerPointGenerator:
             # wrapped line on real Chinese content.
             item.get("category") or "", self._rendered_bullet_label(item, is_chinese_databook),
             item.get("commentary", ""), slot_name="single", shape=None, is_chinese=is_chinese,
+            whole_box=True,
         )
         lead_std_lh_pt = self._planning_std_lh_pt(is_chinese)
         # Matches the RENDER-time factor (2026-08-03), not the planning-only
@@ -2304,7 +2305,8 @@ class PowerPointGenerator:
         explain_pt = 0.0
         if post_table_text:
             explain_units = self._calculate_content_lines(
-                "", "", post_table_text, slot_name="single", shape=None, is_chinese=is_chinese_databook,
+                "", "", post_table_text, slot_name="single", shape=None,
+                is_chinese=is_chinese_databook, whole_box=True,
             )
             explain_std_lh_pt = self._planning_std_lh_pt(is_chinese_databook)
             # Matches _render_presentation_table's own render-time factor --
@@ -2666,7 +2668,7 @@ class PowerPointGenerator:
                     # label that actually renders above (see
                     # _rendered_bullet_label).
                     category_to_write or "", display_name, commentary, slot_name="single",
-                    shape=lead_box, is_chinese=is_chinese,
+                    shape=lead_box, is_chinese=is_chinese, whole_box=True,
                 )
                 capacity_units = self._calculate_max_lines_for_textbox(
                     lead_box, is_chinese=is_chinese, slot_name="single",
@@ -3200,7 +3202,7 @@ class PowerPointGenerator:
             combined = "\n".join(lines)
             used_units = self._calculate_content_lines(
                 "", "", combined, slot_name="single", shape=explain_box,
-                is_chinese=is_chinese_databook,
+                is_chinese=is_chinese_databook, whole_box=True,
             )
             capacity_units = self._calculate_max_lines_for_textbox(
                 explain_box, is_chinese=is_chinese_databook, slot_name="single",
@@ -3857,8 +3859,20 @@ class PowerPointGenerator:
         shape=None,
         is_chinese: Optional[bool] = None,
         statement_type: Optional[str] = None,
+        whole_box: bool = False,
     ) -> float:
         """Return the physical height of this content expressed in std_lh units.
+
+        whole_box=True means this call measures ALL the text in one shape,
+        so the final paragraph's trailing space_after can be dropped -- it
+        renders as invisible padding at the bottom of the frame and pushes
+        nothing. Default False, because the packer calls this ONCE PER
+        ACCOUNT for slots that hold several: there, every account's
+        trailing gap except the very last one is real spacing that
+        separates it from the next account. Dropping it per-account
+        under-counted a 7-account slot by 6 gaps (~1.3 lines), which is
+        exactly the residual that had the DP reporting 100% on a slot
+        PowerPoint renders at 103%.
 
         Returns a *float* (no ceil) so that the DP and greedy fill can track
         actual physical space consumed.  Using ceil was inflating every
@@ -3882,7 +3896,7 @@ class PowerPointGenerator:
         shape_w = int(getattr(shape, "width", 0) or 0) if shape is not None else 0
         cache_key = (
             bool(category), mapping_key, commentary, slot_name, shape_w,
-            is_chinese, str(statement_type or ""),
+            is_chinese, str(statement_type or ""), whole_box,
         )
         cached = self._content_lines_cache.get(cache_key)
         if cached is not None:
@@ -3951,7 +3965,7 @@ class PowerPointGenerator:
                 # function claimed ~327pt, and inspect_pptx.py's matching
                 # copy of the same over-count was reporting a false
                 # "102% OVERFLOW RISK" on a box that is really 93.5% full.
-                if paras:
+                if paras and whole_box:
                     total_pt -= para_gap
 
                 # Return float -- no ceil so actual physical proportion is preserved.
@@ -6051,6 +6065,15 @@ class PowerPointGenerator:
                     used += 1.0  # category header line
                 prev_cat = cat
                 used += _acct_cost.get((a_i, sname, w_key), 0.0)
+            # Each account was costed with its own trailing paragraph gap
+            # included (whole_box=False), which is right for every account
+            # except the LAST one in the slot -- that final gap renders as
+            # invisible padding at the bottom of the frame. Refund exactly
+            # one, once, per slot.
+            if i >= j:
+                used -= self._real_para_gap_pt(True) / (
+                    self._planning_std_lh_pt(True) or 1.0
+                )
             cost_cache[key] = used
             return used
 
@@ -6237,6 +6260,8 @@ class PowerPointGenerator:
                         _a.get("commentary", ""), slot_name=_slot["slot_name"],
                         shape=_slot["shape"], is_chinese=_is_chi,
                     )
+                if assignment[_s_i]:
+                    _used -= self._real_para_gap_pt(True) / (self._planning_std_lh_pt(True) or 1.0)
                 out.append((_used, float(_slot["capacity"])))
             return out
 
