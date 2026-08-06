@@ -1609,13 +1609,32 @@ def run_ai_checks(
     stage_timing: Dict[str, float] = {}
     stage_clock = {"last_boundary": time.time(), "seen_labels": set()}
 
+    # Stages are no longer all the same size: the Validator runs SELECTIVELY,
+    # only on accounts that assert a causal claim (ai.py's
+    # commentary_asserts_inference), so a fixed stage_count * len(mapping_keys)
+    # total left the bar stranded -- a real run finished at 53/69 (77%) with
+    # nothing wrong. Each callback reports its own stage's true size, so
+    # correct the total as soon as a stage reveals it, and count steps from
+    # the per-stage tallies instead of ai.py's uniform-stage arithmetic.
+    stage_done: Dict[int, int] = {}
+    stage_size: Dict[int, int] = {}
+
     def _tqdm_progress(agent_num, agent_label, completed, total_eligible, overall_step, mapping_key):
         with progress_lock:
             pbar.set_postfix_str(f"{agent_label}: {mapping_key}"[:60])
-            delta = overall_step - seen_step["n"]
+            if total_eligible:
+                stage_size[agent_num] = total_eligible
+            stage_done[agent_num] = max(stage_done.get(agent_num, 0), completed)
+            true_total = sum(
+                stage_size.get(i, len(mapping_keys)) for i in range(1, stage_count + 1)
+            )
+            if true_total != pbar.total:
+                pbar.total = true_total
+            done = sum(stage_done.values())
+            delta = done - seen_step["n"]
             if delta > 0:
                 pbar.update(delta)
-                seen_step["n"] = overall_step
+                seen_step["n"] = done
             if agent_label not in stage_clock["seen_labels"] and completed == total_eligible and total_eligible > 0:
                 now = time.time()
                 stage_timing[agent_label] = now - stage_clock["last_boundary"]
