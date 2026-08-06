@@ -2275,23 +2275,28 @@ class PowerPointGenerator:
             # _rendered_bullet_label for why that difference is a whole
             # wrapped line on real Chinese content.
             item.get("category") or "", self._rendered_bullet_label(item, is_chinese_databook),
-            item.get("commentary", ""), slot_name="single", shape=None, is_chinese=is_chinese,
-            whole_box=True,
+            item.get("commentary", ""), slot_name="single",
+            shape=self._measurement_slot_shape(), is_chinese=is_chinese,
+            # whole_box=False: this block sits INSIDE the column's shared
+            # frame with more content after it, so it really does carry its
+            # own trailing paragraph gap. Only the frame's last block gets
+            # that gap refunded, and that refund belongs at frame level
+            # (slot_cost), not here -- charging it per account is the exact
+            # bug that took 15 rounds to find in the capacity investigation.
+            whole_box=False,
         )
         lead_std_lh_pt = self._planning_std_lh_pt(is_chinese)
-        # Matches the RENDER-time factor (2026-08-03), not the planning-only
-        # 1.6x above -- this estimate's whole job is to predict what render
-        # will actually produce, so a different (more conservative) factor
-        # here just makes the prediction systematically wrong in the other
-        # direction: real Crescent exports showed 1.5-2in of genuinely
-        # empty column below a table+trailing-account stack, because this
-        # estimate (still at 1.6x after the render side moved to 1.25x)
-        # believed less room remained than truly did, so a trailing account
-        # that would have fit was never even tried. Same reason the box's
-        # own insets are added here: render adds them on top of the text
-        # height, so omitting them would under-estimate every lead-in.
-        return (lead_in_units * lead_std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
-                + self._TEXTBOX_INSET_PT)
+        # No safety factor and no insets. Both existed because a lead-in used
+        # to render into its OWN textbox, which carries insets and needed
+        # margin against a height this file computed but PowerPoint laid out.
+        # Since _render_table_accounts_stack writes every lead-in as ordinary
+        # paragraphs in the column's single shared frame, a lead-in costs
+        # exactly what any other bullet costs -- its measured text height.
+        # (Do NOT add a category-header line here: _calculate_content_lines
+        # already charges one line pitch for it when `category` is non-empty,
+        # verified at 10.80pt, matching the header paragraph's space_after=0.
+        # Adding it again over-charged every account by a full line.)
+        return lead_in_units * lead_std_lh_pt
 
     def _estimate_table_account_block_height_pt(
         self, item: Dict[str, Any], table: Dict[str, Any], is_chinese_databook: bool,
@@ -2314,24 +2319,32 @@ class PowerPointGenerator:
         accepting or rejecting it whole."""
         lead_in_pt = self._estimate_lead_in_pt(item, is_chinese_databook)
 
-        table_pt = (
+        # The renderer reserves the table's space as WHOLE blank paragraphs
+        # inside the shared frame, so the cost it really imposes is rounded
+        # up to a line pitch. Estimating the raw height instead would leave
+        # the planner believing a fraction of a line more room exists than
+        # the renderer will actually leave.
+        raw_table_pt = (
             self._presentation_table_height_pt(table)
             + self._TABLE_SOURCE_LINE_PT + self._TABLE_GAP_ABOVE_PT + self._TABLE_GAP_BELOW_PT
         )
+        line_pitch_pt = max(1.0, self._planning_std_lh_pt(is_chinese_databook)
+                            - self._real_para_gap_pt(is_chinese_databook))
+        _whole = int(raw_table_pt // line_pitch_pt)
+        table_pt = (_whole + (1 if raw_table_pt > _whole * line_pitch_pt else 0)) * line_pitch_pt
 
         post_table_text = item.get("_post_table_text", "")
         explain_pt = 0.0
         if post_table_text:
             explain_units = self._calculate_content_lines(
-                "", "", post_table_text, slot_name="single", shape=None,
-                is_chinese=is_chinese_databook, whole_box=True,
+                "", "", post_table_text, slot_name="single",
+                shape=self._measurement_slot_shape(),
+                is_chinese=is_chinese_databook, whole_box=False,
             )
-            explain_std_lh_pt = self._planning_std_lh_pt(is_chinese_databook)
-            # Matches _render_presentation_table's own render-time factor --
-            # see _estimate_lead_in_pt's comment for why planning and render
-            # need to agree here, not diverge.
-            explain_pt = (explain_units * explain_std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
-                          + self._TEXTBOX_INSET_PT)
+            # Like _estimate_lead_in_pt: no safety factor, no insets. The
+            # explanation is ordinary flowing text in the column's shared
+            # frame now, not a floating textbox of its own.
+            explain_pt = explain_units * self._planning_std_lh_pt(is_chinese_databook)
 
         return lead_in_pt, table_pt, explain_pt
 
@@ -2603,13 +2616,58 @@ class PowerPointGenerator:
         """
         left = int(bullets_shape.left)
         width = int(bullets_shape.width)
-        current_top = int(bullets_shape.top)
         current_category = None
 
+        # ---- One shared text frame for the whole column ------------------
+        # A table is a separate shape and cannot flow inside a text frame, so
+        # its vertical space is RESERVED with blank paragraphs and the table
+        # is floated over them. Everything else -- each account's lead-in,
+        # its post-table explanation, and the NEXT account's lead-in -- stays
+        # in one continuous flow inside bullets_shape's own frame.
+        #
+        # The previous design gave every account its own textbox stacked down
+        # the column. That could never reuse the space a table left over, and
+        # when a table did not fit it stranded the account's "...明细如下："
+        # with nothing under it. Reserving the space inside the shared frame
+        # removes both: text simply resumes below the table, in the same box.
+        tf = bullets_shape.text_frame
         try:
-            bullets_shape.text_frame.clear()
+            tf.word_wrap = True
+            self._force_no_autofit(tf)
+            from pptx.enum.text import MSO_VERTICAL_ANCHOR
+            tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
         except Exception:
             pass
+        template_empty_p = tf.paragraphs[0]._p
+
+        shape_name = self._shape_name(bullets_shape) or ""
+        slot_name = ("L" if shape_name.endswith("_L")
+                     else "R" if shape_name.endswith("_R") else "single")
+        std_lh_pt = self._planning_std_lh_pt(is_chinese_databook)
+        line_pitch_pt = max(1.0, std_lh_pt - self._real_para_gap_pt(is_chinese_databook))
+        _usable_pt, _inset_pt = self._textbox_usable_and_inset_pt(bullets_shape)
+        top_inset_pt = _inset_pt / 2.0
+
+        cursor_pt = 0.0
+        deferred_tables: List[Tuple[Dict[str, Any], Dict[str, Any], float]] = []
+
+        def _reserve_blank_lines(count: int) -> None:
+            """`count` paragraphs of exactly one line pitch each -- no
+            paragraph gap and no text, so the reserved height is simply
+            count * line_pitch and the table dropped on top of it lands
+            where the arithmetic says it will."""
+            for _ in range(max(0, int(count))):
+                blank_p = tf.add_paragraph()
+                try:
+                    blank_p.space_before = Pt(0)
+                    blank_p.space_after = Pt(0)
+                    blank_p.line_spacing = 1.0
+                except Exception:
+                    pass
+                blank_run = blank_p.add_run()
+                blank_run.text = " "
+                blank_run.font.size = Pt(9)
+                blank_run.font.name = 'Arial'
 
         for account_data in account_data_list:
             table = account_data.get("_presentation_table")
@@ -2625,11 +2683,8 @@ class PowerPointGenerator:
             is_chinese = account_data.get('is_chinese', False)
 
             # Which parts of this account render HERE. Absent (the normal
-            # case) means the whole account. ("lead",) means only its intro
-            # sentence -- its table continues in the next slot; ("table",)
-            # means the table half of an account whose intro sentence
-            # already rendered at the end of the previous slot. Set by
-            # _append_table_accounts_to_distribution's place_table_item.
+            # case) means the whole account. Set by
+            # _append_table_accounts_to_distribution's flow().
             render_parts = account_data.get("_render_parts")
             wants_lead = render_parts is None or "lead" in render_parts
             wants_table = render_parts is None or "table" in render_parts
@@ -2640,115 +2695,76 @@ class PowerPointGenerator:
             if category:
                 current_category = category
 
-            if not wants_lead:
-                # A continued fragment: a compact "科目名（续）" heading
-                # stands in for the intro sentence that already rendered at
-                # the end of the previous column, so this fragment isn't
-                # left unlabelled at the top of a fresh one.
+            if wants_lead:
                 try:
-                    frag_top = self._render_continuation_heading(
-                        slide, left, current_top, width, display_name, is_chinese_databook,
+                    self._fill_text_main_bullets_with_category_and_key(
+                        tf, category_to_write, display_name, commentary, is_chinese,
+                        is_chinese_databook=is_chinese_databook, needs_continuation=False,
+                        font_size_pt=9, clause_reviews=clause_reviews,
                     )
-                except Exception as exc:
-                    logger.warning("Could not render continuation heading for %s: %s", mapping_key, exc)
-                    frag_top = current_top
-                try:
-                    if wants_table:
-                        bottom = self._render_presentation_table(
-                            slide, left, frag_top, width, table, is_chinese_databook,
-                            source_multiplier=self._table_source_multiplier(account_data),
-                            post_table_text=post_table_text if wants_expl else "",
-                        )
-                    elif post_table_text:
-                        # Explanation-only continuation: its own table
-                        # stayed in the previous column.
-                        bottom = self._render_post_table_explanation(
-                            slide, left, frag_top, width, post_table_text, is_chinese_databook,
-                        )
-                    else:
-                        bottom = frag_top
-                except Exception as exc:
-                    logger.warning("Could not render continued fragment for %s: %s", mapping_key, exc)
-                    bottom = frag_top
-                current_top = bottom + int(Pt(self._TABLE_GAP_BELOW_PT))
-                continue
-
-            try:
-                lead_box = slide.shapes.add_textbox(left, current_top, width, Pt(200))
-                lead_tf = lead_box.text_frame
-                lead_tf.word_wrap = True
-                leading_empty_p = lead_tf.paragraphs[0]._p
-                self._fill_text_main_bullets_with_category_and_key(
-                    lead_tf, category_to_write, display_name, commentary, is_chinese,
-                    is_chinese_databook=is_chinese_databook, needs_continuation=False,
-                    font_size_pt=9, clause_reviews=clause_reviews,
-                )
-                if leading_empty_p.getparent() is not None and not (leading_empty_p.text or "").strip():
-                    leading_empty_p.getparent().remove(leading_empty_p)
-                self._force_no_autofit(lead_tf)
-                from pptx.enum.text import MSO_VERTICAL_ANCHOR
-                lead_tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
-
-                used_units = self._calculate_content_lines(
                     # display_name, NOT mapping_key -- this must measure the
-                    # label that actually renders above (see
-                    # _rendered_bullet_label).
-                    category_to_write or "", display_name, commentary, slot_name="single",
-                    shape=lead_box, is_chinese=is_chinese, whole_box=True,
+                    # label that actually renders (see _rendered_bullet_label).
+                    # whole_box is left False: more content follows in this
+                    # same frame, so this block really does carry its own
+                    # trailing paragraph gap.
+                    cursor_pt += self._calculate_content_lines(
+                        category_to_write or "", display_name, commentary,
+                        slot_name=slot_name, shape=bullets_shape, is_chinese=is_chinese,
+                        statement_type=statement_type,
+                    ) * std_lh_pt
+                except Exception as exc:
+                    logger.warning("Could not render lead-in for account %s: %s", mapping_key, exc)
+            else:
+                # Continued fragment: a compact "科目名（续）" line stands in
+                # for the intro sentence that ended the previous column.
+                cursor_pt += self._append_continuation_line_to_frame(
+                    tf, display_name, is_chinese_databook, std_lh_pt,
                 )
-                capacity_units = self._calculate_max_lines_for_textbox(
-                    lead_box, is_chinese=is_chinese, slot_name="single",
-                )
-                # capacity_units was measured against the box's USABLE
-                # height (insets already subtracted), so std_lh must be
-                # derived from that same usable height -- and the insets
-                # then added back on top of the text's own height, or the
-                # box comes out exactly one inset too short for its content.
-                usable_pt, inset_pt = self._textbox_usable_and_inset_pt(lead_box)
-                std_lh_pt = (
-                    (usable_pt / capacity_units) if capacity_units > 0 else
-                    self._real_font_size_pt(is_chinese) * self._real_line_spacing(is_chinese)
-                    + self._real_para_gap_pt(is_chinese)
-                )
-                # Floor 1.5 -> 1.0: the 1.5 floor was added for a real
-                # 129% overflow on a one-line explanation, but that
-                # predates the missing-inset fix that actually caused it.
-                # Real BoundHeight data shows it was forcing ~7pt of dead
-                # space into every single-line box.
-                lead_height_pt = (
-                    max(used_units, 1.0) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR
-                    + inset_pt + self._TABLE_GAP_ABOVE_PT
-                )
-                lead_box.height = int(lead_height_pt * 12700)
-                table_top = int(lead_box.top) + int(lead_box.height)
-            except Exception as exc:
-                logger.warning("Could not render lead-in for account %s: %s", mapping_key, exc)
-                table_top = current_top
 
-            if not table or not wants_table:
-                # Either a plain trailing account (e.g. 投资收益/营业外支出
-                # flowed in after 财务费用's table), whose own lead-in IS
-                # the whole account -- or a table account whose intro
-                # sentence ends this column while its table continues in
-                # the next one. Nothing more to draw here either way.
-                current_top = table_top + int(Pt(self._TABLE_GAP_BELOW_PT))
-                continue
+            if table and wants_table:
+                table_pt = (
+                    self._presentation_table_height_pt(table)
+                    + self._TABLE_SOURCE_LINE_PT
+                    + self._TABLE_GAP_ABOVE_PT + self._TABLE_GAP_BELOW_PT
+                )
+                whole = int(table_pt // line_pitch_pt)
+                n_blank = whole + (1 if table_pt > whole * line_pitch_pt else 0)
+                deferred_tables.append(
+                    (table, account_data, cursor_pt + self._TABLE_GAP_ABOVE_PT)
+                )
+                _reserve_blank_lines(n_blank)
+                cursor_pt += n_blank * line_pitch_pt
 
-            table_source_multiplier = self._table_source_multiplier(account_data)
+            if post_table_text and wants_expl:
+                cursor_pt += self._append_explanation_to_frame(
+                    tf, post_table_text, is_chinese_databook, std_lh_pt,
+                    shape=bullets_shape, slot_name=slot_name, statement_type=statement_type,
+                )
 
+        # The frame's own template paragraph was never counted in cursor_pt,
+        # so it has to go before the tables are positioned against it -- one
+        # stray empty line at the top would shift every reserved band down.
+        try:
+            if template_empty_p.getparent() is not None and not (template_empty_p.text or "").strip():
+                template_empty_p.getparent().remove(template_empty_p)
+        except Exception:
+            pass
+
+        base_top = int(bullets_shape.top) + int(Pt(top_inset_pt))
+        for table, account_data, y_pt in deferred_tables:
             try:
-                bottom = self._render_presentation_table(
-                    slide, left, table_top, width, table, is_chinese_databook,
-                    source_multiplier=table_source_multiplier,
-                    # Withheld when the explanation was split into the next
-                    # column (_render_parts=("lead","table")).
-                    post_table_text=post_table_text if wants_expl else "",
+                self._render_presentation_table(
+                    slide, left, base_top + int(Pt(y_pt)), width, table, is_chinese_databook,
+                    source_multiplier=self._table_source_multiplier(account_data),
+                    # The explanation is now real flowing text in the shared
+                    # frame, not a floating box under the table.
+                    post_table_text="",
                 )
             except Exception as exc:
-                logger.warning("Could not render presentation table for %s: %s", mapping_key, exc)
-                bottom = table_top
-
-            current_top = bottom + int(Pt(self._TABLE_GAP_BELOW_PT))
+                logger.warning(
+                    "Could not render presentation table for %s: %s",
+                    account_data.get("mapping_key", ""), exc,
+                )
 
     # Cell padding (0.04in left + 0.04in right, matching _set_cell's
     # margin_left/margin_right) and the child-row left indent (0.12in,
@@ -2816,6 +2832,37 @@ class PowerPointGenerator:
             logger.debug("Could not resolve real capacity for slot %s/%s: %s",
                          slide_idx, slot_name, exc)
         return self._TABLE_SLOT_CAPACITY_PT
+
+    def _measurement_slot_shape(self):
+        """A representative commentary slot shape, used ONLY to give text
+        measurement a real width when a block's height must be estimated
+        before its column has been chosen.
+
+        Passing shape=None instead makes the measurer fall back to a default
+        width, and on real content that is worth a whole wrapped line: a
+        measured lead-in came out 24.1pt against a real 35.4pt, which is
+        exactly the amount a table then overshot the column by. Resolving a
+        specific slot would be circular (the estimate decides the column),
+        but it doesn't need to be: every commentary slot in the template is
+        the same 4.78in wide -- only their HEIGHTS differ -- and wrapping
+        depends on width alone."""
+        cached = getattr(self, "_measurement_slot_shape_cache", "unset")
+        if cached != "unset":
+            return cached
+        shape = None
+        try:
+            for slide in self.presentation.slides:
+                for candidate in slide.shapes:
+                    if (self._shape_name(candidate) or "").startswith("textMainBullets"):
+                        shape = candidate
+                        break
+                if shape is not None:
+                    break
+        except Exception as exc:
+            logger.debug("Could not resolve a measurement slot shape: %s", exc)
+            shape = None
+        self._measurement_slot_shape_cache = shape
+        return shape
 
     @staticmethod
     def _rendered_bullet_label(account_data: Dict[str, Any], is_chinese_databook: bool) -> str:
@@ -2996,6 +3043,71 @@ class PowerPointGenerator:
         # clamp -- used by _precompute_uniform_table_column_widths, which
         # needs comparable per-table numbers before any per-slot scaling.
         return self._clamp_column_widths_to_available(widths_pt, available_pt)
+
+    def _append_continuation_line_to_frame(
+        self, text_frame, display_name: str, is_chinese_databook: bool, std_lh_pt: float,
+    ) -> float:
+        """Writes "科目名（续）" as a paragraph in the shared column frame and
+        returns the height it consumes. The standalone
+        _render_continuation_heading textbox is only used by callers that
+        still draw their own boxes; inside the shared frame a heading has to
+        be a real paragraph or the text after it would not flow past it."""
+        label = f"{display_name}（续）" if is_chinese_databook else f"{display_name} (cont'd)"
+        para = text_frame.add_paragraph()
+        try:
+            para.space_before = Pt(0)
+            para.space_after = Pt(3)
+            para.line_spacing = 1.0
+        except Exception:
+            pass
+        run = para.add_run()
+        run.text = label
+        run.font.size = Pt(9)
+        run.font.name = 'Arial'
+        run.font.bold = True
+        try:
+            run.font.color.rgb = RGBColor(0, 0, 0)
+        except Exception:
+            pass
+        return std_lh_pt
+
+    def _append_explanation_to_frame(
+        self, text_frame, post_table_text: str, is_chinese_databook: bool, std_lh_pt: float,
+        *, shape=None, slot_name: str = "single", statement_type: Optional[str] = None,
+    ) -> float:
+        """Writes the "➢"/"-" explanatory bullets that follow a presentation
+        table as real paragraphs in the shared column frame, and returns the
+        height they consume. Same content _render_post_table_explanation
+        draws into its own textbox -- but as flowing text, so the next
+        account's lead-in continues underneath instead of needing a whole
+        new column."""
+        marker = "➢ " if is_chinese_databook else "- "
+        raw_lines = [ln.strip() for ln in post_table_text.split("\n") if ln.strip()]
+        if not raw_lines:
+            raw_lines = [post_table_text.strip()]
+        lines = [ln if ln.startswith(("➢", "-", "•")) else f"{marker}{ln}" for ln in raw_lines]
+
+        for line_text in lines:
+            para = text_frame.add_paragraph()
+            try:
+                para.space_before = Pt(0)
+                para.space_after = Pt(3)
+                para.line_spacing = 1.0
+            except Exception:
+                pass
+            run = para.add_run()
+            run.text = line_text
+            run.font.size = Pt(9)
+            run.font.name = 'Arial'
+            try:
+                run.font.color.rgb = RGBColor(0, 0, 0)
+            except Exception:
+                pass
+
+        return self._calculate_content_lines(
+            "", "", "\n".join(lines), slot_name=slot_name, shape=shape,
+            is_chinese=is_chinese_databook, statement_type=statement_type,
+        ) * std_lh_pt
 
     def _render_presentation_table(
         self, slide, left: int, top: int, width: int, table: Dict[str, Any],
