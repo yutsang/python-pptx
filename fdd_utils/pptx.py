@@ -1191,6 +1191,24 @@ class PowerPointGenerator:
             return packing
         return _merge_nested_dict(packing, overrides)
 
+    # How far an account may protrude BELOW its box, in std_lh line-units,
+    # when the only alternative is splitting it across slots. The project
+    # team explicitly accepts 1-2 lines sticking out; they do not accept a
+    # split landing mid-name. Applied only at the split decision, never as a
+    # general capacity increase -- every slot is still packed to its real
+    # capacity, and a slot that simply has more content than fits still
+    # splits as before.
+    _TAIL_OVERFLOW_TOLERANCE_UNITS = 2.0
+
+    def _tail_overflow_tolerance_units(self, statement_type: Optional[str] = None) -> float:
+        raw = self._packing_settings(statement_type).get(
+            "tail_overflow_tolerance_lines", self._TAIL_OVERFLOW_TOLERANCE_UNITS
+        )
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return self._TAIL_OVERFLOW_TOLERANCE_UNITS
+
     def _resolve_summary_model_type(self, is_chinese: bool) -> str:
         cached = getattr(self, "_summary_model_type_cache", None)
         if cached:
@@ -3144,6 +3162,9 @@ class PowerPointGenerator:
         source_box = slide.shapes.add_textbox(left, bottom, width, Pt(self._TABLE_SOURCE_LINE_PT + 2))
         source_tf = source_box.text_frame
         source_tf.word_wrap = True
+        # Same spAutoFit problem as the explanation box below: left on, this
+        # one-line 7pt caption grows itself and pushes everything under it down.
+        self._force_no_autofit(source_tf)
         source_p = source_tf.paragraphs[0]
         source_run = source_p.add_run()
         source_run.text = "资料来源：管理层信息；毕马威分析" if is_chinese_databook else "Source: Management information; KPMG analysis"
@@ -3185,6 +3206,13 @@ class PowerPointGenerator:
         explain_box = slide.shapes.add_textbox(left, top, width, Pt(200))
         explain_tf = explain_box.text_frame
         explain_tf.word_wrap = True
+        # python-pptx's add_textbox ships <a:spAutoFit/> ("resize shape to fit
+        # text"), which makes PowerPoint DISCARD the height computed below and
+        # substitute its own -- consistently taller, because it charges the
+        # last paragraph's space_after plus both insets. That is the phantom
+        # blank line under this box, and it is also why the box cannot be
+        # dragged smaller by hand: PowerPoint snaps it straight back.
+        self._force_no_autofit(explain_tf)
         for i, line_text in enumerate(lines):
             p = explain_tf.paragraphs[0] if i == 0 else explain_tf.add_paragraph()
             run = p.add_run()
@@ -4133,6 +4161,15 @@ class PowerPointGenerator:
                 remaining_lines = adjusted_capacity - current_slot_lines
                 logger.info("  Doesn't fit. Remaining: %s lines, Content: %s lines", remaining_lines, content_lines)
 
+                # NOTE: the tail-overflow tolerance is deliberately NOT applied
+                # here. Measured on a 14-account workload, keeping an account
+                # whole at THIS point made the final deck worse (4 split
+                # fragments -> 5): this greedy pass only produces the starting
+                # point for _optimize_slot_fill, which re-packs everything
+                # anyway, so suppressing a split here just perturbs the DP's
+                # input and it re-splits elsewhere. The tolerance belongs at
+                # the pass that actually decides to cut an account in half --
+                # see _rebalance_overflowing_boundaries.
                 next_slot_idx = current_slot_idx + 1
 
                 split_remaining_min = float(self._packing_settings(statement_type).get("split_min_remaining_lines", 3))
@@ -4244,8 +4281,31 @@ class PowerPointGenerator:
                                     word_end = para.rfind(' ', 0, hard_cap)
                                     if word_end > 0:
                                         best_split = word_end + 1
-                                    elif chars_available < len(para):
-                                        best_split = chars_available  # last-resort hard cut
+                                    else:
+                                        # Chinese has no spaces, so the word
+                                        # fallback above NEVER fires and this
+                                        # dropped straight to a raw character
+                                        # cut. That is the real defect behind
+                                        # the reported "...某某系统" | "工程第四建设
+                                        # 有限公司" -- a cut
+                                        # through the middle of a company
+                                        # name. _snap_split_before_number
+                                        # can't rescue it either: "系统" is a
+                                        # legitimate jieba token boundary, so
+                                        # nothing downstream sees a problem.
+                                        # A clause boundary is always a better
+                                        # cut than an arbitrary character, and
+                                        # is only used when no sentence
+                                        # boundary was available at all.
+                                        clause_end = max(
+                                            (para.rfind(c, min_fill, hard_cap)
+                                             for c in ('，', '；', '、', '：', ',', ';')),
+                                            default=-1,
+                                        )
+                                        if clause_end > 0:
+                                            best_split = clause_end + 1
+                                        elif chars_available < len(para):
+                                            best_split = chars_available  # last-resort hard cut
 
                                 # Never split inside a number -- this is a
                                 # SEPARATE, independent split implementation
@@ -4772,18 +4832,40 @@ class PowerPointGenerator:
             # amount-heavy clause well past 72 chars before its first "。")
             # had NO fallback at all here and always returned None, silently
             # giving up on pulling any of it forward even with real budget
-            # to spare. Comma is the natural next-best CJK clause boundary;
-            # if even that isn't present in range, a hard character cut is
-            # fine for CJK (unlike Latin text, cutting between two Chinese
-            # characters doesn't break a "word").
+            # to spare. Comma is the natural next-best CJK clause boundary.
+            #
+            # The line below used to end "...if even that isn't present in
+            # range, a hard character cut is fine for CJK (unlike Latin text,
+            # cutting between two Chinese characters doesn't break a word)".
+            # A real deck disproved that: it cut
+            #   "...主要为应付某某系统" | "工程第四建设有限公司..."
+            # straight through a company name. jieba can't rescue it either --
+            # 系统|工程 IS a legitimate token boundary, so _snap_split_before_
+            # number sees nothing wrong. CJK absolutely does have words; it
+            # just doesn't mark them with spaces.
+            _cut = min(hard_cap, len(para) - 1)
             comma_end = max(
-                para.rfind('，', 0, min(hard_cap, len(para) - 1)),
-                para.rfind(',', 0, min(hard_cap, len(para) - 1)),
+                para.rfind('，', 0, _cut), para.rfind(',', 0, _cut),
+                para.rfind('；', 0, _cut), para.rfind(';', 0, _cut),
+                para.rfind('、', 0, _cut),
             )
             if comma_end > 0 and comma_end >= min_fill:
                 best_split = comma_end + 1
+            elif comma_end > 0:
+                # A clause boundary EARLIER than min_fill still beats a cut
+                # through the middle of a name; the slot just ends up less
+                # full than the fill target would like.
+                best_split = comma_end + 1
             else:
-                hard_end = min(hard_cap, len(para) - 1)
+                # No clause boundary at all. The project team would rather a
+                # box protrude a line or two than carry a mid-name cut, so
+                # refuse to split when the overflow is within that tolerance
+                # and let the caller keep the account whole. Beyond the
+                # tolerance a hard cut is still better than losing text.
+                overflow_lines = (len(para) - chars_available) / max(1, chars_per_line)
+                if overflow_lines <= self._tail_overflow_tolerance_units(statement_type):
+                    return None
+                hard_end = _cut
                 if hard_end >= min_fill:
                     best_split = hard_end
 
@@ -4939,9 +5021,28 @@ class PowerPointGenerator:
                         found = max(
                             para.rfind('，', best_split, true_max + 1),
                             para.rfind(',', best_split, true_max + 1),
+                            para.rfind('；', best_split, true_max + 1),
+                            para.rfind('、', best_split, true_max + 1),
                         )
                         if found >= 0:
                             natural = found + 1
+                    if natural is None:
+                        # No boundary anywhere in the FORWARD window
+                        # [best_split, true_max]. Falling straight through to
+                        # true_max means cutting at a raw character offset --
+                        # which is how a cut lands mid-word or, worse, inside
+                        # a company name. Any boundary at or before true_max
+                        # necessarily still fits, so look backwards too and
+                        # take the last one, as long as the slot stays at
+                        # least min_fill full. A slightly emptier slot reads
+                        # far better than a cut through the middle of a name.
+                        back = max(
+                            (para.rfind(c, 0, true_max + 1)
+                             for c in ('。', '！', '？', '，', '；', '、')),
+                            default=-1,
+                        )
+                        if back >= 0 and back + 1 >= min_fill:
+                            natural = back + 1
                     best_split = natural if natural is not None else true_max
         except Exception:
             pass  # measurer unavailable -- fall through with the crude best_split
@@ -5534,6 +5635,21 @@ class PowerPointGenerator:
                     )
                     continue
 
+                # No whole account could move. The only remaining option is
+                # cutting one in half -- and a small overflow is not worth
+                # that. The project team accepts 1-2 lines protruding below
+                # the box; what they rejected was a split landing mid-name
+                # ("某某系统" | "工程第四建设有限公司"). Note this gate is
+                # deliberately AFTER the whole-account move above: moving an
+                # account forward is free and still happens for any overflow.
+                if cur_used <= cur_cap + self._tail_overflow_tolerance_units(statement_type):
+                    logger.info(
+                        "  Slot %s left overflowing %.2f line(s) over %s on purpose — "
+                        "within tail tolerance, so not split",
+                        i, cur_used - cur_cap, cur_cap,
+                    )
+                    continue
+
                 if self._try_partial_split_overflow_forward(
                     cur_accts, nxt_accts, cur_cap, cur_name, cur_shape,
                     nxt_cap, nxt_name, nxt_shape, statement_type,
@@ -5620,6 +5736,21 @@ class PowerPointGenerator:
 
         if best_len <= len(head_commentary):
             return False
+
+        # The binary search above optimises for FILL only, so best_len is a
+        # raw character offset -- and _snap_split_before_number below only
+        # rescues numbers and jieba tokens, not names (系统|工程 is a valid
+        # token boundary, which is how a real deck ended up cutting
+        # 某某系统 | 工程第四建设有限公司). Prefer the last natural
+        # sentence/clause boundary at or before best_len; it necessarily
+        # still fits, and it must still be a real extension of the head.
+        _natural = max(
+            (combined.rfind(c, 0, best_len + 1)
+             for c in ('。', '！', '？', '，', '；', '、', '.', ',', ';')),
+            default=-1,
+        )
+        if _natural >= 0 and _natural + 1 > len(head_commentary):
+            best_len = _natural + 1
 
         best_len = self._snap_split_before_number(combined, best_len)
         if best_len <= len(head_commentary):
@@ -6213,13 +6344,18 @@ class PowerPointGenerator:
         except Exception:
             pass
 
+        # DEBUG, not WARNING: these were escalated during the capacity-gap
+        # investigation purely so they'd survive a filtered logging setup.
+        # That investigation is closed, and this console is shared, so a
+        # routine packing decision must not read as a warning. The same
+        # numbers still go to dp_packing_report.txt above.
         if _solved_factor > 1.0:
-            logger.warning(
+            logger.debug(
                 "  DP feasible with relax × %.2f; using %s of %s slots, underfill penalty %.2f (target_min=%.0f%%)",
                 _solved_factor, _used_slots, _S_orig, _final_penalty, _target_min_fill * 100,
             )
         else:
-            logger.warning(
+            logger.debug(
                 "  DP tight-pack: using %s of %s slots (min=%s), underfill penalty %.2f (target_min=%.0f%%)",
                 _used_slots, _S_orig, S_min, _final_penalty, _target_min_fill * 100,
             )
