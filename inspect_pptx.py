@@ -36,7 +36,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from pptx import Presentation
 from pptx.util import Emu
@@ -72,6 +72,9 @@ LINE_SPACING_CHI = 1.0
 PARA_GAP_ENG = 3.0
 PARA_GAP_CHI = 3.0
 MIN_FILL_RATIO_WARN = 0.40  # below this on a non-last slot -> utilisation flag
+# Kept in lockstep with fdd_utils/pptx.py's _TAIL_OVERFLOW_TOLERANCE_UNITS;
+# overwritten from config at inspect time. See the `overflow=` assignment.
+_OVERFLOW_TOLERANCE_LINES = 2.0
 
 
 def _is_chinese_text(text: str, threshold: float = 0.3) -> bool:
@@ -162,6 +165,8 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
     detail back in the returned dict either way)."""
     _print = (lambda *a, **k: None) if quiet else print
     packing_cfg = ((config.get("pptx") or {}).get("commentary_packing") or {})
+    global _OVERFLOW_TOLERANCE_LINES
+    _OVERFLOW_TOLERANCE_LINES = float(packing_cfg.get("tail_overflow_tolerance_lines", 2.0) or 0.0)
     metrics_eng = packing_cfg.get("font_metrics_path_eng") or "fdd_utils/font_metrics/arial_eng.json"
     metrics_chi = packing_cfg.get("font_metrics_path_chi") or "fdd_utils/font_metrics/msyh_chi.json"
     family_eng = packing_cfg.get("font_family_eng") or "Arial"
@@ -422,6 +427,7 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
 
         all_checked_shapes = list(commentary_shapes) + table_stack_shapes
         infos: List[ShapeInfo] = []
+        text_bands_by_shape: Dict[int, List[Tuple[float, float]]] = {}
         for shape in all_checked_shapes:
             if shape in table_stack_shapes:
                 # No name to key off of -- fall back to which half of the
@@ -478,13 +484,51 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
             # lead-in box carrying a category line by a full 3pt.
             # A category line is one with no bullet/arrow marker.
             _MARKERS = ("■", "➢", "-", "•")
-            content_pt = sum(
-                len(measurer.wrap(
-                    p, hang_w,
-                    first_line_width_pt=box.width_pt if p.lstrip().startswith("■") else None,
-                )) * line_h + (para_gap if p.lstrip().startswith(_MARKERS) else 0.0)
-                for p in paras
-            )
+
+            # Walk the REAL paragraph objects, not text.split("\n"), because
+            # a table's vertical space is now reserved as BLANK paragraphs
+            # inside this same frame with the table floated over them (see
+            # fdd_utils/pptx.py's _render_table_accounts_stack). Splitting
+            # the frame's flat text dropped every one of those spacers, so a
+            # column holding a big table measured as nearly empty -- a real
+            # export reported 24% full for a column that is physically full.
+            # The last spacer of a band is deliberately sized to a FRACTION
+            # of a line, so each paragraph's own font size has to be read
+            # rather than assumed.
+            para_bands: List[Tuple[bool, float, float]] = []  # (is_blank, top_pt, bottom_pt)
+            content_pt = 0.0
+            try:
+                real_paras = list(shape.text_frame.paragraphs)
+            except Exception:
+                real_paras = []
+            if real_paras:
+                _y = 0.0
+                for p_obj in real_paras:
+                    p_text = p_obj.text or ""
+                    sizes = [r.font.size.pt for r in p_obj.runs if r.font.size is not None]
+                    p_pitch = (max(sizes) if sizes else 9.0) * 1.2
+                    p_gap = p_obj.space_after.pt if p_obj.space_after is not None else 0.0
+                    if not p_text.strip():
+                        para_bands.append((True, _y, _y + p_pitch))
+                        content_pt += p_pitch + p_gap
+                        _y += p_pitch + p_gap
+                        continue
+                    n = max(1, len(measurer.wrap(
+                        p_text, hang_w,
+                        first_line_width_pt=box.width_pt if p_text.lstrip().startswith("■") else None,
+                    )))
+                    h = n * line_h
+                    para_bands.append((False, _y, _y + h))
+                    content_pt += h + p_gap
+                    _y += h + p_gap
+            else:
+                content_pt = sum(
+                    len(measurer.wrap(
+                        p, hang_w,
+                        first_line_width_pt=box.width_pt if p.lstrip().startswith("■") else None,
+                    )) * line_h + (para_gap if p.lstrip().startswith(_MARKERS) else 0.0)
+                    for p in paras
+                )
             # Same correction as fdd_utils/pptx.py's _calculate_content_lines:
             # the final paragraph's trailing space_after is invisible padding
             # at the bottom of the frame, not occupied height. Counting it
@@ -496,6 +540,14 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
             if paras and paras[-1].lstrip().startswith(_MARKERS):
                 content_pt -= para_gap
             content_units = (content_pt / std_lh) if std_lh > 0 else 0.0
+            # Absolute vertical extent of every real-text paragraph, for the
+            # table-overlap check further down. A table sitting over a BLANK
+            # band is the intended layout, not a collision.
+            _top_inset = max(0.0, (Emu(shape.height).pt - box.height_pt) / 2.0) if shape.height is not None else 3.6
+            _base = (Emu(shape.top).pt if shape.top is not None else 0.0) + _top_inset
+            text_bands_by_shape[id(shape._element)] = [
+                (_base + a, _base + b) for is_blank, a, b in para_bands if not is_blank
+            ]
 
             fill_ratio = (content_units / capacity) if capacity > 0 else 0.0
             infos.append(ShapeInfo(
@@ -506,7 +558,13 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 height_in=Emu(shape.height).inches if shape.height is not None else -1,
                 text=text, n_chars=len(text), capacity_lines=capacity,
                 wrapped_lines=n_lines, content_units=content_units, fill_ratio=fill_ratio,
-                overflow=content_units > capacity,
+                # The packer now DELIBERATELY lets a box protrude by up to
+                # commentary_packing.tail_overflow_tolerance_lines rather than
+                # take an ugly split (the project team accepts 1-2 lines
+                # sticking out). Flagging at capacity + 0.0 would therefore
+                # warn on every well-packed deck; only a protrusion BEYOND
+                # that allowance is a real problem.
+                overflow=content_units > capacity + _OVERFLOW_TOLERANCE_LINES,
                 font_sizes_pt=_actual_font_sizes_pt(shape),
             ))
 
@@ -547,10 +605,27 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 c_box = (shape.left, shape.top, shape.width, shape.height)
                 if None in t_box or None in c_box:
                     continue
-                if _bbox_overlap(t_box, c_box):
+                if not _bbox_overlap(t_box, c_box):
+                    continue
+                # A bounding-box hit is EXPECTED now: a table's vertical space
+                # is reserved as blank paragraphs inside the commentary frame
+                # and the table is floated over them, so it is inside that
+                # frame's box by construction. Only a table landing on a
+                # paragraph that has REAL TEXT in it is a genuine collision.
+                t_top = Emu(table_shape.top).pt
+                t_bot = t_top + Emu(table_shape.height).pt
+                bands = text_bands_by_shape.get(id(shape._element))
+                if bands is not None:
+                    hits = [(a, b) for a, b in bands if a < t_bot - 0.5 and b > t_top + 0.5]
+                    if not hits:
+                        continue  # sits in its own reserved blank band
+                    _print(f"  ❌ TABLE OVERLAPS REAL TEXT — '{table_shape.name}' covers "
+                           f"{len(hits)} paragraph(s) of '{info.name}' "
+                           f"(table {t_top:.0f}-{t_bot:.0f}pt).")
+                else:
                     _print(f"  ❌ TABLE/COMMENTARY OVERLAP — '{table_shape.name}' overlaps '{info.name}'.")
-                    total_warnings += 1
-                    warning_details.append(f"Slide {slide_idx + 1}: table overlaps '{info.name}'")
+                total_warnings += 1
+                warning_details.append(f"Slide {slide_idx + 1}: table overlaps '{info.name}'")
 
         slide_reports.append({
             "slide": slide_idx + 1, "table": bool(table_shapes), "coSummaryShape": has_summary,
