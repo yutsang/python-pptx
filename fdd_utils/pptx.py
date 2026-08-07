@@ -473,8 +473,27 @@ def _translate_statement_row_label(label: str, mappings: Optional[Dict[str, Any]
 
 
 def _has_significant_balance(financial_data: Optional[pd.DataFrame]) -> bool:
+    """Does this account carry a balance worth commenting on?
+
+    The dataframe handed in is the PROJECTION frame -- one stage, ONE date
+    column -- so scanning it answers "is the latest period non-zero", not the
+    question actually being asked. An account that ran to nil by the reporting
+    date but had real activity in earlier periods (a real Crescent 投资收益
+    reads 0 at 2026-03-31 with prior-year movement) was silently dropped from
+    the deck after its commentary had already been generated and paid for.
+
+    workbook.py already computes exactly the right signal while parsing --
+    any_period_nonzero_by_description, |v| >= 0.01 over ALL periods of the
+    stage -- and filter_zero_value_rows already uses it to decide which ROWS
+    survive. Use it here for the same decision at ACCOUNT level; fall back to
+    the single-column scan only when the attribute is absent.
+    """
     if financial_data is None or financial_data.empty:
         return True
+
+    any_period = financial_data.attrs.get("any_period_nonzero_by_description")
+    if isinstance(any_period, dict) and any_period:
+        return any(bool(v) for v in any_period.values())
 
     numeric_cols = financial_data.select_dtypes(include=[float, int]).columns
     if len(numeric_cols) == 0:
@@ -8184,6 +8203,12 @@ class PowerPointGenerator:
                 # export still read as "hasn't taken effect" at the lighter
                 # shade.
                 LIGHT_BLUE_HIGHLIGHT = RGBColor(0xBD, 0xD7, 0xEE)
+                # Brighter than the navy title band above it, as in the
+                # reference report, so the two bands read as distinct.
+                HEADER_ROW_BLUE = RGBColor(0x1F, 0x4E, 0x96)
+                _header_blue = bool(
+                    self.pptx_settings.get("financial_table_header_blue", True)
+                )
 
                 for col_idx, col_name in enumerate(df.columns[:max_cols]):
                     if col_idx < len(table.columns):
@@ -8214,24 +8239,49 @@ class PowerPointGenerator:
                             self._declare_run_language(run)
                             run.font.size = header_font_size
                             run.font.bold = True
-                            run.font.color.rgb = BLACK
+                            run.font.color.rgb = WHITE if _header_blue else BLACK
                             p.line_spacing = 1.0
                             self._apply_east_asian_line_breaking(p)
 
-                        # Only the LAST column is highlighted light blue
-                        # (matches the company-format reference's "adjusted
-                        # figures" column) -- every other column is
-                        # EXPLICITLY set to solid white, not left unset.
-                        # Leaving fill untouched makes the cell "inherit"
-                        # from the table's built-in style GUID (still
-                        # referenced even with first_row/horz_banding
-                        # disabled), which can be a themed/tinted colour --
-                        # confirmed via inspect_pptx_tables.py showing
-                        # fill=inherited on every un-highlighted cell.
+                        # Blue header band with white text, matching the
+                        # reference report (IMG_0224): the date/period row
+                        # sits under the navy title band on its own blue
+                        # fill, not on white.
+                        #
+                        # READ THIS BEFORE TOUCHING IT. This exact fill is
+                        # what ebf2179 applied and 93c41e4 reverted: two
+                        # real Chinese exports came back with the BS and IS
+                        # first pages rendering COMPLETELY BLANK in real
+                        # PowerPoint (slow file-open, while python-pptx still
+                        # saw every shape and all text intact), and those are
+                        # exactly the two pages carrying this grid. It is not
+                        # reproducible on a Mac -- no real PowerPoint, and a
+                        # local template whose bands are plain text boxes
+                        # rather than the native placeholders production uses.
+                        # Re-applied here on the user's explicit sign-off
+                        # against the reference photo, but behind
+                        # pptx_settings["financial_table_header_blue"] so a
+                        # recurrence is one config value to flip, not a code
+                        # revert -- and so the answer stays a single known
+                        # switch rather than another round of bisecting.
                         cell.fill.solid()
-                        cell.fill.fore_color.rgb = (
-                            LIGHT_BLUE_HIGHLIGHT if col_idx == max_cols - 1 else WHITE
-                        )
+                        if _header_blue:
+                            cell.fill.fore_color.rgb = HEADER_ROW_BLUE
+                        else:
+                            # Only the LAST column is highlighted light blue
+                            # (matches the company-format reference's
+                            # "adjusted figures" column) -- every other column
+                            # is EXPLICITLY set to solid white, not left
+                            # unset. Leaving fill untouched makes the cell
+                            # "inherit" from the table's built-in style GUID
+                            # (still referenced even with first_row/
+                            # horz_banding disabled), which can be a themed/
+                            # tinted colour -- confirmed via
+                            # inspect_pptx_tables.py showing fill=inherited on
+                            # every un-highlighted cell.
+                            cell.fill.fore_color.rgb = (
+                                LIGHT_BLUE_HIGHLIGHT if col_idx == max_cols - 1 else WHITE
+                            )
 
                         # Vertical (column-separating) borders plus ONE
                         # bottom rule under the header row -- horizontal
@@ -8997,6 +9047,55 @@ class PowerPointGenerator:
             return truncated[:pos].rstrip() + "..."
         return truncated.rstrip() + "..."
 
+    _ORPHANABLE_END_PUNCT = "。．.；;"
+
+    def _drop_orphan_trailing_punctuation(self, key_prefix: str, text: str, is_chinese: bool) -> str:
+        """Delete a sentence-ending mark that is the only thing pushing a
+        paragraph onto one more line.
+
+        A lone "。" starting a line is wrong in Chinese typography and the
+        project team will not accept it. The usual remedies are unavailable
+        here: shrinking the font is explicitly ruled out, and the kinsoku
+        controls PowerPoint should honour (eaLnBrk, hangingPunct, the run's
+        own lang) were all set correctly across three attempts and changed
+        nothing in the real render. So take the remedy the team named
+        themselves -- "直接刪除句號 他不是那麼重要".
+
+        Measured the way POWERPOINT breaks, not the way this repo does. Our
+        own wrapper already implements kinsoku, so it hangs the mark on the
+        previous line for free and a line-count comparison here can never
+        detect the problem -- the first version of this check was written
+        that way and provably never fired. Instead: wrap without the mark,
+        then ask whether the mark still fits on the resulting last line. If
+        it does not, PowerPoint (which does no hanging) puts it alone on the
+        next line, and it goes.
+        """
+        from fdd_utils.text_metrics import get_measurer, text_box_from_shape
+
+        stripped = (text or "").rstrip()
+        if not stripped or stripped[-1] not in self._ORPHANABLE_END_PUNCT:
+            return text
+        shape = self._measurement_slot_shape()
+        box = text_box_from_shape(shape)
+        if box is None or box.width_pt <= 0:
+            return text
+        packing = self._packing_settings()
+        measurer = get_measurer(
+            self._measurer_family(is_chinese, packing),
+            self._real_font_size_pt(is_chinese), is_cjk=is_chinese,
+            line_spacing=self._real_line_spacing(is_chinese),
+            metrics_path=self._resolve_font_metrics_path(is_chinese, packing),
+        )
+        body_width = max(1.0, box.width_pt - self._BULLET_HANGING_INDENT_PT)
+        lines = measurer.wrap(
+            key_prefix + stripped[:-1], body_width, first_line_width_pt=box.width_pt,
+        )
+        if not lines:
+            return text
+        if measurer.text_width_pt(lines[-1] + stripped[-1]) > body_width:
+            return stripped[:-1]
+        return text
+
     def _fill_text_main_bullets_with_category_and_key(self, text_frame, category: str, display_name: str,
                                                       commentary: str, is_chinese: bool, is_chinese_databook: bool = False,
                                                       needs_continuation: bool = False, font_size_pt: int = 9,
@@ -9013,8 +9112,15 @@ class PowerPointGenerator:
         from pptx.dml.color import RGBColor
         from pptx.enum.text import PP_ALIGN
 
+        # Before anything measures or renders this text, and before the
+        # clause segments that carry hallucination highlighting are cut from
+        # it, so every downstream consumer sees the same string.
+        commentary = self._drop_orphan_trailing_punctuation(
+            f"■ {display_name} - " if display_name else "", commentary, is_chinese,
+        )
+
         clause_segments = self._build_clause_segments(commentary, clause_reviews) if clause_reviews else None
-        
+
         # Add category as first level (if category exists and is not None)
         # Note: category is now handled at slide level, so this is only for individual calls
         if category:
