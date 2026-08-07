@@ -272,6 +272,12 @@ def _change_direction(prev_value: float, curr_value: float) -> str:
     return "flat"
 
 
+# A period-on-period swing at or above this, relative to the line's own
+# opening value, is worth a sentence even when the amount is small. 30% is
+# the project team's own stated threshold.
+MATERIAL_PCT_CHANGE = 30.0
+
+
 def build_significant_movements(analysis_df: pd.DataFrame, max_items: int = 3) -> List[Dict[str, Any]]:
     if analysis_df is None or analysis_df.empty or len(analysis_df.columns) < 3:
         return []
@@ -311,10 +317,28 @@ def build_significant_movements(analysis_df: pd.DataFrame, max_items: int = 3) -
     if total_change <= 0:
         return []
 
+    def _pct_change(item: Dict[str, Any]) -> Optional[float]:
+        base = abs(item["from_value"])
+        if base < 0.01:
+            return None  # from nil -- a percentage would be meaningless
+        return round((item["delta"] / base) * 100, 1)
+
+    # Ranked by share of the account's total movement, as before, but a line
+    # that swung hard RELATIVE TO ITSELF now also qualifies even when its
+    # absolute delta is small. Ranking on absolute size alone hid exactly the
+    # analytically interesting cases -- a minor line doubling is a finding, a
+    # 3% drift in the largest line is not -- and the model had no way to tell
+    # them apart because it was given raw values and had to do the arithmetic
+    # itself, which is where it invents numbers.
     significant = []
     for item in sorted(movement_candidates, key=lambda entry: entry["abs_delta"], reverse=True):
         percent_of_total_change = (item["abs_delta"] / total_change) * 100
-        if percent_of_total_change < 25:
+        pct_change = _pct_change(item)
+        material = (
+            percent_of_total_change >= 25
+            or (pct_change is not None and abs(pct_change) >= MATERIAL_PCT_CHANGE)
+        )
+        if not material:
             continue
         significant.append(
             {
@@ -326,6 +350,14 @@ def build_significant_movements(analysis_df: pd.DataFrame, max_items: int = 3) -
                 "delta": item["delta"],
                 "direction": item["direction"],
                 "percent_of_total_change": round(percent_of_total_change, 1),
+                # Stated rather than left to be derived, so a commentary that
+                # cites a percentage is quoting a supplied figure instead of
+                # constructing one -- the same rule that fixed the AR
+                # quantified-recommendation hallucination.
+                "percent_change": pct_change,
+                "exceeds_materiality": bool(
+                    pct_change is not None and abs(pct_change) >= MATERIAL_PCT_CHANGE
+                ),
             }
         )
         if len(significant) >= max_items:

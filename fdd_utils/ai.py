@@ -1734,6 +1734,15 @@ class PromptStylePack:
                 "'首句先说明最新期末余额及构成'这一结构要求的前提下，动词与句式可以自然变化，例如'截至<DATE>，X为...'、"
                 "'X于<DATE>的余额为...'、'报告期末，X...'、'<DATE>末，X余额...'等，让不同科目、不同实体读起来更像人工"
                 "撰写而非模板填空。"
+                # 分析权重：模型本来只拿到一堆原始数值，要自己心算变幅——正是它编造
+                # 数字的地方。significant_movements 现在直接给出 percent_change 与
+                # exceeds_materiality（30%），这里要求它引用而不是自行推导，并允许
+                # 在备注不支持原因时只陈述变动、不编原因。
+                "分析深度（比单纯罗列金额更重要）：当 significant_movements 中某项 exceeds_materiality 为真时，"
+                "该变动**必须**在评论中出现，并优先说明其原因。原因只能来自 databook 的备注/supporting notes/"
+                "table_linked_remarks；若这些来源都没有交代原因，就只陈述变动本身（例如'较上期下降38.2%'）并"
+                "指出原因未在资料中说明，**不得**自行推测或编造原因。引用变动幅度时直接使用 percent_change 提供"
+                "的数值，不要自行由两期金额相除得出。若备注给出的原因与数据方向矛盾，以数据为准并指出该矛盾。"
                 "禁止无信息量的同义重复句：如某科目没有真正意义上的多项构成（只有单一金额），不要为了'交代构成'硬写"
                 "出'全部为XX明细余额'、'均为单项XX明细'这类等于重复科目名称、没有新增信息的句子——应直接省略构成说明，"
                 "仅陈述金额即可。"
@@ -1750,6 +1759,15 @@ class PromptStylePack:
                 "一个全称在正文中重复出现，每次几乎占掉一整行，是这些评论中最容易避免的篇幅浪费。"
             )
         return (
+            "Analytical depth (this matters more than listing amounts): when an entry in "
+            "significant_movements has exceeds_materiality true, that movement MUST appear in the "
+            "commentary and its cause should be given first. The cause may come ONLY from the "
+            "databook remarks / supporting notes / table_linked_remarks; where none of those "
+            "explain it, state the movement alone (e.g. 'down 38.2% on the prior period') and say "
+            "the reason is not set out in the information provided. Never infer or invent a cause. "
+            "Quote the percentage from percent_change as supplied rather than dividing the two "
+            "period figures yourself. Where a remark contradicts the direction of the data, follow "
+            "the data and flag the contradiction. "
             "Use natural paragraph-style reporting; no bullets, bold, or meta-commentary. "
             "ALWAYS use the SHORT form of a company name, never its full legal name: drop "
             "Co., Ltd. / Limited / (Shanghai) and similar legal-form or place-of-registration "
