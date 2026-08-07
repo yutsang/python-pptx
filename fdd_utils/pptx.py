@@ -2684,8 +2684,25 @@ class PowerPointGenerator:
                 )
                 break
 
+        # The same tail tolerance the ordinary packer honours. This path did
+        # not, so a trailing account that fitted the current column was still
+        # pushed into a fresh one: a real deck left 所得税费用 alone in a 13%
+        # column while the column before it had room -- the fill diagnostic
+        # scored that exact move as a GENUINE GAP ("costs 2.57, remaining
+        # 2.61"). The project team accepts 1-2 lines protruding; they do not
+        # accept a near-empty column beside a full one.
+        # statement_type is not threaded into this function, so this reads the
+        # top-level commentary_packing value rather than a per-statement
+        # override -- the setting the user actually edits.
+        _tail_tol_pt = (
+            self._tail_overflow_tolerance_units()
+            * self._planning_std_lh_pt(is_chinese_databook)
+        )
+
         def _fits(key: Optional[Tuple[int, str]], block_pt: float) -> bool:
-            return key is not None and slot_fill_pt.get(key, 0.0) + block_pt <= _cap_for(key)
+            if key is None:
+                return False
+            return slot_fill_pt.get(key, 0.0) + block_pt <= _cap_for(key) + _tail_tol_pt
 
         def flow(item: Dict[str, Any], block_pt: float,
                  parts_pt: Optional[Tuple[float, float, float]] = None) -> None:
