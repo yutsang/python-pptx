@@ -1876,7 +1876,18 @@ def export_and_inspect_pptx(
     _dropped = []
     for _account_key in ai_results or {}:
         _mk = find_mapping_key(_account_key, mappings)
-        if not _mk or _mk in _shipped:
+        if not _mk:
+            # No entry in mappings.yml at all. build_pptx_structured_payloads
+            # skips these outright, so the account's commentary is generated,
+            # paid for, and thrown away. The first version of this report
+            # filtered on the SAME lookup and so was blind to exactly the
+            # accounts it existed to surface -- 投资收益 appears nowhere in
+            # mappings.yml and was reported as "every account reached the
+            # deck" three runs running.
+            _dropped.append((f"{_account_key} (NOT IN mappings.yml — add it there)",
+                             None, None, None))
+            continue
+        if _mk in _shipped:
             continue
         if (mappings.get(_mk, {}) or {}).get("type") not in {"BS", "IS"}:
             continue
