@@ -3528,6 +3528,13 @@ class PowerPointGenerator:
         GREY_TOTAL_FILL = RGBColor(0xD9, 0xD9, 0xD9)
         CHILD_BLUE = RGBColor(0x1F, 0x4E, 0x96)
         CHILD_ROW_FILL = RGBColor(0xF2, 0xF2, 0xF2)
+        # The reference report's two banner rows are DIFFERENT blues sitting
+        # directly on top of each other: a dark navy statement title, then a
+        # lighter blue period header. Rendering both in the same navy (tried
+        # first) merges them into one slab and loses the distinction the
+        # reference draws; a separating rule loses the adjacency instead.
+        # Different fills, no rule between them.
+        HEADER_BAND_BLUE = RGBColor(0x1F, 0x4E, 0x96)
 
         def _set_cell(cell, text, *, bold=False, color=BLACK, fill=None, size_pt=7.0,
                       align=PP_ALIGN.LEFT, indent_emu=0):
@@ -3589,10 +3596,10 @@ class PowerPointGenerator:
         # here alone so the two can be told apart if it ever recurs.
         table_shape.rows[1].height = Pt(self._TABLE_HEADER_ROW_PT)
         _set_cell(table_shape.cell(1, 0), unit_label, bold=True,
-                  color=WHITE, fill=DARK_BLUE, size_pt=7.5)
+                  color=WHITE, fill=HEADER_BAND_BLUE, size_pt=7.5)
         for j, period in enumerate(periods, start=1):
             _set_cell(table_shape.cell(1, j), period_labels.get(period, period),
-                      bold=True, color=WHITE, fill=DARK_BLUE, size_pt=7.5,
+                      bold=True, color=WHITE, fill=HEADER_BAND_BLUE, size_pt=7.5,
                       align=PP_ALIGN.CENTER)
 
         # Data / child / total rows.
@@ -8262,13 +8269,13 @@ class PowerPointGenerator:
                 # export still read as "hasn't taken effect" at the lighter
                 # shade.
                 LIGHT_BLUE_HIGHLIGHT = RGBColor(0xBD, 0xD7, 0xEE)
-                # The SAME navy as the title band directly above it, so the
-                # two rows read as one continuous block -- which is how the
-                # subtables already render and what the reference report
-                # shows. A lighter shade here (tried first) plus the black
-                # cell borders below made the header look like a separate
-                # element sitting under the title rather than part of it.
-                HEADER_ROW_BLUE = DARK_BLUE
+                # A lighter blue than the navy title band directly above it,
+                # matching the reference report's two-tone banner. Merging
+                # them into one navy (tried first) removed the distinction the
+                # reference draws. What made the header read as a SEPARATE
+                # element before was not the shade but the black cell borders
+                # drawn across it -- those are white hairlines now.
+                HEADER_ROW_BLUE = RGBColor(0x1F, 0x4E, 0x96)
                 _header_blue = bool(
                     self.pptx_settings.get("financial_table_header_blue", True)
                 )

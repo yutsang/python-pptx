@@ -1470,6 +1470,18 @@ OCI:
     Pattern 1: |
       the balance represented the translation differences arising from the translation of offshore USD financial statements to CNY
 
+Other CL:
+  type: BS
+  category: Current liabilities
+  aliases: ["Other CL", "Other current liabilities", "Other Current Liabilities",
+            "其他流动负债", "其他流動負債"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      mainly represented interest payable on bank borrowings accrued but not yet settled at the reporting date
+    Pattern 2: |
+      主要系已计提但尚未支付的银行借款应付利息
 Other NCL:
   type: BS
   category: Non-current liabilities
