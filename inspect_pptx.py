@@ -422,6 +422,24 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
         for s_shape in summary_shapes:
             s_text = s_shape.text_frame.text.strip()
             if s_text:
+                # How full the band actually is. "The summary is too short"
+                # is unanswerable without this: a short summary in a 3-line
+                # band is correct and the band is the thing to enlarge, while
+                # a short summary in a 6-line band is a generator problem.
+                # Reported in the same line-units as every commentary box.
+                _s_box = text_box_from_shape(s_shape)
+                _s_chi = _is_chinese_text(s_text)
+                _s_pitch = ((FONT_SIZE_CHI if _s_chi else FONT_SIZE_ENG)
+                            * (LINE_SPACING_CHI if _s_chi else LINE_SPACING_ENG) * 1.2)
+                _s_measurer = get_measurer(
+                    "msyh" if _s_chi else "arial",
+                    FONT_SIZE_CHI if _s_chi else FONT_SIZE_ENG, is_cjk=_s_chi,
+                    line_spacing=LINE_SPACING_CHI if _s_chi else LINE_SPACING_ENG,
+                )
+                _s_cap = (_s_box.height_pt / _s_pitch) if _s_pitch else 0.0
+                _s_used = len(_s_measurer.wrap(s_text, _s_box.width_pt))
+                _print(f"  [{s_shape.name}] band holds {_s_cap:.1f} lines, text uses {_s_used} "
+                       f"-> {(_s_used / _s_cap * 100) if _s_cap else 0:.0f}% of the band")
                 if dump_text:
                     # Full text, untruncated -- a 120-char preview cuts an
                     # executive summary off mid-sentence, which is useless
@@ -1128,6 +1146,7 @@ def main() -> int:
 
     if args.out:
         return _run_teed_to_file(ap, args)
+    return _main_with_args(args)
 
 
 def _main_with_args(args) -> int:

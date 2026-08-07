@@ -1263,9 +1263,35 @@ class PowerPointGenerator:
             if not wrapped:
                 return static_chi, static_eng
             per_line = max(1.0, len(probe) / len(wrapped))
+            # How many lines the box HOLDS, measured -- not the configured
+            # guess. The width here has always been measured while the line
+            # count was a static 4, which is wrong in both directions on a
+            # per-machine template: this Mac's band holds 2.99 lines (so 4
+            # over-fills it), while the band that prompted "exe sum 非常短"
+            # is evidently taller. target_lines survives only as the fallback
+            # for when the shape can't be measured, which is exactly the role
+            # the static width fallback already plays.
+            from fdd_utils.text_metrics import POWERPOINT_LINE_PITCH_FACTOR
+            pitch = font_pt * POWERPOINT_LINE_PITCH_FACTOR * self._real_line_spacing(is_chinese)
+            fitting_lines = (box.height_pt / pitch) if pitch > 0 else 0
+            lines = fitting_lines if fitting_lines >= 1 else target_lines
             # 0.92: aim just under a full box so a slightly long sentence
             # doesn't push a whole extra line past the table beneath it.
-            chars = int(per_line * target_lines * 0.92)
+            chars = int(per_line * lines * 0.92)
+            logger.info(
+                "Executive summary target: %d chars (band %.0fx%.0fpt holds %.2f lines "
+                "at %.1fpt, ~%.0f chars/line)",
+                chars, box.width_pt, box.height_pt, fitting_lines, font_pt, per_line,
+            )
+            # No max(static, ...) floor once BOTH dimensions are measured.
+            # The floor existed because the line count was a guess; raising a
+            # measured 127-char band to a static 144 just overflows it, which
+            # is the same mistake as shrinking a box to absorb 0.3 lines. If
+            # the resulting summary is too short for the reader's taste, the
+            # band itself is too small -- the log line above says by how much,
+            # so that is now a decision that can be made on a real number.
+            if fitting_lines >= 1:
+                return (chars, static_eng) if is_chinese else (static_chi, int(chars / 6))
             if is_chinese:
                 return max(static_chi, chars), static_eng
             # English targets are in WORDS; ~6 chars per word including space.
@@ -9404,35 +9430,57 @@ Original content:
     def _generate_page_summary(self, commentary: str, is_chinese: bool) -> str:
         """Fallback (non-AI) page summary.
 
-        Instead of taking the first N sentences of the concatenated blob
-        (which only covers the first account), pick the opening sentence
-        from each account paragraph so the summary spans the whole page.
+        Sentences are taken in RANK ORDER across account paragraphs -- every
+        account's opening sentence first, then every account's second, and so
+        on -- until the measured character budget for the box is used up. The
+        rank ordering keeps the original intent (the summary spans the whole
+        page rather than covering only the first account); filling to the
+        budget is what stops it under-running the box.
+
+        The old version took exactly one sentence per account and stopped at
+        a static max_sentences (4). Both limits starved the band on a real
+        deck: a 7-account page showed 4 sentences / 168 chars against a ~276
+        char budget, and a single-account page showed one sentence / 31
+        chars -- reported as "exe sum 非常短". max_chars is derived from the
+        real coSummaryShape width x target_lines, so it already expresses
+        "as much as the box holds" far better than a hand-tuned sentence
+        count, and now governs on its own.
         """
         if not commentary or not commentary.strip():
             return ""
         is_chinese_text = is_chinese or detect_chinese_text(commentary)
-        summary_settings = self._summary_settings()
-        max_sentences = int(summary_settings.get(
-            "max_sentences_chi" if is_chinese_text else "max_sentences_eng", 4
-        ))
         _t_chi, _t_eng = self._summary_length_targets(is_chinese_text)
         max_chars = _t_chi if is_chinese_text else _t_eng * 6
 
-        # Each account block is separated by "\n\n".  Take the first sentence
-        # from each block so the summary spans all accounts on the page.
+        # Each account block is separated by "\n\n".
         blocks = [b.strip() for b in commentary.split("\n\n") if b.strip()]
-        picked: List[str] = []
-        for block in blocks:
-            first_sentences = _split_text_sentences(block, is_chinese_text)
-            if first_sentences:
-                picked.append(first_sentences[0])
-            if len(picked) >= max_sentences:
-                break
-
-        if not picked:
-            picked = _split_text_sentences(commentary, is_chinese_text)[:1]
+        by_block = [_split_text_sentences(b, is_chinese_text) for b in blocks]
+        by_block = [s for s in by_block if s]
+        if not by_block:
+            by_block = [_split_text_sentences(commentary, is_chinese_text)]
+            by_block = [s for s in by_block if s]
+            if not by_block:
+                return ""
 
         sep = "" if is_chinese_text else " "
+        picked: List[str] = []
+        used = 0
+        for rank in range(max(len(s) for s in by_block)):
+            for sentences in by_block:
+                if rank >= len(sentences):
+                    continue
+                candidate = sentences[rank].strip()
+                if not candidate:
+                    continue
+                cost = len(candidate) + (len(sep) if picked else 0)
+                if picked and used + cost > max_chars:
+                    continue
+                picked.append(candidate)
+                used += cost
+
+        if not picked:
+            picked = [by_block[0][0]]
+
         summary = sep.join(picked).strip()
         if len(summary) > max_chars:
             summary = summary[:max_chars].rstrip(" ,;:/-") + "…"
