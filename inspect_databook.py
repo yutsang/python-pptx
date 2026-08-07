@@ -1809,6 +1809,7 @@ def export_and_inspect_pptx(
     file — all in one pass, no separate manual export+inspect steps."""
     _hr("8. PPTX EXPORT (build payloads -> export .pptx, capturing logs)")
     from fdd_utils.pptx import build_pptx_structured_payloads, export_pptx_from_structured_data_combined
+    from fdd_utils.workbook import find_mapping_key
     from fdd_utils.workbook import synthesize_balance_sheet_and_income_statement
     import inspect_pptx as _inspect_pptx
 
@@ -1825,6 +1826,37 @@ def export_and_inspect_pptx(
         print("ℹ️  No Financials sheet — using a synthesized BS/IS built from the mapped schedule tabs.")
     payloads = build_pptx_structured_payloads(ai_results, mappings, bs_is_results=bs_is_results, dfs=dfs)
     print(f"BS items: {len(payloads['BS'])}, IS items: {len(payloads['IS'])}")
+
+    # Which accounts the AI wrote commentary for but that never reached a
+    # slide. This runs BEFORE the export, so pptx.py's own drop warning is
+    # outside the log handler section 8b attaches -- a real 投资收益 vanished
+    # silently across three runs, visible only as "IS items: 5". Reported
+    # here with the evidence the drop was judged on, since re-running the AI
+    # to find out costs 10 minutes.
+    _shipped = {
+        str(item.get("mapping_key") or "")
+        for statement_items in payloads.values() for item in statement_items
+    }
+    _dropped = []
+    for _account_key in ai_results or {}:
+        _mk = find_mapping_key(_account_key, mappings)
+        if not _mk or _mk in _shipped:
+            continue
+        if (mappings.get(_mk, {}) or {}).get("type") not in {"BS", "IS"}:
+            continue
+        _df = dfs.get(_account_key) if dfs else None
+        _attrs = getattr(_df, "attrs", {}) or {}
+        _dropped.append((_mk, _attrs.get("any_period_nonzero_by_description"),
+                         _attrs.get("prompt_analysis_stage"),
+                         list(getattr(_df, "columns", [])) or None))
+    if _dropped:
+        print(f"\n⚠️  {len(_dropped)} account(s) had commentary generated but were DROPPED "
+              f"before the deck (paid-for AI output that never ships):")
+        for _mk, _any, _stage, _cols in _dropped:
+            print(f"    {_mk}: any_period_nonzero={_any}")
+            print(f"        analysis stage={_stage}  projection columns={_cols}")
+    else:
+        print("✅ Every account with commentary reached the deck.")
 
     template_path = str(Path(__file__).parent / "fdd_utils" / "template.pptx")
     is_chinese = (language == "Chi")
