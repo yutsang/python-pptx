@@ -533,6 +533,21 @@ def build_pptx_structured_payloads(
 
         financial_data = dfs.get(account_key) if dfs and account_key in dfs else None
         if not _has_significant_balance(financial_data):
+            # Dropping an account here throws away commentary the AI pipeline
+            # has already produced and been paid for, and it happens silently
+            # -- the only trace was a smaller "IS items: N". Say which account
+            # and on what evidence, so the next run answers "why is 投资收益
+            # missing" instead of another round of guessing.
+            _attrs = getattr(financial_data, "attrs", {}) or {}
+            _any = _attrs.get("any_period_nonzero_by_description")
+            logger.warning(
+                "Dropping %s from the deck: no period carries a balance. "
+                "any_period_nonzero_by_description=%s, stage=%s, columns=%s",
+                mapping_key,
+                dict(_any) if isinstance(_any, dict) else _any,
+                _attrs.get("prompt_analysis_stage"),
+                list(getattr(financial_data, "columns", [])) or None,
+            )
             continue
 
         final_content = _extract_final_content(result)
@@ -5034,15 +5049,27 @@ class PowerPointGenerator:
             # _distribute_content_across_slots and appended afterwards, so
             # the only callers that ever see one are the render-time autofit
             # gate and the diagnostic -- both of which want the real height.
+            # ...charged per PART, matching _render_parts, which is how a
+            # split table account is actually rendered: the first fragment
+            # draws ("lead", "table") and the continuation draws ("expl",)
+            # only. Charging the whole block to both put 管理费用's table on
+            # two slots and read a 67%-full column as 117%. Absent
+            # _render_parts means the account renders whole.
             table = account.get("_presentation_table")
             if table:
                 _is_chi = self._account_is_chinese(account)
+                _parts = account.get("_render_parts")
                 _lead_pt, _table_pt, _explain_pt = self._estimate_table_account_parts_pt(
                     account, table, _is_chi,
                 )
                 _std_lh = self._planning_std_lh_pt(_is_chi)
                 if _std_lh > 0:
-                    used += (_table_pt + _explain_pt) / _std_lh
+                    _extra = 0.0
+                    if _parts is None or "table" in _parts:
+                        _extra += _table_pt
+                    if _parts is None or "expl" in _parts:
+                        _extra += _explain_pt
+                    used += _extra / _std_lh
         return max(0.0, used)
 
     def _rebalance_lopsided_lr_pairs(
