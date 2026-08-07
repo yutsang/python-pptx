@@ -88,7 +88,20 @@ def check_a():
 
 def check_b(deck_path):
     _bar("CHECK B — run the summary generator on THIS deck's real commentary")
-    prs = Presentation(deck_path)
+    # A mistyped path otherwise surfaces as a 30-line python-pptx traceback
+    # ending in "Package not found", which reads like the deck is corrupt.
+    path = Path(deck_path)
+    if not path.exists():
+        print(f"  ❌ no such file: {path.resolve()}")
+        near = sorted(path.parent.glob("*.pptx")) if path.parent.exists() else []
+        if near:
+            print("  .pptx files in that folder:")
+            for p in near:
+                print(f"    {p}")
+        else:
+            print(f"  (folder {path.parent} has no .pptx files, or does not exist)")
+        return
+    prs = Presentation(str(path))
     print(f"  deck: {Path(deck_path).resolve()}\n")
     _report_summary_shapes(prs, "as shipped:")
 
