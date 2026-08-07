@@ -6488,7 +6488,17 @@ class PowerPointGenerator:
                 whole_used = self._compute_slot_used_lines(
                     cur_accts + [head_acct], cur_name, slot_shape=cur_shape, statement_type=statement_type,
                 )
-                if whole_used <= cur_cap:
+                # Prefer keeping the account WHOLE over a tidy split, up to
+                # the tail tolerance. Strict capacity here was the last place
+                # still ignoring it: the team accepts 1-2 lines protruding and
+                # has said so repeatedly, but this line split an account the
+                # moment it exceeded capacity by any amount at all. On a real
+                # deck that cut 其他非流动资产 across the page-1/page-2
+                # boundary while page 1 rendered at 94% -- roughly 1.5 unused
+                # lines under the split. The tolerance is the same value
+                # inspect_pptx.py already declines to flag as overflow, so
+                # this cannot produce a warning that was not already accepted.
+                if whole_used <= cur_cap + self._tail_overflow_tolerance_units(statement_type):
                     cur_accts.append(nxt_accts.pop(0))
                     continue
 
@@ -8230,9 +8240,13 @@ class PowerPointGenerator:
                 # export still read as "hasn't taken effect" at the lighter
                 # shade.
                 LIGHT_BLUE_HIGHLIGHT = RGBColor(0xBD, 0xD7, 0xEE)
-                # Brighter than the navy title band above it, as in the
-                # reference report, so the two bands read as distinct.
-                HEADER_ROW_BLUE = RGBColor(0x1F, 0x4E, 0x96)
+                # The SAME navy as the title band directly above it, so the
+                # two rows read as one continuous block -- which is how the
+                # subtables already render and what the reference report
+                # shows. A lighter shade here (tried first) plus the black
+                # cell borders below made the header look like a separate
+                # element sitting under the title rather than part of it.
+                HEADER_ROW_BLUE = DARK_BLUE
                 _header_blue = bool(
                     self.pptx_settings.get("financial_table_header_blue", True)
                 )
@@ -8316,8 +8330,17 @@ class PowerPointGenerator:
                         # table has 20+ rows; the total/subtotal rows below
                         # get their own explicit top/bottom rule so those
                         # separators are still there where they matter.
-                        for _side in ("left", "right", "bottom"):
-                            self._set_cell_border(cell, _side, color_rgb="000000", width=Pt(0.5))
+                        # Black column separators drawn ACROSS a navy header
+                        # band read as a grid pasted over the title, which is
+                        # the "header 同藍色黐唔埋" complaint. Use white hairlines
+                        # between the date columns instead -- visible against
+                        # navy, invisible as a boundary -- and keep the black
+                        # rule only where it does real work: under the band,
+                        # separating it from the data.
+                        _sep = "FFFFFF" if _header_blue else "000000"
+                        for _side in ("left", "right"):
+                            self._set_cell_border(cell, _side, color_rgb=_sep, width=Pt(0.5))
+                        self._set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(0.5))
 
                         try:
                             cell.margin_left = Inches(0.04)
