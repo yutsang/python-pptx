@@ -57,6 +57,34 @@ def _report_summary_shapes(prs, label):
         print(f"  {label}: no summary-named shape on any slide")
 
 
+def _warn_if_stale(deck: Path):
+    """Is this deck older than the exporter that supposedly fixed it?
+
+    A .pptx sitting in pptx_previews/ carries no version stamp, so a deck
+    exported before a fix looks exactly like one exported after it and
+    still broken. Diagnosing the stale one wastes a 12-minute re-run at
+    best and sends the investigation somewhere false at worst.
+    """
+    import subprocess
+    from datetime import datetime
+
+    try:
+        exported = datetime.fromtimestamp(deck.stat().st_mtime)
+        changed = datetime.fromtimestamp(int(subprocess.run(
+            ["git", "log", "-1", "--format=%ct", "--", "fdd_utils/pptx.py"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()))
+    except Exception:
+        return
+
+    stamp = "%Y-%m-%d %H:%M"
+    print(f"  exported:        {exported:{stamp}}")
+    print(f"  exporter changed:{changed:{stamp}}  (last commit touching fdd_utils/pptx.py)")
+    if exported < changed:
+        print("  ⚠️  THIS DECK PREDATES THE CURRENT EXPORTER — whatever it shows may "
+              "already be fixed.\n      Re-export before drawing conclusions from it.")
+
+
 def check_a():
     _bar("CHECK A — fill the band using THIS machine's template")
     if not TEMPLATE.exists():
@@ -102,7 +130,9 @@ def check_b(deck_path):
             print(f"  (folder {path.parent} has no .pptx files, or does not exist)")
         return
     prs = Presentation(str(path))
-    print(f"  deck: {Path(deck_path).resolve()}\n")
+    print(f"  deck: {path.resolve()}")
+    _warn_if_stale(path)
+    print()
     _report_summary_shapes(prs, "as shipped:")
 
     gen = PowerPointGenerator(str(TEMPLATE))
