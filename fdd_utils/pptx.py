@@ -8918,7 +8918,17 @@ class PowerPointGenerator:
                 pass
             
             run_category = p_category.add_run()
-            run_category.text = category
+            # The parallel header site in apply_structured_data_to_slides
+            # translates; this one never did, despite taking
+            # is_chinese_databook as a parameter. Only the presentation-table
+            # renderer passes a real category here (the other caller passes
+            # None and writes its own header), so the symptom was narrow and
+            # easy to miss: a Chinese deck whose table pages alone carried an
+            # English section heading -- "Expenses" sitting above 税金及附加
+            # and 营业成本, while every non-table page read 流动资产/营业收入.
+            run_category.text = (
+                translate_category_to_chinese(category) if is_chinese_databook else category
+            )
             run_category.font.size = Pt(font_size_pt)
             run_category.font.name = 'Arial'
             self._set_east_asian_typeface(run_category)

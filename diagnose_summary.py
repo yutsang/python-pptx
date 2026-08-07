@@ -68,21 +68,38 @@ def _warn_if_stale(deck: Path):
     import subprocess
     from datetime import datetime
 
+    stamp = "%Y-%m-%d %H:%M"
+    exported = datetime.fromtimestamp(deck.stat().st_mtime)
+    print(f"  exported:         {exported:{stamp}}")
+
+    # The comparison is against git where available, and the exporter file's
+    # own mtime otherwise -- a machine without git on PATH still gets a real
+    # answer. Whichever is used is named, and a failure to compare is stated
+    # rather than swallowed: the first version of this check returned
+    # silently on any exception, which is indistinguishable from "checked,
+    # deck is current" -- the exact silent-no-op this whole investigation has
+    # been chasing.
+    exporter = Path("fdd_utils/pptx.py")
     try:
-        exported = datetime.fromtimestamp(deck.stat().st_mtime)
         changed = datetime.fromtimestamp(int(subprocess.run(
-            ["git", "log", "-1", "--format=%ct", "--", "fdd_utils/pptx.py"],
+            ["git", "log", "-1", "--format=%ct", "--", str(exporter)],
             capture_output=True, text=True, check=True,
         ).stdout.strip()))
+        source = "last commit touching fdd_utils/pptx.py"
     except Exception:
-        return
+        if not exporter.exists():
+            print("  ⚠️  cannot tell if this deck is current: no git and no "
+                  "fdd_utils/pptx.py. Run from the repo root.")
+            return
+        changed = datetime.fromtimestamp(exporter.stat().st_mtime)
+        source = "mtime of fdd_utils/pptx.py (git unavailable)"
 
-    stamp = "%Y-%m-%d %H:%M"
-    print(f"  exported:        {exported:{stamp}}")
-    print(f"  exporter changed:{changed:{stamp}}  (last commit touching fdd_utils/pptx.py)")
+    print(f"  exporter changed: {changed:{stamp}}  ({source})")
     if exported < changed:
         print("  ⚠️  THIS DECK PREDATES THE CURRENT EXPORTER — whatever it shows may "
               "already be fixed.\n      Re-export before drawing conclusions from it.")
+    else:
+        print("  ✅ deck is newer than the exporter — what it shows is current behaviour.")
 
 
 def check_a():
