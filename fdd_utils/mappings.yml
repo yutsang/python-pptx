@@ -1190,11 +1190,24 @@ Income tax:
       included the current income tax expenses and deferred income tax expenses stemming from the temporary differences between the financial books and tax books
     Pattern 2: |
       尽调期内所得税费用为当期所得税及因直线法调整产生的递延所得税费用
+Investment Income:
+  type: IS
+  category: Revenue
+  aliases: ["Investment Income", "Investment income", "Income from investments",
+            "投资收益", "投資收益"]
+  system_prompts:
+  user_prompts:
+  patterns:
+    Pattern 1: |
+      mainly represented returns on cash management/wealth management products held during the Period
+    Pattern 2: |
+      主要系持有的现金管理产品于报告期内确认的投资收益
 LT DTA:
   type: IS
   category: Others
   aliases: ["LT DTA", "Long-term Deferred Tax Assets", "Long-term deferred tax assets", "Long-term Deferred Tax Asset",
-            "Long-term deferred tax asset", "DTA and DTL", "Deferred tax assets", "Deferred tax liabilities", "递延所得税资产", "遞延所得稅資產"]
+            "Long-term deferred tax asset", "DTA and DTL", "Deferred tax assets", "Deferred tax liabilities", "递延所得税资产", "遞延所得稅資產",
+            "递延所得税资产负债", "遞延所得稅資產負債", "递延所得税", "遞延所得稅"]
   system_prompts:
   user_prompts:
   patterns:
