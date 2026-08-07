@@ -2544,6 +2544,42 @@ class PowerPointGenerator:
         # nothing can ever land between a lead-in and its own table.
         cursor: Optional[Tuple[int, str]] = None
 
+        # Start the flow in the LAST slot the normal packer used, rather than
+        # on a brand-new one. That slot is very often barely filled -- a real
+        # deck left the IS statement page's commentary column at 33% while
+        # the next page's right column sat COMPLETELY EMPTY, roughly two
+        # blank columns between them.
+        #
+        # This slot used to be off-limits: every packer slot went into `used`
+        # so a table could never share one, because two renderers writing the
+        # same slot once produced overlapping tables. That objection is gone
+        # -- since the shared-frame rewrite, _render_table_accounts_stack
+        # writes its lead-ins as PARAGRAPHS in the slot's own text frame and
+        # reserves table space inside it, and the render dispatch already
+        # routes a slot holding any table account through that one path. A
+        # mixed slot therefore has a single writer.
+        #
+        # Only the LAST slot is eligible, which is what keeps reading order:
+        # the table accounts come after the plain ones in the statement, so
+        # appending to the final packer slot continues the document; appending
+        # to an earlier one would interleave them.
+        if slot_distribution:
+            for slide_idx, slot_name, accounts in reversed(slot_distribution):
+                if not accounts:
+                    continue
+                key = (slide_idx, slot_name)
+                # Same currency flow() measures in, so the fit test below is
+                # comparing like with like.
+                slot_fill_pt[key] = sum(
+                    self._estimate_lead_in_pt(a, is_chinese_databook) for a in accounts
+                )
+                cursor = key
+                logger.debug(
+                    "Table flow continues in the packer's last slot %s (%.0f of %.0fpt used)",
+                    key, slot_fill_pt[key], _cap_for(key),
+                )
+                break
+
         def _fits(key: Optional[Tuple[int, str]], block_pt: float) -> bool:
             return key is not None and slot_fill_pt.get(key, 0.0) + block_pt <= _cap_for(key)
 
