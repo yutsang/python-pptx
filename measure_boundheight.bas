@@ -11,8 +11,11 @@
 '   1. Open the exported .pptx in PowerPoint.
 '   2. Alt+F11 (Developer > Visual Basic).
 '   3. Insert > Module, paste this whole file in.
-'   4. F5 (or Run > Run Sub). A message box reports every commentary box.
-'   5. Copy the text out of the Immediate window (Ctrl+G) and paste it back.
+'   4. F5 (or Run > Run Sub).
+'   5. The numbers are written to boundheight.txt NEXT TO THE .pptx (the path
+'      is shown in the message box). Open it and paste the contents back --
+'      no retyping from a dialog, no Immediate window needed. They also still
+'      go to the Immediate window (Ctrl+G) as a fallback.
 '
 ' WHAT THE NUMBERS MEAN
 '   BoundHeight  - the height PowerPoint's own layout engine gives the text
@@ -65,5 +68,28 @@ Sub MeasureCommentaryBoxes()
         Next shp
     Next sld
 
-    MsgBox msg, vbOKOnly, "Rendered text height (PowerPoint's own numbers)"
+    ' Write it out as text as well. Retyping numbers from a message box is
+    ' how a digit gets lost, and these numbers are the ground truth the
+    ' repo's whole line-height model is calibrated against.
+    Dim outPath As String
+    Dim fnum As Integer
+    outPath = ""
+    On Error Resume Next
+    If Len(ActivePresentation.Path) > 0 Then
+        outPath = ActivePresentation.Path & "\boundheight.txt"
+    Else
+        outPath = Environ$("USERPROFILE") & "\Downloads\boundheight.txt"
+    End If
+    fnum = FreeFile
+    Open outPath For Output As #fnum
+    Print #fnum, msg
+    Close #fnum
+    If Err.Number <> 0 Then
+        outPath = "(could not write file: " & Err.Description & ")"
+        Err.Clear
+    End If
+    On Error GoTo 0
+
+    MsgBox msg & vbCrLf & "Written to:" & vbCrLf & outPath, _
+           vbOKOnly, "Rendered text height (PowerPoint's own numbers)"
 End Sub

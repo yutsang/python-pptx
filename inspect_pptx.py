@@ -129,6 +129,34 @@ class ShapeInfo:
     fill_ratio: float
     overflow: bool
     font_sizes_pt: tuple
+    autofit_scale: float = 1.0
+
+
+def _autofit_font_scale(shape) -> float:
+    """The ``fontScale`` on this shape's ``<a:normAutofit/>``, as a fraction
+    (1.0 = no shrink).
+
+    Every other measurement in this file reads the run's ``sz`` attribute,
+    which does NOT change when autofit is in play -- a box whose runs all say
+    9pt can still be DRAWN at 7.8pt. That blind spot cost a full round-trip:
+    a commentary box measured 101% full here while the deck visibly showed a
+    52.8pt gap at the bottom, and only PowerPoint's own BoundHeight (see
+    measure_boundheight.bas) revealed the text had been shrunk to ~87%.
+    Reporting the scale makes that visible from pasted CLI text.
+
+    Note the value written into the file is only a REQUEST: PowerPoint re-runs
+    its own shrink algorithm with its own font metrics and steps down in
+    coarse increments, so what renders is typically smaller than this. Any
+    value below 1.0 means "this box is not being drawn at the size measured
+    above" -- that is the signal, not the exact number."""
+    try:
+        from pptx.oxml.ns import qn
+        autofit = shape.text_frame._txBody.bodyPr.find(qn("a:normAutofit"))
+        if autofit is None:
+            return 1.0
+        return int(autofit.get("fontScale", "100000")) / 100000.0
+    except Exception:
+        return 1.0
 
 
 def _actual_font_sizes_pt(shape) -> tuple:
@@ -656,6 +684,7 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 # that allowance is a real problem.
                 overflow=content_units > capacity + _OVERFLOW_TOLERANCE_LINES,
                 font_sizes_pt=_actual_font_sizes_pt(shape),
+                autofit_scale=_autofit_font_scale(shape),
             ))
 
         for i, info in enumerate(infos):
@@ -669,6 +698,13 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
             _legal = _full_legal_names(info.text)
             if _legal:
                 flags.append(f"📛 FULL LEGAL NAME x{len(_legal)}")
+            if info.autofit_scale < 0.999:
+                # PowerPoint will shrink this box below the size every other
+                # number on this line assumes, and will shrink it further than
+                # the requested scale. The visible result is a column of small
+                # text with blank space under it.
+                flags.append(f"🔻 AUTOFIT SHRINK (requested {info.autofit_scale:.0%}, "
+                             f"PowerPoint will go lower) — measurements above assume full size")
             if info.n_chars > 0 and info.fill_ratio < MIN_FILL_RATIO_WARN and not is_last_slot_on_slide:
                 flags.append(f"📉 under-filled ({info.fill_ratio:.0%})")
             flag_str = ("  " + "  ".join(flags)) if flags else ""

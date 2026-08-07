@@ -7401,6 +7401,21 @@ class PowerPointGenerator:
                 # so give exactly those slots a bounded normAutofit shrink
                 # (never below _BOUNDED_AUTOFIT_MIN_SCALE) so the overflow
                 # the DP already decided was "worth it" is actually visible.
+                #
+                # But ONLY past the tail tolerance. Writing a normAutofit does
+                # not shrink text by the fontScale computed here: PowerPoint
+                # re-runs its own shrink with its own font metrics and steps
+                # down in coarse increments, so it lands wherever it lands.
+                # Measured against a real deck (VBA BoundHeight, the ground
+                # truth): a slot overflowing by 0.3 lines -- fontScale ~99%
+                # written here -- rendered at ~87%, 27 lines at 10.31pt
+                # instead of 10.8pt, leaving 52.8pt of visible blank under a
+                # box the packer had filled to 101%. Every other box in that
+                # deck measured >= 10.8pt/line; this was the only shrunk one
+                # and the only one over capacity. Below the tolerance, letting
+                # the tail protrude is both what the project team asked for
+                # ("1-2 lines sticking out is fine") and strictly better
+                # looking than a whole column shrunk to leave a gap.
                 slot_is_chinese = any(self._account_is_chinese(a) for a in account_data_list)
                 slot_capacity = self._calculate_max_lines_for_textbox(
                     bullets_shape, is_chinese=slot_is_chinese, slot_name=slot_name,
@@ -7410,7 +7425,8 @@ class PowerPointGenerator:
                     account_data_list, slot_name, slot_shape=bullets_shape,
                     statement_type=statement_type,
                 )
-                if slot_used > slot_capacity > 0:
+                _tail_tol = self._tail_overflow_tolerance_units(statement_type)
+                if slot_capacity > 0 and (slot_used - slot_capacity) > _tail_tol:
                     self._apply_bounded_autofit(tf, slot_capacity / slot_used)
                 else:
                     self._force_no_autofit(tf)  # keep text at 9pt/10pt, never shrink
