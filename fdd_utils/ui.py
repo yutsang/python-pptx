@@ -403,6 +403,7 @@ def derive_reconciliation_matched_keys(
     reconciliation: tuple[pd.DataFrame | None, pd.DataFrame | None] | None,
     available_keys: Iterable[str],
     resolution: Dict[str, Any] | None = None,
+    dfs: Dict[str, Any] | None = None,
 ) -> List[str]:
     available_key_order = dedupe_non_empty(available_keys)
     available_key_set = set(available_key_order)
@@ -436,6 +437,27 @@ def derive_reconciliation_matched_keys(
                 continue
             seen.add(key)
             matched_keys.append(key)
+
+    # A Financials line that is nil in the LATEST period never gets compared at
+    # all, so it reconciles to "-" and was dropped here -- even when the same
+    # account carries real balances in earlier periods. On a real file that
+    # silently excluded 其他应收款, 所得税费用 and 营业外支出, each of which
+    # has 2024 data and a breakdown; the project team expects a comment on
+    # every non-zero Financials item, in ANY column, not just the last one.
+    #
+    # Admitting them cannot weaken the reconciliation guarantee the comment
+    # above describes: these lines were not rejected by reconciliation, they
+    # were never examined by it. Requires a schedule tab whose own parse says
+    # some period is non-zero, so a genuinely dormant account still stays out.
+    if dfs:
+        for key in available_key_order:
+            if key in seen:
+                continue
+            attrs = getattr(dfs.get(key), "attrs", {}) or {}
+            any_period = attrs.get("any_period_nonzero_by_description") or {}
+            if isinstance(any_period, dict) and any(bool(v) for v in any_period.values()):
+                seen.add(key)
+                matched_keys.append(key)
 
     # Only accounts that passed reconciliation with an included status go to AI.
     # Dynamic-mapping and resolved-map fallbacks are intentionally removed —
@@ -790,6 +812,7 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                     reconciliation,
                     selected_pipeline_dfs.keys(),
                     session_state.get("resolution"),
+                    dfs=selected_pipeline_dfs,
                 )
                 has_reconciliation_data = bool(reconciliation and any(recon_df is not None and not recon_df.empty for recon_df in reconciliation))
                 if not has_reconciliation_data:
@@ -2032,7 +2055,7 @@ def batch_extract_entity_data(
         if not matched_mapping_keys:
             matched_mapping_keys = list(dfs.keys())
     else:
-        matched_mapping_keys = derive_reconciliation_matched_keys(reconciliation, dfs.keys(), resolution)
+        matched_mapping_keys = derive_reconciliation_matched_keys(reconciliation, dfs.keys(), resolution, dfs=dfs)
         has_reconciliation_data = bool(
             reconciliation and any(recon_df is not None and not recon_df.empty for recon_df in reconciliation)
         )

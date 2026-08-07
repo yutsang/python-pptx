@@ -1573,7 +1573,7 @@ def run_ai_checks(
         (bs_recon is not None and not bs_recon.empty) or (is_recon is not None and not is_recon.empty)
     )
     if has_reconciliation_data:
-        mapping_keys = derive_reconciliation_matched_keys((bs_recon, is_recon), dfs.keys(), None)
+        mapping_keys = derive_reconciliation_matched_keys((bs_recon, is_recon), dfs.keys(), None, dfs=dfs)
         if not mapping_keys:
             print(
                 "❌ No accounts passed reconciliation with an included Match status "
