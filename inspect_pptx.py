@@ -434,6 +434,22 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 _print(f"  ⚠️  [{s_shape.name}] executive summary shape is EMPTY (0 chars)")
                 total_warnings += 1
                 warning_details.append(f"Slide {slide_idx + 1}: executive summary ({s_shape.name}) is empty")
+            # This file matches any shape whose name merely CONTAINS
+            # "summary"; fdd_utils/pptx.py fills it via
+            # find_shape_by_name(..., "coSummaryShape"), an exact match. A
+            # template whose band got renamed in PowerPoint (a trailing " 2"
+            # after a copy/paste is the usual way) therefore reports fine
+            # here and is silently skipped at export -- the box is simply
+            # never found, and no amount of fixing the fill logic helps.
+            # Worth saying out loud because template.pptx is local to each
+            # machine, so this can be true for one person and nobody else.
+            if s_shape.name != "coSummaryShape":
+                _print(f"  ❌ [{s_shape.name}] is NOT named exactly 'coSummaryShape' — "
+                       f"the exporter looks up that exact name and will never fill this shape. "
+                       f"Rename it in the template.")
+                total_warnings += 1
+                warning_details.append(
+                    f"Slide {slide_idx + 1}: summary shape misnamed ({s_shape.name!r} != 'coSummaryShape')")
 
         # Presentation-table (subtable) width + wrap-risk check. Reports
         # each native table's own width against the widest sibling
