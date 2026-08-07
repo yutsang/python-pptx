@@ -162,6 +162,12 @@ _PLACEHOLDER_PATTERNS = (
     "placeholder - placeholder",
     "click to edit",
     "lorem ipsum",
+    # The summary band's own boilerplate. It is set to 2.17pt in the
+    # template, so when the band was left unfilled it shipped as an
+    # illegible sliver on the front page rather than as obviously-wrong
+    # text -- easy to miss by eye, trivial to catch here.
+    "[project]",
+    "[current]",
 )
 
 

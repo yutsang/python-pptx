@@ -7548,13 +7548,33 @@ class PowerPointGenerator:
             # leave coSummaryShape blank rather than wait. The user can re-run
             # the AI generation step to refresh summaries when the API is
             # responsive.
+            # Skipping the LLM call is right; leaving the box EMPTY was not.
+            # The front page of a deliverable shipped with a blank summary
+            # band, and because the template's own placeholder in that shape
+            # is set to 2.17pt, what showed instead was an illegible sliver
+            # of "Entity overview – Project [PROJECT]" -- reported as "exe
+            # sum 一直未有東西".
+            #
+            # _generate_page_summary already exists for exactly this case:
+            # it takes the opening sentence of each account paragraph, so it
+            # spans the whole page, costs no tokens and no wall time. Use it
+            # rather than shipping nothing.
             logger.info(
-                "No pre-generated summary supplied for this statement; "
-                "skipping in-export LLM summary call (would otherwise add "
-                "1-3 min per slide). Re-run AI generation to populate."
+                "No pre-generated summary supplied; using the deterministic "
+                "page summary instead of an in-export LLM call (which would "
+                "add 1-3 min per slide)."
             )
+            summary_jobs.sort(key=lambda j: j["slide_idx"])
             summary_results = {}
             jobs_to_fill = []
+            for job in summary_jobs:
+                text = self._generate_page_summary(
+                    job.get("page_summary_source") or job.get("page_commentary") or "",
+                    bool(job.get("is_chinese")),
+                )
+                if text:
+                    summary_results[job["slide_idx"]] = text
+                    jobs_to_fill.append(job)
         else:
             summary_results = {}
             jobs_to_fill = []
@@ -7565,9 +7585,17 @@ class PowerPointGenerator:
             summary_shape = job["summary_shape"]
             p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
             p.text = final_summary
+            self._apply_east_asian_line_breaking(p)
             for run in p.runs:
                 run.font.size = get_font_size_for_text(final_summary, force_chinese_mode=job["font_is_chinese"])
                 run.font.name = get_font_name_for_text(final_summary)
+                # This fill site sets font.name from a helper rather than the
+                # literal 'Arial' the other 17 sites use, so it was missed
+                # when the CJK typeface and language were added everywhere
+                # else. The summary band is the first Chinese text on the
+                # page; it needs them at least as much.
+                self._set_east_asian_typeface(run)
+                self._declare_run_language(run)
         
         # Record the FIRST used commentary slide of this statement as a slide
         # OBJECT (not an index). embed_financial_tables targets this so the BS/IS
