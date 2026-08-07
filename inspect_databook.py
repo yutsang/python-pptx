@@ -1245,6 +1245,27 @@ def check_reconciliation(
         print(f"\n{label}: {len(recon)} lines")
         print(recon["Match"].value_counts().to_string())
 
+        # Per-line status for every line that HAS a schedule tab. The counts
+        # above cannot answer "why is 预收款项 not in the matched set" -- that
+        # question was asked five times against five identical summaries
+        # because the only way to see an individual line's status was to open
+        # the workbook. A '-' here means the line was never compared at all,
+        # which is a different problem from a comparison that disagreed.
+        _desc_col = next((c for c in recon.columns
+                          if c.lower() in {"description", "line", "account", "项目", "科目"}), None)
+        if _desc_col is None:
+            _desc_col = recon.columns[0]
+        _tabbed = recon[recon.get("Projection_Stage", "-").astype(str) != "-"] \
+            if "Projection_Stage" in recon.columns else recon
+        if not _tabbed.empty:
+            print(f"\n  Per-line status (only lines with a schedule tab; '-' = never compared):")
+            for _, _row in _tabbed.iterrows():
+                _bits = [f"    {str(_row[_desc_col])[:22]:22s} {str(_row.get('Match', '?')):12s}"]
+                for _c in ("Financials_Value", "Tab_Value", "Difference"):
+                    if _c in recon.columns:
+                        _bits.append(f"{_c.split('_')[0]}={_row[_c]}")
+                print("  ".join(_bits))
+
         # Which stage/period column each breakdown tab's total was actually
         # pulled from (_choose_projection in workbook.py) -- answers "did
         # this map to the preferred stage (Indicative adjusted), or fall
