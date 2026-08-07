@@ -1738,6 +1738,9 @@ class PromptStylePack:
                 # 数字的地方。significant_movements 现在直接给出 percent_change 与
                 # exceeds_materiality（30%），这里要求它引用而不是自行推导，并允许
                 # 在备注不支持原因时只陈述变动、不编原因。
+                "资产负债表科目同样适用：若某科目在报告期内有重大变动（exceeds_materiality 为真），"
+                "即使篇幅上限较紧，也必须用一句话点出该变动及其方向；篇幅上限不是省略重大变动的理由，"
+                "应改为压缩构成描述来腾出空间。"
                 "比较基准必须一致（同一段话内绝不可自相矛盾）：把不足一年的期间与整年比较时，"
                 "两边必须都用年化金额，或都用未年化金额，并在句中写明用的是哪一种。真实交付稿曾出现"
                 "同一段先写'年化后1,464.3万元，较2025年度1,463.3万元基本持平'、再写'较2025年度下降75.0%'——"
@@ -1764,6 +1767,10 @@ class PromptStylePack:
                 "一个全称在正文中重复出现，每次几乎占掉一整行，是这些评论中最容易避免的篇幅浪费。"
             )
         return (
+            "This applies to balance-sheet accounts too: where one shows a material movement "
+            "(exceeds_materiality true), name that movement and its direction in a sentence even "
+            "under the tighter length cap. The cap is not a reason to omit it -- compress the "
+            "composition description to make room. "
             "Comparison basis must be consistent -- never contradict yourself in one "
             "paragraph: when comparing a part-year period against a full year, annualise BOTH "
             "sides or neither, and say which basis is used. A real deliverable read 'annualised "

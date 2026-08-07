@@ -702,7 +702,22 @@ def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
                 rtype = row_types.get(desc, "plain")
                 counts[rtype] = counts.get(rtype, 0) + 1
             counts_str = ", ".join(f"{n} {t}" for t, n in sorted(counts.items()))
-            print(f"  {key}: {len(descriptions)} rows ({counts_str})")
+            # A tab whose main block is a single total is not automatically a
+            # problem: most databooks put the breakdown in a SEPARATE block
+            # lower down, which extract_presentation_detail_table picks up and
+            # the deck renders as a subtable. Reported "很多 acct 只有合計"
+            # could not be judged from this line alone, because it showed the
+            # main block only -- a tab with its detail elsewhere looked
+            # identical to one with no detail at all. Say which it is.
+            _detail = (df.attrs.get("presentation_detail_table") or {})
+            _detail_rows = len(_detail.get("rows") or [])
+            if _detail_rows:
+                _note = f"  + {_detail_rows}-row detail table (renders as a subtable)"
+            elif len(descriptions) <= 1:
+                _note = "  ⚠️ total only, and NO detail table found anywhere on the sheet"
+            else:
+                _note = ""
+            print(f"  {key}: {len(descriptions)} rows ({counts_str}){_note}")
             continue
         print(f"  {key}:")
         for desc in descriptions:
