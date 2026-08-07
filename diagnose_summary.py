@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Why is coSummaryShape blank?
+
+The executive-summary band shipping empty has survived several rounds of
+fixes because every failure mode looks identical from the outside: the shape
+is missing, or there is no source text, or the generator returned nothing, or
+a blank pre-generated summary won -- each one quietly does nothing.
+
+This runs the two checks that actually separate them, using files that
+already exist on this machine. No databook, no AI, no 12-minute export.
+
+    python diagnose_summary.py                          # template only
+    python diagnose_summary.py path/to/exported.pptx    # both checks
+
+CHECK A -- does the fill work with THIS machine's template?
+    Runs the real export entry point over synthetic Chinese commentary. If
+    the band fills here, the template and the fill logic are both fine and
+    the problem is upstream, in what the real run feeds them. If it does NOT
+    fill, the difference is the template, which is gitignored and per-machine
+    -- so this is the only place that can be found.
+
+CHECK B -- does the summary generator work on THIS deck's real text?
+    Pulls the actual commentary off the exported deck's first slide and runs
+    _generate_page_summary on it. Real Chinese, real sentence structure, no
+    AI call. If this returns nothing, the generator is the culprit and the
+    text that broke it is printed.
+"""
+
+import sys
+from pathlib import Path
+
+from pptx import Presentation
+
+from fdd_utils.pptx import PowerPointGenerator, export_pptx_from_structured_data_combined
+
+TEMPLATE = Path("fdd_utils/template.pptx")
+
+
+def _bar(title):
+    print("\n" + "=" * 74)
+    print(f"  {title}")
+    print("=" * 74)
+
+
+def _report_summary_shapes(prs, label):
+    found_any = False
+    for i, slide in enumerate(prs.slides):
+        for shape in slide.shapes:
+            if "summary" not in (shape.name or "").lower():
+                continue
+            found_any = True
+            text = shape.text_frame.text.strip() if shape.has_text_frame else ""
+            state = f"{len(text)} chars: {text[:80]!r}" if text else "*** EMPTY ***"
+            exact = "" if shape.name == "coSummaryShape" else "  ❌ NAME IS NOT EXACTLY 'coSummaryShape'"
+            print(f"  {label} slide {i + 1}  [{shape.name}]  {state}{exact}")
+    if not found_any:
+        print(f"  {label}: no summary-named shape on any slide")
+
+
+def check_a():
+    _bar("CHECK A — fill the band using THIS machine's template")
+    if not TEMPLATE.exists():
+        print(f"  template not found: {TEMPLATE.resolve()}")
+        return
+    print(f"  template: {TEMPLATE.resolve()}")
+
+    def rows(names, category):
+        return [{
+            "mapping_key": n, "account_name": n, "category": category, "is_chinese": True,
+            "commentary": (f"截至2026年03月31日，{n}余额为人民币1,234千元，"
+                           f"较2025年12月31日增加人民币200千元，主要由于业务规模扩大所致。"),
+        } for n in names]
+
+    out = Path("diagnose_summary_output.pptx")
+    export_pptx_from_structured_data_combined(
+        template_path=str(TEMPLATE),
+        bs_data=rows(["货币资金", "应收账款", "预付款项"], "流动资产"),
+        is_data=rows(["营业收入", "营业成本"], "收入"),
+        output_path=str(out),
+        project_name="Diagnostic", language="Chinese",
+        temp_path=None, selected_sheet=None,
+        is_chinese_databook=True, bs_is_results=None,
+    )
+    print()
+    _report_summary_shapes(Presentation(str(out)), "result")
+    print(f"\n  (wrote {out} — delete it when done)")
+
+
+def check_b(deck_path):
+    _bar("CHECK B — run the summary generator on THIS deck's real commentary")
+    prs = Presentation(deck_path)
+    print(f"  deck: {Path(deck_path).resolve()}\n")
+    _report_summary_shapes(prs, "as shipped:")
+
+    gen = PowerPointGenerator(str(TEMPLATE))
+    for i, slide in enumerate(prs.slides):
+        parts = [
+            s.text_frame.text.strip()
+            for s in slide.shapes
+            if (s.name or "").startswith("textMainBullets")
+            and s.has_text_frame and s.text_frame.text.strip()
+        ]
+        if not parts:
+            continue
+        source = "\n\n".join(parts)
+        result = gen._generate_page_summary(source, True)
+        print(f"\n  slide {i + 1}: {len(source)} chars of commentary "
+              f"-> summary {len(result or '')} chars")
+        if result:
+            print(f"    {result[:200]!r}")
+        else:
+            print("    ❌ RETURNED NOTHING — this is the failure. Source began:")
+            print(f"    {source[:200]!r}")
+
+
+if __name__ == "__main__":
+    check_a()
+    if len(sys.argv) > 1:
+        check_b(sys.argv[1])
+    else:
+        print("\n(no deck path given — skipping CHECK B. Pass the exported "
+              ".pptx to run it, e.g. for_test/pptx_previews/<name>.preview.pptx)")

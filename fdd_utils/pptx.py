@@ -7542,8 +7542,27 @@ class PowerPointGenerator:
                         "is_chinese": is_chinese_databook,
                         "font_is_chinese": all_slide_accounts[0].get('is_chinese', False) if all_slide_accounts else False,
                     })
+                else:
+                    # Every way this band ends up blank currently looks
+                    # identical from the outside: shape missing, no source
+                    # text, generator returned nothing, a blank pre-generated
+                    # summary. Each one silently does nothing, so "exe sum
+                    # 一直未有東西" cost several rounds of guessing. Name the
+                    # cause at WARNING level -- inspect_databook.py's export
+                    # log analysis surfaces warnings, so the next real run
+                    # says which one it was instead of just showing a blank.
+                    logger.warning(
+                        "Slide %s: coSummaryShape found but NO summary source text "
+                        "(%s accounts on this slide, %s with commentary) — band left blank",
+                        actual_slide_idx + 1, len(all_slide_accounts),
+                        sum(1 for a in all_slide_accounts if str(a.get("commentary", "") or "").strip()),
+                    )
             else:
-                logger.info("Slide %s: coSummaryShape not present; skipping page summary", actual_slide_idx + 1)
+                logger.warning(
+                    "Slide %s: coSummaryShape NOT FOUND on this slide — band left blank. "
+                    "The lookup is an exact name match; check the template.",
+                    actual_slide_idx + 1,
+                )
 
             logger.info("Filled slide %s with %s accounts across %s slots", actual_slide_idx + 1, len(all_slide_accounts), len(slot_contents))
 
@@ -7584,20 +7603,36 @@ class PowerPointGenerator:
             summary_results = {}
             jobs_to_fill = []
             for job in summary_jobs:
-                text = self._generate_page_summary(
-                    job.get("page_summary_source") or job.get("page_commentary") or "",
-                    bool(job.get("is_chinese")),
-                )
+                _src = job.get("page_summary_source") or job.get("page_commentary") or ""
+                text = self._generate_page_summary(_src, bool(job.get("is_chinese")))
+                if not text:
+                    logger.warning(
+                        "Slide %s: _generate_page_summary returned nothing from %s chars "
+                        "of source — summary band left blank",
+                        job["slide_idx"] + 1, len(_src),
+                    )
                 if text:
                     summary_results[job["slide_idx"]] = text
                     jobs_to_fill.append(job)
         else:
+            # No job was ever collected. Either no slide in this statement has
+            # a coSummaryShape, or none had source text -- both already warned
+            # per-slide above, so this only records that the fill stage ran
+            # with nothing to do rather than silently falling through.
+            logger.warning(
+                "%s: no coSummaryShape jobs collected — every summary band for "
+                "this statement stays blank", statement_type,
+            )
             summary_results = {}
             jobs_to_fill = []
         for job in jobs_to_fill:
             final_summary = str(summary_results.get(job["slide_idx"]) or "").strip()
             if not final_summary:
+                logger.warning("Slide %s: summary resolved to empty text — band left blank",
+                               job["slide_idx"] + 1)
                 continue
+            logger.info("Slide %s: wrote %s-char executive summary into coSummaryShape",
+                        job["slide_idx"] + 1, len(final_summary))
             summary_shape = job["summary_shape"]
             p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
             p.text = final_summary
@@ -9599,8 +9634,13 @@ Original content:
 
         self._localize_label_bands()
 
-        # Ensure output directory exists
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        # Ensure output directory exists. dirname() is "" for a bare filename
+        # in the current directory, and makedirs("") raises FileNotFoundError
+        # -- so any caller passing "out.pptx" rather than a path crashed here
+        # after doing all the generation work.
+        out_dir = os.path.dirname(output_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
 
         self.presentation.save(output_path)
         logger.info("Presentation saved to: %s", output_path)
