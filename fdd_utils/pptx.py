@@ -5002,6 +5002,28 @@ class PowerPointGenerator:
                 is_chinese=self._account_is_chinese(account),
                 statement_type=statement_type,
             )
+            # A presentation-table account's `commentary` is only its lead-in;
+            # the table itself and the explanation below it are reserved as
+            # blank lines by _render_table_accounts_stack and were not counted
+            # here at all. On a real deck that read a slot the renderer fills
+            # to 94% as 10% used -- and once inspect_databook's fill
+            # diagnostic started modelling the real slot assignment, that
+            # under-count immediately produced false "GENUINE GAP" findings
+            # (an account "fits in the 16.7 remaining lines" whose table alone
+            # needs 24). Safe to charge here because table accounts never
+            # reach the packer: they are pulled out before
+            # _distribute_content_across_slots and appended afterwards, so
+            # the only callers that ever see one are the render-time autofit
+            # gate and the diagnostic -- both of which want the real height.
+            table = account.get("_presentation_table")
+            if table:
+                _is_chi = self._account_is_chinese(account)
+                _lead_pt, _table_pt, _explain_pt = self._estimate_table_account_parts_pt(
+                    account, table, _is_chi,
+                )
+                _std_lh = self._planning_std_lh_pt(_is_chi)
+                if _std_lh > 0:
+                    used += (_table_pt + _explain_pt) / _std_lh
         return max(0.0, used)
 
     def _rebalance_lopsided_lr_pairs(
