@@ -7179,54 +7179,32 @@ class PowerPointGenerator:
             return False
         return True
 
-    def apply_structured_data_to_slides(self, structured_data: List[Dict], start_slide: int,
-                                       project_name: str, statement_type: str, is_chinese_databook: bool = False,
-                                       pre_generated_summary: Optional[str] = None):
-        """Apply structured data directly to slides (slides 1-4 for BS, 5-8 for IS).
+    def _plan_slot_distribution(
+        self,
+        structured_data: List[Dict],
+        *,
+        max_slides: int,
+        start_slide: int,
+        statement_type: str,
+        is_chinese_databook: bool,
+    ) -> List[Tuple[int, str, List[Dict]]]:
+        """Decide which accounts land in which slot -- the whole plan,
+        including presentation-table accounts.
 
-        If ``pre_generated_summary`` is provided, it's used directly for the
-        first slide's coSummaryShape — no AI call from inside PPTX export.
+        Extracted so the export and inspect_databook.py's fill diagnostic
+        run the SAME planner. They did not: the diagnostic called
+        _distribute_content_across_slots on every account, while the export
+        pulls table accounts out of that pool first and appends them
+        afterwards. On a real deck that made the diagnostic report an IS
+        page as 100% full with 4 accounts when the shipped page held one
+        account at 33%, and conclude "no genuine packing gaps" about a
+        layout it was not describing. A diagnostic that models a different
+        algorithm than the one shipping is worse than no diagnostic.
+
+        Callers are expected to have run _prepare_structured_data_for_slides
+        already, since the export needs the prepared items for other things
+        too.
         """
-        if not self.presentation:
-            self.load_template()
-
-        # Remembered so save() can decide, once for the whole deck, whether
-        # to strip the template's static English "Commentary" label bands
-        # (see _localize_label_bands) -- both statement passes
-        # (BS then IS) report the same databook language, so whichever
-        # runs last simply re-confirms the same value.
-        self._is_chinese_mode = is_chinese_databook
-
-        stage_started_at = time.perf_counter()
-        logger.info("Applying %s accounts to slides starting at %s", len(structured_data), start_slide)
-
-        # Normalize commentary and store originals for fill optimization
-        structured_data = self._prepare_structured_data_for_slides(structured_data)
-
-        # Continuation slides (every slide of this statement after the first)
-        # lose their coSummaryShape and gain that area as extra commentary
-        # space. The executive summary stays only on the first slide of
-        # each statement, which cuts AI summary calls from up to 8 to 2.
-        max_slides = int(self.pptx_settings.get("max_commentary_slides_per_statement", 4) or 4)
-        first_slide_idx = start_slide - 1
-        for offset in range(1, max_slides):
-            cont_idx = first_slide_idx + offset
-            if cont_idx >= len(self.presentation.slides):
-                break
-            self._expand_commentary_to_cover_summary(self.presentation.slides[cont_idx])
-
-        # Presentation-table accounts are pulled out of the packing pool
-        # entirely rather than fed to the DP/greedy packer with an inflated
-        # cost. A first attempt padded commentary cost to make a table
-        # account "claim" its whole slot -- verified against a real render
-        # that this does NOT work: the packer still placed a second account
-        # in the same slot, then SPLIT it across two slides when the
-        # combined cost overflowed (the overflow-split logic works purely
-        # off the commentary text, with no concept of "this text is padding
-        # for a table, do not cut it"). Two tables ended up drawn at the
-        # exact same on-slide position. Removing them before packing runs
-        # sidesteps that entirely -- the packer never knows they exist, so
-        # its own sharing/splitting behaviour can't touch them.
         tables_enabled = self._presentation_tables_enabled()
         table_style = self._presentation_table_style() if tables_enabled else "table"
         table_items: List[Dict[str, Any]] = []
@@ -7307,6 +7285,61 @@ class PowerPointGenerator:
                 table_items, slot_distribution, max_slides=max_slides, start_slide=start_slide,
                 is_chinese_databook=is_chinese_databook, trailing_items=trailing_items,
             )
+
+        return slot_distribution
+
+    def apply_structured_data_to_slides(self, structured_data: List[Dict], start_slide: int,
+                                       project_name: str, statement_type: str, is_chinese_databook: bool = False,
+                                       pre_generated_summary: Optional[str] = None):
+        """Apply structured data directly to slides (slides 1-4 for BS, 5-8 for IS).
+
+        If ``pre_generated_summary`` is provided, it's used directly for the
+        first slide's coSummaryShape — no AI call from inside PPTX export.
+        """
+        if not self.presentation:
+            self.load_template()
+
+        # Remembered so save() can decide, once for the whole deck, whether
+        # to strip the template's static English "Commentary" label bands
+        # (see _localize_label_bands) -- both statement passes
+        # (BS then IS) report the same databook language, so whichever
+        # runs last simply re-confirms the same value.
+        self._is_chinese_mode = is_chinese_databook
+
+        stage_started_at = time.perf_counter()
+        logger.info("Applying %s accounts to slides starting at %s", len(structured_data), start_slide)
+
+        # Normalize commentary and store originals for fill optimization
+        structured_data = self._prepare_structured_data_for_slides(structured_data)
+
+        # Continuation slides (every slide of this statement after the first)
+        # lose their coSummaryShape and gain that area as extra commentary
+        # space. The executive summary stays only on the first slide of
+        # each statement, which cuts AI summary calls from up to 8 to 2.
+        max_slides = int(self.pptx_settings.get("max_commentary_slides_per_statement", 4) or 4)
+        first_slide_idx = start_slide - 1
+        for offset in range(1, max_slides):
+            cont_idx = first_slide_idx + offset
+            if cont_idx >= len(self.presentation.slides):
+                break
+            self._expand_commentary_to_cover_summary(self.presentation.slides[cont_idx])
+
+        # Presentation-table accounts are pulled out of the packing pool
+        # entirely rather than fed to the DP/greedy packer with an inflated
+        # cost. A first attempt padded commentary cost to make a table
+        # account "claim" its whole slot -- verified against a real render
+        # that this does NOT work: the packer still placed a second account
+        # in the same slot, then SPLIT it across two slides when the
+        # combined cost overflowed (the overflow-split logic works purely
+        # off the commentary text, with no concept of "this text is padding
+        # for a table, do not cut it"). Two tables ended up drawn at the
+        # exact same on-slide position. Removing them before packing runs
+        # sidesteps that entirely -- the packer never knows they exist, so
+        # its own sharing/splitting behaviour can't touch them.
+        slot_distribution = self._plan_slot_distribution(
+            structured_data, max_slides=max_slides, start_slide=start_slide,
+            statement_type=statement_type, is_chinese_databook=is_chinese_databook,
+        )
 
         # Group slot distribution by slide for easier processing
         slides_content = {}  # {slide_idx: {'single': [...], 'L': [...], 'R': [...]}}

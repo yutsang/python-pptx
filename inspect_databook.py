@@ -1944,6 +1944,7 @@ def analyze_population_fill(
 
     gen = PowerPointGenerator(template_path, "chinese" if language == "Chi" else "english", model_type=model_type)
     gen.load_template()
+    is_chinese = (language == "Chi")
     max_slides = int(gen.pptx_settings.get("max_commentary_slides_per_statement", 4) or 4)
 
     _hr("10. POPULATION / FILL DIAGNOSTIC (theoretical ceiling + rigorous boundary check)")
@@ -1979,9 +1980,16 @@ def analyze_population_fill(
         # run in there -- so section 10 and section 9 reported different fill
         # for the same box (95% vs 101% on a real slide 1). A diagnostic that
         # disagrees with the render it is describing is worse than none.
+        # _plan_slot_distribution, not _distribute_content_across_slots: the
+        # export pulls presentation-table accounts out of the packing pool and
+        # appends them to their own slots afterwards, so packing every account
+        # models a layout that never ships. On a real deck this reported an IS
+        # page as 100% full with 4 accounts where the deck held one account at
+        # 33%, then declared "no genuine packing gaps" about it.
         items = gen._prepare_structured_data_for_slides(items)
-        dist = gen._distribute_content_across_slots(
-            items, max_slides=max_slides, start_slide=start_slide, statement_type=statement_type,
+        dist = gen._plan_slot_distribution(
+            items, max_slides=max_slides, start_slide=start_slide,
+            statement_type=statement_type, is_chinese_databook=is_chinese,
         )
         if not dist:
             print("    (no slots used)")
