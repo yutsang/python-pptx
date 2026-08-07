@@ -1603,10 +1603,26 @@ class PowerPointGenerator:
         )
         return int(base_value)
 
-    @staticmethod
-    def _build_page_summary_source(slide_accounts: List[Dict]) -> Tuple[str, str]:
-        """Build the exact slide commentary set used for summary generation."""
+    def _build_page_summary_source(self, slide_accounts: List[Dict]) -> Tuple[str, str]:
+        """Build the exact slide commentary set used for summary generation.
+
+        The summary source is each account's LEAD-IN only, never its table
+        detail. strip_table_detail_for_summary was written for exactly this
+        and its docstring records the symptom it prevents -- the naive
+        first-sentence splitter in _generate_page_summary doesn't know
+        "明细如下：" isn't a sentence end, so a table account's raw commentary
+        yields a "first sentence" that runs through the handoff phrase and
+        swallows the whole first "➢" bullet, splicing table detail into the
+        executive summary and cutting off mid-sentence. Both ui.py call
+        sites already strip; the export path never did, so the deterministic
+        in-export summary reintroduced the same defect the moment it started
+        filling the band rather than leaving it blank.
+
+        page_commentary stays UNSTRIPPED -- it is the AI path's own input and
+        should still see everything.
+        """
         commentary_parts = []
+        summary_source_parts = []
         summary_parts = []
 
         for account_data in slide_accounts or []:
@@ -1614,11 +1630,17 @@ class PowerPointGenerator:
             summary = str(account_data.get("summary", "") or "").strip()
             if commentary:
                 commentary_parts.append(commentary)
+                lead_in = self.strip_table_detail_for_summary(
+                    commentary, self._account_is_chinese(account_data),
+                )
+                summary_source_parts.append(lead_in or commentary)
             if summary:
                 summary_parts.append(summary)
 
         page_commentary = "\n\n".join(commentary_parts).strip()
-        page_summary_source = page_commentary or " ".join(summary_parts).strip()
+        page_summary_source = (
+            "\n\n".join(summary_source_parts).strip() or " ".join(summary_parts).strip()
+        )
         return page_commentary, page_summary_source
 
     @staticmethod
