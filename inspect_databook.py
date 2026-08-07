@@ -1973,6 +1973,13 @@ def analyze_population_fill(
         target_fill = float(gen._packing_settings(statement_type).get("target_fill_min_ratio", 0.95) or 0.95)
         print(f"\n  [{statement_type}] target_fill_min_ratio = {target_fill:.0%} "
               f"(every slot except the last-used one is scored against this)")
+        # Prepare the items EXACTLY as apply_structured_data_to_slides does
+        # before it packs. Skipping this measured different text from the one
+        # that actually ships -- normalisation and shorten_company_names both
+        # run in there -- so section 10 and section 9 reported different fill
+        # for the same box (95% vs 101% on a real slide 1). A diagnostic that
+        # disagrees with the render it is describing is worse than none.
+        items = gen._prepare_structured_data_for_slides(items)
         dist = gen._distribute_content_across_slots(
             items, max_slides=max_slides, start_slide=start_slide, statement_type=statement_type,
         )
