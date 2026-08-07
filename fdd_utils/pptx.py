@@ -7579,10 +7579,20 @@ class PowerPointGenerator:
                         actual_slide_idx + 1, len(all_slide_accounts),
                         sum(1 for a in all_slide_accounts if str(a.get("commentary", "") or "").strip()),
                     )
-            else:
+            elif actual_slide_idx == start_slide - 1:
                 logger.warning(
-                    "Slide %s: coSummaryShape NOT FOUND on this slide — band left blank. "
-                    "The lookup is an exact name match; check the template.",
+                    "Slide %s: coSummaryShape NOT FOUND on the first slide of %s — band "
+                    "left blank. The lookup is an exact name match; check the template.",
+                    actual_slide_idx + 1, statement_type,
+                )
+            else:
+                # Continuation slides have their band removed on purpose by
+                # _expand_commentary_to_cover_summary, so its absence here is
+                # the designed layout, not a fault. Warning on it put three
+                # false lines into the export log analysis of a run whose
+                # summaries had in fact all worked.
+                logger.info(
+                    "Slide %s: continuation slide, no summary band by design",
                     actual_slide_idx + 1,
                 )
 

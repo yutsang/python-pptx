@@ -1065,6 +1065,47 @@ def _check_number_formatting_and_zero_wording(result: dict) -> int:
     return flagged
 
 
+class _Tee:
+    """Write to the console and to a UTF-8 file at once.
+
+    The console copy is best-effort: a Windows console on a legacy code page
+    raises UnicodeEncodeError on characters it cannot represent, and losing
+    the file (the whole point of --out) to that would be backwards.
+    """
+
+    def __init__(self, stream, handle):
+        self._stream, self._handle = stream, handle
+
+    def write(self, text):
+        self._handle.write(text)
+        try:
+            self._stream.write(text)
+        except Exception:
+            pass
+        return len(text)
+
+    def flush(self):
+        self._handle.flush()
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+
+def _run_teed_to_file(ap, args) -> int:
+    import contextlib
+
+    out_path = Path(args.out)
+    if out_path.parent and not out_path.parent.exists():
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    args.out = None  # so the re-entered main() takes the normal path
+    with open(out_path, "w", encoding="utf-8") as handle:
+        with contextlib.redirect_stdout(_Tee(sys.stdout, handle)):
+            code = _main_with_args(args)
+    print(f"\nFull output written as UTF-8 to: {out_path.resolve()}")
+    return code
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pptx_path", help="Path to an already-exported .pptx file, or a directory to scan "
@@ -1077,8 +1118,20 @@ def main() -> int:
                           "(not rounded to the nearest thousand), (3) literal zero-value currency "
                           "mentions that should read as 'nil'/'未发生' instead, (4) '人民币' repeated "
                           "before every number in one Chinese multi-period list sentence.")
+    ap.add_argument("--out", default=None, metavar="FILE",
+                    help="also write everything printed here to FILE as UTF-8. Use this "
+                         "whenever the output will be pasted somewhere: a Windows console "
+                         "renders CJK unreliably (observed inserting spaces mid-word and "
+                         "dropping characters, in text this tool never modified), which has "
+                         "repeatedly made correct output look like a text-corruption bug.")
     args = ap.parse_args()
 
+    if args.out:
+        return _run_teed_to_file(ap, args)
+
+
+def _main_with_args(args) -> int:
+    """main() past argument parsing, so --out can re-enter it under a tee."""
     config = _load_config(args.config)
 
     input_path = Path(args.pptx_path)
