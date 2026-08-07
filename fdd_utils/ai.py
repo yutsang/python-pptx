@@ -1738,6 +1738,11 @@ class PromptStylePack:
                 # 数字的地方。significant_movements 现在直接给出 percent_change 与
                 # exceeds_materiality（30%），这里要求它引用而不是自行推导，并允许
                 # 在备注不支持原因时只陈述变动、不编原因。
+                "比较基准必须一致（同一段话内绝不可自相矛盾）：把不足一年的期间与整年比较时，"
+                "两边必须都用年化金额，或都用未年化金额，并在句中写明用的是哪一种。真实交付稿曾出现"
+                "同一段先写'年化后1,464.3万元，较2025年度1,463.3万元基本持平'、再写'较2025年度下降75.0%'——"
+                "后者用未年化的3个月金额除以全年，两句互相矛盾，读者无法判断哪句可信。写完后自查："
+                "同一对比对象在同一段里只能有一个结论，不可同时说'基本持平'和'大幅下降'。"
                 "分析深度（比单纯罗列金额更重要）：当 significant_movements 中某项 exceeds_materiality 为真时，"
                 "该变动**必须**在评论中出现，并优先说明其原因。原因只能来自 databook 的备注/supporting notes/"
                 "table_linked_remarks；若这些来源都没有交代原因，就只陈述变动本身（例如'较上期下降38.2%'）并"
@@ -1759,6 +1764,13 @@ class PromptStylePack:
                 "一个全称在正文中重复出现，每次几乎占掉一整行，是这些评论中最容易避免的篇幅浪费。"
             )
         return (
+            "Comparison basis must be consistent -- never contradict yourself in one "
+            "paragraph: when comparing a part-year period against a full year, annualise BOTH "
+            "sides or neither, and say which basis is used. A real deliverable read 'annualised "
+            "to 14.6m, broadly flat against FY25 of 14.6m' and then 'down 75.0% on FY25' in the "
+            "same paragraph -- the second divided the raw three-month figure by the full year. "
+            "Check before finishing: one comparison pair may carry only one conclusion; it "
+            "cannot be both broadly flat and sharply down. "
             "Analytical depth (this matters more than listing amounts): when an entry in "
             "significant_movements has exceeds_materiality true, that movement MUST appear in the "
             "commentary and its cause should be given first. The cause may come ONLY from the "
@@ -4888,6 +4900,16 @@ _INFERENCE_MARKERS_ENG = (
 )
 
 
+# Phrasings that say a cause is NOT available. They contain inference-looking
+# words but make no claim, so they must not, on their own, buy an LLM call.
+_NO_CAUSE_DISCLAIMERS = (
+    "原因未在资料中说明", "原因未在数据中说明", "备注中未提供进一步解释",
+    "未在资料中说明原因", "数据中未提供原因", "变动原因未在数据中明确说明",
+    "the reason is not set out in the information provided",
+    "no reason is given in the information provided",
+)
+
+
 def commentary_asserts_inference(text: str) -> bool:
     """Does this commentary make a causal/forward-looking claim?
 
@@ -4897,6 +4919,15 @@ def commentary_asserts_inference(text: str) -> bool:
     reasoning flag from the deck's orange highlighting.
     """
     body = str(text or "")
+    if not body.strip():
+        return False
+    # The prompts now REQUIRE the model to say so when the databook does not
+    # explain a movement. That disclaimer is the opposite of an unsupported
+    # causal claim -- it asserts nothing -- but it reads as one to the marker
+    # scan, and adding the rule pushed the Validator from 173s to 560s on a
+    # real run for a single extra flag. Strip the disclaimers before deciding.
+    for _disclaimer in _NO_CAUSE_DISCLAIMERS:
+        body = body.replace(_disclaimer, "")
     if not body.strip():
         return False
     lowered = body.lower()

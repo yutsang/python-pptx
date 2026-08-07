@@ -2310,7 +2310,29 @@ class PowerPointGenerator:
             return text
         boundary_chars = "。；;.!?！？"
         cut = text[:limit]
-        best = max((cut.rfind(ch) for ch in boundary_chars), default=-1)
+        # A "." between two digits is a DECIMAL POINT, not a sentence end.
+        # Taking it as one truncated a real deck's 营业成本 lead-in at
+        # "...较2025年度下降74." -- the last "boundary" in the string was the
+        # point inside 74.9%, so the figure was cut in half and the rest of
+        # the sentence, including the "明细如下：" handoff, was thrown away.
+        # Same defect class as the mid-number split _snap_split_before_number
+        # already guards in the packing path; this truncation path never had
+        # the guard.
+        best = -1
+        for pos in range(len(cut) - 1, -1, -1):
+            ch = cut[pos]
+            if ch not in boundary_chars:
+                continue
+            if (
+                ch == "."
+                and pos > 0
+                and cut[pos - 1].isdigit()
+                and pos + 1 < len(text)
+                and text[pos + 1].isdigit()
+            ):
+                continue
+            best = pos
+            break
         if best >= int(limit * 0.4):
             return cut[: best + 1]
         return cut.rstrip() + ("…" if is_chinese else "...")
