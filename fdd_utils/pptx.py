@@ -1466,137 +1466,8 @@ class PowerPointGenerator:
         assert last_error is not None
         raise last_error
 
-    def _generate_slide_summaries(self, summary_jobs: List[Dict[str, Any]]) -> Dict[int, str]:
-        if not summary_jobs:
-            return {}
 
-        max_workers = self._summary_max_workers(summary_jobs)
-        model_type = self._resolve_summary_model_type(bool(summary_jobs[0].get("is_chinese")))
-        jobs_by_slide = {job["slide_idx"]: job for job in summary_jobs}
-        results: Dict[int, str] = {}
 
-        logger.info(
-            "Generating %s PPTX slide summaries with model_type=%s, max_workers=%s",
-            len(summary_jobs),
-            model_type,
-            max_workers,
-        )
-
-        def _generate_summary(job: Dict[str, Any]) -> str:
-            slide_number = int(job["slide_idx"]) + 1
-            summary_started_at = time.perf_counter()
-            ai_summary = self._generate_ai_summary(
-                job["page_commentary"] or job["page_summary_source"],
-                job["page_summary_source"],
-                job["is_chinese"],
-            )
-            if ai_summary:
-                logger.info(
-                    "PPTX summary slide %s completed via AI in %.2fs",
-                    slide_number,
-                    time.perf_counter() - summary_started_at,
-                )
-                return ai_summary
-            fallback_summary = self._generate_page_summary(job["page_summary_source"], job["is_chinese"])
-            logger.info(
-                "PPTX summary slide %s completed via fallback in %.2fs",
-                slide_number,
-                time.perf_counter() - summary_started_at,
-            )
-            return fallback_summary
-
-        if max_workers == 1:
-            for slide_idx, job in jobs_by_slide.items():
-                results[slide_idx] = _generate_summary(job)
-            return results
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_slide = {
-                executor.submit(_generate_summary, job): slide_idx
-                for slide_idx, job in jobs_by_slide.items()
-            }
-            for future in as_completed(future_to_slide):
-                slide_idx = future_to_slide[future]
-                job = jobs_by_slide[slide_idx]
-                try:
-                    results[slide_idx] = future.result()
-                except Exception as exc:
-                    logger.warning(
-                        "Slide %s summary generation failed, using fallback summary: %s",
-                        slide_idx + 1,
-                        exc,
-                    )
-                    results[slide_idx] = self._generate_page_summary(
-                        job["page_summary_source"],
-                        job["is_chinese"],
-                    )
-
-        return results
-
-    def _prepare_commentary_blocks(self, commentary: str) -> List[str]:
-        normalized = str(commentary or "").replace("\r\n", "\n").strip()
-        if not normalized:
-            return []
-
-        blocks: List[str] = []
-        for raw_block in re.split(r"\n\s*\n", normalized):
-            lines = [line.strip() for line in raw_block.split("\n") if line.strip()]
-            if not lines:
-                continue
-            if len(lines) == 1:
-                blocks.append(lines[0])
-                continue
-
-            rebuilt: List[str] = []
-            current = ""
-            for line in lines:
-                is_bullet_like = bool(re.match(r"^([-*•]|\d+[.)])\s+", line))
-                if is_bullet_like:
-                    if current:
-                        rebuilt.append(current.strip())
-                        current = ""
-                    rebuilt.append(line)
-                    continue
-                current = f"{current} {line}".strip() if current else line
-            if current:
-                rebuilt.append(current.strip())
-            blocks.extend(rebuilt)
-        return blocks
-
-    def _compact_commentary_for_ppt(self, commentary: str, is_chinese: bool) -> str:
-        normalized = _normalize_slide_commentary_text(commentary)
-        if not normalized:
-            return ""
-
-        packing = self._packing_settings()
-        min_chars = int(
-            packing.get("ppt_min_chars_chi" if is_chinese else "ppt_min_chars_eng", 110 if is_chinese else 190)
-        )
-        if len(normalized) <= min_chars:
-            return normalized
-
-        target_ratio = float(packing.get("ppt_length_ratio", 0.72) or 0.72)
-        target_chars = max(min_chars, int(len(normalized) * target_ratio))
-        max_sentences = int(
-            packing.get("ppt_max_sentences_chi" if is_chinese else "ppt_max_sentences_eng", 3)
-        )
-        max_numeric_sentences = int(packing.get("ppt_max_numeric_sentences", 2) or 2)
-
-        compact = _build_compact_summary_text(
-            normalized,
-            is_chinese=is_chinese,
-            max_sentences=max_sentences,
-            max_chars=target_chars,
-            max_numeric_sentences=max_numeric_sentences,
-        )
-        compact = _normalize_slide_commentary_text(compact)
-        if not compact:
-            return normalized
-
-        minimum_retained_chars = max(90 if is_chinese else 140, int(len(normalized) * 0.35))
-        if len(compact) < minimum_retained_chars:
-            return normalized
-        return compact if len(compact) < len(normalized) else normalized
 
     def _prepare_structured_data_for_slides(self, structured_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         prepared: List[Dict[str, Any]] = []
@@ -4204,44 +4075,6 @@ class PowerPointGenerator:
         detail = f" ({metrics_path})" if measurer.source == "client-metrics" else ""
         logger.info("Text measurement [%s]: %s%s", key, measurer.source, detail)
 
-    def _pillow_measure(
-        self,
-        shape,
-        text: str,
-        *,
-        is_chinese: bool,
-    ) -> Optional[Tuple[int, int]]:
-        """Returns (used_lines, capacity_lines) using real font metrics, or
-        None on any failure (caller falls back to legacy CPL heuristic)."""
-        if not shape or not hasattr(shape, "height") or not hasattr(shape, "width"):
-            return None
-        try:
-            from fdd_utils.text_metrics import (
-                get_measurer,
-                lines_that_fit,
-                text_box_from_shape,
-            )
-        except Exception:
-            return None
-        try:
-            packing = self._packing_settings(None)
-            font_size_pt = self._real_font_size_pt(is_chinese)
-            line_spacing = self._real_line_spacing(is_chinese)
-            _mpath = self._resolve_font_metrics_path(is_chinese, packing)
-            measurer = get_measurer(
-                self._measurer_family(is_chinese, packing), font_size_pt,
-                is_cjk=is_chinese, line_spacing=line_spacing,
-                metrics_path=_mpath,
-            )
-            self._log_measurer_source_once(measurer, _mpath, is_chinese)
-            box = text_box_from_shape(shape)
-            capacity = lines_that_fit(box.height_pt, measurer.line_height_pt())
-            if not text:
-                return (0, capacity)
-            lines = measurer.wrap(text, box.width_pt)
-            return (len(lines), capacity)
-        except Exception:
-            return None
 
     # Space-after (pt) applied to every paragraph in _fill_text_main_bullets.
     # Matches _fill_text_main_bullets_with_category_and_key's own hardcoded
@@ -7220,46 +7053,6 @@ class PowerPointGenerator:
             i = j
         return result
 
-    def _greedy_forward_fill(
-        self,
-        flat_accounts: List[Dict[str, Any]],
-        slots: List[Dict[str, Any]],
-        statement_type: Optional[str],
-    ) -> List[tuple]:
-        """Fallback: fill each slot to capacity greedily. Used only if DP
-        can't find a feasible partition (e.g. a single account overflows a
-        slot). Always places every account — if an account alone exceeds a
-        slot's capacity it is force-placed rather than dropped."""
-        def measure(accts, slot):
-            return self._compute_slot_used_lines(
-                accts, slot["slot_name"], slot_shape=slot["shape"],
-                statement_type=statement_type,
-            )
-
-        idx = 0
-        assignment: List[List[Dict[str, Any]]] = [[] for _ in slots]
-        for s_i, slot in enumerate(slots):
-            while idx < len(flat_accounts):
-                trial = assignment[s_i] + [flat_accounts[idx]]
-                if measure(trial, slot) > slot["capacity"] and assignment[s_i]:
-                    # Slot already has content and adding this account overflows — move on
-                    break
-                # Place the account: either the slot is empty (force-place to avoid
-                # dropping) or it still fits within capacity.
-                assignment[s_i] = trial
-                idx += 1
-
-        # If any accounts are still unplaced (more accounts than slots can absorb),
-        # append them to the last slot rather than silently dropping them.
-        if idx < len(flat_accounts) and slots:
-            for remaining in flat_accounts[idx:]:
-                assignment[-1].append(remaining)
-
-        return [
-            (slot["slide_idx"], slot["slot_name"], self._merge_contd_pairs(assignment[s_i]))
-            for s_i, slot in enumerate(slots)
-            if assignment[s_i]
-        ]
 
     def _expand_commentary_to_cover_summary(self, slide) -> bool:
         """Remove coSummaryShape from a continuation slide and expand the
@@ -8747,17 +8540,6 @@ class PowerPointGenerator:
         
         return bullet_lines
     
-    def _determine_slot_font_size(
-        self,
-        slot_accounts: List[Dict],
-        shape,
-        slot_name: str,
-        statement_type: Optional[str] = None,
-    ) -> int:
-        """Deck-wide fixed size: 9pt Arial for every slot on every slide,
-        regardless of language or content. Any per-slot adjustment here
-        reintroduces size drift between slides."""
-        return 9
 
     _CJK_RANGE = ("一", "鿿")
 
@@ -8916,90 +8698,6 @@ class PowerPointGenerator:
         except Exception as exc:
             logger.debug("Could not apply bounded normAutofit on text frame: %s", exc)
 
-    def _determine_slot_font_size_UNUSED(
-        self,
-        slot_accounts: List[Dict],
-        shape,
-        slot_name: str,
-        statement_type: Optional[str] = None,
-    ) -> int:
-        """KEPT FOR REFERENCE — old shrink-to-fit logic (9→8→7pt)."""
-        packing = self._packing_settings(statement_type)
-        if not shape or not hasattr(shape, "height"):
-            return 9
-
-        is_chinese_slot = any(
-            any("\u4e00" <= c <= "\u9fff" for c in str(a.get("commentary", "")))
-            for a in slot_accounts
-        )
-
-        pillow_ok = self._pillow_fitting_enabled(packing)
-        if pillow_ok:
-            try:
-                from fdd_utils.text_metrics import (
-                    get_font,
-                    line_height_pt as _line_h,
-                    lines_that_fit,
-                    text_box_from_shape,
-                    wrap_text,
-                )
-                box = text_box_from_shape(shape)
-                family = "Microsoft YaHei" if is_chinese_slot else "Arial"
-                line_spacing = 0.95 if is_chinese_slot else 1.0
-                for candidate_pt in (9, 8, 7):
-                    font = get_font(family, candidate_pt, is_cjk=is_chinese_slot)
-                    line_h = _line_h(font, line_spacing=line_spacing)
-                    capacity = lines_that_fit(box.height_pt, line_h)
-                    total_lines = 0
-                    prev_cat = None
-                    for acct in slot_accounts:
-                        cat = acct.get("category", "")
-                        if cat and cat != prev_cat:
-                            total_lines += 1
-                            prev_cat = cat
-                        parts: List[str] = []
-                        mapping_key = acct.get("mapping_key", acct.get("account_name", ""))
-                        if mapping_key:
-                            parts.append(str(mapping_key))
-                        commentary = str(acct.get("commentary", ""))
-                        if commentary:
-                            parts.append(commentary)
-                        joined = "\n".join(parts)
-                        if joined:
-                            total_lines += len(wrap_text(joined, font, box.width_pt))
-                    if total_lines <= capacity:
-                        return candidate_pt
-                return 7
-            except Exception:
-                pass  # fall through to legacy
-
-        for candidate_pt in (9, 8, 7):
-            shape_height_pt = shape.height * 72 / 914400
-            effective_height = shape_height_pt * float(packing.get("shape_height_utilization", 1.02))
-            line_spacing = 0.95 if is_chinese_slot else 1.0
-            line_height = (candidate_pt * line_spacing) + float(packing.get("line_height_padding_pt", 1.6))
-            max_lines = int(effective_height / line_height)
-
-            total_lines = 0
-            prev_cat = None
-            for acct in slot_accounts:
-                cat = acct.get("category", "")
-                if cat and cat != prev_cat:
-                    total_lines += 1
-                    prev_cat = cat
-                commentary = str(acct.get("commentary", ""))
-                is_chi = any("\u4e00" <= c <= "\u9fff" for c in commentary)
-                base_cpl = self._estimate_chars_per_line(slot_name, is_chi, shape=shape, statement_type=statement_type)
-                scale = 9.0 / candidate_pt
-                cpl = max(16, int(base_cpl * scale))
-                total_lines += 1  # key line
-                for line in commentary.split("\n"):
-                    if line.strip():
-                        total_lines += max(1, (len(line) + cpl - 1) // cpl)
-
-            if total_lines <= max_lines:
-                return candidate_pt
-        return 7
 
     @staticmethod
     def _build_clause_segments(
@@ -9126,22 +8824,6 @@ class PowerPointGenerator:
             run.text = remaining
             _apply_run_format(run, None)
 
-    @staticmethod
-    def _truncate_commentary_to_fit(commentary: str, max_chars: int) -> str:
-        """Hard truncation at sentence boundary, with ellipsis."""
-        if len(commentary) <= max_chars:
-            return commentary
-        truncated = commentary[:max_chars]
-        # Try to cut at sentence boundary
-        for end_char in (". ", "。", "! ", "？"):
-            pos = truncated.rfind(end_char)
-            if pos > max_chars * 0.5:
-                return truncated[: pos + len(end_char)].rstrip()
-        # Fall back to word boundary
-        pos = truncated.rfind(" ", int(max_chars * 0.7))
-        if pos > 0:
-            return truncated[:pos].rstrip() + "..."
-        return truncated.rstrip() + "..."
 
     _ORPHANABLE_END_PUNCT = "。．.；;"
 
@@ -9343,92 +9025,6 @@ class PowerPointGenerator:
 
         # Note: "(continued)" is now added to category header, not here
     
-    def _fill_text_main_bullets_with_levels(self, text_frame, commentary: str, is_chinese: bool):
-        """
-        Fill textMainBullets shape with commentary using detailed line break logic
-        and level 1-3 text handling with page breaks (legacy method, kept for compatibility)
-        """
-        from pptx.util import Inches
-        from pptx.dml.color import RGBColor
-        from pptx.enum.text import PP_ALIGN
-        
-        # Detect bullet levels
-        bullet_lines = self._detect_bullet_levels(commentary)
-        
-        # Calculate max lines that can fit in the shape
-        # Estimate based on shape height (conservative estimate)
-        max_lines = 35  # Default conservative estimate
-        
-        lines_added = 0
-        
-        for level, text in bullet_lines:
-            if not text.strip():
-                continue
-            
-            # Check if we need a page break (if shape is getting full)
-            # Note: Actual page breaks would require creating new slides, which is handled
-            # at a higher level. Here we just ensure content fits.
-            if lines_added >= max_lines:
-                # Add continuation indicator
-                p = text_frame.add_paragraph()
-                p.level = 0
-                run = p.add_run()
-                run.text = "... (continued on next page)" if not is_chinese else "... (续下页)"
-                run.font.size = get_font_size_for_text(run.text, force_chinese_mode=is_chinese)
-                run.font.name = get_font_name_for_text(run.text)
-                run.font.italic = True
-                break
-            
-            # Create paragraph with appropriate level
-            p = text_frame.add_paragraph()
-            p.level = level  # Set bullet level (0-3)
-            
-            # Apply paragraph formatting based on level
-            try:
-                # Level 0 (no bullet) or Level 1 (main bullet)
-                if level == 0 or level == 1:
-                    p.left_indent = Inches(0.21)  # 0.21" indent before text
-                    p.first_line_indent = Inches(-0.19)  # 0.19" special hanging
-                    p.space_before = Pt(0)  # 0pt spacing before
-                    p.space_after = Pt(0)  # 0pt spacing after
-                    p.line_spacing = 1.0  # Single line spacing
-                elif level == 2:
-                    # Level 2 - more indented
-                    p.left_indent = Inches(0.4)
-                    p.first_line_indent = Inches(-0.19)
-                    p.space_before = Pt(0)
-                    p.space_after = Pt(0)
-                    p.line_spacing = 1.0
-                    self._apply_east_asian_line_breaking(p)
-                elif level == 3:
-                    # Level 3 - most indented
-                    p.left_indent = Inches(0.6)
-                    p.first_line_indent = Inches(-0.19)
-                    p.space_before = Pt(0)
-                    p.space_after = Pt(0)
-                    p.line_spacing = 1.0
-                    self._apply_east_asian_line_breaking(p)
-            except:
-                pass  # Silently handle formatting errors
-            
-            # Add text with proper formatting
-            run = p.add_run()
-            run.text = text
-            run.font.size = get_font_size_for_text(text, force_chinese_mode=is_chinese)
-            run.font.name = get_font_name_for_text(text)
-            
-            # Apply level-specific formatting
-            if level == 1:
-                run.font.bold = True
-                try:
-                    run.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue for level 1
-                except:
-                    pass
-            elif level == 0:
-                # Regular text - no special formatting
-                pass
-            
-            lines_added += 1
     
     def _validate_ai_summary(
         self,
