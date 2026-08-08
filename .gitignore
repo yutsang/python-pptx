@@ -142,6 +142,11 @@ PORT_MANAGEMENT_GUIDE.md
 LOGGING_ENHANCEMENT_README.md
 *.md
 !README.md
+# This repo is PUBLIC. *.md is ignored by default so working notes that name a
+# client cannot be pushed by accident. Anything allowed through below has been
+# checked for client identifiers -- keep it that way when you add to them.
+!CLAUDE.md
+!docs/failed-attempts.md
 
-# Diagnostic output (see fdd_utils/pptx.py's DP packing report)
+# Diagnostic output (see fdd_utils/pptx/gen_packing.py's DP packing report)
 dp_packing_report.txt
