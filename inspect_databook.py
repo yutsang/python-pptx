@@ -598,6 +598,56 @@ def check_all_tabs_scaling(databook_path: str, dfs: Dict[str, pd.DataFrame], ent
     return len(flagged)
 
 
+def _print_row_survival(tab_name: str, dfs: Dict[str, pd.DataFrame],
+                        normalized: Dict[str, Any], columns: List[Dict[str, Any]]) -> None:
+    """Every row the sheet has, against the ones the AI actually receives.
+
+    The scaling check above answers "is each number right"; it cannot answer
+    "where did the other twelve rows go", which is what a tab that reaches the
+    deck as a bare 合计 needs. A commentary bullet can only enumerate what it
+    was given, so a row dropped here is a component the deck can never name.
+    """
+    rows = normalized.get("row_entries") or []
+    if not rows:
+        return
+    df = dfs.get(tab_name)
+    survived = set()
+    if df is not None and len(df.columns):
+        survived = {str(v).strip() for v in df.iloc[:, 0].tolist()}
+
+    print(f"\n{'=' * 78}")
+    print(f"  ROW SURVIVAL — every row on the sheet vs what reached the AI")
+    print(f"{'=' * 78}")
+    print(f"  sheet has {len(rows)} row(s); dfs['{tab_name}'] carries {len(survived)}")
+    print(f"\n  {'?':<3}{'row':>5}  {'type':<10}{'description':<34}{'values by period':<40}")
+    dropped = 0
+    for row in rows:
+        desc = str(row.get("description") or "").strip()
+        rtype = str(row.get("row_type") or "?")
+        vals = row.get("values") or {}
+        nonzero = {k: v for k, v in vals.items() if isinstance(v, (int, float)) and abs(v) > 0.5}
+        ok = desc in survived
+        if not ok:
+            dropped += 1
+        shown = "  ".join(
+            f"{k.split('|')[-1]}={v:,.0f}" for k, v in list(nonzero.items())[:3]
+        ) or ("all periods 0/empty" if vals else "no values")
+        print(f"  {'✅' if ok else '❌':<3}{row.get('row_idx', '?'):>5}  {rtype:<10}{desc[:32]:<34}{shown[:40]:<40}")
+
+    if dropped:
+        print(f"\n  ❌ {dropped} row(s) never reach the AI. Likely reasons, in the order they bite:")
+        print("     - every period reads 0/empty  -> dropped as a dead row")
+        print("     - description matched a working-remark keyword (check/差异/对账单/recon)")
+        print("       -> pulled out of the table into supporting_notes, listed above")
+        print("     - row_type is not one the schedule keeps (see normalize_financial_schedule)")
+        print("     - the row sits in a second block further down the sheet that the main")
+        print("       table extraction never reached")
+        print("     Cross-check the ❌ rows against the real Excel: a row with a real value")
+        print("     in the latest period that still shows ❌ is a genuine extraction bug.")
+    else:
+        print("\n  ✅ Every row on the sheet reached the AI.")
+
+
 def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
              entity_name: str = "") -> None:
     _hr(f"DUMP TAB: {tab_name!r} (raw Excel value vs final extracted value)")
@@ -700,6 +750,8 @@ def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
         print(f"{'row_idx':>8} {'description':40s} {'column':22s} {'raw':>18s} {'final':>18s}")
         for row_idx, desc, col_key, raw_val, final_val in mismatches:
             print(f"{row_idx:>8} {desc:40s} {col_key:22s} {raw_val!s:>18s} {final_val!s:>18s}")
+
+    _print_row_survival(tab_name, dfs, normalized, columns)
 
     print(
         f"\nHow to read this: 'raw' is the number exactly as it sits in the Excel cell,\n"
