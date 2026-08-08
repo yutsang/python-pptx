@@ -58,28 +58,8 @@ def detect_and_format_amount(value: Union[str, float, int], language: str = "Chi
     return format_number_chinese(convert_scientific_to_normal(value), language)
 
 
-def format_retained_earnings(value: Union[float, int], language: str = "Chi") -> tuple[str, str]:
-    if language == "Chi":
-        if value < 0:
-            return "未弥补亏损", format_number_chinese(abs(value), language)
-        return "未分配利润", format_number_chinese(value, language)
-
-    if value < 0:
-        return "Accumulated Losses", format_number_chinese(abs(value), language)
-    return "Retained Earnings", format_number_chinese(value, language)
 
 
-def format_dataframe_values(df: pd.DataFrame, language: str = "Chi") -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-
-    formatted_df = df.copy()
-    for col in formatted_df.columns[1:]:
-        if pd.api.types.is_numeric_dtype(formatted_df[col]):
-            formatted_df[col] = formatted_df[col].apply(
-                lambda x: detect_and_format_amount(x, language)
-            )
-    return formatted_df
 
 
 def format_value_by_language(value, language: str, _account_name=None) -> str:

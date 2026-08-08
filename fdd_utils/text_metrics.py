@@ -228,8 +228,6 @@ def emu_to_pt(emu: float) -> float:
     return emu / EMU_PER_POINT
 
 
-def pt_to_emu(pt: float) -> int:
-    return int(round(pt * EMU_PER_POINT))
 
 
 # ---------------------------------------------------------------------------

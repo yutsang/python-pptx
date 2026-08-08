@@ -8,13 +8,6 @@ from typing import Optional
 from pptx.util import Pt
 
 
-def get_tab_name(project_name: str) -> Optional[str]:
-    if not project_name:
-        return None
-    words = project_name.split()
-    if words:
-        return words[0]
-    return None
 
 
 def clean_content_quotes(content: str) -> str:
@@ -59,17 +52,6 @@ def get_space_before_for_text(text: str, force_chinese_mode: bool = False) -> Pt
     return Pt(3) if detect_chinese_text(text, force_chinese_mode) else Pt(2)
 
 
-def replace_entity_placeholders(content: str, project_name: str) -> str:
-    if not content or not project_name:
-        return content
-    replacements = {
-        "[PROJECT]": project_name,
-        "[Entity]": project_name,
-        "[Company]": project_name,
-    }
-    for placeholder, replacement in replacements.items():
-        content = content.replace(placeholder, replacement)
-    return content
 # --- end pptx/text.py ---
 
 # --- begin pptx/payloads.py ---
@@ -207,40 +189,6 @@ def _sentence_is_numeric_heavy(sentence: str) -> bool:
     return len(numeric_tokens) >= 2
 
 
-def _build_compact_summary_text(
-    text: str,
-    *,
-    is_chinese: bool,
-    max_sentences: int,
-    max_chars: int,
-    max_numeric_sentences: int,
-) -> str:
-    sentences = _split_text_sentences(text, is_chinese)
-    if not sentences:
-        return str(text or "").strip()
-
-    selected: List[str] = []
-    numeric_sentences = 0
-    for sentence in sentences:
-        heavy = _sentence_is_numeric_heavy(sentence)
-        if heavy and numeric_sentences >= max_numeric_sentences:
-            continue
-        candidate = _join_text_sentences(selected + [sentence], is_chinese)
-        if selected and len(candidate) > max_chars:
-            break
-        selected.append(sentence)
-        if heavy:
-            numeric_sentences += 1
-        if len(selected) >= max_sentences:
-            break
-
-    if not selected:
-        selected = sentences[:1]
-
-    summary = _join_text_sentences(selected, is_chinese).strip()
-    if len(summary) > max_chars:
-        summary = summary[:max_chars].rstrip(" ,;:/-") + "..."
-    return summary.strip()
 
 
 #: Legal-form tails and place-of-registration brackets carry NO identifying
@@ -1392,16 +1340,6 @@ class PowerPointGenerator:
         self._summary_model_type_cache = resolved_model_type
         return resolved_model_type
 
-    def _summary_max_workers(self, summary_jobs: List[Dict[str, Any]]) -> int:
-        if not summary_jobs:
-            return 1
-
-        summary_settings = self._summary_settings()
-        configured_workers = int(summary_settings.get("max_workers", 4) or 4)
-        model_type = self._resolve_summary_model_type(bool(summary_jobs[0].get("is_chinese")))
-        if model_type == "local":
-            configured_workers = int(summary_settings.get("local_max_workers", 1) or 1)
-        return max(1, min(configured_workers, len(summary_jobs)))
 
     def _call_with_timeout(self, func, timeout_seconds: float, timeout_label: str):
         if timeout_seconds <= 0:
@@ -4036,12 +3974,6 @@ class PowerPointGenerator:
         
         logger.info("Successfully filled shape with %s paragraphs", len([l for l in content_lines if l.strip()]))
 
-    def _pillow_fitting_enabled(self, packing: Dict[str, Any]) -> bool:
-        if os.environ.get("FDD_USE_PILLOW_FITTING") == "1":
-            return True
-        if os.environ.get("FDD_USE_PILLOW_FITTING") == "0":
-            return False
-        return bool(packing.get("use_pillow_text_fitting", False))
 
     def _resolve_font_metrics_path(self, is_chinese: bool, packing: Dict[str, Any]) -> Optional[str]:
         """Path to the client-font metrics.json (dumped via dump_font_metrics.py),
@@ -8498,47 +8430,6 @@ class PowerPointGenerator:
                 p = shape.text_frame.paragraphs[0] if shape.text_frame.paragraphs else shape.text_frame.add_paragraph()
                 p.text = text_repr
     
-    def _detect_bullet_levels(self, text: str) -> List[Tuple[int, str]]:
-        """
-        Detect bullet levels (1-3) from commentary text
-        Returns list of (level, text) tuples where level 0 = no bullet, 1-3 = bullet levels
-        """
-        lines = text.split('\n')
-        bullet_lines = []
-        
-        for line in lines:
-            stripped = line.strip()
-            original_line = line
-            
-            # Detect bullet lines with '- ' prefix
-            if original_line.lstrip().startswith('- '):
-                # Calculate indentation level (based on spaces/tabs before the bullet)
-                indent_spaces = len(original_line) - len(original_line.lstrip())
-                
-                # Determine bullet level based on indentation (2 spaces per level)
-                level = min(3, (indent_spaces // 2) + 1)  # Cap at level 3
-                
-                # Clean and store bullet line
-                clean_line = stripped[2:]  # Remove '- '
-                
-                # Special handling for level 3 bullets that contain a dash indicating sub-level
-                if level == 3 and " - " in clean_line:
-                    # Split at the first occurrence of " - "
-                    parts = clean_line.split(" - ", 1)
-                    if len(parts) > 1:
-                        # Add level 3 content
-                        bullet_lines.append((level, parts[0].strip()))
-                        # Add continuation as level 3 (indented)
-                        bullet_lines.append((level, parts[1].strip()))
-                    else:
-                        bullet_lines.append((level, clean_line))
-                else:
-                    bullet_lines.append((level, clean_line))
-            elif stripped:
-                # Regular content (no bullet) - level 0
-                bullet_lines.append((0, stripped))
-        
-        return bullet_lines
     
 
     _CJK_RANGE = ("一", "鿿")

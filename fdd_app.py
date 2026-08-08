@@ -183,34 +183,6 @@ def generate_pptx_presentation():
     )
 
 
-def load_latest_results_from_logs():
-    """Load the most recent results from logs directory"""
-    import yaml
-    import os
-    import glob
-    
-    logs_dir = 'fdd_utils/logs'
-    if not os.path.exists(logs_dir):
-        return None
-    
-    # Find all run directories
-    run_dirs = glob.glob(os.path.join(logs_dir, 'run_*'))
-    if not run_dirs:
-        return None
-    
-    # Get the most recent one
-    latest_run = max(run_dirs, key=os.path.getmtime)
-    results_file = os.path.join(latest_run, 'results.yml')
-    
-    if os.path.exists(results_file):
-        try:
-            with open(results_file, 'r', encoding='utf-8') as f:
-                results = yaml.safe_load(f)
-            return results
-        except Exception as e:
-            logger.warning("Error loading results from %s: %s", results_file, e)
-            return None
-    return None
 
 
 def init_session_state():
