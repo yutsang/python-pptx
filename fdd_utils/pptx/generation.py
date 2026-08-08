@@ -1,1000 +1,74 @@
 from __future__ import annotations
 
-# --- begin pptx/text.py ---
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import re
-from typing import Optional
+from .helpers import (  # lifted out of PowerPointGenerator
+    _account_cost_key,
+    _account_is_chinese,
+    _add_commentary_slot_shape,
+    _apply_east_asian_line_breaking,
+    _build_clause_segments,
+    _build_presentation_table_plan,
+    _category_to_rgb,
+    _expand_commentary_to_cover_summary,
+    _explanation_render_text,
+    _fill_content_shape,
+    _fit_table_columns,
+    _force_no_autofit,
+    _format_table_value,
+    _insert_category_header_rows,
+    _is_commentary_text_shape,
+    _jieba_word_boundary_snap,
+    _measurer_family,
+    _merge_contd_pairs,
+    _planning_std_lh_pt,
+    _prepare_structured_data_for_slides,
+    _presentation_table_for_account,
+    _process_markdown_content,
+    _read_table_style_id,
+    _real_font_size_pt,
+    _real_line_spacing,
+    _real_para_gap_pt,
+    _rendered_bullet_label,
+    _resolve_font_metrics_path,
+    _resolve_table_target_shape,
+    _set_cell_border,
+    _set_paragraph_left_indent,
+    _set_table_style_id,
+    _shape_has_table,
+    _shape_name,
+    _sublist_text_for_table,
+    _table_source_multiplier,
+    _table_unit_label,
+    _textbox_usable_and_inset_pt,
+    _truncate_text_at_boundary,
+    find_content_shape,
+    find_shape_by_name,
+    replace_text_preserve_formatting,
+)
 
-from pptx.util import Pt
-
-
-
-
-def clean_content_quotes(content: str) -> str:
-    if not content:
-        return ""
-    content = re.sub(r'^"*|"*$', "", content.strip())
-    content = re.sub(r'""+', '"', content)
-    return content
-
-
-def detect_chinese_text(text: str, force_chinese_mode: bool = False) -> bool:
-    if force_chinese_mode:
-        return True
-    return contains_predominantly_chinese_text(text)
-
-
-def get_font_size_for_text(text: str, base_size: int = 9, force_chinese_mode: bool = False) -> Pt:
-    # Deck-wide typography: every commentary run, every slide, every
-    # language renders at a single fixed size. We intentionally ignore the
-    # text, base_size, and force_chinese_mode arguments — any caller that
-    # asked for something else would reintroduce the size-variation bug.
-    return Pt(9)
-
-
-def get_font_name_for_text(text: str, default_font: str = "Arial") -> str:
-    # Same philosophy: one font for the whole deck. Arial has CJK fallback
-    # glyphs via the system's default font substitution, so Chinese content
-    # still renders correctly without switching to Microsoft YaHei (which
-    # would change glyph width / baseline on some slides).
-    return "Arial"
-
-
-def get_line_spacing_for_text(text: str, force_chinese_mode: bool = False) -> float:
-    return 0.9 if detect_chinese_text(text, force_chinese_mode) else 1.0
-
-
-def get_space_after_for_text(text: str, force_chinese_mode: bool = False) -> Pt:
-    return Pt(6) if detect_chinese_text(text, force_chinese_mode) else Pt(4)
-
-
-def get_space_before_for_text(text: str, force_chinese_mode: bool = False) -> Pt:
-    return Pt(3) if detect_chinese_text(text, force_chinese_mode) else Pt(2)
-
-
-# --- end pptx/text.py ---
-
-# --- begin pptx/payloads.py ---
-from typing import Any, Dict, Iterable, List, Optional
-
-import pandas as pd
-
-from .financial_common import (
+# re-added: bound by an import in another section of the pre-split module
+from ..keyword_registry import (
+    STATEMENT_ORDER_SKIP_KEYWORDS,
+    SUMMARY_ACCOUNT_SKIP_KEYWORDS,
+    translate_category_to_chinese,
+    translate_statement_line_to_chinese,
+)
+from ..financial_common import (
     contains_chinese_text,
     contains_predominantly_chinese_text,
     get_pipeline_result_text,
     load_yaml_file,
     package_file_path,
 )
-from .keyword_registry import (
-    STATEMENT_ORDER_SKIP_KEYWORDS,
-    SUMMARY_ACCOUNT_SKIP_KEYWORDS,
-    translate_category_to_chinese,
-    translate_statement_line_to_chinese,
-)
-from .workbook import find_mapping_key
-
-
-PPTX_DEFAULT_SETTINGS: Dict[str, Any] = {
-    "max_commentary_slides_per_statement": 4,
-    "executive_summary": {
-        "target_words_eng": 110,
-        "target_chars_chi": 144,
-        "max_sentences_eng": 4,
-        "max_sentences_chi": 4,
-        "max_tokens": 240,
-        "validation_max_tokens": 180,
-        "max_input_chars": 1400,
-        "max_numeric_sentences": 2,
-        "max_workers": 2,
-        "enable_validation": True,
-        "generation_temperature": 0.2,
-        "validation_temperature": 0.1,
-    },
-    "commentary_packing": {
-        "use_pillow_text_fitting": True,
-        # Repeatedly bumped up (1.08 -> 1.15 -> 1.25, and the BS override
-        # further to 1.13 -> 1.47) in response to page fill plateauing too
-        # low -- but the real cause turned out to be _real_para_gap_pt/
-        # _real_line_spacing assuming a 6-9pt inter-paragraph gap and 0.9
-        # Chinese line spacing that _fill_text_main_bullets_with_category_
-        # and_key never actually applies (it hardcodes a flat 3pt gap and
-        # 1.0 spacing for every paragraph, any language) plus a capacity
-        # formula that floored away up to a full extra line on every box.
-        # Once those are fixed at the source (real capacity ~40-50% higher
-        # than before), this relax tier goes back to being a small genuine
-        # second-chance buffer instead of a compensating hack for an
-        # undersized first tier.
-        "shape_height_utilization": 1.00,
-        "minimum_slot_lines": 22,
-        "split_min_remaining_lines": 3,
-        "split_min_content_lines": 5,
-        # Lowered: pull a whole bullet forward into a slot even when the slot
-        # is already 50% full (was 74%). This stops the first IS slot from
-        # sitting at 35% fill while later slots are full.
-        "move_whole_min_fill_ratio": 0.50,
-        "target_fill_min_ratio": 0.95,
-        "target_fill_max_ratio": 1.00,
-        "ppt_length_ratio": 0.84,
-        "ppt_min_chars_eng": 190,
-        "ppt_min_chars_chi": 110,
-        "ppt_max_sentences_eng": 6,
-        "ppt_max_sentences_chi": 5,
-        "ppt_max_numeric_sentences": 2,
-        "category_line_cost": 0.95,
-        "key_line_cost": 1.0,
-        "continuation_spacing_penalty": 0.15,
-        "line_height_padding_pt": 1.6,
-        "split_slot_height_penalty": 1.02,
-        "width_scale_min": 0.9,
-        "width_scale_max": 1.22,
-        "chars_per_line": {
-            "single": {"eng": 100, "chi": 50},
-            "L": {"eng": 56, "chi": 30},
-            "R": {"eng": 56, "chi": 30},
-            "default": {"eng": 66, "chi": 36},
-        },
-        "statement_overrides": {
-            "BS": {
-                "shape_height_utilization": 1.00,
-                "line_height_padding_pt": 1.3,
-                "chars_per_line": {
-                    "single": {"eng": 106},
-                    "L": {"eng": 59},
-                    "R": {"eng": 59},
-                    "default": {"eng": 69},
-                },
-            },
-        },
-    },
-}
-
-
-def _merge_nested_dict(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
-    merged = dict(base or {})
-    for key, value in (overrides or {}).items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_nested_dict(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def _load_pptx_settings(config_path: Optional[str] = None) -> Dict[str, Any]:
-    config = load_yaml_file(config_path or package_file_path("config.yml"))
-    return _merge_nested_dict(PPTX_DEFAULT_SETTINGS, (config or {}).get("pptx") or {})
-
-
-def _split_text_sentences(text: str, is_chinese: bool) -> List[str]:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return []
-    if is_chinese:
-        parts = re.split(r"(?<=[。！？；])", normalized)
-    else:
-        parts = re.split(r"(?<=[.!?;])\s+", normalized)
-    return [part.strip() for part in parts if part and part.strip()]
-
-
-def _join_text_sentences(sentences: List[str], is_chinese: bool) -> str:
-    cleaned = [str(sentence or "").strip() for sentence in sentences if str(sentence or "").strip()]
-    if not cleaned:
-        return ""
-    return "".join(cleaned) if is_chinese else " ".join(cleaned)
-
-
-def _sentence_is_numeric_heavy(sentence: str) -> bool:
-    text = str(sentence or "")
-    numeric_tokens = re.findall(r"\d[\d,.\-]*%?|USD|HKD|RMB|CNY|EUR|JPY|\$", text, flags=re.IGNORECASE)
-    return len(numeric_tokens) >= 2
-
-
-
-
-#: Legal-form tails and place-of-registration brackets carry NO identifying
-#: information -- they say what kind of company it is and where it was
-#: registered, not which company. The reference deck strips both throughout
-#: (浙江卓圣, not 浙江卓圣物业管理有限公司) and only writes a full legal name
-#: when first naming a specific contract counterparty.
-_LEGAL_FORM_TAILS = (
-    "股份有限责任公司", "股份有限公司", "有限责任公司", "私人有限公司",
-    "有限合伙企业", "会计师事务所", "律师事务所", "有限公司",
-)
-#: Removed only when the bracket holds a short place name. A long bracket is
-#: usually a real qualifier and gets left alone.
-_REGISTRATION_BRACKET = re.compile(r"[（(][一-鿿]{2,4}[）)](?=[一-鿿]*(?:%s))"
-                                   % "|".join(_LEGAL_FORM_TAILS))
-
-
-def shorten_company_names(text: str) -> str:
-    """Strip legal-form tails and registration brackets from company names.
-
-    Done deterministically, NOT by prompt. Two separate prompt attempts
-    failed outright: the databook's own row labels ARE the full legal names
-    (e.g. a row literally reading *某某咨询管理有限公司), and the prompts
-    carry a much older, much stronger instruction to reproduce entity names
-    from the data exactly. The model correctly followed the stronger rule.
-    Shortening a name is a mechanical string operation, so it belongs here
-    rather than in an instruction that has to win an argument.
-
-    Deliberately conservative: only the legal form and the registration
-    bracket are removed, because neither identifies the party. Trailing
-    business descriptors (物业管理 / 企业管理) are NOT stripped -- that would
-    reach the reference deck's brevity but risks making two counterparties
-    read the same.
-    """
-    body = str(text or "")
-    if not body:
-        return body
-    body = _REGISTRATION_BRACKET.sub("", body)
-    for tail in _LEGAL_FORM_TAILS:
-        body = body.replace(tail, "")
-    return body
-
-
-def _normalize_slide_commentary_text(text: str) -> str:
-    normalized = clean_content_quotes(str(text or ""))
-    if not normalized:
-        return ""
-    normalized = normalized.replace("\r\n", "\n")
-    normalized = re.sub(r"[ \t]+", " ", normalized)
-    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
-    normalized = shorten_company_names(normalized)
-    return normalized.strip()
-
-
-def _extract_summary(content):
-    text = str(content or "").strip()
-    if not text:
-        return ""
-    if _looks_like_blocked_ai_content(text):
-        return ""
-    return text
-
-
-def _looks_like_blocked_ai_content(text: str) -> bool:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return False
-    lowered = normalized.lower()
-    blocked_markers = (
-        "<!doctype html",
-        "<html",
-        "ac_block_page",
-        "sp.eagleyun.cn",
-        "form.submit()",
-        "api.deepseek.com",
-        "request_uri",
-        "request_user_agent",
-    )
-    return any(marker in lowered for marker in blocked_markers)
-
-
-def _extract_final_content(result_dict):
-    # Defence in depth: strip any Qwen3 <think> block that slipped through (e.g.
-    # via run_generator_reprompt, which skips the _ensure pass) before it can
-    # render into a no-autofit text box and overflow / leak reasoning.
-    from fdd_utils.ai import strip_thinking
-    return strip_thinking(get_pipeline_result_text(result_dict))
-
-
-def _build_statement_order(
-    financial_statement_df: Optional[pd.DataFrame],
-    mappings: Dict[str, Any],
-) -> tuple[Dict[str, int], Dict[str, str]]:
-    financial_statement_order: Dict[str, int] = {}
-    statement_display_names: Dict[str, str] = {}
-    if financial_statement_df is None or financial_statement_df.empty or len(financial_statement_df.columns) == 0:
-        return financial_statement_order, statement_display_names
-
-    first_col = financial_statement_df.iloc[:, 0]
-    skip_keywords = STATEMENT_ORDER_SKIP_KEYWORDS
-    for idx, account_name_in_statement in enumerate(first_col):
-        if pd.isna(account_name_in_statement):
-            continue
-
-        account_name_str = str(account_name_in_statement).strip()
-        if not account_name_str or any(skip in account_name_str.lower() for skip in skip_keywords):
-            continue
-
-        mapping_key = find_mapping_key(account_name_str, mappings)
-        if mapping_key:
-            financial_statement_order[mapping_key] = idx
-            statement_display_names[mapping_key] = account_name_str
-
-        financial_statement_order[account_name_str] = idx
-
-    return financial_statement_order, statement_display_names
-
-
-# Common Traditional -> Simplified character pairs that show up in
-# mappings.yml's own Chinese aliases (e.g. "貨幣資金" vs "货币资金"). Not a
-# general S/T converter -- just enough of this narrow FDD-account-name
-# vocabulary to (a) normalize a Traditional alias to its Simplified spelling
-# for detecting "these two aliases are the same concept, just different
-# script" and (b) prefer Simplified for the final label, matching the
-# convention CATEGORY_TRANSLATIONS_ZH already uses for section headers
-# (fdd_utils/keyword_registry.py).
-_TRADITIONAL_TO_SIMPLIFIED_PAIRS = {
-    "貨": "货", "應": "应", "產": "产", "負": "负", "稅": "税", "資": "资",
-    "積": "积", "準": "准", "幣": "币", "讓": "让", "長": "长", "遞": "递",
-    "認": "认", "賬": "账", "債": "债", "現": "现", "後": "后", "裡": "里",
-    "歸": "归", "屬": "属", "歷": "历", "業": "业", "當": "当", "項": "项",
-    "餘": "余", "繳": "缴", "會": "会", "計": "计", "師": "师", "貴": "贵",
-    "賣": "卖", "買": "买", "須": "须", "廠": "厂", "聯": "联", "繫": "系",
-    "務": "务", "單": "单", "帳": "帐", "報": "报",
-    # Audited (extracted directly from mappings.yml's own alias vocabulary,
-    # see: "python3 -c 'grep aliases + CJK char diff'" in this commit's history)
-    "內": "内", "動": "动", "發": "发", "實": "实", "損": "损", "據": "据",
-    "攤": "摊", "權": "权", "減": "减", "潤": "润", "無": "无", "營": "营",
-    "綜": "综", "職": "职", "譽": "誉", "財": "财", "費": "费", "賃": "赁",
-    "預": "预",
-}
-_TRADITIONAL_TO_SIMPLIFIED = str.maketrans(_TRADITIONAL_TO_SIMPLIFIED_PAIRS)
-
-
-def _find_chinese_display_name(mapping_key: str, fallback: str, mappings: Dict[str, Any]) -> str:
-    """display_name (built in _build_statement_order) is whatever literal
-    text sits in that account's row in the Financials-summary sheet -- for
-    an English-labelled source databook (e.g. Kunshan's "Cash at bank and
-    on hand"), that stays English even when the REPORT is being generated
-    in Chinese, since nothing translates it. mappings.yml already carries a
-    Chinese alias for essentially every account (used for matching Chinese
-    source sheets) -- reuse one of those as the Chinese-report label instead
-    of leaving the English source text in an otherwise fully-translated
-    Chinese bullet.
-
-    A single mapping_key's aliases list often mixes a precise term with
-    broader catch-all synonyms for MATCHING purposes (e.g. Capital's aliases
-    include both "实收资本"/paid-in capital AND "股东权益"/shareholders'
-    equity -- correct for fuzzy-matching a client's sheet name, but "股东权益"
-    would be a semantically WRONG display label for a paid-in-capital
-    account). Picking "any CJK alias" isn't safe.
-
-    Approach: group the CJK aliases by their Simplified-normalized spelling
-    (so a Traditional/Simplified pair like "實收資本"/"实收资本" is treated as
-    ONE concept, not two competing candidates), rank the resulting concepts
-    by how close any of their members sit to where `fallback` itself
-    appears in the alias list (aliases are typically authored in loosely
-    paired EN/CN blocks, e.g. "...实收资本", "Paid-in capital" sit adjacent),
-    and return the Simplified spelling of the winning concept."""
-    config = mappings.get(mapping_key) if isinstance(mappings, dict) else None
-    aliases = config.get("aliases") if isinstance(config, dict) else None
-    if not isinstance(aliases, list) or not aliases:
-        return fallback
-    aliases = [str(a).strip() for a in aliases]
-    chinese_indices = [i for i, a in enumerate(aliases) if contains_chinese_text(a)]
-    if not chinese_indices:
-        return fallback
-
-    normalized_fallback = str(fallback or "").strip().lower()
-    fallback_idx = next(
-        (i for i, a in enumerate(aliases) if a.lower() == normalized_fallback),
-        len(aliases) // 2,  # unknown position -- fall back to the list midpoint
-    )
-
-    concepts: Dict[str, Dict[str, Any]] = {}
-    for i in chinese_indices:
-        simplified = aliases[i].translate(_TRADITIONAL_TO_SIMPLIFIED)
-        entry = concepts.setdefault(simplified, {"best_distance": None, "simplified_form": None})
-        distance = abs(i - fallback_idx)
-        if entry["best_distance"] is None or distance < entry["best_distance"]:
-            entry["best_distance"] = distance
-        if aliases[i] == simplified:
-            entry["simplified_form"] = aliases[i]
-
-    best_concept = min(concepts.items(), key=lambda kv: kv[1]["best_distance"])
-    simplified_key, entry = best_concept
-    return entry["simplified_form"] or simplified_key
-
-
-def _translate_statement_row_label(label: str, mappings: Optional[Dict[str, Any]]) -> str:
-    """Translates ONE row label from the embedded BS/IS summary table
-    (embed_financial_tables) to Chinese, for a Chinese-language report.
-
-    Unlike commentary bullets (which carry their own resolved mapping_key
-    via build_pptx_structured_payloads), these rows come straight from
-    extract_balance_sheet_and_income_statement's own parse of the raw
-    Financials-sheet text -- there was previously NO translation path for
-    them at all, so a Chinese report's embedded table stayed 100% English
-    even though the title/commentary around it were fully translated.
-
-    Two label classes need two different lookups: (1) individual account
-    rows (e.g. "Cash at bank and on hand") resolve via the same
-    mappings.yml alias machinery _find_chinese_display_name already uses
-    for commentary, by first recovering the mapping_key with
-    find_mapping_key; (2) statement-structure total/subtotal rows (e.g.
-    "Total current assets") aren't mapping_key accounts at all, so they
-    fall back to the small fixed STATEMENT_TOTAL_LINE_TRANSLATIONS_ZH
-    table. Returns `label` unchanged if neither resolves (e.g. an
-    already-Chinese source label, or a genuinely unmapped line) --
-    partial coverage beats a blank or crashed cell.
-    """
-    label = str(label or "")
-    if not label.strip() or contains_chinese_text(label):
-        return label
-    if mappings:
-        mapping_key = find_mapping_key(label, mappings)
-        if mapping_key:
-            return _find_chinese_display_name(mapping_key, label, mappings)
-    return translate_statement_line_to_chinese(label) or label
-
-
-def _has_significant_balance(financial_data: Optional[pd.DataFrame]) -> bool:
-    """Does this account carry a balance worth commenting on?
-
-    The dataframe handed in is the PROJECTION frame -- one stage, ONE date
-    column -- so scanning it answers "is the latest period non-zero", not the
-    question actually being asked. An account that ran to nil by the reporting
-    date but had real activity in earlier periods (a real Crescent 投资收益
-    reads 0 at 2026-03-31 with prior-year movement) was silently dropped from
-    the deck after its commentary had already been generated and paid for.
-
-    workbook.py already computes exactly the right signal while parsing --
-    any_period_nonzero_by_description, |v| >= 0.01 over ALL periods of the
-    stage -- and filter_zero_value_rows already uses it to decide which ROWS
-    survive. Use it here for the same decision at ACCOUNT level; fall back to
-    the single-column scan only when the attribute is absent.
-    """
-    if financial_data is None or financial_data.empty:
-        return True
-
-    any_period = financial_data.attrs.get("any_period_nonzero_by_description")
-    if isinstance(any_period, dict) and any_period:
-        return any(bool(v) for v in any_period.values())
-
-    numeric_cols = financial_data.select_dtypes(include=[float, int]).columns
-    if len(numeric_cols) == 0:
-        return True
-
-    for col in numeric_cols:
-        if (financial_data[col].abs() >= 0.01).any():
-            return True
-    return False
-
-
-def build_pptx_structured_payloads(
-    ai_results,
-    mappings,
-    bs_is_results=None,
-    dfs=None,
-):
-    if not ai_results:
-        return {"BS": [], "IS": []}
-
-    balance_sheet_df = bs_is_results.get("balance_sheet") if bs_is_results else None
-    income_statement_df = bs_is_results.get("income_statement") if bs_is_results else None
-    bs_order, bs_display_names = _build_statement_order(balance_sheet_df, mappings)
-    is_order, is_display_names = _build_statement_order(income_statement_df, mappings)
-
-    payloads = {"BS": [], "IS": []}
-    sortable_items = {"BS": [], "IS": []}
-
-    for account_key, result in ai_results.items():
-        mapping_key = find_mapping_key(account_key, mappings)
-        if not mapping_key:
-            continue
-
-        account_type = mappings[mapping_key].get("type")
-        if account_type not in {"BS", "IS"}:
-            continue
-
-        financial_data = dfs.get(account_key) if dfs and account_key in dfs else None
-        if not _has_significant_balance(financial_data):
-            # Dropping an account here throws away commentary the AI pipeline
-            # has already produced and been paid for, and it happens silently
-            # -- the only trace was a smaller "IS items: N". Say which account
-            # and on what evidence, so the next run answers "why is 投资收益
-            # missing" instead of another round of guessing.
-            _attrs = getattr(financial_data, "attrs", {}) or {}
-            _any = _attrs.get("any_period_nonzero_by_description")
-            logger.warning(
-                "Dropping %s from the deck: no period carries a balance. "
-                "any_period_nonzero_by_description=%s, stage=%s, columns=%s",
-                mapping_key,
-                dict(_any) if isinstance(_any, dict) else _any,
-                _attrs.get("prompt_analysis_stage"),
-                list(getattr(financial_data, "columns", [])) or None,
-            )
-            continue
-
-        final_content = _extract_final_content(result)
-        commentary_text = (
-            str(final_content).strip()
-            if final_content and str(final_content).strip()
-            else f"[No content generated for {account_key}]"
-        )
-
-        clause_reviews: List[Dict[str, Any]] = []
-        if isinstance(result, dict):
-            validator_metadata = result.get("agent_4_validation") or {}
-            if isinstance(validator_metadata, dict):
-                raw_reviews = validator_metadata.get("clause_reviews") or []
-                if isinstance(raw_reviews, list):
-                    clause_reviews = [r for r in raw_reviews if isinstance(r, dict)]
-
-        statement_order = bs_order if account_type == "BS" else is_order
-        statement_display_names = bs_display_names if account_type == "BS" else is_display_names
-        order = statement_order.get(mapping_key, statement_order.get(account_key, 9999))
-        display_name = statement_display_names.get(mapping_key, account_key)
-
-        sortable_items[account_type].append(
-            (
-                order,
-                mappings[mapping_key].get("category", ""),
-                mapping_key,
-                {
-                    "account_name": account_key,
-                    "mapping_key": mapping_key,
-                    "display_name": display_name,
-                    "display_name_zh": _find_chinese_display_name(mapping_key, display_name, mappings),
-                    "category": mappings[mapping_key].get("category", ""),
-                    "financial_data": financial_data,
-                    "commentary": commentary_text,
-                    "clause_reviews": clause_reviews,
-                    "summary": _extract_summary(final_content) if final_content else "",
-                    # Predominantly-Chinese (>30%), not "contains any CJK
-                    # character" -- this flag drives CJK-vs-Latin text
-                    # WRAPPING/measurement throughout the packing pipeline
-                    # (_calculate_content_lines, _calculate_max_lines_for_
-                    # textbox's whole-statement is_chinese_any). An English
-                    # commentary that merely names a Chinese counterparty/
-                    # person (e.g. "...payable to the related party 维彧")
-                    # is still fundamentally Latin-script prose; measuring
-                    # it (and, via is_chinese_any, EVERY slot's capacity in
-                    # the whole statement) with CJK line-height/spacing/
-                    # wrap rules instead of Arial's produced a systematic
-                    # believed-vs-actually-rendered fill gap.
-                    "is_chinese": contains_predominantly_chinese_text(commentary_text),
-                },
-            )
-        )
-
-    for statement_type in ["BS", "IS"]:
-        payloads[statement_type] = [
-            item
-            for _order, _category, _mapping_key, item in sorted(
-                sortable_items[statement_type],
-                key=lambda row: (row[0], row[1], row[2]),
-            )
-        ]
-
-    return payloads
-# --- end pptx/payloads.py ---
-
-# --- begin pptx/exporters.py ---
-import copy
-import logging
-import os
-import posixpath
-import time
+from ..workbook import find_mapping_key
 import traceback
-from typing import Dict, List, Optional
 
-from pptx import Presentation
-from pptx.oxml.ns import qn
-
-logger = logging.getLogger(__name__)
-
-
-class ReportGenerator:
-    """Report generator that orchestrates PPTX creation from markdown."""
-
-    def __init__(
-        self,
-        template_path: str,
-        markdown_file: str,
-        output_path: str,
-        project_name: Optional[str] = None,
-        language: str = "english",
-        row_limit: int = 20,
-    ):
-        self.template_path = template_path
-        self.markdown_file = markdown_file
-        self.output_path = output_path
-        self.project_name = project_name
-        self.language = language
-        self.row_limit = row_limit
-
-    def generate(self):
-        logger.info("Starting PPTX generation...")
-        logger.info("Template: %s", self.template_path)
-        logger.info("Markdown: %s", self.markdown_file)
-        logger.info("Output: %s", self.output_path)
-        logger.info("Language: %s", self.language)
-        logger.info("Project: %s", self.project_name)
-
-        with open(self.markdown_file, "r", encoding="utf-8") as handle:
-            md_content = handle.read()
-
-        logger.info("Content length: %s characters", len(md_content))
-        generator = PowerPointGenerator(self.template_path, self.language, self.row_limit)
-
-        try:
-            generator.generate_full_report(md_content, None, self.output_path)
-            if self.project_name:
-                generator.update_project_titles(self.project_name, "BS")
-        except Exception as exc:
-            logger.error("Report generation failed: %s", exc)
-            raise
-
-        logger.info("PPTX generation completed: %s", self.output_path)
-
-
-def export_pptx(
-    template_path: str,
-    markdown_path: str,
-    output_path: str,
-    project_name: Optional[str] = None,
-    _excel_file_path: Optional[str] = None,
-    language: str = "english",
-    statement_type: str = "BS",
-    row_limit: int = 20,
-    model_type: Optional[str] = None,
-):
-    generator = ReportGenerator(template_path, markdown_path, output_path, project_name, language, row_limit)
-    generator.generate()
-
-    if not os.path.exists(output_path):
-        raise FileNotFoundError(f"PPTX file was not created at {output_path}")
-
-    if project_name:
-        temp_presentation = Presentation(output_path)
-        pptx_gen = PowerPointGenerator(template_path, language, row_limit, model_type=model_type)
-        pptx_gen.presentation = temp_presentation
-        pptx_gen.update_project_titles(project_name, statement_type)
-        temp_presentation.save(output_path)
-
-    logger.info("PowerPoint presentation successfully exported to: %s", output_path)
-    return output_path
-
-
-def export_pptx_from_structured_data_combined(
-    template_path: str,
-    bs_data: List[Dict],
-    is_data: List[Dict],
-    output_path: str,
-    project_name: Optional[str] = None,
-    language: str = "english",
-    temp_path: Optional[str] = None,
-    selected_sheet: Optional[str] = None,
-    is_chinese_databook: bool = False,
-    bs_is_results: Optional[Dict[str, Any]] = None,
-    model_type: Optional[str] = None,
-    model_name: Optional[str] = None,
-    skip_summary_ai: bool = False,  # AI summary needed for coSummaryShape; parallelized at max_workers=4
-    pre_generated_summaries: Optional[Dict[str, str]] = None,  # {"BS": str, "IS": str} — bypass AI in PPTX export
-    mappings: Optional[Dict[str, Any]] = None,  # for translating the embedded BS/IS table's row labels when Chinese
-):
-    try:
-        export_started_at = time.perf_counter()
-        def _stage_log(msg: str) -> None:
-            logger.info(msg)
-
-        _stage_log(f"Starting export | BS={len(bs_data)} IS={len(is_data)} skip_summary_ai={skip_summary_ai}")
-
-        generator = PowerPointGenerator(template_path, language, row_limit=20, model_type=model_type, model_name=model_name)
-        if skip_summary_ai:
-            generator.pptx_settings.setdefault("executive_summary", {})["enable_ai"] = False
-        stage_started_at = time.perf_counter()
-        generator.load_template()
-        _stage_log(f"load_template: {time.perf_counter() - stage_started_at:.2f}s")
-
-        pre_summaries = pre_generated_summaries or {}
-        if bs_data:
-            stage_started_at = time.perf_counter()
-            generator.apply_structured_data_to_slides(
-                bs_data, 1, project_name, "BS",
-                is_chinese_databook=is_chinese_databook,
-                pre_generated_summary=pre_summaries.get("BS"),
-            )
-            _stage_log(f"apply_bs_slides: {time.perf_counter() - stage_started_at:.2f}s")
-        if is_data:
-            stage_started_at = time.perf_counter()
-            generator.apply_structured_data_to_slides(
-                is_data, 5, project_name, "IS",
-                is_chinese_databook=is_chinese_databook,
-                pre_generated_summary=pre_summaries.get("IS"),
-            )
-            _stage_log(f"apply_is_slides: {time.perf_counter() - stage_started_at:.2f}s")
-        # bs_is_results being already-computed is sufficient on its own --
-        # requiring selected_sheet too silently skipped the embedded table
-        # whenever the caller had no sheet name to give (roll-up-sourced
-        # financials with a blank own-file sheet, or a synthesized BS/IS
-        # built purely from schedule tabs with no Financials sheet at all)
-        # even though there was real BS/IS data ready to embed.
-        if temp_path and (selected_sheet or bs_is_results):
-            stage_started_at = time.perf_counter()
-            generator.embed_financial_tables(
-                temp_path,
-                selected_sheet,
-                project_name,
-                language,
-                bs_is_results=bs_is_results,
-                mappings=mappings,
-            )
-            _stage_log(f"embed_financial_tables: {time.perf_counter() - stage_started_at:.2f}s")
-        if hasattr(generator, "_unused_slides_to_remove") and generator._unused_slides_to_remove:
-            stage_started_at = time.perf_counter()
-            unused_slides_sorted = sorted(set(generator._unused_slides_to_remove), reverse=True)
-            generator._remove_slides(unused_slides_sorted)
-            _stage_log(f"remove_unused_slides ({len(unused_slides_sorted)}): {time.perf_counter() - stage_started_at:.2f}s")
-        if project_name:
-            stage_started_at = time.perf_counter()
-            generator.refresh_project_placeholders(project_name)
-            _stage_log(f"refresh_project_placeholders: {time.perf_counter() - stage_started_at:.2f}s")
-
-        stage_started_at = time.perf_counter()
-        generator.save(output_path)
-        _stage_log(f"save_presentation: {time.perf_counter() - stage_started_at:.2f}s")
-        _stage_log(f"TOTAL export: {time.perf_counter() - export_started_at:.2f}s")
-        logger.info("Combined PPTX generation completed: %s", output_path)
-        return output_path
-    except Exception as exc:
-        logger.error("PPTX generation failed: %s", exc)
-        logger.error(traceback.format_exc())
-        raise
-
-
-def export_pptx_from_structured_data(
-    template_path: str,
-    structured_data: List[Dict],
-    output_path: str,
-    project_name: Optional[str] = None,
-    language: str = "english",
-    statement_type: str = "BS",
-    start_slide: int = 1,
-    model_type: Optional[str] = None,
-):
-    try:
-        logger.info("Starting PPTX generation from structured data...")
-        logger.info("Template: %s", template_path)
-        logger.info("Output: %s", output_path)
-        logger.info("Language: %s", language)
-        logger.info("Statement type: %s, Start slide: %s", statement_type, start_slide)
-        logger.info("Accounts to process: %s", len(structured_data))
-
-        generator = PowerPointGenerator(template_path, language, row_limit=20, model_type=model_type)
-        generator.load_template()
-        generator.apply_structured_data_to_slides(structured_data, start_slide, project_name, statement_type)
-        generator.save(output_path)
-
-        logger.info("PPTX generation completed: %s", output_path)
-        return output_path
-    except Exception as exc:
-        logger.error("PPTX generation failed: %s", exc)
-        raise
-
-
-def merge_presentations(bs_presentation_path: str, is_presentation_path: str, output_path: str):
-    try:
-        logger.info("🔄 Starting presentation merge...")
-        logger.info("   BS: %s", bs_presentation_path)
-        logger.info("   IS: %s", is_presentation_path)
-
-        merged_prs = Presentation(bs_presentation_path)
-        is_prs = Presentation(is_presentation_path)
-
-        from copy import deepcopy
-
-        for slide_idx, slide in enumerate(is_prs.slides):
-            try:
-                slide_layout = slide.slide_layout
-                new_slide = merged_prs.slides.add_slide(slide_layout)
-
-                source_slide_xml = slide._element
-                target_slide_xml = new_slide._element
-
-                shapes_to_remove = list(new_slide.shapes)
-                for shape in shapes_to_remove:
-                    try:
-                        sp_tree = target_slide_xml.get_or_add_spTree()
-                        sp_tree.remove(shape._element)
-                    except Exception:
-                        pass
-
-                source_sp_tree = source_slide_xml.get_or_add_spTree()
-                target_sp_tree = target_slide_xml.get_or_add_spTree()
-                for shape_element in source_sp_tree:
-                    target_sp_tree.append(deepcopy(shape_element))
-
-            except Exception as exc:
-                logger.error("Error copying slide %s, using fallback method: %s", slide_idx, exc)
-                slide_layout = slide.slide_layout
-                new_slide = merged_prs.slides.add_slide(slide_layout)
-                for shape in slide.shapes:
-                    if shape.has_text_frame:
-                        for new_shape in new_slide.shapes:
-                            if (
-                                hasattr(new_shape, "name")
-                                and hasattr(shape, "name")
-                                and new_shape.name == shape.name
-                                and new_shape.has_text_frame
-                            ):
-                                new_shape.text_frame.text = shape.text_frame.text
-                                break
-
-        merged_prs.save(output_path)
-        del merged_prs
-        del is_prs
-
-        import gc
-
-        gc.collect()
-        logger.info("✅ Presentation merge completed successfully")
-    except Exception as exc:
-        logger.error("Presentation merge failed: %s", exc)
-        raise
-
-
-def _dedupe_part_name(dest_prs: "Presentation", target_part, renamed_part_ids: set) -> None:
-    """Rename `target_part` in-place if its partname collides with a part
-    already present in dest_prs's package.
-
-    python-pptx's Package.save() writes every part reachable from the
-    package's own relationship graph using each Part object's OWN
-    `.partname` -- it never re-derives a name. When _copy_slide_into()
-    relates a destination slide directly to a Part object still owned by a
-    DIFFERENT source Presentation (e.g. a picture's blipFill target), that
-    part keeps the partname it was assigned in ITS OWN package (e.g.
-    "/ppt/media/image3.png"). Since every batch entity's deck is built by
-    the same export code, two different source decks landing on the same
-    numbered partname is common, not a corner case -- and when that
-    happens, the combined package ends up with two different parts both
-    claiming "/ppt/media/image3.png", which produces a zip with a
-    duplicate member name: invalid OPC, which is exactly what makes
-    PowerPoint prompt "repair this presentation" (the media is
-    unrecoverable/misattributed, not merely cosmetically wrong).
-    Renaming the incoming part to a partname that's actually free in the
-    destination package's namespace (via next_partname, the same
-    mechanism python-pptx itself uses when adding new parts) avoids the
-    collision. Only checked once per distinct source Part object
-    (tracked by id() in `renamed_part_ids`, shared across an entire
-    combine_presentations() call) -- once resolved, a part's identity/
-    partname pairing is stable for the rest of the run.
-    """
-    if id(target_part) in renamed_part_ids:
-        return
-    renamed_part_ids.add(id(target_part))
-    existing_partnames = {p.partname for p in dest_prs.part.package.iter_parts()}
-    if target_part.partname not in existing_partnames:
-        return
-    partname = target_part.partname
-    name_part = re.sub(r"\d+$", "", posixpath.splitext(partname.filename)[0]) or "part"
-    tmpl = posixpath.join(partname.baseURI, f"{name_part}%d.{partname.ext}") if partname.ext else posixpath.join(partname.baseURI, f"{name_part}%d")
-    target_part.partname = dest_prs.part.package.next_partname(tmpl)
-
-
-def _copy_slide_into(dest_prs: "Presentation", source_slide, renamed_part_ids: Optional[set] = None) -> None:
-    """Deep-copy one slide from a DIFFERENT Presentation (built from the
-    same template.pptx) onto the end of dest_prs, preserving every shape
-    including images and native tables.
-
-    python-pptx has no built-in "append an existing slide" API, so this
-    clones the slide's shape-tree XML directly -- the same technique
-    merge_presentations() above uses. The one thing that technique is
-    missing (and why it's not reused as-is here): the copied XML still
-    references relationship IDs (r:embed / r:id / r:link, used by
-    pictures and hyperlinks) that only exist in the SOURCE file's part.
-    Left unmapped, those would point at nothing in the destination part --
-    copied images would come through as silently broken/missing rather
-    than raising an error. Every non-slideLayout relationship the source
-    slide owns is re-created on the destination slide's own part first,
-    and every r:embed/r:id/r:link attribute in the copied XML is
-    rewritten to the new relationship id.
-
-    Embedded/linked OLE objects (MSO_SHAPE_TYPE.EMBEDDED_OLE_OBJECT /
-    LINKED_OLE_OBJECT -- e.g. a "TCLayout.ActiveDocument.1" marker some
-    add-ins like ThinkCell/UpSlide leave on every slide) are deliberately
-    SKIPPED entirely, not copied or relationship-remapped: a real batch
-    combine produced blank/whited-out pages specifically where these
-    existed, and this codebase has no template with such an object to
-    debug the exact OLE relationship mechanics against locally. These
-    markers are consistently 0.001in x 0.001in (invisible, carry no
-    reader-facing content) in every template seen so far, so dropping them
-    trades an add-in bookkeeping artifact for guaranteed-correct visible
-    content -- the safer side of that tradeoff.
-    """
-    from pptx.enum.shapes import MSO_SHAPE_TYPE
-
-    renamed_part_ids = renamed_part_ids if renamed_part_ids is not None else set()
-
-    layout_name = source_slide.slide_layout.name
-    dest_layout = next(
-        (layout for layout in dest_prs.slide_layouts if layout.name == layout_name),
-        dest_prs.slide_layouts[0],
-    )
-    dest_slide = dest_prs.slides.add_slide(dest_layout)
-
-    # The layout auto-populates placeholder shapes -- clear them, the
-    # source slide's own shape tree (copied below) already carries
-    # everything that should be on the page.
-    for shape in list(dest_slide.shapes):
-        shape._element.getparent().remove(shape._element)
-
-    r_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
-    ole_shape_elements = set()
-    ole_rel_ids = set()
-    for shape in source_slide.shapes:
-        try:
-            is_ole = shape.shape_type in (MSO_SHAPE_TYPE.EMBEDDED_OLE_OBJECT, MSO_SHAPE_TYPE.LINKED_OLE_OBJECT)
-        except (ValueError, NotImplementedError):
-            is_ole = False
-        if is_ole:
-            ole_shape_elements.add(shape._element)
-            for el in shape._element.iter():
-                for attr_name in ("embed", "link", "id"):
-                    rid = el.get(f"{r_ns}{attr_name}")
-                    if rid:
-                        ole_rel_ids.add(rid)
-
-    rel_id_map: Dict[str, str] = {}
-    for rel_id, rel in source_slide.part.rels.items():
-        if rel.reltype.endswith("/slideLayout") or rel_id in ole_rel_ids:
-            continue  # layout relationship isn't copied; OLE ones are deliberately dropped
-        if rel.is_external:
-            new_rel_id = dest_slide.part.relate_to(rel.target_ref, rel.reltype, is_external=True)
-        else:
-            _dedupe_part_name(dest_prs, rel.target_part, renamed_part_ids)
-            new_rel_id = dest_slide.part.relate_to(rel.target_part, rel.reltype)
-        rel_id_map[rel_id] = new_rel_id
-
-    for shape_elm in list(source_slide.shapes._spTree):
-        if shape_elm.tag in (qn("p:nvGrpSpPr"), qn("p:grpSpPr")):
-            continue  # spTree's two fixed non-shape children, not content
-        if shape_elm in ole_shape_elements:
-            continue
-        new_elm = copy.deepcopy(shape_elm)
-        for el in new_elm.iter():
-            for attr_name in ("embed", "link", "id"):
-                old_rid = el.get(f"{r_ns}{attr_name}")
-                if old_rid and old_rid in rel_id_map:
-                    el.set(f"{r_ns}{attr_name}", rel_id_map[old_rid])
-        dest_slide.shapes._spTree.append(new_elm)
-
-
-def combine_presentations(pptx_sources: List, output_path) -> "str | None":
-    """Combine several already-exported .pptx decks (e.g. one per batch
-    entity, all built from the same template.pptx) into a single deck --
-    every slide from every source, in order, via _copy_slide_into().
-
-    pptx_sources: file paths (str) and/or file-like objects (e.g.
-    io.BytesIO of already-in-memory PPTX bytes -- python-pptx's own
-    Presentation() constructor accepts either, so no temp files are needed
-    when combining straight from a batch run's cached pptx_download_data).
-    output_path: a path (str) to save to, OR a file-like object (e.g.
-    io.BytesIO) to write into instead of touching disk -- returns the path
-    string in the former case, None in the latter (caller already holds
-    the buffer it passed in).
-
-    Deliberately NOT a general-purpose "merge any two PPTX files" utility:
-    it assumes every input shares the same template (true for every batch
-    entity, since they all come from export_pptx_from_structured_data_combined
-    with the same template_path), which is what makes layout-name matching
-    a safe way to pick the destination layout for each copied slide.
-    """
-    if not pptx_sources:
-        raise ValueError("combine_presentations requires at least one input source")
-
-    combined_prs = Presentation(pptx_sources[0])
-    renamed_part_ids: set = set()
-    for source in pptx_sources[1:]:
-        source_prs = Presentation(source)
-        for source_slide in source_prs.slides:
-            _copy_slide_into(combined_prs, source_slide, renamed_part_ids)
-
-    combined_prs.save(output_path)
-    logger.info("Combined %s presentation(s)", len(pptx_sources))
-    if isinstance(output_path, str):
-        return output_path
-    return None
-# --- end pptx/exporters.py ---
-
-# --- begin pptx/generation.py ---
 """
 PowerPoint Generation Module for Financial Reports
 Based on the backup methods but implemented fresh for the new system
 """
+
+from .text import detect_chinese_text, get_font_name_for_text, get_font_size_for_text, get_line_spacing_for_text, get_space_after_for_text, get_space_before_for_text
+from .payloads import _load_pptx_settings, _looks_like_blocked_ai_content, _merge_nested_dict, _normalize_slide_commentary_text, _split_text_sentences, _translate_statement_row_label
 
 import os
 import re
@@ -1040,34 +114,7 @@ class PowerPointGenerator:
         self.presentation = Presentation(self.template_path)
         logger.info("Loaded template: %s", self.template_path)
 
-    def find_shape_by_name(self, shapes, name: str):
-        """Find shape by name in slide (case-insensitive), recursive"""
-        name_lower = name.lower()
-        for shape in shapes:
-            if hasattr(shape, 'name') and (shape.name == name or shape.name.lower() == name_lower):
-                return shape
-            
-            # Check for group
-            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-                found = self.find_shape_by_name(shape.shapes, name)
-                if found:
-                    return found
-        return None
 
-    @staticmethod
-    def _is_commentary_text_shape(shape) -> bool:
-        if not getattr(shape, "has_text_frame", False):
-            return False
-        shape_name = str(getattr(shape, "name", "") or "").lower()
-        excluded_tokens = (
-            "title",
-            "projtitle",
-            "summary",
-            "cosummaryshape",
-            "table",
-            "subtitle",
-        )
-        return not any(token in shape_name for token in excluded_tokens)
 
     def _split_single_into_lr(self, slide, source_shape):
         """Clone a full-width commentary box into two half-width boxes side by
@@ -1162,7 +209,7 @@ class PowerPointGenerator:
         }
 
         for name in preferred_names.get(slot_name, []):
-            shape = self.find_shape_by_name(slide.shapes, name)
+            shape = find_shape_by_name(slide.shapes, name)
             if shape and getattr(shape, "has_text_frame", False) and id(shape) not in used_shape_ids:
                 return shape
 
@@ -1172,14 +219,14 @@ class PowerPointGenerator:
         # one full-width box instead of two side-by-side columns). Split it
         # into two half-width boxes instead, mirroring the BS page layout.
         if slot_name in ("L", "R"):
-            single_shape = self.find_shape_by_name(slide.shapes, "textMainBullets")
+            single_shape = find_shape_by_name(slide.shapes, "textMainBullets")
             if single_shape and getattr(single_shape, "has_text_frame", False) and id(single_shape) not in used_shape_ids:
                 left_shape, right_shape = self._split_single_into_lr(slide, single_shape)
                 return left_shape if slot_name == "L" else right_shape
 
         generic_candidates = [
             shape for shape in slide.shapes
-            if self._is_commentary_text_shape(shape) and id(shape) not in used_shape_ids
+            if _is_commentary_text_shape(shape) and id(shape) not in used_shape_ids
         ]
         if not generic_candidates:
             return None
@@ -1190,18 +237,6 @@ class PowerPointGenerator:
             return max(generic_candidates, key=lambda shape: (getattr(shape, "left", 0), getattr(shape, "width", 0)))
         return max(generic_candidates, key=lambda shape: (getattr(shape, "width", 0), -getattr(shape, "left", 0)))
 
-    def _add_commentary_slot_shape(self, slide, slot_name: str):
-        top = Inches(2.22)
-        width = Inches(4.78)
-        height = Inches(4.13)
-        if slot_name == "L":
-            left = Inches(0.13)
-        elif slot_name == "R":
-            left = Inches(5.09)
-        else:
-            # Page 1 template uses a single commentary box on the right beside the table.
-            left = Inches(5.09)
-        return slide.shapes.add_textbox(left, top, width, height)
 
     def _summary_settings(self) -> Dict[str, Any]:
         return dict(self.pptx_settings.get("executive_summary") or {})
@@ -1225,7 +260,7 @@ class PowerPointGenerator:
         try:
             shape = None
             for slide in self.presentation.slides:
-                shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
+                shape = find_shape_by_name(slide.shapes, "coSummaryShape")
                 if shape is not None:
                     break
             if shape is None:
@@ -1233,11 +268,11 @@ class PowerPointGenerator:
             from fdd_utils.text_metrics import get_measurer, text_box_from_shape
             box = text_box_from_shape(shape)
             packing = self._packing_settings()
-            font_pt = self._real_font_size_pt(is_chinese)
+            font_pt = _real_font_size_pt(is_chinese)
             measurer = get_measurer(
-                self._measurer_family(is_chinese, packing), font_pt, is_cjk=is_chinese,
-                line_spacing=self._real_line_spacing(is_chinese),
-                metrics_path=self._resolve_font_metrics_path(is_chinese, packing),
+                _measurer_family(is_chinese, packing), font_pt, is_cjk=is_chinese,
+                line_spacing=_real_line_spacing(is_chinese),
+                metrics_path=_resolve_font_metrics_path(is_chinese, packing),
             )
             probe = ("财务尽职调查评述示例文字内容测算每行可容纳字数上限" * 12) if is_chinese else (
                 "financial due diligence commentary sample text measuring how many words fit " * 6)
@@ -1254,7 +289,7 @@ class PowerPointGenerator:
             # for when the shape can't be measured, which is exactly the role
             # the static width fallback already plays.
             from fdd_utils.text_metrics import POWERPOINT_LINE_PITCH_FACTOR
-            pitch = font_pt * POWERPOINT_LINE_PITCH_FACTOR * self._real_line_spacing(is_chinese)
+            pitch = font_pt * POWERPOINT_LINE_PITCH_FACTOR * _real_line_spacing(is_chinese)
             fitting_lines = (box.height_pt / pitch) if pitch > 0 else 0
             lines = fitting_lines if fitting_lines >= 1 else target_lines
             # 0.92: aim just under a full box so a slightly long sentence
@@ -1407,16 +442,6 @@ class PowerPointGenerator:
 
 
 
-    def _prepare_structured_data_for_slides(self, structured_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        prepared: List[Dict[str, Any]] = []
-        for account_data in structured_data or []:
-            item = dict(account_data or {})
-            commentary = _normalize_slide_commentary_text(item.get("commentary", ""))
-            if commentary:
-                item["original_commentary"] = commentary
-            item["commentary"] = commentary  # Keep full length; fill optimizer handles fit
-            prepared.append(item)
-        return prepared
 
     # Average rendered character width (pt) for the fonts we use.
     # English: Arial 9pt mixed text ≈ 5.0 pt/char (incl. spaces & punctuation).
@@ -1500,7 +525,7 @@ class PowerPointGenerator:
             if commentary:
                 commentary_parts.append(commentary)
                 lead_in = self.strip_table_detail_for_summary(
-                    commentary, self._account_is_chinese(account_data),
+                    commentary, _account_is_chinese(account_data),
                 )
                 summary_source_parts.append(lead_in or commentary)
             if summary:
@@ -1512,63 +537,8 @@ class PowerPointGenerator:
         )
         return page_commentary, page_summary_source
 
-    @staticmethod
-    def _shape_name(shape) -> str:
-        return str(getattr(shape, "name", "") or "")
 
-    @staticmethod
-    def _shape_has_table(shape) -> bool:
-        try:
-            if getattr(shape, "has_table", False):
-                return True
-        except Exception:
-            pass
 
-        try:
-            table = getattr(shape, "table", None)
-            return table is not None
-        except Exception:
-            return False
-
-    def _resolve_table_target_shape(self, slide, statement_type: str):
-        """Resolve the best existing target for a BS/IS table on a slide."""
-        statement_type = (statement_type or "").upper()
-        preferred_names = [
-            "Table Placeholder",
-            "Table Placeholder 2",
-            "Content Placeholder 2",
-        ]
-        if statement_type == "IS":
-            preferred_names.extend(["Table 3", "Table 2"])
-        preferred_names.extend(["Table", "table", "TABLE"])
-
-        for name in preferred_names:
-            shape = self.find_shape_by_name(slide.shapes, name)
-            if shape:
-                return shape
-
-        named_table_candidates = []
-        table_candidates = []
-        text_placeholder_candidates = []
-        for shape in slide.shapes:
-            shape_name = self._shape_name(shape)
-            shape_name_lower = shape_name.lower()
-            if "table" in shape_name_lower and "placeholder" in shape_name_lower:
-                text_placeholder_candidates.append(shape)
-                continue
-            if self._shape_has_table(shape):
-                table_candidates.append(shape)
-                continue
-            if "table" in shape_name_lower:
-                named_table_candidates.append(shape)
-
-        if text_placeholder_candidates:
-            return text_placeholder_candidates[0]
-        if table_candidates:
-            return table_candidates[0]
-        if named_table_candidates:
-            return named_table_candidates[0]
-        return None
 
     def _calculate_table_bounds(self, slide, target_shape=None, statement_type: str = "BS") -> Dict[str, int]:
         """Use target geometry when available, otherwise derive bounds from slide layout.
@@ -1597,7 +567,7 @@ class PowerPointGenerator:
         for shape in slide.shapes:
             if not getattr(shape, "has_text_frame", False):
                 continue
-            name = self._shape_name(shape).lower()
+            name = _shape_name(shape).lower()
             try:
                 label_text = (shape.text_frame.text or "").strip().lower()
             except Exception:
@@ -1680,33 +650,7 @@ class PowerPointGenerator:
             "height": int(height),
         }
 
-    @staticmethod
-    def _read_table_style_id(tbl_element) -> Optional[str]:
-        """Read <a:tableStyleId> (the style GUID) from a table's XML, or None."""
-        try:
-            from pptx.oxml.ns import qn
-            tblPr = tbl_element.find(qn("a:tblPr"))
-            if tblPr is None:
-                return None
-            el = tblPr.find(qn("a:tableStyleId"))
-            return el.text.strip() if (el is not None and el.text) else None
-        except Exception:
-            return None
 
-    @staticmethod
-    def _set_table_style_id(tbl_element, style_id: str) -> None:
-        """Set the table's style GUID so PowerPoint renders it with that (e.g.
-        UpSlide) table style instead of the python-pptx default."""
-        from pptx.oxml.ns import qn
-        tblPr = tbl_element.find(qn("a:tblPr"))
-        if tblPr is None:
-            tblPr = tbl_element.makeelement(qn("a:tblPr"), {})
-            tbl_element.insert(0, tblPr)  # tblPr must be the first child of <a:tbl>
-        for el in tblPr.findall(qn("a:tableStyleId")):
-            tblPr.remove(el)
-        style_el = tblPr.makeelement(qn("a:tableStyleId"), {})
-        style_el.text = style_id
-        tblPr.append(style_el)
 
     def _resolve_table_style_id(self) -> Optional[str]:
         """The table style GUID to apply to BS/IS tables.
@@ -1726,7 +670,7 @@ class PowerPointGenerator:
             for slide in self.presentation.slides:
                 for shape in slide.shapes:
                     if getattr(shape, "has_table", False):
-                        sid = self._read_table_style_id(shape.table._tbl)
+                        sid = _read_table_style_id(shape.table._tbl)
                         if sid:
                             style_id = sid
                             break
@@ -1752,115 +696,13 @@ class PowerPointGenerator:
         style_id = self._resolve_table_style_id()
         if style_id:
             try:
-                self._set_table_style_id(graphic_frame.table._tbl, style_id)
+                _set_table_style_id(graphic_frame.table._tbl, style_id)
             except Exception as exc:
                 logger.debug("Could not apply table style %s: %s", style_id, exc)
         return graphic_frame
 
-    def _fit_table_columns(self, table, df):
-        """Allocate width by role and content length for better readability."""
-        if len(table.columns) == 0:
-            return
 
-        try:
-            total_width = sum(col.width for col in table.columns)
-        except Exception:
-            total_width = 0
-        if total_width <= 0:
-            return
 
-        # A CJK character renders roughly 2x as wide as a Latin
-        # character/digit at the same point size, but max_len here is a
-        # raw character COUNT -- an 11-character Chinese row label like
-        # "一年内到期的非流动负债" measures the same "length" as an
-        # 11-character Latin one that's actually half as wide on the page.
-        # Using the same /10 divisor for both meant max_len/10 almost never
-        # exceeded the 2.0 floor for realistic Chinese labels (would need
-        # 20+ characters), so column 0's weight was effectively a FIXED
-        # 2.0 regardless of actual label length -- combined with the 0.12in
-        # left-indent every leaf row gets, longer labels routinely wrapped
-        # to 2 lines, each one rendering roughly 2x its neighbors' height
-        # (PowerPoint auto-grows a row to fit wrapped text; the nominal
-        # row.height set elsewhere is a floor, not a cap).
-        col0_series = df.iloc[:, 0].astype(str) if len(df.columns) else pd.Series(dtype=str)
-        is_cjk_labels = any(
-            any('一' <= ch <= '鿿' for ch in str(v)) for v in col0_series.head(25).tolist()
-        )
-
-        weights = []
-        for col_idx, col_name in enumerate(df.columns[: len(table.columns)]):
-            col_series = df.iloc[:, col_idx].astype(str) if col_idx < len(df.columns) else pd.Series(dtype=str)
-            max_len = max([len(str(col_name))] + [len(val) for val in col_series.head(25).tolist()]) if len(col_series) else len(str(col_name))
-            col_name_str = str(col_name).lower()
-            if col_idx == 0:
-                weight = (
-                    max(2.6, min(4.2, max_len / 5)) if is_cjk_labels
-                    else max(2.0, min(3.2, max_len / 10))
-                )
-            elif any(token in col_name_str for token in ["20", "19", "date", "年", "月"]):
-                weight = max(1.4, min(2.0, max_len / 10))
-            else:
-                weight = max(1.2, min(1.9, max_len / 9))
-            weights.append(weight)
-
-        total_weight = sum(weights) or 1
-        assigned = 0
-        for col_idx, weight in enumerate(weights):
-            if col_idx == len(weights) - 1:
-                width = total_width - assigned
-            else:
-                width = int(total_width * weight / total_weight)
-                assigned += width
-            table.columns[col_idx].width = max(int(Inches(0.7)), width)
-
-    @staticmethod
-    def _format_table_value(value, is_numeric_column: bool) -> str:
-        def _fmt_number(n: float) -> str:
-            if n == 0:
-                return "-"
-            # Accounting convention: negatives in parentheses, not with a minus sign.
-            return f"({abs(n):,.0f})" if n < 0 else f"{n:,.0f}"
-
-        if pd.isna(value):
-            return ""
-        if isinstance(value, (int, float)) and is_numeric_column:
-            return _fmt_number(float(value))
-
-        text_val = str(value).strip()
-        if is_numeric_column:
-            numeric_candidate = text_val.replace(",", "")
-            if re.fullmatch(r"-?\d+(\.\d+)?", numeric_candidate):
-                try:
-                    return _fmt_number(float(numeric_candidate))
-                except Exception:
-                    return text_val
-        return text_val
-
-    @staticmethod
-    def _set_paragraph_left_indent(paragraph, left_indent_emu: int) -> None:
-        """Set a table-cell paragraph's left indent (marL) directly on its
-        <a:pPr> XML, with indent (first-line offset) pinned to 0.
-
-        _Paragraph has NO left_indent property in this python-pptx version
-        (only alignment/level/line_spacing/font are exposed) -- `paragraph.
-        left_indent = Inches(...)` doesn't raise, but that's because plain
-        Python objects accept arbitrary ad-hoc attribute assignment; it
-        silently creates a throwaway instance attribute with ZERO effect on
-        the underlying XML, discarded the moment the object is garbage
-        collected. Confirmed by round-tripping through a real save+reload:
-        the "set" value reads back fine within the SAME Python session (the
-        fake attribute is still sitting right there), but a freshly loaded
-        Presentation() from that same saved file raises AttributeError on
-        the same read -- proof nothing was ever written. marL/indent are
-        real OOXML attributes on <a:pPr> (ECMA-376 CT_TextParagraphProperties)
-        that python-pptx just doesn't wrap with a friendly property; setting
-        them via the raw element (same get_or_add_pPr() pattern python-pptx's
-        own oxml layer uses internally) is the only way that actually
-        persists.
-        """
-        pPr = paragraph._p.get_or_add_pPr()
-        pPr.set('marL', str(int(left_indent_emu)))
-        pPr.set('indent', '0')
 
     # -- Presentation-detail tables (per-account report-ready breakdowns) --
     # workbook.py's extract_presentation_detail_table finds a small,
@@ -1988,103 +830,7 @@ class PowerPointGenerator:
         value = str(value or "table").strip().lower()
         return value if value in ("table", "sublist") else "table"
 
-    def _sublist_text_for_table(
-        self, table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float = 1,
-        max_items: int = 5,
-    ) -> str:
-        """Converts a presentation_detail_table dict (extract_presentation_
-        detail_table's return shape) into plain text lines for "sublist"
-        style. Component lines show ONLY the LATEST period's figure -- a
-        full table's worth of per-period, per-component detail written out
-        as prose would be worse than the empty space this whole feature
-        exists to fill. The total line keeps every period inline, matching
-        how OI/OC accounts already state multi-year figures in this
-        project's own reference style. Top-level rows only: nested children
-        are already rolled into their own parent's total (e.g. 物业管理费's
-        第三方/上海熙麦 sub-vendors), and a plain-text bullet list is not the
-        place for two levels of indentation -- this already keeps
-        same-nature items merged under their shared parent.
 
-        When there are more than max_items top-level rows, only the
-        max_items-1 largest (by the latest period's absolute value) are
-        shown individually, ranked descending; everything past that is
-        rolled into one final "其他"/"Other" line (summed, not dropped --
-        the account's own real total still fully accounts for it even
-        though this specific line doesn't itemise it). Keeps a long
-        component list (e.g. 管理费用's 8 rows) from producing an equally
-        long, table-like bullet list -- exactly what "sublist" style trades
-        the native table's own per-component precision for.
-
-        Values are in the same raw-yuan internal scale every account's df
-        uses (see _render_presentation_table's own docstring) -- divided
-        back down by source_multiplier here, at text-building time only,
-        same as the native-table path does at render time (cadbce8)."""
-        divisor = source_multiplier if source_multiplier and source_multiplier != 0 else 1
-
-        def _scaled(v):
-            return v / divisor if isinstance(v, (int, float)) else v
-
-        periods = table.get("periods") or []
-        period_labels = table.get("period_labels") or {}
-        rows = table.get("rows") or []
-        total_row = table.get("total_row") or {}
-        if not periods or not rows:
-            return ""
-
-        latest_period = periods[-1]
-        marker = "- "
-        items: List[Tuple[str, float]] = []
-        for row in rows:
-            label = row.get("label", "")
-            value = _scaled((row.get("values") or {}).get(latest_period))
-            if value is None or not label:
-                continue
-            items.append((label, value))
-
-        lines: List[str] = []
-        if len(items) > max(1, max_items):
-            ranked = sorted(items, key=lambda item: abs(item[1]), reverse=True)
-            shown, rest = ranked[: max(1, max_items - 1)], ranked[max(1, max_items - 1):]
-            for label, value in shown:
-                lines.append(f"{marker}{label}：{self._format_table_value(value, is_numeric_column=True)}")
-            if rest:
-                other_label = "其他" if is_chinese_databook else "Other"
-                other_value = sum(v for _l, v in rest)
-                lines.append(f"{marker}{other_label}：{self._format_table_value(other_value, is_numeric_column=True)}")
-        else:
-            for label, value in items:
-                lines.append(f"{marker}{label}：{self._format_table_value(value, is_numeric_column=True)}")
-
-        if total_row:
-            total_label = total_row.get("label") or ("合计" if is_chinese_databook else "Total")
-            total_values = total_row.get("values") or {}
-            parts = []
-            for period in periods:
-                v = _scaled(total_values.get(period))
-                if v is None:
-                    continue
-                label = period_labels.get(period, period)
-                text_val = self._format_table_value(v, is_numeric_column=True)
-                parts.append(f"{label}{text_val}" if is_chinese_databook else f"{text_val} in {label}")
-            if parts:
-                joiner = "，" if is_chinese_databook else ", "
-                sep = "：" if is_chinese_databook else ": "
-                lines.append(f"{marker}{total_label}{sep}{joiner.join(parts)}")
-
-        return "\n".join(lines)
-
-    @staticmethod
-    def _presentation_table_for_account(account_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        financial_data = (account_data or {}).get("financial_data")
-        if not isinstance(financial_data, pd.DataFrame):
-            return None
-        try:
-            table = (financial_data.attrs or {}).get("presentation_detail_table")
-        except Exception:
-            return None
-        if not table or not table.get("rows"):
-            return None
-        return table
 
     @classmethod
     def _presentation_table_height_pt(cls, table: Dict[str, Any]) -> float:
@@ -2109,42 +855,6 @@ class PowerPointGenerator:
     _TABLE_HANDOFF_CHI = "明细如下："
     _TABLE_HANDOFF_ENG = "the breakdown is set out below"
 
-    @staticmethod
-    def _truncate_text_at_boundary(text: str, limit: int, is_chinese: bool) -> str:
-        """Cuts `text` to at most `limit` chars at a sentence boundary where
-        possible. Shared by the lead-in and the post-table explanation --
-        same safety-net shape, different caps (see _split_table_commentary)."""
-        text = (text or "").strip()
-        if len(text) <= limit:
-            return text
-        boundary_chars = "。；;.!?！？"
-        cut = text[:limit]
-        # A "." between two digits is a DECIMAL POINT, not a sentence end.
-        # Taking it as one truncated a real deck's 营业成本 lead-in at
-        # "...较2025年度下降74." -- the last "boundary" in the string was the
-        # point inside 74.9%, so the figure was cut in half and the rest of
-        # the sentence, including the "明细如下：" handoff, was thrown away.
-        # Same defect class as the mid-number split _snap_split_before_number
-        # already guards in the packing path; this truncation path never had
-        # the guard.
-        best = -1
-        for pos in range(len(cut) - 1, -1, -1):
-            ch = cut[pos]
-            if ch not in boundary_chars:
-                continue
-            if (
-                ch == "."
-                and pos > 0
-                and cut[pos - 1].isdigit()
-                and pos + 1 < len(text)
-                and text[pos + 1].isdigit()
-            ):
-                continue
-            best = pos
-            break
-        if best >= int(limit * 0.4):
-            return cut[: best + 1]
-        return cut.rstrip() + ("…" if is_chinese else "...")
 
     def _split_table_commentary(self, commentary: str, is_chinese: bool) -> Tuple[str, str]:
         """Splits an account's raw commentary into (lead_in, post_table_text)
@@ -2173,7 +883,7 @@ class PowerPointGenerator:
         idx = text.lower().find(handoff.lower())
         if idx < 0:
             lead_limit = 220 if is_chinese else 340
-            return self._truncate_text_at_boundary(text, lead_limit, is_chinese), ""
+            return _truncate_text_at_boundary(text, lead_limit, is_chinese), ""
         split_at = idx + len(handoff)
         lead_in = text[:split_at].strip()
         post_table = text[split_at:].strip()
@@ -2187,8 +897,8 @@ class PowerPointGenerator:
         # new vertical space that wasn't being claimed before.
         post_limit = 450 if is_chinese else 700
         return (
-            self._truncate_text_at_boundary(lead_in, lead_limit, is_chinese),
-            self._truncate_text_at_boundary(post_table, post_limit, is_chinese),
+            _truncate_text_at_boundary(lead_in, lead_limit, is_chinese),
+            _truncate_text_at_boundary(post_table, post_limit, is_chinese),
         )
 
     def _slot_names_for_actual_slide(self, actual_slide_idx: int, start_slide: int) -> List[str]:
@@ -2205,9 +915,9 @@ class PowerPointGenerator:
         """
         if self.presentation is not None and 0 <= actual_slide_idx < len(self.presentation.slides):
             slide = self.presentation.slides[actual_slide_idx]
-            has_left = self.find_shape_by_name(slide.shapes, "textMainBullets_L") is not None
-            has_right = self.find_shape_by_name(slide.shapes, "textMainBullets_R") is not None
-            has_single = self.find_shape_by_name(slide.shapes, "textMainBullets") is not None
+            has_left = find_shape_by_name(slide.shapes, "textMainBullets_L") is not None
+            has_right = find_shape_by_name(slide.shapes, "textMainBullets_R") is not None
+            has_single = find_shape_by_name(slide.shapes, "textMainBullets") is not None
             if has_left and has_right:
                 return ["L", "R"]
             if has_single:
@@ -2279,7 +989,7 @@ class PowerPointGenerator:
             # The rendered label, NOT the raw mapping_key -- see
             # _rendered_bullet_label for why that difference is a whole
             # wrapped line on real Chinese content.
-            item.get("category") or "", self._rendered_bullet_label(item, is_chinese_databook),
+            item.get("category") or "", _rendered_bullet_label(item, is_chinese_databook),
             item.get("commentary", ""), slot_name="single",
             shape=self._measurement_slot_shape(), is_chinese=is_chinese,
             # whole_box=False: this block sits INSIDE the column's shared
@@ -2290,7 +1000,7 @@ class PowerPointGenerator:
             # bug that took 15 rounds to find in the capacity investigation.
             whole_box=False,
         )
-        lead_std_lh_pt = self._planning_std_lh_pt(is_chinese)
+        lead_std_lh_pt = _planning_std_lh_pt(is_chinese)
         # No safety factor and no insets. Both existed because a lead-in used
         # to render into its OWN textbox, which carries insets and needed
         # margin against a height this file computed but PowerPoint laid out.
@@ -2358,14 +1068,14 @@ class PowerPointGenerator:
                 # "➢ " is two more characters and on a full line that is
                 # enough to force one extra wrap, measured at 10.8pt (a whole
                 # line) of under-estimate on a real-shaped account.
-                "", "", self._explanation_render_text(post_table_text, is_chinese_databook),
+                "", "", _explanation_render_text(post_table_text, is_chinese_databook),
                 slot_name="single", shape=self._measurement_slot_shape(),
                 is_chinese=is_chinese_databook, whole_box=False,
             )
             # Like _estimate_lead_in_pt: no safety factor, no insets. The
             # explanation is ordinary flowing text in the column's shared
             # frame now, not a floating textbox of its own.
-            explain_pt = explain_units * self._planning_std_lh_pt(is_chinese_databook)
+            explain_pt = explain_units * _planning_std_lh_pt(is_chinese_databook)
 
         return lead_in_pt, table_pt, explain_pt
 
@@ -2505,7 +1215,7 @@ class PowerPointGenerator:
         # override -- the setting the user actually edits.
         _tail_tol_pt = (
             self._tail_overflow_tolerance_units()
-            * self._planning_std_lh_pt(is_chinese_databook)
+            * _planning_std_lh_pt(is_chinese_databook)
         )
 
         def _fits(key: Optional[Tuple[int, str]], block_pt: float) -> bool:
@@ -2623,7 +1333,7 @@ class PowerPointGenerator:
             p.space_before = Pt(0)
             p.space_after = Pt(0)
             p.line_spacing = 1.0
-            self._apply_east_asian_line_breaking(p)
+            _apply_east_asian_line_breaking(p)
         except Exception:
             pass
         run_bullet = p.add_run()
@@ -2647,7 +1357,7 @@ class PowerPointGenerator:
             run_name.font.color.rgb = RGBColor(0, 0, 0)
         except Exception:
             pass
-        self._force_no_autofit(tf)
+        _force_no_autofit(tf)
         return top + int(Pt(self._TABLE_CONTINUATION_HEADING_PT))
 
     def _render_table_accounts_stack(
@@ -2722,19 +1432,19 @@ class PowerPointGenerator:
             # deliverable.
             tf.clear()
             tf.word_wrap = True
-            self._force_no_autofit(tf)
+            _force_no_autofit(tf)
             from pptx.enum.text import MSO_VERTICAL_ANCHOR
             tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
         except Exception:
             pass
         template_empty_p = tf.paragraphs[0]._p
 
-        shape_name = self._shape_name(bullets_shape) or ""
+        shape_name = _shape_name(bullets_shape) or ""
         slot_name = ("L" if shape_name.endswith("_L")
                      else "R" if shape_name.endswith("_R") else "single")
-        std_lh_pt = self._planning_std_lh_pt(is_chinese_databook)
-        line_pitch_pt = max(1.0, std_lh_pt - self._real_para_gap_pt(is_chinese_databook))
-        _usable_pt, _inset_pt = self._textbox_usable_and_inset_pt(bullets_shape)
+        std_lh_pt = _planning_std_lh_pt(is_chinese_databook)
+        line_pitch_pt = max(1.0, std_lh_pt - _real_para_gap_pt(is_chinese_databook))
+        _usable_pt, _inset_pt = _textbox_usable_and_inset_pt(bullets_shape)
         top_inset_pt = _inset_pt / 2.0
 
         cursor_pt = 0.0
@@ -2779,7 +1489,7 @@ class PowerPointGenerator:
                     blank_p.space_before = Pt(0)
                     blank_p.space_after = Pt(0)
                     blank_p.line_spacing = 1.0
-                    self._apply_east_asian_line_breaking(blank_p)
+                    _apply_east_asian_line_breaking(blank_p)
                 except Exception:
                     pass
                 blank_run = blank_p.add_run()
@@ -2893,7 +1603,7 @@ class PowerPointGenerator:
             try:
                 self._render_presentation_table(
                     slide, left, base_top + int(Pt(y_pt)), width, table, is_chinese_databook,
-                    source_multiplier=self._table_source_multiplier(account_data),
+                    source_multiplier=_table_source_multiplier(account_data),
                     # The explanation is now real flowing text in the shared
                     # frame, not a floating box under the table.
                     post_table_text="",
@@ -2934,21 +1644,6 @@ class PowerPointGenerator:
     # is available to the text itself.
     _TABLE_CONTINUATION_HEADING_PT = 18.0
 
-    def _planning_std_lh_pt(self, is_chinese: bool) -> float:
-        """One std_lh unit as RENDER actually produces it, for the
-        shape-less planning estimates.
-
-        The estimates used to compute font_size x line_spacing + para_gap
-        (9 x 1.0 + 2.2 = 11.2pt), but PowerPoint's real line pitch is
-        1.2 x the point size (POWERPOINT_LINE_PITCH_FACTOR -- researched
-        and confirmed separately, see project memory), so render uses
-        10.8 + 2.2 = 13.0pt. Planning was therefore under-estimating every
-        block by ~14%, which _TABLE_SLOT_PACK_THRESHOLD was quietly
-        absorbing -- two compensating errors that together left real
-        columns filled to only ~60% of their true capacity."""
-        from fdd_utils.text_metrics import POWERPOINT_LINE_PITCH_FACTOR
-        return (self._real_font_size_pt(is_chinese) * POWERPOINT_LINE_PITCH_FACTOR
-                * self._real_line_spacing(is_chinese) + self._real_para_gap_pt(is_chinese))
 
     def _slot_capacity_pt(self, slide_idx: int, slot_name: str, start_slide: int) -> float:
         """The REAL usable height of one commentary slot, read from the
@@ -2963,7 +1658,7 @@ class PowerPointGenerator:
             slide = self.presentation.slides[start_slide - 1 + slide_idx]
             shape = self._resolve_commentary_slot_shape(slide, slot_name)
             if shape is not None:
-                usable_pt, _inset_pt = self._textbox_usable_and_inset_pt(shape)
+                usable_pt, _inset_pt = _textbox_usable_and_inset_pt(shape)
                 if usable_pt > 1.0:
                     return usable_pt
         except Exception as exc:
@@ -2991,7 +1686,7 @@ class PowerPointGenerator:
         try:
             for slide in self.presentation.slides:
                 for candidate in slide.shapes:
-                    if (self._shape_name(candidate) or "").startswith("textMainBullets"):
+                    if (_shape_name(candidate) or "").startswith("textMainBullets"):
                         shape = candidate
                         break
                 if shape is not None:
@@ -3002,76 +1697,10 @@ class PowerPointGenerator:
         self._measurement_slot_shape_cache = shape
         return shape
 
-    @staticmethod
-    def _rendered_bullet_label(account_data: Dict[str, Any], is_chinese_databook: bool) -> str:
-        """The label a bullet ACTUALLY renders with ("■ <label> - ...").
 
-        Cost estimates must measure this, not the raw mapping_key: in a
-        Chinese deck the mapping_key is the English short code
-        ("Tax and Surcharges"), which is far wider than the Chinese name
-        that really renders ("税金及附加") -- 352pt vs 315pt against a
-        329.8pt box for one real lead-in, i.e. the estimate believed the
-        line wrapped when it doesn't. Every such lead-in box came out one
-        whole line too tall, which is exactly the "height 似乎是固定的...
-        表格不是緊貼comments" the user reported."""
-        mapping_key = account_data.get("mapping_key", account_data.get("account_name", ""))
-        if is_chinese_databook:
-            return account_data.get("display_name_zh") or account_data.get("display_name", mapping_key)
-        return account_data.get("display_name", mapping_key)
 
-    @staticmethod
-    def _textbox_usable_and_inset_pt(shape) -> Tuple[float, float]:
-        """(usable text height, total top+bottom inset) in points for a
-        shape, read from its real bodyPr insets. Falls back to the OOXML
-        default when they aren't declared."""
-        raw_pt = int(shape.height) / 12700
-        try:
-            from fdd_utils.text_metrics import text_box_from_shape
-            usable_pt = text_box_from_shape(shape).height_pt
-        except Exception:
-            usable_pt = max(1.0, raw_pt - PowerPointGenerator._TEXTBOX_INSET_PT)
-        return usable_pt, max(0.0, raw_pt - usable_pt)
 
-    @staticmethod
-    def _table_unit_label(is_chinese_databook: bool) -> str:
-        return "人民币千元" if is_chinese_databook else "CNY'000"
 
-    @staticmethod
-    def _table_source_multiplier(account_data: Dict[str, Any]) -> float:
-        """The account's own raw-yuan -> display-unit divisor. Single
-        definition, since the renderer, the width precompute and the
-        AI-prompt side all need the identical value (an earlier 1000x
-        display bug came from exactly this being derived twice)."""
-        financial_data = (account_data or {}).get("financial_data")
-        if hasattr(financial_data, "attrs"):
-            return financial_data.attrs.get("source_multiplier") or 1
-        return 1
-
-    @classmethod
-    def _build_presentation_table_plan(
-        cls, table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float,
-    ) -> List[Dict[str, Any]]:
-        """Flattens a presentation table's rows -> children (indented) ->
-        total into the single ordered render plan both the renderer and
-        the uniform-width precompute measure against. Values are divided
-        back down to display units here (see _render_presentation_table's
-        docstring for why that division belongs at display time)."""
-        divisor = source_multiplier if source_multiplier and source_multiplier != 0 else 1
-
-        def _scaled(values: Dict[str, float]) -> Dict[str, float]:
-            return {period: (v / divisor if isinstance(v, (int, float)) else v)
-                    for period, v in (values or {}).items()}
-
-        plan: List[Dict[str, Any]] = []
-        for row in (table.get("rows") or []):
-            plan.append({"label": row.get("label", ""), "values": _scaled(row.get("values")), "kind": "data"})
-            for child in (row.get("children") or []):
-                plan.append({"label": child.get("label", ""), "values": _scaled(child.get("values")), "kind": "child"})
-        total_row = table.get("total_row")
-        if total_row:
-            plan.append({"label": total_row.get("label", "合计" if is_chinese_databook else "Total"),
-                         "values": _scaled(total_row.get("values")), "kind": "total"})
-        return plan
 
     def _clamp_column_widths_to_available(
         self, widths_pt: List[float], available_pt: Optional[float],
@@ -3111,12 +1740,12 @@ class PowerPointGenerator:
                 continue
             periods = table.get("periods") or []
             try:
-                plan = self._build_presentation_table_plan(
-                    table, is_chinese_databook, self._table_source_multiplier(item),
+                plan = _build_presentation_table_plan(
+                    table, is_chinese_databook, _table_source_multiplier(item),
                 )
                 widths = self._measure_presentation_table_column_widths_pt(
                     plan, periods, table.get("period_labels") or {},
-                    self._table_unit_label(is_chinese_databook), is_chinese_databook,
+                    _table_unit_label(is_chinese_databook), is_chinese_databook,
                     available_pt=None,   # raw need; the per-slot clamp happens at render
                 )
             except Exception as exc:
@@ -3154,8 +1783,8 @@ class PowerPointGenerator:
         from fdd_utils.text_metrics import get_measurer
 
         packing = self._packing_settings()
-        family = self._measurer_family(is_chinese_databook, packing)
-        metrics_path = self._resolve_font_metrics_path(is_chinese_databook, packing)
+        family = _measurer_family(is_chinese_databook, packing)
+        metrics_path = _resolve_font_metrics_path(is_chinese_databook, packing)
         measurer_header = get_measurer(family, 7.5, is_cjk=is_chinese_databook, metrics_path=metrics_path)
         measurer_data = get_measurer(family, 7.0, is_cjk=is_chinese_databook, metrics_path=metrics_path)
 
@@ -3173,7 +1802,7 @@ class PowerPointGenerator:
             candidates_pt = [measurer_header.text_width_pt(period_labels.get(period, period))]
             for entry in plan:
                 value = entry.get("values", {}).get(period)
-                text_val = self._format_table_value(value, is_numeric_column=True) if value is not None else ""
+                text_val = _format_table_value(value, is_numeric_column=True) if value is not None else ""
                 candidates_pt.append(measurer_data.text_width_pt(text_val))
             widths_pt.append(max(candidates_pt) + self._TABLE_CELL_PADDING_PT)
 
@@ -3191,10 +1820,10 @@ class PowerPointGenerator:
             from fdd_utils.text_metrics import get_measurer, text_box_from_shape
             packing = self._packing_settings()
             measurer = get_measurer(
-                self._measurer_family(is_chinese, packing),
-                self._real_font_size_pt(is_chinese), is_cjk=is_chinese,
-                line_spacing=self._real_line_spacing(is_chinese),
-                metrics_path=self._resolve_font_metrics_path(is_chinese, packing),
+                _measurer_family(is_chinese, packing),
+                _real_font_size_pt(is_chinese), is_cjk=is_chinese,
+                line_spacing=_real_line_spacing(is_chinese),
+                metrics_path=_resolve_font_metrics_path(is_chinese, packing),
             )
             box = text_box_from_shape(shape)
             hang_w = max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT)
@@ -3205,7 +1834,7 @@ class PowerPointGenerator:
             return n * measurer.line_height_pt()
         except Exception as exc:
             logger.debug("Could not measure paragraph: %s", exc)
-            return self._planning_std_lh_pt(is_chinese)
+            return _planning_std_lh_pt(is_chinese)
 
     def _append_continuation_line_to_frame(
         self, text_frame, display_name: str, is_chinese_databook: bool, std_lh_pt: float,
@@ -3221,7 +1850,7 @@ class PowerPointGenerator:
             para.space_before = Pt(0)
             para.space_after = Pt(3)
             para.line_spacing = 1.0
-            self._apply_east_asian_line_breaking(para)
+            _apply_east_asian_line_breaking(para)
         except Exception:
             pass
         run = para.add_run()
@@ -3237,19 +1866,6 @@ class PowerPointGenerator:
             pass
         return std_lh_pt
 
-    @staticmethod
-    def _explanation_render_text(post_table_text: str, is_chinese_databook: bool) -> str:
-        """The post-table explanation exactly as it RENDERS -- one marker-
-        prefixed line per source line. Single definition so the planner
-        measures the same string the renderer writes; the two-character
-        "➢ " prefix is worth a whole wrapped line on a full-width line."""
-        marker = "➢ " if is_chinese_databook else "- "
-        raw_lines = [ln.strip() for ln in (post_table_text or "").split("\n") if ln.strip()]
-        if not raw_lines:
-            raw_lines = [(post_table_text or "").strip()]
-        return "\n".join(
-            ln if ln.startswith(("➢", "-", "•")) else f"{marker}{ln}" for ln in raw_lines
-        )
 
     def _append_explanation_to_frame(
         self, text_frame, post_table_text: str, is_chinese_databook: bool, std_lh_pt: float,
@@ -3261,7 +1877,7 @@ class PowerPointGenerator:
         draws into its own textbox -- but as flowing text, so the next
         account's lead-in continues underneath instead of needing a whole
         new column."""
-        lines = self._explanation_render_text(post_table_text, is_chinese_databook).split("\n")
+        lines = _explanation_render_text(post_table_text, is_chinese_databook).split("\n")
 
         for line_text in lines:
             para = text_frame.add_paragraph()
@@ -3269,7 +1885,7 @@ class PowerPointGenerator:
                 para.space_before = Pt(0)
                 para.space_after = Pt(3)
                 para.line_spacing = 1.0
-                self._apply_east_asian_line_breaking(para)
+                _apply_east_asian_line_breaking(para)
             except Exception:
                 pass
             run = para.add_run()
@@ -3313,13 +1929,13 @@ class PowerPointGenerator:
         """
         periods = table.get("periods") or []
         period_labels = table.get("period_labels") or {}
-        plan = self._build_presentation_table_plan(table, is_chinese_databook, source_multiplier)
+        plan = _build_presentation_table_plan(table, is_chinese_databook, source_multiplier)
 
         n_cols = 1 + len(periods)
         n_rows = 2 + len(plan)  # title + header + plan rows
         height = int(self._presentation_table_height_pt(table) * 12700)
 
-        unit_label = self._table_unit_label(is_chinese_databook)
+        unit_label = _table_unit_label(is_chinese_databook)
         available_pt = width / 12700.0
         # Prefer the deck-wide uniform widths when they've been precomputed
         # (see _precompute_uniform_table_column_widths): sizing each table
@@ -3344,7 +1960,7 @@ class PowerPointGenerator:
         style_id = self._resolve_table_style_id()
         if style_id:
             try:
-                self._set_table_style_id(table_shape._tbl, style_id)
+                _set_table_style_id(table_shape._tbl, style_id)
             except Exception as exc:
                 logger.debug("Could not apply table style %s: %s", style_id, exc)
 
@@ -3382,10 +1998,10 @@ class PowerPointGenerator:
                     pass
             try:
                 p.line_spacing = 1.0
-                self._apply_east_asian_line_breaking(p)
+                _apply_east_asian_line_breaking(p)
                 p.alignment = align
                 if indent_emu:
-                    self._set_paragraph_left_indent(p, indent_emu)
+                    _set_paragraph_left_indent(p, indent_emu)
             except Exception:
                 pass
             try:
@@ -3450,7 +2066,7 @@ class PowerPointGenerator:
                       indent_emu=int(Inches(0.12)) if is_child else 0)
             for j, period in enumerate(periods, start=1):
                 value = entry["values"].get(period)
-                text_val = self._format_table_value(value, is_numeric_column=True) if value is not None else ""
+                text_val = _format_table_value(value, is_numeric_column=True) if value is not None else ""
                 _set_cell(table_shape.cell(row_idx, j), text_val, bold=is_total,
                           color=label_color, fill=label_fill, size_pt=7.0, align=PP_ALIGN.RIGHT)
 
@@ -3462,14 +2078,14 @@ class PowerPointGenerator:
                 for c in range(n_cols):
                     cell = table_shape.cell(r, c)
                     if c > 0:
-                        self._set_cell_border(cell, 'left', color_rgb=RGBColor(0xBF, 0xBF, 0xBF), width=Pt(0.5))
+                        _set_cell_border(cell, 'left', color_rgb=RGBColor(0xBF, 0xBF, 0xBF), width=Pt(0.5))
             for c in range(n_cols):
-                self._set_cell_border(table_shape.cell(1, c), 'bottom', color_rgb=BLACK, width=Pt(1))
+                _set_cell_border(table_shape.cell(1, c), 'bottom', color_rgb=BLACK, width=Pt(1))
             total_row_idx = next((i for i, e in enumerate(plan, start=2) if e["kind"] == "total"), None)
             if total_row_idx is not None:
                 for c in range(n_cols):
-                    self._set_cell_border(table_shape.cell(total_row_idx, c), 'top', color_rgb=BLACK, width=Pt(1))
-                    self._set_cell_border(table_shape.cell(total_row_idx, c), 'bottom', color_rgb=BLACK, width=Pt(1.25))
+                    _set_cell_border(table_shape.cell(total_row_idx, c), 'top', color_rgb=BLACK, width=Pt(1))
+                    _set_cell_border(table_shape.cell(total_row_idx, c), 'bottom', color_rgb=BLACK, width=Pt(1.25))
         except Exception as exc:
             logger.debug("Could not apply presentation-table borders: %s", exc)
 
@@ -3479,7 +2095,7 @@ class PowerPointGenerator:
         source_tf.word_wrap = True
         # Same spAutoFit problem as the explanation box below: left on, this
         # one-line 7pt caption grows itself and pushes everything under it down.
-        self._force_no_autofit(source_tf)
+        _force_no_autofit(source_tf)
         source_p = source_tf.paragraphs[0]
         source_run = source_p.add_run()
         source_run.text = "资料来源：管理层信息；毕马威分析" if is_chinese_databook else "Source: Management information; KPMG analysis"
@@ -3529,7 +2145,7 @@ class PowerPointGenerator:
         # last paragraph's space_after plus both insets. That is the phantom
         # blank line under this box, and it is also why the box cannot be
         # dragged smaller by hand: PowerPoint snaps it straight back.
-        self._force_no_autofit(explain_tf)
+        _force_no_autofit(explain_tf)
         for i, line_text in enumerate(lines):
             p = explain_tf.paragraphs[0] if i == 0 else explain_tf.add_paragraph()
             run = p.add_run()
@@ -3543,7 +2159,7 @@ class PowerPointGenerator:
             except Exception:
                 pass
             p.line_spacing = 1.0
-            self._apply_east_asian_line_breaking(p)
+            _apply_east_asian_line_breaking(p)
             p.space_after = Pt(2)
 
         try:
@@ -3558,11 +2174,11 @@ class PowerPointGenerator:
             # See _render_table_accounts_stack's lead-in sizing: derive
             # std_lh from the USABLE height capacity was measured against,
             # then add the insets back on top of the text's own height.
-            usable_pt, inset_pt = self._textbox_usable_and_inset_pt(explain_box)
+            usable_pt, inset_pt = _textbox_usable_and_inset_pt(explain_box)
             std_lh_pt = (
                 (usable_pt / capacity_units) if capacity_units > 0 else
-                self._real_font_size_pt(is_chinese_databook) * self._real_line_spacing(is_chinese_databook)
-                + self._real_para_gap_pt(is_chinese_databook)
+                _real_font_size_pt(is_chinese_databook) * _real_line_spacing(is_chinese_databook)
+                + _real_para_gap_pt(is_chinese_databook)
             )
             explain_height_pt = (
                 max(used_units, 1.0) * std_lh_pt * self._TABLE_RENDER_HEIGHT_SAFETY_FACTOR + inset_pt
@@ -3573,54 +2189,6 @@ class PowerPointGenerator:
 
         return top + int(explain_box.height)
 
-    @staticmethod
-    def _insert_category_header_rows(df, mappings: Optional[Dict[str, Any]], is_chinese_mode: bool):
-        """Insert a blank-figures header row ("流动资产" / "Current assets"
-        / etc.) into `df` whenever a leaf line item's mapped category
-        (mappings.yml -- the SAME per-account "category" field the
-        commentary bullets already group by) changes from the previous
-        one. Total/subtotal rows (same keyword detection the later styling
-        pass uses) never update the running category tracker and never
-        trigger an insertion themselves -- a subtotal belongs to whatever
-        category the items above it were in, not a category of its own.
-
-        A real Financials-sheet check this session (inspect_financials_
-        structure.py against the Kunshan databook) confirmed the RAW
-        extracted sheet has no such header rows at all -- straight from a
-        leaf item to "Total current assets" -- so this is what actually
-        produces the reference format's ("IMG_0035") header rows, since
-        nothing upstream of this table provides them on its own.
-
-        Returns `df` unchanged if there's no mappings to categorise
-        against (never silently drops rows in that case).
-        """
-        if not mappings or df is None or df.empty:
-            return df
-
-        total_keywords = list(
-            {'total', '合计', '总计', '小计', 'subtotal', 'sub-total', 'sub total'}
-            | set(SUMMARY_ACCOUNT_SKIP_KEYWORDS)
-        )
-
-        new_rows = []
-        current_category = None
-        for _, row in df.iterrows():
-            label = str(row.iloc[0]).strip()
-            label_lower = label.lower()
-            is_total = any(kw in label_lower for kw in total_keywords)
-
-            if not is_total and label:
-                mapping_key = find_mapping_key(label, mappings)
-                category = str((mappings.get(mapping_key) or {}).get('category', '') or '') if mapping_key else ''
-                if category and category != current_category:
-                    header_label = translate_category_to_chinese(category) if is_chinese_mode else category
-                    header_row = {col: (header_label if i == 0 else pd.NA) for i, col in enumerate(df.columns)}
-                    new_rows.append(header_row)
-                    current_category = category
-
-            new_rows.append(row.to_dict())
-
-        return pd.DataFrame(new_rows, columns=df.columns)
 
     def _embed_statement_table(
         self, slide, df, statement_type: str, table_name: str = None, currency_unit: str = None,
@@ -3632,11 +2200,11 @@ class PowerPointGenerator:
         # doing this here means the extra rows are already accounted for by
         # the time the table shape itself gets created, not squeezed in
         # after the fact.
-        df = self._insert_category_header_rows(df, mappings, is_chinese_mode)
+        df = _insert_category_header_rows(df, mappings, is_chinese_mode)
 
-        target_shape = self._resolve_table_target_shape(slide, statement_type)
+        target_shape = _resolve_table_target_shape(slide, statement_type)
         bounds = self._calculate_table_bounds(slide, target_shape=target_shape, statement_type=statement_type)
-        target_name = self._shape_name(target_shape) if target_shape is not None else "(new table)"
+        target_name = _shape_name(target_shape) if target_shape is not None else "(new table)"
         logger.info(
             f"Resolved {statement_type} table target on slide using {target_name} "
             f"at left={bounds['left']} top={bounds['top']} width={bounds['width']} height={bounds['height']}"
@@ -3685,60 +2253,7 @@ class PowerPointGenerator:
             is_chinese_mode=is_chinese_mode,
         )
     
-    def find_content_shape(self, shapes):
-        """Find content shape by trying multiple possible names"""
-        # Try different possible names for content shapes
-        possible_names = [
-            'Content',
-            'Text-commentary',
-            'textMainBullets',
-            'Text',
-            'Commentary',
-            'MainContent',
-            'Body'
-        ]
-        
-        for name in possible_names:
-            shape = self.find_shape_by_name(shapes, name)
-            if shape and shape.has_text_frame:
-                return shape
-        
-        # If no named shape found, try to find any text frame shape that's not a title
-        for shape in shapes:
-            if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
-                shape_name = getattr(shape, 'name', '')
-                # Skip title shapes and other non-content shapes
-                if shape_name and 'title' not in shape_name.lower() and 'proj' not in shape_name.lower():
-                    return shape
-        
-        return None
 
-    def replace_text_preserve_formatting(self, shape, replacements: Dict[str, str]) -> bool:
-        """Replace text while preserving formatting"""
-        if not shape.has_text_frame:
-            return False
-
-        replaced = False
-
-        for paragraph in shape.text_frame.paragraphs:
-            for run in paragraph.runs:
-                original_text = run.text
-                for old_text, new_text in replacements.items():
-                    if old_text in run.text:
-                        run.text = run.text.replace(old_text, new_text)
-                if run.text != original_text:
-                    replaced = True
-
-        if not replaced:
-            current_text = shape.text_frame.text
-            updated_text = current_text
-            for old_text, new_text in replacements.items():
-                updated_text = updated_text.replace(old_text, new_text)
-            if updated_text != current_text:
-                shape.text_frame.text = updated_text
-                replaced = True
-
-        return replaced
 
     def refresh_project_placeholders(self, project_name: str):
         """Refresh placeholder tokens such as [PROJECT], [Current], and [Total]."""
@@ -3757,7 +2272,7 @@ class PowerPointGenerator:
         }
 
         for slide_index, slide in enumerate(self.presentation.slides):
-            proj_title_shape = self.find_shape_by_name(slide.shapes, "projTitle")
+            proj_title_shape = find_shape_by_name(slide.shapes, "projTitle")
             if not proj_title_shape or not proj_title_shape.has_text_frame:
                 continue
 
@@ -3767,7 +2282,7 @@ class PowerPointGenerator:
             current_text = proj_title_shape.text
 
             if any(token in current_text for token in replacements):
-                self.replace_text_preserve_formatting(proj_title_shape, replacements)
+                replace_text_preserve_formatting(proj_title_shape, replacements)
 
             # Chinese reports: the template's own title text is an English
             # scaffold ("Entity overview - Project [PROJECT] (1/4)") with
@@ -3784,7 +2299,7 @@ class PowerPointGenerator:
                     '', stripped,
                 )
                 if stripped != proj_title_shape.text:
-                    self.replace_text_preserve_formatting(
+                    replace_text_preserve_formatting(
                         proj_title_shape, {proj_title_shape.text: stripped},
                     )
 
@@ -3816,7 +2331,7 @@ class PowerPointGenerator:
         # Update titles in all slides
         for slide_index, slide in enumerate(self.presentation.slides):
             current_slide_number = slide_index + 1
-            proj_title_shape = self.find_shape_by_name(slide.shapes, "projTitle")
+            proj_title_shape = find_shape_by_name(slide.shapes, "projTitle")
 
             if proj_title_shape:
                 current_text = proj_title_shape.text
@@ -3826,7 +2341,7 @@ class PowerPointGenerator:
                         "[Current]": str(current_slide_number),
                         "[Total]": str(len(self.presentation.slides))
                     }
-                    self.replace_text_preserve_formatting(proj_title_shape, replacements)
+                    replace_text_preserve_formatting(proj_title_shape, replacements)
                 else:
                     # Replace the entire title
                     if proj_title_shape.has_text_frame:
@@ -3839,7 +2354,7 @@ class PowerPointGenerator:
             self.load_template()
 
         # Process markdown content
-        processed_content = self._process_markdown_content(markdown_content)
+        processed_content = _process_markdown_content(markdown_content)
 
         # Apply content to presentation
         self._apply_content_to_presentation(processed_content)
@@ -3848,37 +2363,6 @@ class PowerPointGenerator:
         if output_path:
             self.save(output_path)
 
-    def _process_markdown_content(self, content: str) -> Dict:
-        """Process markdown content into structured data"""
-        if not content:
-            logger.warning("Empty content provided to _process_markdown_content")
-            return {}
-
-        logger.info("Processing markdown content, length: %s", len(content))
-        logger.debug("Content preview (first 500 chars): %s", content[:500])
-
-        # Split by headers (## Account Name)
-        sections = re.split(r'^##\s+(.+)$', content, flags=re.MULTILINE)
-
-        logger.info("Found %s sections after splitting", len(sections))
-
-        processed_sections = {}
-
-        # Process each section
-        for i in range(1, len(sections), 2):
-            if i + 1 < len(sections):
-                account_name = sections[i].strip()
-                account_content = sections[i + 1].strip()
-
-                logger.info("Processing section: %s, content length: %s", account_name, len(account_content))
-
-                processed_sections[account_name] = {
-                    'content': account_content,
-                    'is_chinese': detect_chinese_text(account_content)
-                }
-
-        logger.info("Processed %s sections", len(processed_sections))
-        return processed_sections
 
     def _apply_content_to_presentation(self, sections: Dict):
         """Apply processed content to presentation slides"""
@@ -3901,12 +2385,12 @@ class PowerPointGenerator:
             logger.info("Processing slide %s for account: %s", slide_idx + 1, account_name)
 
             # Find content shape using flexible name matching
-            content_shape = self.find_content_shape(slide.shapes)
+            content_shape = find_content_shape(slide.shapes)
             if content_shape:
                 logger.info("Found content shape '%s' on slide %s", content_shape.name, slide_idx + 1)
                 if content_shape.has_text_frame:
                     # Apply content to shape
-                    self._fill_content_shape(content_shape, section_data)
+                    _fill_content_shape(content_shape, section_data)
                     logger.info("Applied content to slide %s", slide_idx + 1)
                 else:
                     logger.warning("Content shape found but has no text_frame on slide %s", slide_idx + 1)
@@ -3918,81 +2402,14 @@ class PowerPointGenerator:
                         shape_name = getattr(shape, 'name', 'unnamed')
                         if 'title' not in shape_name.lower() and 'proj' not in shape_name.lower():
                             logger.info("Using fallback shape '%s' on slide %s", shape_name, slide_idx + 1)
-                            self._fill_content_shape(shape, section_data)
+                            _fill_content_shape(shape, section_data)
                             break
 
             slide_idx += 1
 
-    def _fill_content_shape(self, shape, section_data: Dict):
-        """Fill content shape with processed data"""
-        if not shape.has_text_frame:
-            logger.warning("Shape does not have text_frame")
-            return
-
-        content = section_data.get('content', '')
-        is_chinese = section_data.get('is_chinese', False)
-
-        logger.info("Filling shape with content length: %s", len(content))
-
-        # Clear existing content
-        shape.text_frame.clear()
-        
-        if not content or not content.strip():
-            logger.warning("No content to fill")
-            return
-        
-        # Split content into paragraphs if it contains newlines
-        content_lines = content.split('\n')
-        
-        # Add content with proper formatting
-        for idx, line in enumerate(content_lines):
-            line = line.strip()
-            if not line and idx > 0:
-                # Skip empty lines except add a paragraph break
-                continue
-            
-            if idx == 0:
-                # Use first paragraph or create one
-                if shape.text_frame.paragraphs:
-                    p = shape.text_frame.paragraphs[0]
-                else:
-                    p = shape.text_frame.add_paragraph()
-            else:
-                p = shape.text_frame.add_paragraph()
-            
-            p.text = line
-            
-            # Apply formatting to runs
-            for run in p.runs:
-                run.font.size = get_font_size_for_text(line, force_chinese_mode=is_chinese)
-                run.font.name = get_font_name_for_text(line)
-
-            # Set paragraph formatting
-            p.space_after = get_space_after_for_text(line, force_chinese_mode=is_chinese)
-            p.space_before = get_space_before_for_text(line, force_chinese_mode=is_chinese)
-            p.line_spacing = get_line_spacing_for_text(line, force_chinese_mode=is_chinese)
-        
-        logger.info("Successfully filled shape with %s paragraphs", len([l for l in content_lines if l.strip()]))
 
 
-    def _resolve_font_metrics_path(self, is_chinese: bool, packing: Dict[str, Any]) -> Optional[str]:
-        """Path to the client-font metrics.json (dumped via dump_font_metrics.py),
-        so line-fitting measures with the font the client's PowerPoint renders.
-        Language-specific key wins; falls back to a single shared path. Relative
-        paths resolve against the repo root."""
-        key = "font_metrics_path_chi" if is_chinese else "font_metrics_path_eng"
-        path = packing.get(key) or packing.get("font_metrics_path")
-        if not path:
-            return None
-        p = str(path)
-        if not os.path.isabs(p):
-            p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), p)
-        return p if os.path.exists(p) else None
 
-    def _measurer_family(self, is_chinese: bool, packing: Dict[str, Any]) -> str:
-        """System-font family for the Pillow fallback (overridable in config)."""
-        key = "font_family_chi" if is_chinese else "font_family_eng"
-        return str(packing.get(key) or ("Microsoft YaHei" if is_chinese else "Arial"))
 
     def _log_measurer_source_once(self, measurer, metrics_path: Optional[str], is_chinese: bool) -> None:
         """INFO-log the text-measurement source once per language per export, so a
@@ -4019,64 +2436,8 @@ class PowerPointGenerator:
     # textMainBullets run.
     _PARA_SPACE_AFTER = 3.0
 
-    @staticmethod
-    def _real_font_size_pt(is_chinese: bool) -> float:
-        """Font size actually applied to the run (get_font_size_for_text) —
-        a single deck-wide 9pt regardless of language, NOT the 10pt some
-        capacity/content code used to assume for Chinese."""
-        return get_font_size_for_text("", force_chinese_mode=is_chinese).pt
 
-    @staticmethod
-    def _real_line_spacing(is_chinese: bool) -> float:
-        """Line spacing actually applied to a commentary bullet run.
 
-        _fill_text_main_bullets_with_category_and_key hardcodes
-        line_spacing = 1.0 on every paragraph it creates (category header,
-        key line, and continuation lines alike) -- unconditionally, not
-        gated on is_chinese at all. get_line_spacing_for_text's 0.9-for-
-        Chinese value belongs to the separate, legacy _fill_content_shape
-        path (markdown generate() flow) and was never actually the value
-        applied to a live textMainBullets paragraph. A user-supplied real-
-        client-metrics capacity check (inspect_single_slot.py against a
-        real Windows export) directly caught this: assuming 0.9 line
-        spacing + a 6-9pt inter-paragraph gap that never actually renders
-        made the computed capacity roughly 30% smaller than the box's true
-        capacity -- "the tool says 94% full" against a box the user could
-        still visibly type 5-7 more lines into.
-        """
-        return 1.0
-
-    @staticmethod
-    def _real_para_gap_pt(is_chinese: bool) -> float:
-        """Total vertical gap PowerPoint actually renders between two
-        consecutive bullet paragraphs.
-
-        _fill_text_main_bullets_with_category_and_key hardcodes
-        space_before = Pt(0) and space_after = Pt(3) on every paragraph
-        (category header, key line, continuation line) -- 3pt total,
-        REGARDLESS of language. It never calls get_space_after_for_text /
-        get_space_before_for_text at all; those getters' 4-9pt values
-        belong to the separate legacy _fill_content_shape path. See
-        _real_line_spacing's docstring for how this was actually caught.
-
-        2.2, not 3.0 (2026-08-04): the requested space_after XML value is
-        still literally Pt(3) at render time, unchanged -- this is not a
-        claim that PowerPoint renders less than what's asked for. It's a
-        correction to how much of that requested space this codebase's
-        OWN capacity/content-cost formula should count against a box's
-        available room, back-solved from real, empirical spare-capacity
-        measurements the user made in real PowerPoint on two independent,
-        differently-sized, differently-shaped boxes (a single-column table
-        page's textMainBullets and a plain L-column continuation page) --
-        both independently implied a real std_lh of ~13.0pt against this
-        formula's previous 13.8pt (line_h 10.8, PROVEN correct separately,
-        see POWERPOINT_LINE_PITCH_FACTOR's own history -- so the gap
-        isolates to para_gap specifically: implied ~2.2pt, not 3.0pt).
-        Deliberately not landing exactly on 2.2 without a second real
-        cross-check on the render side too -- see the commit message this
-        shipped in for the full reasoning and what still needs re-verifying.
-        """
-        return 3.0
 
     def _calculate_max_lines_for_textbox(
         self,
@@ -4101,9 +2462,9 @@ class PowerPointGenerator:
         if not shape or not hasattr(shape, "height"):
             return int(packing.get("minimum_slot_lines", 20) or 20)
 
-        font_size_pt = self._real_font_size_pt(is_chinese)
-        line_spacing = self._real_line_spacing(is_chinese)
-        family       = self._measurer_family(is_chinese, packing)
+        font_size_pt = _real_font_size_pt(is_chinese)
+        line_spacing = _real_line_spacing(is_chinese)
+        family       = _measurer_family(is_chinese, packing)
 
         # ── Real font metrics via text_metrics ───────────────────────────────────
         # Prefer the client's font (metrics.json) so line height matches what the
@@ -4111,14 +2472,14 @@ class PowerPointGenerator:
         # reads bodyPr tIns/bIns directly from shape XML.
         try:
             from fdd_utils.text_metrics import get_measurer, text_box_from_shape
-            _mpath   = self._resolve_font_metrics_path(is_chinese, packing)
+            _mpath   = _resolve_font_metrics_path(is_chinese, packing)
             measurer = get_measurer(
                 family, font_size_pt, is_cjk=is_chinese, line_spacing=line_spacing,
                 metrics_path=_mpath,
             )
             self._log_measurer_source_once(measurer, _mpath, is_chinese)
             box      = text_box_from_shape(shape)
-            std_lh   = measurer.line_height_pt() + self._real_para_gap_pt(is_chinese)
+            std_lh   = measurer.line_height_pt() + _real_para_gap_pt(is_chinese)
             # Float, not int(...) floored -- content cost (_calculate_content_
             # lines / _compute_slot_used_lines) is ALSO measured in these same
             # std_lh units and never rounds, so "N lines fit" and "the content
@@ -4206,11 +2567,11 @@ class PowerPointGenerator:
         if cached is not None:
             return cached
 
-        font_size_pt = self._real_font_size_pt(is_chinese)
-        line_spacing = self._real_line_spacing(is_chinese)
-        para_gap     = self._real_para_gap_pt(is_chinese)
+        font_size_pt = _real_font_size_pt(is_chinese)
+        line_spacing = _real_line_spacing(is_chinese)
+        para_gap     = _real_para_gap_pt(is_chinese)
         packing = self._packing_settings(statement_type)
-        family = self._measurer_family(is_chinese, packing)
+        family = _measurer_family(is_chinese, packing)
 
         # -- Real glyph metrics via text_metrics --
         # Uses get_measurer (client metrics.json when configured, else the
@@ -4225,7 +2586,7 @@ class PowerPointGenerator:
         if shape is not None:
             try:
                 from fdd_utils.text_metrics import get_measurer, text_box_from_shape
-                _mpath   = self._resolve_font_metrics_path(is_chinese, packing)
+                _mpath   = _resolve_font_metrics_path(is_chinese, packing)
                 measurer = get_measurer(
                     family, font_size_pt, is_cjk=is_chinese, line_spacing=line_spacing,
                     metrics_path=_mpath,
@@ -4324,7 +2685,7 @@ class PowerPointGenerator:
         sample_shape = None
         for slide in self.presentation.slides:
             for alt_name in ["textMainBullets", "textMainBullets_L", "textMainBullets_R"]:
-                shape = self.find_shape_by_name(slide.shapes, alt_name)
+                shape = find_shape_by_name(slide.shapes, alt_name)
                 if shape:
                     sample_shape = shape
                     break
@@ -4762,28 +3123,7 @@ class PowerPointGenerator:
     # (uncaught-by-autofit) overflow once the 1.2x-size pitch fix landed.
     _BULLET_HANGING_INDENT_PT = 10.8  # 0.15 inch
 
-    def _account_is_chinese(self, account: Dict) -> bool:
-        """Language flag for MEASUREMENT (which glyph-width table to wrap
-        with). Uses the account's own is_chinese when present (set by the
-        payload builder via contains_predominantly_chinese_text); otherwise
-        detects from the commentary instead of silently defaulting to
-        English -- measuring CJK text with Arial's advance table (which has
-        no CJK glyphs) under-counted lines badly enough that genuinely
-        overflowing slots passed the render-time autofit gate as 'fits'."""
-        v = (account or {}).get("is_chinese")
-        if v is not None:
-            return bool(v)
-        return contains_predominantly_chinese_text(str((account or {}).get("commentary", "")))
 
-    def _account_cost_key(self, account: Dict) -> str:
-        """The key text whose rendered width the cost model should charge:
-        mapping_key plus the continuation marker the renderer appends
-        (' (续)' / \" (cont'd)\") -- previously never charged, so every
-        continuation's first paragraph was measured ~4-9 chars short."""
-        key = str(account.get("mapping_key", account.get("account_name", "")) or "")
-        if account.get("is_continuation"):
-            key += " (续)" if self._account_is_chinese(account) else " (cont'd)"
-        return key
 
     def _compute_slot_used_lines(
         self,
@@ -4832,19 +3172,19 @@ class PowerPointGenerator:
                     # replicating the render's own paragraph-by-paragraph pt
                     # math for a real 7-account/2-category slot and comparing
                     # totals directly (0.23-unit gap, ~3pt, matched exactly).
-                    _approx_line_h = self._real_font_size_pt(False) * self._real_line_spacing(False)
-                    _approx_std_lh = _approx_line_h + self._real_para_gap_pt(False)
+                    _approx_line_h = _real_font_size_pt(False) * _real_line_spacing(False)
+                    _approx_std_lh = _approx_line_h + _real_para_gap_pt(False)
                     used += (_approx_line_h / _approx_std_lh) if _approx_std_lh > 0 else 1.0
                 else:
                     used += 1.0   # category header (same as slot_cost)
                 prev_cat = cat
             used += self._calculate_content_lines(
                 "",
-                self._account_cost_key(account),
+                _account_cost_key(account),
                 account.get("commentary", ""),
                 slot_name=slot_name,
                 shape=slot_shape,
-                is_chinese=self._account_is_chinese(account),
+                is_chinese=_account_is_chinese(account),
                 statement_type=statement_type,
             )
             # A presentation-table account's `commentary` is only its lead-in;
@@ -4868,12 +3208,12 @@ class PowerPointGenerator:
             # _render_parts means the account renders whole.
             table = account.get("_presentation_table")
             if table:
-                _is_chi = self._account_is_chinese(account)
+                _is_chi = _account_is_chinese(account)
                 _parts = account.get("_render_parts")
                 _lead_pt, _table_pt, _explain_pt = self._estimate_table_account_parts_pt(
                     account, table, _is_chi,
                 )
-                _std_lh = self._planning_std_lh_pt(_is_chi)
+                _std_lh = _planning_std_lh_pt(_is_chi)
                 if _std_lh > 0:
                     _extra = 0.0
                     if _parts is None or "table" in _parts:
@@ -5201,17 +3541,17 @@ class PowerPointGenerator:
             from fdd_utils.text_metrics import get_measurer, text_box_from_shape
             if shape is not None:
                 packing = self._packing_settings(statement_type)
-                family = self._measurer_family(is_chinese, packing)
-                font_size_pt = self._real_font_size_pt(is_chinese)
-                line_spacing = self._real_line_spacing(is_chinese)
-                _mpath = self._resolve_font_metrics_path(is_chinese, packing)
+                family = _measurer_family(is_chinese, packing)
+                font_size_pt = _real_font_size_pt(is_chinese)
+                line_spacing = _real_line_spacing(is_chinese)
+                _mpath = _resolve_font_metrics_path(is_chinese, packing)
                 measurer = get_measurer(
                     family, font_size_pt, is_cjk=is_chinese, line_spacing=line_spacing,
                     metrics_path=_mpath,
                 )
                 box = text_box_from_shape(shape)
                 line_h = measurer.line_height_pt()
-                para_gap = self._real_para_gap_pt(is_chinese)
+                para_gap = _real_para_gap_pt(is_chinese)
                 std_lh = line_h + para_gap
                 budget_pt = max(0.0, available_std_lh_units) * std_lh
                 min_fill_pt = budget_pt * min_fill_ratio
@@ -5495,42 +3835,6 @@ class PowerPointGenerator:
         snapped = prev + 1
         return snapped if snapped >= pos * 0.3 else pos
 
-    @classmethod
-    def _jieba_word_boundary_snap(cls, text: str, pos: int) -> Optional[int]:
-        """If jieba is installed, segment `text` and return the start index
-        of whichever word strictly contains `pos`, or None if pos already
-        sits on a word boundary (or jieba is unavailable/errors).
-
-        This is the GENERAL version of the curated _PROTECTED_CJK_COMPOUNDS
-        list below -- it was found to have a real gap: "结清" (settle) split
-        as "...或交割前结" / "清安排..." in real production output, the
-        SECOND compound found broken after the first round of fixes
-        (人民币/万元/分别/年度) -- confirming a fixed list will always be
-        one case behind whatever the AI writes next, since Chinese has no
-        spaces to mark word boundaries structurally. jieba is a real
-        Chinese-word-segmentation library (context-aware -- correctly
-        keeps "784"/"万元" as separate tokens but "分别"/"年度"/"结清" as
-        single ones); used here ONLY for its segmentation, no other
-        behaviour change. Optional dependency, imported lazily so a
-        machine without it still runs (falls back to the curated list
-        below, unchanged) rather than failing PPTX generation outright.
-        """
-        try:
-            import jieba  # type: ignore
-        except ImportError:
-            return None
-        try:
-            offset = 0
-            for word in jieba.cut(text):
-                word_len = len(word)
-                if offset < pos < offset + word_len:
-                    return offset
-                offset += word_len
-                if offset >= pos:
-                    break
-            return None
-        except Exception:
-            return None
 
     @classmethod
     def _snap_split_before_number(cls, text: str, pos: int) -> int:
@@ -5557,7 +3861,7 @@ class PowerPointGenerator:
         if pos <= 0:
             return pos
         numeric_chars = set('0123456789,.')
-        jieba_snap = cls._jieba_word_boundary_snap(text, pos)
+        jieba_snap = _jieba_word_boundary_snap(text, pos)
         if jieba_snap is not None:
             pos = jieba_snap
             if pos <= 0:
@@ -5691,7 +3995,7 @@ class PowerPointGenerator:
         if text_budget < 1.0:
             return False
 
-        is_chinese = self._account_is_chinese(head_acct)
+        is_chinese = _account_is_chinese(head_acct)
         # The split-point estimate (char-count based) and the real measurement
         # (_compute_slot_used_lines, font-metric based) don't perfectly agree --
         # shrink the requested budget and retry a few times if the chosen head
@@ -5709,7 +4013,7 @@ class PowerPointGenerator:
                 is_chinese=is_chinese,
                 shape=cur_shape,
                 statement_type=statement_type,
-                key_prefix=f"■ {self._account_cost_key(head_acct)} - ",
+                key_prefix=f"■ {_account_cost_key(head_acct)} - ",
                 # `gap` above is already capacity + allowance.
                 overflow_allowance_units=0.0,
             )
@@ -5913,7 +4217,7 @@ class PowerPointGenerator:
         if available_for_tail < 1.0:
             return False
 
-        is_chinese = self._account_is_chinese(tail_acct)
+        is_chinese = _account_is_chinese(tail_acct)
         part1 = None
         head_text = tail_text = ""
         remaining_budget = available_for_tail
@@ -5926,7 +4230,7 @@ class PowerPointGenerator:
                 shape=cur_shape,
                 statement_type=statement_type,
                 min_fill_ratio=0.3,
-                key_prefix=f"■ {self._account_cost_key(tail_acct)} - ",
+                key_prefix=f"■ {_account_cost_key(tail_acct)} - ",
             )
             if not split_result:
                 return False
@@ -6325,7 +4629,7 @@ class PowerPointGenerator:
                 if text_budget < 0.5:
                     break
 
-                is_chinese = self._account_is_chinese(head_acct)
+                is_chinese = _account_is_chinese(head_acct)
                 part1 = None
                 head_text = tail_text = ""
                 remaining_budget = text_budget
@@ -6353,7 +4657,7 @@ class PowerPointGenerator:
                         # off fragment is still worth taking here even
                         # where it wouldn't be for a balance-oriented move.
                         min_fill_ratio=0.15,
-                        key_prefix=f"■ {self._account_cost_key(head_acct)} - ",
+                        key_prefix=f"■ {_account_cost_key(head_acct)} - ",
                         # Also lower than the shared 1.0 default, in step
                         # with this pass's own gap<0.2/text_budget<0.5 gates
                         # above -- same reasoning: this is the last-word,
@@ -6505,7 +4809,7 @@ class PowerPointGenerator:
             return distribution
 
         slots: List[Dict[str, Any]] = []
-        is_chinese_any = any(self._account_is_chinese(a) for a in flat_accounts)
+        is_chinese_any = any(_account_is_chinese(a) for a in flat_accounts)
         for slide_idx, slot_name, _accounts in distribution:
             shape = _resolve_shape(slide_idx, slot_name)
             capacity = self._calculate_max_lines_for_textbox(
@@ -6545,11 +4849,11 @@ class PowerPointGenerator:
             for a_i, account in enumerate(flat_accounts):
                 _acct_cost[(a_i, slot["slot_name"], w_key)] = self._calculate_content_lines(
                     "",
-                    self._account_cost_key(account),
+                    _account_cost_key(account),
                     account.get("commentary", ""),
                     slot_name=slot["slot_name"],
                     shape=shape,
-                    is_chinese=self._account_is_chinese(account),
+                    is_chinese=_account_is_chinese(account),
                     statement_type=statement_type,
                 )
 
@@ -6651,8 +4955,8 @@ class PowerPointGenerator:
             # invisible padding at the bottom of the frame. Refund exactly
             # one, once, per slot.
             if i >= j:
-                used -= self._real_para_gap_pt(True) / (
-                    self._planning_std_lh_pt(True) or 1.0
+                used -= _real_para_gap_pt(True) / (
+                    _planning_std_lh_pt(True) or 1.0
                 )
             cost_cache[key] = used
             return used
@@ -6841,12 +5145,12 @@ class PowerPointGenerator:
                     _prev = _c
                     _is_chi = bool(_a.get("is_chinese"))
                     _used += self._calculate_content_lines(
-                        "", self._rendered_bullet_label(_a, _is_chi),
+                        "", _rendered_bullet_label(_a, _is_chi),
                         _a.get("commentary", ""), slot_name=_slot["slot_name"],
                         shape=_slot["shape"], is_chinese=_is_chi,
                     )
                 if assignment[_s_i]:
-                    _used -= self._real_para_gap_pt(True) / (self._planning_std_lh_pt(True) or 1.0)
+                    _used -= _real_para_gap_pt(True) / (_planning_std_lh_pt(True) or 1.0)
                 out.append((_used, float(_slot["capacity"])))
             return out
 
@@ -6915,118 +5219,14 @@ class PowerPointGenerator:
             slot["slide_idx"] for s_i, slot in enumerate(slots) if assignment[s_i]
         }
         rebuilt = [
-            (slot["slide_idx"], slot["slot_name"], self._merge_contd_pairs(assignment[s_i]))
+            (slot["slide_idx"], slot["slot_name"], _merge_contd_pairs(assignment[s_i]))
             for s_i, slot in enumerate(slots)
             if assignment[s_i] or slot["slide_idx"] in slide_has_content
         ]
         return rebuilt
 
-    @staticmethod
-    def _merge_contd_pairs(accounts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Merge any consecutive run of (part1, cont'd-part2, cont'd-part3, ...)
-        fragments that landed in the same slot.  This happens when the DP
-        re-balances: a split was created because an earlier slot was almost
-        full, but the resulting pieces all fit together in the slot the DP
-        actually chose.  Merging removes the spurious (cont'd) label(s) and
-        restores the original single account.
-
-        Only ever merged a single PAIR until a real screenshot (IMG_0076)
-        showed an orphaned "(续)" bullet sitting right after its own
-        already-rendered head -- a 3-way split (a middle fragment that is
-        BOTH is_partial [it got re-split by a later rebalance pass] AND
-        is_continuation [it continues the fragment before it]) only had its
-        first two pieces merged; the third was never considered because the
-        old loop looked at exactly one `nxt`, not the whole chain. Confirmed
-        via direct reproduction + tracing: a 3-part split landed as
-        [is_partial, is_partial+is_continuation, is_continuation] in one
-        slot, and the old pairwise merge produced "merged(1+2)" followed by
-        untouched "3" as its own still-(续)-labelled bullet."""
-        result: List[Dict[str, Any]] = []
-        i = 0
-        n = len(accounts)
-        while i < n:
-            acct = accounts[i]
-            if not acct.get("is_partial"):
-                result.append(acct)
-                i += 1
-                continue
-            base_key = acct.get("mapping_key")
-            run = [acct]
-            j = i + 1
-            while (
-                j < n
-                and accounts[j].get("is_continuation")
-                and accounts[j].get("original_key", accounts[j].get("mapping_key")) == base_key
-            ):
-                run.append(accounts[j])
-                j += 1
-            if len(run) > 1:
-                combined = run[0].copy()
-                combined["commentary"] = " ".join(
-                    str(a.get("commentary", "") or "").strip() for a in run
-                ).strip()
-                combined.pop("is_partial", None)
-                combined.pop("part_num", None)
-                # A middle fragment re-split by a later rebalance pass can
-                # itself be is_continuation=True (it continues a head that
-                # sits in an EARLIER slot) as well as is_partial=True (it
-                # got split again, with its own tail in THIS run) -- if
-                # run[0] is one of those, keep its is_continuation/
-                # original_key on the merged result so the "(续)" label
-                # renders correctly against the real earlier-slot head;
-                # only drop them when run[0] is a genuine, non-continuation
-                # first part (the common case).
-                if not run[0].get("is_continuation"):
-                    combined.pop("is_continuation", None)
-                    combined.pop("original_key", None)
-                result.append(combined)
-            else:
-                result.append(acct)
-            i = j
-        return result
 
 
-    def _expand_commentary_to_cover_summary(self, slide) -> bool:
-        """Remove coSummaryShape from a continuation slide and expand the
-        commentary box(es) upward to fill the freed area.
-
-        Returns True if the operation modified the slide. Called only on
-        continuation slides (i.e., not the first slide of a BS/IS statement)
-        so the AI executive summary stays on the first slide only.
-        """
-        summary_shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
-        if summary_shape is None:
-            return False
-        try:
-            co_top = int(summary_shape.top)
-            co_height = int(summary_shape.height)
-        except Exception:
-            return False
-        co_bottom = co_top + co_height
-
-        for slot_name in ("textMainBullets", "textMainBullets_L", "textMainBullets_R"):
-            box = self.find_shape_by_name(slide.shapes, slot_name)
-            if box is None:
-                continue
-            try:
-                box_top = int(box.top)
-                box_height = int(box.height)
-            except Exception:
-                continue
-            # Only expand boxes located below the summary shape — avoid
-            # accidentally covering tables / titles that sit above it.
-            if box_top >= co_bottom:
-                extension = box_top - co_top
-                box.top = co_top
-                box.height = box_height + extension
-
-        try:
-            sp = summary_shape._element
-            sp.getparent().remove(sp)
-        except Exception as exc:
-            logger.warning("Could not remove coSummaryShape on continuation slide: %s", exc)
-            return False
-        return True
 
     def _plan_slot_distribution(
         self,
@@ -7061,7 +5261,7 @@ class PowerPointGenerator:
         last_table_pos: Optional[int] = None
         tagged_normal: List[Tuple[int, Dict[str, Any]]] = []
         for pos, item in enumerate(structured_data):
-            table = self._presentation_table_for_account(item) if tables_enabled else None
+            table = _presentation_table_for_account(item) if tables_enabled else None
             if table and table_style == "sublist":
                 # Fallback style: the account is NEVER pulled out of the
                 # normal packing pool -- the table dict becomes plain text
@@ -7078,7 +5278,7 @@ class PowerPointGenerator:
                 financial_data = item.get("financial_data")
                 if hasattr(financial_data, "attrs"):
                     source_multiplier = financial_data.attrs.get("source_multiplier") or 1
-                sublist_text = self._sublist_text_for_table(table, is_chinese, source_multiplier)
+                sublist_text = _sublist_text_for_table(table, is_chinese, source_multiplier)
                 parts = [p for p in (lead_in, sublist_text, post_table_text) if p]
                 item["commentary"] = "\n".join(parts)
                 tagged_normal.append((pos, item))
@@ -7159,7 +5359,7 @@ class PowerPointGenerator:
         logger.info("Applying %s accounts to slides starting at %s", len(structured_data), start_slide)
 
         # Normalize commentary and store originals for fill optimization
-        structured_data = self._prepare_structured_data_for_slides(structured_data)
+        structured_data = _prepare_structured_data_for_slides(structured_data)
 
         # Continuation slides (every slide of this statement after the first)
         # lose their coSummaryShape and gain that area as extra commentary
@@ -7171,7 +5371,7 @@ class PowerPointGenerator:
             cont_idx = first_slide_idx + offset
             if cont_idx >= len(self.presentation.slides):
                 break
-            self._expand_commentary_to_cover_summary(self.presentation.slides[cont_idx])
+            _expand_commentary_to_cover_summary(self.presentation.slides[cont_idx])
 
         # Presentation-table accounts are pulled out of the packing pool
         # entirely rather than fed to the DP/greedy packer with an inflated
@@ -7278,7 +5478,7 @@ class PowerPointGenerator:
                         used_shape_ids=used_slot_shape_ids,
                     )
                 if not bullets_shape:
-                    bullets_shape = self._add_commentary_slot_shape(slide, slot_name)
+                    bullets_shape = _add_commentary_slot_shape(slide, slot_name)
                 
                 if not bullets_shape.has_text_frame:
                     logger.warning("Slide %s: Shape for slot '%s' has no text frame", actual_slide_idx + 1, slot_name)
@@ -7346,7 +5546,7 @@ class PowerPointGenerator:
                 # the tail protrude is both what the project team asked for
                 # ("1-2 lines sticking out is fine") and strictly better
                 # looking than a whole column shrunk to leave a gap.
-                slot_is_chinese = any(self._account_is_chinese(a) for a in account_data_list)
+                slot_is_chinese = any(_account_is_chinese(a) for a in account_data_list)
                 slot_capacity = self._calculate_max_lines_for_textbox(
                     bullets_shape, is_chinese=slot_is_chinese, slot_name=slot_name,
                     statement_type=statement_type,
@@ -7359,7 +5559,7 @@ class PowerPointGenerator:
                 if slot_capacity > 0 and (slot_used - slot_capacity) > _tail_tol:
                     self._apply_bounded_autofit(tf, slot_capacity / slot_used)
                 else:
-                    self._force_no_autofit(tf)  # keep text at 9pt/10pt, never shrink
+                    _force_no_autofit(tf)  # keep text at 9pt/10pt, never shrink
                 from pptx.enum.text import MSO_VERTICAL_ANCHOR
                 tf.vertical_anchor = MSO_VERTICAL_ANCHOR.TOP
                 
@@ -7407,7 +5607,7 @@ class PowerPointGenerator:
                             p_category.space_before = Pt(3) if current_category else Pt(0)
                             p_category.space_after = Pt(0)
                             p_category.line_spacing = 1.0
-                            self._apply_east_asian_line_breaking(p_category)
+                            _apply_east_asian_line_breaking(p_category)
                         except:
                             pass
                         
@@ -7459,10 +5659,10 @@ class PowerPointGenerator:
             page_commentary, page_summary_source = self._build_page_summary_source(all_slide_accounts)
 
             # Collect coSummaryShape jobs and fill after summaries are generated.
-            summary_shape = self.find_shape_by_name(slide.shapes, "coSummaryShape")
+            summary_shape = find_shape_by_name(slide.shapes, "coSummaryShape")
             if summary_shape and summary_shape.has_text_frame:
                 summary_shape.text_frame.clear()
-                self._force_no_autofit(summary_shape.text_frame)
+                _force_no_autofit(summary_shape.text_frame)
                 if page_summary_source:
                     summary_jobs.append({
                         "slide_idx": actual_slide_idx,
@@ -7576,7 +5776,7 @@ class PowerPointGenerator:
             summary_shape = job["summary_shape"]
             p = summary_shape.text_frame.paragraphs[0] if summary_shape.text_frame.paragraphs else summary_shape.text_frame.add_paragraph()
             p.text = final_summary
-            self._apply_east_asian_line_breaking(p)
+            _apply_east_asian_line_breaking(p)
             for run in p.runs:
                 run.font.size = get_font_size_for_text(final_summary, force_chinese_mode=job["font_is_chinese"])
                 run.font.name = get_font_name_for_text(final_summary)
@@ -7640,76 +5840,6 @@ class PowerPointGenerator:
                     logger.warning("Could not remove slide %s: %s", slide_idx + 1, e)
                     logger.debug(traceback.format_exc())
     
-    def _set_cell_border(self, cell, border_position='top', color_rgb=None, width=Pt(1)):
-        """Set cell border"""
-        from pptx.oxml.xmlchemy import OxmlElement
-        
-        tc = cell._tc
-        tcPr = tc.get_or_add_tcPr()
-        
-        # Map position to tag name
-        tag_map = {'top': 'lnT', 'bottom': 'lnB', 'left': 'lnL', 'right': 'lnR'}
-        tag_name = tag_map.get(border_position)
-        if not tag_name:
-            return
-            
-        # Check if line element exists
-        ln = tcPr.find(f"{{http://schemas.openxmlformats.org/drawingml/2006/main}}{tag_name}")
-        if ln is None:
-            ln = OxmlElement(f"a:{tag_name}")
-            tcPr.append(ln)
-            
-        # Set properties
-        ln.set('w', str(int(width)))
-        ln.set('cap', 'flat')
-        ln.set('cmpd', 'sng')
-        ln.set('algn', 'ctr')
-
-        # Calling this twice on the same side (e.g. a full-grid pass, then a
-        # heavier total-row override) previously left BOTH the old and new
-        # <a:solidFill>/<a:prstDash>/<a:round>/<a:headEnd>/<a:tailEnd>
-        # children on `ln` -- append() never replaces, so the element ended
-        # up with duplicates and PowerPoint's rendering of that is
-        # undefined (in practice, whichever child renderers pick up first).
-        # Clear any existing children before appending the new ones so a
-        # second call genuinely overrides the first, not just adds to it.
-        for child in list(ln):
-            ln.remove(child)
-
-        # Set color
-        if color_rgb:
-            solidFill = OxmlElement('a:solidFill')
-            srgbClr = OxmlElement('a:srgbClr')
-            # Convert RGBColor or tuple to hex string
-            hex_color = "000000"
-            if isinstance(color_rgb, str):
-                hex_color = color_rgb.replace('#', '')
-            elif isinstance(color_rgb, tuple) and len(color_rgb) == 3:
-                hex_color = f"{color_rgb[0]:02x}{color_rgb[1]:02x}{color_rgb[2]:02x}"
-            # If it's an RGBColor object, user should pass str or tuple for this low-level func
-                
-            srgbClr.set('val', hex_color)
-            solidFill.append(srgbClr)
-            ln.append(solidFill)
-            
-            prstDash = OxmlElement('a:prstDash')
-            prstDash.set('val', 'solid')
-            ln.append(prstDash)
-            
-            round_ = OxmlElement('a:round')
-            ln.append(round_)
-            
-            headEnd = OxmlElement('a:headEnd')
-            headEnd.set('type', 'none')
-            headEnd.set('w', 'med')
-            headEnd.set('len', 'med')
-            ln.append(headEnd)
-            
-            tailEnd = OxmlElement('a:tailEnd')
-            tailEnd.set('type', 'none')
-            tailEnd.set('w', 'med')
-            tailEnd.set('len', 'med')
-            ln.append(tailEnd)
 
     def _fill_table_placeholder(
         self, shape, df, table_name: str = None, currency_unit: str = None, bounds: Dict[str, int] = None,
@@ -7848,7 +5978,7 @@ class PowerPointGenerator:
                 # statement-level grand totals with a solid grey fill.
                 GREY_TOTAL_FILL = RGBColor(0xD9, 0xD9, 0xD9)
 
-                self._fit_table_columns(table, df)
+                _fit_table_columns(table, df)
 
                 # Smaller/tighter than before across the board -- reference
                 # format (IMG_0035) reads noticeably more compact than this
@@ -8053,7 +6183,7 @@ class PowerPointGenerator:
                             run.font.bold = True
                             run.font.color.rgb = WHITE if _header_blue else BLACK
                             p.line_spacing = 1.0
-                            self._apply_east_asian_line_breaking(p)
+                            _apply_east_asian_line_breaking(p)
 
                         # Blue header band with white text, matching the
                         # reference report (IMG_0224): the date/period row
@@ -8110,8 +6240,8 @@ class PowerPointGenerator:
                         # separating it from the data.
                         _sep = "FFFFFF" if _header_blue else "000000"
                         for _side in ("left", "right"):
-                            self._set_cell_border(cell, _side, color_rgb=_sep, width=Pt(0.5))
-                        self._set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(0.5))
+                            _set_cell_border(cell, _side, color_rgb=_sep, width=Pt(0.5))
+                        _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(0.5))
 
                         try:
                             cell.margin_left = Inches(0.04)
@@ -8280,7 +6410,7 @@ class PowerPointGenerator:
 
                         # Get value from DataFrame safely
                         value = df_row[col_name] if col_name in df_row.index else ""
-                        text_val = self._format_table_value(value, is_numeric_column=col_idx > 0)
+                        text_val = _format_table_value(value, is_numeric_column=col_idx > 0)
 
                         # Description column only -- the source Financials
                         # sheet's own row labels (e.g. "Cash at bank and on
@@ -8321,7 +6451,7 @@ class PowerPointGenerator:
                             run.font.bold = is_special_row
                         try:
                             p.line_spacing = 1.0
-                            self._apply_east_asian_line_breaking(p)
+                            _apply_east_asian_line_breaking(p)
                         except Exception:
                             pass
 
@@ -8347,7 +6477,7 @@ class PowerPointGenerator:
                             p.alignment = PP_ALIGN.LEFT if col_idx == 0 else PP_ALIGN.RIGHT
                             if col_idx == 0:
                                 should_indent = not is_category_header_row and not is_total_row
-                                self._set_paragraph_left_indent(p, int(Inches(0.12)) if should_indent else 0)
+                                _set_paragraph_left_indent(p, int(Inches(0.12)) if should_indent else 0)
                         except Exception:
                             pass
 
@@ -8359,7 +6489,7 @@ class PowerPointGenerator:
                         # applied AFTER this, so those separators are still
                         # there exactly where they matter.
                         for _side in ("left", "right"):
-                            self._set_cell_border(cell, _side, color_rgb="000000", width=Pt(0.5))
+                            _set_cell_border(cell, _side, color_rgb="000000", width=Pt(0.5))
 
                         # Only the LAST column is highlighted light blue, on
                         # EVERY row including totals -- every other cell is
@@ -8389,9 +6519,9 @@ class PowerPointGenerator:
                         # matching the reference's two-tier total styling.
                         if is_total_row:
                             try:
-                                self._set_cell_border(cell, 'top', color_rgb="00338D", width=Pt(0.75))
+                                _set_cell_border(cell, 'top', color_rgb="00338D", width=Pt(0.75))
                                 if is_grand_total_row:
-                                    self._set_cell_border(cell, 'bottom', color_rgb="00338D", width=Pt(2.25))
+                                    _set_cell_border(cell, 'bottom', color_rgb="00338D", width=Pt(2.25))
                             except Exception:
                                 pass
                     
@@ -8495,59 +6625,7 @@ class PowerPointGenerator:
         except Exception as exc:
             logger.debug("Could not set East Asian typeface: %s", exc)
 
-    @staticmethod
-    def _apply_east_asian_line_breaking(paragraph) -> None:
-        """Turn on East Asian line-breaking (禁则处理) and hanging punctuation
-        for one paragraph.
 
-        Without this a real deck put a full stop at the START of a line, and
-        in the worst case a lone "。" on its own line under a paragraph that
-        otherwise ended cleanly. Chinese typography forbids a line beginning
-        with closing punctuation (。，）」etc.); the rule that prevents it is
-        a PARAGRAPH property, and the template declares no <a:pPr> at all, so
-        nothing was asserting it.
-
-        eaLnBrk       -- apply East Asian line-break rules rather than Latin
-                         ones. Our runs carry font.name='Arial' (a Latin
-                         typeface) even for Chinese text, which is exactly
-                         the case where PowerPoint may otherwise fall back to
-                         Latin breaking.
-        hangingPunct  -- let trailing punctuation hang past the right margin
-                         instead of being pushed onto the next line, which is
-                         what keeps "米。" together.
-
-        Set explicitly rather than relied on as a schema default -- the
-        observed render proves the default was not being applied here.
-        """
-        try:
-            pPr = paragraph._p.get_or_add_pPr()
-            pPr.set("eaLnBrk", "1")
-            pPr.set("hangingPunct", "1")
-        except Exception as exc:
-            logger.debug("Could not set East Asian line-breaking: %s", exc)
-
-    @staticmethod
-    def _force_no_autofit(text_frame) -> None:
-        """Set the text frame's bodyPr autofit to ``<a:noAutofit/>`` so
-        PowerPoint never shrinks the text to fit the shape. The template
-        ships with ``<a:spAutoFit/>`` (resize shape to fit text), which in
-        some viewers falls back to shrinking the text when the shape can't
-        grow. Forcing ``noAutofit`` keeps the text at the exact point size
-        we set (9pt / 10pt); overflow is simply clipped at the shape edge."""
-        try:
-            from lxml import etree  # noqa: F401
-            from pptx.oxml.ns import qn
-            bodyPr = text_frame._txBody.bodyPr
-            # Remove any existing autofit child (spAutoFit / normAutofit / noAutofit).
-            for tag in ("a:spAutoFit", "a:normAutofit", "a:noAutofit"):
-                for child in bodyPr.findall(qn(tag)):
-                    bodyPr.remove(child)
-            from pptx.oxml import parse_xml
-            bodyPr.append(parse_xml(
-                '<a:noAutofit xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/>'
-            ))
-        except Exception as exc:
-            logger.debug("Could not force noAutofit on text frame: %s", exc)
 
     # A slot the DP could only pack by relaxing past strict 1.0x capacity
     # (shape_height_utilization / the later 1.35x, 1.6x tiers) has no room
@@ -8590,67 +6668,7 @@ class PowerPointGenerator:
             logger.debug("Could not apply bounded normAutofit on text frame: %s", exc)
 
 
-    @staticmethod
-    def _build_clause_segments(
-        commentary: str,
-        clause_reviews: Optional[List[Dict[str, Any]]],
-    ) -> Optional[List[Tuple[str, str]]]:
-        """Split commentary into (text, category) segments using clause_reviews.
 
-        Returns None if no clauses match. Falls back to a single 'data-backed'
-        segment for any text not matched by any clause review (so unmatched
-        prose stays black).
-        """
-        if not commentary or not clause_reviews:
-            return None
-        # Sort clauses by their position in the commentary
-        positions: List[Tuple[int, int, str]] = []
-        used_starts: set = set()
-        for review in clause_reviews:
-            clause_text = str(review.get("clause") or "").strip()
-            if not clause_text:
-                continue
-            category = str(review.get("category") or ("data-backed" if review.get("supported") else "hallucination")).lower()
-            search_from = 0
-            # Find first non-overlapping occurrence
-            while True:
-                idx = commentary.find(clause_text, search_from)
-                if idx == -1:
-                    break
-                if idx in used_starts:
-                    search_from = idx + 1
-                    continue
-                used_starts.add(idx)
-                positions.append((idx, idx + len(clause_text), category))
-                break
-        if not positions:
-            return None
-        positions.sort()
-        # Merge overlaps by sorting and skipping fully-contained overlaps
-        cleaned: List[Tuple[int, int, str]] = []
-        for start, end, cat in positions:
-            if cleaned and start < cleaned[-1][1]:
-                continue
-            cleaned.append((start, end, cat))
-        # Build segments from start to end of commentary
-        segments: List[Tuple[str, str]] = []
-        cursor = 0
-        for start, end, cat in cleaned:
-            if start > cursor:
-                segments.append((commentary[cursor:start], "data-backed"))
-            segments.append((commentary[start:end], cat))
-            cursor = end
-        if cursor < len(commentary):
-            segments.append((commentary[cursor:], "data-backed"))
-        return segments
-
-    @staticmethod
-    def _category_to_rgb(category: str) -> Optional[Tuple[int, int, int]]:
-        if category == "hallucination":
-            return (200, 16, 46)  # red
-        if category == "reasoning":
-            return (213, 94, 0)  # orange
-        return None
 
     def _add_runs_for_line(
         self,
@@ -8697,7 +6715,7 @@ class PowerPointGenerator:
             if overlap_start == 0:
                 run = paragraph.add_run()
                 run.text = segment_text
-                _apply_run_format(run, self._category_to_rgb(category))
+                _apply_run_format(run, _category_to_rgb(category))
                 remaining = remaining[len(segment_text):]
             elif overlap_start > 0:
                 # Plain prefix before this segment
@@ -8707,7 +6725,7 @@ class PowerPointGenerator:
                 # Then the segment
                 run = paragraph.add_run()
                 run.text = segment_text
-                _apply_run_format(run, self._category_to_rgb(category))
+                _apply_run_format(run, _category_to_rgb(category))
                 remaining = remaining[overlap_start + len(segment_text):]
             # else: segment doesn't appear on this line, skip it
         if remaining:
@@ -8750,10 +6768,10 @@ class PowerPointGenerator:
             return text
         packing = self._packing_settings()
         measurer = get_measurer(
-            self._measurer_family(is_chinese, packing),
-            self._real_font_size_pt(is_chinese), is_cjk=is_chinese,
-            line_spacing=self._real_line_spacing(is_chinese),
-            metrics_path=self._resolve_font_metrics_path(is_chinese, packing),
+            _measurer_family(is_chinese, packing),
+            _real_font_size_pt(is_chinese), is_cjk=is_chinese,
+            line_spacing=_real_line_spacing(is_chinese),
+            metrics_path=_resolve_font_metrics_path(is_chinese, packing),
         )
         body_width = max(1.0, box.width_pt - self._BULLET_HANGING_INDENT_PT)
         lines = measurer.wrap(
@@ -8788,7 +6806,7 @@ class PowerPointGenerator:
             f"■ {display_name} - " if display_name else "", commentary, is_chinese,
         )
 
-        clause_segments = self._build_clause_segments(commentary, clause_reviews) if clause_reviews else None
+        clause_segments = _build_clause_segments(commentary, clause_reviews) if clause_reviews else None
 
         # Add category as first level (if category exists and is not None)
         # Note: category is now handled at slide level, so this is only for individual calls
@@ -8801,7 +6819,7 @@ class PowerPointGenerator:
                 p_category.space_before = Pt(0)
                 p_category.space_after = Pt(0)
                 p_category.line_spacing = 1.0
-                self._apply_east_asian_line_breaking(p_category)
+                _apply_east_asian_line_breaking(p_category)
             except:
                 pass
             
@@ -8837,7 +6855,7 @@ class PowerPointGenerator:
             p_key.space_before = Pt(0)
             p_key.space_after = Pt(3)  # Matches _PARA_SPACE_AFTER (cost estimator)
             p_key.line_spacing = 1.0
-            self._apply_east_asian_line_breaking(p_key)
+            _apply_east_asian_line_breaking(p_key)
         except Exception as e:
             logger.warning("Could not set paragraph formatting: %s", e)
             pass
@@ -8902,7 +6920,7 @@ class PowerPointGenerator:
                     p_text.space_before = Pt(0)
                     p_text.space_after = Pt(3)
                     p_text.line_spacing = 1.0
-                    self._apply_east_asian_line_breaking(p_text)
+                    _apply_east_asian_line_breaking(p_text)
                 except:
                     pass
                 target_paragraph = p_text
@@ -9449,7 +7467,7 @@ Original content:
         label_names = {"Text-commentary", "Text-commentary_L", "Text-commentary_R"}
         for slide in self.presentation.slides:
             for shape in slide.shapes:
-                if self._shape_name(shape) not in label_names:
+                if _shape_name(shape) not in label_names:
                     continue
                 if not getattr(shape, "has_text_frame", False):
                     continue
@@ -9478,4 +7496,3 @@ Original content:
 
         self.presentation.save(output_path)
         logger.info("Presentation saved to: %s", output_path)
-# --- end pptx/generation.py ---
