@@ -1059,6 +1059,10 @@ class PowerPointGenerator(
             if summary_shape and summary_shape.has_text_frame:
                 summary_shape.text_frame.clear()
                 _force_no_autofit(summary_shape.text_frame)
+                # Claim the gap the template leaves between this band and the
+                # table below. _summary_length_targets sizes the text against
+                # the same measurement, so the box and the request stay in step.
+                self._grow_summary_band_into_spare(slide, summary_shape)
                 if page_summary_source:
                     summary_jobs.append({
                         "slide_idx": actual_slide_idx,

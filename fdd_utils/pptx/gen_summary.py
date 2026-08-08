@@ -100,6 +100,64 @@ class _SummaryMixin:
         return dict(self.pptx_settings.get("executive_summary") or {})
 
 
+    _SUMMARY_BAND_CLEARANCE_PT = 3.0
+
+    @classmethod
+    def _summary_band_spare_pt(cls, slide, shape) -> float:
+        """Vertical space below the band that nothing else claims.
+
+        The template draws coSummaryShape at whatever height its author picked
+        and then leaves a gap before the table beneath it. Sizing the summary
+        to the shape's own height therefore measures the drawing, not the
+        space -- it can only ever fill the box someone drew, however much room
+        sits under it. On the template this was written against that gap is
+        17.7pt, a full 1.6 lines unused on every summary page, which is the
+        band visibly not reaching the table.
+
+        Returns the extra height available, measured to the top of the nearest
+        shape that overlaps this one horizontally, less a small clearance so
+        the last line does not touch the table. 0 when nothing is below.
+        """
+        try:
+            top = float(shape.top)
+            bottom = top + float(shape.height)
+            left = float(shape.left)
+            right = left + float(shape.width)
+            nearest = None
+            for other in slide.shapes:
+                if other is shape or other.top is None:
+                    continue
+                o_top = float(other.top)
+                if o_top < bottom:
+                    continue
+                o_left = float(other.left)
+                if o_left >= right or (o_left + float(other.width)) <= left:
+                    continue                      # different column, ignore
+                nearest = o_top if nearest is None else min(nearest, o_top)
+            if nearest is None:
+                return 0.0
+            spare_pt = (nearest - bottom) / 12700.0 - cls._SUMMARY_BAND_CLEARANCE_PT
+            return max(0.0, spare_pt)
+        except Exception:
+            return 0.0
+
+    def _grow_summary_band_into_spare(self, slide, shape) -> float:
+        """Take the unused space under the band. Returns the pt gained.
+
+        Only ever grows. The target character count is computed from the same
+        measurement, so the box and the text it is asked for stay in step.
+        """
+        spare = self._summary_band_spare_pt(slide, shape)
+        if spare <= 1.0:
+            return 0.0
+        try:
+            shape.height = int(shape.height + spare * 12700)
+            logger.info("Summary band grown by %.1fpt into unused space above the table", spare)
+            return spare
+        except Exception as exc:
+            logger.debug("Could not grow the summary band: %s", exc)
+            return 0.0
+
     def _summary_length_targets(self, is_chinese: bool) -> Tuple[int, int]:
         """(target_chars_chi, target_words_eng) sized to the REAL summary box
         rather than to a static config number.
@@ -118,9 +176,11 @@ class _SummaryMixin:
         target_lines = max(1, int(settings.get("target_lines", 4) or 4))
         try:
             shape = None
+            spare_pt = 0.0
             for slide in self.presentation.slides:
                 shape = find_shape_by_name(slide.shapes, "coSummaryShape")
                 if shape is not None:
+                    spare_pt = self._summary_band_spare_pt(slide, shape)
                     break
             if shape is None:
                 return static_chi, static_eng
@@ -149,15 +209,20 @@ class _SummaryMixin:
             # the static width fallback already plays.
             from fdd_utils.text_metrics import POWERPOINT_LINE_PITCH_FACTOR
             pitch = font_pt * POWERPOINT_LINE_PITCH_FACTOR * _real_line_spacing(is_chinese)
-            fitting_lines = (box.height_pt / pitch) if pitch > 0 else 0
+            # Measure the SPACE, not the drawing: the band's own height plus
+            # whatever sits unclaimed between it and the table below. Using
+            # box.height_pt alone is circular -- it can only ever ask for
+            # enough text to fill the box someone happened to draw.
+            usable_pt = box.height_pt + spare_pt
+            fitting_lines = (usable_pt / pitch) if pitch > 0 else 0
             lines = fitting_lines if fitting_lines >= 1 else target_lines
             # 0.92: aim just under a full box so a slightly long sentence
             # doesn't push a whole extra line past the table beneath it.
             chars = int(per_line * lines * 0.92)
             logger.info(
-                "Executive summary target: %d chars (band %.0fx%.0fpt holds %.2f lines "
-                "at %.1fpt, ~%.0f chars/line)",
-                chars, box.width_pt, box.height_pt, fitting_lines, font_pt, per_line,
+                "Executive summary target: %d chars (band %.0fx%.0fpt + %.1fpt spare "
+                "below = %.2f lines at %.1fpt, ~%.0f chars/line)",
+                chars, box.width_pt, box.height_pt, spare_pt, fitting_lines, font_pt, per_line,
             )
             # No max(static, ...) floor once BOTH dimensions are measured.
             # The floor existed because the line count was a guess; raising a
