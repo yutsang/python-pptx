@@ -7,6 +7,7 @@ from .gen_splitting import _SplittingMixin
 from .gen_tables import _TablesMixin
 from .gen_summary import _SummaryMixin
 
+from . import helpers as _helpers
 from .helpers import (  # lifted out of PowerPointGenerator
     _account_cost_key,
     _account_is_chinese,
@@ -126,6 +127,27 @@ class PowerPointGenerator(
 
         self.presentation = Presentation(self.template_path)
         logger.info("Loaded template: %s", self.template_path)
+
+    # ---- attribute access kept for callers outside this package ----
+    # These four moved to helpers.py because they need no instance state, but
+    # tooling outside fdd_utils/pptx calls them ON the generator --
+    # inspect_databook.py's population diagnostic and
+    # ad-hoc/pptx-probes/diagnose_presentation_tables.py. Deleting the
+    # attribute broke that (AttributeError at section 10, after a paid-for AI
+    # run had already completed). The helper stays the single implementation;
+    # these only keep `gen.<name>(...)` resolving.
+
+    def find_shape_by_name(self, shapes, name: str):
+        return _helpers.find_shape_by_name(shapes, name)
+
+    def _prepare_structured_data_for_slides(self, structured_data):
+        return _helpers._prepare_structured_data_for_slides(structured_data)
+
+    def _presentation_table_for_account(self, account_data):
+        return _helpers._presentation_table_for_account(account_data)
+
+    def _expand_commentary_to_cover_summary(self, slide):
+        return _helpers._expand_commentary_to_cover_summary(slide)
 
 
 

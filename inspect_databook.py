@@ -156,6 +156,51 @@ pd.set_option("display.width", 200)
 VERBOSE = False
 
 
+def assert_pptx_output_writable(out_path: str) -> None:
+    """Fail now if the deck we are about to overwrite is open in PowerPoint.
+
+    PowerPoint keeps an exclusive lock on an open .pptx, so python-pptx's save
+    raises only at the very end -- after a full --run-ai pass has been paid for
+    in both minutes and tokens. Checking up front turns a wasted run into a
+    two-second message.
+
+    Opening for append rather than write is deliberate: it takes the same lock
+    the save will need without truncating a deck the user may still want.
+    """
+    target = Path(out_path)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"\n❌ Cannot create the output folder {target.parent}: {exc}")
+        sys.exit(2)
+
+    try:
+        if target.exists():
+            with open(target, "a+b"):
+                pass
+        else:
+            probe = target.with_suffix(target.suffix + ".writetest")
+            with open(probe, "wb"):
+                pass
+            probe.unlink()
+    except PermissionError:
+        print("\n" + "=" * 78)
+        print("  ❌ OUTPUT FILE IS LOCKED -- stopping before any work is done")
+        print("=" * 78)
+        print(f"  {target.resolve()}")
+        print()
+        print("  This deck is open in PowerPoint (or another program holds it).")
+        print("  The export would run the full AI pipeline first and only fail at")
+        print("  the save, so it is stopped here instead.")
+        print()
+        print("  Close the file in PowerPoint and run the same command again.")
+        print("  To keep it open, pass --pptx-out-dir <other folder>.")
+        sys.exit(2)
+    except OSError as exc:
+        print(f"\n❌ Cannot write {target.resolve()}: {exc}")
+        sys.exit(2)
+
+
 def _hr(title: str = "") -> None:
     print("\n" + "=" * 78)
     if title:
@@ -1957,9 +2002,13 @@ def export_and_inspect_pptx(
                   "repo-shipped/client metrics.json — check pptx.commentary_packing."
                   "font_metrics_path_eng/chi and use_pillow_text_fitting in config.yml.")
     else:
-        print("  ⚠️  No 'Text measurement [...]' log line captured — either Pillow fitting is "
-              "off (use_pillow_text_fitting: false) so the legacy CPL heuristic was used "
-              "instead, or logging didn't propagate. Check pptx.commentary_packing in config.yml.")
+        print("  ℹ️  No 'Text measurement [...]' log line captured. That line is emitted once "
+              "per language on first measurement, so this usually just means logging didn't "
+              "propagate — section 9 below reports the measurement source it actually observed "
+              "in the deck; trust that over this line.")
+        print("      (This used to blame use_pillow_text_fitting: false. That setting no longer "
+              "has a reader — the accurate path is taken whenever a shape is available — so it "
+              "was reporting a cause that could not happen.)")
 
     if stage_times:
         print("  Export stage timing:")
@@ -2225,6 +2274,16 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                  pptx_out_dir: Optional[str] = None, financials_from: Optional[str] = None,
                  financials_sheet: Optional[str] = None) -> Dict[str, Any]:
     _hr(f"INSPECTING: {path}")
+
+    # Resolved and checked before anything expensive runs: with --run-ai the
+    # export sits ~12 minutes and a pile of tokens downstream of here, and a
+    # deck left open in PowerPoint would only surface at the save.
+    pptx_out_path = None
+    if export_pptx:
+        _out_dir = Path(pptx_out_dir) if pptx_out_dir else Path(path).parent / "pptx_previews"
+        pptx_out_path = str(_out_dir / f"{Path(path).stem}.preview.pptx")
+        assert_pptx_output_writable(pptx_out_path)
+
     summary: Dict[str, Any] = {"file": Path(path).name, "status": "ok"}
     dfs = check_tab_read_summary(path, entity_name=entity_name)
     summary["tabs_parsed"] = len(dfs)
@@ -2321,9 +2380,8 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         summary["ai"] = ai_summary
 
         if export_pptx and not ai_summary.get("skipped") and ai_summary.get("results"):
-            out_dir = Path(pptx_out_dir) if pptx_out_dir else Path(path).parent / "pptx_previews"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_path = str(out_dir / f"{Path(path).stem}.preview.pptx")
+            out_path = pptx_out_path            # resolved and lock-checked up front
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
             try:
                 pptx_summary = export_and_inspect_pptx(
                     path, selected_sheet_for_ai, dfs, ai_summary["results"], language,
