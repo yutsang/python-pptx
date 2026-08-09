@@ -398,8 +398,11 @@ class PromptEngine:
             "balance of each revenue stream), not every counterparty; name an individual counterparty "
             "only where its size, ageing or nature makes it worth calling out, and say why. Use a "
             "numbered form -- \"comprising: 1) ...; 2) ...; 3) ...\" -- once there are three or more "
-            "components. The components should sum to the total; where they do not, say what the "
-            "difference is rather than forcing a reconciliation."
+            "components. ADD THE ITEMS UP and check them against the total BEFORE writing them. Any "
+            "difference is itself a component you have to account for: name it from the data (a "
+            "cut-off adjustment, an accrual, an unexplained balance) and list it last as \"the "
+            "remaining CNYx\". Listing items that do not reach the total, without saying what the "
+            "rest is, is an incomplete disclosure. Do not force a reconciliation."
         )
 
     def _rhs_guidance_block(self, adjacent_detail_rows: list[Dict[str, Any]], language: str) -> str:
