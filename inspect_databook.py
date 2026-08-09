@@ -1642,6 +1642,46 @@ def _ground_truth_values(dfs: Dict[str, pd.DataFrame]) -> List[float]:
     return truth
 
 
+_ENUM_ITEM = re.compile(r"[1-9]）\s*[^；;]*?([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+_STATED_TOTAL = re.compile(r"(?:合计|总额|余额合?计?)\s*(?:为)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+_SCALE = {"元": 1.0, "万元": 1e4, "亿元": 1e8}
+
+
+def check_composition_adds_up(mapping_key: str, text: str) -> List[str]:
+    """Does an enumerated composition actually reach the total it states?
+
+    The model is asked to add its items up before writing them and to account
+    for any difference. It does not reliably do either: one real account came
+    back as "余额合计674.5万元，主要包括：1）434.2万元；2）163.8万元；3）39.2万元"
+    twice in a row, which is 637.2 -- the missing 37.3万元 being precisely the
+    three items the analyst deliverable lists and this one does not.
+
+    Arithmetic is checkable, so it is checked here rather than left to the
+    reader to spot. A gap under 1% is treated as rounding.
+    """
+    body = str(text or "")
+    if "）" not in body:
+        return []
+    m = _STATED_TOTAL.search(body)
+    items = _ENUM_ITEM.findall(body)
+    if not m or len(items) < 2:
+        return []
+    total = float(m.group(1).replace(",", "")) * _SCALE.get(m.group(2), 1.0)
+    listed = sum(float(v.replace(",", "")) * _SCALE.get(u, 1.0) for v, u in items)
+    if total <= 0:
+        return []
+    gap = total - listed
+    if abs(gap) / total <= 0.01:
+        return []
+    fmt = lambda v: f"{v/1e4:,.1f}万元"
+    return [
+        f"[{mapping_key}] composition does not reach the stated total: "
+        f"{len(items)} item(s) sum to {fmt(listed)} against {fmt(total)}, "
+        f"leaving {fmt(gap)} ({abs(gap)/total:.0%}) unaccounted for. The reader "
+        f"cannot tell whether the rest is an omission or a component with no name."
+    ]
+
+
 def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str, pd.DataFrame]) -> List[str]:
     """Returns a list of warning strings for numbers that only match ground
     truth at a non-1x scale factor (the generalized 1000x-bug detector)."""
@@ -1900,6 +1940,7 @@ def run_ai_checks(
             continue
         checked_count += 1
         all_warnings.extend(check_numeric_grounding(key, text, {key: dfs.get(key)} if key in dfs else dfs))
+        all_warnings.extend(check_composition_adds_up(key, text))
     print(f"Checked {checked_count} of {len(results or {})} account(s) with non-empty output.")
     if empty_accounts:
         print(
