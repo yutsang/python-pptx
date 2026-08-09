@@ -620,11 +620,21 @@ def _print_row_survival(tab_name: str, dfs: Dict[str, pd.DataFrame],
     analysis_df = normalized.get("prompt_analysis_df")
     deck_df = dfs.get(tab_name)
 
+    # Match on row_idx, not description. A sheet repeats the same label under
+    # different parents -- 应交增值税 appears at rows 4 and 18, the same tenant
+    # under both 租金收入 and 物业管理费收入 -- so a description match reports a
+    # dead row as surviving because its namesake elsewhere did.
+    def _surviving_row_idx(frame):
+        if frame is None or "__source_row_idx" not in getattr(frame, "columns", []):
+            return None
+        return {int(v) for v in frame["__source_row_idx"].tolist() if pd.notna(v)}
+
     def _first_col_values(frame):
         if frame is None or not len(getattr(frame, "columns", [])):
             return set()
         return {str(v).strip() for v in frame.iloc[:, 0].tolist()}
 
+    survived_idx = _surviving_row_idx(analysis_df)
     survived = _first_col_values(analysis_df)
     deck_rows = _first_col_values(deck_df)
 
@@ -643,12 +653,14 @@ def _print_row_survival(tab_name: str, dfs: Dict[str, pd.DataFrame],
         rtype = str(row.get("row_type") or "?")
         vals = row.get("values") or {}
         nonzero = {k: v for k, v in vals.items() if isinstance(v, (int, float)) and abs(v) > 0.5}
-        ok = desc in survived
+        ridx = row.get("row_idx")
+        ok = (ridx in survived_idx) if survived_idx is not None else (desc in survived)
         if not ok:
             dropped += 1
+        has_any = any(v is not None for v in vals.values())
         shown = "  ".join(
             f"{k.split('|')[-1]}={v:,.0f}" for k, v in list(nonzero.items())[:3]
-        ) or ("all periods 0/empty" if vals else "no values")
+        ) or ("zero in every period" if has_any else "no value in any period")
         print(f"  {'✅' if ok else '❌':<3}{row.get('row_idx', '?'):>5}  {rtype:<10}{desc[:32]:<34}{shown[:40]:<40}")
 
     if dropped:
@@ -1851,6 +1863,28 @@ def run_ai_checks(
             clause = str(r.get("clause", ""))[:150]
             print(f"      category={r.get('category', '?')}  reason={r.get('reason', '?')}")
             print(f"      clause: \"{clause}\"")
+
+    # With --accounts the point of the run is usually to read the text, not to
+    # sweep it: it is the 20-second loop for judging a prompt or an extraction
+    # change. Printing it here saves digging the same string back out of
+    # fdd_utils/output afterwards. Suppressed on a full run, where it would bury
+    # every check below under thirty bullets.
+    if accounts:
+        _hr("5c. GENERATED COMMENTARY (printed because --accounts narrowed the run)")
+        for key in (accounts or []):
+            content = (results or {}).get(key)
+            if content is None:
+                for _k, _v in (results or {}).items():
+                    if str(_k).strip() == str(key).strip():
+                        content = _v
+                        break
+            text = get_pipeline_result_text(content) if content else ""
+            print(f"\n  ── {key}")
+            if not text:
+                print("     (empty — the pipeline produced no final text for this account)")
+                continue
+            for line in str(text).splitlines() or [""]:
+                print(f"     {line}")
 
     _hr("6-7. NUMERIC GROUNDING + UNIT-LABEL SWEEP (this script's own independent check)")
     all_warnings: List[str] = []
