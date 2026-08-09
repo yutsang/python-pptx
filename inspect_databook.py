@@ -610,15 +610,32 @@ def _print_row_survival(tab_name: str, dfs: Dict[str, pd.DataFrame],
     rows = normalized.get("row_entries") or []
     if not rows:
         return
-    df = dfs.get(tab_name)
-    survived = set()
-    if df is not None and len(df.columns):
-        survived = {str(v).strip() for v in df.iloc[:, 0].tolist()}
+
+    # The AI does NOT read the frame this CLI hands around. production
+    # (fdd_utils/workbook/flow.py) feeds it the "detail_analysis" variant, which
+    # is normalize_financial_schedule's prompt_analysis_df; the CLI's own dfs
+    # come from extract_data_from_excel's default variant, i.e. projection_df.
+    # An earlier version of this section compared against the latter and so
+    # reported no change after a fix that only ever touched the former.
+    analysis_df = normalized.get("prompt_analysis_df")
+    deck_df = dfs.get(tab_name)
+
+    def _first_col_values(frame):
+        if frame is None or not len(getattr(frame, "columns", [])):
+            return set()
+        return {str(v).strip() for v in frame.iloc[:, 0].tolist()}
+
+    survived = _first_col_values(analysis_df)
+    deck_rows = _first_col_values(deck_df)
 
     print(f"\n{'=' * 78}")
     print(f"  ROW SURVIVAL — every row on the sheet vs what reached the AI")
     print(f"{'=' * 78}")
-    print(f"  sheet has {len(rows)} row(s); dfs['{tab_name}'] carries {len(survived)}")
+    print(f"  sheet has {len(rows)} row(s)")
+    print(f"  ✅/❌ below is against prompt_analysis_df — the 'analysis' variant, "
+          f"which is what\n     production actually sends the AI: {len(survived)} row(s)")
+    print(f"  for reference, the default variant the deck's tables use "
+          f"(projection_df): {len(deck_rows)} row(s)")
     print(f"\n  {'?':<3}{'row':>5}  {'type':<10}{'description':<34}{'values by period':<40}")
     dropped = 0
     for row in rows:
