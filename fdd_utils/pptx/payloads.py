@@ -176,6 +176,12 @@ def shorten_company_names(text: str) -> str:
     body = str(text or "")
     if not body:
         return body
+    # The databook marks counterparty rows with a leading asterisk (*丽迅企业发
+    # 展, *XINSHENG LOGISTICS). It is a workpaper marker, not part of the name,
+    # and it reached a real deck as "*嘉兴粤浩纸业有限公司" once the model was
+    # given the component rows to quote from. Same reasoning as the legal-form
+    # tail below: mechanical, so it does not belong in an instruction.
+    body = re.sub(r"(?<![\w*])\*(?=[^\s*])", "", body)
     body = _REGISTRATION_BRACKET.sub("", body)
     for tail in _LEGAL_FORM_TAILS:
         body = body.replace(tail, "")
