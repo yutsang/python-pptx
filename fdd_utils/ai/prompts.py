@@ -259,10 +259,18 @@ class PromptEngine:
         visible_rows = visible_descriptions(df)
         if not visible_rows or len(analysis_df.columns) == 0:
             return analysis_df
+        # Component ("breakdown") rows are deliberately absent from the main
+        # frame -- they are not accounts of their own -- so a visibility test
+        # alone would drop them straight back out. They are what lets a bullet
+        # say "包括：1）...2）..." instead of quoting one total, so keep them.
+        components = set(analysis_df.attrs.get("component_descriptions") or [])
         first_col = analysis_df.columns[0]
         filtered = analysis_df[
-            analysis_df[first_col].astype(str).map(lambda value: value.strip() in visible_rows)
+            analysis_df[first_col].astype(str).map(
+                lambda value: value.strip() in visible_rows or value.strip() in components
+            )
         ].copy()
+        filtered.attrs["component_descriptions"] = list(components)
         return filtered if not filtered.empty else analysis_df
 
     def _filter_adjacent_detail_rows(self, df: pd.DataFrame) -> list[Dict[str, Any]]:

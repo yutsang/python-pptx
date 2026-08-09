@@ -1312,16 +1312,38 @@ def _build_prompt_analysis_df(
     if not analysis_columns:
         return pd.DataFrame(columns=[block_title])
 
+    # "breakdown" rows are a schedule's component lines: an indented child, or
+    # a sub-row under a parent that already carries their sum. They are rightly
+    # kept out of reconciliation totals (they would double-count) and out of the
+    # account list (they are not accounts of their own) -- but they used to be
+    # dropped here too, and this table is the ONLY thing the commentary sees.
+    #
+    # That is what made a schedule arrive as a bare 合计. On one real tab the
+    # sheet held 应交增值税 / 土地使用税 / 房产税 / 印花税 with correct values and
+    # the model received a single 1,437,383 total, so it could only write "余额
+    # 为1,437,383元" where the analyst deliverable writes "主要为应交房产税106.6
+    # 万元、应交土地使用税36.8万元以及应交印花税2,938元". No prompt can recover a
+    # number it was never given.
+    #
+    # They are included here and recorded as components. Reconciliation reads
+    # row_types_by_description off the main frame, not this one, so totals are
+    # untouched. Grounding reads this frame, so enumerating a component no
+    # longer reads as a hallucination.
     prompt_rows: List[Dict[str, Any]] = []
+    component_descriptions: List[str] = []
     for row in row_entries:
-        if row["row_type"] == "breakdown":
-            continue
+        is_component = row["row_type"] == "breakdown"
         row_values = {
             column["date"]: row["values"].get(column["key"])
             for column in analysis_columns
         }
-        if row["row_type"] == "detail" and not any(value is not None for value in row_values.values()):
+        has_value = any(value is not None for value in row_values.values())
+        if row["row_type"] == "detail" and not has_value:
             continue
+        if is_component:
+            if not has_value:
+                continue                      # dead component, nothing to say
+            component_descriptions.append(str(row["description"]))
         prompt_rows.append(
             {
                 block_title: row["description"],
@@ -1332,7 +1354,9 @@ def _build_prompt_analysis_df(
 
     if not prompt_rows:
         return pd.DataFrame(columns=[block_title, INTERNAL_ROW_KEY, *[column["date"] for column in analysis_columns]])
-    return pd.DataFrame(prompt_rows)
+    frame = pd.DataFrame(prompt_rows)
+    frame.attrs["component_descriptions"] = component_descriptions
+    return frame
 
 
 def _multiply_factor(profile: Dict[str, Any]) -> int:
