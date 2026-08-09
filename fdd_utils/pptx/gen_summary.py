@@ -497,7 +497,44 @@ Draft summary:
         """
         generator = cls.__new__(cls)
         lead_in, _post = generator._split_table_commentary(text, is_chinese)
-        return lead_in
+        return cls._drop_itemised_breakdown(lead_in, is_chinese)
+
+    @staticmethod
+    def _drop_itemised_breakdown(text: str, is_chinese: bool) -> str:
+        """Cut an account's numbered composition out of the summary source.
+
+        The per-account bullets now enumerate composition, which is what the
+        deliverable wants THERE. It is not what a page summary wants: the band
+        is a few lines covering seven accounts, so an enumeration inherited
+        wholesale reads as one item per account and nothing else. A real export
+        opened with "货币资金余额为1.23亿元，主要包括：1）工商银行嘉兴平湖支行
+        #6028#-美元资本金户8,404.9万元；截至..." -- a bank account number in the
+        executive summary, and the other components never mentioned.
+
+        Keeps the sentence up to the enumeration handoff, so the headline
+        balance survives and only the itemisation goes.
+        """
+        body = str(text or "")
+        if not body:
+            return body
+        # "...合计674.5万元，主要包括：1）..." -> "...合计674.5万元。"
+        handoff = re.search(
+            r"[，,]?\s*(?:主要)?(?:包括|包含|comprising|consisting of)\s*[:：]\s*(?=[1-9１]\s*[）)])",
+            body)
+        if not handoff or not body[:handoff.start()].strip():
+            return body
+        head = body[:handoff.start()].rstrip("，,、 ")
+        tail = body[handoff.end():]
+        # End of the enumeration = the first real sentence end after it. Match
+        # 。！？ directly, and an ASCII full stop only when it is NOT a decimal
+        # point -- splitting on every "." turned "8,404.9万元" into a sentence
+        # boundary and left "9万元；2）..." stranded in the summary.
+        end = re.search(r"[。！？]|(?<!\d)\.(?!\d)", tail)
+        # Anything after the enumeration is kept: the ageing, impairment and
+        # procedure observations live there and are what a summary most wants.
+        rest = tail[end.end():].lstrip() if end else ""
+        joiner = "。" if is_chinese else ". "
+        return (head + joiner + rest).strip()
 
 
     @classmethod
