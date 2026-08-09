@@ -359,6 +359,49 @@ class PromptEngine:
         formatted_analysis_df.attrs.update(df.attrs)
         return formatted_analysis_df
 
+    @staticmethod
+    def _composition_guidance(df: Optional[pd.DataFrame], language: str) -> str:
+        """Tell the model how to enumerate, but only when there is something to
+        enumerate.
+
+        The component rows of a schedule now reach the prompt. Without this the
+        model names the categories and drops their amounts -- "主要包括租金收入、
+        物业管理费收入及水电费收入" where the analyst deliverable writes "1）...
+        598.1万元；2）...39.2万元". It was reading the detail (it quoted a single
+        3,588元 tenant figure unprompted); it just had no instruction on the
+        shape.
+
+        Gated on components actually being present. Asking for an itemised
+        breakdown of an account that has none is an invitation to invent one.
+        """
+        if not isinstance(df, pd.DataFrame):
+            return ""
+        analysis_df = df.attrs.get("prompt_analysis_df")
+        components = []
+        if isinstance(analysis_df, pd.DataFrame):
+            components = list(analysis_df.attrs.get("component_descriptions") or [])
+        if len(components) < 2:
+            return ""
+        if language == "Chi":
+            return (
+                "【组成披露】该科目的明细组成已随财务数据提供。"
+                "请按组成列举，且每一项都必须带上金额——只写类别名称而不给金额是不合格的。"
+                "在**有金额的最高层级**列举（例如租金收入、物业管理费收入、水电费收入各自的余额），"
+                "不要逐一罗列每个交易对手；仅在某一交易对手金额重大、账龄异常或性质特殊时才具名，"
+                "并说明为何值得一提。组成达三项或以上时使用'包括：1）…；2）…；3）…'的编号句式。"
+                "组成金额之和应与合计一致；若不一致，说明差额由什么构成，不要强行凑数。"
+            )
+        return (
+            "COMPOSITION. The account's component lines are supplied with the financial data. "
+            "Enumerate the composition and give an AMOUNT for every item -- naming categories without "
+            "amounts is not acceptable. Enumerate at the HIGHEST level that carries amounts (e.g. the "
+            "balance of each revenue stream), not every counterparty; name an individual counterparty "
+            "only where its size, ageing or nature makes it worth calling out, and say why. Use a "
+            "numbered form -- \"comprising: 1) ...; 2) ...; 3) ...\" -- once there are three or more "
+            "components. The components should sum to the total; where they do not, say what the "
+            "difference is rather than forcing a reconciliation."
+        )
+
     def _rhs_guidance_block(self, adjacent_detail_rows: list[Dict[str, Any]], language: str) -> str:
         if not adjacent_detail_rows:
             return ""
@@ -1282,6 +1325,7 @@ class PromptEngine:
             ),
             "analytical_lens_guidance": self._analytical_lens_guidance(df, language),
             "detail_table_guidance": self._detail_table_guidance(df, language),
+            "composition_guidance": self._composition_guidance(df, language),
             "rhs_guidance_block": self._rhs_guidance_block(
                 self.filter_adjacent_detail_rows(df) if isinstance(df, pd.DataFrame) else [],
                 language,
