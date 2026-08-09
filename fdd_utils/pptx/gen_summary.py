@@ -580,7 +580,15 @@ Draft summary:
             from fdd_utils.ai import AIClient
             summary_settings = self._summary_settings()
             if not bool(summary_settings.get("enable_ai", True)):
-                logger.info("PPTX summary AI disabled by config; using fallback summary")
+                # WARNING, not INFO: falling back is invisible in the deck --
+                # the band still fills, just with spliced first sentences that
+                # read "截至...；截至...；截至...". A reader cannot tell the AI
+                # summary never ran, so the log has to say so at a level that
+                # inspect_databook's export-log analysis actually surfaces.
+                logger.warning(
+                    "Executive summary: AI DISABLED by config "
+                    "(pptx.executive_summary.enable_ai) -- the band will be filled by the "
+                    "deterministic first-sentence fallback, not by the model.")
                 return None
             model_type = self._resolve_summary_model_type(is_chinese)
             max_input_chars = int(summary_settings.get("max_input_chars", 1600))
@@ -601,6 +609,9 @@ Draft summary:
             max_sentences_eng = int(summary_settings.get("max_sentences_eng", 4))
             source_text = str(commentary or summary_source or "").strip()
             if not source_text:
+                logger.warning(
+                    "Executive summary: no source text for this page -- neither the page "
+                    "commentary nor the summary source had content, so the band falls back.")
                 return None
 
             if is_chinese:
@@ -668,6 +679,18 @@ Original content:
 
             if summary:
                 return self._validate_ai_summary(source_text, summary, is_chinese, ai_helper=ai_helper)
+            # The last silent way out, and the likeliest one: a local model that
+            # answers in 10-14s against a 10s summary timeout returns nothing,
+            # and the band quietly fills with spliced first sentences instead.
+            # Nothing in the deck says which happened, so say it here.
+            logger.warning(
+                "Executive summary: the model returned NO text (model_type=%s, "
+                "timeout=%.0fs, source=%d chars) -- falling back to spliced first "
+                "sentences. If this is a local model, raise "
+                "pptx.executive_summary.local_generation_timeout_seconds.",
+                model_type, generation_timeout_seconds, len(source_text),
+            )
+            return None
         except Exception as e:
             logger.warning("Could not generate AI summary: %s", e)
             logger.debug(traceback.format_exc())

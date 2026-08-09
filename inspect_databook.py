@@ -2097,9 +2097,19 @@ def export_and_inspect_pptx(
     template_path = str(Path(__file__).parent / "fdd_utils" / "template.pptx")
     is_chinese = (language == "Chi")
 
+    # Every fdd_utils.pptx.* module sets its OWN logger to WARNING at import,
+    # and a child's level wins over the parent's -- so raising only the parent
+    # captured nothing, which is why "Text measurement [...]" never appeared and
+    # why a silent executive-summary fallback stayed silent. Raise the children
+    # too, and put them back afterwards.
     pptx_logger = logging.getLogger("fdd_utils.pptx")
     handler = _ListLogHandler()
     prev_level = pptx_logger.level
+    _child_levels = {}
+    for _name, _lg in list(logging.Logger.manager.loggerDict.items()):
+        if _name.startswith("fdd_utils.pptx.") and isinstance(_lg, logging.Logger):
+            _child_levels[_name] = _lg.level
+            _lg.setLevel(logging.INFO)
     pptx_logger.addHandler(handler)
     pptx_logger.setLevel(logging.INFO)
     stdout_buf = io.StringIO()
@@ -2119,6 +2129,8 @@ def export_and_inspect_pptx(
     finally:
         pptx_logger.removeHandler(handler)
         pptx_logger.setLevel(prev_level)
+        for _name, _lvl in _child_levels.items():
+            logging.getLogger(_name).setLevel(_lvl)
     captured_stdout = stdout_buf.getvalue()
     print(captured_stdout, end="")
 
