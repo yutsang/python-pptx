@@ -356,6 +356,17 @@ class PromptEngine:
         if not isinstance(df, pd.DataFrame) or df.empty or not report_language:
             return df
         formatted_analysis_df = add_language_display_columns(df.copy(), report_language)
+        # add_language_display_columns keeps each raw numeric column alongside
+        # its new "<date>_formatted" sibling. Left as-is, the model sees both
+        # for the same date (e.g. 1676234.56 next to "167.6万") and can quote
+        # the wrong one -- confirmed via a real deck where 房产税 came out as
+        # "1,676.2万元" against a source of 167.6万元, a clean 10x slip.
+        # Collapse to formatted-only, same as the main table
+        # (_build_markdown_prompt_payload already does this via
+        # prepare_display_dataframe). SourceIndex grounding is unaffected: it
+        # reads df.attrs["prompt_analysis_df"] directly, before this
+        # formatting step ever runs.
+        formatted_analysis_df = prepare_display_dataframe(formatted_analysis_df)
         formatted_analysis_df.attrs.update(df.attrs)
         return formatted_analysis_df
 

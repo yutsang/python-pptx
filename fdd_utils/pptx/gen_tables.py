@@ -258,7 +258,12 @@ class _TablesMixin:
 
 
     def _add_table_to_slide(self, slide, df, bounds: Dict[str, int], table_name: str = None):
-        total_rows = len(df) + 2 if table_name else len(df) + 1
+        # +3 = title band + stage banner ("示意性调整后"/"Indicative adjusted",
+        # IMG_0399) + date-header row. The banner only exists alongside the
+        # title (both come from _fill_table_placeholder's "if table_name"
+        # block), so a bare header-only table (no table_name) still only
+        # needs +1.
+        total_rows = len(df) + 3 if table_name else len(df) + 1
         graphic_frame = slide.shapes.add_table(
             total_rows,
             len(df.columns),
@@ -657,9 +662,23 @@ class _TablesMixin:
         # a real export), which the user flagged as "一個大一個細". The
         # uniform set is the element-wise MAX across every table sharing
         # this column count, so no table's own content can wrap under it.
+        # IMG_0402: explanation text landing on top of the table. Traced to
+        # here -- the uniform set is deliberately the MAX across every table
+        # sharing this column count (a WIDER sibling table's own longest
+        # label can inflate it well past what THIS table's content needs),
+        # and _clamp_column_widths_to_available then scales EVERY column down
+        # proportionally whenever that inflated total doesn't fit this slot's
+        # available_pt. That scale can push a column narrower than THIS
+        # table's own content needs, so a cell wraps in real PowerPoint even
+        # though _presentation_table_height_pt assumed one line per row --
+        # exactly the class of bug 2c6e2b1 was reverted for, reintroduced via
+        # a different path the no-wrap fix didn't anticipate. Only take the
+        # uniform width when it already fits without scaling; otherwise fall
+        # back to sizing THIS table to its own content (still clamped to
+        # available_pt, but against a need that's actually its own).
         uniform = (getattr(self, "_uniform_table_col_widths_pt", None) or {}).get(n_cols)
-        if uniform:
-            column_widths_pt = self._clamp_column_widths_to_available(list(uniform), available_pt)
+        if uniform and sum(uniform) <= available_pt:
+            column_widths_pt = list(uniform)
         else:
             column_widths_pt = self._measure_presentation_table_column_widths_pt(
                 plan, periods, period_labels, unit_label, is_chinese_databook, available_pt,
@@ -1118,10 +1137,11 @@ class _TablesMixin:
                         # Remove the placeholder shape
                         sp = shape._element
                         slide.shapes._spTree.remove(sp)
-                        
+
                         # Add new table at the same position
-                        # Need: 1 row for title (if table_name), 1 for header, N for data
-                        total_rows = len(df) + 2 if table_name else len(df) + 1
+                        # Need: 1 row for title, 1 for the stage banner (both
+                        # only when table_name), 1 for the date header, N for data
+                        total_rows = len(df) + 3 if table_name else len(df) + 1
                         table_shape = slide.shapes.add_table(
                             rows=total_rows,
                             cols=len(df.columns),
@@ -1223,6 +1243,12 @@ class _TablesMixin:
                 header_row_height = Inches(data_row_height.inches + 0.03)
                 title_font_size = Pt(data_font_size.pt + 2)
                 title_row_height = Inches(data_row_height.inches + 0.05)
+                # Stage banner ("示意性调整后"/"Indicative adjusted", IMG_0399)
+                # sits between the title band and the date-header row. Same
+                # height/font tier as the date row -- it is short, un-wrapped
+                # text, not a second density-bearing row.
+                banner_row_height = header_row_height
+                banner_font_size = header_font_size
 
                 # Hard clamp: the three fixed tiers above are picked from
                 # ROW COUNT alone and don't know this table's actual
@@ -1236,6 +1262,7 @@ class _TablesMixin:
                     _available_h_in = max(0.1, (bounds.get("height", 0) or 0) / 914400)
                     _needed_h_in = (
                         (title_row_height.inches if table_name else 0.0)
+                        + (banner_row_height.inches if table_name else 0.0)
                         + header_row_height.inches
                         + len(df) * data_row_height.inches
                     )
@@ -1244,9 +1271,11 @@ class _TablesMixin:
                         data_row_height = Inches(max(0.08, data_row_height.inches * _scale))
                         header_row_height = Inches(max(0.09, header_row_height.inches * _scale))
                         title_row_height = Inches(max(0.10, title_row_height.inches * _scale))
+                        banner_row_height = Inches(max(0.09, banner_row_height.inches * _scale))
                         data_font_size = Pt(max(4.5, data_font_size.pt * _scale))
                         header_font_size = Pt(max(5.0, header_font_size.pt * _scale))
                         title_font_size = Pt(max(5.5, title_font_size.pt * _scale))
+                        banner_font_size = Pt(max(5.0, banner_font_size.pt * _scale))
                 except Exception:
                     pass
 
@@ -1294,7 +1323,73 @@ class _TablesMixin:
                         data_start_row = 0
                 else:
                     data_start_row = 0
-                
+
+                # A lighter blue than the navy title band directly above it,
+                # matching the reference report's two-tone banner. Merging
+                # them into one navy (tried first) removed the distinction the
+                # reference draws. What made the header read as a SEPARATE
+                # element before was not the shade but the black cell borders
+                # drawn across it -- those are white hairlines now.
+                HEADER_ROW_BLUE = RGBColor(0x1F, 0x4E, 0x96)
+                _header_blue = bool(
+                    self.pptx_settings.get("financial_table_header_blue", True)
+                )
+
+                # Stage banner row ("示意性调整后" / "Indicative adjusted"),
+                # merged across every column, directly beneath the title band.
+                # IMG_0399 shows the deliverable's header as TWO rows -- this
+                # banner, then the date row -- not one; an earlier commit
+                # today read the stage as already covered by the (bare) title
+                # band and the (date-only) header row and dropped it from
+                # both, which this photo shows was wrong.
+                #
+                # DANGER: _fill_table_placeholder's per-cell colour/border
+                # changes on this exact table caused two real Chinese exports
+                # to render COMPLETELY BLANK in real PowerPoint (see
+                # docs/failed-attempts.md). Reusing the same HEADER_ROW_BLUE
+                # fill and the same financial_table_header_blue toggle as the
+                # already-shipped date row, rather than inventing a new style,
+                # keeps this row inside the pattern that is already
+                # signed-off and in production -- but it is still a NEW row
+                # on this table and has not been seen in real PowerPoint yet.
+                if table_name:
+                    try:
+                        if len(table.rows) <= data_start_row:
+                            table.rows.add_row()
+                        banner_row = table.rows[data_start_row]
+                        banner_row.height = banner_row_height
+                        if len(table.columns) > 1:
+                            table.cell(data_start_row, 0).merge(
+                                table.cell(data_start_row, len(table.columns) - 1)
+                            )
+                        banner_cell = table.cell(data_start_row, 0)
+                        banner_cell.text = "示意性调整后" if is_chinese_mode else "Indicative adjusted"
+                        if banner_cell.text_frame.paragraphs:
+                            p = banner_cell.text_frame.paragraphs[0]
+                            p.alignment = PP_ALIGN.CENTER
+                            run = p.runs[0] if p.runs else p.add_run()
+                            run.font.name = 'Arial'
+                            self._set_east_asian_typeface(run)
+                            self._declare_run_language(run)
+                            run.font.size = banner_font_size
+                            run.font.bold = True
+                            run.font.color.rgb = WHITE if _header_blue else BLACK
+                            p.line_spacing = 1.0
+                            _apply_east_asian_line_breaking(p)
+                        banner_cell.fill.solid()
+                        banner_cell.fill.fore_color.rgb = HEADER_ROW_BLUE if _header_blue else WHITE
+                        _set_cell_border(banner_cell, "bottom", color_rgb="000000", width=Pt(0.5))
+                        try:
+                            banner_cell.margin_left = Inches(0.04)
+                            banner_cell.margin_right = Inches(0.04)
+                            banner_cell.margin_top = Inches(0.02)
+                            banner_cell.margin_bottom = Inches(0.02)
+                        except Exception:
+                            pass
+                        data_start_row += 1
+                    except Exception:
+                        logger.debug("Could not render stage banner row", exc_info=True)
+
                 # Fill header row with formatting
                 max_cols = min(len(df.columns), len(table.columns))
                 header_row_idx = data_start_row
@@ -1337,16 +1432,9 @@ class _TablesMixin:
                 # export still read as "hasn't taken effect" at the lighter
                 # shade.
                 LIGHT_BLUE_HIGHLIGHT = RGBColor(0xBD, 0xD7, 0xEE)
-                # A lighter blue than the navy title band directly above it,
-                # matching the reference report's two-tone banner. Merging
-                # them into one navy (tried first) removed the distinction the
-                # reference draws. What made the header read as a SEPARATE
-                # element before was not the shade but the black cell borders
-                # drawn across it -- those are white hairlines now.
-                HEADER_ROW_BLUE = RGBColor(0x1F, 0x4E, 0x96)
-                _header_blue = bool(
-                    self.pptx_settings.get("financial_table_header_blue", True)
-                )
+                # HEADER_ROW_BLUE / _header_blue are defined earlier now,
+                # alongside the stage banner row, since that row needs them
+                # first.
 
                 for col_idx, col_name in enumerate(df.columns[:max_cols]):
                     if col_idx < len(table.columns):
