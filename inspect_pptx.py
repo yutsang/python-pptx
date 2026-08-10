@@ -280,13 +280,21 @@ def _spare_below_pt(slide, shape) -> float:
     """Unclaimed vertical space between a shape's bottom and whatever is under
     it, in points. 0 when the shape is unknown or nothing sits below."""
     if shape is None:
-        return 0.0
+        return 0.0, ""
     try:
         bottom = float(shape.top) + float(shape.height)
         left = float(shape.left)
         right = left + float(shape.width)
         nearest = None
-        for other in slide.shapes:
+        # The source line / page furniture usually lives on the LAYOUT, not the
+        # slide, so a slide-only scan reports the full drop to the paper edge
+        # and overstates what is actually usable.
+        _others = list(slide.shapes)
+        try:
+            _others += list(slide.slide_layout.shapes)
+        except Exception:
+            pass
+        for other in _others:
             if other is shape or other.top is None:
                 continue
             o_top = float(other.top)
@@ -297,10 +305,19 @@ def _spare_below_pt(slide, shape) -> float:
                 continue
             nearest = o_top if nearest is None else min(nearest, o_top)
         if nearest is None:
-            return 0.0
-        return max(0.0, (nearest - bottom) / 12700.0)
+            # Nothing below it -- which is the usual case for the commentary
+            # slots, they are the bottom-most element on the page. Measuring
+            # only to the next SHAPE reported 0pt for exactly the slot a real
+            # deck showed two empty lines under, because the empty area below
+            # a bottom-most box is not a shape. Fall back to the slide edge.
+            try:
+                slide_h = float(slide.part.package.presentation_part.presentation.slide_height)
+            except Exception:
+                return 0.0
+            return max(0.0, (slide_h - bottom) / 12700.0), "slide bottom"
+        return max(0.0, (nearest - bottom) / 12700.0), "next shape"
     except Exception:
-        return 0.0
+        return 0.0, ""
 
 def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text: bool = False) -> dict:
     """Runs the full layout inspection and returns a structured summary
@@ -779,9 +796,9 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
             # the box smaller than the space available under it. That is the
             # same defect already fixed for coSummaryShape, measured here for
             # the commentary slots so it is a number rather than an impression.
-            _spare = _spare_below_pt(slide, _shape_by_name.get(info.name))
-            _spare_str = (f"  ⬇ {_spare:.1f}pt ({_spare/10.8:.1f} lines) UNUSED below the box"
-                          if _spare >= 5.0 else "")
+            _spare, _spare_to = _spare_below_pt(slide, _shape_by_name.get(info.name))
+            _spare_str = (f"  ⬇ {_spare:.1f}pt ({_spare/10.8:.1f} lines) unused below the box "
+                          f"(to {_spare_to})" if _spare >= 5.0 else "")
             _print(f"  [{info.slot:6s}] {info.name:24s} left={info.left_in:5.2f}in width={info.width_in:5.2f}in "
                    f"chars={info.n_chars:4d} capacity={info.capacity_lines:5.1f}L used={info.content_units:5.1f}L "
                    f"fill={info.fill_ratio:.0%} font_pt={list(info.font_sizes_pt)} "
