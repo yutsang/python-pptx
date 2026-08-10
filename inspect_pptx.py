@@ -275,6 +275,33 @@ def _bbox_overlap(a, b) -> bool:
     return ax1 < bx2 and bx1 < ax2 and ay1 < by2 and by1 < ay2
 
 
+
+def _spare_below_pt(slide, shape) -> float:
+    """Unclaimed vertical space between a shape's bottom and whatever is under
+    it, in points. 0 when the shape is unknown or nothing sits below."""
+    if shape is None:
+        return 0.0
+    try:
+        bottom = float(shape.top) + float(shape.height)
+        left = float(shape.left)
+        right = left + float(shape.width)
+        nearest = None
+        for other in slide.shapes:
+            if other is shape or other.top is None:
+                continue
+            o_top = float(other.top)
+            if o_top < bottom:
+                continue
+            o_left = float(other.left)
+            if o_left >= right or (o_left + float(other.width)) <= left:
+                continue
+            nearest = o_top if nearest is None else min(nearest, o_top)
+        if nearest is None:
+            return 0.0
+        return max(0.0, (nearest - bottom) / 12700.0)
+    except Exception:
+        return 0.0
+
 def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text: bool = False) -> dict:
     """Runs the full layout inspection and returns a structured summary
     (used both by this file's own CLI and by inspect_databook.py's combined
@@ -580,6 +607,7 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
         all_checked_shapes = list(commentary_shapes) + table_stack_shapes
         infos: List[ShapeInfo] = []
         text_bands_by_shape: Dict[int, List[Tuple[float, float]]] = {}
+        _shape_by_name = {getattr(sh, 'name', ''): sh for sh in slide.shapes}
         for shape in all_checked_shapes:
             if shape in table_stack_shapes:
                 # No name to key off of -- fall back to which half of the
@@ -745,10 +773,19 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
             if flags:
                 total_warnings += 1
                 warning_details.append(f"Slide {slide_idx + 1} [{info.slot}] {info.name}: {', '.join(flags)}")
+            # How much room sits BELOW this shape that nothing claims. A slot
+            # can be full to the last point (VBA BoundHeight == ShapeHeight,
+            # gap 0) and still look two lines short, because the template drew
+            # the box smaller than the space available under it. That is the
+            # same defect already fixed for coSummaryShape, measured here for
+            # the commentary slots so it is a number rather than an impression.
+            _spare = _spare_below_pt(slide, _shape_by_name.get(info.name))
+            _spare_str = (f"  ⬇ {_spare:.1f}pt ({_spare/10.8:.1f} lines) UNUSED below the box"
+                          if _spare >= 5.0 else "")
             _print(f"  [{info.slot:6s}] {info.name:24s} left={info.left_in:5.2f}in width={info.width_in:5.2f}in "
                    f"chars={info.n_chars:4d} capacity={info.capacity_lines:5.1f}L used={info.content_units:5.1f}L "
                    f"fill={info.fill_ratio:.0%} font_pt={list(info.font_sizes_pt)} "
-                   f"(raw wraps_to={info.wrapped_lines:3d}L, NOT comparable to capacity){flag_str}")
+                   f"(raw wraps_to={info.wrapped_lines:3d}L, NOT comparable to capacity){flag_str}{_spare_str}")
 
         # 1. L/R collision: a page with no table/summary (i.e. NOT the
         # designed single-column table slide) but only a single unsplit slot.
