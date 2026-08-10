@@ -1417,9 +1417,14 @@ class _TablesMixin:
                             # tinted colour -- confirmed via
                             # inspect_pptx_tables.py showing fill=inherited on
                             # every un-highlighted cell.
-                            cell.fill.fore_color.rgb = (
-                                LIGHT_BLUE_HIGHLIGHT if col_idx == max_cols - 1 else WHITE
-                            )
+                            # The deliverable tints NO column: the stage is
+                            # already named in the header, so a highlight on
+                            # the last one is redundant and reads as emphasis
+                            # the analyst did not intend. Still set solid WHITE
+                            # rather than leaving it unset -- an unset fill
+                            # inherits the table style GUID's themed colour,
+                            # which is the reason this branch is explicit.
+                            cell.fill.fore_color.rgb = WHITE
 
                         # Vertical (column-separating) borders plus ONE
                         # bottom rule under the header row -- horizontal
@@ -1434,9 +1439,12 @@ class _TablesMixin:
                         # navy, invisible as a boundary -- and keep the black
                         # rule only where it does real work: under the band,
                         # separating it from the data.
-                        _sep = "FFFFFF" if _header_blue else "000000"
-                        for _side in ("left", "right"):
-                            _set_cell_border(cell, _side, color_rgb=_sep, width=Pt(0.5))
+                        # No vertical separators: the deliverable's table has
+                        # none in the data area at all -- the columns are held
+                        # apart by alignment and cell margins, and the only
+                        # rules are horizontal, under the header band and above
+                        # each total. Drawing them made the table read as a
+                        # spreadsheet rather than a report page.
                         _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(0.5))
 
                         try:
@@ -1677,15 +1685,13 @@ class _TablesMixin:
                         except Exception:
                             pass
 
-                        # Vertical (column-separating) borders only -- a
-                        # horizontal rule under every single data row reads
-                        # as visually busy/cluttered once the table has 20+
-                        # rows. Total/subtotal rows get their own explicit
-                        # top (and, for grand totals, bottom) rule below,
-                        # applied AFTER this, so those separators are still
-                        # there exactly where they matter.
-                        for _side in ("left", "right"):
-                            _set_cell_border(cell, _side, color_rgb="000000", width=Pt(0.5))
+                        # No borders on a data cell at all. The deliverable
+                        # draws none: not vertically, which would read as a
+                        # spreadsheet, and not horizontally under every row,
+                        # which is visually busy past 20 rows. Total and
+                        # subtotal rows get their own explicit rules below,
+                        # applied AFTER this, so the separators remain exactly
+                        # where they carry meaning.
 
                         # Only the LAST column is highlighted light blue, on
                         # EVERY row including totals -- every other cell is
@@ -1705,7 +1711,7 @@ class _TablesMixin:
                                 cell.fill.fore_color.rgb = GREY_TOTAL_FILL
                             else:
                                 cell.fill.fore_color.rgb = (
-                                    LIGHT_BLUE_HIGHLIGHT if col_idx == max_cols - 1 else WHITE
+                                    WHITE  # deliverable tints no column
                                 )
                         except Exception:
                             pass
