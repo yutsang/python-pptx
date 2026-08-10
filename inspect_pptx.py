@@ -292,6 +292,7 @@ def _spare_below_pt(slide, shape) -> float:
         _others = list(slide.shapes)
         try:
             _others += list(slide.slide_layout.shapes)
+            _others += list(slide.slide_layout.slide_master.shapes)
         except Exception:
             pass
         for other in _others:
