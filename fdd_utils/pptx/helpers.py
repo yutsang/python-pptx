@@ -719,12 +719,24 @@ def _resolve_font_metrics_path(is_chinese: bool, packing: Dict[str, Any]) -> Opt
     Language-specific key wins; falls back to a single shared path. Relative
     paths resolve against the repo root."""
     key = "font_metrics_path_chi" if is_chinese else "font_metrics_path_eng"
-    path = packing.get(key) or packing.get("font_metrics_path")
-    if not path:
+    # Same default inspect_pptx uses. Without it an unset (or empty-string)
+    # config key made the EXPORTER fall back to a system font while the CHECKER
+    # loaded the client metrics -- the packer laid the deck out with Arial and
+    # inspect_pptx then measured the result with the client's real typeface.
+    # Every fill ratio compared two different rulers.
+    _default = ("font_metrics/msyh_chi.json" if is_chinese
+                else "font_metrics/arial_eng.json")
+    path = packing.get(key) or packing.get("font_metrics_path") or _default
+    p = str(path).strip()
+    if not p:
         return None
-    p = str(path)
     if not os.path.isabs(p):
-        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), p)
+        # Anchor on the REPO ROOT. This file used to be fdd_utils/pptx.py, where
+        # dirname(dirname(__file__)) was the root; since the package split it is
+        # fdd_utils/pptx/helpers.py, so the same expression pointed one level
+        # too deep and every relative path resolved to fdd_utils/fdd_utils/...
+        _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        p = os.path.join(_root, p)
     return p if os.path.exists(p) else None
 
 

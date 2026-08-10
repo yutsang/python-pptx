@@ -330,8 +330,11 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
     packing_cfg = ((config.get("pptx") or {}).get("commentary_packing") or {})
     global _OVERFLOW_TOLERANCE_LINES
     _OVERFLOW_TOLERANCE_LINES = float(packing_cfg.get("tail_overflow_tolerance_lines", 2.0) or 0.0)
-    metrics_eng = packing_cfg.get("font_metrics_path_eng") or "fdd_utils/font_metrics/arial_eng.json"
-    metrics_chi = packing_cfg.get("font_metrics_path_chi") or "fdd_utils/font_metrics/msyh_chi.json"
+    # The repo ships these at font_metrics/, not fdd_utils/font_metrics/ --
+    # the old default pointed at a directory that does not exist, so this fell
+    # through to a system font whenever config.yml left the key unset.
+    metrics_eng = packing_cfg.get("font_metrics_path_eng") or "font_metrics/arial_eng.json"
+    metrics_chi = packing_cfg.get("font_metrics_path_chi") or "font_metrics/msyh_chi.json"
     family_eng = packing_cfg.get("font_family_eng") or "Arial"
     family_chi = packing_cfg.get("font_family_chi") or "Microsoft YaHei"
 
