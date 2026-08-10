@@ -89,6 +89,26 @@ logger.setLevel(logging.WARNING)
 
 
 
+
+_ISO_DATE = re.compile(r"^\s*(\d{4})-(\d{2})-(\d{2})\s*$")
+
+
+def _format_header_period(label: str, is_chinese: bool) -> str:
+    """Column headers read 2023年12月31日 in the analyst deliverable, not
+    2023-12-31. Pure text at render time -- it touches no fill, border or font,
+    so it is not the class of change that produced blank pages here before.
+    Anything that is not a bare ISO date comes back untouched, which leaves the
+    annualised and period labels alone.
+    """
+    if not is_chinese:
+        return label
+    m = _ISO_DATE.match(str(label or ""))
+    if not m:
+        return label
+    y, mth, d = m.groups()
+    return f"{y}年{int(mth)}月{int(d)}日"
+
+
 class _TablesMixin:
     """Drawing tables onto slides: the statement table, the presentation detail
     tables and their lead-ins, continuation headings and post-table explanations.
@@ -1335,7 +1355,7 @@ class _TablesMixin:
                         if currency_unit and (col_name.lower() == 'description' or '描述' in str(col_name) or '项目' in str(col_name)):
                             cell.text = currency_unit
                         else:
-                            cell.text = str(col_name)
+                            cell.text = _format_header_period(str(col_name), bool(is_chinese_mode))
                         # Company-format reference: the date/header row sits
                         # directly under the navy title band with NO fill of
                         # its own (white bg, dark bold text) -- only the title
@@ -1806,13 +1826,17 @@ class _TablesMixin:
             # the source Excel calls the sheet. Language-aware so Chinese decks
             # stay consistent with English decks.
             is_chinese_mode = str(language or "").strip().lower().startswith(("chi", "zh", "cn"))
-            project_suffix = f" - {project_name}" if project_name else ""
+            # The analyst deliverable's band reads just 资产负债表. It carries no
+            # 示意性调整后 prefix (the stage is already stated in the column
+            # headers) and no project suffix -- the suffix put the databook's
+            # FILE NAME in the band, e.g. "...资产负债表 - Crescent-databook",
+            # which is a working artefact, not a table title.
             if is_chinese_mode:
-                bs_table_name = f"示意性调整后资产负债表{project_suffix}"
-                is_table_name = f"示意性调整后利润表{project_suffix}"
+                bs_table_name = "资产负债表"
+                is_table_name = "利润表"
             else:
-                bs_table_name = f"Indicative adjusted balance sheet{project_suffix}"
-                is_table_name = f"Indicative adjusted income statement{project_suffix}"
+                bs_table_name = "Balance sheet"
+                is_table_name = "Income statement"
 
             # Detect currency unit from the sheet header. Currency markers live
             # in the first 20 rows (table titles / unit row); reading the full
