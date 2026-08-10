@@ -217,11 +217,20 @@ def _fit_table_columns(table, df):
         col_name_str = str(col_name).lower()
         if col_idx == 0:
             weight = (
-                max(2.6, min(4.2, max_len / 5)) if is_cjk_labels
+                # Lowered from 2.6 to pay for the date columns above. 2.2 of a
+                # 4.78in table is 1.07in ~= 71pt of usable cell, which still
+                # holds an 11-character label like 一年内到期的非流动负债 at 6pt
+                # without wrapping -- that is the longest in this statement.
+                max(2.2, min(4.2, max_len / 5)) if is_cjk_labels
                 else max(2.0, min(3.2, max_len / 10))
             )
         elif any(token in col_name_str for token in ["20", "19", "date", "年", "月"]):
-            weight = max(1.4, min(2.0, max_len / 10))
+            # The weight is computed from the ISO column NAME (2023-12-31, 10
+            # chars) but a Chinese deck renders 2023年12月31日 -- same character
+            # count, three of them full-width, so ~1.4x the drawn width. At the
+            # old 1.4 floor that came to 53.0pt of usable cell against 57.7pt of
+            # text, and the header wrapped to two lines, growing the row.
+            weight = max(1.9, min(2.4, max_len / 8))
         else:
             weight = max(1.2, min(1.9, max_len / 9))
         weights.append(weight)
