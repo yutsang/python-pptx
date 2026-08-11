@@ -1812,15 +1812,24 @@ def run_ai_checks(
     else:
         from fdd_utils.ai import load_yaml_config, get_default_config_path
         try:
-            _provider_cfg = load_yaml_config(get_default_config_path()).get(model_type, {}) or {}
+            _cfg = load_yaml_config(get_default_config_path()) or {}
         except Exception:
-            _provider_cfg = {}
-        _configured = _provider_cfg.get("max_workers")
-        if _configured:
-            effective_workers, workers_source = int(_configured), f"{model_type}.max_workers in config.yml"
+            _cfg = {}
+        # Two keys exist for one setting: the Streamlit path reads
+        # processing.max_workers and this one read <provider>.max_workers, so
+        # the same config.yml gave the UI concurrency and the CLI none. Honour
+        # both, provider first.
+        _provider_workers = (_cfg.get(model_type) or {}).get("max_workers")
+        _processing_workers = (_cfg.get("processing") or {}).get("max_workers")
+        if _provider_workers:
+            effective_workers = int(_provider_workers)
+            workers_source = f"{model_type}.max_workers in config.yml"
+        elif _processing_workers:
+            effective_workers = int(_processing_workers)
+            workers_source = "processing.max_workers in config.yml"
         else:
             effective_workers = 4 if model_type == "local" else 2
-            workers_source = "built-in default — no <provider>.max_workers set in config.yml"
+            workers_source = "built-in default — no max_workers set in config.yml"
     print(f"Running pipeline for {len(mapping_keys)} MAPPED accounts (of {len(dfs)} total tabs), "
           f"model_type={model_type}, model_name={model_name}, workers={effective_workers} ({workers_source})...")
 
@@ -1893,8 +1902,15 @@ def run_ai_checks(
     stage_clock["last_boundary"] = start
     try:
         results = run_ai_pipeline_with_progress(
+            # effective_workers, NOT the raw --workers argument. Passing the
+            # argument meant None whenever the flag was omitted, and
+            # _resolve_max_workers reads None for a local model as 1 -- so the
+            # CLI printed "workers=4" and then ran the whole pipeline
+            # serially, while the Streamlit path passed its configured value
+            # and ran several accounts at once. That alone is most of why the
+            # same databook took minutes longer here than in the UI.
             mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, model_name=model_name,
-            language=language, use_multithreading=True, max_workers=workers,
+            language=language, use_multithreading=True, max_workers=effective_workers,
             progress_callback=_tqdm_progress,
         )
     finally:
