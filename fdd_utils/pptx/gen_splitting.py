@@ -181,7 +181,11 @@ class _SplittingMixin:
         # measure says the paragraph would fit; let the boundary search below
         # decide, and downstream capacity re-validation is the real safety net.
         para = paragraphs[0]
-        chars_available = int(max(1, available_visual * chars_per_line))
+        # Exact where the client's font metrics are available; the average
+        # only survives as the fallback (see _exact_chars_for_lines).
+        chars_available = self._exact_chars_for_lines(
+            para, available_visual, shape=shape, is_chinese=is_chinese,
+        ) or int(max(1, available_visual * chars_per_line))
         hard_cap = min(len(para), int(chars_available * 1.05))
         min_fill = max(1, int(chars_available * min_fill_ratio))
         end_positions: List[int] = []
@@ -493,6 +497,62 @@ class _SplittingMixin:
             return None
         return head, tail
 
+
+    def _exact_chars_for_lines(
+        self, text: str, n_lines: float, *, shape, is_chinese: bool,
+    ) -> Optional[int]:
+        """How many CHARACTERS of `text` occupy at most `n_lines` rendered
+        lines, measured with the client's real font rather than an average.
+
+        Returns None when no shape/metrics are available, in which case the
+        caller keeps its chars-per-line estimate.
+
+        The estimate this replaces assumed one average width for every
+        character. Financial Chinese is not uniform -- a full-width 期 and the
+        half-width digits of 355.8 differ by roughly a factor of two -- so the
+        average was wrong in both directions depending on how amount-heavy the
+        sentence was, and consistently short overall. Measuring the actual
+        string removes the guess entirely.
+
+        Binary search over the index rather than joining wrapped lines back
+        together: wrap() may drop the whitespace it broke at, so the joined
+        text does not map back onto an offset in the original. len() of a
+        prefix always does.
+        """
+        if shape is None or n_lines <= 0:
+            return None
+        try:
+            from fdd_utils.text_metrics import get_measurer, text_box_from_shape
+            packing = self._packing_settings()
+            measurer = get_measurer(
+                _measurer_family(is_chinese, packing),
+                _real_font_size_pt(is_chinese),
+                is_cjk=is_chinese,
+                line_spacing=_real_line_spacing(is_chinese),
+                metrics_path=_resolve_font_metrics_path(is_chinese, packing),
+            )
+            width_pt = text_box_from_shape(shape).width_pt
+        except Exception as exc:
+            logger.debug("Exact line budget unavailable, using the estimate: %s", exc)
+            return None
+        if width_pt <= 0:
+            return None
+
+        budget = int(n_lines)
+        if budget <= 0:
+            return None
+        lo, hi, best = 0, len(text), 0
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            try:
+                used = len(measurer.wrap(text[:mid], width_pt))
+            except Exception:
+                return None
+            if used <= budget:
+                best, lo = mid, mid + 1
+            else:
+                hi = mid - 1
+        return best or None
 
     # Tokens that cannot end a column: each one is grammatically waiting for
     # something that is now in the next column. The number guard above keeps a
