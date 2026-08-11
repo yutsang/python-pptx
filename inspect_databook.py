@@ -208,6 +208,57 @@ def _hr(title: str = "") -> None:
         print("=" * 78)
 
 
+def check_font_metrics_available() -> Dict[str, bool]:
+    """Load both client font-metrics files before anything expensive runs.
+
+    They are what every width decision in the deck is measured against -- line
+    fill, split points, table column widths. Missing one is not fatal: the
+    measurers fall back to an average character width, which UNDER-counts (a
+    4.78in line comes out 37 characters against a real 42), so the result is
+    slightly emptier columns rather than text spilling past the box. But it is
+    a silent downgrade, and the export only reports which ruler it used at
+    section 8b, after the AI run has been paid for.
+
+    Loading here also warms text_metrics' own lru_cache, so the files are read
+    once for the whole process rather than on first use mid-render.
+    """
+    from fdd_utils.pptx.helpers import _resolve_font_metrics_path
+    from fdd_utils.pptx.payloads import _load_pptx_settings
+    from fdd_utils.text_metrics import get_measurer
+
+    packing = ((_load_pptx_settings() or {}).get("commentary_packing") or {})
+    out: Dict[str, bool] = {}
+    lines = []
+    for label, is_chinese, probe in (("CHI", True, "测"), ("ENG", False, "M")):
+        path = _resolve_font_metrics_path(is_chinese, packing)
+        ok = False
+        if path:
+            try:
+                measurer = get_measurer(
+                    "Microsoft YaHei" if is_chinese else "Arial", 9.0,
+                    is_cjk=is_chinese, metrics_path=path,
+                )
+                ok = measurer.source == "client-metrics" and measurer.text_width_pt(probe) > 0
+            except Exception as exc:
+                lines.append(f"  ⚠️  {label}: failed to load {path} -- {exc}")
+        out[label] = ok
+        if ok:
+            lines.append(f"  ✅ {label}: client-metrics  ({path})")
+        elif path:
+            lines.append(f"  ⚠️  {label}: {path} did not load -- falling back to a system font "
+                         f"(columns will be measured with an average width and come out emptier)")
+        else:
+            lines.append(f"  ⚠️  {label}: no metrics file resolved -- falling back to a system font "
+                         f"(columns will be measured with an average width and come out emptier)")
+    _hr("0. FONT METRICS PREFLIGHT (what every width in the deck is measured against)")
+    print("\n".join(lines))
+    if not all(out.values()):
+        print("\n  Both files ship in font_metrics/. Check "
+              "pptx.commentary_packing.font_metrics_path_chi / _eng in config.yml "
+              "if either is being pointed elsewhere.")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 1. Tab read summary
 # ---------------------------------------------------------------------------
@@ -2507,6 +2558,15 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         _out_dir = Path(pptx_out_dir) if pptx_out_dir else Path(path).parent / "pptx_previews"
         pptx_out_path = str(_out_dir / f"{Path(path).stem}.preview.pptx")
         assert_pptx_output_writable(pptx_out_path)
+
+    # Up front, for the same reason as the output-path check above: the export
+    # already reports which ruler it measured with, but only at section 8b,
+    # which is minutes and a pile of tokens downstream. A missing metrics file
+    # does not break anything -- every splitter falls back to an average
+    # character width that UNDER-counts, so columns come out slightly emptier,
+    # never overfull -- but it silently costs layout quality, and finding that
+    # out after paying for the run is the wrong order.
+    check_font_metrics_available()
 
     summary: Dict[str, Any] = {"file": Path(path).name, "status": "ok"}
     dfs = check_tab_read_summary(path, entity_name=entity_name)
