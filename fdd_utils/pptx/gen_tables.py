@@ -1663,6 +1663,15 @@ class _TablesMixin:
                         '总资产', '负债合计', '负债总计', '所有者权益合计',
                         '股东权益合计', '资产总计', 'net profit', 'net loss', '净利润', '净亏损',
                         'ebitda',
+                        # The statement-level "liabilities + equity" tie-out line
+                        # (IMG_0410: grey-filled like 资产总计/负债合计) wasn't
+                        # covered by any keyword above -- it ends in 总计/合计
+                        # but neither "负债合计" nor "所有者权益合计" appears in it
+                        # as an exact substring ("负债及所有者权益总计" has 负债 and
+                        # 总计 but not 负债合计 together, and 所有者权益 here is
+                        # followed by 总计 not 合计).
+                        '负债及所有者权益总计', '负债及所有者权益合计',
+                        'total liabilities and equity', "total liabilities and owners",
                     ]
                     # "Total equity attributable to owners of the Company" is a
                     # subtotal, not the statement-level grand total, even though
@@ -1763,7 +1772,17 @@ class _TablesMixin:
                             self._declare_run_language(run)
                             run.font.size = data_font_size
                             try:
-                                run.font.color.rgb = BLACK
+                                # A bare category header ("流动资产"/"非流动资产"/
+                                # etc, IMG_0410) is its own colour -- the same
+                                # blue as the header band -- distinct from a
+                                # total/subtotal row, which stays bold BLACK.
+                                # is_category_header_row already excludes total
+                                # rows (see its own definition above), so this
+                                # can't collide with the grand-total grey-fill
+                                # rows below.
+                                run.font.color.rgb = (
+                                    HEADER_ROW_BLUE if is_category_header_row else BLACK
+                                )
                             except Exception:
                                 pass
                             run.font.bold = is_special_row
