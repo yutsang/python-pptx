@@ -543,6 +543,27 @@ def _explanation_render_text(post_table_text: str, is_chinese_databook: bool) ->
     )
 
 
+# A section heading is not the same word as the account it introduces. The
+# shared category translation renders Revenue as 营业收入 -- correct as a label
+# for the revenue LINE, but as a section heading it repeats the 营业收入 row
+# directly beneath it. Suppressing the duplicate left the income statement
+# opening with no heading at all while the expense block still had one, which
+# read as lopsided. The statement wants the broader word for the section.
+_GRID_SECTION_HEADING_ZH = {
+    "Revenue": "收入",
+    "Operating revenue": "收入",
+    "Operating Revenue": "收入",
+}
+
+
+def _grid_section_heading(category: str, is_chinese_mode: bool) -> str:
+    if not is_chinese_mode:
+        return category
+    if category in _GRID_SECTION_HEADING_ZH:
+        return _GRID_SECTION_HEADING_ZH[category]
+    return translate_category_to_chinese(category)
+
+
 def _insert_category_header_rows(df, mappings: Optional[Dict[str, Any]], is_chinese_mode: bool):
     """Insert a blank-figures header row ("流动资产" / "Current assets"
     / etc.) into `df` whenever a leaf line item's mapped category
@@ -583,7 +604,7 @@ def _insert_category_header_rows(df, mappings: Optional[Dict[str, Any]], is_chin
             mapping_key = find_mapping_key(label, mappings)
             category = str((mappings.get(mapping_key) or {}).get('category', '') or '') if mapping_key else ''
             if category and category != current_category:
-                header_label = translate_category_to_chinese(category) if is_chinese_mode else category
+                header_label = _grid_section_heading(category, is_chinese_mode)
                 # A category is opened ONCE. A balance sheet's categories are
                 # contiguous so this never mattered there, but an income
                 # statement runs in statement order and its categories
