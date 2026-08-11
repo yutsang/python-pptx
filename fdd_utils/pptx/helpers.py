@@ -573,6 +573,7 @@ def _insert_category_header_rows(df, mappings: Optional[Dict[str, Any]], is_chin
 
     new_rows = []
     current_category = None
+    seen_categories: set[str] = set()
     for _, row in df.iterrows():
         label = str(row.iloc[0]).strip()
         label_lower = label.lower()
@@ -583,13 +584,62 @@ def _insert_category_header_rows(df, mappings: Optional[Dict[str, Any]], is_chin
             category = str((mappings.get(mapping_key) or {}).get('category', '') or '') if mapping_key else ''
             if category and category != current_category:
                 header_label = translate_category_to_chinese(category) if is_chinese_mode else category
-                header_row = {col: (header_label if i == 0 else pd.NA) for i, col in enumerate(df.columns)}
-                new_rows.append(header_row)
+                # A category is opened ONCE. A balance sheet's categories are
+                # contiguous so this never mattered there, but an income
+                # statement runs in statement order and its categories
+                # interleave -- Revenue, Expenses, ... then a single Revenue
+                # line (投资收益) partway down, then Expenses again. Re-opening
+                # on every change reprinted "营业收入" and "费用" mid-statement,
+                # which reads as a second, restarted section rather than as
+                # the running P&L it is.
+                #
+                # A header identical to the row it introduces is also dropped:
+                # the Revenue category translates to the same words as the
+                # 营业收入 account line itself, so the two rendered as a
+                # duplicated label one above the other.
+                duplicates_next = header_label.strip() == label
+                if header_label not in seen_categories and not duplicates_next:
+                    header_row = {col: (header_label if i == 0 else pd.NA) for i, col in enumerate(df.columns)}
+                    new_rows.append(header_row)
+                # Marked as opened even when the header was suppressed for
+                # duplicating the row below it: that row IS the heading, in
+                # the reader's eyes. Without this the category counts as
+                # unopened and re-opens later -- which is how "营业收入"
+                # reappeared further down the income statement.
+                seen_categories.add(header_label)
                 current_category = category
 
         new_rows.append(row.to_dict())
 
     return pd.DataFrame(new_rows, columns=df.columns)
+
+
+_LEAD_PROMISES_TABLE_RE = re.compile(
+    r"(?:明细|明細|构成|構成|情况|情況|分析|列示|详情|詳情)?\s*"
+    r"(?:如下|见下表|見下表|列示如下|详见下表|詳見下表)\s*[:：]?\s*$"
+)
+
+
+def lead_promises_table(text: str) -> bool:
+    """Does this lead-in END by announcing the table that follows it?
+
+    "…明细如下：" only makes sense with the detail directly beneath it. A
+    column that ends on that phrase with nothing under it reads as broken,
+    which is why splitting a lead from its own table was removed once before
+    (see _append_table_accounts_to_distribution's flow()).
+
+    A lead that instead stands on its own -- a complete statement of the
+    balance and its drivers, with the table there to support rather than
+    complete it -- can be separated, because the sentence is finished either
+    way. This is the test that tells the two apart.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return False
+    # Only the final clause matters: an earlier "如下" inside a long paragraph
+    # is not what the reader is left hanging on.
+    tail = re.split(r"[。；;\n]", body)[-1].strip() or body
+    return bool(_LEAD_PROMISES_TABLE_RE.search(tail))
 
 
 def find_content_shape(shapes):

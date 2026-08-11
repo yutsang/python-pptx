@@ -446,6 +446,14 @@ class PowerPointGenerator(
     # is "用盡空間 比較好".
     _TABLE_SLOT_PACK_THRESHOLD = 0.98
 
+    # How much of a column's REMAINING space a stranded lead-in has to fill
+    # before it is worth separating it from its own table (see flow()'s
+    # branch 2). The version of that split which was removed had no such
+    # test and fired even when the lead was two words, leaving a column
+    # essentially blank. At 0.5 the lead has to take at least half of what
+    # is left, so the split only happens when it genuinely uses the column.
+    _TABLE_SPLIT_MIN_LEAD_FILL = 0.5
+
 
 
 

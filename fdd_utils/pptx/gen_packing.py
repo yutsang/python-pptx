@@ -42,6 +42,7 @@ from .helpers import (  # lifted out of PowerPointGenerator
     _truncate_text_at_boundary,
     find_content_shape,
     find_shape_by_name,
+    lead_promises_table,
     replace_text_preserve_formatting,
 )
 
@@ -287,6 +288,13 @@ class _PackingMixin:
                 return False
             return slot_fill_pt.get(key, 0.0) + block_pt <= _cap_for(key) + _tail_tol_pt
 
+        def _remaining(key: Optional[Tuple[int, str]]) -> float:
+            """Space left in a slot, for deciding whether a partial block is
+            worth leaving behind rather than merely whether it fits."""
+            if key is None:
+                return 0.0
+            return max(0.0, _cap_for(key) + _tail_tol_pt - slot_fill_pt.get(key, 0.0))
+
         def flow(item: Dict[str, Any], block_pt: float,
                  parts_pt: Optional[Tuple[float, float, float]] = None) -> None:
             """Places one account at the flow cursor, splitting it at a
@@ -320,21 +328,50 @@ class _PackingMixin:
                                             explain_pt + heading)
                     return
                 # 2. Keep only the lead-in here; table + explanation move.
-                #    REMOVED after reviewing a real deck. This was built to
-                #    the letter of "表格前如果這個point有文字 而這一邊放不下表格
-                #    那表格可以放下一個", but rendered it is the worst of the
-                #    three outcomes and it fired on EVERY table account:
-                #      - the column ends on "...明细如下：" with no 明细 under
+                #
+                #    READ THE HISTORY BEFORE WIDENING THIS. It was built once
+                #    to the letter of "表格前如果這個point有文字 而這一邊放不下
+                #    表格 那表格可以放下一個", fired on EVERY table account, and
+                #    was removed as the worst of the three outcomes:
+                #      - the column ended on "...明细如下：" with no 明细 under
                 #        it, which simply reads as broken;
-                #      - the table then needs a "（续）" heading in the next
+                #      - the table then needed a "（续）" heading in the next
                 #        column -- the repeated header the same instruction
                 #        asked us to avoid;
-                #      - and the stranded lead-in leaves the rest of its own
+                #      - and the stranded lead-in left the rest of its own
                 #        column empty (one real column sat ~50% blank).
-                #    Falling through to _open_new_slot moves the whole
-                #    lead+table+explanation block together instead. On the
-                #    reviewed deck that is exactly one account per column
-                #    with no continuation headings at all.
+                #
+                #    Restored deliberately narrowed, on the user's later
+                #    "如果像明細如下這種當然不要 但如果是只是說明關係…" and their
+                #    explicit acceptance of the （续）heading. Two gates, and
+                #    both matter:
+                #
+                #    (a) The lead must NOT announce the table
+                #        (lead_promises_table). That is the whole of the first
+                #        objection above: a lead ending "明细如下：" is a
+                #        sentence completed BY the table, and separating them
+                #        breaks it. A lead that already stands as a complete
+                #        statement does not break.
+                #    (b) It must actually buy something -- the lead has to fill
+                #        a real part of what is left, not strand two words at
+                #        the bottom of the column. That is the third objection:
+                #        the old version fired even when the lead was tiny.
+                #
+                #    The table itself is still never divided (no repeated
+                #    header inside a table) per the original instruction.
+                lead_text = str(item.get("commentary") or "")
+                if (
+                    lead_pt > 0
+                    and not lead_promises_table(lead_text)
+                    and _fits(cursor, lead_pt)
+                    and lead_pt >= self._TABLE_SPLIT_MIN_LEAD_FILL * _remaining(cursor)
+                ):
+                    _append_to_slot(cursor, dict(item, _render_parts=("lead",)), lead_pt)
+                    cursor = _open_new_slot(
+                        dict(item, _render_parts=("table", "expl")),
+                        table_pt + explain_pt + heading,
+                    )
+                    return
 
             cursor = _open_new_slot(item, block_pt)
 

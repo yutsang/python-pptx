@@ -1536,7 +1536,7 @@ class _TablesMixin:
                         if table_name:
                             _clear_cell_border(cell, "bottom")
                         else:
-                            _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(0.5))
+                            _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(1.0))
                         _clear_cell_border(cell, "top")
 
                         try:
@@ -1596,7 +1596,7 @@ class _TablesMixin:
                             # data. Its TOP edge is cleared: the date row above
                             # is the same blue, and the table style's own white
                             # hairline was cutting the band in half.
-                            _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(0.5))
+                            _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(1.0))
                             _clear_cell_border(cell, "top")
                             try:
                                 cell.margin_left = Inches(0.04)
@@ -1932,7 +1932,12 @@ class _TablesMixin:
                         # IMG_0410, not the table's navy title/header colour.
                         if is_total_row:
                             try:
-                                _set_cell_border(cell, 'top', color_rgb="05378F", width=Pt(0.75))
+                                # 1.25pt, not 0.75. At 0.75 the rule renders as
+                                # roughly one screen pixel and was reported as
+                                # invisible once it was finally being drawn at
+                                # all. Still half the grand-total weight below,
+                                # so the two tiers stay distinguishable.
+                                _set_cell_border(cell, 'top', color_rgb="05378F", width=Pt(1.25))
                                 if is_grand_total_row:
                                     _set_cell_border(cell, 'bottom', color_rgb="05378F", width=Pt(2.25))
                             except Exception:
