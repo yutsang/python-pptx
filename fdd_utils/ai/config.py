@@ -223,14 +223,30 @@ class FDDConfig:
         return bool(self.get_processing_config().get("debug_mode", False))
 
     def get_validator_mode(self) -> str:
-        """"selective" (default) runs the LLM Validator only on accounts that
-        assert a causal claim -- the one thing verify_commentary's
-        deterministic number-grounding cannot judge -- and grounds the rest
-        for free. "always" restores the previous behaviour of running it on
-        every account. Measured: the Validator was 59% of a 964s run, and on
-        real data ~80% of accounts had no causal claim for it to review."""
-        mode = str(self.get_processing_config().get("validator_mode", "selective") or "selective").lower()
-        return mode if mode in {"selective", "always"} else "selective"
+        """"always" (default) runs the LLM Validator on every account.
+        "selective" runs it only where the commentary asserts a causal claim
+        and leaves the rest to verify_commentary's deterministic
+        number-grounding.
+
+        Default moved selective -> always on the user's explicit instruction:
+        they want every account confirmed by the model, not by code. The
+        deterministic pass is NOT lost by this -- verify_commentary still runs
+        inside the Validator stage (see run_agent_stage) and still overwrites
+        the model's own clause reviews with its number-grounding, so "always"
+        is strictly the LLM judgment ADDED ON TOP of what selective did, never
+        instead of it.
+
+        The reason it matters is accuracy, not coverage: code alone cannot
+        tell a figure the model derived (an annualisation, a sum of
+        components) from one it invented, so deterministically-grounded
+        accounts were having legitimate derived numbers flagged as
+        unsupported reasoning.
+
+        Cost is the tradeoff, and it is real -- the Validator was 59% of a
+        measured 964s run, and on real data ~80% of accounts have no causal
+        claim. A 27-account run goes from 64 stage-steps to 81."""
+        mode = str(self.get_processing_config().get("validator_mode", "always") or "always").lower()
+        return mode if mode in {"selective", "always"} else "always"
 
     def get_feedback_loop_config(self) -> Dict[str, Any]:
         processing = self.get_processing_config()
