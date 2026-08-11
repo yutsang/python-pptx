@@ -31,6 +31,7 @@ from pptx import Presentation
 from pptx.util import Emu
 
 from fdd_utils.financial_common import load_yaml_file
+from fdd_utils.pptx.helpers import _resolve_font_metrics_path
 from fdd_utils.text_metrics import get_measurer, text_box_from_shape
 
 FONT_PT = 9.0
@@ -67,11 +68,11 @@ def main() -> int:
         True: get_measurer(packing.get("font_family_chi") or "Microsoft YaHei", FONT_PT,
                            is_cjk=True, line_spacing=1.0,
                            metrics_path=packing.get("font_metrics_path_chi")
-                           or "fdd_utils/font_metrics/msyh_chi.json"),
+                           or _resolve_font_metrics_path(True, packing)),
         False: get_measurer(packing.get("font_family_eng") or "Arial", FONT_PT,
                             is_cjk=False, line_spacing=1.0,
                             metrics_path=packing.get("font_metrics_path_eng")
-                            or "fdd_utils/font_metrics/arial_eng.json"),
+                            or _resolve_font_metrics_path(False, packing)),
     }
     print(f"Measurement source: CHI={measurers[True].source}  ENG={measurers[False].source}\n")
 

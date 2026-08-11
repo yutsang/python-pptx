@@ -805,31 +805,54 @@ def _fill_content_shape(shape, section_data: Dict):
     logger.info("Successfully filled shape with %s paragraphs", len([l for l in content_lines if l.strip()]))
 
 
+def font_metrics_filename(is_chinese: bool) -> str:
+    return "msyh_chi.json" if is_chinese else "arial_eng.json"
+
+
+def font_metrics_candidates(is_chinese: bool, configured: Optional[str] = None) -> List[str]:
+    """Every place the client-font metrics may live, best first.
+
+    The files live INSIDE the package (fdd_utils/font_metrics/) so a deployment
+    that ships only fdd_utils/ and fdd_app.py carries them. The repo root is
+    still searched after it, because that is where they used to sit and an
+    older checkout or an absolute config entry should keep working.
+
+    Searching both rather than picking one on purpose: the defaults and the
+    real location disagreeing is exactly what broke this before (e732e2d) --
+    the default pointed at fdd_utils/font_metrics/ while the files were at the
+    root, so every relative path missed and the exporter silently measured with
+    a system font while the checker used the client's.
+    """
+    name = font_metrics_filename(is_chinese)
+    # fdd_utils/pptx/helpers.py -> fdd_utils/ -> repo root
+    _pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _root = os.path.dirname(_pkg)
+    out: List[str] = []
+    for raw in (configured, os.path.join("font_metrics", name)):
+        if not raw:
+            continue
+        p = str(raw).strip()
+        if not p:
+            continue
+        if os.path.isabs(p):
+            out.append(p)
+        else:
+            out.extend([os.path.join(_pkg, p), os.path.join(_root, p)])
+    return out
+
+
 def _resolve_font_metrics_path(is_chinese: bool, packing: Dict[str, Any]) -> Optional[str]:
     """Path to the client-font metrics.json (dumped via dump_font_metrics.py),
     so line-fitting measures with the font the client's PowerPoint renders.
-    Language-specific key wins; falls back to a single shared path. Relative
-    paths resolve against the repo root."""
+    Language-specific key wins, then a single shared key, then the shipped
+    default -- each tried inside the package first and at the repo root
+    second (see font_metrics_candidates)."""
     key = "font_metrics_path_chi" if is_chinese else "font_metrics_path_eng"
-    # Same default inspect_pptx uses. Without it an unset (or empty-string)
-    # config key made the EXPORTER fall back to a system font while the CHECKER
-    # loaded the client metrics -- the packer laid the deck out with Arial and
-    # inspect_pptx then measured the result with the client's real typeface.
-    # Every fill ratio compared two different rulers.
-    _default = ("font_metrics/msyh_chi.json" if is_chinese
-                else "font_metrics/arial_eng.json")
-    path = packing.get(key) or packing.get("font_metrics_path") or _default
-    p = str(path).strip()
-    if not p:
-        return None
-    if not os.path.isabs(p):
-        # Anchor on the REPO ROOT. This file used to be fdd_utils/pptx.py, where
-        # dirname(dirname(__file__)) was the root; since the package split it is
-        # fdd_utils/pptx/helpers.py, so the same expression pointed one level
-        # too deep and every relative path resolved to fdd_utils/fdd_utils/...
-        _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        p = os.path.join(_root, p)
-    return p if os.path.exists(p) else None
+    configured = packing.get(key) or packing.get("font_metrics_path")
+    for candidate in font_metrics_candidates(is_chinese, configured):
+        if os.path.exists(candidate):
+            return candidate
+    return None
 
 
 def _measurer_family(is_chinese: bool, packing: Dict[str, Any]) -> str:

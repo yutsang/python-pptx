@@ -253,7 +253,7 @@ def check_font_metrics_available() -> Dict[str, bool]:
     _hr("0. FONT METRICS PREFLIGHT (what every width in the deck is measured against)")
     print("\n".join(lines))
     if not all(out.values()):
-        print("\n  Both files ship in font_metrics/. Check "
+        print("\n  Both files ship in fdd_utils/font_metrics/. Check "
               "pptx.commentary_packing.font_metrics_path_chi / _eng in config.yml "
               "if either is being pointed elsewhere.")
     return out

@@ -44,8 +44,12 @@ def main() -> int:
 
     config = _load_config()
     packing_cfg = ((config.get("pptx") or {}).get("commentary_packing") or {})
-    metrics_eng = packing_cfg.get("font_metrics_path_eng") or "fdd_utils/font_metrics/arial_eng.json"
-    metrics_chi = packing_cfg.get("font_metrics_path_chi") or "fdd_utils/font_metrics/msyh_chi.json"
+    # One resolver for every tool -- see _resolve_font_metrics_path. Repeating
+    # a literal default here is how the exporter and the checker ended up
+    # measuring with two different fonts.
+    from fdd_utils.pptx.helpers import _resolve_font_metrics_path
+    metrics_eng = _resolve_font_metrics_path(False, packing_cfg)
+    metrics_chi = _resolve_font_metrics_path(True, packing_cfg)
     family_eng = packing_cfg.get("font_family_eng") or "Arial"
     family_chi = packing_cfg.get("font_family_chi") or "Microsoft YaHei"
 

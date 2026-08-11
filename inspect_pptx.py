@@ -330,11 +330,15 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
     packing_cfg = ((config.get("pptx") or {}).get("commentary_packing") or {})
     global _OVERFLOW_TOLERANCE_LINES
     _OVERFLOW_TOLERANCE_LINES = float(packing_cfg.get("tail_overflow_tolerance_lines", 2.0) or 0.0)
-    # The repo ships these at font_metrics/, not fdd_utils/font_metrics/ --
-    # the old default pointed at a directory that does not exist, so this fell
-    # through to a system font whenever config.yml left the key unset.
-    metrics_eng = packing_cfg.get("font_metrics_path_eng") or "font_metrics/arial_eng.json"
-    metrics_chi = packing_cfg.get("font_metrics_path_chi") or "font_metrics/msyh_chi.json"
+    # Resolved through the SAME search the exporter uses, rather than a literal
+    # default repeated here. The two disagreeing is what broke this before: the
+    # checker found the metrics while the exporter did not, so every fill ratio
+    # compared two different rulers. The files ship inside the package
+    # (fdd_utils/font_metrics/) so a deployment carrying only fdd_utils/ has
+    # them; the repo root is still searched after it.
+    from fdd_utils.pptx.helpers import _resolve_font_metrics_path
+    metrics_eng = _resolve_font_metrics_path(False, packing_cfg)
+    metrics_chi = _resolve_font_metrics_path(True, packing_cfg)
     family_eng = packing_cfg.get("font_family_eng") or "Arial"
     family_chi = packing_cfg.get("font_family_chi") or "Microsoft YaHei"
 
