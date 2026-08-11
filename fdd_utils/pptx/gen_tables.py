@@ -1324,12 +1324,18 @@ class _TablesMixin:
                 else:
                     data_start_row = 0
 
-                # A lighter blue than the navy title band directly above it,
-                # matching the reference report's two-tone banner. Merging
-                # them into one navy (tried first) removed the distinction the
-                # reference draws. What made the header read as a SEPARATE
-                # element before was not the shade but the black cell borders
-                # drawn across it -- those are white hairlines now.
+                # Eyedropper-sampled directly off IMG_0410 (the real
+                # deliverable), not estimated. The date row is TWO colours,
+                # not one: column 0 ("人民币千元") is the darker/more
+                # saturated blue, every date column is the lighter one -- and
+                # the "示意性调整后" row repeats that SAME lighter blue under
+                # each date column (see the banner-row block below), pairing
+                # each date visually with its own stage label underneath.
+                # HEADER_ROW_BLUE is kept separate (unchanged) for the
+                # category-header TEXT colour below, which is a different
+                # sampling point from either of these fills.
+                HEADER_LABEL_BLUE = RGBColor(0x1E, 0x4C, 0xE2)
+                HEADER_DATE_BLUE = RGBColor(0x00, 0xB8, 0xF5)
                 HEADER_ROW_BLUE = RGBColor(0x1F, 0x4E, 0x96)
                 _header_blue = bool(
                     self.pptx_settings.get("financial_table_header_blue", True)
@@ -1437,7 +1443,12 @@ class _TablesMixin:
                         # switch rather than another round of bisecting.
                         cell.fill.solid()
                         if _header_blue:
-                            cell.fill.fore_color.rgb = HEADER_ROW_BLUE
+                            # Column 0 ("人民币千元") is the darker sampled
+                            # blue; every date column is the lighter one --
+                            # see the constants' own comment above.
+                            cell.fill.fore_color.rgb = (
+                                HEADER_LABEL_BLUE if col_idx == 0 else HEADER_DATE_BLUE
+                            )
                         else:
                             # Only the LAST column is highlighted light blue
                             # (matches the company-format reference's
@@ -1506,13 +1517,15 @@ class _TablesMixin:
                 # DANGER: _fill_table_placeholder's per-cell colour/border
                 # changes on this exact table caused two real Chinese exports
                 # to render COMPLETELY BLANK in real PowerPoint (see
-                # docs/failed-attempts.md). LIGHT_BLUE_HIGHLIGHT is an
-                # already-defined, already-reviewed constant (previously used
-                # for the single-column tint that was later removed) reused
-                # here rather than a new RGB value, and this row is gated on
-                # the SAME financial_table_header_blue toggle as the date row
-                # -- still a NEW row on this table, not yet seen in real
-                # PowerPoint.
+                # docs/failed-attempts.md). Colours reuse the SAME
+                # eyedropper-sampled constants as the date row directly
+                # above -- each date column's "示意性调整后" cell is the same
+                # HEADER_DATE_BLUE as the date cell it sits under, and column
+                # 0 (blank here) stays HEADER_LABEL_BLUE for vertical
+                # continuity with "人民币千元" above it -- and this row is
+                # gated on the SAME financial_table_header_blue toggle as the
+                # date row -- still a NEW row on this table, not yet seen in
+                # real PowerPoint.
                 if table_name:
                     try:
                         banner_row_idx = data_start_row + 1
@@ -1524,7 +1537,12 @@ class _TablesMixin:
                                 break
                             cell = table.cell(banner_row_idx, col_idx)
                             cell.fill.solid()
-                            cell.fill.fore_color.rgb = LIGHT_BLUE_HIGHLIGHT if _header_blue else WHITE
+                            if _header_blue:
+                                cell.fill.fore_color.rgb = (
+                                    HEADER_LABEL_BLUE if col_idx == 0 else HEADER_DATE_BLUE
+                                )
+                            else:
+                                cell.fill.fore_color.rgb = WHITE
                             _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(0.5))
                             try:
                                 cell.margin_left = Inches(0.04)
@@ -1849,14 +1867,16 @@ class _TablesMixin:
                         except Exception:
                             pass
 
-                        # Thin top border on every total/subtotal row; grand
-                        # totals additionally get a heavier bottom border,
-                        # matching the reference's two-tier total styling.
+                        # Thin blue top border on every total/subtotal row;
+                        # grand totals additionally get a heavier blue bottom
+                        # border -- matching the reference's two-tier total
+                        # styling. #05378F is eyedropper-sampled directly off
+                        # IMG_0410, not the table's navy title/header colour.
                         if is_total_row:
                             try:
-                                _set_cell_border(cell, 'top', color_rgb="00338D", width=Pt(0.75))
+                                _set_cell_border(cell, 'top', color_rgb="05378F", width=Pt(0.75))
                                 if is_grand_total_row:
-                                    _set_cell_border(cell, 'bottom', color_rgb="00338D", width=Pt(2.25))
+                                    _set_cell_border(cell, 'bottom', color_rgb="05378F", width=Pt(2.25))
                             except Exception:
                                 pass
                     
