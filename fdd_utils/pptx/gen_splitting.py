@@ -485,8 +485,6 @@ class _SplittingMixin:
         # capacity check already accepted this position stays satisfied.
         best_split = self._snap_split_before_number(para, best_split)
         best_split = self._snap_before_dangling_connective(para, best_split, min_fill)
-        if not best_split:
-            return None
 
         head = para[:best_split].strip()
         tail_rest = para[best_split:].strip()
@@ -515,10 +513,10 @@ class _SplittingMixin:
         """Back `pos` off a split that would leave the head grammatically
         hanging, or refuse the split entirely.
 
-        Returns the adjusted position, or None when no honest split remains --
-        in which case the caller moves the whole account rather than shipping
-        half a sentence. Refusing costs a partly-empty column; the alternative
-        costs a column that ends mid-clause, which a reader notices.
+        Retreats only when a full sentence end is available to retreat TO, and
+        otherwise leaves the split where it was. It deliberately never refuses:
+        asked to choose, the user took a half sentence over a blank line, so
+        this may improve a break but must never cost a line of fill.
         """
         if pos <= 0 or pos > len(text):
             return pos
@@ -531,15 +529,17 @@ class _SplittingMixin:
         # SENTENCE end. Backing up to the nearest comma just trades one
         # fragment for another -- on the real case it produced a bare
         # "截至<date>，", an adverbial with no clause attached, which reads no
-        # better than the "…余额为" it replaced. Anything short of a sentence
-        # end, and the account moves whole.
+        # better than the "…余额为" it replaced.
+        #
+        # No sentence end in range means the split stays exactly where it was.
+        # Refusing here was tried and is wrong for this deck: it empties the
+        # line instead of filling it, and the user's explicit preference is a
+        # half sentence over a blank line.
         cut = max(head.rfind(ch) for ch in "。！？!?")
         if cut <= 0:
-            return None
+            return pos
         candidate = cut + 1
-        if candidate < min_fill:
-            return None
-        return candidate
+        return candidate if candidate >= min_fill else pos
 
     @classmethod
     def _snap_before_org_name(cls, text: str, pos: int) -> int:

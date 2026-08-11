@@ -234,11 +234,28 @@ class PowerPointGenerator(
 
     # Average rendered character width (pt) for the fonts we use.
     # English: Arial 9pt mixed text ≈ 5.0 pt/char (incl. spaces & punctuation).
-    # Chinese: YaHei 10pt CJK characters are square — 1 em ≈ 10 pt/char.
     # A small word-wrap slack (≈8 %) is subtracted because lines always break
     # at a word/character boundary, not at the exact pixel edge.
+    #
+    # Chinese was 10.0, on the reasoning that a CJK glyph is square so one em
+    # at 10pt is 10pt wide. Two things were wrong with that: the commentary
+    # renders at 9pt, not 10, and financial prose is not pure CJK -- every
+    # amount, date and ASCII marker in it is a HALF-width glyph. Measured with
+    # the shipped client metrics over six real commentary sentences: 7.52
+    # pt/char weighted, ranging 6.6 (an amount-heavy multi-period sentence) to
+    # 8.6. At 10.0 a 4.78in column was estimated to hold 30 characters where it
+    # really holds 42, so every split candidate the search proposed was about
+    # a dozen characters short of the line -- which is what left a column
+    # ending on "…余额为" with a third of its last line empty.
+    #
+    # 8.0 rather than the measured 7.52: this only sizes the SEARCH, and the
+    # candidate it proposes is then validated against the real measurer, so
+    # a slightly conservative value costs a little fill while an over-generous
+    # one costs retry rounds. Note this constant no longer affects capacity in
+    # production at all -- _calculate_content_lines uses it only in its
+    # no-font-available fallback, and the real metrics load in every run.
     _AVG_CHAR_WIDTH_ENG = 5.0
-    _AVG_CHAR_WIDTH_CHI = 10.0
+    _AVG_CHAR_WIDTH_CHI = 8.0
     _WORD_WRAP_SLACK    = 0.92   # use 92 % of the theoretical line width
 
 
