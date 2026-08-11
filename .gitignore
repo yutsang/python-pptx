@@ -145,6 +145,10 @@ LOGGING_ENHANCEMENT_README.md
 # Keep them local; do not add a negation here without checking the content.
 *.md
 !README.md
+# Reviewed for client data before the negation was added, per the note above:
+# no entity names, no databook names, no figures, no per-run counts. Keep it
+# that way -- it documents the verification design, not any engagement.
+!methods.md
 docs/
 
 # Diagnostic output (see fdd_utils/pptx/gen_packing.py's DP packing report)
