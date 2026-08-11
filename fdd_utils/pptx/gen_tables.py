@@ -1335,69 +1335,14 @@ class _TablesMixin:
                     self.pptx_settings.get("financial_table_header_blue", True)
                 )
 
-                # Stage banner row ("示意性调整后" / "Indicative adjusted"),
-                # merged across every column, directly beneath the title band.
-                # IMG_0399 shows the deliverable's header as TWO rows -- this
-                # banner, then the date row -- not one; an earlier commit
-                # today read the stage as already covered by the (bare) title
-                # band and the (date-only) header row and dropped it from
-                # both, which this photo shows was wrong.
-                #
-                # DANGER: _fill_table_placeholder's per-cell colour/border
-                # changes on this exact table caused two real Chinese exports
-                # to render COMPLETELY BLANK in real PowerPoint (see
-                # docs/failed-attempts.md). Reusing the same HEADER_ROW_BLUE
-                # fill and the same financial_table_header_blue toggle as the
-                # already-shipped date row, rather than inventing a new style,
-                # keeps this row inside the pattern that is already
-                # signed-off and in production -- but it is still a NEW row
-                # on this table and has not been seen in real PowerPoint yet.
-                if table_name:
-                    try:
-                        if len(table.rows) <= data_start_row:
-                            table.rows.add_row()
-                        banner_row = table.rows[data_start_row]
-                        banner_row.height = banner_row_height
-                        if len(table.columns) > 1:
-                            table.cell(data_start_row, 0).merge(
-                                table.cell(data_start_row, len(table.columns) - 1)
-                            )
-                        banner_cell = table.cell(data_start_row, 0)
-                        banner_cell.text = "示意性调整后" if is_chinese_mode else "Indicative adjusted"
-                        if banner_cell.text_frame.paragraphs:
-                            p = banner_cell.text_frame.paragraphs[0]
-                            p.alignment = PP_ALIGN.CENTER
-                            run = p.runs[0] if p.runs else p.add_run()
-                            run.font.name = 'Arial'
-                            self._set_east_asian_typeface(run)
-                            self._declare_run_language(run)
-                            run.font.size = banner_font_size
-                            run.font.bold = True
-                            run.font.color.rgb = WHITE if _header_blue else BLACK
-                            p.line_spacing = 1.0
-                            _apply_east_asian_line_breaking(p)
-                        banner_cell.fill.solid()
-                        banner_cell.fill.fore_color.rgb = HEADER_ROW_BLUE if _header_blue else WHITE
-                        _set_cell_border(banner_cell, "bottom", color_rgb="000000", width=Pt(0.5))
-                        try:
-                            banner_cell.margin_left = Inches(0.04)
-                            banner_cell.margin_right = Inches(0.04)
-                            banner_cell.margin_top = Inches(0.02)
-                            banner_cell.margin_bottom = Inches(0.02)
-                        except Exception:
-                            pass
-                        data_start_row += 1
-                    except Exception:
-                        logger.debug("Could not render stage banner row", exc_info=True)
-
                 # Fill header row with formatting
                 max_cols = min(len(df.columns), len(table.columns))
                 header_row_idx = data_start_row
-                
+
                 # Ensure header row exists
                 if len(table.rows) <= header_row_idx:
                     table.rows.add_row()
-                
+
                 # Set header row height slightly taller for readability
                 try:
                     table.rows[header_row_idx].height = header_row_height
@@ -1544,7 +1489,71 @@ class _TablesMixin:
                             pass
 
                         logger.debug("Filled header cell %s: %s", col_idx, cell.text)
-                
+
+                # Stage banner row ("示意性调整后" / "Indicative adjusted"),
+                # directly beneath the date row. Per IMG_0410 (the actual
+                # deliverable, not the earlier IMG_0399 read of it): the two
+                # header rows are DATE on top, stage BELOW it -- the reverse
+                # of the order shipped first -- and the stage label is
+                # repeated under EACH date column separately, not merged into
+                # one banner (column 0 stays blank, matching "人民币千元"
+                # already sitting in the date row's own column 0). A commit
+                # before this one dropped the stage from the header
+                # entirely, reasoning it was "already named" -- IMG_0399
+                # showed it wasn't, and this photo shows the first fix's
+                # shape (merged, banner-first) wasn't right either.
+                #
+                # DANGER: _fill_table_placeholder's per-cell colour/border
+                # changes on this exact table caused two real Chinese exports
+                # to render COMPLETELY BLANK in real PowerPoint (see
+                # docs/failed-attempts.md). LIGHT_BLUE_HIGHLIGHT is an
+                # already-defined, already-reviewed constant (previously used
+                # for the single-column tint that was later removed) reused
+                # here rather than a new RGB value, and this row is gated on
+                # the SAME financial_table_header_blue toggle as the date row
+                # -- still a NEW row on this table, not yet seen in real
+                # PowerPoint.
+                if table_name:
+                    try:
+                        banner_row_idx = data_start_row + 1
+                        if len(table.rows) <= banner_row_idx:
+                            table.rows.add_row()
+                        table.rows[banner_row_idx].height = banner_row_height
+                        for col_idx in range(max_cols):
+                            if col_idx >= len(table.columns):
+                                break
+                            cell = table.cell(banner_row_idx, col_idx)
+                            cell.fill.solid()
+                            cell.fill.fore_color.rgb = LIGHT_BLUE_HIGHLIGHT if _header_blue else WHITE
+                            _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(0.5))
+                            try:
+                                cell.margin_left = Inches(0.04)
+                                cell.margin_right = Inches(0.04)
+                                cell.margin_top = Inches(0.02)
+                                cell.margin_bottom = Inches(0.02)
+                            except Exception:
+                                pass
+                            if col_idx == 0:
+                                cell.text = ""
+                                continue
+                            cell.text = "示意性调整后" if is_chinese_mode else "Indicative adjusted"
+                            if cell.text_frame.paragraphs:
+                                p = cell.text_frame.paragraphs[0]
+                                p.alignment = PP_ALIGN.CENTER
+                                run = p.runs[0] if p.runs else p.add_run()
+                                run.font.name = 'Arial'
+                                self._set_east_asian_typeface(run)
+                                self._declare_run_language(run)
+                                run.font.size = banner_font_size
+                                run.font.bold = True
+                                run.font.color.rgb = WHITE if _header_blue else BLACK
+                                p.line_spacing = 1.0
+                                _apply_east_asian_line_breaking(p)
+                        header_row_idx = banner_row_idx
+                        data_start_row = banner_row_idx
+                    except Exception:
+                        logger.debug("Could not render stage banner row", exc_info=True)
+
                 # Fill data rows with formatting - show ALL rows (no limit)
                 # Check if table has enough rows, if not, limit to available rows
                 max_rows = len(df)  # Show all rows
