@@ -456,7 +456,7 @@ class _TablesMixin:
         top_inset_pt = _inset_pt / 2.0
 
         cursor_pt = 0.0
-        deferred_tables: List[Tuple[Dict[str, Any], Dict[str, Any], float]] = []
+        deferred_tables: List[Tuple[Dict[str, Any], Dict[str, Any], float, bool]] = []
 
         def _measured_content_pt() -> float:
             """Height of everything CURRENTLY in the frame, measured from the
@@ -528,7 +528,7 @@ class _TablesMixin:
                 reserved += font_pt * POWERPOINT_LINE_PITCH_FACTOR
             return reserved
 
-        for account_data in account_data_list:
+        for account_idx, account_data in enumerate(account_data_list):
             table = account_data.get("_presentation_table")
             category = account_data.get('category', '')
             mapping_key = account_data.get('mapping_key', account_data.get('account_name', ''))
@@ -581,11 +581,22 @@ class _TablesMixin:
                 cursor_pt = _measured_content_pt()
 
             if table and wants_table:
+                # Only the LAST table in this column carries the source
+                # caption -- it names the source for the page, not for one
+                # table, and a column holding three subtables printed it three
+                # times. Decided here, before anything is reserved, so the
+                # reservation and the render agree (see
+                # _table_block_reserved_pt's own note on that).
+                is_last_table = not any(
+                    later.get("_presentation_table")
+                    and (later.get("_render_parts") is None or "table" in later["_render_parts"])
+                    for later in account_data_list[account_idx + 1:]
+                )
                 deferred_tables.append(
-                    (table, account_data, cursor_pt + self._TABLE_GAP_ABOVE_PT)
+                    (table, account_data, cursor_pt + self._TABLE_GAP_ABOVE_PT, is_last_table)
                 )
                 cursor_pt += _reserve_exact(
-                    self._table_block_reserved_pt(table)
+                    self._table_block_reserved_pt(table, with_source=is_last_table)
                 )
 
             if post_table_text and wants_expl:
@@ -607,7 +618,7 @@ class _TablesMixin:
             pass
 
         base_top = int(bullets_shape.top) + int(Pt(top_inset_pt))
-        for table, account_data, y_pt in deferred_tables:
+        for table, account_data, y_pt, with_source in deferred_tables:
             try:
                 self._render_presentation_table(
                     slide, left, base_top + int(Pt(y_pt)), width, table, is_chinese_databook,
@@ -615,6 +626,7 @@ class _TablesMixin:
                     # The explanation is now real flowing text in the shared
                     # frame, not a floating box under the table.
                     post_table_text="",
+                    with_source=with_source,
                 )
             except Exception as exc:
                 logger.warning(
@@ -626,6 +638,7 @@ class _TablesMixin:
     def _render_presentation_table(
         self, slide, left: int, top: int, width: int, table: Dict[str, Any],
         is_chinese_databook: bool, source_multiplier: float = 1, post_table_text: str = "",
+        with_source: bool = True,
     ) -> int:
         """Renders `table` (extract_presentation_detail_table's return
         shape) as a native table at the given EMU position, a source-line
@@ -753,8 +766,15 @@ class _TablesMixin:
             try:
                 cell.margin_left = Inches(0.04)
                 cell.margin_right = Inches(0.04)
-                cell.margin_top = Inches(0.01)
-                cell.margin_bottom = Inches(0.01)
+                # 0.005in, not 0.01. These margins are part of the height a
+                # row needs, so they set the floor below which PowerPoint
+                # auto-grows the row and breaks the reservation: font x 1.2 +
+                # top + bottom. At 0.01in each the floor for the 7pt data font
+                # is 9.84pt, which left the 10pt row below only 0.16pt of
+                # headroom. Halving them drops the floor to 9.12pt and makes
+                # that row genuinely safe rather than marginal.
+                cell.margin_top = Inches(0.005)
+                cell.margin_bottom = Inches(0.005)
                 if fill is not None:
                     cell.fill.solid()
                     cell.fill.fore_color.rgb = fill
@@ -843,6 +863,17 @@ class _TablesMixin:
             logger.debug("Could not apply presentation-table borders: %s", exc)
 
         bottom = top + height
+        if not with_source:
+            # Not the last table in this column: the caption names the source
+            # for the page, not for one table (see _table_block_reserved_pt,
+            # which stops charging for it in exactly the same cases).
+            after_source = bottom
+            if not post_table_text:
+                return after_source
+            return self._render_post_table_explanation(
+                slide, left, after_source, width, post_table_text, is_chinese_databook,
+            )
+
         source_box = slide.shapes.add_textbox(left, bottom, width, Pt(self._TABLE_SOURCE_LINE_PT + 2))
         source_tf = source_box.text_frame
         source_tf.word_wrap = True

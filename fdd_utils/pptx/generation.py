@@ -306,11 +306,20 @@ class PowerPointGenerator(
     # _set_cell applies: 7pt data font x 1.2 + 0.01in top + 0.01in bottom =
     # 9.84pt. Anything at or under that gets auto-grown by PowerPoint, which
     # would break the height reservation the same way a wrapped cell does.
-    _TABLE_TITLE_ROW_PT = 15.0
-    _TABLE_HEADER_ROW_PT = 13.0
-    _TABLE_DATA_ROW_PT = 11.0
-    _TABLE_CHILD_ROW_PT = 10.5
-    _TABLE_TOTAL_ROW_PT = 13.0
+    #
+    # Tightened a second time (2026-08-11) after the trim above still left the
+    # income statement a unit and a bit short of two pages. Safe because the
+    # cell margins came down with them: _set_cell now writes 0.005in top and
+    # bottom rather than 0.01in, so the floor at which PowerPoint auto-grows a
+    # row -- font x 1.2 + margins -- drops from 9.84pt to 9.12pt for the 7pt
+    # data font, and from 10.44 to 9.72 for the 7.5pt header. Every row below
+    # clears its own floor by at least 0.9pt, where the previous 11pt row had
+    # only 0.16pt of headroom against the old margins.
+    _TABLE_TITLE_ROW_PT = 14.0
+    _TABLE_HEADER_ROW_PT = 12.0
+    _TABLE_DATA_ROW_PT = 10.0
+    _TABLE_CHILD_ROW_PT = 10.0
+    _TABLE_TOTAL_ROW_PT = 12.0
     _TABLE_SOURCE_LINE_PT = 12.0
     # Pure whitespace, not text-safety margin -- trimmed 2026-07-31 (6->4,
     # and the source-line box's own "+4" padding at its two call sites ->

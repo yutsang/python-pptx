@@ -513,7 +513,7 @@ class _MeasurementMixin:
         return sum(self._estimate_table_account_parts_pt(item, table, is_chinese_databook))
 
 
-    def _table_block_reserved_pt(self, table: Dict[str, Any]) -> float:
+    def _table_block_reserved_pt(self, table: Dict[str, Any], *, with_source: bool = True) -> float:
         """Vertical space one table block occupies inside the column's shared
         frame: the gap above it, the table itself, and the source caption
         _render_presentation_table draws underneath (whose box is
@@ -521,7 +521,14 @@ class _MeasurementMixin:
 
         Single definition on purpose -- the renderer reserves this and the
         planner charges it, and the two silently drifting is exactly the
-        class of bug that produced a table overhanging its column.
+        class of bug that produced a table overhanging its column. That is
+        also why `with_source` exists rather than the renderer simply skipping
+        the caption: both sides have to agree on which tables carry one.
+
+        with_source=False for every table in a column except the last. The
+        caption names the source for the page, not for one table, and a column
+        holding three subtables was printing "资料来源：管理层信息；毕马威分析"
+        three times.
 
         No _TABLE_GAP_BELOW_PT: separation from the paragraph that follows
         is already provided by that paragraph's own space_before/after in
@@ -531,7 +538,7 @@ class _MeasurementMixin:
         return (
             self._TABLE_GAP_ABOVE_PT
             + self._presentation_table_height_pt(table)
-            + self._TABLE_SOURCE_LINE_PT + 2.0
+            + ((self._TABLE_SOURCE_LINE_PT + 2.0) if with_source else 0.0)
         )
 
 
