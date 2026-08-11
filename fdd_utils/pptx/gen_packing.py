@@ -203,6 +203,8 @@ class _PackingMixin:
                     result[i] = (s, n, accounts + [item])
                     break
             slot_fill_pt[key] = slot_fill_pt.get(key, 0.0) + block_pt
+            if item.get("_presentation_table"):
+                slots_with_table.add(key)
 
         def _open_new_slot(item: Dict[str, Any], block_pt: float) -> Optional[Tuple[int, str]]:
             for slide_idx in range(max_slides):
@@ -213,6 +215,8 @@ class _PackingMixin:
                     used.add((slide_idx, slot_name))
                     result.append((slide_idx, slot_name, [item]))
                     slot_fill_pt[(slide_idx, slot_name)] = block_pt
+                    if item.get("_presentation_table"):
+                        slots_with_table.add((slide_idx, slot_name))
                     return (slide_idx, slot_name)
             logger.warning(
                 "No free slot for account %s within %s slides -- not rendered.",
@@ -295,6 +299,25 @@ class _PackingMixin:
                 return 0.0
             return max(0.0, _cap_for(key) + _tail_tol_pt - slot_fill_pt.get(key, 0.0))
 
+        # A column draws ONE source caption no matter how many subtables it
+        # holds (see _render_table_accounts_stack, which gives it to the last
+        # one only). The per-account estimate charges every table for its own,
+        # so the second and later tables in a column have to be refunded it --
+        # otherwise the planner believes a column is fuller than it renders,
+        # by exactly this much per extra table. Measured on a real export: it
+        # over-charged a column by 14.0pt and rejected a block that fitted with
+        # 14pt to spare, missing the boundary by 0.1pt.
+        _source_cost_pt = self._TABLE_SOURCE_LINE_PT + 2.0
+        slots_with_table: set = set()
+
+        def _refunded(key: Optional[Tuple[int, str]], block_pt: float,
+                      parts_pt: Optional[Tuple[float, float, float]]):
+            """block/parts as they will actually RENDER into `key`."""
+            if parts_pt is None or key is None or key not in slots_with_table:
+                return block_pt, parts_pt
+            lead, table, expl = parts_pt
+            return block_pt - _source_cost_pt, (lead, table - _source_cost_pt, expl)
+
         def flow(item: Dict[str, Any], block_pt: float,
                  parts_pt: Optional[Tuple[float, float, float]] = None) -> None:
             """Places one account at the flow cursor, splitting it at a
@@ -312,6 +335,9 @@ class _PackingMixin:
             marks an account with nothing to split (a plain trailing
             account), which flows whole."""
             nonlocal cursor
+            # What this block costs IN THIS COLUMN -- a second table here does
+            # not pay for a second source caption (see _refunded).
+            block_pt, parts_pt = _refunded(cursor, block_pt, parts_pt)
             if _fits(cursor, block_pt):
                 _append_to_slot(cursor, item, block_pt)
                 return
