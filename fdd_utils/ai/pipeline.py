@@ -212,77 +212,27 @@ def humanise_zero_balance(text: str, statement_type: str = "") -> str:
     return body
 
 
-# Enumeration separators. The trailing conjunctions only ever appear before the
-# LAST item, which is why they are matched as alternatives to the plain 、.
-_ENUM_SPLIT_RE = re.compile(r"(、|及|和|以及|，|,)")
-_MIN_SHARED_PREFIX_CHARS = 4
-
-
-def dedupe_enumeration_prefix(text: str) -> str:
-    """Drop a shared leading name repeated across items of one enumeration.
-
-    A cash account list names the same branch on every line -- "<bank><branch>
-    #1#-A户 X、<bank><branch>#2#-B户 Y" -- and reads as padding. The bank is
-    stated once and the later items keep only what distinguishes them.
-
-    Only fires when consecutive items share at least _MIN_SHARED_PREFIX_CHARS
-    characters, so ordinary short overlaps ("应收租金…、应收水电费…", 2 chars)
-    are left alone. Amounts are never touched, so number-grounding is
-    unaffected by this rewrite.
-    """
-    body = str(text or "")
-    if not body:
-        return body
-
-    parts = _ENUM_SPLIT_RE.split(body)
-    # split() with one capturing group yields [item, sep, item, sep, ..., item]
-    if len(parts) < 3:
-        return body
-
-    items = parts[0::2]
-    seps = parts[1::2]
-
-    def _repeated_prefix(item: str, earlier: str) -> str:
-        """Longest prefix of `item` that already appears in `earlier`.
-
-        Comparing whole items against each other does not work: the first item
-        of an enumeration usually carries the lead-in ("截至…，主要包括<name>…"),
-        so the shared part sits at its END, not its start. Searching `earlier`
-        for the prefix finds it either way.
-        """
-        longest = ""
-        for end in range(len(item), _MIN_SHARED_PREFIX_CHARS - 1, -1):
-            candidate = item[:end]
-            if candidate in earlier:
-                longest = candidate
-                break
-        # Cut back to a name boundary. A prefix ending mid-identifier
-        # ("…支行#") would leave the remainder starting with a bare digit and
-        # lose the "#" that opens the account number.
-        return longest.rstrip("#-－—·:：0123456789 ")
-
-    out_items = list(items)
-    seen = items[0]
-    for idx in range(1, len(out_items)):
-        shared = _repeated_prefix(items[idx], seen)
-        seen += items[idx]
-        if len(shared) < _MIN_SHARED_PREFIX_CHARS:
-            continue
-        remainder = out_items[idx][len(shared):]
-        # A dash left dangling by the cut is punctuation, not content. "#" is
-        # kept -- it opens an account number and is part of what identifies
-        # the item.
-        remainder = remainder.lstrip("-－—·")
-        # Never strip an item down to nothing or to a bare amount fragment --
-        # the point is to remove a repeated NAME, not to lose the item.
-        if len(remainder.strip()) < 2:
-            continue
-        out_items[idx] = remainder
-
-    rebuilt = out_items[0]
-    for sep, item in zip(seps, out_items[1:]):
-        rebuilt += sep + item
-    return rebuilt
+# REMOVED 2026-08-11: dedupe_enumeration_prefix, which stripped a shared
+# leading name repeated across items of one enumeration so a cash list named
+# its bank once instead of on every line.
+#
+# IT DELETED REAL TEXT, on six accounts of a single real run. Two design
+# errors, either of which is fatal on financial prose:
+#
+#   * "," was in the separator set, and a thousands separator is a comma. It
+#     split "1,034.3万元" into "1" and "034.3万元", after which the second half
+#     matched an earlier occurrence and was stripped -- the deck shipped
+#     "余额为1,。我方核对了".
+#   * "the longest prefix of this item that appears ANYWHERE earlier" is far
+#     too loose. It ate "土地使用税" out of "房产税及土地使用税分别减少" and
+#     "Loan-" out of "Loan-2 phase", because both had appeared earlier in the
+#     same paragraph for unrelated reasons.
+#
+# The repeated bank name it was written for is a cosmetic complaint. Silent
+# deletion inside a financial deliverable is not a fair trade, and no narrowing
+# of the rule makes "delete text the model wrote" safe by default. If this is
+# attempted again it belongs in the PROMPT, where the model decides what to
+# omit, not in a post-processor that cuts finished sentences.
 
 
 def create_result_shell(mapping_keys: List[str], dfs: Dict[str, pd.DataFrame]) -> Dict[str, Dict[str, str]]:
@@ -342,7 +292,6 @@ def _finalize_agent_content(
     # ignored. Neither touches an amount, so number-grounding is unaffected.
     if language != "Eng":
         content = humanise_zero_balance(content, statement_type)
-        content = dedupe_enumeration_prefix(content)
     if language == "Eng":
         content = polish_english_commentary(content)
     if agent_name == "subagent_4" and metadata:
