@@ -1721,8 +1721,25 @@ class _TablesMixin:
                         if col_idx == 0 and is_chinese_mode:
                             text_val = _translate_statement_row_label(text_val, mappings)
 
+                        # A category-header row ("流动资产" etc.) has NO value
+                        # in columns 1+ -- _format_table_value returns "" for
+                        # those. cell.text = "" writes a run with an EMPTY
+                        # <a:t/> (confirmed: python-pptx still sets its sz
+                        # correctly, e.g. sz="600"), but PowerPoint does not
+                        # measure a run with no actual character for line
+                        # height -- it falls back to the table style's theme
+                        # default instead. Confirmed via a real screenshot:
+                        # clicking an empty value cell in "流动资产" showed
+                        # Arial 13.5pt, next to the label cell's correct
+                        # Microsoft YaHei 6pt -- the 13.5pt line height is
+                        # what auto-grew that one row taller than its
+                        # neighbours. Same fix _reserve_blank_lines already
+                        # uses for the same reason: a single space is a real,
+                        # measurable character at zero visible width cost.
+                        display_text = text_val if text_val else " "
+
                         # Set text
-                        cell.text = text_val
+                        cell.text = display_text
                         
                         # Log first cell value of first row
                         if row_idx == 0 and col_idx < 2:
@@ -1737,9 +1754,9 @@ class _TablesMixin:
                         if not p.runs:
                             p.add_run()
                             
-                        # cell.text = text_val above already wrote the text into
-                        # the run; setting run.text again was a redundant XML
-                        # roundtrip. Just apply the font formatting.
+                        # cell.text = display_text above already wrote the text
+                        # into the run; setting run.text again was a redundant
+                        # XML roundtrip. Just apply the font formatting.
                         for run in p.runs:
                             run.font.name = 'Arial'
                             self._set_east_asian_typeface(run)
