@@ -183,10 +183,24 @@ class _SplittingMixin:
         para = paragraphs[0]
         # Exact where the client's font metrics are available; the average
         # only survives as the fallback (see _exact_chars_for_lines).
-        chars_available = self._exact_chars_for_lines(
+        _exact_available = self._exact_chars_for_lines(
             para, available_visual, shape=shape, is_chinese=is_chinese,
-        ) or int(max(1, available_visual * chars_per_line))
-        hard_cap = min(len(para), int(chars_available * 1.05))
+        )
+        chars_available = _exact_available or int(max(1, available_visual * chars_per_line))
+        # The 5% over-run below is a correction for a BAD budget, not licence to
+        # overshoot a good one. It existed because chars_available used to be
+        # chars_per_line x lines, which under-counted badly -- a 4.78in line was
+        # put at 30 characters where the client metrics say 42 -- so 5% never
+        # actually reached the edge of the line.
+        #
+        # Against the exact budget it is pure overshoot, and it lands as the
+        # symptom reported several times: the head runs 2-4 characters past what
+        # fits and those characters take a line of their own, so a column ends
+        # on one or two stray glyphs. Measured on a real paragraph: a 1-line
+        # budget is 41 characters, 1.05 makes it 43, and 43 wraps to 2 lines.
+        # No slop when the budget is measured.
+        _overshoot = 1.0 if _exact_available else 1.05
+        hard_cap = min(len(para), int(chars_available * _overshoot))
         min_fill = max(1, int(chars_available * min_fill_ratio))
         end_positions: List[int] = []
         for end_char in ['. ', '。', '! ', '！', '? ', '？']:
