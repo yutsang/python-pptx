@@ -268,11 +268,32 @@ class PowerPointGenerator(
     # _fill_table_placeholder -- those are hard-coupled to the full BS/IS
     # overview grid (category-header rows, row-role tiering by keyword) that
     # a flat ~3-15 row account breakdown doesn't have and doesn't need.
-    _TABLE_TITLE_ROW_PT = 16.0
-    _TABLE_HEADER_ROW_PT = 14.0
-    _TABLE_DATA_ROW_PT = 12.0
-    _TABLE_CHILD_ROW_PT = 11.0
-    _TABLE_TOTAL_ROW_PT = 14.0
+    # Tightened one point per row 2026-08-11 to buy the income statement its
+    # third page back. The arithmetic, in the planning unit (13.80pt for
+    # Chinese): the IS holds 78.0 units against 75.9 of capacity across two
+    # pages, i.e. it misses by 2.1 -- and the tail tolerance is 2.0, so it was
+    # missing by a tenth of a line. All of the slack sat on IS page 1, which
+    # carried only 营业收入 (7.2 of 23.9) because 营业成本 could not follow it
+    # there: even split at its one legal boundary (lead + table stay, the
+    # explanation moves on), that block needed ~266pt against ~252pt free.
+    # Reading order forbids promoting a later account into the gap, and the
+    # lead-only split was tried and deleted (the column ends on "明细如下："
+    # with no detail under it), so the row metrics were the only lever left.
+    #
+    # A 16-row subtable goes 216pt -> 199pt, which puts lead+table at ~249pt
+    # against ~252pt free -- it fits, with the page-2 remainder at 52.8 units
+    # against 52.0 capacity, inside the same 2.0 tolerance.
+    #
+    # 11pt is the conservative end of what is safe, not the tightest that
+    # fits. The floor is PowerPoint's own line pitch plus the cell margins
+    # _set_cell applies: 7pt data font x 1.2 + 0.01in top + 0.01in bottom =
+    # 9.84pt. Anything at or under that gets auto-grown by PowerPoint, which
+    # would break the height reservation the same way a wrapped cell does.
+    _TABLE_TITLE_ROW_PT = 15.0
+    _TABLE_HEADER_ROW_PT = 13.0
+    _TABLE_DATA_ROW_PT = 11.0
+    _TABLE_CHILD_ROW_PT = 10.5
+    _TABLE_TOTAL_ROW_PT = 13.0
     _TABLE_SOURCE_LINE_PT = 12.0
     # Pure whitespace, not text-safety margin -- trimmed 2026-07-31 (6->4,
     # and the source-line box's own "+4" padding at its two call sites ->
