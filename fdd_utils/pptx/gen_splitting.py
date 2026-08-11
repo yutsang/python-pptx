@@ -484,6 +484,9 @@ class _SplittingMixin:
         # only ever REMOVES characters from head (never adds), so whatever
         # capacity check already accepted this position stays satisfied.
         best_split = self._snap_split_before_number(para, best_split)
+        best_split = self._snap_before_dangling_connective(para, best_split, min_fill)
+        if not best_split:
+            return None
 
         head = para[:best_split].strip()
         tail_rest = para[best_split:].strip()
@@ -492,6 +495,51 @@ class _SplittingMixin:
             return None
         return head, tail
 
+
+    # Tokens that cannot end a column: each one is grammatically waiting for
+    # something that is now in the next column. The number guard above keeps a
+    # figure whole but says nothing about what is left BEHIND it, so a real
+    # deck ended a column on "…长期待摊费用余额为" with "355.8万元…" resuming
+    # overleaf -- the amount was intact and the sentence was still broken.
+    # Longest first: the scan takes the first match, and "主要为" must win
+    # over "为".
+    _DANGLING_TAIL_TOKENS = (
+        "主要包括", "主要系", "主要为", "分别为", "合计为", "约为", "增至", "降至", "升至",
+        "包括", "共计", "计为", "达到", "人民币",
+        "为", "系", "是", "约", "达", "及", "和", "与", "或", "的", "至", "从", "由", "在", "于",
+    )
+    _CLAUSE_BOUNDARY_CHARS = "，,；;。、）)"
+
+    @classmethod
+    def _snap_before_dangling_connective(cls, text: str, pos: int, min_fill: int) -> Optional[int]:
+        """Back `pos` off a split that would leave the head grammatically
+        hanging, or refuse the split entirely.
+
+        Returns the adjusted position, or None when no honest split remains --
+        in which case the caller moves the whole account rather than shipping
+        half a sentence. Refusing costs a partly-empty column; the alternative
+        costs a column that ends mid-clause, which a reader notices.
+        """
+        if pos <= 0 or pos > len(text):
+            return pos
+        head = text[:pos].rstrip()
+        if not head:
+            return pos
+        if not any(head.endswith(token) for token in cls._DANGLING_TAIL_TOKENS):
+            return pos
+        # Once the head is hanging, the only retreat worth taking is to a full
+        # SENTENCE end. Backing up to the nearest comma just trades one
+        # fragment for another -- on the real case it produced a bare
+        # "截至<date>，", an adverbial with no clause attached, which reads no
+        # better than the "…余额为" it replaced. Anything short of a sentence
+        # end, and the account moves whole.
+        cut = max(head.rfind(ch) for ch in "。！？!?")
+        if cut <= 0:
+            return None
+        candidate = cut + 1
+        if candidate < min_fill:
+            return None
+        return candidate
 
     @classmethod
     def _snap_before_org_name(cls, text: str, pos: int) -> int:
