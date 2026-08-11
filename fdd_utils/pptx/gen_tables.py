@@ -8,6 +8,7 @@ from .helpers import (  # lifted out of PowerPointGenerator
     _build_clause_segments,
     _build_presentation_table_plan,
     _category_to_rgb,
+    _clear_cell_border,
     _expand_commentary_to_cover_summary,
     _explanation_render_text,
     _fill_content_shape,
@@ -708,11 +709,24 @@ class _TablesMixin:
         # first) merges them into one slab and loses the distinction the
         # reference draws; a separating rule loses the adjacency instead.
         # Different fills, no rule between them.
-        HEADER_BAND_BLUE = RGBColor(0x1F, 0x4E, 0x96)
+        #
+        # Same eyedropper-sampled pair the BS/IS grid uses (see
+        # _fill_table_placeholder): the unit-label cell is the darker blue,
+        # every period column the lighter one. A subtable is the same object
+        # in the deliverable, so it follows the same rule rather than keeping
+        # its own approximation of it.
+        HEADER_LABEL_BLUE = RGBColor(0x1E, 0x4C, 0xE2)
+        HEADER_DATE_BLUE = RGBColor(0x00, 0xB8, 0xF5)
+        TOTAL_RULE_BLUE = "05378F"
 
         def _set_cell(cell, text, *, bold=False, color=BLACK, fill=None, size_pt=7.0,
                       align=PP_ALIGN.LEFT, indent_emu=0):
-            cell.text = text
+            # " ", never "": PowerPoint does not measure a run with an empty
+            # <a:t/> for line height and falls back to the theme default,
+            # growing the row (see _fill_table_placeholder's data-row loop --
+            # same fix, and it is what made a category-header row render
+            # taller than every row around it).
+            cell.text = text if text else " "
             if not cell.text_frame.paragraphs:
                 cell.text_frame.add_paragraph()
             p = cell.text_frame.paragraphs[0]
@@ -770,10 +784,10 @@ class _TablesMixin:
         # here alone so the two can be told apart if it ever recurs.
         table_shape.rows[1].height = Pt(self._TABLE_HEADER_ROW_PT)
         _set_cell(table_shape.cell(1, 0), unit_label, bold=True,
-                  color=WHITE, fill=HEADER_BAND_BLUE, size_pt=7.5)
+                  color=WHITE, fill=HEADER_LABEL_BLUE, size_pt=7.5)
         for j, period in enumerate(periods, start=1):
             _set_cell(table_shape.cell(1, j), period_labels.get(period, period),
-                      bold=True, color=WHITE, fill=HEADER_BAND_BLUE, size_pt=7.5,
+                      bold=True, color=WHITE, fill=HEADER_DATE_BLUE, size_pt=7.5,
                       align=PP_ALIGN.CENTER)
 
         # Data / child / total rows.
@@ -813,11 +827,18 @@ class _TablesMixin:
                         _set_cell_border(cell, 'left', color_rgb=RGBColor(0xBF, 0xBF, 0xBF), width=Pt(0.5))
             for c in range(n_cols):
                 _set_cell_border(table_shape.cell(1, c), 'bottom', color_rgb=BLACK, width=Pt(1))
+                # Title band and period header are adjacent blues in the
+                # deliverable; the style's white hairline between them read as
+                # a seam. Same treatment as the BS/IS grid's header block.
+                _clear_cell_border(table_shape.cell(0, c), 'bottom')
+                _clear_cell_border(table_shape.cell(1, c), 'top')
+            # Blue total rules, matching the BS/IS grid (#05378F sampled off
+            # IMG_0410) rather than this function's own black.
             total_row_idx = next((i for i, e in enumerate(plan, start=2) if e["kind"] == "total"), None)
             if total_row_idx is not None:
                 for c in range(n_cols):
-                    _set_cell_border(table_shape.cell(total_row_idx, c), 'top', color_rgb=BLACK, width=Pt(1))
-                    _set_cell_border(table_shape.cell(total_row_idx, c), 'bottom', color_rgb=BLACK, width=Pt(1.25))
+                    _set_cell_border(table_shape.cell(total_row_idx, c), 'top', color_rgb=TOTAL_RULE_BLUE, width=Pt(1))
+                    _set_cell_border(table_shape.cell(total_row_idx, c), 'bottom', color_rgb=TOTAL_RULE_BLUE, width=Pt(1.25))
         except Exception as exc:
             logger.debug("Could not apply presentation-table borders: %s", exc)
 
@@ -1243,12 +1264,15 @@ class _TablesMixin:
                 header_row_height = Inches(data_row_height.inches + 0.03)
                 title_font_size = Pt(data_font_size.pt + 2)
                 title_row_height = Inches(data_row_height.inches + 0.05)
-                # Stage banner ("示意性调整后"/"Indicative adjusted", IMG_0399)
-                # sits between the title band and the date-header row. Same
-                # height/font tier as the date row -- it is short, un-wrapped
-                # text, not a second density-bearing row.
+                # Stage banner ("示意性调整后"/"Indicative adjusted") sits
+                # directly under the date row. Sized to the DATA tier, not the
+                # header tier: it is a secondary qualifier on the date above
+                # it, not a heading in its own right, and at header size it
+                # rendered a point larger than every figure in the table --
+                # which also made inspect_pptx report the data rows as having
+                # inconsistent font sizes, since it reads this row as one.
                 banner_row_height = header_row_height
-                banner_font_size = header_font_size
+                banner_font_size = data_font_size
 
                 # Hard clamp: the three fixed tiers above are picked from
                 # ROW COUNT alone and don't know this table's actual
@@ -1275,7 +1299,11 @@ class _TablesMixin:
                         data_font_size = Pt(max(4.5, data_font_size.pt * _scale))
                         header_font_size = Pt(max(5.0, header_font_size.pt * _scale))
                         title_font_size = Pt(max(5.5, title_font_size.pt * _scale))
-                        banner_font_size = Pt(max(5.0, banner_font_size.pt * _scale))
+                        # Same floor as data_font_size, not the header's --
+                        # the banner tracks the data tier (see above), so a
+                        # higher floor here would let it drift back to being
+                        # larger than the figures on a heavily-clamped table.
+                        banner_font_size = Pt(max(4.5, banner_font_size.pt * _scale))
                 except Exception:
                     pass
 
@@ -1316,6 +1344,11 @@ class _TablesMixin:
 
                             name_cell.fill.solid()
                             name_cell.fill.fore_color.rgb = DARK_BLUE
+
+                        # The table style's white hairline under this band read
+                        # as a gap between the navy title and the blue header
+                        # rows below it -- the two are meant to sit flush.
+                        _clear_cell_border(name_cell, "bottom")
 
                         # Shift data down - we'll use rows starting from index 1
                         data_start_row = 1
@@ -1489,7 +1522,22 @@ class _TablesMixin:
                         # rules are horizontal, under the header band and above
                         # each total. Drawing them made the table read as a
                         # spreadsheet rather than a report page.
-                        _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(0.5))
+                        #
+                        # The rule under the band belongs to whichever row is
+                        # LAST in the header block. When the stage banner
+                        # follows (the normal case -- it is drawn whenever
+                        # there is a table_name), that is the banner, not this
+                        # row: a rule here would cut across two rows of the
+                        # same blue. Both this row's own seams are cleared for
+                        # the same reason -- the table style draws a white
+                        # hairline that is invisible on white data rows but
+                        # reads as a gap straight through a solid blue band,
+                        # including under the navy title directly above.
+                        if table_name:
+                            _clear_cell_border(cell, "bottom")
+                        else:
+                            _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(0.5))
+                        _clear_cell_border(cell, "top")
 
                         try:
                             cell.margin_left = Inches(0.04)
@@ -1543,7 +1591,13 @@ class _TablesMixin:
                                 )
                             else:
                                 cell.fill.fore_color.rgb = WHITE
+                            # This row IS the bottom of the header block, so it
+                            # carries the rule that separates the band from the
+                            # data. Its TOP edge is cleared: the date row above
+                            # is the same blue, and the table style's own white
+                            # hairline was cutting the band in half.
                             _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(0.5))
+                            _clear_cell_border(cell, "top")
                             try:
                                 cell.margin_left = Inches(0.04)
                                 cell.margin_right = Inches(0.04)
@@ -1551,10 +1605,14 @@ class _TablesMixin:
                                 cell.margin_bottom = Inches(0.02)
                             except Exception:
                                 pass
-                            if col_idx == 0:
-                                cell.text = ""
-                                continue
-                            cell.text = "示意性调整后" if is_chinese_mode else "Indicative adjusted"
+                            # " ", never "": an empty <a:t/> is not measured by
+                            # PowerPoint for line height and the row inherits
+                            # the theme default instead, growing it (see the
+                            # data-row loop below, same fix, same reason).
+                            cell.text = (
+                                " " if col_idx == 0
+                                else ("示意性调整后" if is_chinese_mode else "Indicative adjusted")
+                            )
                             if cell.text_frame.paragraphs:
                                 p = cell.text_frame.paragraphs[0]
                                 p.alignment = PP_ALIGN.CENTER

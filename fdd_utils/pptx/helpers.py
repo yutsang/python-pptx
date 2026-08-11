@@ -205,23 +205,35 @@ def _fit_table_columns(table, df):
     # to 2 lines, each one rendering roughly 2x its neighbors' height
     # (PowerPoint auto-grows a row to fit wrapped text; the nominal
     # row.height set elsewhere is a floor, not a cap).
+    # Measured over EVERY row, not a head(25) sample. The sample was silently
+    # capping this: a real 33-row balance sheet carries its longest label,
+    # 归属于母公司所有者权益合计 (13 chars), at row 30 -- outside the sample --
+    # so max_len saw only 11 (一年内到期的非流动负债) and column 0 was sized 2
+    # characters too narrow. Confirmed against the shipped client metrics:
+    # the label needs 78.0pt at 6pt, the sampled weight gave 71.5pt of usable
+    # cell, and PowerPoint auto-grew that row to fit the wrap.
     col0_series = df.iloc[:, 0].astype(str) if len(df.columns) else pd.Series(dtype=str)
     is_cjk_labels = any(
-        any('一' <= ch <= '鿿' for ch in str(v)) for v in col0_series.head(25).tolist()
+        any('一' <= ch <= '鿿' for ch in str(v)) for v in col0_series.tolist()
     )
 
     weights = []
     for col_idx, col_name in enumerate(df.columns[: len(table.columns)]):
         col_series = df.iloc[:, col_idx].astype(str) if col_idx < len(df.columns) else pd.Series(dtype=str)
-        max_len = max([len(str(col_name))] + [len(val) for val in col_series.head(25).tolist()]) if len(col_series) else len(str(col_name))
+        max_len = max([len(str(col_name))] + [len(val) for val in col_series.tolist()]) if len(col_series) else len(str(col_name))
         col_name_str = str(col_name).lower()
         if col_idx == 0:
             weight = (
-                # Lowered from 2.6 to pay for the date columns above. 2.2 of a
-                # 4.78in table is 1.07in ~= 71pt of usable cell, which still
-                # holds an 11-character label like 一年内到期的非流动负债 at 6pt
-                # without wrapping -- that is the longest in this statement.
-                max(2.2, min(4.2, max_len / 5)) if is_cjk_labels
+                # Ceiling lowered 4.2 -> 3.0 at the same time as the head(25)
+                # removal above, and for that reason: the sample used to cap
+                # this weight by accident, and without a tighter ceiling a
+                # single very long label could now claim width the DATE
+                # columns need. These two trade directly against each other
+                # (see the date-column comment below). At 3.0 a date column
+                # still measures 56.1pt of usable cell against the 53.8pt
+                # 2023年12月31日 needs at 7pt, and 3.0 still admits a 15-char
+                # label -- longer than any real statement line seen so far.
+                max(2.2, min(3.0, max_len / 5)) if is_cjk_labels
                 else max(2.0, min(3.2, max_len / 10))
             )
         elif any(token in col_name_str for token in ["20", "19", "date", "年", "月"]):
@@ -981,6 +993,37 @@ def _expand_commentary_to_cover_summary(slide) -> bool:
         logger.warning("Could not remove coSummaryShape on continuation slide: %s", exc)
         return False
     return True
+
+
+def _clear_cell_border(cell, border_position='top'):
+    """Explicitly draw NO border on one edge of a cell.
+
+    Not the same as never calling _set_cell_border: a cell left alone
+    inherits whatever the table style GUID draws, and the UpSlide style this
+    deck uses puts a white hairline between cells. That is invisible against
+    white data rows but reads as a seam straight across the solid blue header
+    band -- which is what "中間不要白色border" was pointing at. An explicit
+    <a:noFill/> is the only thing that overrides the style; a border with no
+    fill child is treated as "inherit", not "none".
+    """
+    from pptx.oxml.xmlchemy import OxmlElement
+
+    tag_map = {'top': 'lnT', 'bottom': 'lnB', 'left': 'lnL', 'right': 'lnR'}
+    tag_name = tag_map.get(border_position)
+    if not tag_name:
+        return
+
+    tcPr = cell._tc.get_or_add_tcPr()
+    ns = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+    ln = tcPr.find(f"{ns}{tag_name}")
+    if ln is None:
+        ln = OxmlElement(f"a:{tag_name}")
+        tcPr.append(ln)
+    # Same reason _set_cell_border clears first: append() never replaces, so a
+    # leftover <a:solidFill> would still be there next to the <a:noFill/>.
+    for child in list(ln):
+        ln.remove(child)
+    ln.append(OxmlElement('a:noFill'))
 
 
 def _set_cell_border(cell, border_position='top', color_rgb=None, width=Pt(1)):
