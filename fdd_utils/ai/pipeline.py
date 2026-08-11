@@ -1357,6 +1357,13 @@ def _run_feedback_loop_for_key(
         if best["label"] != attempts[-1]["label"] and best["content"]:
             results[key]["subagent_4"] = best["content"]
             results[key]["agent_4_validation"] = best["validation"]
+            # "final" too, or this whole arbiter is a no-op: _store_agent_result
+            # set it to the LAST attempt when that attempt's validator result
+            # was stored, and every consumer resolves text through
+            # get_pipeline_result_text, whose priority reads "final" FIRST.
+            # Overwriting only subagent_4 left the deck showing the attempt the
+            # arbiter had just rejected.
+            results[key]["final"] = best["content"]
             logger.logger.warning(
                 "[FeedbackLoop] %s: %s retries did not clear all hallucinations; "
                 "kept '%s' (%s defect(s)) over the final attempt (%s defect(s))",

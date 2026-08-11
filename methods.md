@@ -13,6 +13,88 @@ already public in this repo.
 
 ---
 
+## 0. The whole thing on one page
+
+One account's journey. Everything runs per account, in parallel across accounts.
+
+```
+              ┌──────────────────────────────────────────────────────┐
+              │  data for ONE account (table, breakdown, remarks)     │
+              └──────────────────────────┬───────────────────────────┘
+                                         │
+   ┌─────────────────────────────────────▼───────────────────────────────┐
+   │  ATTEMPT  (up to 3: the first, then 2 retries)                      │
+   │                                                                     │
+   │    Generator ──► Auditor ──► [Validator]                            │
+   │     writes       checks       only if the text claims a CAUSE       │
+   │                  numbers      (judging that is all it adds)         │
+   │                  + format                                           │
+   │                     │              │                                │
+   │                     └──────┬───────┘                                │
+   │                            ▼                                        │
+   │                   verify_commentary                                 │
+   │                   ── arithmetic, no LLM ──                          │
+   │                   every amount vs the source                        │
+   │                            │                                        │
+   │                            ▼                                        │
+   │                     clause_reviews                                  │
+   │             data-backed │ reasoning │ hallucination                 │
+   └────────────────────────────┬────────────────────────────────────────┘
+                                │
+                    any hallucination?
+                                │
+              ┌─── yes ─────────┴──────── no ───┐
+              │                                 │
+     retry (feedback = the                    done
+     offending amounts, fed
+     back into the Generator)
+              │
+              └──► attempts exhausted
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │  FINAL ARBITER        │
+                    │  keep the attempt     │
+                    │  with the FEWEST      │
+                    │  hallucinations —     │
+                    │  not the last one     │
+                    └───────────┬───────────┘
+                                ▼
+                          into the deck
+```
+
+**Why the arbiter exists:** re-generation is not monotonically better. The
+third attempt can be the worst of the three, so "whatever came out last" is the
+wrong thing to ship. Ties break toward the later attempt, which has had the most
+feedback applied.
+
+**Why the loop only fires on `hallucination`:** the other flag, `reasoning`, is
+supportable FDD inference — the analysis the deliverable asks for, rendered in
+orange in the deck. Retrying on it spends tokens punishing good writing. See §7.
+
+### Two different retries, easy to confuse
+
+| | Transport retry | Feedback loop |
+|---|---|---|
+| Fires on | the API timing out / erroring | a hallucinated amount in the output |
+| Prompt | identical, resent | rewritten with the defect named |
+| Scope | one LLM call | the whole attempt (Generator → Validator) |
+| Budget | 3 attempts per call | 3 attempts per account |
+| Also | a circuit breaker skips a stage after repeated failures | a final arbiter picks the best attempt |
+
+### Harness notes
+
+- Every LLM call is **stateless** — `[system, user]`, no conversation carried
+  between stages. The Auditor sees the Generator's text cold, as a reviewer
+  would, not as its own previous turn.
+- **Both** the Auditor and the Validator receive the source data alongside the
+  commentary, so either can compare the two.
+- The arithmetic check is not an agent and never asks a model anything. It is
+  the same function on both paths, and its verdict on a number **outranks the
+  model's** (§4).
+
+---
+
 ## 1. Pipeline shape
 
 `SUBAGENT_SEQUENCE` is the truth: Generator → Auditor → Validator.
