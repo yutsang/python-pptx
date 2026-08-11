@@ -995,6 +995,37 @@ def _expand_commentary_to_cover_summary(slide) -> bool:
     return True
 
 
+# ECMA-376 CT_TableCellProperties fixes the ORDER of tcPr's children:
+#   lnL, lnR, lnT, lnB, lnTlToBr, lnBlToTr, cell3D, <fill>, headers, extLst
+# PowerPoint enforces it. Appending a border to tcPr puts it AFTER the
+# <a:solidFill> that cell.fill.solid() already wrote, the sequence is invalid,
+# and PowerPoint silently drops the border -- which is why repeated attempts to
+# restyle the total-row rules "never took effect" while fills always did.
+# Every border therefore has to be INSERTED at its ranked position, not
+# appended.
+_TCPR_CHILD_ORDER = (
+    "lnL", "lnR", "lnT", "lnB", "lnTlToBr", "lnBlToTr", "cell3D",
+    "noFill", "solidFill", "gradFill", "blipFill", "pattFill", "grpFill",
+    "headers", "extLst",
+)
+
+
+def _tcpr_insert_ordered(tcPr, element) -> None:
+    """Place `element` among tcPr's children in schema order."""
+    from lxml import etree
+
+    def _rank(el) -> int:
+        name = etree.QName(el).localname
+        return _TCPR_CHILD_ORDER.index(name) if name in _TCPR_CHILD_ORDER else len(_TCPR_CHILD_ORDER)
+
+    my_rank = _rank(element)
+    for existing in tcPr:
+        if _rank(existing) > my_rank:
+            existing.addprevious(element)
+            return
+    tcPr.append(element)
+
+
 def _clear_cell_border(cell, border_position='top'):
     """Explicitly draw NO border on one edge of a cell.
 
@@ -1018,7 +1049,7 @@ def _clear_cell_border(cell, border_position='top'):
     ln = tcPr.find(f"{ns}{tag_name}")
     if ln is None:
         ln = OxmlElement(f"a:{tag_name}")
-        tcPr.append(ln)
+        _tcpr_insert_ordered(tcPr, ln)
     # Same reason _set_cell_border clears first: append() never replaces, so a
     # leftover <a:solidFill> would still be there next to the <a:noFill/>.
     for child in list(ln):
@@ -1043,7 +1074,9 @@ def _set_cell_border(cell, border_position='top', color_rgb=None, width=Pt(1)):
     ln = tcPr.find(f"{{http://schemas.openxmlformats.org/drawingml/2006/main}}{tag_name}")
     if ln is None:
         ln = OxmlElement(f"a:{tag_name}")
-        tcPr.append(ln)
+        # Ordered, not appended -- see _tcpr_insert_ordered. Appending here put
+        # the border after the cell's fill and PowerPoint dropped it.
+        _tcpr_insert_ordered(tcPr, ln)
         
     # Set properties
     ln.set('w', str(int(width)))
