@@ -1,439 +1,122 @@
-# Methods — how commentary is generated, checked and grounded
-
-Reference for the AI pipeline's verification design: which agent checks what,
-where the check is an LLM judgement and where it is exact arithmetic, and what
-the number-grounding pool can and cannot see.
+# Methods — how the commentary pipeline checks itself
 
 **This file is committed. It must never contain client data** — no entity
-names, no databook names, no monetary figures, no per-run account counts. The
-repo's `.gitignore` excludes every `.md` but `README.md` for exactly that
-reason (working notes name clients); this file carries an explicit negation
-and therefore has to stay generic. Constants quoted below are code constants,
-already public in this repo.
+names, no databook names, no monetary figures, no per-run counts. The repo's
+`.gitignore` excludes every `.md` but `README.md` for exactly that reason
+(working notes name clients); this file carries an explicit negation and has to
+stay generic.
 
 ---
 
-## 0. The whole thing on one page
+## The whole pipeline
 
-One account's journey. Everything runs per account, in parallel across accounts.
+One account's journey. Every account runs this independently, in parallel.
 
 ```
-              ┌──────────────────────────────────────────────────────┐
-              │  data for ONE account (table, breakdown, remarks)     │
-              └──────────────────────────┬───────────────────────────┘
-                                         │
-   ┌─────────────────────────────────────▼───────────────────────────────┐
-   │  ATTEMPT  (up to 3: the first, then 2 retries)                      │
-   │                                                                     │
-   │    Generator ──► Auditor ──► [Validator]                            │
-   │     writes       checks       only if the text claims a CAUSE       │
-   │                  numbers      (judging that is all it adds)         │
-   │                  + format                                           │
-   │                     │              │                                │
-   │                     └──────┬───────┘                                │
-   │                            ▼                                        │
-   │                   verify_commentary                                 │
-   │                   ── arithmetic, no LLM ──                          │
-   │                   every amount vs the source                        │
-   │                            │                                        │
-   │                            ▼                                        │
-   │                     clause_reviews                                  │
-   │             data-backed │ reasoning │ hallucination                 │
-   └────────────────────────────┬────────────────────────────────────────┘
-                                │
-                    any hallucination?
-                                │
-              ┌─── yes ─────────┴──────── no ───┐
-              │                                 │
-     retry (feedback = the                    done
-     offending amounts, fed
-     back into the Generator)
-              │
-              └──► attempts exhausted
-                                │
-                                ▼
-                    ┌───────────────────────┐
-                    │  FINAL ARBITER        │
-                    │  keep the attempt     │
-                    │  with the FEWEST      │
-                    │  hallucinations —     │
-                    │  not the last one     │
-                    └───────────┬───────────┘
-                                ▼
-                          into the deck
+╔════════════════════════════════════════════════════════════════════╗
+║  HARNESS ①   stateless calls · timeout resend · circuit breaker    ║
+╚════════════════════════════════════════════════════════════════════╝
+
+                    data for ONE account
+                 (table · breakdown · remarks)
+                              │
+    ╭─────────────────────────▼──────────────────────────────╮
+    │  ATTEMPT                          ② up to 3 attempts   │
+    │                                                        │
+    │   Generator ──► Auditor ──► [ Validator ]               │
+    │    writes it    re-reads it   only when the text        │
+    │                 against the   claims a CAUSE — judging  │
+    │                 source data   that is all it adds ③     │
+    │                      │             │                    │
+    │                      ╰──────┬──────╯                    │
+    │                             ▼                           │
+    │                    verify_commentary            ④       │
+    │                 arithmetic, not a model:                │
+    │                 every amount vs the source              │
+    │                             │                           │
+    │                             ▼                           │
+    │        data-backed  │  reasoning  │  hallucination      │
+    ╰─────────────────────────────┬──────────────────────────╯
+                                  │
+                    any hallucination?  ⑤
+                                  │
+              ┌──── no ───────────┴─────────── yes ────┐
+              │                                        │
+              ▼                                  name the bad
+           ship it                               amounts, feed
+                                                 back, retry ⑥
+                                                        │
+                                            attempts exhausted
+                                                        │
+                                                        ▼
+                                        ╭───────────────────────────╮
+                                        │ ARBITER ⑦                 │
+                                        │ keep the attempt with the │
+                                        │ FEWEST hallucinations —   │
+                                        │ NOT the last one          │
+                                        ╰───────────────────────────╯
 ```
-
-**Why the arbiter exists:** re-generation is not monotonically better. The
-third attempt can be the worst of the three, so "whatever came out last" is the
-wrong thing to ship. Ties break toward the later attempt, which has had the most
-feedback applied.
-
-**Why the loop only fires on `hallucination`:** the other flag, `reasoning`, is
-supportable FDD inference — the analysis the deliverable asks for, rendered in
-orange in the deck. Retrying on it spends tokens punishing good writing. See §7.
-
-### Two different retries, easy to confuse
-
-| | Transport retry | Feedback loop |
-|---|---|---|
-| Fires on | the API timing out / erroring | a hallucinated amount in the output |
-| Prompt | identical, resent | rewritten with the defect named |
-| Scope | one LLM call | the whole attempt (Generator → Validator) |
-| Budget | 3 attempts per call | 3 attempts per account |
-| Also | a circuit breaker skips a stage after repeated failures | a final arbiter picks the best attempt |
-
-### Harness notes
-
-- Every LLM call is **stateless** — `[system, user]`, no conversation carried
-  between stages. The Auditor sees the Generator's text cold, as a reviewer
-  would, not as its own previous turn.
-- **Both** the Auditor and the Validator receive the source data alongside the
-  commentary, so either can compare the two.
-- The arithmetic check is not an agent and never asks a model anything. It is
-  the same function on both paths, and its verdict on a number **outranks the
-  model's** (§4).
 
 ---
 
-## 1. Pipeline shape
+## What each marker is, and why
 
-`SUBAGENT_SEQUENCE` is the truth: Generator → Auditor → Validator.
-subagent_3 (Refiner) has prompts but is not in the sequence — it is dormant.
+**① Harness.** Every LLM call is stateless — `[system, user]`, no conversation
+carried between stages. The Auditor therefore reads the Generator's text
+*cold*, like a reviewer, not as its own previous turn; a model reviewing its own
+visible prior turn is much less likely to find fault with it. On top of that the
+harness resends a call that times out (same prompt), and a circuit breaker stops
+a stage that keeps failing instead of burning the whole run on retries.
 
-```
-N accounts
-   │
-   ├─ Stage 1  Generator (subagent_1) ──────────────► N LLM calls
-   │              writes the commentary
-   │
-   ├─ Stage 2  Auditor (subagent_2) ────────────────► N LLM calls
-   │              verifies + tightens + finalises
-   │              └─► verify_commentary()   ← deterministic, 0 LLM calls
-   │                    every account now carries clause_reviews from here
-   │
-   └─ Stage 3  Validator (subagent_4)
-          │
-          │  processing.validator_mode
-          │
-          ├── "selective"  (see §6 for why this exists)
-          │      │
-          │      │  commentary_asserts_inference(text)?
-          │      │  scans for causal markers, after stripping the
-          │      │  "no cause available" disclaimers
-          │      │
-          │      ├─ asserts a cause ──► M accounts ──► M LLM calls
-          │      │                          └─► verify_commentary(llm_reviews)
-          │      │
-          │      └─ no cause ──────────► N-M accounts ──► 0 LLM calls
-          │                                  └─► _apply_deterministic_verification
-          │                                       └─► verify_commentary(None)
-          │
-          └── "always"
-                 every account ──────────► N LLM calls
-                                             └─► verify_commentary(llm_reviews)
-```
+**② Bounded attempts — the sycophancy limit.** This is the core reason the
+budget is 3 and not "until clean". Tell a model its answer is wrong and it will
+agree and change it, whether or not it was wrong. Each extra round pushes it
+further toward whatever the feedback implies rather than toward the data, and
+the text gets blander and less specific. So the loop is capped, and the three
+mechanisms below all exist to stop agreeableness being mistaken for correction.
 
-Both branches end in `verify_commentary`. **The number-grounding is identical
-on both paths** — the only difference is whether an LLM opinion exists to be
-merged in.
+**③ Narrow scope.** The Validator only runs where the commentary asserts a
+cause, because judging a causal claim is the one thing arithmetic cannot do.
+Asking a model to re-review text that has nothing for it to judge invites it to
+change something just to look useful.
 
----
+**④ The judge is not a model.** Amounts are checked by arithmetic against the
+account's own source data. This is what keeps the loop honest — a model-judged
+loop can be talked round by a confident rewrite; a sum cannot. Its verdict on a
+number outranks the model's, in both directions: it overrides a fabricated
+figure the model defended, and it dismisses a "hallucination" the model flagged
+on a figure that does match.
 
-## 2. What each agent actually checks
+**⑤ A deliberately narrow gate.** Retry fires **only** on `hallucination`, never
+on `reasoning`. A `reasoning` flag means the numbers are right but an inference
+is not directly provable — which is the analysis an FDD deliverable is *for*
+(the deck renders it in orange on purpose). Retrying on it spends tokens
+punishing good writing and trains the output toward saying less. A ratio-based
+gate was tried and is wrong at any threshold: one fabricated figure inside a
+long correct paragraph dilutes below any sane cut-off, so it misses exactly the
+case it exists for.
 
-| | Generator | Auditor | Validator |
-|---|---|---|---|
-| Writes commentary | yes | rewrites | rewrites |
-| Checks numbers | — | yes, by reading | yes, by reading |
-| Deterministic number-grounding | no | **yes** (`verify_commentary`) | yes |
-| Emits `clause_reviews` | no | **yes** | yes |
-| Can trigger the retry loop | no | **yes** | yes |
-| Judges a causal claim | — | — | **yes — its unique job** |
+**⑥ Feedback names the defect.** The retry does not say "that was wrong, try
+again" — it names the specific amounts that failed grounding, so the next
+attempt has something concrete to correct rather than a mood to match.
 
-### The Auditor is an independent reviewer, by construction
-
-Every agent call is a **fresh, stateless** LLM call — `messages` is
-`[system, user]` with no conversation history carried across stages. The
-Auditor sees the Generator's text cold, not as its own prior turn.
-
-It receives both sides of the comparison. Its user prompt carries
-`先前输出: {output}` (the commentary) and `原始数据: {financial_data}` (the
-data), and `render_prompt` builds that payload for **every** agent, not just
-the Generator — so it includes the main table, the multi-period analysis table
-with its breakdown component rows, supporting notes, and the side-column
-remarks.
-
-Its checklist is explicitly numbers-and-format: *「与原始数据相比, 所有数字是否
-准确?」*, *「趋势交叉验证：若评论称某科目"增加"或"减少"，核实方向是否与源数据
-各期数值一致」*, plus amount formatting, date formatting, materiality
-thresholds and whether remarks are data-supported.
-
-### What it could not do before, and now can
-
-`verify_commentary` used to be gated on `agent_name == "subagent_4"`. That was
-an accident of implementation rather than a design decision — it is pure
-arithmetic over the account's own data, costs no tokens, and does not care
-which agent last touched the text. It now runs after the Auditor too, filed
-under the same single validation record. Consequences:
-
-1. **Every account carries `clause_reviews` after stage 2**, with no third LLM
-   call — including the accounts `"selective"` will skip.
-2. **An Auditor-stage defect can trigger a retry.** The gate reads that record,
-   so a fabricated figure surviving stage 2 is caught without waiting for a
-   Validator that may never run for that account.
-3. The Validator **overwrites** the record when it does run — its text is
-   later, and it merges its own judgement in.
-
-This leaves the Validator with only the job code cannot do: judging a causal
-claim.
+**⑦ The arbiter is the real sycophancy guard.** Re-generation is **not**
+monotonically better: attempt 3 can be the worst of the three, precisely because
+each round drifts further under pressure to agree. So the pipeline never ships
+"whatever came out last" — it scores every attempt by hallucination count and
+keeps the best, breaking ties toward the later attempt (which has had the most
+feedback applied). Without this, bounded retries would just guarantee shipping
+the most-drifted version.
 
 ---
 
-## 3. Inside `verify_commentary`
+## Known limits
 
-```
-final_content
-   │
-   ├─ segment_clauses()  ──► one clause at a time
-   │
-   └─ per clause:
-        │
-        ├─ A. ground_amounts(clause, SourceIndex)
-        │       extract_amounts(clause)
-        │        ├─ no amount found ─────────► det = None      (defer)
-        │        └─ amounts found ─► source.matches(x) for each
-        │              ├─ all matched ───────► det = data-backed    conf 1.0
-        │              └─ any unmatched ─────► det = hallucination  conf 0.9
-        │
-        ├─ B. _lookup_llm_review(clause)
-        │       the LLM's own opinion, matched by clause overlap
-        │       (always None on the deterministic-only path)
-        │
-        └─ C. _combine_verdict(det, llm)
-```
-
-`matches()` compares **magnitudes** — sign is dropped by `extract_amounts`, so
-a negative source cell still matches a positively-written figure. The test is:
-
-```
-abs(target - value) <= max(500.0, 0.05 * value)
-```
-
-Two tiers, and the flat floor matters. Above CNY10k the 5% term dominates.
-Below it the **flat 500 floor** does, and it is proportionally very wide — it
-exists because Chinese commentary rounds sub-million amounts to one decimal of
-万 (i.e. to the nearest thousand), a conventional rounding the old tight tier
-flagged as hallucination. A genuine zero source cell is special-cased: it only
-matches a target that also rounds to zero.
-
----
-
-## 4. `_combine_verdict` precedence — the part that decides everything
-
-```
-if det == hallucination:
-      ┌──────────────────────────────────────────────────────┐
-      │  verdict = hallucination.  The LLM CANNOT override.   │  ★
-      └──────────────────────────────────────────────────────┘
-      code comment: "the model cannot override hard arithmetic"
-
-elif det == data-backed:
-      ├─ LLM says reasoning + unsupported ──► reasoning
-      │                                       (numbers fine, inference doubted)
-      └─ otherwise ────────────────────────► data-backed
-                                              (an LLM "hallucination" claim
-                                               here is dropped as a false
-                                               positive)
-
-else:                       # det is None — no checkable amount in the clause
-      ├─ an LLM review exists ─────────────► use it
-      └─ none ────────────────────────────► causal language ⇒ reasoning
-                                              otherwise supported
-```
-
-### Consequence worth stating plainly
-
-A figure the pool cannot find is flagged `hallucination` **before any LLM
-opinion is consulted**. Therefore:
-
-> Running the Validator on more accounts (`validator_mode: "always"`) does
-> **not** rescue a correct-but-unfindable number. That path is closed by
-> precedence, not by coverage.
-
-The LLM's only decisive contribution is the middle branch: numbers all match,
-but the *inference* is unsupported → `reasoning`. That is exactly the subset
-`"selective"` already selects for.
-
----
-
-## 5. The grounding pool (`SourceIndex`)
-
-### What goes in
-
-```
-SourceIndex.from_df(df, sibling_dfs)
-   │
-   ├─ every numeric cell of the account's projection_df
-   ├─ each column's total
-   ├─ sums of every run of 2..4 CONSECUTIVE rows      (_adjacent_window_sums)
-   ├─ all of the above for df.attrs["prompt_analysis_df"]  (the multi-period table)
-   ├─ every number appearing in df.attrs text (notes / remarks / side columns)
-   ├─ those text numbers × the annualisation factor, when 0 < months < 12
-   └─ all of the above for each sibling df
-                                    ▲
-                                    └─ siblings are the SAME statement type only
-```
-
-### Where a legitimate figure can fall outside it
-
-Derived from reading the code. **Not yet confirmed against a real run** —
-confirm before treating any row as a known defect.
-
-| Figure the commentary states | Findable? | Why |
-|---|---|---|
-| A single line item | yes | present as a cell |
-| A column total | yes | totals are added explicitly |
-| Sum of 2–4 **adjacent** rows | yes | window sums |
-| Sum of **non-adjacent** rows | **no** | windows are consecutive runs only |
-| Sum of **5 or more** rows | **no** | `max_window = 4` |
-| A **difference** (A − B, "the remaining X") | **no** | pool holds no subtraction |
-| A **ratio / percentage / per-unit** figure | **no** | pool holds no division |
-| A figure from the **other statement** (BS clause citing IS) | **no** | siblings are same-type only |
-| Annualised value of a table row | yes | the annualised column is in the df |
-| Annualised value of a **remark** figure | yes | text numbers × factor |
-
-### Both error directions are real
-
-The pool is deliberately generous, and that cuts both ways:
-
-- **False positive (flagged but correct).** Any row in the table above marked
-  "no". This is authoritative per §4 and cannot be argued down by the LLM.
-- **False negative (fabricated but passed).** Pool size grows roughly as
-  `columns × (4 × rows)` per df, multiplied again across siblings, so it is
-  large — and every entry carries a `max(500, 5%)` catchment around it. For
-  small figures the flat 500 floor makes that catchment proportionally very
-  wide. A fabricated figure therefore has a non-trivial chance of landing
-  within tolerance of *something*. **A `data-backed` verdict is weak evidence
-  of correctness**, not proof, and it is weakest exactly where the amounts
-  are small.
-
-Neither direction is currently measured. Quantifying the false-negative rate
-would mean injecting known-fabricated figures and counting how many pass.
-
----
-
-## 6. Why `"selective"` exists
-
-Measured previously on a real run (figures deliberately omitted here — see the
-private session notes): the Auditor does substantive work, while the
-Validator's edits were mostly cosmetic, it stripped `➢` bullets, and it was
-the single most expensive stage because it re-emits the full text *plus* a
-per-clause review array that the deterministic layer then largely overwrites.
-
-`commentary_asserts_inference` is a cheap deterministic pre-filter, and is
-deliberately **over-inclusive**: a false positive costs one avoidable LLM
-call, a false negative loses a real reasoning flag from the deck.
-
-`主要为` / `主要包括` are deliberately **not** markers — they introduce a
-composition, not a cause.
-
----
-
-## 7. Feedback loop (`_run_feedback_loop_for_key`)
-
-Already implemented and enabled by default.
-
-```
-attempt 0 = the original result
-   │
-   └─ up to max_retries times (default 2 → 3 attempts total):
-         │
-         ├─ gate: count_defective_clauses(clause_reviews)
-         │        supported == False AND category == "hallucination"
-         │        (RETRIABLE_CLAUSE_CATEGORIES)
-         │        plus the unsupported-ratio as a secondary trigger
-         │
-         ├─ no defect ─► stop
-         │
-         └─ defect ────► format_validator_feedback_for_reprompt()
-                         └─ re-run Generator → Auditor → Validator
-                            with the feedback appended to the user comment
-   │
-   └─ final arbiter: score every attempt by hallucination count,
-                     keep the BEST (ties break toward the latest).
-                     Re-generation is not monotonically better — the last
-                     attempt can be the worst.
-```
-
-### The gate is `hallucination` only, on purpose
-
-An earlier design gated on `unsupported_clauses / total > threshold`. Every
-unsupported clause observed on real runs was category `reasoning` — supportable
-FDD inference, which the deliverable *wants* and the deck renders in orange.
-Retrying on those spends tokens punishing good analysis and pushes the model
-toward blander commentary.
-
-A ratio is also the wrong **shape** of test at any threshold: one fabricated
-figure inside a long correct bullet dilutes below any sane cut-off, so the
-gate misses precisely the case it exists for.
-
----
-
-## 8. House style enforced as code
-
-Two rules exist in the prompts *and* as deterministic post-processing in
-`_finalize_agent_content`, because a rule that only lives in prose is not a
-guarantee. Neither touches an amount, so number-grounding is unaffected.
-
-**Zero balances** (`humanise_zero_balance`). A real report does not write
-"余额为0元". Balance-sheet accounts read 无余额, income-statement accounts
-未发生. The regex carries a negative lookahead so a real amount that merely
-begins with a zero digit is never rewritten.
-
-**Repeated names in an enumeration** (`dedupe_enumeration_prefix`). A cash
-account list names the same bank and branch on every item, which reads as
-padding. The name is stated once; later items keep only what distinguishes
-them:
-
-```
-before:  …主要包括<bank><branch>#1#-A户 …、<bank><branch>#2#-B户 …
-after:   …主要包括<bank><branch>#1#-A户 …、#2#-B户 …
-```
-
-It only fires when consecutive items share a long enough prefix, so ordinary
-short overlaps are left alone, and it never strips an item to nothing.
-
----
-
-## 9. Executive summary
-
-The band is written by an LLM (`generate_section_summary`), but **only if a
-summary was generated before export**. `export_pptx_from_structured_data_combined`
-deliberately makes no LLM call of its own — an in-export call was reported to
-hang for many minutes on a flaky API — so when nothing is passed to its
-`pre_generated_summaries` argument it falls back to `_generate_page_summary`,
-which splices each account's opening sentence together.
-
-That fallback is easy to mistake for a real summary: it is grammatical, it
-fills the band, and nothing in the export log says it happened. The tell is
-that it reads as a verbatim copy of the page's first bullet.
-
-Both the batch UI path and the CLI now call the shared `build_section_summaries`
-before exporting. The CLI previously did not, so its decks never carried an AI
-summary at all.
-
----
-
-## 10. Open questions
-
-- Which pool gaps from §5 the reports actually hit. Answerable for free from
-  an existing run's flagged clauses — no re-run needed.
-- The false-negative rate (§5). Needs deliberate injection of known-bad
-  figures.
-- Whether the LLM Validator catches anything the deterministic layer does not,
-  on accounts `"selective"` would have skipped. Answerable by diffing a
-  `"always"` run against the deterministic verdicts for the same accounts.
-- Both Chinese prompts (Auditor and Validator) carry `禁止使用要点、列表`, so
-  `➢` bullets from the Generator get stripped inconsistently depending on
-  which stage touches the account last. This affects rendered line counts,
-  not just appearance.
+- The grounding pool holds each cell, column totals, sums of short runs of
+  adjacent rows, and figures quoted in the notes. A legitimate figure derived
+  another way — a difference, a ratio, a sum of non-adjacent rows, a
+  cross-statement reference — is **not** in it and will be flagged.
+- Matching carries a tolerance, and the pool is large, so a `data-backed`
+  verdict is weak evidence of correctness rather than proof — weakest where the
+  amounts are small.
+- Neither error rate has been measured.
