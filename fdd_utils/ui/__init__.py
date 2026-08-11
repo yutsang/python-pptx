@@ -132,6 +132,7 @@ from .pptx_export import (  # noqa: F401
     batch_extract_entity_data,
     batch_process_entity,
     batch_run_ai_for_entity,
+    build_section_summaries,
     generate_pptx_presentation,
     logger,
     render_bridge_lab,

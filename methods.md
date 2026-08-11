@@ -26,6 +26,8 @@ N accounts
    │
    ├─ Stage 2  Auditor (subagent_2) ────────────────► N LLM calls
    │              verifies + tightens + finalises
+   │              └─► verify_commentary()   ← deterministic, 0 LLM calls
+   │                    every account now carries clause_reviews from here
    │
    └─ Stage 3  Validator (subagent_4)
           │
@@ -60,30 +62,48 @@ merged in.
 | | Generator | Auditor | Validator |
 |---|---|---|---|
 | Writes commentary | yes | rewrites | rewrites |
-| Checks numbers | — | **yes, by reading** | yes, by reading |
-| Deterministic number-grounding | no | **no** | **yes** (`verify_commentary`) |
-| Emits `clause_reviews` | no | **no** | yes |
-| Can trigger the retry loop | no | **no** | yes |
+| Checks numbers | — | yes, by reading | yes, by reading |
+| Deterministic number-grounding | no | **yes** (`verify_commentary`) | yes |
+| Emits `clause_reviews` | no | **yes** | yes |
+| Can trigger the retry loop | no | **yes** | yes |
+| Judges a causal claim | — | — | **yes — its unique job** |
 
-### The Auditor does check numbers — but nothing records the result
+### The Auditor is an independent reviewer, by construction
 
-Its prompt is explicit: *「验证先前代理输出中数字的准确性和重要性」*,
-*「纠正任何不准确的数字或格式问题」*, *「趋势交叉验证：若评论称某科目"增加"
-或"减少"，核实方向是否与源数据各期数值一致」*.
+Every agent call is a **fresh, stateless** LLM call — `messages` is
+`[system, user]` with no conversation history carried across stages. The
+Auditor sees the Generator's text cold, not as its own prior turn.
 
-Three consequences follow, and they are the reason the Auditor's check does
-not remove the need for the Validator's:
+It receives both sides of the comparison. Its user prompt carries
+`先前输出: {output}` (the commentary) and `原始数据: {financial_data}` (the
+data), and `render_prompt` builds that payload for **every** agent, not just
+the Generator — so it includes the main table, the multi-period analysis table
+with its breakdown component rows, supporting notes, and the side-column
+remarks.
 
-1. **No deterministic backstop.** `verify_commentary` is gated on
-   `agent_name == "subagent_4"` (`pipeline.py`, in `process_single_agent_item`).
-   The Auditor's number check is an LLM reading a table — the task LLMs are
-   least reliable at, because it is exact lookup and arithmetic.
-2. **No structured output.** The Auditor returns prose only. It emits no
-   `clause_reviews`, so anything it silently fixes (or silently misses) is
-   invisible to the deck's highlighting and to every downstream gate.
-3. **It cannot drive the loop.** `_run_feedback_loop_for_key` reads
-   `agent_4_validation.clause_reviews`. An Auditor objection is not
-   representable in that structure, so it can never request a retry.
+Its checklist is explicitly numbers-and-format: *「与原始数据相比, 所有数字是否
+准确?」*, *「趋势交叉验证：若评论称某科目"增加"或"减少"，核实方向是否与源数据
+各期数值一致」*, plus amount formatting, date formatting, materiality
+thresholds and whether remarks are data-supported.
+
+### What it could not do before, and now can
+
+`verify_commentary` used to be gated on `agent_name == "subagent_4"`. That was
+an accident of implementation rather than a design decision — it is pure
+arithmetic over the account's own data, costs no tokens, and does not care
+which agent last touched the text. It now runs after the Auditor too, filed
+under the same single validation record. Consequences:
+
+1. **Every account carries `clause_reviews` after stage 2**, with no third LLM
+   call — including the accounts `"selective"` will skip.
+2. **An Auditor-stage defect can trigger a retry.** The gate reads that record,
+   so a fabricated figure surviving stage 2 is caught without waiting for a
+   Validator that may never run for that account.
+3. The Validator **overwrites** the record when it does run — its text is
+   later, and it merges its own judgement in.
+
+This leaves the Validator with only the job code cannot do: judging a causal
+claim.
 
 ---
 
@@ -277,7 +297,52 @@ gate misses precisely the case it exists for.
 
 ---
 
-## 8. Open questions
+## 8. House style enforced as code
+
+Two rules exist in the prompts *and* as deterministic post-processing in
+`_finalize_agent_content`, because a rule that only lives in prose is not a
+guarantee. Neither touches an amount, so number-grounding is unaffected.
+
+**Zero balances** (`humanise_zero_balance`). A real report does not write
+"余额为0元". Balance-sheet accounts read 无余额, income-statement accounts
+未发生. The regex carries a negative lookahead so a real amount that merely
+begins with a zero digit is never rewritten.
+
+**Repeated names in an enumeration** (`dedupe_enumeration_prefix`). A cash
+account list names the same bank and branch on every item, which reads as
+padding. The name is stated once; later items keep only what distinguishes
+them:
+
+```
+before:  …主要包括<bank><branch>#1#-A户 …、<bank><branch>#2#-B户 …
+after:   …主要包括<bank><branch>#1#-A户 …、#2#-B户 …
+```
+
+It only fires when consecutive items share a long enough prefix, so ordinary
+short overlaps are left alone, and it never strips an item to nothing.
+
+---
+
+## 9. Executive summary
+
+The band is written by an LLM (`generate_section_summary`), but **only if a
+summary was generated before export**. `export_pptx_from_structured_data_combined`
+deliberately makes no LLM call of its own — an in-export call was reported to
+hang for many minutes on a flaky API — so when nothing is passed to its
+`pre_generated_summaries` argument it falls back to `_generate_page_summary`,
+which splices each account's opening sentence together.
+
+That fallback is easy to mistake for a real summary: it is grammatical, it
+fills the band, and nothing in the export log says it happened. The tell is
+that it reads as a verbatim copy of the page's first bullet.
+
+Both the batch UI path and the CLI now call the shared `build_section_summaries`
+before exporting. The CLI previously did not, so its decks never carried an AI
+summary at all.
+
+---
+
+## 10. Open questions
 
 - Which pool gaps from §5 the reports actually hit. Answerable for free from
   an existing run's flagged clauses — no re-run needed.

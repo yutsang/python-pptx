@@ -2055,7 +2055,7 @@ _PPTX_STAGE_RE = re.compile(r"\[PPTX\] ([\w_ ]+?): ([\d.]+)s")
 
 def export_and_inspect_pptx(
     databook_path: str, sheet_name: Optional[str], dfs: Dict[str, pd.DataFrame], ai_results: Dict[str, Any],
-    language: str, model_type: str, out_path: str,
+    language: str, model_type: str, out_path: str, model_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Runs the FULL remaining pipeline (build payloads -> export .pptx),
     captures every [PPTX] stdout line and fdd_utils.pptx logger record
@@ -2128,6 +2128,26 @@ def export_and_inspect_pptx(
     template_path = str(Path(__file__).parent / "fdd_utils" / "template.pptx")
     is_chinese = (language == "Chi")
 
+    # Write the executive summaries BEFORE export. The exporter makes no LLM
+    # call of its own (an in-export call was reported to hang 10+ min on a
+    # flaky API), so without this the band falls back to splicing each
+    # account's opening sentence -- which is why the summary could read as a
+    # verbatim copy of the page's first bullet. The batch UI path has always
+    # done this; the CLI never did, so a --run-ai --export-pptx deck has
+    # never carried a real AI summary.
+    from fdd_utils.ui import build_section_summaries
+    _summary_started_at = time.perf_counter()
+    section_summaries = build_section_summaries(
+        ai_results=ai_results,
+        mappings=mappings,
+        is_chinese_db=is_chinese,
+        model_type=model_type,
+        model_name=model_name,
+        label=Path(databook_path).stem,
+    )
+    print(f"\nExecutive summaries generated: {sorted(section_summaries) or 'NONE (band will use the spliced fallback)'}"
+          f"  [{time.perf_counter() - _summary_started_at:.1f}s]")
+
     # Every fdd_utils.pptx.* module sets its OWN logger to WARNING at import,
     # and a child's level wins over the parent's -- so raising only the parent
     # captured nothing, which is why "Text measurement [...]" never appeared and
@@ -2155,6 +2175,7 @@ def export_and_inspect_pptx(
                 temp_path=databook_path, selected_sheet=sheet_name,
                 is_chinese_databook=is_chinese, bs_is_results=bs_is_results,
                 model_type=model_type,
+                pre_generated_summaries=section_summaries,
                 mappings=mappings,
             )
     finally:
@@ -2572,7 +2593,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             try:
                 pptx_summary = export_and_inspect_pptx(
                     path, selected_sheet_for_ai, dfs, ai_summary["results"], language,
-                    model_type, out_path,
+                    model_type, out_path, model_name=model_name,
                 )
                 summary["pptx"] = pptx_summary
                 # Repeated dead-last: section 9/10 print a lot after the export,

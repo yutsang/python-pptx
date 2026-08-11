@@ -179,6 +179,112 @@ def clean_agent_output(content: str) -> str:
     return cleaned.strip()
 
 
+# "余额为0元" and its variants. The prompts already forbid this (mappings.yml
+# for the Generator, prompts.yml for the Auditor, plus its checklist), but a
+# rule that only exists in prose is not a guarantee -- this is the same rule
+# as code, applied to every agent's output.
+#
+# The negative lookahead is what keeps it safe: a real amount that merely
+# STARTS with a zero digit (0.5万元) must not match, so the 0 may not be
+# followed by another digit, a decimal point, or a full-width period.
+_ZERO_BALANCE_RE = re.compile(
+    r"(?:余额)?(?:合计)?为(?:人民币)?0(?![\d.．])\s*(?:元)?"
+)
+# Same idea for the other mechanical form: "无/未有余额" is fine, "余额为零" is not.
+_ZERO_BALANCE_CHAR_RE = re.compile(r"(?:余额)?(?:合计)?为(?:人民币)?零\s*(?:元)?")
+
+
+def humanise_zero_balance(text: str, statement_type: str = "") -> str:
+    """Rewrite the mechanical zero-balance forms the deliverable never uses.
+
+    A real report does not write "余额为0元". Balance-sheet accounts read
+    "无余额"; income-statement (period) accounts read "未发生". statement_type
+    picks between them and defaults to the balance-sheet wording, which is the
+    safer of the two to apply to an unknown account -- it is at worst slightly
+    less idiomatic, where "未发生" on a balance would be wrong.
+    """
+    body = str(text or "")
+    if not body:
+        return body
+    replacement = "未发生" if str(statement_type or "").strip().upper() == "IS" else "无余额"
+    body = _ZERO_BALANCE_RE.sub(replacement, body)
+    body = _ZERO_BALANCE_CHAR_RE.sub(replacement, body)
+    return body
+
+
+# Enumeration separators. The trailing conjunctions only ever appear before the
+# LAST item, which is why they are matched as alternatives to the plain 、.
+_ENUM_SPLIT_RE = re.compile(r"(、|及|和|以及|，|,)")
+_MIN_SHARED_PREFIX_CHARS = 4
+
+
+def dedupe_enumeration_prefix(text: str) -> str:
+    """Drop a shared leading name repeated across items of one enumeration.
+
+    A cash account list names the same branch on every line -- "<bank><branch>
+    #1#-A户 X、<bank><branch>#2#-B户 Y" -- and reads as padding. The bank is
+    stated once and the later items keep only what distinguishes them.
+
+    Only fires when consecutive items share at least _MIN_SHARED_PREFIX_CHARS
+    characters, so ordinary short overlaps ("应收租金…、应收水电费…", 2 chars)
+    are left alone. Amounts are never touched, so number-grounding is
+    unaffected by this rewrite.
+    """
+    body = str(text or "")
+    if not body:
+        return body
+
+    parts = _ENUM_SPLIT_RE.split(body)
+    # split() with one capturing group yields [item, sep, item, sep, ..., item]
+    if len(parts) < 3:
+        return body
+
+    items = parts[0::2]
+    seps = parts[1::2]
+
+    def _repeated_prefix(item: str, earlier: str) -> str:
+        """Longest prefix of `item` that already appears in `earlier`.
+
+        Comparing whole items against each other does not work: the first item
+        of an enumeration usually carries the lead-in ("截至…，主要包括<name>…"),
+        so the shared part sits at its END, not its start. Searching `earlier`
+        for the prefix finds it either way.
+        """
+        longest = ""
+        for end in range(len(item), _MIN_SHARED_PREFIX_CHARS - 1, -1):
+            candidate = item[:end]
+            if candidate in earlier:
+                longest = candidate
+                break
+        # Cut back to a name boundary. A prefix ending mid-identifier
+        # ("…支行#") would leave the remainder starting with a bare digit and
+        # lose the "#" that opens the account number.
+        return longest.rstrip("#-－—·:：0123456789 ")
+
+    out_items = list(items)
+    seen = items[0]
+    for idx in range(1, len(out_items)):
+        shared = _repeated_prefix(items[idx], seen)
+        seen += items[idx]
+        if len(shared) < _MIN_SHARED_PREFIX_CHARS:
+            continue
+        remainder = out_items[idx][len(shared):]
+        # A dash left dangling by the cut is punctuation, not content. "#" is
+        # kept -- it opens an account number and is part of what identifies
+        # the item.
+        remainder = remainder.lstrip("-－—·")
+        # Never strip an item down to nothing or to a bare amount fragment --
+        # the point is to remove a repeated NAME, not to lose the item.
+        if len(remainder.strip()) < 2:
+            continue
+        out_items[idx] = remainder
+
+    rebuilt = out_items[0]
+    for sep, item in zip(seps, out_items[1:]):
+        rebuilt += sep + item
+    return rebuilt
+
+
 def create_result_shell(mapping_keys: List[str], dfs: Dict[str, pd.DataFrame]) -> Dict[str, Dict[str, str]]:
     return {key: {} for key in mapping_keys if key in dfs}
 
@@ -202,6 +308,14 @@ def _store_agent_result(
     if agent_name == "subagent_4":
         results[mapping_key]["agent_4_validation"] = metadata
         results[mapping_key]["final"] = content
+    elif agent_name == "subagent_2" and (metadata or {}).get("clause_reviews"):
+        # The Auditor now carries deterministic grounding too (see
+        # process_single_agent_item). Filed under the SAME key rather than a
+        # new one so the deck's highlighting, _apply_deterministic_verification
+        # and the retry gate all keep reading one record -- the Validator
+        # overwrites it when it runs. "final" is deliberately NOT set here: the
+        # Validator, when it runs, produces the later text.
+        results[mapping_key]["agent_4_validation"] = metadata
 
 
 def _finalize_agent_content(
@@ -210,6 +324,7 @@ def _finalize_agent_content(
     raw_content: str,
     previous_output: str,
     language: str,
+    statement_type: str = "",
 ) -> Tuple[str, Dict[str, Any]]:
     metadata: Dict[str, Any] = {}
     if agent_name == "subagent_4":
@@ -222,10 +337,16 @@ def _finalize_agent_content(
         }
     else:
         content = clean_agent_output(raw_content)
+    # House style enforced as code, not only as prompt text. Both rules exist
+    # in the prompts already; these are the same rules where they cannot be
+    # ignored. Neither touches an amount, so number-grounding is unaffected.
+    if language != "Eng":
+        content = humanise_zero_balance(content, statement_type)
+        content = dedupe_enumeration_prefix(content)
     if language == "Eng":
         content = polish_english_commentary(content)
-        if agent_name == "subagent_4" and metadata:
-            metadata["final_content"] = content
+    if agent_name == "subagent_4" and metadata:
+        metadata["final_content"] = content
     return content, metadata
 
 
@@ -477,33 +598,55 @@ def process_single_agent_item(
         if logger.debug_mode:
             logger.log_debug("RAW_OUTPUT", mapping_key, "Agent=%s len=%s" % (agent_name, len(raw_content)), raw_content)
 
+        statement_type = ""
+        try:
+            statement_type = prompt_manager.get_mapping_component(mapping_key, component="type") or ""
+        except Exception:
+            pass
+
         content, metadata = _finalize_agent_content(
             agent_name=agent_name,
             raw_content=raw_content,
             previous_output=previous_output,
             language=ai_helper.language,
+            statement_type=statement_type,
         )
 
         # Deterministic hallucination/reasoning verification: layer Python
-        # number-grounding over the validator's soft judgement. This catches
+        # number-grounding over the LLM's soft judgement. This catches
         # fabricated figures the weak local model misses AND drops its false
         # positives on figures that actually match the source. Wrapped so a
         # verifier error never breaks the pipeline (keeps the LLM clause_reviews).
-        if agent_name == "subagent_4" and metadata and df is not None:
+        #
+        # Runs after the AUDITOR as well as the Validator. Attaching it only to
+        # the Validator was an accident of implementation, not a design
+        # decision: it is pure arithmetic over the account's own data, costs no
+        # tokens, and does not care which agent last touched the text. Attached
+        # here too, every account carries clause_reviews after stage 2 -- so the
+        # deck's highlighting and the retry gate both have something to read on
+        # accounts the Validator will skip, and an Auditor-stage defect can
+        # actually trigger a retry. The Validator overwrites this when it runs
+        # (its text is later, and it merges its own judgement in).
+        if agent_name in ("subagent_2", "subagent_4") and df is not None:
             try:
                 sibling_dfs = None
-                if dfs:
-                    statement_type = prompt_manager.get_mapping_component(mapping_key, component="type")
-                    if statement_type:
-                        sibling_dfs = [
-                            other_df for other_key, other_df in dfs.items()
-                            if other_key != mapping_key
-                            and prompt_manager.get_mapping_component(other_key, component="type") == statement_type
-                        ]
-                metadata["clause_reviews"] = verify_commentary(
+                if dfs and statement_type:
+                    sibling_dfs = [
+                        other_df for other_key, other_df in dfs.items()
+                        if other_key != mapping_key
+                        and prompt_manager.get_mapping_component(other_key, component="type") == statement_type
+                    ]
+                reviews = verify_commentary(
                     content, df, metadata.get("clause_reviews"),
                     sibling_dfs=sibling_dfs,
                 )
+                if agent_name == "subagent_2":
+                    # The Auditor has no metadata of its own; give it the same
+                    # shape the Validator produces so _store_agent_result can
+                    # file it under the one validation record everything reads.
+                    metadata = dict(metadata or {})
+                    metadata["final_content"] = content
+                metadata["clause_reviews"] = reviews
             except Exception as exc:  # pragma: no cover - defensive
                 logger.logger.warning("[verify_commentary] %s: %s", mapping_key, exc)
 

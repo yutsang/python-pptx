@@ -287,6 +287,86 @@ def batch_extract_entity_data(
     return result
 
 
+def build_section_summaries(
+    *,
+    ai_results: Dict[str, Any],
+    mappings: Dict[str, Any],
+    is_chinese_db: bool,
+    model_type: Optional[str] = None,
+    model_name: Optional[str] = None,
+    label: str = "",
+) -> Dict[str, str]:
+    """One LLM-written executive summary per statement, keyed "BS"/"IS".
+
+    Must be called BEFORE export. `export_pptx_from_structured_data_combined`
+    deliberately makes no LLM call of its own -- an in-export call was
+    reported to hang 10+ minutes on a flaky API -- so when nothing is passed
+    to its `pre_generated_summaries`, the band falls back to
+    `_generate_page_summary`, which splices each account's opening sentence.
+    That fallback is why a summary can read as a verbatim copy of the first
+    bullet on the page: it is not a summary at all, and nothing in the export
+    log says so.
+
+    Shared by the batch UI path and inspect_databook.py's CLI export, which
+    is the whole reason it is a function rather than inline: the CLI had no
+    equivalent and therefore never produced an AI summary at all.
+    """
+    from ..pptx import PowerPointGenerator
+
+    section_summaries: Dict[str, str] = {}
+    try:
+        blobs: Dict[str, List[str]] = {"BS": [], "IS": []}
+        for account_key, ai_result in (ai_results or {}).items():
+            mapping_key = find_mapping_key(account_key, mappings)
+            if not mapping_key or mapping_key not in mappings:
+                continue
+            atype = mappings[mapping_key].get("type")
+            if atype not in blobs:
+                continue
+            text = extract_result_text_content(
+                (ai_result or {}).get("final")
+                or (ai_result or {}).get("subagent_4")
+                or (ai_result or {}).get("subagent_2")
+                or (ai_result or {}).get("subagent_1")
+                or ""
+            )
+            if not text.strip():
+                continue
+            # A page/section summary needs each account's lead-in theme
+            # only, never a table account's per-component "-"/"➢" detail
+            # bullets after "明细如下：" -- see strip_table_detail_for_
+            # summary's own docstring for the real corrupted-coSummaryShape
+            # bug this prevents.
+            blobs[atype].append(
+                PowerPointGenerator.strip_table_detail_for_summary(text, is_chinese_db)
+            )
+        for stmt, blob in blobs.items():
+            if not blob:
+                continue
+            try:
+                from ..ai import _PIPELINE_BREAKER
+                if any(_PIPELINE_BREAKER.is_open(stage) for stage in ("subagent_1", "subagent_2")):
+                    continue
+            except Exception:
+                pass
+            summary = PowerPointGenerator.generate_section_summary(
+                "\n\n".join(blob),
+                is_chinese=is_chinese_db,
+                language=("chinese" if is_chinese_db else "english"),
+                model_type=model_type,
+                model_name=model_name,
+            )
+            if summary:
+                section_summaries[stmt] = summary
+    except Exception as exc:
+        logger.warning(
+            "Section summary generation failed for %s (PPTX summary band will fall "
+            "back to spliced first sentences): %s", label or "?", exc,
+        )
+        return {}
+    return section_summaries
+
+
 def batch_run_ai_for_entity(
     *,
     extracted: Dict[str, Any],
@@ -353,57 +433,14 @@ def batch_run_ai_for_entity(
     # coSummaryShape genuinely blank on every entity's first BS/IS slide.
     # Confirmed via a real batch export's --dump-text output: a literal
     # empty coSummaryShape text frame on both statements.
-    from ..pptx import PowerPointGenerator
-    is_chinese_db = effective_language == "Chn"
-    section_summaries: Dict[str, str] = {}
-    try:
-        bs_blob: List[str] = []
-        is_blob: List[str] = []
-        for account_key, ai_result in ai_results.items():
-            mapping_key = find_mapping_key(account_key, mappings)
-            if not mapping_key or mapping_key not in mappings:
-                continue
-            atype = mappings[mapping_key].get("type")
-            text = extract_result_text_content(
-                (ai_result or {}).get("final")
-                or (ai_result or {}).get("subagent_4")
-                or (ai_result or {}).get("subagent_2")
-                or (ai_result or {}).get("subagent_1")
-                or ""
-            )
-            if not text.strip():
-                continue
-            # A page/section summary needs each account's lead-in theme
-            # only, never a table account's per-component "-"/"➢" detail
-            # bullets after "明细如下：" -- see strip_table_detail_for_
-            # summary's own docstring for the real corrupted-coSummaryShape
-            # bug this prevents.
-            text = PowerPointGenerator.strip_table_detail_for_summary(text, is_chinese_db)
-            if atype == "BS":
-                bs_blob.append(text)
-            elif atype == "IS":
-                is_blob.append(text)
-        for stmt, blob in (("BS", bs_blob), ("IS", is_blob)):
-            if not blob:
-                continue
-            try:
-                from ..ai import _PIPELINE_BREAKER
-                if any(_PIPELINE_BREAKER.is_open(stage) for stage in ("subagent_1", "subagent_2")):
-                    continue
-            except Exception:
-                pass
-            summary = PowerPointGenerator.generate_section_summary(
-                "\n\n".join(blob),
-                is_chinese=is_chinese_db,
-                language=("chinese" if is_chinese_db else "english"),
-                model_type=model_type,
-                model_name=model_name,
-            )
-            if summary:
-                section_summaries[stmt] = summary
-    except Exception as exc:
-        logger.warning("Batch section summary generation failed for %s (PPTX summary will be blank): %s", entity_name, exc)
-        section_summaries = {}
+    section_summaries = build_section_summaries(
+        ai_results=ai_results,
+        mappings=mappings,
+        is_chinese_db=(effective_language == "Chn"),
+        model_type=model_type,
+        model_name=model_name,
+        label=str(entity_name),
+    )
 
     structured_payloads = build_pptx_structured_payloads(
         ai_results=ai_results,

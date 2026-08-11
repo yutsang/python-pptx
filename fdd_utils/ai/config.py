@@ -228,25 +228,23 @@ class FDDConfig:
         and leaves the rest to verify_commentary's deterministic
         number-grounding.
 
-        Default moved selective -> always on the user's explicit instruction:
-        they want every account confirmed by the model, not by code. The
-        deterministic pass is NOT lost by this -- verify_commentary still runs
-        inside the Validator stage (see run_agent_stage) and still overwrites
-        the model's own clause reviews with its number-grounding, so "always"
-        is strictly the LLM judgment ADDED ON TOP of what selective did, never
-        instead of it.
+        Briefly defaulted to "always", to make every account LLM-confirmed.
+        Reverted, because reading _combine_verdict showed it cannot do what it
+        was changed for: a deterministic hallucination verdict is consulted
+        BEFORE any LLM opinion and the model cannot override it. So a correct
+        figure the grounding pool cannot find stays flagged no matter how many
+        accounts the Validator visits -- that path is closed by precedence,
+        not by coverage. The fix for a mis-flagged number is a wider pool, and
+        the fix for coverage is that the Auditor now attaches the same
+        deterministic grounding (see process_single_agent_item), so every
+        account carries clause_reviews without a third LLM call.
 
-        The reason it matters is accuracy, not coverage: code alone cannot
-        tell a figure the model derived (an annualisation, a sum of
-        components) from one it invented, so deterministically-grounded
-        accounts were having legitimate derived numbers flagged as
-        unsupported reasoning.
-
-        Cost is the tradeoff, and it is real -- the Validator was 59% of a
-        measured 964s run, and on real data ~80% of accounts have no causal
-        claim. A 27-account run goes from 64 stage-steps to 81."""
-        mode = str(self.get_processing_config().get("validator_mode", "always") or "always").lower()
-        return mode if mode in {"selective", "always"} else "always"
+        What the Validator uniquely adds is judgement on a CAUSAL claim, which
+        is exactly what "selective" selects for. Cost of the alternative is
+        real: the Validator was 59% of a measured 964s run, and on real data
+        ~80% of accounts assert no causal claim at all."""
+        mode = str(self.get_processing_config().get("validator_mode", "selective") or "selective").lower()
+        return mode if mode in {"selective", "always"} else "selective"
 
     def get_feedback_loop_config(self) -> Dict[str, Any]:
         processing = self.get_processing_config()
