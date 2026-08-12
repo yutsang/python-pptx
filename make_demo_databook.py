@@ -202,8 +202,8 @@ def split_company(name: str) -> tuple[str, str, str]:
         rest = rest[: inner_end - len(inner_suffix)]
 
     # A place can sit after the industry word with no brackets:
-    # "艾奕康造价咨询深圳有限公司上海分公司".  Peel it before the industry word,
-    # or the brand ends up as "艾奕康造价咨询深圳" and gets scrambled whole.
+    # "某某造价咨询深圳有限公司上海分公司".  Peel it before the industry word,
+    # or the brand ends up as "某某造价咨询深圳" and gets scrambled whole.
     # Guarded on length so a brand merely ending in a place character survives.
     for p in PLACE_PREFIXES:
         if rest.endswith(p) and len(rest) - len(p) >= 2:
