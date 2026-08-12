@@ -13,6 +13,7 @@ from .helpers import (  # lifted out of PowerPointGenerator
     _explanation_render_text,
     _fill_content_shape,
     _fit_table_columns,
+    _format_header_period,
     _force_no_autofit,
     _format_table_value,
     _insert_category_header_rows,
@@ -90,24 +91,6 @@ logger.setLevel(logging.WARNING)
 
 
 
-
-_ISO_DATE = re.compile(r"^\s*(\d{4})-(\d{2})-(\d{2})\s*$")
-
-
-def _format_header_period(label: str, is_chinese: bool) -> str:
-    """Column headers read 2023年12月31日 in the analyst deliverable, not
-    2023-12-31. Pure text at render time -- it touches no fill, border or font,
-    so it is not the class of change that produced blank pages here before.
-    Anything that is not a bare ISO date comes back untouched, which leaves the
-    annualised and period labels alone.
-    """
-    if not is_chinese:
-        return label
-    m = _ISO_DATE.match(str(label or ""))
-    if not m:
-        return label
-    y, mth, d = m.groups()
-    return f"{y}年{int(mth)}月{int(d)}日"
 
 
 class _TablesMixin:
@@ -1246,8 +1229,6 @@ class _TablesMixin:
                 # statement-level grand totals with a solid grey fill.
                 GREY_TOTAL_FILL = RGBColor(0xD9, 0xD9, 0xD9)
 
-                _fit_table_columns(table, df)
-
                 # Smaller/tighter than before across the board -- reference
                 # format (IMG_0035) reads noticeably more compact than this
                 # table previously rendered at.
@@ -1337,6 +1318,19 @@ class _TablesMixin:
                         banner_font_size = Pt(max(4.5, banner_font_size.pt * _scale))
                 except Exception:
                     pass
+
+                # Columns are fitted HERE, not before the tiers above, because
+                # measuring them properly needs the font sizes those tiers
+                # decide. Sizing by character count was the last estimate left
+                # in the deck and the cause of its one remaining wrap warning:
+                # a 13-character Chinese label counted the same as 13 digits.
+                _fit_table_columns(
+                    table, df,
+                    data_font_pt=data_font_size.pt,
+                    header_font_pt=header_font_size.pt,
+                    is_chinese=is_chinese_mode,
+                    packing=(self.pptx_settings.get("commentary_packing") or {}),
+                )
 
                 # Add table name as first row if provided
                 if table_name:

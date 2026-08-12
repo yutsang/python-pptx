@@ -180,7 +180,96 @@ def _set_table_style_id(tbl_element, style_id: str) -> None:
     tblPr.append(style_el)
 
 
-def _fit_table_columns(table, df):
+_ISO_DATE = re.compile(r"^\s*(\d{4})-(\d{2})-(\d{2})\s*$")
+
+
+def _format_header_period(label: str, is_chinese: bool) -> str:
+    """Column headers read 2023年12月31日 in the analyst deliverable, not
+    2023-12-31. Pure text at render time -- it touches no fill, border or font,
+    so it is not the class of change that produced blank pages here before.
+    Anything that is not a bare ISO date comes back untouched, which leaves the
+    annualised and period labels alone.
+    """
+    if not is_chinese:
+        return label
+    m = _ISO_DATE.match(str(label or ""))
+    if not m:
+        return label
+    y, mth, d = m.groups()
+    return f"{y}年{int(mth)}月{int(d)}日"
+
+
+_GRID_CELL_PADDING_PT = 0.08 * 72   # margin_left + margin_right, per _fill_table_placeholder
+
+
+def _measure_grid_column_widths_pt(
+    df, total_width_pt: float, *, data_font_pt: float, header_font_pt: float,
+    is_chinese: bool, packing: Optional[Dict[str, Any]] = None,
+) -> Optional[List[float]]:
+    """Real per-glyph column widths for the BS/IS overview grid.
+
+    The weight-and-character-count allocation below is the last place in the
+    deck still sizing by len(): it counts a full-width 益 and a half-width 7 as
+    one unit each. That is what left 归属于母公司所有者权益合计 needing 91.0pt
+    in a column given 81.9pt -- the one wrap warning that survived every other
+    measurement fix.
+
+    Returns None when the client metrics are unavailable, so the caller keeps
+    the old estimate rather than measuring with the wrong font.
+    """
+    try:
+        from fdd_utils.text_metrics import get_measurer
+    except Exception:
+        return None
+    packing = packing or {}
+    metrics_path = _resolve_font_metrics_path(is_chinese, packing)
+    if not metrics_path:
+        return None
+    try:
+        family = _measurer_family(is_chinese, packing)
+        m_data = get_measurer(family, data_font_pt, is_cjk=is_chinese, metrics_path=metrics_path)
+        m_head = get_measurer(family, header_font_pt, is_cjk=is_chinese, metrics_path=metrics_path)
+    except Exception:
+        return None
+
+    needs: List[float] = []
+    for col_idx, col_name in enumerate(df.columns):
+        # The header is measured AS RENDERED: _fill_table_placeholder writes
+        # 2023年12月31日, not the ISO column name. Measuring "2023-12-31" makes
+        # a date column look 10 narrow ASCII characters wide when it draws six
+        # full-width glyphs, and the column then wraps.
+        widest = m_head.text_width_pt(_format_header_period(str(col_name), is_chinese))
+        for value in df.iloc[:, col_idx].tolist():
+            text = "" if value is None else str(value)
+            if not text or text == "nan":
+                continue
+            widest = max(widest, m_data.text_width_pt(text))
+        # Leaf rows in column 0 carry a 0.12in indent (see _fill_table_placeholder).
+        indent = (0.12 * 72) if col_idx == 0 else 0.0
+        needs.append(widest + indent + _GRID_CELL_PADDING_PT)
+
+    if not needs or total_width_pt <= 0:
+        return None
+    required = sum(needs)
+    if required <= 0:
+        return None
+    if required <= total_width_pt:
+        # Spare width is shared in proportion to what each column needs.
+        # Giving it all to the row label was tried and is wrong: on real data
+        # that column needs 87pt and would have taken 160, squeezing the date
+        # columns to 39pt against the 54pt their header actually draws.
+        needs = [w * total_width_pt / required for w in needs]
+    else:
+        # Cannot fit even measured -- scale everything down together, which is
+        # still better than the count-based guess it replaces.
+        needs = [w * total_width_pt / required for w in needs]
+    return needs
+
+
+def _fit_table_columns(table, df, *, data_font_pt: Optional[float] = None,
+                       header_font_pt: Optional[float] = None,
+                       is_chinese: Optional[bool] = None,
+                       packing: Optional[Dict[str, Any]] = None):
     """Allocate width by role and content length for better readability."""
     if len(table.columns) == 0:
         return
@@ -191,6 +280,19 @@ def _fit_table_columns(table, df):
         total_width = 0
     if total_width <= 0:
         return
+
+    # Measured where the caller knows the rendered font sizes and the client
+    # metrics are present; the weight heuristic below is the fallback.
+    if data_font_pt and header_font_pt:
+        measured = _measure_grid_column_widths_pt(
+            df, total_width / 12700.0,
+            data_font_pt=data_font_pt, header_font_pt=header_font_pt,
+            is_chinese=bool(is_chinese), packing=packing,
+        )
+        if measured:
+            for col_idx, width_pt in enumerate(measured[: len(table.columns)]):
+                table.columns[col_idx].width = max(int(Inches(0.35)), int(width_pt * 12700))
+            return
 
     # A CJK character renders roughly 2x as wide as a Latin
     # character/digit at the same point size, but max_len here is a
