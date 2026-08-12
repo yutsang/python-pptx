@@ -39,7 +39,7 @@ import shutil
 import sys
 import time
 import zipfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import openpyxl
@@ -48,7 +48,7 @@ from openpyxl.utils import column_index_from_string
 # Bumped on every behaviour change.  Printed at the top of every run so a
 # report can be matched to the code that produced it -- two identical reports
 # from what were supposed to be different versions cost a full round trip.
-SCRIPT_VERSION = "2026-08-12.9"
+SCRIPT_VERSION = "2026-08-12.10"
 
 DEFAULT_SCALE = 0.8734
 
@@ -334,19 +334,38 @@ def build_name_map(real_names: set[str]) -> dict[str, str]:
     return mapping
 
 
+# A two-character brand can be an ordinary word: "中国人民财产保险..." has the
+# brand 人民, and substituting that rewrites 人民币 and every other innocent
+# use of it.  When such a hit lands in a sheet name or an account label, the
+# pipeline stops recognising the schedule and whole subtables vanish.
+ABBREV_STOPWORDS = {
+    "人民", "中国", "管理", "服务", "工程", "物业", "资产", "投资", "财务",
+    "销售", "成本", "费用", "收入", "利润", "税金", "银行", "保险", "公司",
+    "集团", "有限", "股份", "实业", "发展", "建设", "科技", "贸易", "物流",
+    "仓储", "能源", "电力", "供电", "水电", "租金", "合同", "项目", "客户",
+    "供应", "采购", "生产", "运营", "行政", "人力", "资本", "现金", "存货",
+    "折旧", "摊销", "预付", "应收", "应付", "其他", "合计", "小计", "本期",
+    "上期", "年度", "季度", "月份", "期初", "期末", "增加", "减少", "余额",
+    "金额", "单位", "备注", "说明", "调整", "审计", "报表", "科目", "明细",
+}
+
+
 def build_abbrev_map(name_map: dict[str, str]) -> dict[str, str]:
     """Short forms used in remark text ("某某" for 上海某某铭电子有限公司).
 
-    Every hit is reported so the substitutions can be eyeballed rather than
-    trusted; 2-char forms in particular can collide with ordinary Chinese.
+    Two-character forms are the dangerous ones -- they collide with ordinary
+    Chinese -- so common words are excluded outright and every rule's hit
+    count is reported, because a short form matching hundreds of times is
+    matching something other than a tenant.
     """
     abbrev: dict[str, str] = {}
     for real, fake in name_map.items():
         _, real_brand, _ = split_company(real)
         _, fake_core, _ = split_company(fake)
-        if len(real_brand) >= 2 and real_brand not in name_map:
+        if (len(real_brand) >= 2 and real_brand not in name_map
+                and real_brand not in ABBREV_STOPWORDS):
             abbrev[real_brand] = fake_core
-        if len(real_brand) >= 3:
+        if len(real_brand) >= 3 and real_brand[:2] not in ABBREV_STOPWORDS:
             abbrev[real_brand[:2]] = fake_core[:2]
     return abbrev
 
@@ -500,12 +519,14 @@ def build_replacer(mapping: dict):
     return re.compile("|".join(re.escape(k) for k in keys))
 
 
-def apply_replacements(text: str, pattern, mapping: dict, used: set) -> str:
+def apply_replacements(text: str, pattern, mapping: dict, used: Counter) -> str:
+    """`used` counts hits per rule -- a short form matching hundreds of times
+    is matching ordinary Chinese, not a tenant, and that must be visible."""
     if pattern is None:
         return text
 
     def repl(m):
-        used.add(m.group(0))
+        used[m.group(0)] += 1
         return mapping[m.group(0)]
 
     return pattern.sub(repl, text)
@@ -522,7 +543,14 @@ def main() -> int:
     ap.add_argument("--rename", action="append", default=[],
                     help="Extra literal replacement 'old=new'; repeatable. Use for project/entity names.")
     ap.add_argument("--no-abbrev", action="store_true",
-                    help="Do not substitute brand short forms in remark text")
+                    help="Do not substitute brand short forms in remark text. "
+                         "Full company names are still replaced. Safest option "
+                         "that still masks tenants.")
+    ap.add_argument("--numbers-only", action="store_true",
+                    help="Scale figures and the amounts quoted in remarks; leave "
+                         "every NAME and LABEL untouched. Zero risk to sheet names "
+                         "and account labels -- but the demo keeps the real "
+                         "company names.")
     ap.add_argument("--no-ratio-detect", action="store_true",
                     help="Scale every numeric cell, including detected ratio columns")
     ap.add_argument("--inspect", action="store_true",
@@ -580,10 +608,12 @@ def main() -> int:
         return inspect_only(src, wb_f, wb_v, real_names, embedded_names, ratio_cols,
                             name_map, stats, Path(args.inspect_out))
 
-    abbrev_map = {} if args.no_abbrev else build_abbrev_map(name_map)
+    if args.numbers_only:
+        name_map = {}
+    abbrev_map = {} if (args.no_abbrev or args.numbers_only) else build_abbrev_map(name_map)
 
     extra_map: dict[str, str] = {}
-    for spec in args.rename:
+    for spec in (() if args.numbers_only else args.rename):
         if "=" not in spec:
             print(f"ERROR: --rename needs 'old=new', got {spec!r}")
             return 1
@@ -594,6 +624,15 @@ def main() -> int:
     # consumed before the "某某" abbreviation rule can chew a hole in it.
     all_map = {**name_map, **abbrev_map, **extra_map}
     replacer = build_replacer(all_map)
+    # Sheet titles get FULL names and explicit --rename only.  A sheet name is
+    # what mappings.yml keys off; renaming one on a two-character abbreviation
+    # match silently detaches the whole schedule from the pipeline.
+    sheet_map_rules = {**name_map, **extra_map}
+    sheet_replacer = build_replacer(sheet_map_rules)
+
+    if args.numbers_only:
+        print("\n  --numbers-only: no name or label is touched; only figures and "
+              "the amounts inside remark text are scaled.")
 
     print(f"\n=== SOURCE: {src.name} ===")
     print(f"  sheets {len(wb_f.sheetnames)} | formulas {stats['formula']} "
@@ -634,7 +673,7 @@ def main() -> int:
 
     scaled = flattened = blanked = skipped_ratio = text_changed = 0
     money_hits: list[tuple[str, str]] = []
-    names_hit: set[str] = set()
+    names_hit: Counter = Counter()
     t_transform = time.time()
 
     def transform_text(s: str) -> str:
@@ -679,7 +718,8 @@ def main() -> int:
 
     renamed_sheets = []
     for ws in wb_f.worksheets:
-        new_title = apply_replacements(ws.title, replacer, all_map, set())[:31]
+        new_title = apply_replacements(ws.title, sheet_replacer,
+                                       sheet_map_rules, Counter())[:31]
         if new_title != ws.title:
             renamed_sheets.append((ws.title, new_title))
             ws.title = new_title
@@ -700,7 +740,14 @@ def main() -> int:
         if len(money_hits) > 25:
             print(f"      ... and {len(money_hits) - 25} more")
 
-    unhit = sorted(set(name_map) - names_hit)
+    short_rules = {k: names_hit.get(k, 0) for k in abbrev_map}
+    if short_rules:
+        print("\n  簡稱規則命中次數（次數異常高 = 撞到一般詞彙，不是租戶）:")
+        for k, n in sorted(short_rules.items(), key=lambda kv: -kv[1])[:20]:
+            flag = "   ⚠ 疑似誤傷" if (n > 50 and len(k) <= 2) else ""
+            print(f"      {k} -> {abbrev_map[k]}   x{n}{flag}")
+
+    unhit = sorted(set(name_map) - set(names_hit))
     if unhit:
         print(f"\n  NOTE: {len(unhit)} mapped name(s) were never substituted "
               f"(a longer rule consumed the cell first):")
