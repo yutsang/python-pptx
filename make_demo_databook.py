@@ -36,6 +36,7 @@ import argparse
 import hashlib
 import re
 import shutil
+import sys
 import zipfile
 from collections import defaultdict
 from pathlib import Path
@@ -45,7 +46,7 @@ import openpyxl
 # Bumped on every behaviour change.  Printed at the top of every run so a
 # report can be matched to the code that produced it -- two identical reports
 # from what were supposed to be different versions cost a full round trip.
-SCRIPT_VERSION = "2026-08-12.6"
+SCRIPT_VERSION = "2026-08-12.7"
 
 DEFAULT_SCALE = 0.8734
 
@@ -485,6 +486,13 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="Report only; write nothing")
     ap.add_argument("--emit-mapping", help="Write the real->fake table here (SENSITIVE: never commit)")
     args = ap.parse_args()
+
+    # On Windows, stdout redirected to a file defaults to the ANSI codepage
+    # (cp1252), and every Chinese name in this report then raises
+    # UnicodeEncodeError. The report is Chinese by nature, so say so.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     print(f"make_demo_databook.py version {SCRIPT_VERSION}")
     src = Path(args.source)
