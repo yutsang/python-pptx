@@ -94,8 +94,26 @@ GENERIC_NAMES = {
 # Footnote markers glued to the front of a name cell ("*某某（浙江）物流有限公司").
 # One real workbook puts these on most AR tenant rows; stripping them is what
 # turned 998 near-misses into extracted names.
-LEADING_MARK_RE = re.compile(r"^[*＊#＃※\s]+")
+LEADING_MARK_RE = re.compile(r"^['\"`*＊#＃※\s]+")
 TRAILING_MARK_RE = re.compile(r"[*＊#＃※\s]+$")
+
+# Account-line noise welded to the front of a name: "应付上海某某有限公司".
+# Stripped before the name is taken, so the fake keeps the account word intact.
+LEADING_NOISE = [
+    "其他应付款", "其他应收款", "其他应付", "其他应收", "预付账款", "预收账款",
+    "应付账款", "应收账款", "长期应付", "长期应收", "应付", "应收", "预付",
+    "预收", "往来", "关联方", "关联公司", "第三方", "客户", "供应商", "租户",
+    "承租人", "出租人", "付", "收",
+]
+LEADING_NOISE.sort(key=len, reverse=True)
+
+# A company name embedded in a longer cell ("上海某某有限公司往来款").  Used
+# only on short cells; long remark sentences are covered by full-text
+# substitution of names already found in clean cells.
+EMBEDDED_NAME_RE = re.compile(
+    r"[一-鿿（）()·、]{2,24}(?:" + "|".join(COMPANY_SUFFIXES) + r")"
+)
+EMBEDDED_MAX_CELL_LEN = 40
 
 # Characters legitimately found inside a Chinese company name.
 NAME_CHAR_RE = re.compile(r"[一-鿿（）()·、\s]")
@@ -118,6 +136,43 @@ def strip_marks(s: str) -> str:
     return TRAILING_MARK_RE.sub("", LEADING_MARK_RE.sub("", s))
 
 
+def strip_leading_noise(s: str) -> str:
+    """Drop one account-line prefix, so "应付上海某某有限公司" yields the name."""
+    for noise in LEADING_NOISE:
+        if s.startswith(noise) and len(s) - len(noise) >= 4:
+            return s[len(noise):]
+    return s
+
+
+def extract_embedded_names(s: str) -> list[str]:
+    """Names inside a longer cell, e.g. "上海某某有限公司往来款".
+
+    90 cells in one real workbook carry a tenant name with a trailing account
+    word, which whole-cell matching cannot see -- and those names would
+    otherwise never be masked anywhere.  Restricted to short cells and to
+    candidates that survive prefix-stripping, because a greedy match on a
+    sentence would happily swallow the verb in front of the company.
+    """
+    if len(s) > EMBEDDED_MAX_CELL_LEN:
+        return []
+    found = []
+    for m in EMBEDDED_NAME_RE.finditer(s):
+        cand = strip_leading_noise(strip_marks(m.group(0)))
+        if len(cand) >= 5 and cand not in GENERIC_NAMES and COMPANY_CELL_RE.match(cand):
+            found.append(cand)
+    return found
+
+
+def normalize_brackets(s: str) -> str:
+    """Half-width and full-width brackets name the same company.
+
+    Both spellings occur for the same tenant on different rows; seeding the
+    scramble from the normalised form keeps their fakes identical, so the demo
+    does not split one tenant into two companies.
+    """
+    return s.replace("(", "（").replace(")", "）")
+
+
 def split_company(name: str) -> tuple[str, str, str]:
     """Split into (place prefix, brand core, industry+suffix tail)."""
     rest = name
@@ -131,6 +186,28 @@ def split_company(name: str) -> tuple[str, str, str]:
     for s in COMPANY_SUFFIXES:
         if rest.endswith(s):
             suffix, rest = s, rest[: -len(s)]
+            break
+
+    # Compound name: "中国某某科技股份有限公司上海分公司" still holds a company
+    # suffix after the outer one was stripped.  Everything from that inner
+    # suffix rightwards is structure, not brand -- scrambling it produces the
+    # gibberish that the ⚠ warning was flagging.
+    inner_end, inner_suffix = -1, ""
+    for s in COMPANY_SUFFIXES:
+        idx = rest.rfind(s)
+        if idx >= 0 and idx + len(s) > inner_end:
+            inner_end, inner_suffix = idx + len(s), s
+    if inner_end > 0:
+        suffix = rest[inner_end - len(inner_suffix):] + suffix
+        rest = rest[: inner_end - len(inner_suffix)]
+
+    # A place can sit after the industry word with no brackets:
+    # "艾奕康造价咨询深圳有限公司上海分公司".  Peel it before the industry word,
+    # or the brand ends up as "艾奕康造价咨询深圳" and gets scrambled whole.
+    # Guarded on length so a brand merely ending in a place character survives.
+    for p in PLACE_PREFIXES:
+        if rest.endswith(p) and len(rest) - len(p) >= 2:
+            suffix, rest = p + suffix, rest[: -len(p)]
             break
 
     industry = ""
@@ -186,8 +263,9 @@ def fake_brand(real_brand: str, salt: int = 0) -> str:
     m = BRACKET_PLACE_RE.search(real_brand)
     if m:
         head, kept, tail = real_brand[: m.start()], m.group(0), real_brand[m.end():]
-        return _scramble(head, len(head), salt) + kept + _scramble(tail, len(tail), salt + 1)
-    return _scramble(real_brand, len(real_brand), salt)
+        return (_scramble(normalize_brackets(head), len(head), salt) + kept
+                + _scramble(normalize_brackets(tail), len(tail), salt + 1))
+    return _scramble(normalize_brackets(real_brand), len(real_brand), salt)
 
 
 def brand_warning(name: str) -> str:
@@ -291,6 +369,7 @@ def scan_workbook(wb_f, wb_v) -> tuple[set[str], dict, dict]:
     count too -- in a formula-heavy workbook that is most of the figures.
     """
     names: set[str] = set()
+    embedded: set[str] = set()
     numeric_cols: dict = defaultdict(lambda: defaultdict(list))
     stats = {"formula": 0, "stale": 0, "numeric": 0, "text": 0}
 
@@ -312,10 +391,13 @@ def scan_workbook(wb_f, wb_v) -> tuple[set[str], dict, dict]:
                     s = strip_marks(v.strip())
                     if s not in GENERIC_NAMES and COMPANY_CELL_RE.match(s):
                         names.add(s)
+                    else:
+                        embedded.update(extract_embedded_names(v.strip()))
                 elif isinstance(v, (int, float)) and not isinstance(v, bool):
                     stats["numeric"] += 1
                     numeric_cols[ws.title][cell.column_letter].append(float(v))
-    return names, numeric_cols, stats
+    embedded -= names
+    return names | embedded, embedded, numeric_cols, stats
 
 
 def detect_ratio_columns(numeric_cols) -> dict[str, set[str]]:
@@ -386,13 +468,13 @@ def main() -> int:
 
     print("loading (twice: formulas + cached values)...")
     wb_f, wb_v = load_pair(src)
-    real_names, numeric_cols, stats = scan_workbook(wb_f, wb_v)
+    real_names, embedded_names, numeric_cols, stats = scan_workbook(wb_f, wb_v)
     ratio_cols = {} if args.no_ratio_detect else detect_ratio_columns(numeric_cols)
     name_map = build_name_map(real_names)
 
     if args.inspect:
-        return inspect_only(src, wb_f, wb_v, real_names, ratio_cols, name_map,
-                            stats, Path(args.inspect_out))
+        return inspect_only(src, wb_f, wb_v, real_names, embedded_names, ratio_cols,
+                            name_map, stats, Path(args.inspect_out))
 
     abbrev_map = {} if args.no_abbrev else build_abbrev_map(name_map)
 
@@ -601,8 +683,8 @@ def why_not_company(s: str) -> str:
     return "未知(請回報)"
 
 
-def inspect_only(src: Path, wb_f, wb_v, real_names, ratio_cols, name_map,
-                 stats, full_path: Path) -> int:
+def inspect_only(src: Path, wb_f, wb_v, real_names, embedded_names, ratio_cols,
+                 name_map, stats, full_path: Path) -> int:
     """Report what the transform WOULD see, twice: redacted here, full to disk."""
     safe: list[str] = []
     full: list[str] = []
@@ -651,7 +733,7 @@ def inspect_only(src: Path, wb_f, wb_v, real_names, ratio_cols, name_map,
                 if isinstance(v, str):
                     s = v.strip()
                     if any(w in s.lower() for w in SUBTOTAL_WORDS) and len(s) <= 20:
-                        subtotal_rows[ws.title].append(f"r{cell.row}:{s}")
+                        subtotal_rows[ws.title].append((cell.row, s))
                     if PURE_CN_RE.match(s):
                         short_cn[s] += 1
                     stripped = strip_marks(s)
@@ -672,10 +754,17 @@ def inspect_only(src: Path, wb_f, wb_v, real_names, ratio_cols, name_map,
          f"({100 * precise / total_float:.0f}% carry >2dp)")
     emit("  (informational only -- linearity keeps the tie-out either way)")
 
-    emit(f"\n--- company names cleanly extracted: {len(real_names)} ---")
+    clean = sorted(set(real_names) - set(embedded_names))
+    emit(f"\n--- company names from a whole-cell match: {len(clean)} ---")
     emit("    left = real, right = the fake that will replace it",
          "    the 商號 shown IS the generated fake, at the real one's length")
-    for n in sorted(real_names):
+    for n in clean:
+        emit(f"   {n}   ->   {name_map.get(n, '(不變)')}",
+             f"   {redact_company(n, name_map)}")
+
+    emit(f"\n--- names EXTRACTED FROM INSIDE a longer cell: {len(embedded_names)} ---")
+    emit("    CHECK THESE: a wrong cut here renames part of an account label.")
+    for n in sorted(embedded_names):
         emit(f"   {n}   ->   {name_map.get(n, '(不變)')}",
              f"   {redact_company(n, name_map)}")
 
@@ -708,8 +797,8 @@ def inspect_only(src: Path, wb_f, wb_v, real_names, ratio_cols, name_map,
 
     emit(f"\n--- subtotal/total/check rows per sheet (the subtable structure) ---")
     for sheet, rows in sorted(subtotal_rows.items()):
-        emit(f"   {sheet}: {'; '.join(rows[:12])}",
-             f"   {redact(sheet)}: {'; '.join(redact(r) for r in rows[:12])}")
+        emit(f"   {sheet}: " + "; ".join(f"r{r}:{s}" for r, s in rows[:12]),
+             f"   {redact(sheet)}: " + "; ".join(f"r{r}:{redact(s)}" for r, s in rows[:12]))
 
     emit(f"\n--- short pure-Chinese strings (2-8 chars), {len(short_cn)} distinct ---")
     emit("    Tenant SHORT FORMS and PERSON NAMES hide here. Check the full file.")
