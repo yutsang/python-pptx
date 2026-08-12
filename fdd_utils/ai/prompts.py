@@ -577,19 +577,33 @@ class PromptEngine:
         rows = table["rows"]
         periods = table.get("periods") or []
         latest = periods[-1] if periods else None
-        # table's values are in the SAME raw-yuan internal scale every
-        # account's df uses (source_multiplier -- 1000 whenever the sheet's
-        # own header says 千元 -- applied so cross-account math and the
-        # table's own tie-out against the account total work); divide back
-        # out for this prompt-facing figure the same way pptx.py's renderer
-        # does, so a model that ignores the "don't repeat figures" ban below
-        # isn't shown a number ~1000x the real one.
-        divisor = (df.attrs or {}).get("source_multiplier") or 1
+        # No divisor here any more. The table's values are in the SAME raw-yuan
+        # internal scale every account's df uses (source_multiplier -- 1000
+        # whenever the sheet's own header says 千元 -- applied so cross-account
+        # math and the table's own tie-out against the account total work), and
+        # format_value_by_language below takes raw yuan and returns the figure
+        # with its unit. Dividing first and formatting after would double-count
+        # the scale.
+
+        # Formatted with a UNIT, through the same function as every other
+        # figure the model is shown. It used to hand over the bare quotient
+        # "1676.2" -- the raw-yuan value divided by source_multiplier, i.e. a
+        # figure in 千元 with nothing saying so. The model appended the unit
+        # it sees everywhere else and wrote "1,676.2万元" for a component whose
+        # real value is 167.6万元: 千元 read as 万元 is exactly 10x, and the
+        # whole account was only 204.8万元, so the three components summed to
+        # ten times the total they belonged to.
+        #
+        # The main table has always been pre-formatted ("167.6万"), so the
+        # model was being shown the same quantity twice, once labelled and once
+        # bare, and took the bare one. Same lesson as the analysis frame
+        # earlier: hand over ONE representation, already carrying its unit.
+        from ..financial_display_format import format_value_by_language
 
         def _fmt(entry):
             values = entry.get("values") or {}
             if latest and latest in values and isinstance(values[latest], (int, float)):
-                return f"{entry['label']} {values[latest] / divisor:,.1f}"
+                return f"{entry['label']} {format_value_by_language(values[latest], language)}"
             return str(entry["label"])
 
         listed = "、".join(_fmt(r) for r in rows[:10])

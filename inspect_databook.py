@@ -1697,71 +1697,7 @@ def _ground_truth_values(dfs: Dict[str, pd.DataFrame]) -> List[float]:
 # "主要包括房产税1,676.2万元、土地使用税368.5万元及印花税2.9万元". The second
 # was invisible to the first pattern, which is how a 10x scale error reached a
 # real deck unflagged.
-_ENUM_ITEM = re.compile(r"[1-9]）\s*[^；;]*?([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
-_ENUM_RUNON = re.compile(r"(?:主要)?(?:包括|包含|为|系)[^。；;]*?"
-                         r"((?:[\u4e00-\u9fff]{2,10}[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)[、及和]?){2,})")
-_RUNON_AMT = re.compile(r"([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
-_STATED_TOTAL = re.compile(r"(?:合计|总额|余额合?计?)\s*(?:为)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
-_SCALE = {"元": 1.0, "万元": 1e4, "亿元": 1e8}
-
-
-def check_composition_adds_up(mapping_key: str, text: str) -> List[str]:
-    """Does an enumerated composition actually reach the total it states?
-
-    The model is asked to add its items up before writing them and to account
-    for any difference. It does not reliably do either: one real account came
-    back as "余额合计674.5万元，主要包括：1）434.2万元；2）163.8万元；3）39.2万元"
-    twice in a row, which is 637.2 -- the missing 37.3万元 being precisely the
-    three items the analyst deliverable lists and this one does not.
-
-    Arithmetic is checkable, so it is checked here rather than left to the
-    reader to spot. A gap under 1% is treated as rounding.
-    """
-    body = str(text or "")
-    # No "）" guard: the run-on form carries no numbering at all, and that early
-    # exit is why a 10x unit error in a 、-separated list was never reached.
-    if not body.strip():
-        return []
-    m = _STATED_TOTAL.search(body)
-    items = _ENUM_ITEM.findall(body)
-    if not items:
-        run = _ENUM_RUNON.search(body)
-        if run:
-            items = _RUNON_AMT.findall(run.group(1))
-    if not m or len(items) < 2:
-        return []
-    total = float(m.group(1).replace(",", "")) * _SCALE.get(m.group(2), 1.0)
-    listed = sum(float(v.replace(",", "")) * _SCALE.get(u, 1.0) for v, u in items)
-    if total <= 0:
-        return []
-    gap = total - listed
-    if abs(gap) / total <= 0.01:
-        return []
-    fmt = lambda v: f"{v/1e4:,.1f}万元"
-    # A ratio near a power of ten is a unit error, not an omission: the model
-    # took a raw CNY'000 cell and wrote 万元 against it. Worth saying so --
-    # "66% unaccounted for" reads as a missing component, and the reader would
-    # go looking for one that does not exist.
-    ratio = listed / total if total else 0
-    for _mult, _label in ((10.0, "10x"), (100.0, "100x"), (0.1, "1/10")):
-        if abs(ratio - _mult) / _mult <= 0.05:
-            return [
-                f"[{mapping_key}] composition is {_label} the stated total "
-                f"({fmt(listed)} vs {fmt(total)}) -- this is a UNIT error, not a "
-                f"missing component: a raw CNY'000 figure written as 万元."
-            ]
-    if abs(ratio - 2.0) <= 0.05:
-        return [
-            f"[{mapping_key}] composition is exactly double the stated total "
-            f"({fmt(listed)} vs {fmt(total)}) -- a parent line and the lines "
-            f"that make it up have both been listed."
-        ]
-    return [
-        f"[{mapping_key}] composition does not reach the stated total: "
-        f"{len(items)} item(s) sum to {fmt(listed)} against {fmt(total)}, "
-        f"leaving {fmt(gap)} ({abs(gap)/total:.0%}) unaccounted for. The reader "
-        f"cannot tell whether the rest is an omission or a component with no name."
-    ]
+from fdd_utils.ai.validator import check_composition_adds_up  # single definition; see validator.py
 
 
 def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str, pd.DataFrame]) -> List[str]:

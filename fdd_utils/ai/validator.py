@@ -714,6 +714,73 @@ def _combine_verdict(clause: str, det: Optional[Dict[str, Any]],
     return {"clause": clause, "supported": supported, "category": category, "reason": reason}
 
 
+_ENUM_ITEM = re.compile(r"[1-9]）\s*[^；;]*?([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+_ENUM_RUNON = re.compile(r"(?:主要)?(?:包括|包含|为|系)[^。；;]*?"
+                         r"((?:[\u4e00-\u9fff]{2,10}[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)[、及和]?){2,})")
+_RUNON_AMT = re.compile(r"([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+_STATED_TOTAL = re.compile(r"(?:合计|总额|余额合?计?)\s*(?:为)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+_SCALE = {"元": 1.0, "万元": 1e4, "亿元": 1e8}
+
+
+def check_composition_adds_up(mapping_key: str, text: str) -> List[str]:
+    """Does an enumerated composition actually reach the total it states?
+
+    The model is asked to add its items up before writing them and to account
+    for any difference. It does not reliably do either: one real account came
+    back as "余额合计674.5万元，主要包括：1）434.2万元；2）163.8万元；3）39.2万元"
+    twice in a row, which is 637.2 -- the missing 37.3万元 being precisely the
+    three items the analyst deliverable lists and this one does not.
+
+    Arithmetic is checkable, so it is checked here rather than left to the
+    reader to spot. A gap under 1% is treated as rounding.
+    """
+    body = str(text or "")
+    # No "）" guard: the run-on form carries no numbering at all, and that early
+    # exit is why a 10x unit error in a 、-separated list was never reached.
+    if not body.strip():
+        return []
+    m = _STATED_TOTAL.search(body)
+    items = _ENUM_ITEM.findall(body)
+    if not items:
+        run = _ENUM_RUNON.search(body)
+        if run:
+            items = _RUNON_AMT.findall(run.group(1))
+    if not m or len(items) < 2:
+        return []
+    total = float(m.group(1).replace(",", "")) * _SCALE.get(m.group(2), 1.0)
+    listed = sum(float(v.replace(",", "")) * _SCALE.get(u, 1.0) for v, u in items)
+    if total <= 0:
+        return []
+    gap = total - listed
+    if abs(gap) / total <= 0.01:
+        return []
+    fmt = lambda v: f"{v/1e4:,.1f}万元"
+    # A ratio near a power of ten is a unit error, not an omission: the model
+    # took a raw CNY'000 cell and wrote 万元 against it. Worth saying so --
+    # "66% unaccounted for" reads as a missing component, and the reader would
+    # go looking for one that does not exist.
+    ratio = listed / total if total else 0
+    for _mult, _label in ((10.0, "10x"), (100.0, "100x"), (0.1, "1/10")):
+        if abs(ratio - _mult) / _mult <= 0.05:
+            return [
+                f"[{mapping_key}] composition is {_label} the stated total "
+                f"({fmt(listed)} vs {fmt(total)}) -- this is a UNIT error, not a "
+                f"missing component: a raw CNY'000 figure written as 万元."
+            ]
+    if abs(ratio - 2.0) <= 0.05:
+        return [
+            f"[{mapping_key}] composition is exactly double the stated total "
+            f"({fmt(listed)} vs {fmt(total)}) -- a parent line and the lines "
+            f"that make it up have both been listed."
+        ]
+    return [
+        f"[{mapping_key}] composition does not reach the stated total: "
+        f"{len(items)} item(s) sum to {fmt(listed)} against {fmt(total)}, "
+        f"leaving {fmt(gap)} ({abs(gap)/total:.0%}) unaccounted for. The reader "
+        f"cannot tell whether the rest is an omission or a component with no name."
+    ]
+
+
 def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[Dict[str, Any]]] = None,
                       *, highlight_min_conf: float = 0.6,
                       sibling_dfs: Optional[List[Any]] = None) -> List[Dict[str, Any]]:
@@ -733,7 +800,54 @@ def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[
         det = ground_amounts(clause, source)
         llm = _lookup_llm_review(clause, llm_reviews)
         out.append(_combine_verdict(clause, det, llm, highlight_min_conf))
+    out.extend(_composition_reviews(final_content))
     return out
+
+
+def _composition_reviews(final_content: str) -> List[Dict[str, Any]]:
+    """Whether an enumerated composition reaches the total it states.
+
+    Every amount in "余额合计674.5万元，主要包括：1）434.2万元；2）163.8万元；
+    3）39.2万元" can be individually present in the source and the sentence
+    still be wrong -- the three add to 637.2, not 674.5. ground_amounts checks
+    figures one at a time and cannot see that, which is why these reached real
+    decks repeatedly while the Validator passed the account with zero flags.
+
+    check_composition_adds_up already existed, but only inside
+    inspect_databook, where it prints a warning AFTER the deck is built and
+    feeds nothing. Reading it here turns it into a real clause_review: it
+    highlights in the deck and the retry gate can see it.
+
+    Category is chosen by how certain the defect is, because only
+    "hallucination" costs a retry (see count_defective_clauses):
+      * a ratio at a power of ten, or exactly double -- arithmetic that is
+        definitely wrong, a unit error or a parent listed with its own
+        children. Worth re-generating for.
+      * anything else is a shortfall: each amount may be right and the
+        composition merely incomplete. Flagged for the reader, but not worth
+        spending a retry on -- the same reasoning that keeps the gate off
+        ordinary "reasoning" flags.
+    """
+    body = str(final_content or "")
+    reviews: List[Dict[str, Any]] = []
+    for message in check_composition_adds_up("", body):
+        detail = message.split("] ", 1)[-1]
+        certain = ("UNIT error" in detail) or ("exactly double" in detail)
+        # Anchor on the sentence stating the total, so the deck highlights the
+        # claim rather than the whole paragraph.
+        match = _STATED_TOTAL.search(body)
+        clause = body
+        if match:
+            start = body.rfind("。", 0, match.start()) + 1
+            end = body.find("。", match.end())
+            clause = body[start: (end + 1) if end >= 0 else len(body)].strip() or body
+        reviews.append({
+            "clause": clause,
+            "supported": False,
+            "category": "hallucination" if certain else "reasoning",
+            "reason": detail,
+        })
+    return reviews
 
 
 def build_highlighted_commentary_html(final_content: str, clause_reviews: List[Dict[str, Any]]) -> str:
