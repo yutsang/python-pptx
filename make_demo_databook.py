@@ -45,7 +45,7 @@ import openpyxl
 # Bumped on every behaviour change.  Printed at the top of every run so a
 # report can be matched to the code that produced it -- two identical reports
 # from what were supposed to be different versions cost a full round trip.
-SCRIPT_VERSION = "2026-08-12.5"
+SCRIPT_VERSION = "2026-08-12.6"
 
 DEFAULT_SCALE = 0.8734
 
@@ -79,6 +79,7 @@ INDUSTRY_TAILS = [
     "材料", "食品", "医药", "生物", "环保", "能源", "租赁", "销售", "服务",
     "发展", "实体", "工贸", "农业", "化工", "纺织", "家具", "包装", "印刷",
     "国际", "集团", "控股", "投资", "资产", "产业", "地产", "开发",
+    "供电", "电力", "燃气", "自来水", "水务", "通信", "电信", "移动", "联通",
 ]
 INDUSTRY_TAILS.sort(key=len, reverse=True)
 
@@ -112,13 +113,23 @@ LEADING_NOISE = [
 ]
 LEADING_NOISE.sort(key=len, reverse=True)
 
-# A company name embedded in a longer cell ("上海某某有限公司往来款").  Used
-# only on short cells; long remark sentences are covered by full-text
-# substitution of names already found in clean cells.
+# A company name embedded in a longer cell ("上海某某有限公司往来款").
+#
+# Only STRONG suffixes qualify.  Allowing the bare "公司" cut five characters
+# out of the middle of cash-flow-statement row labels and called them tenants:
+# two adjacent labels yielded two different "companies".  A full legal name
+# ends in 有限公司 / 股份有限公司 / 有限责任公司 / 分公司; anything ending in
+# a bare 公司 that is genuinely a name still gets caught by whole-cell match.
+EMBEDDED_STRONG_SUFFIXES = ["股份有限公司", "有限责任公司", "有限公司", "分公司"]
 EMBEDDED_NAME_RE = re.compile(
-    r"[一-鿿（）()·、]{2,24}(?:" + "|".join(COMPANY_SUFFIXES) + r")"
+    r"[一-鿿（）()·、]{2,24}(?:" + "|".join(EMBEDDED_STRONG_SUFFIXES) + r")"
 )
 EMBEDDED_MAX_CELL_LEN = 40
+
+# How much of the fragment may be left over after the name is taken.  A real
+# case is "<name>往来款": a few characters. Fifteen characters of leftovers
+# means the match landed inside a sentence, not on a label.
+EMBEDDED_RESIDUE_MAX = 12
 
 # Characters legitimately found inside a Chinese company name.
 NAME_CHAR_RE = re.compile(r"[一-鿿（）()·、\s]")
@@ -174,6 +185,8 @@ def extract_embedded_names(s: str) -> list[str]:
     for part in CONNECTOR_RE.split(s):
         for m in EMBEDDED_NAME_RE.finditer(part):
             cand = strip_leading_noise(strip_marks(m.group(0)))
+            if len(part) - len(cand) > EMBEDDED_RESIDUE_MAX:
+                continue
             if len(cand) >= 5 and cand not in GENERIC_NAMES and COMPANY_CELL_RE.match(cand):
                 found.append(cand)
     return found
@@ -701,7 +714,9 @@ def _tail_is_vocabulary(tail: str) -> bool:
     rest = tail
     for word in COMPANY_SUFFIXES + INDUSTRY_TAILS + PLACE_PREFIXES:
         rest = rest.replace(word, "")
-    return not rest.strip("（）() 、·")
+    # "...苏州市分公司" leaves a bare 市 behind; administrative-division
+    # characters name no one and must not make a correct parse look failed.
+    return not rest.strip("（）() 、·市省区縣县镇乡街道新旧东南西北中")
 
 
 def redact_company(name: str, name_map: dict) -> str:
