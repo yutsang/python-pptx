@@ -200,6 +200,10 @@ _ZERO_BALANCE_CHAR_RE = re.compile(r"(?:余额)?(?:合计)?为(?:人民币)?零\
 _WORKPAPER_WORDS = (
     (re.compile(r"checking(?=不平|不符|有差异)?"), "核对"),
     (re.compile(r"tie[- ]?out"), "核对"),
+    # "管报package" / "管理报表package" -- the English tail is the databook's
+    # own filing word and says nothing the Chinese does not already say.
+    (re.compile(r"(?<=管报)\s*package"), ""),
+    (re.compile(r"(?<=管理报表)\s*package"), ""),
 )
 
 # "根据备注" / "根据备注说明" cites the DATABOOK's remarks column. A deliverable
@@ -216,10 +220,15 @@ _SOURCE_META_RE = re.compile(r"(?:^|(?<=[。；;\n]))\s*根据备注(?:说明)?[
 # and it only ever rewrites the sign into words -- the figure is untouched.
 _NEGATIVE_RE_RE = re.compile(r"(未分配利润|留存收益)(为|是)(?:人民币)?-\s*([\d,]+(?:\.\d+)?)")
 
-# A zero amount does not need a magnitude unit. "0万元" is the arithmetic
-# showing through; every real report writes a bare 0 (or says 未发生, which the
-# rule below already handles where the sentence shape allows it).
-_ZERO_UNIT_RE = re.compile(r"(?<![\d.,])0\s*(?:万元|亿元)")
+# NOT rewritten here: "分别为16.1万元、-16.1万元、0万元及0万元".
+# Turning the zeros into a bare "0" was tried and the result -- "0及0" -- reads
+# no better than what it replaced. What a report actually writes is
+# "分别为16.1万元及-16.1万元，2025年度及2026年1至3月未发生", which means
+# splitting the enumeration and re-attaching the period labels. That is a
+# restructure, not a substitution, and restructuring finished sentences is what
+# deleted real figures last time (see docs/failed-attempts.md). It stays a
+# prompt rule, with a worked example, where the model can see the whole
+# sentence and decide.
 
 
 def humanise_report_language(text: str) -> str:
@@ -239,7 +248,6 @@ def humanise_report_language(text: str) -> str:
         body = pattern.sub(replacement, body)
     body = _SOURCE_META_RE.sub("", body)
     body = _NEGATIVE_RE_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}未弥补亏损{m.group(3)}", body)
-    body = _ZERO_UNIT_RE.sub("0", body)
     return body
 
 

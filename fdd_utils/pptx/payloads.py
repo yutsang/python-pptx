@@ -156,6 +156,14 @@ _REGISTRATION_BRACKET = re.compile(r"[（(][一-鿿]{2,4}[）)](?=[一-鿿]*(?:%
                                    % "|".join(_LEGAL_FORM_TAILS))
 
 
+_WORKPAPER_ASTERISK = re.compile(r"(?<!\*)\*(?=[\u4e00-\u9fffA-Za-z])")
+_LEGAL_FORM_TAIL_RE = re.compile(
+    r"(?<![为是属系])(?:" + "|".join(
+        sorted(_LEGAL_FORM_TAILS, key=len, reverse=True)
+    ) + r")"
+)
+
+
 def shorten_company_names(text: str) -> str:
     """Strip legal-form tails and registration brackets from company names.
 
@@ -181,10 +189,21 @@ def shorten_company_names(text: str) -> str:
     # and it reached a real deck as "*嘉兴粤浩纸业有限公司" once the model was
     # given the component rows to quote from. Same reasoning as the legal-form
     # tail below: mechanical, so it does not belong in an instruction.
-    body = re.sub(r"(?<![\w*])\*(?=[^\s*])", "", body)
+    # Anywhere in the sentence, not only at its start. The old lookbehind
+    # required a NON-word character before the asterisk, and Chinese is all
+    # word characters, so "应付*丽迅企业发展" kept its marker and a real deck
+    # shipped "备注提及*嘉兴粤浩纸业3,588元". Guarding on a preceding asterisk
+    # instead leaves markdown emphasis alone: in "**x**" the first star is
+    # followed by a star (not a name character) and the second is preceded by
+    # one.
+    body = _WORKPAPER_ASTERISK.sub("", body)
     body = _REGISTRATION_BRACKET.sub("", body)
-    for tail in _LEGAL_FORM_TAILS:
-        body = body.replace(tail, "")
+    # A legal form is only a legal form when it TAILS A NAME. Replacing the
+    # bare string everywhere deleted it out of ordinary prose --
+    # "该公司为有限合伙企业性质" came out as "该公司为性质" -- which is the
+    # same blind-deletion mistake as the reverted enumeration dedupe. A copula
+    # in front means the phrase names a CATEGORY, not a company.
+    body = _LEGAL_FORM_TAIL_RE.sub("", body)
     return body
 
 
