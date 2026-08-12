@@ -42,6 +42,11 @@ from pathlib import Path
 
 import openpyxl
 
+# Bumped on every behaviour change.  Printed at the top of every run so a
+# report can be matched to the code that produced it -- two identical reports
+# from what were supposed to be different versions cost a full round trip.
+SCRIPT_VERSION = "2026-08-12.5"
+
 DEFAULT_SCALE = 0.8734
 
 # ---------------------------------------------------------------- name parsing
@@ -449,6 +454,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("source", help="Path to the real databook .xlsx")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {SCRIPT_VERSION}")
     ap.add_argument("--output", help="Output path (default: '[DEMO]<stem>.xlsx' beside the source)")
     ap.add_argument("--scale", type=float, default=DEFAULT_SCALE,
                     help=f"Global factor (default {DEFAULT_SCALE})")
@@ -467,6 +473,7 @@ def main() -> int:
     ap.add_argument("--emit-mapping", help="Write the real->fake table here (SENSITIVE: never commit)")
     args = ap.parse_args()
 
+    print(f"make_demo_databook.py version {SCRIPT_VERSION}")
     src = Path(args.source)
     if not src.exists():
         print(f"ERROR: source not found: {src}")
@@ -733,6 +740,7 @@ def inspect_only(src: Path, wb_f, wb_v, real_names, embedded_names, ratio_cols,
         safe.append(line if safe_line is None else safe_line)
 
     emit(f"=== INSPECT: {src.name} ===")
+    emit(f"script version: {SCRIPT_VERSION}")
     emit(f"sheets: {len(wb_f.sheetnames)}")
     emit("sheet names:", "sheet names (redacted, real chars - NOT the real names):")
     for name in wb_f.sheetnames:
