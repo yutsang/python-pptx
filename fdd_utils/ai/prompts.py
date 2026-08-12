@@ -118,6 +118,9 @@ def get_prompt_engine(
     return _PROMPT_ENGINE_CACHE[cache_key]
 
 
+_RECEIVABLE_NEEDLES = ("应收账款", "应收帐款", "accounts receivable", "trade receivable")
+
+
 class PromptEngine:
     """Centralized prompt accessor aligned with the HR prompt handling pattern."""
 
@@ -676,6 +679,232 @@ class PromptEngine:
             "were A, B and C'), listing each component's per-period figures, and annualised "
             "restatements -- the table carries all of those. Part 2 explains what/who/how, not "
             "numbers the table already shows."
+        )
+
+    @staticmethod
+    def _data_insight_guidance(
+        df: Optional[pd.DataFrame],
+        language: str,
+        peer_context: Optional[Dict[str, Any]] = None,
+        mapping_key: Optional[str] = None,
+    ) -> str:
+        """Two things the model cannot safely work out for itself: what the
+        breakdown says once it is digested, and how this account sits against
+        another one.
+
+        Until now every observation about a breakdown -- which component
+        drives a movement, whether the balance is concentrated in one
+        counterparty, whether a component appeared or stopped -- had to be
+        eyeballed out of a table of figures. mappings.yml asks for
+        "对手方/集中度" outright and nothing anywhere computed it, so the
+        honest branch ("数据未提供") was the only one that could ever fire.
+        740b40d is what the other branch costs: asked for a quantified figure
+        with none to hand, the model built one out of unlabelled balances and
+        produced 484,000 on one run and 36,000 on the next.
+
+        So each observation is computed HERE and handed over as a stated
+        fact -- the same contract _variance_analysis_guidance already works
+        to, and the reason its percentages have never been a hallucination
+        risk: validator.py's matcher is deliberately money-expressions-only,
+        so a bare ratio has nothing to ground and nothing to fail.
+
+        Two limits, because the deliverable's problem is length as much as
+        depth:
+
+        * At most ONE composition insight and ONE ratio, ranked -- never a
+          list of every metric that cleared its threshold. A movement
+          attribution outranks concentration because "why did it move" is the
+          question the reader actually has; concentration is what to say when
+          nothing moved enough to explain.
+        * NO cap exemption. _variance_analysis_guidance carries one, which is
+          right for a material movement, but if every analysis block exempts
+          itself the paragraph only ever grows. This one instead says to SPEND
+          a sentence that currently recites figures the table already carries.
+          That is the only way depth and length can improve together rather
+          than trading off.
+        """
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return ""
+        attrs = df.attrs or {}
+        integrity = attrs.get("integrity") or {}
+        statement_type = str(integrity.get("statement_type") or "").strip().upper()
+
+        def _num(value) -> float:
+            return float(value) if isinstance(value, (int, float)) else 0.0
+
+        def _account_total(period: str) -> Optional[float]:
+            """The account's own figure for a named period column, read the
+            same way _variance_analysis_guidance reads it -- the labelled
+            total row where the sheet has one, the column sum otherwise."""
+            if period not in df.columns:
+                return None
+            row_types = attrs.get("row_types_by_description") or {}
+            desc_col = df.columns[0]
+            total_idx = None
+            for idx, row in df.iterrows():
+                if str(row_types.get(str(row[desc_col]), "")).lower() in ("total", "subtotal"):
+                    total_idx = idx
+            try:
+                if total_idx is None:
+                    return float(df[period].fillna(0).sum())
+                return float(df.loc[total_idx, period] or 0)
+            except Exception:
+                return None
+
+        # ---------- 1. digest the breakdown ----------
+        composition_chi = composition_eng = ""
+        table = attrs.get("presentation_detail_table") or {}
+        rows = table.get("rows") or []
+        periods = table.get("periods") or []
+        if rows and periods:
+            latest = periods[-1]
+            labels = [str(r.get("label") or "").strip() for r in rows]
+            curr_vals = [_num((r.get("values") or {}).get(latest)) for r in rows]
+            total_curr = sum(curr_vals)
+
+            # (a) Movement attribution -- one component carrying the account.
+            if len(periods) >= 2 and not composition_chi:
+                prev = periods[-2]
+                prev_vals = [_num((r.get("values") or {}).get(prev)) for r in rows]
+                total_prev = sum(prev_vals)
+                delta_total = total_curr - total_prev
+                scale = max(abs(total_curr), abs(total_prev))
+                # A movement worth attributing at all: 10% of the account.
+                if scale > 0 and abs(delta_total) >= scale * 0.10:
+                    deltas = list(zip(labels, [c - p for c, p in zip(curr_vals, prev_vals)]))
+                    label, delta = max(deltas, key=lambda kv: abs(kv[1]))
+                    share = delta / delta_total
+                    if label and share >= 0.6:
+                        direction_chi = "增加" if delta_total > 0 else "减少"
+                        direction_eng = "increase" if delta_total > 0 else "decrease"
+                        composition_chi = (
+                            f"本科目由{prev}至{latest}的净{direction_chi}中，约{share * 100:.0f}%"
+                            f"来自「{label}」一项，其余构成项变动相对轻微。"
+                        )
+                        composition_eng = (
+                            f"About {share * 100:.0f}% of the net {direction_eng} from {prev} to "
+                            f"{latest} came from '{label}' alone; the other components moved little."
+                        )
+
+            # (b) A component that appeared or stopped -- a structural change
+            #     a percentage on the total would hide entirely.
+            if len(periods) >= 2 and not composition_chi:
+                prev = periods[-2]
+                prev_vals = [_num((r.get("values") or {}).get(prev)) for r in rows]
+                floor = max((abs(v) for v in curr_vals + prev_vals), default=0.0) * 0.10
+                for label, p_v, c_v in zip(labels, prev_vals, curr_vals):
+                    if not label or floor <= 0:
+                        continue
+                    if abs(p_v) < floor <= abs(c_v):
+                        composition_chi = (
+                            f"「{label}」于{prev}并无余额，至{latest}方才出现。"
+                        )
+                        composition_eng = (
+                            f"'{label}' had no balance at {prev} and appears only at {latest}."
+                        )
+                        break
+                    if abs(c_v) < floor <= abs(p_v):
+                        composition_chi = (
+                            f"「{label}」于{prev}尚有余额，至{latest}已不再出现。"
+                        )
+                        composition_eng = (
+                            f"'{label}' carried a balance at {prev} and no longer appears at {latest}."
+                        )
+                        break
+
+            # (c) Concentration -- what to say when nothing moved enough.
+            if not composition_chi and total_curr > 0:
+                ranked = sorted(
+                    ((l, v) for l, v in zip(labels, curr_vals) if l and v > 0),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+                if ranked:
+                    top_label, top_value = ranked[0]
+                    top_share = top_value / total_curr
+                    top3_share = sum(v for _l, v in ranked[:3]) / total_curr
+                    if top_share >= 0.5:
+                        composition_chi = (
+                            f"最新一期构成中，「{top_label}」一项即占约{top_share * 100:.0f}%，"
+                            "集中度偏高。"
+                        )
+                        composition_eng = (
+                            f"'{top_label}' alone accounts for about {top_share * 100:.0f}% of the "
+                            "latest balance -- the composition is concentrated."
+                        )
+                    elif len(ranked) >= 4 and top3_share >= 0.8:
+                        composition_chi = (
+                            f"最新一期构成中，前三大项目合计占约{top3_share * 100:.0f}%，"
+                            "其余项目金额零星。"
+                        )
+                        composition_eng = (
+                            f"The three largest items make up about {top3_share * 100:.0f}% of the "
+                            "latest balance; the rest are minor."
+                        )
+
+        # ---------- 2. one cross-account ratio ----------
+        # Only ever against the SAME period the peer figure was measured over.
+        # A period-end balance divided by a one-quarter revenue is not a
+        # comparable ratio, and the partial tail period is exactly where that
+        # goes wrong -- the same trap _build_peer_context already avoids for
+        # growth.
+        ratio_chi = ratio_eng = ""
+        peer = peer_context or {}
+        rev_total = peer.get("revenue_latest")
+        rev_period = peer.get("revenue_period")
+        rev_months = peer.get("revenue_months")
+        is_revenue_itself = bool(
+            peer.get("revenue_key") and mapping_key
+            and str(peer["revenue_key"]).strip().lower() == str(mapping_key).strip().lower()
+        )
+        if isinstance(rev_total, (int, float)) and rev_total > 0 and rev_period and not is_revenue_itself:
+            own_total = _account_total(str(rev_period))
+            key_text = f"{mapping_key or ''} {' '.join(str(c) for c in df.columns[:1])}".lower()
+            receivable = any(n in key_text for n in _RECEIVABLE_NEEDLES)
+            days = (float(rev_months) * 30.44) if isinstance(rev_months, (int, float)) and 0 < rev_months <= 12 else 365.0
+            if own_total is not None and abs(own_total) > 0:
+                if statement_type == "BS" and receivable:
+                    dso = abs(own_total) / float(rev_total) * days
+                    if 0 < dso < 1095:
+                        ratio_chi = (
+                            f"以{rev_period}的营业收入推算，本科目余额相当于约{dso:.0f}天的收入，"
+                            "即平均回款周期。"
+                        )
+                        ratio_eng = (
+                            f"Against revenue for {rev_period}, the balance equates to about "
+                            f"{dso:.0f} days of revenue -- the average collection period."
+                        )
+                elif statement_type == "IS":
+                    share = abs(own_total) / float(rev_total) * 100
+                    if 0.5 <= share <= 500:
+                        ratio_chi = (
+                            f"本科目于{rev_period}相当于同期营业收入的约{share:.0f}%。"
+                        )
+                        ratio_eng = (
+                            f"For {rev_period} this account equates to about {share:.0f}% of "
+                            "revenue for the same period."
+                        )
+
+        facts_chi = [f for f in (composition_chi, ratio_chi) if f]
+        facts_eng = [f for f in (composition_eng, ratio_eng) if f]
+        if not facts_chi:
+            return ""
+
+        if language == "Chi":
+            return (
+                "【数据洞察（系统已算出，可直接引用）】" + "".join(facts_chi)
+                + "以上结论由系统按本科目明细算出，可直接采用；但**不得据此自行推算其他比率或份额**，"
+                "自行推算的数字等同编造。"
+                "**篇幅要求：这不是额外增加的句子。**请用它取代一句原本只在罗列表格已有金额的描述，"
+                "本科目的整体句数上限不变。若无句子可取代，宁可不写这一点，也不得超出上限。"
+            )
+        return (
+            "[DATA INSIGHT -- ALREADY COMPUTED, QUOTE DIRECTLY] " + " ".join(facts_eng)
+            + " These follow from this account's own breakdown and may be used as stated, but do "
+            "NOT derive any further ratio or share yourself -- a self-derived figure is fabrication. "
+            "**On length: this is not an extra sentence.** Use it in place of a sentence that "
+            "merely recites figures the table already shows; this account's sentence cap is "
+            "unchanged. If there is nothing to replace, drop this point rather than exceed the cap."
         )
 
     @staticmethod
@@ -1355,6 +1584,9 @@ class PromptEngine:
                 thresholds=kwargs.get("analysis_thresholds"),
             ),
             "analytical_lens_guidance": self._analytical_lens_guidance(df, language),
+            "data_insight_guidance": self._data_insight_guidance(
+                df, language, peer_context=kwargs.get("peer_context"), mapping_key=mapping_key,
+            ),
             "detail_table_guidance": self._detail_table_guidance(df, language),
             "composition_guidance": self._composition_guidance(df, language),
             "rhs_guidance_block": self._rhs_guidance_block(

@@ -56,7 +56,7 @@ _default_subagent_1:
       Shared alignment rules:
       - {common_data_rules}
       - {common_formatting} {fdd_judgement}
-      - {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+      - {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
 
       **CRITICAL LANGUAGE REQUIREMENT**:
       THIS IS AN ENGLISH DATABOOK. Your output MUST be 100% in ENGLISH.
@@ -73,7 +73,7 @@ _default_subagent_1:
       {rhs_guidance_block}
       **Note**: Amounts are already formatted (e.g., "59.3 million", "54,950"). Render with NO space after CNY: "CNY59.3 million", "CNY54,950". Never use "K" suffix.
       {common_data_rules}
-      {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+      {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
       {remarks_weight_instruction}
       {user_guidance_instruction}
 
@@ -147,10 +147,10 @@ _default_subagent_1:
       {rhs_guidance_block}
       **注意**: 数据中的金额已格式化(例如: 8万, 1亿)。请保持这些展示单位，不要再次换算。
       {common_data_rules}
-      {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+      {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
       {remarks_weight_instruction}
       {user_guidance_instruction}
-      **重要**: 按照{period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}中的报告重点进行撰写。
+      **重要**: 按照{period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}中的报告重点进行撰写。
       资产负债表科目：首句仅说明最新期末余额及其构成（单一期间，不要罗列所有期间），不得罗列所有报告期间余额，也不得以变动句开篇。前期余额仅在变动重大且有数据支持时简略提及。
       利润表科目：首句以构成开篇（"主要包括..."或"主要来自..."），而非孤立趋势句。对每一重要构成项，应在句中提供所有报告期间的金额（**若本科目已有做好的明细表，则此项不适用**：各期金额由表格列示，正文不得逐项重复）（"分别为A、B、C万元，于2023年度、2024年度、2025年度期间发生"），而不是仅最新一期。构成与多期金额之后，如有重大变动，可在数据支持下说明驱动因素。
       无论科目类型，均应使用所有示意性调整后期间数据作为背景参考，整体篇幅应进一步压缩并保持紧凑。
@@ -170,7 +170,7 @@ _general_dynamic_mapping:
         Data: {financial_figure}
         {rhs_guidance_block}
         {common_data_rules}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         Write from an FDD consultant angle using the inferred accounting nature only as contextual guidance. Keep the commentary data-backed, trend-led, concise, and limited to one concise paragraph unless the evidence clearly requires more. Build the reasoning from data, trend, and supported remarks together, and for income-statement items you may also use broader numeric analysis when it is supported. Preserve material remark-backed reasoning and analytical explanation where they support the conclusion, and make material supported remark points visible in the paragraph. If the data does not clearly support a reason or assertion, do not add it.
@@ -185,7 +185,7 @@ _general_dynamic_mapping:
         数据: {financial_figure}
         {rhs_guidance_block}
         {common_data_rules}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         请从财务尽调顾问角度撰写评论，并将推断出的会计性质仅作为上下文参考。评论必须以数据为基础、以趋势为先，表达简洁；若数据不能清楚支持某项原因或判断，则不要加入。
@@ -208,13 +208,13 @@ Cash:
         Variations supported by data: replace "with no restricted use" with the actual restriction (e.g., "of which CNY5.8 million was pledged for ICBC's fixed asset loan with restricted use"). Drop the bank-statement caveat if the data shows statements were reconciled.
         BANNED: listing individual bank-account names/branches/currencies; period-on-period filler; verbose cross-check ("has been cross-checked... no material discrepancies were identified" → use "We have not obtained the bank statements yet" instead); invented drivers; bracketed sub-amounts.
         Number format: CNY<X> million (1dp, no space) for >= CNY1m; CNY<XX,XXX> for sub-million. NEVER use "K" suffix.
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 1-2 sentences, 25-50 words. Latest-period balance + restriction + bank-statement caveat (if supported). NO bank-account drill-down, NO PoP filler, NO K-suffix, NO space after CNY.
@@ -227,14 +227,14 @@ Cash:
         首句之后，描述构成（币种、银行集中度）、限制及数据支持的重要备注。如前期余额变动重大，可在后续一句中简略提及，但仅在数据有意义时，而非例行总结。
         **防止臆造**：不得编造"经营现金流入超过流出"或"反映良好回款"等驱动原因，除非数据/备注明确解释变动。如无支持原因，仅陈述事实。
         如数据暗示尚未取得银行对账单，可加入"我方尚未取得银行对账单"等标准注脚。
-        整体约2-4句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        整体约2-4句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下科目上下文仅作写作提示，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         以单一期间陈述最新余额及其构成开篇。不得在首句罗列所有期间。不得编造变动驱动原因——仅在数据/备注解释时才说明。约2-4句。
@@ -263,13 +263,13 @@ AR:
         Quantified recommendation — ONLY when the data/remarks state a SINGLE amount EXPLICITLY LABELLED as the specific figure at risk (e.g. a line item literally captioned as a provision, write-off, or impairment amount for a named counterparty): you may close with ONE clause recommending that exact amount be deducted from net assets (e.g. "it is recommended that the CNY<X> long-aged receivable be deducted from net assets"). Do NOT sum, estimate, or select among several raw, unlabelled per-tenant or per-period balances to construct a figure yourself — that is inventing a number the data doesn't actually state, even if every input digit is real. When the data only shows ambiguous raw balances (e.g. one tenant's figure repeated or varying across several periods with no line explicitly identified as the impairment/write-off amount), name the tenant and the aging fact WITHOUT stating a deduction amount (e.g. "a specific aging risk was noted for <ENTITY>, though no impairment amount was stated in the data"). This is the one narrow exception to the project's no-advisory-language rule — allowed only for a specific, quantified, EXPLICITLY LABELLED, data-grounded amount, never a generic call to action ("you should confirm..."), and never a number derived by you rather than stated in the source.
         BANNED: bracketed sub-figures by income type ("Rental income accounted for CNY 412.9K, management fees..."); period-on-period filler; verbose provision narratives; a recommendation amount that is summed, estimated, or selected by you from multiple raw figures rather than explicitly labelled in the data/remarks as the figure at risk.
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 2-3 sentences, 40-80 words. Latest balance + counterparty + payment-terms context. Ageing/collectability clause is REQUIRED every time: the fact if supported, otherwise a plain "no ageing breakdown was provided" statement — never silently skip this dimension. If, and only if, the data/remarks state a SINGLE amount EXPLICITLY LABELLED as the specific figure at risk (not one you summed/estimated/selected from several raw unlabelled balances), you may close with one clause recommending that amount be deducted from net assets — otherwise name the aging fact without a dollar figure, never a generic advisory sentence. NO sub-component breakdown by rent/mgmt-fee/utility, NO PoP filler.
@@ -284,14 +284,14 @@ AR:
         **量化建议——仅当数据/备注明确以单一、有标签的金额指出具体风险金额时才可使用**（例如某笔明确标注为"计提减值"或"应核销"的金额，对应具体交易对手）：可在结尾加一句具体建议，如"建议将上述长账龄应收账款人民币X万元于净资产中予以扣除"。**不得**从多笔未标签的原始余额（如某租户跨多期出现的数字）中自行加总、估算或挑选出一个金额——即使每个数字本身都真实存在，自行推算出的金额仍等同于编造。若数据只提供这类模糊的原始余额，只需具体点出交易对手与账龄风险这个事实，**不得**附上扣除金额（如"XX公司存在具体账龄风险，但数据未列示具体减值金额"）。这是本项目"不得有顾问式建议"规则的唯一例外，仅限有明确标签依据的金额；不得是"建议与管理层确认"这类泛泛建议，也不得是自行推算出的金额。
         如前期余额变动重大，可在后续一句中简略提及。
         **防止臆造**：不得编造催收原因、账龄假设或减值变动，除非数据/备注明确说明。"历史上未发生坏账"等标准注脚需有数据支持——不得假设。
-        整体约2-4句（账龄/坏账说明，以及仅在触发时的量化建议，如需要可各额外增加1个短分句）。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        整体约2-4句（账龄/坏账说明，以及仅在触发时的量化建议，如需要可各额外增加1个短分句）。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下科目上下文仅作写作提示，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         以单一期间陈述最新应收账款余额及其构成开篇。不得在首句罗列所有期间。对手方/付款条款仅在数据支持时说明。账龄与坏账风险这个维度每次都必须提及——有数据就据实说明，没有数据就写"未提供账龄细分"，不得整段跳过不提。若且仅若数据/备注以单一、有标签的金额明确指出具体风险金额（不是从多笔未标签原始余额自行加总或估算出来的），结尾可加一句量化建议（扣除净资产）；数据只有模糊原始余额时，只点出交易对手与账龄事实，不附金额；否则不得添加任何建议性语句。约2-4句。
@@ -326,13 +326,13 @@ OR:
         For multi-component OR (e.g. RP loans + deposits + utility receivables), use a numbered list inside one bullet: "1) CNY<X> million of...; 2) CNY<Y> million of...; 3) CNY<Z> in...". Cap at 3 components.
         BANNED: PoP filler; invented impairment narratives; bracketed sub-amounts.
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 2-4 sentences, 50-100 words. Lead with related-party loans (counterparty, amount, interest-free + pre-deal settlement note); add other components only if material. Stock phrase: "Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction."
@@ -341,14 +341,14 @@ OR:
       system_prompt: |
         角色: 财务尽职调查顾问
         撰写其他应收款评论。仅使用提供的数据。
-        最重要的是关联方往来款：说明交易对手、金额、是否免息、是否在完成交割前结清。此外，注明押金保证金、水电费应收等其他重要余额。如数据支持，提示减值风险或无协议情况。整体约2-4句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        最重要的是关联方往来款：说明交易对手、金额、是否免息、是否在完成交割前结清。此外，注明押金保证金、水电费应收等其他重要余额。如数据支持，提示减值风险或无协议情况。整体约2-4句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         优先说明关联方往来款（对手方、金额、利息安排、交割前结清），再说明押金、保证金或其他项目。约2-4句。
@@ -388,13 +388,13 @@ IP:
         CRITICAL: The reference structure uses `<PLACEHOLDER>` markers to show format only. Replace every `<PLACEHOLDER>` with actual data from the input. If the data does not contain that value, OMIT the entire phrase or sentence — NEVER output literal `<PLACEHOLDER>` text.
         BANNED: PoP filler; invented impairment narratives; bracketed sub-amounts; "no provision for impairment was recorded" unless data states it.
         Number format: CNY<X> million (1dp, no space). No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 4-7 sentences, 100-200 words. Cover land + building + mortgage + final-accounting + CAPEX advice (when supported). Use the reference stock phrasing exactly. Omit any sub-point lacking data — do not invent.
@@ -410,14 +410,14 @@ IP:
         (d) 抵押情况：投资性房地产是否已抵押及对应贷款行。
         (e) 决算情况：是否已完成决算，决算结果与建造成本的差异是否已入账。
         (f) 资本性支出提示（如数据支持）：建议读者与管理层确认未来资本性支出计划，并在估值模型中考虑相关资本承诺。
-        不提供数据支持的子项目可省略。整体约3-5句，复杂项目可延长至8句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        不提供数据支持的子项目可省略。整体约3-5句，复杂项目可延长至8句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         结构：账面价值 → 土地使用权详情 → 仓库/建筑物详情 → 抵押情况 → 决算情况 → 资本支出提示。严格依据数据，缺乏数据支持的子项目可省略。
@@ -454,13 +454,13 @@ NCA:
         Movement driver (capex additions, disposals, completed-construction transfers) only when data/remarks explicitly support it — do not invent a reason for a book-value change.
         BANNED: inventing a useful life or residual value not in the data; collapsing multiple categories with different useful lives into one invented blanket figure; PoP filler.
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         3-5 sentences, 60-140 words. Latest net book value + composition by category (only categories present in data). Depreciation method + useful life clause is REQUIRED every time, by category if categories differ, otherwise state plainly that policy detail wasn't provided — never silently skip this dimension. Movement driver only if data/remarks support it.
@@ -473,14 +473,14 @@ NCA:
         **折旧/摊销政策——这是固定资产科目固定的分析维度，每次都必须提及，不可省略**：说明折旧方法（如年限平均法）及使用年限，若不同类别的使用年限不同，须分别说明（例如"土地使用权按572至582个月摊销，房屋及改造按240个月折旧，电子设备及办公家具按3至5年折旧"），并说明残值率（数据支持时）。若数据/备注未提供折旧政策或分类别的使用年限细节，也要明确写出这一事实（如"数据未提供折旧政策的进一步细节"），而不是完全不提这个维度，也不得把不同类别的使用年限合并编造成一个统一数字。
         变动原因（资本性支出、处置、在建工程转固等）仅在数据/备注明确支持时说明，不得臆造。
         **防止臆造**：不得为不同类别编造统一的使用年限或残值率；不得编造未在数据中出现的变动原因。
-        整体约3-5句（比单一金额的资产负债表科目篇幅更宽松，因为通常涉及多个资产类别）。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        整体约3-5句（比单一金额的资产负债表科目篇幅更宽松，因为通常涉及多个资产类别）。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下科目上下文仅作写作提示，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         以单一期间陈述最新账面净值及按类别列示的构成开篇。折旧方法与使用年限这个维度每次都必须提及——不同类别分别说明，若数据未提供就写"未提供折旧政策细节"，不得整段跳过不提。变动原因仅在数据支持时说明。约3-5句。
@@ -515,13 +515,13 @@ Long-term loans:
         Cover (only when data supports): lender, drawn vs facility, term dates, rate (LPR + spread or fixed), collateral, guarantor.
         BANNED: PoP filler; bracketed sub-amounts; "as at <Date> management had not yet provided..." (unless explicitly the case in remarks).
         Number format: CNY<X> million (1dp, no space). No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 2-3 sentences, 50-100 words. Lender + amount + maturity bucket + rate + collateral. Use stock opening "the balance as at <DATE> represented the loan owed to <BANK>...".
@@ -530,14 +530,14 @@ Long-term loans:
       system_prompt: |
         角色: 财务尽职调查顾问
         撰写长期借款评论。仅使用提供的数据。
-        按顺序说明（有数据支持时）：余额、贷款行名称、授信额度与已提款金额、借款用途、借款期限（起止日期）、利率（LPR+基点或固定利率）、抵押/质押物（土地使用权、股权质押、应收账款质押）、担保人。整体约2-5句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        按顺序说明（有数据支持时）：余额、贷款行名称、授信额度与已提款金额、借款用途、借款期限（起止日期）、利率（LPR+基点或固定利率）、抵押/质押物（土地使用权、股权质押、应收账款质押）、担保人。整体约2-5句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         说明：余额、贷款行、期限日期、利率、抵押物。约2-5句。
@@ -563,13 +563,13 @@ NCL due within one year:
         Stock follow-on (when supported, factual only — NO advisory): "The Target's loans from <BANK> amounting to CNY<X> million would be fully due in <DATE>." Do NOT append "You should consider the funding sources..." — that is consultant advisory and is banned.
         BANNED: PoP filler; invented refinancing assumptions.
         Number format: CNY<X> million (1dp, no space). No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 1-3 sentences, 30-80 words. Amount + onshore/offshore + lender + (maturity warning if large balance maturing). Use stock advisory phrase when warranted.
@@ -578,14 +578,14 @@ NCL due within one year:
       system_prompt: |
         角色: 财务尽职调查顾问
         撰写一年内到期的非流动负债评论。仅使用提供的数据。
-        说明：金额（境内/境外分别列示）、贷款行名称、到期日期、利率、抵押物。若有大额贷款即将到期，建议读者关注还款/展期安排。整体约2-4句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        说明：金额（境内/境外分别列示）、贷款行名称、到期日期、利率、抵押物。若有大额贷款即将到期，建议读者关注还款/展期安排。整体约2-4句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         说明：金额、贷款行、到期日、利率、抵押物，如大额贷款即将到期需提示还款安排。约2-4句。
@@ -650,13 +650,13 @@ AP:
         Lead with the LARGEST component (typically construction/工程款 payables) and name the contractor/vendor. When a component is a retention or warranty holdback (质保金/质保尾款) tied to a completion or defect-liability percentage, state that percentage and what it is contingent on WHEN the data states it — never invent one. Cap at 3-4 individually-named components (each materially sized); group every remaining small item into ONE closing line ("and CNY<X> of other operating payables, mainly comprising <categories>") rather than listing each separately — do not drop any item's value from the total, only its individual line.
         BANNED: PoP filler; itemising every sub-1%-of-total payable line separately; bracketed sub-amounts beyond what the reference shows.
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet using multi-line "mainly entailed:" list, 60-150 words. Lead with the largest component (name the contractor/vendor). State a retention/warranty-holdback percentage only when the data states one. Cap 3-4 individually-named components, merge all remaining small items into one closing "other operating payables" line.
@@ -665,14 +665,14 @@ AP:
       system_prompt: |
         角色: 财务尽职调查顾问
         撰写应付账款评论。仅使用提供的数据。
-        开篇陈述报告日余额总额，随后列示主要构成项（金额+承包商/供应商名称+简述），典型项目包括：工程款（按承包商列示；若为质保金/质保尾款且数据注明比例及触发条件，据实说明该比例，不得编造）、物业管理费、水电费、法律服务费等。金额最大的构成项（通常是工程款）优先列示。仅列示3-4个金额较大的构成项，其余小额项目（如各类小额质保金、维修费）合并为一句"以及其他若干小额应付款项（如XX、XX等）合计人民币X万元"，不逐项列示，但金额不得从总额中遗漏。整体约3-5句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        开篇陈述报告日余额总额，随后列示主要构成项（金额+承包商/供应商名称+简述），典型项目包括：工程款（按承包商列示；若为质保金/质保尾款且数据注明比例及触发条件，据实说明该比例，不得编造）、物业管理费、水电费、法律服务费等。金额最大的构成项（通常是工程款）优先列示。仅列示3-4个金额较大的构成项，其余小额项目（如各类小额质保金、维修费）合并为一句"以及其他若干小额应付款项（如XX、XX等）合计人民币X万元"，不逐项列示，但金额不得从总额中遗漏。整体约3-5句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         以余额总额开篇，然后分列3-4个金额最大的构成项（承包商/供应商名称+金额+简述；质保金类需注明比例，仅限数据有说明时），其余小额项目合并为一句，不逐项列示。整体约3-5句。
@@ -743,13 +743,13 @@ Tax payable:
         Aggregate any tax under CNY100,000 into "and other minor tax balances" — do NOT list stamp duty, environmental tax separately if individually small.
         BANNED: listing 5+ tax components; listing zero-balance taxes ("CNY0 of environmental tax"); attributive sentences ("the balance represented a net tax liability driven by..."); period-on-period filler.
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 1-2 sentences, 30-70 words. Cap at 3 named components (property tax, land use tax, VAT). For VAT, state NET position only — no input/output sub-decomposition. Aggregate <CNY100K items as "other minor tax balances".
@@ -776,13 +776,13 @@ OP:
         Cap at 4-5 components; group minor items as "and other miscellaneous expenses". Related-party borrowings come first when present.
         BANNED: PoP filler; lender-account-level drill-down; bracketed sub-amounts beyond what the reference shows.
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet using multi-line "mainly entailed:" list, 60-150 words. Lead with related-party borrowings (always note interest-free + pre-deal settlement when supported). Cap 4-5 components, group small items.
@@ -791,14 +791,14 @@ OP:
       system_prompt: |
         角色: 财务尽职调查顾问
         撰写其他应付款评论。仅使用提供的数据。
-        开篇陈述报告日余额总额，随后列示主要构成项（金额+简述），典型项目包括：关联方往来款（说明是否免息及是否在交割前结清）、工程款、银行利息、物业管理费、预提费用。仅列示数据中出现的项目，次要项目可合并。整体约3-5句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        开篇陈述报告日余额总额，随后列示主要构成项（金额+简述），典型项目包括：关联方往来款（说明是否免息及是否在交割前结清）、工程款、银行利息、物业管理费、预提费用。仅列示数据中出现的项目，次要项目可合并。整体约3-5句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         以余额总额开篇，然后分列主要构成（金额+简述）。关联方往来款是最重要的构成项，须注明是否免息、是否在完成交割前结清（如数据支持）。整体约3-5句。
@@ -824,13 +824,13 @@ Capital:
         - "<ENTITY>'s paid-in capital was CNY<X> million. We checked the capital injection documentation of CNY<X> million and found no differences."
         BANNED: PoP filler; speculation on shareholder structure beyond what's in data.
         Number format: CNY<X> million (1dp, no space). No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 2-3 sentences, 40-90 words. Consolidated paid-in capital + entity-level registered capital + verification result. Use the stock "We checked the audit report for <YEAR> and found no differences in respect of this amount" phrase when supported.
@@ -844,14 +844,14 @@ Capital:
         (b) 主要境内实体注册资本：金额、币种、是否足额缴付及经验资。
         (c) 核查来源：所参考的增资协议或审计报告，以及是否发现差异。
         (d) 如适用：境内实体资本的抵销处理。
-        整体约2-4句，不要加入未被数据支持的股权结构评论。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        整体约2-4句，不要加入未被数据支持的股权结构评论。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         涵盖：①合并层实收资本，②境内实体注册资本及验资情况，③核查结果。整体约2-4句。
@@ -917,13 +917,13 @@ OI:
         - Sentences starting with "Although", "However", "Despite" connecting two unsupported claims.
 
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 2-4 sentences, 60-100 words. Total revenue across MAJOR years only (typically 3 full years); partial year mentioned as raw figure. NO sub-stream-by-sub-stream listing, NO annualisation, NO invented drivers, NO ADR/occupancy unless explicit in source.
@@ -931,7 +931,7 @@ OI:
     Chi:
       system_prompt: |
         角色: 财务尽职调查顾问
-        撰写营业收入评论。仅使用提供的数据。这是一个利润表科目——以构成开篇：说明营业收入"主要来自"哪些项目（如租金收入、物业管理费收入、水电费收入，如数据提供则说明比例）。然后在句中提供所有报告期间的营业收入金额（如："营业收入分别为A、B、C万元，于2023年度、2024年度、2025年度期间产生"）。如数据支持，再涵盖主要租户及占比（具体名称/百分比）、日租金单价趋势（各期具体数值）、出租率趋势（具体百分比）、爬坡期或一次性影响。变动原因仅在数据/备注明确说明时才提及。整体约4-7句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        撰写营业收入评论。仅使用提供的数据。这是一个利润表科目——以构成开篇：说明营业收入"主要来自"哪些项目（如租金收入、物业管理费收入、水电费收入，如数据提供则说明比例）。然后在句中提供所有报告期间的营业收入金额（如："营业收入分别为A、B、C万元，于2023年度、2024年度、2025年度期间产生"）。如数据支持，再涵盖主要租户及占比（具体名称/百分比）、日租金单价趋势（各期具体数值）、出租率趋势（具体百分比）、爬坡期或一次性影响。变动原因仅在数据/备注明确说明时才提及。整体约4-7句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **防止臆造**：不得编造数据/备注中未出现的租户名称、出租率、日租金单价或增长原因。如"反映稳定的出租率和年度租金递增"等通用表述，若未在数据中明确出现，则禁止使用。
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
@@ -939,7 +939,7 @@ OI:
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         以构成开篇（营业收入主要包括什么），然后在句中给出所有报告期间的营业收入金额，再说明具体租户/日租金单价/出租率（数据支持时）。不得以孤立的趋势句开篇。约4-7句。
@@ -965,13 +965,13 @@ OC:
         Provider/contract sentence (when supported, 1 sentence MAX): "<PROVIDER> started providing property management services in <DATE> at a fixed monthly fee of CNY<X>."
         BANNED: listing every component with multi-period figures; per-fee 3-period drill-down; invented reasons ("reflecting cost discipline"); annualisation; "consistent with the contractual terms" filler.
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 2-3 sentences, 50-90 words. Composition opening (single-period figures for each component); multi-year trend for only ONE dominant component; one provider/contract sentence max. NO per-fee drill-down with multi-period figures.
@@ -979,7 +979,7 @@ OC:
     Chi:
       system_prompt: |
         角色: 财务尽职调查顾问
-        撰写营业成本评论。仅使用提供的数据。以构成开篇——说明营业成本"主要包括"折旧摊销、物业管理费及其他有数据支持的项目。对每一重要构成项（占总额>=10%），应在句中提供所有报告期间的金额（例如："折旧摊销分别为A、B、C万元，于2023年度、2024年度、2025年度期间发生"）。如数据支持，说明物业管理服务提供方名称、合同条款（每月费用、计费基础）及任何服务方变更。变动原因仅在数据/备注支持时才提及。整体约4-7句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        撰写营业成本评论。仅使用提供的数据。以构成开篇——说明营业成本"主要包括"折旧摊销、物业管理费及其他有数据支持的项目。对每一重要构成项（占总额>=10%），应在句中提供所有报告期间的金额（例如："折旧摊销分别为A、B、C万元，于2023年度、2024年度、2025年度期间发生"）。如数据支持，说明物业管理服务提供方名称、合同条款（每月费用、计费基础）及任何服务方变更。变动原因仅在数据/备注支持时才提及。整体约4-7句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **防止臆造**：不得编造"反映成本控制"或"经营效率提升"等通用解释。仅陈述数据，原因仅在数据/备注支持时才提及。
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
@@ -987,7 +987,7 @@ OC:
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         构成开篇（主要包括折旧摊销、物业管理费等）→ 对每一重要构成项给出所有期间的金额 → 物业管理服务方名称及合同条款（数据支持时）→ 变动原因（仅在支持时）。约4-7句。
@@ -1015,13 +1015,13 @@ Tax and Surcharges:
         - "consistent with historical trends", "stable accruals", "as stated by management" — assertion fillers.
         - Listing stamp duty / environmental tax separately if individually small (<CNY100K) — group as "and other minor tax balances".
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 1-2 sentences, 30-70 words. State main 2-3 tax types (RET, LUT) with single-period figures OR with 3-year inline figures for the dominant tax type only. Group minor taxes as "other tax and surcharges". NO 4-period drill-down per tax.
@@ -1047,13 +1047,13 @@ GA:
         - "Asset management fees were CNY... in 1M26, CNY... in FY25, CNY... in FY24. Professional service fees were ...". This drill-down is forbidden.
         - Annualisation; per-fee period-by-period series.
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 2-3 sentences, 40-80 words. State the 2-3 dominant G&A categories with proportion (% of total) for the latest year. Group minor fees as "other professional service fees". NO per-fee 4-period drill-down.
@@ -1078,13 +1078,13 @@ Fin Exp:
         Multi-year variant (when periods clearly differ): "mainly represented CNY<A> million, CNY<B> million and CNY<C> million of interest expense incurred in FY19, FY20 and FY21 respectively, as well as interest income, bank charges, and net gain (or loss) on exchange differences."
         BANNED: invented drivers (loan drawdowns, rate changes) unless data/remarks state them.
         Number format: CNY<X> million (1dp, no space); CNY<XX,XXX> for sub-million. No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 2-3 sentences, 50-100 words. Composition (interest expense + income + charges + FX) + weighted-average rate (when available).
@@ -1092,14 +1092,14 @@ Fin Exp:
     Chi:
       system_prompt: |
         角色: 财务尽职调查顾问
-        撰写财务费用评论。仅使用提供的数据。以构成开篇——说明该科目"主要为"银行借款利息支出、利息收入、银行手续费及汇兑损益。利息支出应在句中提供所有报告期间的具体金额（例如："利息支出分别为A、B、C万元，于2023年度、2024年度、2025年度期间发生"）。如有加权平均利率，予以说明。变动原因（借款提款/还款/利率变化）仅在数据/备注支持时才提及。整体约2-4句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        撰写财务费用评论。仅使用提供的数据。以构成开篇——说明该科目"主要为"银行借款利息支出、利息收入、银行手续费及汇兑损益。利息支出应在句中提供所有报告期间的具体金额（例如："利息支出分别为A、B、C万元，于2023年度、2024年度、2025年度期间发生"）。如有加权平均利率，予以说明。变动原因（借款提款/还款/利率变化）仅在数据/备注支持时才提及。整体约2-4句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         构成开篇（主要为利息支出/收入/手续费/汇兑） → 各构成项目的多期金额 → 加权平均利率（如有） → 变动原因（仅在支持时）。约2-4句。
@@ -1298,13 +1298,13 @@ CIP:
         Stock follow-on (when supported): "According to <GROUP>'s internal accounting policy, construction costs were accounted for based on the construction progress maintained in the system by the engineering department, and the finance department would accrue the construction costs accordingly. Management did not provide the construction contract log for the CIP with the contract amounts, verified amounts or settlement amounts. Therefore, construction payables and CAPEX commitments may be under-estimated."
         BANNED: PoP filler; invented completion dates.
         Number format: CNY<X> million (1dp, no space). No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 2-4 sentences, 50-130 words. Latest balance + what it represents + accounting policy + under-estimation flag (when applicable).
@@ -1313,14 +1313,14 @@ CIP:
       system_prompt: |
         角色: 财务尽职调查顾问
         撰写在建工程评论。仅使用提供的数据。
-        说明：余额、代表内容（项目名称/阶段）、成本确认政策（如按工程进度确认）、完工进度及预计完工日期。若管理层未提供详细施工合同台账（含合同金额、核定金额、结算金额），需提示建造成本应付款及资本支出承诺可能被低估。整体约2-4句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        说明：余额、代表内容（项目名称/阶段）、成本确认政策（如按工程进度确认）、完工进度及预计完工日期。若管理层未提供详细施工合同台账（含合同金额、核定金额、结算金额），需提示建造成本应付款及资本支出承诺可能被低估。整体约2-4句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         说明：余额、内容、完工状态/预计完工日期、成本确认政策；如未提供合同台账，提示低估风险。约2-4句。
@@ -1344,13 +1344,13 @@ DTA:
         Opening (lowercase): "the balance as at <DATE> mainly arose from the impact of revenue recognition in the rent-free period, un-utilised tax losses, and liabilities that were accrued but not paid."
         BANNED: PoP filler; recoverability speculation; invented sources.
         Number format: CNY<X> million (1dp, no space). No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 1-2 sentences, 25-50 words. Latest balance + main sources from the data only.
@@ -1358,14 +1358,14 @@ DTA:
     Chi:
       system_prompt: |
         角色: 财务尽职调查顾问
-        撰写递延所得税资产评论。仅使用提供的数据。列示DTA主要来源：①直线法收入确认时间性差异，②未使用税收亏损，③已计提未支付负债。陈述报告日余额及主要驱动因素。整体约2-3句，不对可回收性作出未被数据支持的判断。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        撰写递延所得税资产评论。仅使用提供的数据。列示DTA主要来源：①直线法收入确认时间性差异，②未使用税收亏损，③已计提未支付负债。陈述报告日余额及主要驱动因素。整体约2-3句，不对可回收性作出未被数据支持的判断。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         陈述报告日余额及主要来源。约2-3句。
@@ -1401,13 +1401,13 @@ Deferred income:
         Opening: "represented property-related government grants, which were initially recorded as long-term payables and then recognised in other income on a straight-line basis over the useful life period of the Targeted properties. Historically, <ENTITY> received government subsidies amounting to CNY<X> million."
         BANNED: PoP filler; invented amortisation policies.
         Number format: CNY<X> million (1dp, no space). No "K".
-        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **LANGUAGE**: 100% English.
       user_prompt: |
         Patterns (style only): {patterns}
         Data: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         ONE bullet, 2-3 sentences, 40-90 words. Nature + amortisation basis + historical subsidy amount.
@@ -1416,14 +1416,14 @@ Deferred income:
       system_prompt: |
         角色: 财务尽职调查顾问
         撰写递延收益/政府补贴评论。仅使用提供的数据。
-        说明：余额、补贴性质（如工业发展支持资金）、收到年份、原始金额、摊销期间（通常为相关资产使用寿命，如50年或20年）、每年摊销金额。整体约2-3句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        说明：余额、补贴性质（如工业发展支持资金）、收到年份、原始金额、摊销期间（通常为相关资产使用寿命，如50年或20年）、每年摊销金额。整体约2-3句。{common_formatting} {fdd_judgement} {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         **语言**: 这是一个中文数据簿。输出必须100%为中文。
       user_prompt: |
         以下模式仅作写作风格参考，请根据实际数据撰写最终评论。
         模式: {patterns}
         数据: {financial_figure}
         {rhs_guidance_block}
-        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance}
+        {period_reference_guidance} {variance_analysis_guidance} {analytical_lens_guidance} {detail_table_guidance} {composition_guidance} {data_insight_guidance}
         {remarks_weight_instruction}
         {user_guidance_instruction}
         说明：余额、补贴类型、收到年份、摊销期间及年摊销金额。约2-3句。

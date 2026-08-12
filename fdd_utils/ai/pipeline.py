@@ -495,15 +495,41 @@ def _build_peer_context(dfs: Optional[Dict[str, pd.DataFrame]]) -> Optional[Dict
         except Exception:
             continue
         months = attrs.get("annualization_months") or integrity.get("annualization_months")
+        dropped_tail = False
         if isinstance(months, (int, float)) and 0 < months < 12 and len(vals) > 2:
-            vals = vals[:-1]
+            # cols is truncated WITH vals: the period the surviving figure was
+            # measured over has to travel with it, or a ratio built downstream
+            # would divide by the wrong column's revenue.
+            vals, cols = vals[:-1], cols[:-1]
+            dropped_tail = True
         if len(vals) < 2:
             continue
         scale = max((abs(v) for v in vals), default=0.0)
         prev, curr = vals[-2], vals[-1]
-        if scale <= 0 or abs(prev) < scale * 0.01:
+        if scale <= 0:
             continue
-        return {"revenue_growth_pct": (curr - prev) / abs(prev) * 100, "revenue_key": key}
+        # How long the surviving latest period covers. Dropping a partial tail
+        # leaves a full period behind; keeping one (only two periods, so there
+        # was nothing to fall back to) means the tail's own length stands.
+        period_months = (
+            float(months)
+            if not dropped_tail and isinstance(months, (int, float)) and 0 < months < 12
+            else 12.0
+        )
+        # Growth stays optional -- a base too small for a percentage to mean
+        # anything used to abandon the whole peer context, taking the revenue
+        # LEVEL with it. The level is what a ratio needs, and it is fine even
+        # when growth is not, so the two are now reported independently.
+        growth = (
+            (curr - prev) / abs(prev) * 100 if abs(prev) >= scale * 0.01 else None
+        )
+        return {
+            "revenue_growth_pct": growth,
+            "revenue_key": key,
+            "revenue_latest": curr,
+            "revenue_period": str(cols[-1]),
+            "revenue_months": period_months,
+        }
     return None
 
 
