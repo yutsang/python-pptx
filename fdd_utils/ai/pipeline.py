@@ -194,6 +194,55 @@ _ZERO_BALANCE_RE = re.compile(
 _ZERO_BALANCE_CHAR_RE = re.compile(r"(?:余额)?(?:合计)?为(?:人民币)?零\s*(?:元)?")
 
 
+# Databook working-note vocabulary that should never reach a deliverable.
+# 1:1 replacements only -- no deletion, so there is no way for this to lose a
+# fact the way the reverted enumeration dedupe did.
+_WORKPAPER_WORDS = (
+    (re.compile(r"checking(?=不平|不符|有差异)?"), "核对"),
+    (re.compile(r"tie[- ]?out"), "核对"),
+)
+
+# "根据备注" / "根据备注说明" cites the DATABOOK's remarks column. A deliverable
+# states the fact; the reader has no access to the working file and does not
+# care where it was written down.
+#
+# "根据管理层说明" / "管理层表示" are deliberately NOT here: a management
+# representation is a real, citable source in due diligence, and the prompts
+# explicitly ask for those to be kept.
+_SOURCE_META_RE = re.compile(r"(?:^|(?<=[。；;\n]))\s*根据备注(?:说明)?[，,、]\s*")
+
+# A negative retained-earnings balance reads as 未弥补亏损, not as a minus sign.
+# Anchored on the account name so it cannot touch an ordinary negative amount,
+# and it only ever rewrites the sign into words -- the figure is untouched.
+_NEGATIVE_RE_RE = re.compile(r"(未分配利润|留存收益)(为|是)(?:人民币)?-\s*([\d,]+(?:\.\d+)?)")
+
+# A zero amount does not need a magnitude unit. "0万元" is the arithmetic
+# showing through; every real report writes a bare 0 (or says 未发生, which the
+# rule below already handles where the sentence shape allows it).
+_ZERO_UNIT_RE = re.compile(r"(?<![\d.,])0\s*(?:万元|亿元)")
+
+
+def humanise_report_language(text: str) -> str:
+    """Fixed substitutions for phrasing a deliverable never uses.
+
+    Every rule here is a REPLACEMENT, never a deletion of content -- the one
+    exception being the "根据备注" lead-in, which is a citation of the working
+    file rather than a fact, and whose removal leaves the sentence intact.
+    That restraint is deliberate: the enumeration dedupe that did guess at
+    removable text deleted real figures on six accounts and was reverted
+    (see docs/failed-attempts.md).
+    """
+    body = str(text or "")
+    if not body:
+        return body
+    for pattern, replacement in _WORKPAPER_WORDS:
+        body = pattern.sub(replacement, body)
+    body = _SOURCE_META_RE.sub("", body)
+    body = _NEGATIVE_RE_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}未弥补亏损{m.group(3)}", body)
+    body = _ZERO_UNIT_RE.sub("0", body)
+    return body
+
+
 def humanise_zero_balance(text: str, statement_type: str = "") -> str:
     """Rewrite the mechanical zero-balance forms the deliverable never uses.
 
@@ -292,6 +341,7 @@ def _finalize_agent_content(
     # ignored. Neither touches an amount, so number-grounding is unaffected.
     if language != "Eng":
         content = humanise_zero_balance(content, statement_type)
+        content = humanise_report_language(content)
     if language == "Eng":
         content = polish_english_commentary(content)
     if agent_name == "subagent_4" and metadata:
