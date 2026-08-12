@@ -37,16 +37,18 @@ import hashlib
 import re
 import shutil
 import sys
+import time
 import zipfile
 from collections import defaultdict
 from pathlib import Path
 
 import openpyxl
+from openpyxl.utils import column_index_from_string
 
 # Bumped on every behaviour change.  Printed at the top of every run so a
 # report can be matched to the code that produced it -- two identical reports
 # from what were supposed to be different versions cost a full round trip.
-SCRIPT_VERSION = "2026-08-12.7"
+SCRIPT_VERSION = "2026-08-12.9"
 
 DEFAULT_SCALE = 0.8734
 
@@ -381,6 +383,29 @@ def scale_money_in_text(text: str, factor: float, hits: list[tuple[str, str]]) -
 # ------------------------------------------------------------------- scanning
 
 
+# Simple same-column SUM ranges are collected during the initial scan so that
+# verify() does not have to re-open the source workbook just to read formulas.
+SUM_RE = re.compile(r"^=SUM\(([A-Z]+)(\d+):([A-Z]+)(\d+)\)$", re.I)
+
+
+def iter_cells(ws):
+    """Iterate only the cells that actually exist.
+
+    iter_rows() walks the DECLARED dimension, not the used range, and a
+    hand-edited workbook inflates that badly: one stray format in a far cell
+    turned a 60-cell sheet into a 702,000-cell walk, 147x slower.  Worse, it
+    materialises an empty Cell object for every coordinate it touches, so
+    every later pass over the same sheet pays the inflated price too -- and
+    this file makes four passes.
+    """
+    return list(ws._cells.values())
+
+
+def sheet_bloat(ws) -> tuple[int, int]:
+    """(declared cell count, stored cell count) -- for reporting only."""
+    return ws.max_row * ws.max_column, len(ws._cells)
+
+
 def load_pair(src: Path):
     """Load twice: once for structure/formulas, once for cached results.
 
@@ -401,15 +426,21 @@ def scan_workbook(wb_f, wb_v) -> tuple[set[str], dict, dict]:
     names: set[str] = set()
     embedded: dict[str, str] = {}
     numeric_cols: dict = defaultdict(lambda: defaultdict(list))
+    sums: list = []
     stats = {"formula": 0, "stale": 0, "numeric": 0, "text": 0}
 
     for ws in wb_f.worksheets:
         ws_v = wb_v[ws.title]
-        for row in ws.iter_rows():
-            for cell in row:
+        for cell in iter_cells(ws):
                 v = cell.value
                 if isinstance(v, str) and v.startswith("="):
                     stats["formula"] += 1
+                    sm = SUM_RE.match(v.replace(" ", ""))
+                    if sm and sm.group(1).upper() == sm.group(3).upper():
+                        r1, r2 = int(sm.group(2)), int(sm.group(4))
+                        if 0 <= r2 - r1 <= 500:
+                            sums.append((ws.title, cell.coordinate,
+                                         sm.group(1).upper(), r1, r2))
                     cached = ws_v[cell.coordinate].value
                     if cached is None:
                         stats["stale"] += 1
@@ -429,7 +460,7 @@ def scan_workbook(wb_f, wb_v) -> tuple[set[str], dict, dict]:
                     numeric_cols[ws.title][cell.column_letter].append(float(v))
     for n in names:
         embedded.pop(n, None)
-    return names | set(embedded), embedded, numeric_cols, stats
+    return names | set(embedded), embedded, numeric_cols, sums, stats
 
 
 def detect_ratio_columns(numeric_cols) -> dict[str, set[str]]:
@@ -455,13 +486,29 @@ def detect_ratio_columns(numeric_cols) -> dict[str, set[str]]:
 # ------------------------------------------------------------------ transform
 
 
-def apply_replacements(text: str, ordered_pairs) -> tuple[str, list[str]]:
-    used: list[str] = []
-    for real, fake in ordered_pairs:
-        if real in text:
-            text = text.replace(real, fake)
-            used.append(real)
-    return text, used
+def build_replacer(mapping: dict):
+    """One alternation regex instead of one pass per name.
+
+    With ~160 names and tens of thousands of text cells, the per-name
+    str.replace loop is millions of scans of the same strings; a single
+    alternation walks each string once.  Longest first so a full name is
+    consumed before its own abbreviation can bite into it.
+    """
+    if not mapping:
+        return None
+    keys = sorted(mapping, key=len, reverse=True)
+    return re.compile("|".join(re.escape(k) for k in keys))
+
+
+def apply_replacements(text: str, pattern, mapping: dict, used: set) -> str:
+    if pattern is None:
+        return text
+
+    def repl(m):
+        used.add(m.group(0))
+        return mapping[m.group(0)]
+
+    return pattern.sub(repl, text)
 
 
 def main() -> int:
@@ -508,8 +555,24 @@ def main() -> int:
               f"openpyxl drops them from the demo file.")
 
     print("loading (twice: formulas + cached values)...")
+    t0 = time.time()
     wb_f, wb_v = load_pair(src)
-    real_names, embedded_names, numeric_cols, stats = scan_workbook(wb_f, wb_v)
+    print(f"  loaded in {time.time() - t0:.1f}s")
+    t0 = time.time()
+    real_names, embedded_names, numeric_cols, sum_ranges, stats = scan_workbook(wb_f, wb_v)
+    print(f"  scanned in {time.time() - t0:.1f}s")
+
+    bloat = []
+    for ws in wb_f.worksheets:
+        declared, stored = sheet_bloat(ws)
+        if stored and declared > stored * 20 and declared > 200_000:
+            bloat.append((ws.title, declared, stored))
+    if bloat:
+        bloat.sort(key=lambda x: -x[1])
+        print(f"  NOTE: {len(bloat)} sheet(s) declare a far bigger range than they use")
+        print(f"        (harmless now -- only cells that exist are visited):")
+        for name, dec, sto in bloat[:5]:
+            print(f"        {name}: declares {dec:,} cells, actually stores {sto:,}")
     ratio_cols = {} if args.no_ratio_detect else detect_ratio_columns(numeric_cols)
     name_map = build_name_map(real_names)
 
@@ -527,10 +590,10 @@ def main() -> int:
         old, new = spec.split("=", 1)
         extra_map[old] = new
 
-    # Longest first, so "上海某某贸易有限公司" is consumed before the "某某"
-    # abbreviation rule can chew a hole in the middle of it.
-    ordered_pairs = sorted({**name_map, **abbrev_map, **extra_map}.items(),
-                           key=lambda kv: len(kv[0]), reverse=True)
+    # Longest first (inside build_replacer), so "上海某某贸易有限公司" is
+    # consumed before the "某某" abbreviation rule can chew a hole in it.
+    all_map = {**name_map, **abbrev_map, **extra_map}
+    replacer = build_replacer(all_map)
 
     print(f"\n=== SOURCE: {src.name} ===")
     print(f"  sheets {len(wb_f.sheetnames)} | formulas {stats['formula']} "
@@ -572,18 +635,16 @@ def main() -> int:
     scaled = flattened = blanked = skipped_ratio = text_changed = 0
     money_hits: list[tuple[str, str]] = []
     names_hit: set[str] = set()
+    t_transform = time.time()
 
     def transform_text(s: str) -> str:
-        nonlocal names_hit
-        new, used = apply_replacements(s, ordered_pairs)
-        names_hit.update(used)
+        new = apply_replacements(s, replacer, all_map, names_hit)
         return scale_money_in_text(new, args.scale, money_hits)
 
     for ws in wb_f.worksheets:
         ws_v = wb_v[ws.title]
         sheet_ratio = ratio_cols.get(ws.title, set())
-        for row in ws.iter_rows():
-            for cell in row:
+        for cell in iter_cells(ws):
                 v = cell.value
                 if v is None or isinstance(v, bool):
                     continue
@@ -618,13 +679,12 @@ def main() -> int:
 
     renamed_sheets = []
     for ws in wb_f.worksheets:
-        new_title, _ = apply_replacements(ws.title, ordered_pairs)
-        new_title = new_title[:31]
+        new_title = apply_replacements(ws.title, replacer, all_map, set())[:31]
         if new_title != ws.title:
             renamed_sheets.append((ws.title, new_title))
             ws.title = new_title
 
-    print("\n--- transform ---")
+    print(f"\n--- transform (took {time.time() - t_transform:.1f}s) ---")
     print(f"  plain numbers scaled     : {scaled}")
     print(f"  formulas flattened       : {flattened}")
     print(f"  formulas blanked (stale) : {blanked}")
@@ -651,8 +711,9 @@ def main() -> int:
         backup = out.with_suffix(out.suffix + ".bak")
         shutil.copy2(out, backup)
         print(f"\n  existing output backed up to {backup.name}")
+    t0 = time.time()
     wb_f.save(out)
-    print(f"\n  written: {out}")
+    print(f"\n  written: {out}  (save took {time.time() - t0:.1f}s)")
 
     if args.emit_mapping:
         lines = ["# SENSITIVE - real -> fake mapping. Do NOT commit.", ""]
@@ -660,7 +721,7 @@ def main() -> int:
         Path(args.emit_mapping).write_text("\n".join(lines) + "\n", encoding="utf-8")
         print(f"  mapping written: {args.emit_mapping}  (SENSITIVE - do not commit)")
 
-    return verify(src, out, args.scale, name_map, extra_map, ratio_cols)
+    return verify(wb_v, sum_ranges, out, args.scale, name_map, extra_map, ratio_cols)
 
 
 # ------------------------------------------------------------------- inspect
@@ -791,8 +852,7 @@ def inspect_only(src: Path, wb_f, wb_v, real_names, embedded_names, ratio_cols,
 
     for ws in wb_f.worksheets:
         ws_v = wb_v[ws.title]
-        for row in ws.iter_rows():
-            for cell in row:
+        for cell in iter_cells(ws):
                 v = cell.value
                 if isinstance(v, str) and v.startswith("="):
                     cv = ws_v[cell.coordinate].value
@@ -889,58 +949,54 @@ def inspect_only(src: Path, wb_f, wb_v, real_names, embedded_names, ratio_cols,
 
 # -------------------------------------------------------------- verification
 
-SUM_RE = re.compile(r"^=SUM\(([A-Z]+)(\d+):([A-Z]+)(\d+)\)$", re.I)
-
-
-def verify_sums(wb_src_f, wb_out) -> tuple[int, int, list[str]]:
-    """Re-add every simple =SUM(range) from the source against the demo file.
+def verify_sums(sum_ranges, wb_out, sheet_map) -> tuple[int, int, list[str]]:
+    """Re-add every simple =SUM(range) collected from the source.
 
     This is the check that does NOT assume linearity, so it is the one that
     catches a ratio column wrongly left unscaled inside a summed range.
+    Ranges come from the initial scan, so the source is never reopened, and
+    cells are addressed numerically rather than by parsing "AB123".
     """
     checked = failed = 0
     detail: list[str] = []
-    out_by_name = {ws.title: ws for ws in wb_out.worksheets}
-    for i, ws in enumerate(wb_src_f.worksheets):
-        ws_o = out_by_name.get(ws.title) or wb_out.worksheets[i]
-        for row in ws.iter_rows():
-            for cell in row:
-                v = cell.value
-                if not isinstance(v, str) or not v.startswith("="):
-                    continue
-                m = SUM_RE.match(v.replace(" ", ""))
-                if not m or m.group(1).upper() != m.group(3).upper():
-                    continue
-                col, r1, r2 = m.group(1).upper(), int(m.group(2)), int(m.group(4))
-                if r2 < r1 or r2 - r1 > 500:
-                    continue
-                total = ws_o[cell.coordinate].value
-                if not isinstance(total, (int, float)) or isinstance(total, bool):
-                    continue
-                parts = []
-                for r in range(r1, r2 + 1):
-                    pv = ws_o[f"{col}{r}"].value
-                    if isinstance(pv, (int, float)) and not isinstance(pv, bool):
-                        parts.append(pv)
-                checked += 1
-                got = sum(parts)
-                if abs(got - total) > max(abs(total) * 1e-6, 1e-6):
-                    failed += 1
-                    if len(detail) < 8:
-                        detail.append(f"{ws.title}!{cell.coordinate}: cell={total!r} "
-                                      f"but SUM({col}{r1}:{col}{r2})={got!r}")
+    for sheet, coord, col, r1, r2 in sum_ranges:
+        ws_o = sheet_map.get(sheet)
+        if ws_o is None:
+            continue
+        ci = column_index_from_string(col)
+        total = ws_o[coord].value
+        if not isinstance(total, (int, float)) or isinstance(total, bool):
+            continue
+        got = 0.0
+        for r in range(r1, r2 + 1):
+            pv = ws_o.cell(row=r, column=ci).value
+            if isinstance(pv, (int, float)) and not isinstance(pv, bool):
+                got += pv
+        checked += 1
+        if abs(got - total) > max(abs(total) * 1e-6, 1e-6):
+            failed += 1
+            if len(detail) < 8:
+                detail.append(f"{sheet}!{coord}: cell={total!r} "
+                              f"but SUM({col}{r1}:{col}{r2})={got!r}")
     return checked, failed, detail
 
 
-def verify(src: Path, out: Path, factor: float, name_map, extra_map, ratio_cols) -> int:
-    """Two independent checks: linearity, then a real re-addition of subtotals."""
-    print("\n=== VERIFY ===")
-    wb_src_f = openpyxl.load_workbook(src, data_only=False)
-    wb_src_v = openpyxl.load_workbook(src, data_only=True)
-    wb_out = openpyxl.load_workbook(out, data_only=False)
+def verify(wb_src_v, sum_ranges, out: Path, factor: float,
+           name_map, extra_map, ratio_cols) -> int:
+    """Two independent checks: linearity, then a real re-addition of subtotals.
 
-    if len(wb_src_f.sheetnames) != len(wb_out.sheetnames):
-        print(f"  FAIL: sheet count {len(wb_src_f.sheetnames)} -> {len(wb_out.sheetnames)}")
+    The source is NOT reopened: the cached-value workbook is the one already
+    loaded (the transform only ever read from it), and the SUM ranges were
+    collected during the initial scan.  Reopening an 85-sheet workbook twice
+    more here was the single biggest cost in a full run.
+    """
+    print("\n=== VERIFY ===")
+    t0 = time.time()
+    wb_out = openpyxl.load_workbook(out, data_only=False)
+    print(f"  (reloaded output in {time.time() - t0:.1f}s)")
+
+    if len(wb_src_v.sheetnames) != len(wb_out.sheetnames):
+        print(f"  FAIL: sheet count {len(wb_src_v.sheetnames)} -> {len(wb_out.sheetnames)}")
         return 1
 
     checked = mismatches = 0
@@ -948,8 +1004,7 @@ def verify(src: Path, out: Path, factor: float, name_map, extra_map, ratio_cols)
     for i, s_name in enumerate(wb_src_v.sheetnames):
         ws_s, ws_o = wb_src_v[s_name], wb_out.worksheets[i]
         sheet_ratio = ratio_cols.get(s_name, set())
-        for row in ws_s.iter_rows():
-            for cell in row:
+        for cell in iter_cells(ws_s):
                 v = cell.value
                 if not isinstance(v, (int, float)) or isinstance(v, bool):
                     continue
@@ -970,7 +1025,9 @@ def verify(src: Path, out: Path, factor: float, name_map, extra_map, ratio_cols)
     print(f"  [1] linearity: {checked} value(s) checked, {mismatches} mismatch(es), "
           f"worst rel. error {worst:.2e}")
 
-    s_checked, s_failed, s_detail = verify_sums(wb_src_f, wb_out)
+    sheet_map = {name: wb_out.worksheets[i]
+                 for i, name in enumerate(wb_src_v.sheetnames)}
+    s_checked, s_failed, s_detail = verify_sums(sum_ranges, wb_out, sheet_map)
     print(f"  [2] subtotal re-addition: {s_checked} =SUM() range(s) re-added, "
           f"{s_failed} do NOT tie")
     for d in s_detail:
@@ -984,14 +1041,31 @@ def verify(src: Path, out: Path, factor: float, name_map, extra_map, ratio_cols)
 
     leaked = defaultdict(list)
     real_tokens = list(name_map) + list(extra_map)
+    leak_re = (re.compile("|".join(re.escape(x) for x in
+                                   sorted(real_tokens, key=len, reverse=True)))
+               if real_tokens else None)
+    brand_chars: set[str] = set()
+    for real in name_map:
+        _, brand, _ = split_company(real)
+        brand_chars.update(c for c in brand if CJK_RE.match(c))
+    residue_re = (re.compile("[" + re.escape("".join(sorted(brand_chars))) + "]")
+                  if brand_chars else None)
+    residue = defaultdict(list)
+
+    # One walk of the output, one regex per concern.  Scanning once per token
+    # meant tens of thousands of cells times ~160 tokens.
     for ws in wb_out.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                if not isinstance(cell.value, str):
+        for cell in iter_cells(ws):
+                val = cell.value
+                if not isinstance(val, str) or not val:
                     continue
-                for tok in real_tokens:
-                    if tok in cell.value:
-                        leaked[tok].append(f"{ws.title}!{cell.coordinate}")
+                where = f"{ws.title}!{cell.coordinate}"
+                if leak_re is not None:
+                    for m in leak_re.finditer(val):
+                        leaked[m.group(0)].append(where)
+                if residue_re is not None and len(val) >= 2:
+                    for ch in set(residue_re.findall(val)):
+                        residue[ch].append(where)
     if leaked:
         print(f"\n  FAIL: {len(leaked)} real name(s) still present in the output:")
         for tok, locs in list(leaked.items())[:10]:
@@ -999,22 +1073,9 @@ def verify(src: Path, out: Path, factor: float, name_map, extra_map, ratio_cols)
     else:
         print(f"  name leak: none of the {len(real_tokens)} mapped names survive.")
 
-    # Character-level residue: catches typo variants of a real brand
-    # (a one-character misspelling of a tenant) that literal substitution misses.
-    # A real workbook was found to carry exactly this.
-    brand_chars: set[str] = set()
-    for real in name_map:
-        _, brand, _ = split_company(real)
-        brand_chars.update(c for c in brand if CJK_RE.match(c))
-    residue = defaultdict(list)
-    for ws in wb_out.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                val = cell.value
-                if not isinstance(val, str) or len(val) < 2:
-                    continue
-                for ch in brand_chars.intersection(val):
-                    residue[ch].append(f"{ws.title}!{cell.coordinate}")
+    # Character-level residue (collected in the walk above): catches typo
+    # variants of a real brand that literal substitution misses.  A real
+    # workbook was found to carry exactly this.
     if residue:
         print(f"\n  REVIEW BY EYE: {len(residue)} character(s) from real brands still occur.")
         print("  Most are ordinary Chinese; look for a MISSPELT company name.")
