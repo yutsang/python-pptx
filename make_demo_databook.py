@@ -144,22 +144,33 @@ def strip_leading_noise(s: str) -> str:
     return s
 
 
+# Words that cannot appear inside a company name, so a greedy match spanning
+# one ("A有限公司是B有限公司") is cut back to the part after the last of them.
+# "和" is deliberately absent: it is common inside real brand names.
+CONNECTOR_RE = re.compile(r"[是為为及或由向至到从從等的，,。；;：:、\s]")
+
+
 def extract_embedded_names(s: str) -> list[str]:
     """Names inside a longer cell, e.g. "上海某某有限公司往来款".
 
     90 cells in one real workbook carry a tenant name with a trailing account
     word, which whole-cell matching cannot see -- and those names would
     otherwise never be masked anywhere.  Restricted to short cells and to
-    candidates that survive prefix-stripping, because a greedy match on a
-    sentence would happily swallow the verb in front of the company.
+    candidates that survive prefix- and connector-stripping, because a greedy
+    match on a sentence will otherwise swallow whatever sits in front of the
+    company, up to and including a second company name.
     """
     if len(s) > EMBEDDED_MAX_CELL_LEN:
         return []
     found = []
-    for m in EMBEDDED_NAME_RE.finditer(s):
-        cand = strip_leading_noise(strip_marks(m.group(0)))
-        if len(cand) >= 5 and cand not in GENERIC_NAMES and COMPANY_CELL_RE.match(cand):
-            found.append(cand)
+    # Split on connectors FIRST: "A公司、B公司" holds two real names, and
+    # trimming a greedy match back to the last connector would silently drop
+    # the first one.
+    for part in CONNECTOR_RE.split(s):
+        for m in EMBEDDED_NAME_RE.finditer(part):
+            cand = strip_leading_noise(strip_marks(m.group(0)))
+            if len(cand) >= 5 and cand not in GENERIC_NAMES and COMPANY_CELL_RE.match(cand):
+                found.append(cand)
     return found
 
 
@@ -369,7 +380,7 @@ def scan_workbook(wb_f, wb_v) -> tuple[set[str], dict, dict]:
     count too -- in a formula-heavy workbook that is most of the figures.
     """
     names: set[str] = set()
-    embedded: set[str] = set()
+    embedded: dict[str, str] = {}
     numeric_cols: dict = defaultdict(lambda: defaultdict(list))
     stats = {"formula": 0, "stale": 0, "numeric": 0, "text": 0}
 
@@ -392,12 +403,14 @@ def scan_workbook(wb_f, wb_v) -> tuple[set[str], dict, dict]:
                     if s not in GENERIC_NAMES and COMPANY_CELL_RE.match(s):
                         names.add(s)
                     else:
-                        embedded.update(extract_embedded_names(v.strip()))
+                        for e in extract_embedded_names(v.strip()):
+                            embedded.setdefault(e, v.strip())
                 elif isinstance(v, (int, float)) and not isinstance(v, bool):
                     stats["numeric"] += 1
                     numeric_cols[ws.title][cell.column_letter].append(float(v))
-    embedded -= names
-    return names | embedded, embedded, numeric_cols, stats
+    for n in names:
+        embedded.pop(n, None)
+    return names | set(embedded), embedded, numeric_cols, stats
 
 
 def detect_ratio_columns(numeric_cols) -> dict[str, set[str]]:
@@ -659,15 +672,41 @@ def redact(s: str) -> str:
     return "".join(out)
 
 
+# Units that carry no client information, so they can be shown unredacted.
+# Anything else gets redacted: such a "unit" is really a fragment of real
+# text, and this section used to print those verbatim into the shareable half
+# of the report.
+SAFE_UNITS = set(MONEY_UNITS) | {
+    "%", "年", "月", "日", "天", "个", "个月", "套", "间", "栋", "层", "库",
+    "号", "平", "米", "平米", "平方米", "㎡", "吨", "度", "台", "辆", "人",
+    "户", "份", "次", "小时", "工作日", "季度", "期", "笔", "张", "块",
+    "M", "F", "Q", "W", "K", "k", "m", "w", "q", "H", "D", "Y",
+}
+
+
+def _tail_is_vocabulary(tail: str) -> bool:
+    """True only if the tail is built purely from the known word lists.
+
+    A correctly parsed tail is industry + suffix + place, all of which are
+    generic. A MIS-parsed one carries real text ("有限公司是上海某某…"), and
+    printing that verbatim would leak the very name being masked.
+    """
+    rest = tail
+    for word in COMPANY_SUFFIXES + INDUSTRY_TAILS + PLACE_PREFIXES:
+        rest = rest.replace(word, "")
+    return not rest.strip("（）() 、·")
+
+
 def redact_company(name: str, name_map: dict) -> str:
     """Show the parse, using the actual generated fake as the visible brand."""
     prefix, brand, tail = split_company(name)
     fake = name_map.get(name, "")
     _, fake_core, _ = split_company(fake) if fake else ("", "?" * len(brand), "")
+    shown_tail = tail if _tail_is_vocabulary(tail) else redact(tail) + " ←解析失敗,已遮罩"
     warn = brand_warning(name)
     return (f"[地名:{prefix or '—'}]"
             f"[商號:{fake_core or '!!空!!'}({effective_brand_len(brand)}字)]"
-            f"[尾:{tail or '!!無!!'}]"
+            f"[尾:{shown_tail or '!!無!!'}]"
             + (f"   ⚠ {warn}" if warn else ""))
 
 
@@ -738,7 +777,8 @@ def inspect_only(src: Path, wb_f, wb_v, real_names, embedded_names, ratio_cols,
                         short_cn[s] += 1
                     stripped = strip_marks(s)
                     if (stripped not in real_names and stripped not in GENERIC_NAMES
-                            and any(suf in s for suf in COMPANY_SUFFIXES)):
+                            and any(suf in s for suf in COMPANY_SUFFIXES)
+                            and not extract_embedded_names(s)):
                         near_miss.append((f"{ws.title}!{cell.coordinate}", s,
                                           why_not_company(stripped)))
                     for m in NUM_UNIT_PROBE.finditer(s):
@@ -765,8 +805,9 @@ def inspect_only(src: Path, wb_f, wb_v, real_names, embedded_names, ratio_cols,
     emit(f"\n--- names EXTRACTED FROM INSIDE a longer cell: {len(embedded_names)} ---")
     emit("    CHECK THESE: a wrong cut here renames part of an account label.")
     for n in sorted(embedded_names):
-        emit(f"   {n}   ->   {name_map.get(n, '(不變)')}",
-             f"   {redact_company(n, name_map)}")
+        src = embedded_names[n]
+        emit(f"   {n}   ->   {name_map.get(n, '(不變)')}\n        from cell: {src[:60]}",
+             f"   {redact_company(n, name_map)}\n        來源cell長度={len(src)}: {redact(src[:50])}")
 
     by_reason: dict[str, list] = defaultdict(list)
     for loc, s, reason in near_miss:
@@ -783,8 +824,11 @@ def inspect_only(src: Path, wb_f, wb_v, real_names, embedded_names, ratio_cols,
             emit(f"      ... and {len(items) - 8} more")
 
     emit(f"\n--- number+unit tokens (does the money regex cover them?) ---")
+    emit("    non-vocabulary 'units' are fragments of real text and are redacted here")
     for unit, count in sorted(money_units.items(), key=lambda kv: -kv[1])[:30]:
-        emit(f"   '{unit}' x{count}   [{'SCALED' if unit in MONEY_UNITS else 'not scaled'}]")
+        tag = "SCALED" if unit in MONEY_UNITS else "not scaled"
+        emit(f"   '{unit}' x{count}   [{tag}]",
+             f"   '{unit if unit in SAFE_UNITS else redact(unit)}' x{count}   [{tag}]")
     emit(f"   money regex matches {len(money_samples)} token(s); samples:")
     emit(f"      {', '.join(money_samples[:15])}",
          f"      {', '.join(redact(m) for m in money_samples[:15])}")
