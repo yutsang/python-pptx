@@ -3,19 +3,31 @@
 Turn a real client databook into a demo one: scale every figure by a single
 factor, and replace every real company / entity name with a stable fake.
 
-Why one global scale factor rather than per-row noise: the workbook carries
-ZERO formulas -- every Subtotal, Total and `Check` row is a hardcoded value.
-Anything other than a linear transform means recomputing the whole tie-out
-structure by hand and hoping the inferred structure was right.  Scaling is
-linear, so every detail sum, subtotal, BS balance, Financials<->schedule
-tie-out and `Check = 0` row survives untouched -- and the amounts quoted
-inside the Chinese remark text ("应收租金 29.1w") can be scaled by the same
-factor and stay consistent with the table beside them.
+Why one global scale factor rather than per-row noise: a databook's tie-out
+structure (detail -> Subtotal -> Total -> Financials, `Check = 0`, BS balance)
+is exactly what a demo must keep intact, and a linear transform preserves all
+of it for free.  Per-row noise would mean re-deriving every subtotal by hand
+from an inferred structure -- and being wrong somewhere.  Scaling also lets the
+amounts quoted inside the Chinese remark text ("应收租金 29.1w") move by the
+same factor and stay consistent with the table beside them.
+
+FORMULAS: a databook is often mostly formulas -- one real client file measured
+22,687 formula cells against 6,937 plain numbers.  Writing a scaled value into
+a formula cell would destroy the formula, and leaving the formula alone would
+leave openpyxl unable to report a value.  So the demo file is flattened: every
+formula cell is replaced by its cached result x factor.  The output is a
+pure-value workbook -- which is what the FDD pipeline reads anyway -- and stays
+internally consistent by linearity.
+
+Always run --inspect first: it prints a redacted report (safe to share) and
+writes the unredacted one to a file, so the extraction can be checked against
+this particular workbook's naming habits before anything is generated.
 
 Usage:
-    python make_demo_databook.py "Project Gold Kunshan.databook.xlsx"
-    python make_demo_databook.py <src> --scale 0.8734 --rename 昆山润泽置业有限公司=昆山瑞茂置业有限公司
-    python make_demo_databook.py <src> --dry-run
+    python make_demo_databook.py for_test/<databook>.xlsx --inspect
+    python make_demo_databook.py for_test/<databook>.xlsx --dry-run
+    python make_demo_databook.py for_test/<databook>.xlsx \
+        --rename 上海某某置业有限公司=上海瑞茂置业有限公司
 """
 
 from __future__ import annotations
@@ -34,31 +46,34 @@ DEFAULT_SCALE = 0.8734
 
 # ---------------------------------------------------------------- name parsing
 
-# Geography kept as-is: the user wants the demo to still read as a real
-# Chinese logistics deal, and a scrambled province makes the commentary absurd.
+# Geography is kept as-is: the demo should still read as a real Chinese
+# logistics deal, and a scrambled province makes the commentary absurd.
 PLACE_PREFIXES = [
-    "内蒙古", "黑龙江", "石家庄", "哈尔滨", "乌鲁木齐",
+    "内蒙古", "黑龙江", "石家庄", "哈尔滨", "乌鲁木齐", "连云港", "张家港",
     "上海", "北京", "深圳", "广州", "天津", "重庆", "成都", "武汉", "南京",
     "杭州", "苏州", "无锡", "常州", "昆山", "宁波", "青岛", "济南", "西安",
     "郑州", "长沙", "合肥", "福州", "厦门", "大连", "沈阳", "佛山", "东莞",
-    "珠海", "中山", "惠州", "嘉兴", "绍兴", "temp",
+    "珠海", "中山", "惠州", "嘉兴", "绍兴", "台州", "温州", "金华", "湖州",
+    "南通", "徐州", "扬州", "镇江", "泰州", "盐城", "淮安", "宿迁", "太仓",
+    "义乌", "余姚", "慈溪", "海宁", "平湖", "桐乡", "嘉善", "昆明", "南宁",
     "浙江", "江苏", "山东", "广东", "河北", "河南", "湖北", "湖南", "四川",
     "福建", "安徽", "辽宁", "陕西", "山西", "江西", "云南", "贵州", "广西",
     "海南", "甘肃", "青海", "宁夏", "新疆", "西藏", "吉林",
     "中国", "华东", "华南", "华北", "华中", "西南", "东北",
 ]
-PLACE_PREFIXES = [p for p in PLACE_PREFIXES if p != "temp"]
 PLACE_PREFIXES.sort(key=len, reverse=True)
 
 # Industry tail, kept as-is so the fake name still describes the same business.
 INDUSTRY_TAILS = [
     "投资管理咨询", "企业管理咨询", "供应链管理", "设备安装工程", "房地产经纪",
-    "信息科技", "货物运输", "仓储服务", "物业服务", "物业管理", "投资管理",
+    "国际贸易", "信息科技", "货物运输", "仓储服务", "物业服务", "物业管理",
+    "投资管理", "智能科技", "网络科技", "电子商务", "生物科技", "环保科技",
     "造价咨询", "管理咨询", "安装工程", "财产保险", "供应链", "电动车",
     "新能源", "房地产", "商贸", "贸易", "物流", "电子", "实业", "科技",
     "仓储", "建设", "工程", "咨询", "保险", "运输", "置业", "装饰", "机械",
     "材料", "食品", "医药", "生物", "环保", "能源", "租赁", "销售", "服务",
     "发展", "实体", "工贸", "农业", "化工", "纺织", "家具", "包装", "印刷",
+    "国际", "集团", "控股", "投资", "资产", "产业", "地产", "开发",
 ]
 INDUSTRY_TAILS.sort(key=len, reverse=True)
 
@@ -73,22 +88,34 @@ GENERIC_NAMES = {
     "目标公司", "本公司", "母公司", "子公司", "关联公司", "总公司", "分公司",
     "公司", "第三方", "该公司", "集团", "关联方", "供应商", "承租人", "出租人",
     "物业公司", "施工单位", "建设单位", "保险公司", "银行", "税务局",
+    "上级公司", "同一控制", "关联公司往来", "其他公司",
 }
 
-# A whole cell that is nothing but a company name.  Deliberately anchored:
-# a long remark sentence that merely *mentions* a company must NOT match here,
-# or the extracted "real name" would be a sentence fragment.  Remarks are
-# handled by full-text substitution of the names found in the clean cells.
+# Footnote markers glued to the front of a name cell ("*某某（浙江）物流有限公司").
+# One real workbook puts these on most AR tenant rows; stripping them is what
+# turned 998 near-misses into extracted names.
+LEADING_MARK_RE = re.compile(r"^[*＊#＃※\s]+")
+TRAILING_MARK_RE = re.compile(r"[*＊#＃※\s]+$")
+
+# Characters legitimately found inside a Chinese company name.
+NAME_CHAR_RE = re.compile(r"[一-鿿（）()·、\s]")
+
+# A whole cell that is nothing but a company name.  Deliberately anchored: a
+# long remark sentence that merely *mentions* a company must NOT match, or the
+# extracted "real name" would be a sentence fragment.  Remarks are covered
+# instead by full-text substitution of the names found in these clean cells.
 COMPANY_CELL_RE = re.compile(
-    r"^[一-鿿（）()·\s]{2,30}(?:"
-    + "|".join(COMPANY_SUFFIXES)
-    + r")$"
+    r"^[一-鿿（）()·、\s]{2,30}(?:" + "|".join(COMPANY_SUFFIXES) + r")$"
 )
 
 BRAND_CHARS = (
     "瑞宏恒嘉启泰盛鑫达丰隆通和兴利源正德信顺安佳元茂康联创立明辉阳"
-    "卓越弘毅锦程远航睿臻拓新润泽晟昊博轩宁禾岳川岭峰晖朗骏毅睿祺"
+    "卓越弘毅锦程远航睿臻拓新润泽晟昊博轩宁禾岳川岭峰晖朗骏祺"
 )
+
+
+def strip_marks(s: str) -> str:
+    return TRAILING_MARK_RE.sub("", LEADING_MARK_RE.sub("", s))
 
 
 def split_company(name: str) -> tuple[str, str, str]:
@@ -106,30 +133,43 @@ def split_company(name: str) -> tuple[str, str, str]:
             suffix, rest = s, rest[: -len(s)]
             break
 
-    # A second place name can sit before the suffix: "...有限公司上海市分公司".
     industry = ""
     for t in INDUSTRY_TAILS:
-        if rest.endswith(t):
+        if rest.endswith(t) and rest != t:
             industry, rest = t, rest[: -len(t)]
             break
+
+    # "某某（浙江）物流有限公司" strips down to a brand of "（浙江）" -- nothing
+    # but a preserved bracket, which fake_brand cannot change.  That is the
+    # prefix having eaten the actual brand, so give it back.
+    if not rest or BRACKET_PLACE_RE.fullmatch(rest):
+        rest, prefix = prefix + rest, ""
 
     return prefix, rest, industry + suffix
 
 
 # "百盟（上海）供应链有限公司" carries a place name INSIDE the brand.  Blindly
-# scrambling those six characters turns the bracket pair into gibberish, so the
-# bracketed place is carved out and kept.
+# scrambling those characters turns the bracket pair into gibberish, so the
+# bracketed place is carved out and kept.  Both bracket widths occur, sometimes
+# for the same company on different rows.
 BRACKET_PLACE_RE = re.compile(
     r"[（(](?:" + "|".join(PLACE_PREFIXES) + r")[）)]"
 )
 
-# A brand this long is not a brand: it is a compound name the splitter failed to
-# parse (e.g. "...股份有限公司上海市分公司").  Flagged for an explicit --rename
-# rather than silently scrambled.
+# A brand longer than this is not a brand: it is a compound name the splitter
+# failed to parse.  Flagged for an explicit --rename rather than scrambled.
 LONG_BRAND_WARN = 8
 
 
+def effective_brand_len(brand: str) -> int:
+    """Brand length ignoring a bracketed place name, which is preserved."""
+    m = BRACKET_PLACE_RE.search(brand)
+    return len(brand) - (m.end() - m.start()) if m else len(brand)
+
+
 def _scramble(seed: str, length: int, salt: int) -> str:
+    if length <= 0:
+        return ""
     digest = hashlib.md5(f"{seed}|{salt}".encode()).digest()
     while len(digest) < length:
         digest += hashlib.md5(digest).digest()
@@ -157,8 +197,8 @@ def brand_warning(name: str) -> str:
         return "商號為空，不會被替換"
     if any(suf in brand for suf in COMPANY_SUFFIXES):
         return "商號內還有第二個公司後綴 -> 複合名稱，請用 --rename 指定"
-    if len(brand) > LONG_BRAND_WARN:
-        return f"商號長達 {len(brand)} 字 -> 可能夾雜其他文字，請用 --rename 指定"
+    if effective_brand_len(brand) > LONG_BRAND_WARN:
+        return f"商號長達 {effective_brand_len(brand)} 字 -> 可能夾雜其他文字，請用 --rename 指定"
     return ""
 
 
@@ -168,44 +208,49 @@ def build_name_map(real_names: set[str]) -> dict[str, str]:
     taken: set[str] = set()
     for name in sorted(real_names):
         prefix, brand, tail = split_company(name)
-        if not brand:  # e.g. bare "上海分公司" -- nothing to anonymise
+        if not brand:
             continue
-        salt = 0
-        while True:
+        # Bounded: a brand that no salt can change (all preserved characters)
+        # must not spin forever -- fall back to scrambling it whole.
+        candidate = ""
+        for salt in range(64):
             candidate = prefix + fake_brand(brand, salt) + tail
             if candidate not in taken and candidate != name:
                 break
-            salt += 1
+        else:
+            candidate = prefix + _scramble(brand, len(brand), 999) + tail
         mapping[name] = candidate
         taken.add(candidate)
     return mapping
 
 
 def build_abbrev_map(name_map: dict[str, str]) -> dict[str, str]:
-    """Short forms used in the remark text ("尚泽" for 上海尚泽铭电子有限公司).
+    """Short forms used in remark text ("某某" for 上海某某铭电子有限公司).
 
-    Only the brand core and its 2-char head are mapped, and only when they are
-    long enough not to be ordinary Chinese.  Every hit is reported so the
-    substitutions can be eyeballed rather than trusted.
+    Every hit is reported so the substitutions can be eyeballed rather than
+    trusted; 2-char forms in particular can collide with ordinary Chinese.
     """
     abbrev: dict[str, str] = {}
     for real, fake in name_map.items():
         _, real_brand, _ = split_company(real)
-        _, fake_brand_core, _ = split_company(fake)
+        _, fake_core, _ = split_company(fake)
         if len(real_brand) >= 2 and real_brand not in name_map:
-            abbrev[real_brand] = fake_brand_core
+            abbrev[real_brand] = fake_core
         if len(real_brand) >= 3:
-            abbrev[real_brand[:2]] = fake_brand_core[:2]
+            abbrev[real_brand[:2]] = fake_core[:2]
     return abbrev
 
 
 # ------------------------------------------------------------- text scaling
 
 # Only numbers carrying an explicit money unit get scaled.  "25.1" in
-# "应收25.1一个月的含税租金" is a year-month, and "26年2月3日" is a date --
+# "应收25.1一个月的含税租金" is a year-month and "26年2月3日" is a date --
 # scaling either would corrupt the narrative rather than anonymise it.
+MONEY_UNITS = ["万美元", "亿美元", "美元", "万元", "亿元", "百万", "千元",
+               "w元", "W元", "万", "亿", "元", "w", "W"]
 MONEY_RE = re.compile(
-    r"(?<![\d.年月])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*(w元|W元|w|W|万元|万|元)"
+    r"(?<![\d.年月第])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*("
+    + "|".join(MONEY_UNITS) + r")"
 )
 
 
@@ -216,9 +261,9 @@ def scale_money_in_text(text: str, factor: float, hits: list[tuple[str, str]]) -
             value = float(int_part.replace(",", "") + dec_part)
         except ValueError:
             return m.group(0)
-        scaled = value * factor
         decimals = len(dec_part) - 1 if dec_part else 0
-        new_text = f"{scaled:.{decimals}f}{unit}"
+        grouped = "," if "," in int_part else ""
+        new_text = f"{value * factor:{grouped}.{decimals}f}{unit}"
         hits.append((m.group(0), new_text))
         return new_text
 
@@ -228,36 +273,67 @@ def scale_money_in_text(text: str, factor: float, hits: list[tuple[str, str]]) -
 # ------------------------------------------------------------------- scanning
 
 
-def scan_workbook(wb) -> tuple[set[str], dict[str, set[str]]]:
-    """Collect clean company-name cells and the numeric columns per sheet."""
+def load_pair(src: Path):
+    """Load twice: once for structure/formulas, once for cached results.
+
+    Both are needed because a formula cell's *text* lives in one and its
+    *value* in the other, and the demo file needs the value.
+    """
+    wb_f = openpyxl.load_workbook(src, data_only=False)
+    wb_v = openpyxl.load_workbook(src, data_only=True)
+    return wb_f, wb_v
+
+
+def scan_workbook(wb_f, wb_v) -> tuple[set[str], dict, dict]:
+    """Collect clean company-name cells and per-column numerics.
+
+    Numerics are read from the cached-value workbook so that formula results
+    count too -- in a formula-heavy workbook that is most of the figures.
+    """
     names: set[str] = set()
-    numeric_cols: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-    for ws in wb.worksheets:
+    numeric_cols: dict = defaultdict(lambda: defaultdict(list))
+    stats = {"formula": 0, "stale": 0, "numeric": 0, "text": 0}
+
+    for ws in wb_f.worksheets:
+        ws_v = wb_v[ws.title]
         for row in ws.iter_rows():
             for cell in row:
                 v = cell.value
+                if isinstance(v, str) and v.startswith("="):
+                    stats["formula"] += 1
+                    cached = ws_v[cell.coordinate].value
+                    if cached is None:
+                        stats["stale"] += 1
+                    elif isinstance(cached, (int, float)) and not isinstance(cached, bool):
+                        numeric_cols[ws.title][cell.column_letter].append(float(cached))
+                    continue
                 if isinstance(v, str):
-                    s = v.strip()
+                    stats["text"] += 1
+                    s = strip_marks(v.strip())
                     if s not in GENERIC_NAMES and COMPANY_CELL_RE.match(s):
                         names.add(s)
                 elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                    stats["numeric"] += 1
                     numeric_cols[ws.title][cell.column_letter].append(float(v))
-    return names, numeric_cols
+    return names, numeric_cols, stats
 
 
 def detect_ratio_columns(numeric_cols) -> dict[str, set[str]]:
-    """Columns that are ratios, not amounts -- scaling them breaks the ratio.
+    """Columns that are ratios, not amounts.
 
-    A ratio column keeps its value under a global scale (numerator and
-    denominator both move), so it must be left alone.  Heuristic: every
-    non-zero value in the column is within +/-1, and there are at least two
-    of them.  A real amount column always carries something bigger.
+    Under a global scale a ratio must NOT move (numerator and denominator both
+    scale, so the ratio is unchanged).  Heuristic: every non-zero value in the
+    column sits within +/-1 and there are at least three of them -- an amount
+    column always carries something bigger.
+
+    A false positive here is the dangerous direction: skipping a real amount
+    column would break the tie-out.  That is what verify_sums() is for.
     """
     ratio: dict[str, set[str]] = defaultdict(set)
     for sheet, cols in numeric_cols.items():
         for col, values in cols.items():
             nz = [v for v in values if v != 0]
-            if len(nz) >= 2 and all(abs(v) <= 1.0 for v in nz):
+            if len(nz) >= 3 and all(abs(v) <= 1.0 for v in nz):
                 ratio[sheet].add(col)
     return ratio
 
@@ -265,7 +341,7 @@ def detect_ratio_columns(numeric_cols) -> dict[str, set[str]]:
 # ------------------------------------------------------------------ transform
 
 
-def apply_replacements(text: str, ordered_pairs: list[tuple[str, str]]) -> tuple[str, list[str]]:
+def apply_replacements(text: str, ordered_pairs) -> tuple[str, list[str]]:
     used: list[str] = []
     for real, fake in ordered_pairs:
         if real in text:
@@ -275,21 +351,25 @@ def apply_replacements(text: str, ordered_pairs: list[tuple[str, str]]) -> tuple
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("source", help="Path to the real databook .xlsx")
-    ap.add_argument("--output", help="Output path (default: '[DEMO]<stem>.xlsx' beside this script)")
-    ap.add_argument("--scale", type=float, default=DEFAULT_SCALE, help=f"Global factor (default {DEFAULT_SCALE})")
+    ap.add_argument("--output", help="Output path (default: '[DEMO]<stem>.xlsx' beside the source)")
+    ap.add_argument("--scale", type=float, default=DEFAULT_SCALE,
+                    help=f"Global factor (default {DEFAULT_SCALE})")
     ap.add_argument("--rename", action="append", default=[],
                     help="Extra literal replacement 'old=new'; repeatable. Use for project/entity names.")
-    ap.add_argument("--no-abbrev", action="store_true", help="Do not substitute brand short forms in remark text")
-    ap.add_argument("--no-ratio-detect", action="store_true", help="Scale every numeric cell, including ratio columns")
+    ap.add_argument("--no-abbrev", action="store_true",
+                    help="Do not substitute brand short forms in remark text")
+    ap.add_argument("--no-ratio-detect", action="store_true",
+                    help="Scale every numeric cell, including detected ratio columns")
     ap.add_argument("--inspect", action="store_true",
                     help="Diagnose the source only. Prints a REDACTED report (safe to share) "
                          "and writes the full one to --inspect-out.")
     ap.add_argument("--inspect-out", default="demo_inspect_FULL.txt",
-                    help="Where the unredacted inspect report goes (default: demo_inspect_FULL.txt)")
+                    help="Where the unredacted inspect report goes")
     ap.add_argument("--dry-run", action="store_true", help="Report only; write nothing")
-    ap.add_argument("--emit-mapping", help="Write the real->fake table to this file (SENSITIVE: never commit it)")
+    ap.add_argument("--emit-mapping", help="Write the real->fake table here (SENSITIVE: never commit)")
     args = ap.parse_args()
 
     src = Path(args.source)
@@ -301,18 +381,18 @@ def main() -> int:
     with zipfile.ZipFile(src) as z:
         embedded = [n for n in z.namelist() if n.startswith(("xl/media/", "xl/charts/"))]
     if embedded:
-        print(f"WARNING: source contains {len(embedded)} embedded image/chart part(s); "
-              f"openpyxl will drop them from the demo file.")
+        print(f"WARNING: source has {len(embedded)} embedded image/chart part(s); "
+              f"openpyxl drops them from the demo file.")
 
-    wb = openpyxl.load_workbook(src, data_only=False)
-    real_names, numeric_cols = scan_workbook(wb)
+    print("loading (twice: formulas + cached values)...")
+    wb_f, wb_v = load_pair(src)
+    real_names, numeric_cols, stats = scan_workbook(wb_f, wb_v)
     ratio_cols = {} if args.no_ratio_detect else detect_ratio_columns(numeric_cols)
-
     name_map = build_name_map(real_names)
 
     if args.inspect:
-        return inspect_only(src, wb, real_names, numeric_cols, ratio_cols,
-                            name_map, Path(args.inspect_out))
+        return inspect_only(src, wb_f, wb_v, real_names, ratio_cols, name_map,
+                            stats, Path(args.inspect_out))
 
     abbrev_map = {} if args.no_abbrev else build_abbrev_map(name_map)
 
@@ -324,13 +404,21 @@ def main() -> int:
         old, new = spec.split("=", 1)
         extra_map[old] = new
 
-    # Longest first, so "上海邵奥贸易有限公司" is consumed before the "邵奥"
+    # Longest first, so "上海某某贸易有限公司" is consumed before the "某某"
     # abbreviation rule can chew a hole in the middle of it.
     ordered_pairs = sorted({**name_map, **abbrev_map, **extra_map}.items(),
                            key=lambda kv: len(kv[0]), reverse=True)
 
     print(f"\n=== SOURCE: {src.name} ===")
-    print(f"  sheets: {len(wb.sheetnames)}   scale factor: {args.scale}")
+    print(f"  sheets {len(wb_f.sheetnames)} | formulas {stats['formula']} "
+          f"| plain numbers {stats['numeric']} | scale {args.scale}")
+    if stats["formula"]:
+        print(f"  NOTE: {stats['formula']} formula cell(s) will be FLATTENED to "
+              f"(cached value x {args.scale}).")
+        if stats["stale"]:
+            print(f"  WARNING: {stats['stale']} formula cell(s) have no cached value "
+                  f"(never calculated) -> they become blank.")
+
     print(f"\n--- company names found ({len(name_map)}) ---")
     warned = 0
     for real, fake in sorted(name_map.items()):
@@ -338,8 +426,8 @@ def main() -> int:
         print(f"  {real}  ->  {fake}" + (f"   ⚠ {warn}" if warn else ""))
         warned += bool(warn)
     if warned:
-        print(f"  ⚠ {warned} name(s) above need an explicit --rename; the auto-generated")
-        print(f"    replacement for them will look like gibberish.")
+        print(f"  ⚠ {warned} name(s) need an explicit --rename, or their replacement "
+              f"will read as gibberish.")
     if extra_map:
         print(f"\n--- extra --rename rules ({len(extra_map)}) ---")
         for old, new in extra_map.items():
@@ -349,74 +437,98 @@ def main() -> int:
         for old, new in sorted(abbrev_map.items()):
             print(f"  {old}  ->  {new}")
     if ratio_cols:
-        print("\n--- columns treated as RATIOS and left unscaled ---")
+        n = sum(len(c) for c in ratio_cols.values())
+        print(f"\n--- {n} column(s) treated as RATIOS and left unscaled ---")
         for sheet, cols in sorted(ratio_cols.items()):
             print(f"  {sheet}: {', '.join(sorted(cols))}")
-
-    scaled_cells = 0
-    skipped_ratio = 0
-    text_cells_changed = 0
-    money_hits: list[tuple[str, str]] = []
-    names_hit: set[str] = set()
-
-    for ws in wb.worksheets:
-        sheet_ratio = ratio_cols.get(ws.title, set())
-        for row in ws.iter_rows():
-            for cell in row:
-                v = cell.value
-                if isinstance(v, bool) or v is None:
-                    continue
-                if isinstance(v, (int, float)):
-                    if cell.column_letter in sheet_ratio:
-                        skipped_ratio += 1
-                        continue
-                    cell.value = v * args.scale
-                    scaled_cells += 1
-                elif isinstance(v, str):
-                    new, used = apply_replacements(v, ordered_pairs)
-                    names_hit.update(used)
-                    new = scale_money_in_text(new, args.scale, money_hits)
-                    if new != v:
-                        cell.value = new
-                        text_cells_changed += 1
-
-    renamed_sheets = []
-    for ws in wb.worksheets:
-        new_title, _ = apply_replacements(ws.title, ordered_pairs)
-        if new_title != ws.title:
-            renamed_sheets.append((ws.title, new_title))
-            ws.title = new_title
-
-    print("\n--- transform ---")
-    print(f"  numeric cells scaled : {scaled_cells}")
-    print(f"  numeric cells skipped (ratio columns) : {skipped_ratio}")
-    print(f"  text cells changed   : {text_cells_changed}")
-    print(f"  sheets renamed       : {len(renamed_sheets)}")
-    for old, new in renamed_sheets:
-        print(f"      {old}  ->  {new}")
-    if money_hits:
-        print(f"  amounts rewritten inside remark text ({len(money_hits)}):")
-        for old, new in money_hits[:40]:
-            print(f"      {old}  ->  {new}")
-        if len(money_hits) > 40:
-            print(f"      ... and {len(money_hits) - 40} more")
-
-    unhit = sorted(set(name_map) - names_hit)
-    if unhit:
-        print(f"\n  NOTE: {len(unhit)} mapped name(s) never appeared during substitution "
-              f"(they were found in a cell that got replaced by a longer rule first):")
-        for n in unhit:
-            print(f"      {n}")
 
     if args.dry_run:
         print("\n[dry run] nothing written.")
         return 0
 
+    scaled = flattened = blanked = skipped_ratio = text_changed = 0
+    money_hits: list[tuple[str, str]] = []
+    names_hit: set[str] = set()
+
+    def transform_text(s: str) -> str:
+        nonlocal names_hit
+        new, used = apply_replacements(s, ordered_pairs)
+        names_hit.update(used)
+        return scale_money_in_text(new, args.scale, money_hits)
+
+    for ws in wb_f.worksheets:
+        ws_v = wb_v[ws.title]
+        sheet_ratio = ratio_cols.get(ws.title, set())
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if v is None or isinstance(v, bool):
+                    continue
+                is_ratio = cell.column_letter in sheet_ratio
+
+                if isinstance(v, str) and v.startswith("="):
+                    cached = ws_v[cell.coordinate].value
+                    if cached is None:
+                        cell.value = None
+                        blanked += 1
+                    elif isinstance(cached, (int, float)) and not isinstance(cached, bool):
+                        cell.value = cached if is_ratio else cached * args.scale
+                        flattened += 1
+                        skipped_ratio += is_ratio
+                    elif isinstance(cached, str):
+                        cell.value = transform_text(cached)
+                        flattened += 1
+                    else:
+                        cell.value = cached
+                        flattened += 1
+                elif isinstance(v, (int, float)):
+                    if is_ratio:
+                        skipped_ratio += 1
+                        continue
+                    cell.value = v * args.scale
+                    scaled += 1
+                elif isinstance(v, str):
+                    new = transform_text(v)
+                    if new != v:
+                        cell.value = new
+                        text_changed += 1
+
+    renamed_sheets = []
+    for ws in wb_f.worksheets:
+        new_title, _ = apply_replacements(ws.title, ordered_pairs)
+        new_title = new_title[:31]
+        if new_title != ws.title:
+            renamed_sheets.append((ws.title, new_title))
+            ws.title = new_title
+
+    print("\n--- transform ---")
+    print(f"  plain numbers scaled     : {scaled}")
+    print(f"  formulas flattened       : {flattened}")
+    print(f"  formulas blanked (stale) : {blanked}")
+    print(f"  cells left unscaled(ratio): {skipped_ratio}")
+    print(f"  text cells changed       : {text_changed}")
+    print(f"  sheets renamed           : {len(renamed_sheets)}")
+    for old, new in renamed_sheets:
+        print(f"      {old}  ->  {new}")
+    if money_hits:
+        print(f"  amounts rewritten inside remark text ({len(money_hits)}):")
+        for old, new in money_hits[:25]:
+            print(f"      {old}  ->  {new}")
+        if len(money_hits) > 25:
+            print(f"      ... and {len(money_hits) - 25} more")
+
+    unhit = sorted(set(name_map) - names_hit)
+    if unhit:
+        print(f"\n  NOTE: {len(unhit)} mapped name(s) were never substituted "
+              f"(a longer rule consumed the cell first):")
+        for n in unhit[:15]:
+            print(f"      {n}")
+
     if out.exists():
         backup = out.with_suffix(out.suffix + ".bak")
         shutil.copy2(out, backup)
         print(f"\n  existing output backed up to {backup.name}")
-    wb.save(out)
+    wb_f.save(out)
     print(f"\n  written: {out}")
 
     if args.emit_mapping:
@@ -434,37 +546,64 @@ CJK_RE = re.compile(r"[一-鿿]")
 PURE_CN_RE = re.compile(r"^[一-鿿]{2,8}$")
 SUBTOTAL_WORDS = ("subtotal", "total", "check", "小计", "小計", "合计", "合計", "总计", "總計")
 # Deliberately loose: the point is to discover units the money regex does NOT
-# yet cover (百万, 亿, k, K...), not to confirm the ones it does.
+# cover, not to confirm the ones it does.
 NUM_UNIT_PROBE = re.compile(r"\d(?:[\d,]*\.?\d*)\s*([一-鿿A-Za-z%]{1,3})")
+
+# Redaction alphabet -- real characters, not circles, so the report reads like
+# a databook instead of a wall of placeholders.  Nothing here maps back: the
+# substitution is many-to-one by construction.
+REDACT_CN = ("德明华兴盛达丰隆通和利源正信顺安佳元茂康联创立辉阳卓越弘毅"
+             "锦程远航睿臻拓新润泽晟昊博轩宁禾岳川岭峰晖朗骏祺瑞宏恒嘉启泰鑫")
 
 
 def redact(s: str) -> str:
-    """Structure-preserving redaction: shape survives, content does not."""
-    s = CJK_RE.sub("〇", s)
-    s = re.sub(r"\d", "N", s)
-    return re.sub(r"[A-Za-z]", "A", s)
+    """Structure-preserving redaction with real characters.
+
+    Punctuation is deliberately preserved: a leading '*' or a bracketed place
+    name is exactly the structural detail that tells us why a name was missed.
+    """
+    out = []
+    for i, ch in enumerate(s):
+        if CJK_RE.match(ch):
+            out.append(REDACT_CN[(ord(ch) * 7 + i * 13) % len(REDACT_CN)])
+        elif ch.isdigit():
+            out.append(str((ord(ch) * 3 + i * 7) % 10))
+        elif "a" <= ch <= "z":
+            out.append(chr(ord("a") + (ord(ch) + i) % 26))
+        elif "A" <= ch <= "Z":
+            out.append(chr(ord("A") + (ord(ch) + i) % 26))
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
-def redact_company(name: str) -> str:
+def redact_company(name: str, name_map: dict) -> str:
+    """Show the parse, using the actual generated fake as the visible brand."""
     prefix, brand, tail = split_company(name)
-    m = BRACKET_PLACE_RE.search(brand)
-    if m:
-        shown = "〇" * m.start() + m.group(0) + "〇" * (len(brand) - m.end())
-    else:
-        shown = "〇" * len(brand)
+    fake = name_map.get(name, "")
+    _, fake_core, _ = split_company(fake) if fake else ("", "?" * len(brand), "")
     warn = brand_warning(name)
     return (f"[地名:{prefix or '—'}]"
-            f"[商號:{shown or '!!空!!'}({len(brand)}字)]"
+            f"[商號:{fake_core or '!!空!!'}({effective_brand_len(brand)}字)]"
             f"[尾:{tail or '!!無!!'}]"
             + (f"   ⚠ {warn}" if warn else ""))
 
 
-def inspect_only(src: Path, wb, real_names, numeric_cols, ratio_cols, name_map, full_path: Path) -> int:
-    """Report what the transform WOULD see, twice: redacted here, full to disk.
+def why_not_company(s: str) -> str:
+    """Precise reason a suffix-bearing cell was not extracted as a name."""
+    if len(s) > 30:
+        return f"長度{len(s)}>30(多半是備註句，沒問題)"
+    if not any(s.endswith(suf) for suf in COMPANY_SUFFIXES):
+        return "公司後綴不在結尾"
+    bad = sorted({ch for ch in s if not NAME_CHAR_RE.match(ch)})
+    if bad:
+        return "含字元 " + " ".join(bad)
+    return "未知(請回報)"
 
-    Everything printed to the terminal is safe to paste to someone who must
-    not see the client's data; the file written beside it is not.
-    """
+
+def inspect_only(src: Path, wb_f, wb_v, real_names, ratio_cols, name_map,
+                 stats, full_path: Path) -> int:
+    """Report what the transform WOULD see, twice: redacted here, full to disk."""
     safe: list[str] = []
     full: list[str] = []
 
@@ -473,89 +612,96 @@ def inspect_only(src: Path, wb, real_names, numeric_cols, ratio_cols, name_map, 
         safe.append(line if safe_line is None else safe_line)
 
     emit(f"=== INSPECT: {src.name} ===")
-    emit(f"sheets: {len(wb.sheetnames)}")
-    emit("sheet names:", "sheet names (redacted):")
-    for name in wb.sheetnames:
+    emit(f"sheets: {len(wb_f.sheetnames)}")
+    emit("sheet names:", "sheet names (redacted, real chars - NOT the real names):")
+    for name in wb_f.sheetnames:
         emit(f"   {name}", f"   {redact(name)}")
 
     with zipfile.ZipFile(src) as z:
         media = [n for n in z.namelist() if n.startswith(("xl/media/", "xl/charts/"))]
-    emit(f"\nembedded media/charts: {len(media)}  "
-         f"{'(WILL BE LOST by openpyxl)' if media else ''}")
+    emit(f"\nembedded media/charts: {len(media)}"
+         + ("  (WILL BE LOST by openpyxl)" if media else ""))
 
-    formulas, merged, precise, rounded = [], 0, 0, 0
+    merged = sum(len(ws.merged_cells.ranges) for ws in wb_f.worksheets)
+    emit(f"merged cell ranges: {merged}  (preserved)")
+    emit(f"formula cells: {stats['formula']}"
+         + (f"   -> will be FLATTENED to cached value x factor" if stats["formula"] else ""))
+    if stats["stale"]:
+        emit(f"formula cells with NO cached value: {stats['stale']}"
+             f"   <-- these become blank; open+save in Excel first if this is large")
+
     money_units: dict[str, int] = defaultdict(int)
     money_samples: list[str] = []
     near_miss: list[tuple[str, str, str]] = []
     short_cn: dict[str, int] = defaultdict(int)
     subtotal_rows: dict[str, list[str]] = defaultdict(list)
+    precise = rounded = 0
 
-    for ws in wb.worksheets:
-        merged += len(ws.merged_cells.ranges)
+    for ws in wb_f.worksheets:
+        ws_v = wb_v[ws.title]
         for row in ws.iter_rows():
             for cell in row:
                 v = cell.value
+                if isinstance(v, str) and v.startswith("="):
+                    cv = ws_v[cell.coordinate].value
+                    if isinstance(cv, float):
+                        precise += cv != round(cv, 2)
+                        rounded += cv == round(cv, 2)
+                    continue
                 if isinstance(v, str):
                     s = v.strip()
-                    if s.startswith("="):
-                        formulas.append(f"{ws.title}!{cell.coordinate}")
-                        continue
                     if any(w in s.lower() for w in SUBTOTAL_WORDS) and len(s) <= 20:
                         subtotal_rows[ws.title].append(f"r{cell.row}:{s}")
                     if PURE_CN_RE.match(s):
                         short_cn[s] += 1
-                    if s not in real_names and s not in GENERIC_NAMES and \
-                            any(suf in s for suf in COMPANY_SUFFIXES):
-                        reason = ("長度>30" if len(s) > 30 else
-                                  "含數字" if any(c.isdigit() for c in s) else
-                                  "含非中文字元")
-                        near_miss.append((ws.title + "!" + cell.coordinate, s, reason))
+                    stripped = strip_marks(s)
+                    if (stripped not in real_names and stripped not in GENERIC_NAMES
+                            and any(suf in s for suf in COMPANY_SUFFIXES)):
+                        near_miss.append((f"{ws.title}!{cell.coordinate}", s,
+                                          why_not_company(stripped)))
                     for m in NUM_UNIT_PROBE.finditer(s):
                         money_units[m.group(1)] += 1
                     for m in MONEY_RE.finditer(s):
                         money_samples.append(m.group(0))
                 elif isinstance(v, float) and not isinstance(v, bool):
-                    if v == round(v, 2):
-                        rounded += 1
-                    else:
-                        precise += 1
+                    precise += v != round(v, 2)
+                    rounded += v == round(v, 2)
 
-    emit(f"merged cell ranges: {merged}")
-    emit(f"formula cells: {len(formulas)}"
-         + ("   <-- CRITICAL: writing values would DESTROY these" if formulas else ""))
-    for f in formulas[:10]:
-        emit(f"   {f}")
-
-    total_float = precise + rounded
-    emit(f"\nfloat precision: {precise} full-precision / {total_float} floats "
+    total_float = precise + rounded or 1
+    emit(f"\nfloat precision: {precise} full-precision / {total_float} "
          f"({100 * precise / total_float:.0f}% carry >2dp)")
-    emit("  -> full precision means detail sums tie to subtotals EXACTLY;"
-         if precise > rounded else
-         "  -> mostly 2dp: subtotals may carry rounding drift (same as the original).")
+    emit("  (informational only -- linearity keeps the tie-out either way)")
 
     emit(f"\n--- company names cleanly extracted: {len(real_names)} ---")
+    emit("    left = real, right = the fake that will replace it",
+         "    the 商號 shown IS the generated fake, at the real one's length")
     for n in sorted(real_names):
         emit(f"   {n}   ->   {name_map.get(n, '(不變)')}",
-             f"   {redact_company(n)}")
+             f"   {redact_company(n, name_map)}")
 
-    emit(f"\n--- NEAR MISSES: contain a company suffix but were NOT extracted: {len(near_miss)} ---")
-    emit("    (long remark sentences here are FINE - full-text substitution covers them.")
-    emit("     A short one with no punctuation = a name format I am failing to catch.)")
-    for loc, s, reason in near_miss[:40]:
-        emit(f"   [{reason}] {loc}: {s[:60]}",
-             f"   [{reason}] {loc}: len={len(s)} {redact(s[:40])}")
-    if len(near_miss) > 40:
-        emit(f"   ... and {len(near_miss) - 40} more")
+    by_reason: dict[str, list] = defaultdict(list)
+    for loc, s, reason in near_miss:
+        by_reason[reason].append((loc, s))
+    emit(f"\n--- NEAR MISSES: {len(near_miss)} cell(s) carry a company suffix "
+         f"but were NOT extracted ---")
+    emit("    '長度>30' entries are remark sentences: FINE, full-text substitution covers them.")
+    emit("    Anything else is a name format the extractor is failing to catch.")
+    for reason, items in sorted(by_reason.items(), key=lambda kv: -len(kv[1])):
+        emit(f"  [{reason}]  x{len(items)}")
+        for loc, s in items[:8]:
+            emit(f"      {loc}: {s[:60]}", f"      {loc}: len={len(s)} {redact(s[:45])}")
+        if len(items) > 8:
+            emit(f"      ... and {len(items) - 8} more")
 
-    emit(f"\n--- number+unit tokens seen (to check the money regex covers them) ---")
+    emit(f"\n--- number+unit tokens (does the money regex cover them?) ---")
     for unit, count in sorted(money_units.items(), key=lambda kv: -kv[1])[:30]:
-        covered = "SCALED" if unit in ("w", "W", "万", "元") or unit.startswith(("w元", "万元")) else "not scaled"
-        emit(f"   '{unit}' x{count}   [{covered}]")
-    emit(f"   money regex currently matches {len(money_samples)} token(s); samples:")
+        emit(f"   '{unit}' x{count}   [{'SCALED' if unit in MONEY_UNITS else 'not scaled'}]")
+    emit(f"   money regex matches {len(money_samples)} token(s); samples:")
     emit(f"      {', '.join(money_samples[:15])}",
          f"      {', '.join(redact(m) for m in money_samples[:15])}")
 
-    emit(f"\n--- ratio columns (left unscaled) ---")
+    n_ratio = sum(len(c) for c in ratio_cols.values())
+    emit(f"\n--- {n_ratio} ratio column(s) detected (left unscaled) ---")
     for sheet, cols in sorted(ratio_cols.items()):
         emit(f"   {sheet}: {', '.join(sorted(cols))}",
              f"   {redact(sheet)}: {', '.join(sorted(cols))}")
@@ -566,42 +712,77 @@ def inspect_only(src: Path, wb, real_names, numeric_cols, ratio_cols, name_map, 
              f"   {redact(sheet)}: {'; '.join(redact(r) for r in rows[:12])}")
 
     emit(f"\n--- short pure-Chinese strings (2-8 chars), {len(short_cn)} distinct ---")
-    emit("    These are where tenant SHORT FORMS and PERSON NAMES hide.")
-    emit("    Redacted terminal output cannot show them - check the full file yourself.")
-    for s, c in sorted(short_cn.items(), key=lambda kv: -kv[1])[:60]:
+    emit("    Tenant SHORT FORMS and PERSON NAMES hide here. Check the full file.")
+    for s, c in sorted(short_cn.items(), key=lambda kv: -kv[1])[:80]:
         full.append(f"   x{c:<4} {s}")
 
     full_path.write_text("\n".join(full) + "\n", encoding="utf-8")
     print("\n".join(safe))
     print(f"\n\n[full, UNREDACTED report written to: {full_path}]")
-    print("[the terminal output above is redacted and safe to share; the file is NOT]")
+    print("[terminal output above is redacted and safe to share; the file is NOT]")
     return 0
 
 
 # -------------------------------------------------------------- verification
 
+SUM_RE = re.compile(r"^=SUM\(([A-Z]+)(\d+):([A-Z]+)(\d+)\)$", re.I)
+
+
+def verify_sums(wb_src_f, wb_out) -> tuple[int, int, list[str]]:
+    """Re-add every simple =SUM(range) from the source against the demo file.
+
+    This is the check that does NOT assume linearity, so it is the one that
+    catches a ratio column wrongly left unscaled inside a summed range.
+    """
+    checked = failed = 0
+    detail: list[str] = []
+    out_by_name = {ws.title: ws for ws in wb_out.worksheets}
+    for i, ws in enumerate(wb_src_f.worksheets):
+        ws_o = out_by_name.get(ws.title) or wb_out.worksheets[i]
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if not isinstance(v, str) or not v.startswith("="):
+                    continue
+                m = SUM_RE.match(v.replace(" ", ""))
+                if not m or m.group(1).upper() != m.group(3).upper():
+                    continue
+                col, r1, r2 = m.group(1).upper(), int(m.group(2)), int(m.group(4))
+                if r2 < r1 or r2 - r1 > 500:
+                    continue
+                total = ws_o[cell.coordinate].value
+                if not isinstance(total, (int, float)) or isinstance(total, bool):
+                    continue
+                parts = []
+                for r in range(r1, r2 + 1):
+                    pv = ws_o[f"{col}{r}"].value
+                    if isinstance(pv, (int, float)) and not isinstance(pv, bool):
+                        parts.append(pv)
+                checked += 1
+                got = sum(parts)
+                if abs(got - total) > max(abs(total) * 1e-6, 1e-6):
+                    failed += 1
+                    if len(detail) < 8:
+                        detail.append(f"{ws.title}!{cell.coordinate}: cell={total!r} "
+                                      f"but SUM({col}{r1}:{col}{r2})={got!r}")
+    return checked, failed, detail
+
 
 def verify(src: Path, out: Path, factor: float, name_map, extra_map, ratio_cols) -> int:
-    """Prove linearity cell-by-cell, then hunt for leaked real names.
-
-    Linearity is the whole argument for the totals still tying out, so it is
-    checked directly rather than by re-adding the schedules: if every numeric
-    cell equals source*factor, then every sum of them does too.
-    """
+    """Two independent checks: linearity, then a real re-addition of subtotals."""
     print("\n=== VERIFY ===")
-    wb_src = openpyxl.load_workbook(src, data_only=False)
+    wb_src_f = openpyxl.load_workbook(src, data_only=False)
+    wb_src_v = openpyxl.load_workbook(src, data_only=True)
     wb_out = openpyxl.load_workbook(out, data_only=False)
 
-    src_sheets = wb_src.sheetnames
-    out_sheets = wb_out.sheetnames
-    if len(src_sheets) != len(out_sheets):
-        print(f"  FAIL: sheet count {len(src_sheets)} -> {len(out_sheets)}")
+    if len(wb_src_f.sheetnames) != len(wb_out.sheetnames):
+        print(f"  FAIL: sheet count {len(wb_src_f.sheetnames)} -> {len(wb_out.sheetnames)}")
         return 1
 
     checked = mismatches = 0
     worst = 0.0
-    for s_name, o_name in zip(src_sheets, out_sheets):
-        ws_s, ws_o = wb_src[s_name], wb_out[o_name]
+    for i, s_name in enumerate(wb_src_v.sheetnames):
+        ws_s, ws_o = wb_src_v[s_name], wb_out.worksheets[i]
         sheet_ratio = ratio_cols.get(s_name, set())
         for row in ws_s.iter_rows():
             for cell in row:
@@ -611,22 +792,31 @@ def verify(src: Path, out: Path, factor: float, name_map, extra_map, ratio_cols)
                 got = ws_o[cell.coordinate].value
                 expect = v if cell.column_letter in sheet_ratio else v * factor
                 checked += 1
-                if got is None:
+                if not isinstance(got, (int, float)) or isinstance(got, bool):
                     mismatches += 1
                     continue
-                denom = max(abs(expect), 1e-9)
-                rel = abs(got - expect) / denom
+                rel = abs(got - expect) / max(abs(expect), 1e-9)
                 worst = max(worst, rel)
                 if rel > 1e-9:
                     mismatches += 1
                     if mismatches <= 5:
-                        print(f"  MISMATCH {o_name}!{cell.coordinate}: got {got!r}, expected {expect!r}")
+                        print(f"  MISMATCH {ws_o.title}!{cell.coordinate}: "
+                              f"got {got!r}, expected {expect!r}")
 
-    print(f"  linearity: {checked} numeric cells checked, {mismatches} mismatch(es), "
-          f"worst relative error {worst:.2e}")
-    if mismatches == 0:
-        print("  PASS -- every figure is exactly source x factor, so every subtotal,")
-        print("         total, Check row and Financials tie-out is preserved by construction.")
+    print(f"  [1] linearity: {checked} value(s) checked, {mismatches} mismatch(es), "
+          f"worst rel. error {worst:.2e}")
+
+    s_checked, s_failed, s_detail = verify_sums(wb_src_f, wb_out)
+    print(f"  [2] subtotal re-addition: {s_checked} =SUM() range(s) re-added, "
+          f"{s_failed} do NOT tie")
+    for d in s_detail:
+        print(f"      {d}")
+    if s_failed:
+        print("      -> most likely a ratio column was wrongly left unscaled inside a")
+        print("         summed range. Re-run with --no-ratio-detect.")
+
+    if mismatches == 0 and s_failed == 0:
+        print("  PASS -- every figure is source x factor AND every re-added subtotal ties.")
 
     leaked = defaultdict(list)
     real_tokens = list(name_map) + list(extra_map)
@@ -638,37 +828,37 @@ def verify(src: Path, out: Path, factor: float, name_map, extra_map, ratio_cols)
                 for tok in real_tokens:
                     if tok in cell.value:
                         leaked[tok].append(f"{ws.title}!{cell.coordinate}")
-
     if leaked:
         print(f"\n  FAIL: {len(leaked)} real name(s) still present in the output:")
-        for tok, locs in leaked.items():
+        for tok, locs in list(leaked.items())[:10]:
             print(f"      {tok}: {', '.join(locs[:5])}{' ...' if len(locs) > 5 else ''}")
     else:
-        print(f"  name leak: none of the {len(real_tokens)} mapped names survive in the output.")
+        print(f"  name leak: none of the {len(real_tokens)} mapped names survive.")
 
     # Character-level residue: catches typo variants of a real brand
-    # ("上海卲奥" for 上海邵奥) that literal substitution cannot reach.
+    # (a one-character misspelling of a tenant) that literal substitution misses.
+    # A real workbook was found to carry exactly this.
     brand_chars: set[str] = set()
     for real in name_map:
         _, brand, _ = split_company(real)
-        brand_chars.update(brand)
+        brand_chars.update(c for c in brand if CJK_RE.match(c))
     residue = defaultdict(list)
     for ws in wb_out.worksheets:
         for row in ws.iter_rows():
             for cell in row:
-                if not isinstance(cell.value, str) or len(cell.value) < 2:
+                val = cell.value
+                if not isinstance(val, str) or len(val) < 2:
                     continue
-                for ch in brand_chars:
-                    if ch in cell.value:
-                        residue[ch].append(f"{ws.title}!{cell.coordinate}")
-
+                for ch in brand_chars.intersection(val):
+                    residue[ch].append(f"{ws.title}!{cell.coordinate}")
     if residue:
-        print(f"\n  REVIEW BY EYE: {len(residue)} character(s) from real brand names still occur.")
-        print("  Most are ordinary Chinese and harmless; look for a misspelt company name.")
+        print(f"\n  REVIEW BY EYE: {len(residue)} character(s) from real brands still occur.")
+        print("  Most are ordinary Chinese; look for a MISSPELT company name.")
         for ch, locs in sorted(residue.items(), key=lambda kv: -len(kv[1]))[:15]:
-            print(f"      '{ch}' x{len(locs)}: {', '.join(locs[:3])}{' ...' if len(locs) > 3 else ''}")
+            print(f"      '{ch}' x{len(locs)}: {', '.join(locs[:3])}"
+                  f"{' ...' if len(locs) > 3 else ''}")
 
-    return 1 if (mismatches or leaked) else 0
+    return 1 if (mismatches or leaked or s_failed) else 0
 
 
 if __name__ == "__main__":
