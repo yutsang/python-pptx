@@ -801,6 +801,7 @@ def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[
         llm = _lookup_llm_review(clause, llm_reviews)
         out.append(_combine_verdict(clause, det, llm, highlight_min_conf))
     out.extend(_composition_reviews(final_content))
+    out.extend(_date_reviews(final_content, df))
     return out
 
 
@@ -846,6 +847,120 @@ def _composition_reviews(final_content: str) -> List[Dict[str, Any]]:
             "supported": False,
             "category": "hallucination" if certain else "reasoning",
             "reason": detail,
+        })
+    return reviews
+
+
+
+#: A date is only a date here when all three parts are present. "2026年1-6月"
+#: must NOT read as 2026-01-06, and "2024年度" is a period name, not a date.
+_DATE_CHI = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+_DATE_ISO = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
+
+
+def _dates_in(value) -> set:
+    """Every (y, m, d) reachable from one value, in either notation. A real
+    datetime/Timestamp is taken directly so a column whose header is a date
+    OBJECT counts as a source date the same as a string one."""
+    if value is None:
+        return set()
+    year, month, day = (getattr(value, "year", None), getattr(value, "month", None),
+                        getattr(value, "day", None))
+    if isinstance(year, int) and isinstance(month, int) and isinstance(day, int):
+        return {(year, month, day)}
+    text = str(value)
+    found = set()
+    for pattern in (_DATE_CHI, _DATE_ISO):
+        for y, m, d in pattern.findall(text):
+            found.add((int(y), int(m), int(d)))
+    return found
+
+
+def _harvest_source_dates(df) -> set:
+    """Dates the account's own data actually contains -- period columns, the
+    effective date, and any date written into a cell, note or detail row.
+
+    Notes and remarks are included on purpose: a loan maturity or a lease end
+    date is a legitimate date to quote and is not a period column. Grounding
+    against the whole source, not just the period set, is the same contract
+    SourceIndex already uses for amounts."""
+    allowed: set = set()
+    if df is None:
+        return allowed
+    attrs = getattr(df, "attrs", None) or {}
+    integrity = attrs.get("integrity") or {}
+    for key in ("effective_date", "raw_effective_date"):
+        allowed |= _dates_in(integrity.get(key))
+    try:
+        for col in df.columns:
+            allowed |= _dates_in(col)
+            for cell in df[col].tolist():
+                allowed |= _dates_in(cell)
+    except Exception:
+        pass
+    table = attrs.get("presentation_detail_table") or {}
+    for period in (table.get("periods") or []):
+        allowed |= _dates_in(period)
+    for row in (table.get("rows") or []):
+        allowed |= _dates_in(row.get("label") if isinstance(row, dict) else row)
+    for bucket in ("supporting_notes", "adjacent_detail_rows"):
+        for item in (attrs.get(bucket) or []):
+            allowed |= _dates_in(item)
+    return allowed
+
+
+def _date_reviews(final_content: str, df) -> List[Dict[str, Any]]:
+    """Any date in the commentary that appears NOWHERE in the account's source.
+
+    A real 21-slide deck shipped "截至2232年01月01日", "较1770年01月01日",
+    "截至1938年01月01日", "截至2215年01月01日" and a dozen more against a
+    databook whose only period ends are 2026-06-30, 2025-01-01, 2024-01-01 and
+    2023-01-01. The trigger is in _period_reference_guidance: when an account
+    carried no effective_date, the instruction rendered its date slot EMPTY --
+    "首句必须仅说明截至的最新期末余额", four blanks in one paragraph -- and a
+    model told to write "截至___" supplies something.
+
+    That prompt hole is fixed separately, but a rule that only lives in the
+    prompt is not a guardrail: the invented COMPARISON dates on that deck
+    ("余额较1971年05月30日的2,608.3万元") sat in accounts whose opening date was
+    correct, so filling the slot would not have caught them. This check does,
+    and it is deterministic.
+
+    Category is "hallucination" -- a date the source never contained is
+    fabricated by definition, which is exactly what the retry gate is for.
+
+    Silent when the source yields no dates at all: with nothing to judge
+    against, flagging every date would be a guess, not a finding."""
+    body = str(final_content or "")
+    if not body:
+        return []
+    allowed = _harvest_source_dates(df)
+    if not allowed:
+        return []
+    first_seen: Dict[tuple, Any] = {}
+    for pattern in (_DATE_CHI, _DATE_ISO):
+        for match in pattern.finditer(body):
+            key = tuple(int(part) for part in match.groups())
+            if key not in allowed:
+                first_seen.setdefault(key, match)
+    if not first_seen:
+        return []
+    known = "、".join(
+        f"{y}年{m:02d}月{d:02d}日" for y, m, d in sorted(allowed)[:6]
+    )
+    reviews: List[Dict[str, Any]] = []
+    for (y, m, d), match in first_seen.items():
+        start = body.rfind("。", 0, match.start()) + 1
+        end = body.find("。", match.end())
+        clause = body[start: (end + 1) if end >= 0 else len(body)].strip() or body
+        reviews.append({
+            "clause": clause,
+            "supported": False,
+            "category": "hallucination",
+            "reason": (
+                f"日期 {y}年{m:02d}月{d:02d}日 并未出现在本科目的任何来源数据中"
+                f"（来源日期为：{known}）。日期不得自行推断或编造。"
+            ),
         })
     return reviews
 

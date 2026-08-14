@@ -1258,7 +1258,15 @@ Lease Liabilities:
 
 Deferred Revenue:
   type: BS
-  category: Current liabilities
+  # Non-current, not current. The statement ORDER already placed this account
+  # after 长期应付款 -- exactly where a Chinese balance sheet puts non-current
+  # liabilities -- so the "Current liabilities" tag disagreed with the source's
+  # own sequencing, and the commentary reopened a 流动负债 heading that had
+  # already closed two accounts earlier ("流动负债 ... 非流动负债 ... 流动负债"
+  # on two slides of a real deck). The grant behind it amortises over the
+  # asset's life (50 years on this databook), which is the accounting answer
+  # as well as the layout one.
+  category: Non-current liabilities
   aliases: ["Deferred Revenue", "Deferred revenue", "Deferred Income", "Deferred income",
             "递延收益", "遞延收益"]
   subagent_1_prompts:

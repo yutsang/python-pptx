@@ -118,6 +118,9 @@ def get_prompt_engine(
     return _PROMPT_ENGINE_CACHE[cache_key]
 
 
+#: A period column that actually carries a date, used as the fallback when an
+#: account arrives with no effective_date of its own.
+_DATE_LIKE_COL = re.compile(r"\d{4}\s*[-/年]\s*\d{1,2}")
 _RECEIVABLE_NEEDLES = ("应收账款", "应收帐款", "accounts receivable", "trade receivable")
 
 
@@ -1261,6 +1264,47 @@ class PromptEngine:
         attrs = df.attrs if isinstance(df, pd.DataFrame) else {}
         statement_type = str(integrity.get("statement_type") or "").strip().upper()
         effective_date = str(integrity.get("effective_date") or "").strip()
+        # A missing effective_date used to render EVERY date slot in this
+        # instruction empty -- "首句必须仅说明截至的最新期末余额", four blanks in
+        # one paragraph. Told to write "截至___" with nothing to put there, the
+        # model supplies its own: a real 21-slide deck shipped 截至2232年01月01日,
+        # 较1770年01月01日 and 截至1938年01月01日 against a databook whose only
+        # period ends are 2026-06-30, 2025-01-01 and 2024-01-01.
+        #
+        # The latest date-like period column fills the slot from real data. It
+        # does not make the instruction sufficient on its own -- the invented
+        # COMPARISON dates on that deck sat in accounts whose opening date was
+        # correct -- so naming the permitted dates outright matters as much as
+        # filling the slot, and validator.py's _date_reviews is the check that
+        # does not depend on the model reading either.
+        period_dates = [
+            str(col) for col in (list(df.columns)[1:] if isinstance(df, pd.DataFrame) else [])
+            if _DATE_LIKE_COL.search(str(col)) and not str(col).endswith("_formatted")
+        ]
+        if not effective_date and period_dates:
+            effective_date = period_dates[-1]
+        if period_dates:
+            allowed_dates_chi = (
+                "【日期限制】本科目可引用的日期仅限：" + "、".join(period_dates[:6])
+                + "。不得写出任何其他日期，比较期的日期同样受此限制；"
+                "不确定时只写期间名称（如'上年末'），不得自行推断具体日期。"
+            )
+            allowed_dates_eng = (
+                "[PERMITTED DATES] The only dates you may write for this account are: "
+                + ", ".join(period_dates[:6])
+                + ". Never write any other date, comparison dates included; where unsure, "
+                "name the period ('the prior year end') rather than inferring a date."
+            )
+        else:
+            effective_date = effective_date or ("最新一期" if language == "Chi" else "the latest period")
+            allowed_dates_chi = (
+                "【日期限制】数据未提供具体日期，请一律写期间名称（如'最新一期'、'上年末'），"
+                "不得写出任何具体日期。"
+            )
+            allowed_dates_eng = (
+                "[PERMITTED DATES] No date is available for this account. Name the period "
+                "('the latest period', 'the prior year end') and write no specific date."
+            )
         annualization_months = attrs.get("annualization_months")
         if annualization_months in (None, ""):
             annualization_months = integrity.get("annualization_months")
@@ -1277,6 +1321,7 @@ class PromptEngine:
                     "首句之后，再描述构成项目、对手方/集中度、合同条款及重要备注说明。"
                     "如跨期变动重大且数据支持，可简略提及前期余额，但不得作为开篇。"
                     f"请使用时点表述如【截至{effective_date}】，不要写成期间表述。"
+                    + allowed_dates_chi
                 )
             if statement_type == "IS":
                 period_label = build_income_statement_period_label(
@@ -1307,6 +1352,7 @@ class PromptEngine:
                     f"描述目标期间时，请使用【于{period_label}期间】或【在{period_label}内】等期间表述，"
                     f"不要写成【截至{effective_date}止】或时点余额表述。{partial_note}"
                     "有右侧备注的科目优先讨论。"
+                    + allowed_dates_chi
                 )
             return "请根据科目属性正确区分时点表述与期间表述。"
 
@@ -1320,6 +1366,7 @@ class PromptEngine:
                 f"After the opening, describe composition, counterparty/concentration, terms, and any material remarks supported by the data. "
                 f"Prior-period balances may appear briefly only when the movement is material and the data supports the explanation. "
                 f"Use point-in-time wording such as 'as at {effective_date}', not period-flow wording."
+                + " " + allowed_dates_eng
             )
         if statement_type == "IS":
             period_label = build_income_statement_period_label(
