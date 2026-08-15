@@ -2869,6 +2869,20 @@ def main() -> int:
         return 1
 
     target = Path(args.path)
+    if not target.exists():
+        # A quoted path with the following flag glued to it -- "databooks/"--portfolio
+        # -- is one shell token, so `path` silently becomes "databooks/--portfolio"
+        # and the flag's VALUE is left over as a stray positional. argparse then
+        # reports only "unrecognized arguments: I", naming neither the real
+        # mistake nor the flag it belongs to. The quote hides the missing space,
+        # which cost a real user two rounds of debugging.
+        hint = ""
+        if "--" in str(args.path):
+            head, _, tail = str(args.path).partition("--")
+            hint = (f"\n   It looks like a space is missing before a flag: try "
+                    f'"{head}" --{tail}')
+        print(f"❌ Path not found: {args.path}{hint}")
+        return 1
     if args.dump_tab and target.is_dir():
         print("❌ --dump-tab only works against a single file, not a folder. "
               "Pass the exact .xlsx path.")
