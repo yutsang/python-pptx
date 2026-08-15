@@ -14,6 +14,23 @@ measurement itself is the larger factor.
 Usage:
     python wrap_debug_real.py
 """
+import sys as _sys
+
+# Windows swaps the console encoding away from UTF-8 the moment output is piped
+# or redirected: attached to a terminal, printing goes through the console's own
+# Unicode writer, but `... | findstr` / `... > out.txt` falls back to
+# locale.getpreferredencoding() -- cp1252 on this user's box -- and every CJK
+# character this tool prints (主表, 固定资产, the account names themselves) then
+# raises UnicodeEncodeError mid-print. It crashed a real `--help | findstr`.
+# errors="replace" so a genuinely undisplayable glyph degrades to a placeholder
+# rather than killing a 12-minute run on its last line.
+for _stream in (_sys.stdout, _sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
 import sys
 
 from fdd_utils.text_metrics import get_measurer, text_box_from_shape

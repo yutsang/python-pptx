@@ -7,6 +7,23 @@ Usage:
     python inspect_single_slot.py "output.pptx" --slide 1 --shape textMainBullets
     python inspect_single_slot.py "output.pptx" --slide 2 --shape textMainBullets_L
 """
+import sys as _sys
+
+# Windows swaps the console encoding away from UTF-8 the moment output is piped
+# or redirected: attached to a terminal, printing goes through the console's own
+# Unicode writer, but `... | findstr` / `... > out.txt` falls back to
+# locale.getpreferredencoding() -- cp1252 on this user's box -- and every CJK
+# character this tool prints (主表, 固定资产, the account names themselves) then
+# raises UnicodeEncodeError mid-print. It crashed a real `--help | findstr`.
+# errors="replace" so a genuinely undisplayable glyph degrades to a placeholder
+# rather than killing a 12-minute run on its last line.
+for _stream in (_sys.stdout, _sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
 import argparse
 import sys
 
