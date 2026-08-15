@@ -2826,6 +2826,12 @@ def main() -> int:
                          "default) collapses into one-line summaries. Findings/flags always "
                          "print in full either way -- this only controls the 'everything is "
                          "fine' noise, which is what makes a multi-file batch run unpasteable.")
+    ap.add_argument("--portfolio", default=None, metavar="ID",
+                    help="when `path` is a folder, only process files belonging to this "
+                         "portfolio, e.g. --portfolio I (comma-separate for several: 'I,II'). "
+                         "The roll-up ('主表') Financials source is still auto-matched per "
+                         "entity, so this reproduces the UI flow of ticking one portfolio's "
+                         "entity files and handing it that portfolio's 主表.")
     ap.add_argument("--no-auto-rollup", action="store_true",
                     help="folder mode only: disable auto-detecting each entity file's roll-up "
                          "('主表') Financials source from the Portfolio I/II/III naming "
@@ -2861,6 +2867,25 @@ def main() -> int:
         if not files:
             print(f"No .xlsx files found in {target}")
             return 1
+        if args.portfolio:
+            # The folder holds every portfolio at once, but a real run is
+            # almost always ONE portfolio's entities against ONE roll-up --
+            # which is exactly what the UI does when you tick Portfolio I's
+            # files and give it that portfolio's 主表. Without this the only
+            # way to scope a folder run was to move files out of it.
+            wanted = {p.strip().upper() for p in args.portfolio.split(",") if p.strip()}
+            kept = []
+            for f in files:
+                parsed = parse_portfolio_filename(f.name)
+                if parsed and str(parsed["portfolio"]).upper() in wanted:
+                    kept.append(f)
+            if not kept:
+                print(f"❌ No files in {target} belong to portfolio {sorted(wanted)}. "
+                      f"Names must look like '<project>.Portfolio I.<entity>.xlsx'.")
+                return 1
+            skipped = len(files) - len(kept)
+            files = kept
+            print(f"Portfolio filter {sorted(wanted)}: kept {len(files)} file(s), skipped {skipped}.")
         print(f"Found {len(files)} databook(s) in {target}: {[f.name for f in files]}")
         if args.run_ai and not args.limit:
             print(
@@ -2891,6 +2916,24 @@ def main() -> int:
                     else:
                         print(f"    {entity_path.name!r} -> ⚠️ no confident sheet match, "
                               f"using its own default")
+            if args.portfolio:
+                # The UI uses the 主表 as a Financials SOURCE, never as a subject
+                # in its own right, so reproducing that flow means not also
+                # running it as an entity. Doing so is not merely redundant:
+                # a roll-up's own IS tabs are the known-open "Unable to detect
+                # stage/date rows" case, so processing it buries the entities'
+                # real output under a dozen extraction errors that say nothing
+                # about the entities. Only when the roll-up is actually being
+                # used -- with --no-auto-rollup it stays a normal file.
+                rollups = {
+                    group["rollup"] for group in group_portfolio_files(files).values()
+                    if group["rollup"]
+                }
+                if rollups:
+                    files = [f for f in files if f not in rollups]
+                    print(f"  Roll-up {sorted(r.name for r in rollups)} used as the Financials "
+                          f"source only, not processed as an entity (as the UI does); "
+                          f"{len(files)} entity file(s) to run.")
     else:
         files = [target]
 

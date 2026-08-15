@@ -529,6 +529,11 @@ def _build_peer_context(dfs: Optional[Dict[str, pd.DataFrame]]) -> Optional[Dict
             "revenue_latest": curr,
             "revenue_period": str(cols[-1]),
             "revenue_months": period_months,
+            # The prior period too, so a ratio can be stated as a MOVEMENT.
+            # "税金及附加相当于收入的148%" is a number; "占收入比由14%升至148%"
+            # is the finding, and it is the one that can actually be attributed.
+            "revenue_prev": prev,
+            "revenue_prev_period": str(cols[-2]),
         }
     return None
 

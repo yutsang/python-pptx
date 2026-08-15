@@ -879,35 +879,104 @@ class PromptEngine:
                         )
                 elif statement_type == "IS":
                     share = abs(own_total) / float(rev_total) * 100
+                    # The SAME ratio one period earlier, when both sides are
+                    # available for it. A single ratio is a number the reader
+                    # cannot do anything with -- a real deck shipped
+                    # "税金及附加相当于同期营业收入约148%" and stopped there. The
+                    # same fact as a movement ("由14%升至148%") states what
+                    # changed, which is the thing that can be attributed, and
+                    # it costs the same one sentence.
+                    prev_rev = peer.get("revenue_prev")
+                    prev_period = peer.get("revenue_prev_period")
+                    prev_share = None
+                    if isinstance(prev_rev, (int, float)) and prev_rev > 0 and prev_period:
+                        prev_own = _account_total(str(prev_period))
+                        if prev_own is not None and abs(prev_own) > 0:
+                            prev_share = abs(prev_own) / float(prev_rev) * 100
                     if 0.5 <= share <= 500:
-                        ratio_chi = (
-                            f"本科目于{rev_period}相当于同期营业收入的约{share:.0f}%。"
-                        )
-                        ratio_eng = (
-                            f"For {rev_period} this account equates to about {share:.0f}% of "
-                            "revenue for the same period."
-                        )
+                        if prev_share is not None and abs(share - prev_share) >= max(2.0, prev_share * 0.2):
+                            direction_chi = "升" if share > prev_share else "降"
+                            direction_eng = "rose" if share > prev_share else "fell"
+                            ratio_chi = (
+                                f"本科目占营业收入的比重，由{prev_period}的约{prev_share:.0f}%"
+                                f"{direction_chi}至{rev_period}的约{share:.0f}%。"
+                            )
+                            ratio_eng = (
+                                f"As a share of revenue this account {direction_eng} from about "
+                                f"{prev_share:.0f}% in {prev_period} to about {share:.0f}% in "
+                                f"{rev_period}."
+                            )
+                        else:
+                            ratio_chi = (
+                                f"本科目于{rev_period}相当于同期营业收入的约{share:.0f}%"
+                                + (f"，与{prev_period}的约{prev_share:.0f}%大致相当。"
+                                   if prev_share is not None else "。")
+                            )
+                            ratio_eng = (
+                                f"For {rev_period} this account equates to about {share:.0f}% of "
+                                "revenue for the same period"
+                                + (f", broadly in line with about {prev_share:.0f}% in {prev_period}."
+                                   if prev_share is not None else ".")
+                            )
 
         facts_chi = [f for f in (composition_chi, ratio_chi) if f]
         facts_eng = [f for f in (composition_eng, ratio_eng) if f]
         if not facts_chi:
             return ""
 
+        # Stating a computed fact and stopping is not analysis. The same
+        # remarks-or-nothing contract _variance_analysis_guidance uses applies
+        # here: attribute from the notes where they support it, mark the
+        # inference as judgement so a reader can tell it from fact, and say the
+        # cause has not been obtained rather than inventing one. Whether there
+        # is anything to reason FROM decides which of those is asked for.
+        has_support = bool(attrs.get("supporting_notes") or attrs.get("adjacent_detail_rows"))
+        if has_support:
+            attribute_chi = (
+                "**请在同一句内尝试归因**：结合下方备注/右侧说明推断成因，"
+                "推理必须以备注或数据为起点（例如备注载明某项目完工转固，即可据以解释折旧上升），"
+                "不得凭空假设市场、竞争或宏观原因。凡属推断而非备注原文直述，"
+                "须以'主要系…所致'、'预计'、'推测'等措辞标示为判断。"
+            )
+            attribute_eng = (
+                "**Attribute it in the same sentence**: reason from the notes/side remarks below "
+                "(if a remark says a phase completed and transferred to fixed assets, that can "
+                "explain a rise in depreciation). The reasoning must start from the remarks or the "
+                "data -- never assume market, competitive or macro causes -- and anything that is "
+                "your inference rather than stated outright must be marked as judgement "
+                "('mainly attributable to...', 'expected to...')."
+            )
+        else:
+            attribute_chi = (
+                "**备注中没有可解释此结论的信息**：请如实陈述该事实，并指出成因尚待与管理层确认，"
+                "不得臆造原因，也不得套用'反映经营效率提升'这类无据的通用解释。"
+            )
+            attribute_eng = (
+                "**The notes contain nothing that explains this**: state the fact accurately and "
+                "note that the driver remains to be confirmed with management. Do not invent a "
+                "cause, and do not fall back on unsupported boilerplate ('reflecting improved "
+                "operating efficiency')."
+            )
+
         if language == "Chi":
             return (
                 "【数据洞察（系统已算出，可直接引用）】" + "".join(facts_chi)
                 + "以上结论由系统按本科目明细算出，可直接采用；但**不得据此自行推算其他比率或份额**，"
                 "自行推算的数字等同编造。"
-                "**篇幅要求：这不是额外增加的句子。**请用它取代一句原本只在罗列表格已有金额的描述，"
-                "本科目的整体句数上限不变。若无句子可取代，宁可不写这一点，也不得超出上限。"
+                + attribute_chi
+                + "**篇幅要求：这不是额外增加的句子，归因也不另起一句。**"
+                "请用这一句取代一句原本只在罗列表格已有金额的描述，本科目的整体句数上限不变。"
+                "若无句子可取代，宁可不写这一点，也不得超出上限。"
             )
         return (
             "[DATA INSIGHT -- ALREADY COMPUTED, QUOTE DIRECTLY] " + " ".join(facts_eng)
             + " These follow from this account's own breakdown and may be used as stated, but do "
             "NOT derive any further ratio or share yourself -- a self-derived figure is fabrication. "
-            "**On length: this is not an extra sentence.** Use it in place of a sentence that "
-            "merely recites figures the table already shows; this account's sentence cap is "
-            "unchanged. If there is nothing to replace, drop this point rather than exceed the cap."
+            + attribute_eng
+            + " **On length: this is not an extra sentence, and the attribution does not start a "
+            "new one.** Use it in place of a sentence that merely recites figures the table already "
+            "shows; this account's sentence cap is unchanged. If there is nothing to replace, drop "
+            "this point rather than exceed the cap."
         )
 
     @staticmethod
