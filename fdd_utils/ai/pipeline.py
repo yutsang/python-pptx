@@ -187,11 +187,37 @@ def clean_agent_output(content: str) -> str:
 # The negative lookahead is what keeps it safe: a real amount that merely
 # STARTS with a zero digit (0.5万元) must not match, so the 0 may not be
 # followed by another digit, a decimal point, or a full-width period.
+# Two guards, both earned on a real seven-entity run.
+#
+#   * The unit. The old lookahead blocked a digit or a decimal point but not a
+#     UNIT, so "分别为0万元" matched at "为0" and the deck shipped
+#     "银行手续费分别未发生万元、1.8万元、1.4万元及1.3万元". The zero there is
+#     0万元, a figure, not a bare "为0元".
+#   * The enumeration. Even with the right unit, substituting one item inside
+#     "分别为A、B、C" leaves a list whose first item is a verb phrase. A trailing
+#     list separator followed by another figure means this zero is one item of
+#     several, and the sentence has to be restructured rather than substituted --
+#     which is prompt work, not regex work, and is why the 0万元 rewrite was
+#     dropped once already.
+# 万/亿/千/百 only. NOT 元 -- "为0元" is exactly the bare-zero form this rule
+# exists to rewrite, whereas "为0万元" is a figure that happens to be zero.
+_ZERO_UNITS = "万亿千百"
+# The enumeration guard is a lookahead placed BEFORE the optional 元, not after
+# it. Written as a trailing lookahead it does nothing: the engine simply
+# backtracks, gives up the 元 it had consumed, and matches the shorter "为0" --
+# turning "分别为0元、1.8万元" into "分别未发生元、1.8万元". Checking from the
+# zero itself, with 元 optional inside the lookahead, leaves nothing to
+# backtrack into.
+_ZERO_NOT_A_LIST = r"(?!\s*元?\s*[、，,]\s*-?[\d])"
 _ZERO_BALANCE_RE = re.compile(
-    r"(?:余额)?(?:合计)?为(?:人民币)?0(?![\d.．])\s*(?:元)?"
+    r"(?:余额)?(?:合计)?为(?:人民币)?0(?![\d.．" + _ZERO_UNITS + r"])"
+    + _ZERO_NOT_A_LIST + r"\s*(?:元)?"
 )
 # Same idea for the other mechanical form: "无/未有余额" is fine, "余额为零" is not.
-_ZERO_BALANCE_CHAR_RE = re.compile(r"(?:余额)?(?:合计)?为(?:人民币)?零\s*(?:元)?")
+_ZERO_BALANCE_CHAR_RE = re.compile(
+    r"(?:余额)?(?:合计)?为(?:人民币)?零(?![" + _ZERO_UNITS + r"])"
+    + _ZERO_NOT_A_LIST + r"\s*(?:元)?"
+)
 
 
 # Databook working-note vocabulary that should never reach a deliverable.
