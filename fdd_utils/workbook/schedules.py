@@ -531,10 +531,21 @@ def _reclassify_indent_rollup_children(
         child_sum = sum(child_vals)
         if abs(parent_val - child_sum) > max(1.0, abs(parent_val) * 0.005):
             continue  # doesn't match -- needs individual review, don't guess
+        parent_entry = row_entry_by_idx.get(parent_row_idx)
+        parent_desc = str(parent_entry["description"]) if parent_entry else ""
         for child_row_idx in child_row_idxs:
             child_entry = row_entry_by_idx.get(child_row_idx)
             if child_entry is not None:
                 child_entry["row_type"] = "breakdown"
+                # Which parent this row rolls into, recorded now that the sum
+                # has been verified. Nothing downstream could tell a parent
+                # from its child otherwise: both end up "breakdown", so the
+                # model received a flat list and enumerated across levels --
+                # "应付账款-预提管理费用82.2万元、嘉兴市晶美新能源48.8万元、
+                # 缪治彬12.5万元" against an 81.7万元 account, where items 2
+                # and 3 are inside item 1.
+                if parent_desc:
+                    child_entry["rollup_parent_desc"] = parent_desc
                 matched_row_idxs.add(child_row_idx)
 
     # Second pass: retry orphaned top-level sibling groups (see docstring)
@@ -577,10 +588,13 @@ def _reclassify_indent_rollup_children(
         distinct_values = {round(row["values"][projection_column_key], 2) for row in candidates}
         if len(distinct_values) != 1:
             continue  # candidates genuinely disagree -- don't guess
+        matched_parent_desc = str(candidates[0]["description"] or "")
         for sibling_idx in sibling_idxs:
             sibling_entry = row_entry_by_idx.get(sibling_idx)
             if sibling_entry is not None:
                 sibling_entry["row_type"] = "breakdown"
+                if matched_parent_desc:
+                    sibling_entry["rollup_parent_desc"] = matched_parent_desc
 
 
 def _fallback_description(description: str, title: str, last_label: Optional[str]) -> str:
@@ -1337,6 +1351,11 @@ def _build_prompt_analysis_df(
     # longer reads as a hallucination.
     prompt_rows: List[Dict[str, Any]] = []
     component_descriptions: List[str] = []
+    # {parent description: [child descriptions]} for groups whose sum was
+    # actually verified against the parent's own value. Only these are stated
+    # to the model -- an unverified guess about hierarchy would be worse than
+    # no guess at all.
+    rollup_groups: Dict[str, List[str]] = {}
     for row in row_entries:
         is_component = row["row_type"] == "breakdown"
         row_values = {
@@ -1350,6 +1369,9 @@ def _build_prompt_analysis_df(
             if not has_value:
                 continue                      # dead component, nothing to say
             component_descriptions.append(str(row["description"]))
+            parent_desc = str(row.get("rollup_parent_desc") or "")
+            if parent_desc:
+                rollup_groups.setdefault(parent_desc, []).append(str(row["description"]))
         prompt_rows.append(
             {
                 block_title: row["description"],
@@ -1359,9 +1381,13 @@ def _build_prompt_analysis_df(
         )
 
     if not prompt_rows:
-        return pd.DataFrame(columns=[block_title, INTERNAL_ROW_KEY, *[column["date"] for column in analysis_columns]])
+        empty = pd.DataFrame(columns=[block_title, INTERNAL_ROW_KEY, *[column["date"] for column in analysis_columns]])
+        empty.attrs["component_descriptions"] = []
+        empty.attrs["rollup_groups"] = {}
+        return empty
     frame = pd.DataFrame(prompt_rows)
     frame.attrs["component_descriptions"] = component_descriptions
+    frame.attrs["rollup_groups"] = rollup_groups
     return frame
 
 

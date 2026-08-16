@@ -277,6 +277,8 @@ class PromptEngine:
             )
         ].copy()
         filtered.attrs["component_descriptions"] = list(components)
+        # Carried too, or the hierarchy is lost the moment the frame is copied.
+        filtered.attrs["rollup_groups"] = dict(analysis_df.attrs.get("rollup_groups") or {})
         return filtered if not filtered.empty else analysis_df
 
     def _filter_adjacent_detail_rows(self, df: pd.DataFrame) -> list[Dict[str, Any]]:
@@ -399,9 +401,58 @@ class PromptEngine:
             components = list(analysis_df.attrs.get("component_descriptions") or [])
         if len(components) < 2:
             return ""
+
+        # The abstract rule is already below in both languages and has been for
+        # a while. It does not work: a seven-entity run broke it on roughly
+        # eight accounts EACH, including one composition that came out exactly
+        # double the account. The reason is not that the model ignored the rule
+        # -- it is that nothing in the data let it apply the rule. A rollup
+        # parent and its children both end up row_type "breakdown", so the
+        # component list it reads is flat and a parent is indistinguishable
+        # from the lines inside it.
+        #
+        # So the pairs are named. These come from the indent hierarchy and are
+        # only recorded where the children were actually verified to sum to the
+        # parent, so this states a checked fact rather than a guess about
+        # layout. Same move as the detail-table fix: hand over the answer
+        # instead of restating the rule and hoping.
+        groups = {}
+        if isinstance(analysis_df, pd.DataFrame):
+            groups = analysis_df.attrs.get("rollup_groups") or {}
+        groups = {
+            parent: [c for c in children if c]
+            for parent, children in groups.items()
+            if parent and children
+        }
+        hierarchy_chi = hierarchy_eng = ""
+        if groups:
+            lines_chi = []
+            lines_eng = []
+            for parent, children in list(groups.items())[:6]:
+                shown = "、".join(children[:6])
+                shown_eng = ", ".join(children[:6])
+                more = f"等{len(children)}项" if len(children) > 6 else ""
+                lines_chi.append(f"「{parent}」已包含：{shown}{more}")
+                lines_eng.append(f"'{parent}' already contains: {shown_eng}")
+            hierarchy_chi = (
+                "【本科目已核对的层级关系】" + "；".join(lines_chi) + "。"
+                "上述母项的金额**已经包含**其子项，两者相加会重复计算。"
+                "列举时只能取其中一层：**优先列母项**；"
+                "若要点名某个子项（金额重大、账龄异常或性质特殊），"
+                "就必须把它的母项从列举中拿掉，或写成'其中…'附在母项之后，不得与母项并列编号。"
+            )
+            hierarchy_eng = (
+                "[VERIFIED HIERARCHY FOR THIS ACCOUNT] " + "; ".join(lines_eng) + ". "
+                "Each parent's amount ALREADY INCLUDES its children, so listing both double-counts. "
+                "Enumerate one level only, preferring the parent. To call out a child (material size, "
+                "unusual ageing, special nature), either drop its parent from the enumeration or "
+                "attach it to the parent as \"of which ...\" -- never as a sibling numbered item. "
+            )
+
         if language == "Chi":
             return (
-                "【组成披露】该科目的明细组成已随财务数据提供。"
+                hierarchy_chi
+                + "【组成披露】该科目的明细组成已随财务数据提供。"
                 "请按组成列举，且每一项都必须带上金额——只写类别名称而不给金额是不合格的。"
                 "在**有金额的最高层级**列举（例如租金收入、物业管理费收入、水电费收入各自的余额），"
                 "**绝对不要同时列出母项和它的子项**——两者相加会重复计算。若某项下面还有更细的分解，只列该项本身的金额，细项最多用于举例说明，不另计入列举。"
@@ -410,7 +461,8 @@ class PromptEngine:
                 "**列举前先做加法**：把你打算列出的各项金额相加，与合计核对。若两者不等，差额本身就是一个必须交代的组成项——用数据中对应的名称说明它是什么（例如截止性调整、补计提、未解释性质的余额），并把它作为最后一项列出，写成'其余X万元为…'。只列出加总不等于合计的几项而不交代差额，是不完整的披露。不要强行凑数。"
             )
         return (
-            "COMPOSITION. The account's component lines are supplied with the financial data. "
+            hierarchy_eng
+            + "COMPOSITION. The account's component lines are supplied with the financial data. "
             "Enumerate the composition and give an AMOUNT for every item -- naming categories without "
             "amounts is not acceptable. Enumerate at the HIGHEST level that carries amounts (e.g. the "
             "balance of each revenue stream), not every counterparty. NEVER list a parent line AND the "
