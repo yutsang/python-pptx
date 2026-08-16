@@ -2076,6 +2076,7 @@ _PPTX_STAGE_RE = re.compile(r"\[PPTX\] ([\w_ ]+?): ([\d.]+)s")
 def export_and_inspect_pptx(
     databook_path: str, sheet_name: Optional[str], dfs: Dict[str, pd.DataFrame], ai_results: Dict[str, Any],
     language: str, model_type: str, out_path: str, model_name: Optional[str] = None,
+    financials_from: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Runs the FULL remaining pipeline (build payloads -> export .pptx),
     captures every [PPTX] stdout line and fdd_utils.pptx logger record
@@ -2091,8 +2092,17 @@ def export_and_inspect_pptx(
 
     mappings = get_effective_mappings(load_mappings(), None)
     if sheet_name:
+        # The Financials sheet may live in a sibling roll-up ("主表"), not in
+        # this entity's own workbook -- that is the whole point of
+        # --financials-from. Section 4's reconciliation already honoured it;
+        # this call did not, so it went looking for e.g. "南通通海Financials"
+        # inside 南通通海.xlsx, which has no such sheet. The lookup raised,
+        # bs_is_results came back empty, and every slide in all seven decks
+        # was exported with NO balance-sheet or income-statement table --
+        # visible only as "Skipping BS table — bs_df empty=True" and
+        # table=False on every slide.
         bs_is_results = extract_balance_sheet_and_income_statement(
-            workbook_path=databook_path, sheet_name=sheet_name, debug=False,
+            workbook_path=financials_from or databook_path, sheet_name=sheet_name, debug=False,
         )
     else:
         # Mirrors process_workbook_data's fallback (fdd_utils/workbook.py) --
@@ -2623,6 +2633,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                 pptx_summary = export_and_inspect_pptx(
                     path, selected_sheet_for_ai, dfs, ai_summary["results"], language,
                     model_type, out_path, model_name=model_name,
+                    financials_from=financials_from,
                 )
                 summary["pptx"] = pptx_summary
                 # Repeated dead-last: section 9/10 print a lot after the export,

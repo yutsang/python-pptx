@@ -185,6 +185,10 @@ def _stage_block_heading(df: pd.DataFrame, stage_row_idx: int) -> str:
             continue
         if any(canonical_stage_label(value) for value in texts):
             continue
+        # Deliberately permissive, unlike the detection path above: this is a
+        # SKIP test, and a row of bare numbers was already being skipped here
+        # because it parsed as serial dates. Tightening it would let such a row
+        # through and return it as the entity heading.
         if any(_parse_date_label(value) for value in texts):
             continue
         if any(any(marker.lower() in value.lower() for marker in _UNIT_PATTERNS) for value in texts):
@@ -193,16 +197,22 @@ def _stage_block_heading(df: pd.DataFrame, stage_row_idx: int) -> str:
     return ""
 
 
-def _parse_date_label(value: Any) -> Optional[str]:
+def _parse_date_label(value: Any, allow_bare_number: bool = True) -> Optional[str]:
     from .statements import parse_date  # local: breaks the inspector<->statements import cycle
-    parsed = parse_date(value)
+    parsed = parse_date(value, allow_bare_number=allow_bare_number)
     if not parsed:
         return None
     return parsed.strftime("%Y-%m-%d")
 
 
 def _date_row_index(df: pd.DataFrame, stage_row_idx: Optional[int], max_distance: int = 2) -> Optional[int]:
-    return date_row_index(df, stage_row_idx, _parse_date_label, max_distance=max_distance)
+    # Bare numbers are refused while CHOOSING the row: a row of 千元 balances
+    # outscores the real date row otherwise (see parse_date's own note).
+    return date_row_index(
+        df, stage_row_idx,
+        lambda value: _parse_date_label(value, allow_bare_number=False),
+        max_distance=max_distance,
+    )
 
 
 def _title_row_index(df: pd.DataFrame, stage_row_idx: Optional[int]) -> Optional[int]:

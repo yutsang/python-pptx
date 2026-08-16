@@ -180,7 +180,13 @@ def _local_date_row_index(df: pd.DataFrame, stage_row_idx: int) -> int:
     # (falsy in Python) and fall back to the stage row itself -- explicit None
     # check needed since 0 is a valid date-row index (e.g. sheets with no title
     # row above the header, where the date row is the very first row).
-    result = date_row_index(df, stage_row_idx, parse_date, max_distance=2)
+    # Bare numbers are refused while CHOOSING the row: a row of 千元 balances
+    # scores higher than the real date row otherwise (see parse_date).
+    result = date_row_index(
+        df, stage_row_idx,
+        lambda value: parse_date(value, allow_bare_number=False),
+        max_distance=2,
+    )
     return result if result is not None else stage_row_idx
 
 

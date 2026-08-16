@@ -75,20 +75,47 @@ def _column_numeric_profile(series: pd.Series) -> Dict[str, float]:
         'numeric_ratio': numeric_ratio,
     }
 
-def parse_date(date_str, debug=False):
+def parse_date(date_str, debug=False, allow_bare_number=True):
     """
     Parse date string in various formats including xMxx and Chinese formats.
     Uses the same preprocessing logic as process_databook.py for consistency.
-    
+
     Args:
         date_str: Date string in various formats
         debug: If True, print debug info
-        
+        allow_bare_number: whether a value carrying no date punctuation at all --
+            a raw Excel serial, or a bare four-digit number -- may become a date.
+            True preserves the long-standing behaviour and is right once you
+            already KNOW the cell is a date. Pass False while still deciding
+            WHICH row holds the dates: there, a number that happens to look like
+            a date is not a weak signal, it is a wrong answer for the whole tab.
+
+            A real client run is what this is for. date_row_index scores a row by
+            how many of its cells parse, and 20000..60000 is precisely the 千元
+            range of a warehouse entity's balances, so a row of AMOUNTS outscored
+            the real date row on 7 of 7 entities. The corrupted headers went
+            straight into the deck: 无形资产 净值3,307.2万 + 累计摊销436.8万 =
+            3,744.0万 = 37,440 became "2002-07-03"; 货币资金 4,624.4万 = 46,244
+            became "2026-08-10"; 长期借款 3,915.1万 = 39,151 became "2007-03-10".
+            Four-digit balances took the other branch and became bare years --
+            应收账款 181.8万 = 1,818 became "1818-01-01". The model then quoted
+            those headers faithfully, so it read as commentary inventing dates
+            when nothing had been invented.
+
     Returns:
         datetime object or None if parsing fails
     """
     if not date_str or pd.isna(date_str):
         return None
+
+    if not allow_bare_number:
+        # Anything that is a number, or spells one with no date punctuation,
+        # is refused outright. A genuinely date-formatted Excel cell arrives
+        # here as a datetime/Timestamp via openpyxl and is unaffected.
+        if isinstance(date_str, (int, float)) and not isinstance(date_str, bool):
+            return None
+        if str(date_str).strip().replace(",", "").replace(".", "").isdigit():
+            return None
 
     if isinstance(date_str, (int, float)) and not isinstance(date_str, bool):
         serial_value = float(date_str)
