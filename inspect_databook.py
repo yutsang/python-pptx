@@ -1410,7 +1410,7 @@ def _trace_bs_is_detection_failure(
 
 
 
-def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame], language: str) -> None:
+def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None:
     """Walk the ACTUAL chain a subtable travels, and say where it stops.
 
     Written because "still no subtables" had already survived two rounds of
@@ -1437,9 +1437,16 @@ def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame], l
         print(f"  Could not import the production pieces: {type(exc).__name__}: {exc}")
         return
 
+    # Read off the frames rather than taking it as an argument: this check runs
+    # on the deterministic path, where inspect_one has no `language` bound yet.
+    is_chi = any(
+        str((getattr(df, "attrs", None) or {}).get("report_language") or "").strip().lower()
+        in ("chi", "chinese")
+        for df in (dfs or {}).values()
+    ) or any(re.search(r"[\u4e00-\u9fff]", str(k)) for k in (dfs or {}))
     template_path = str(Path(__file__).parent / "fdd_utils" / "template.pptx")
     try:
-        gen = PowerPointGenerator(template_path, "chinese" if language == "Chi" else "english")
+        gen = PowerPointGenerator(template_path, "chinese" if is_chi else "english")
         enabled = gen._presentation_tables_enabled()
         style = gen._presentation_table_style()
     except Exception as exc:
@@ -1496,7 +1503,7 @@ def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame], l
               "\n     _append_table_accounts_to_distribution, not extraction.")
 
 
-def check_statement_table_units(bs_is_results: Dict[str, Any], language: str) -> None:
+def check_statement_table_units(bs_is_results: Dict[str, Any]) -> None:
     """What the embedded BS/IS grid will actually print in its unit cell, and
     at what scale -- the two things reported wrong after the grid started
     rendering ("人民币千元" became a description, values came out raw)."""
@@ -2659,7 +2666,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
     summary["scaling_mismatch_tabs"] = check_all_tabs_scaling(path, dfs, entity_name=entity_name)
     check_row_structures(dfs)
     check_indent_signals(path, dfs, entity_name=entity_name)
-    check_subtable_readiness(path, dfs, language)
+    check_subtable_readiness(path, dfs)
 
     xl = pd.ExcelFile(path)
     summary["total_sheets"] = len(xl.sheet_names)
@@ -2723,8 +2730,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                 extract_balance_sheet_and_income_statement(
                     workbook_path=financials_from or path,
                     sheet_name=_sheet_for_units, debug=False,
-                ),
-                language,
+                )
             )
     except Exception as _exc:
         print(f"\n  (statement-table unit check skipped: {type(_exc).__name__}: {_exc})")
