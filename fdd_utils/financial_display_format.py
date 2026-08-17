@@ -75,19 +75,29 @@ def format_value_by_language(value, language: str, _account_name=None) -> str:
     # "_formatted" columns, which are what the MODEL is shown -- so if these
     # were rounded to whole 万 the model would copy that precision straight
     # into the report no matter what the prompt asked for.
+    # EVERY branch carries a unit, including the small one. It used to return a
+    # bare "3091" below 10,000 while everything above it read "705.8万", and a
+    # model reading a column where most figures are labelled 万 takes the
+    # unlabelled one for 万 as well. A real run shipped 预付款项 as
+    # "余额合计为3,091.0万元 ... 国网江苏818.3万元" on two entities at once, for
+    # an account whose actual balance is 3,091 YUAN and whose largest component
+    # is 8,183 yuan -- out by a factor of ten thousand, and consistently so,
+    # because the ambiguity is in the data rather than in the model's attention.
+    # Same lesson as the 10x components: hand over one representation, already
+    # carrying its unit.
     if language == "Chi":
         if abs_value >= 100000000:
             formatted = f"{abs_value / 100000000:.2f}亿"
         elif abs_value >= 10000:
             formatted = f"{abs_value / 10000:.1f}万"
         else:
-            formatted = f"{abs_value:.0f}"
+            formatted = f"{abs_value:.0f}元"
         return f"-{formatted}" if is_negative else formatted
 
     if abs_value >= 1000000:
         formatted = f"{abs_value / 1000000:.1f} million"
     else:
-        formatted = f"{abs_value:,.0f}"
+        formatted = f"CNY{abs_value:,.0f}"
     return f"-{formatted}" if is_negative else formatted
 
 
