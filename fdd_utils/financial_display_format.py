@@ -101,6 +101,52 @@ def format_value_by_language(value, language: str, _account_name=None) -> str:
     return f"-{formatted}" if is_negative else formatted
 
 
+
+#: (divisor, label), largest first. One unit is chosen for a WHOLE account and
+#: declared once, rather than each figure carrying its own -- which is how the
+#: deliverable itself writes a table ("人民币千元" in the header, bare numbers
+#: under it).
+_DISPLAY_UNITS_CHI = ((1e8, "人民币亿元", 2), (1e4, "人民币万元", 1), (1.0, "人民币元", 0))
+_DISPLAY_UNITS_ENG = ((1e6, "CNY million", 2), (1e3, "CNY thousand", 1), (1.0, "CNY", 0))
+
+
+def choose_display_unit(values, language: str):
+    """(divisor, label, decimals) for a whole account's figures.
+
+    Per-VALUE units are what produced the worst number error of the project.
+    format_value_by_language decides the unit one figure at a time, so an
+    account whose total is 7,057,567 reads "705.8万" while a component of
+    8,183 read "8183" -- and a model reading a column where most figures say
+    万 takes the unlabelled one for 万 too. 预付款项 shipped as "3,091.0万元"
+    against a real balance of 3,091 YUAN, on two entities at once.
+
+    Labelling each figure would fix the ambiguity but not the shape: a report
+    states its unit once, at the top of the table. Choosing from the account's
+    LARGEST figure keeps every number in that account directly comparable,
+    which is the property a reader actually uses.
+    """
+    magnitudes = [
+        abs(float(v)) for v in values
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+        and not pd.isna(v) and float(v) != 0.0
+    ]
+    table = _DISPLAY_UNITS_CHI if language == "Chi" else _DISPLAY_UNITS_ENG
+    scale = max(magnitudes) if magnitudes else 0.0
+    for divisor, label, decimals in table:
+        if scale >= divisor:
+            return divisor, label, decimals
+    return table[-1]
+
+
+def format_in_unit(value, divisor: float, decimals: int) -> str:
+    """A bare number in an already-declared unit. No unit text: the caller
+    states it once."""
+    if value is None or pd.isna(value):
+        return ""
+    if float(value) == 0.0:
+        return "0"
+    return f"{float(value) / divisor:,.{decimals}f}"
+
 def handle_retained_earnings(df: pd.DataFrame, language: str) -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -150,7 +196,15 @@ def handle_retained_earnings(df: pd.DataFrame, language: str) -> pd.DataFrame:
         rename_map[description] = str(df_modified.at[idx, desc_col]).strip()
         formatted_col = f"{value_col}_formatted"
         if formatted_col in df_modified.columns:
-            df_modified.at[idx, formatted_col] = format_value_by_language(abs(value), language)
+            # Same unit the rest of the frame is already in -- re-deriving it
+            # per figure here would reintroduce exactly the mixed-unit
+            # ambiguity add_language_display_columns exists to remove.
+            divisor = df_modified.attrs.get("display_unit_divisor")
+            decimals = df_modified.attrs.get("display_unit_decimals")
+            if divisor:
+                df_modified.at[idx, formatted_col] = format_in_unit(abs(value), divisor, decimals or 0)
+            else:
+                df_modified.at[idx, formatted_col] = format_value_by_language(abs(value), language)
 
     if rename_map:
         existing = dict(df_modified.attrs.get("display_description_map") or {})
@@ -162,18 +216,32 @@ def handle_retained_earnings(df: pd.DataFrame, language: str) -> pd.DataFrame:
 
 
 def add_language_display_columns(df: pd.DataFrame, language: str) -> pd.DataFrame:
+    """Build the _formatted columns the model reads, all in ONE unit chosen
+    across the whole account and recorded in attrs["display_unit_label"] for
+    the prompt to state once. See choose_display_unit for why per-figure units
+    were wrong."""
     if df is None or df.empty or not language:
         return df
 
     df_modified = df.copy()
-    for col in df_modified.columns[1:]:
-        if str(col).endswith("_formatted"):
-            continue
-        if not pd.api.types.is_numeric_dtype(df_modified[col]):
-            continue
+    numeric_cols = [
+        col for col in df_modified.columns[1:]
+        if not str(col).endswith("_formatted")
+        and not str(col).startswith("__")
+        and pd.api.types.is_numeric_dtype(df_modified[col])
+    ]
+    if not numeric_cols:
+        return handle_retained_earnings(df_modified, language)
+
+    every_value = [v for col in numeric_cols for v in df_modified[col].tolist()]
+    divisor, label, decimals = choose_display_unit(every_value, language)
+    for col in numeric_cols:
         df_modified[f"{col}_formatted"] = df_modified[col].apply(
-            lambda x: format_value_by_language(x, language)
+            lambda x: format_in_unit(x, divisor, decimals)
         )
+    df_modified.attrs["display_unit_label"] = label
+    df_modified.attrs["display_unit_divisor"] = divisor
+    df_modified.attrs["display_unit_decimals"] = decimals
     return handle_retained_earnings(df_modified, language)
 
 

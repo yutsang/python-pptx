@@ -98,6 +98,7 @@ written back to the workbook.
 """
 from __future__ import annotations
 
+import os
 import sys as _sys
 
 # Windows swaps the console encoding away from UTF-8 the moment output is piped
@@ -2854,6 +2855,12 @@ def main() -> int:
                          "default) collapses into one-line summaries. Findings/flags always "
                          "print in full either way -- this only controls the 'everything is "
                          "fine' noise, which is what makes a multi-file batch run unpasteable.")
+    ap.add_argument("--subtables", choices=("auto", "on", "off"), default="auto",
+                    help="per-account breakdown tables beside the commentary. 'auto' uses "
+                         "config.yml (pptx.presentation_tables.enabled); on/off override it "
+                         "for this run. config.yml is gitignored and per-machine, so a machine "
+                         "whose file still says false cannot be fixed from the repo -- this is "
+                         "the escape hatch.")
     ap.add_argument("--portfolio", default=None, metavar="ID",
                     help="when `path` is a folder, only process files belonging to this "
                          "portfolio, e.g. --portfolio I (comma-separate for several: 'I,II'). "
@@ -2869,6 +2876,26 @@ def main() -> int:
 
     global VERBOSE
     VERBOSE = args.verbose
+
+    if args.subtables != "auto":
+        os.environ["FDD_SUBTABLES"] = "1" if args.subtables == "on" else "0"
+    # Printed BEFORE the run, not discovered after it. This flag being off is
+    # invisible in the output -- the deck simply has no subtables, which reads
+    # as a rendering bug rather than a setting, and cost a full seven-entity
+    # pass to notice.
+    try:
+        from fdd_utils.pptx.payloads import _load_pptx_settings as _pptx_cfg
+        _sub = os.environ.get("FDD_SUBTABLES")
+        if _sub is not None and str(_sub).strip() != "":
+            _on = str(_sub).strip().lower() not in ("0", "false", "no", "off")
+            _src = f"--subtables {args.subtables}"
+        else:
+            _on = bool((_pptx_cfg().get("presentation_tables") or {}).get("enabled", True))
+            _src = "config.yml" if (_pptx_cfg().get("presentation_tables") or {}) else "built-in default"
+        print(f"Per-account subtables: {'ON' if _on else 'OFF'}  (from {_src})"
+              + ("" if _on else "  -- pass --subtables on to force them for this run"))
+    except Exception as _exc:
+        print(f"Per-account subtables: could not resolve setting ({_exc})")
 
     if args.export_pptx and not args.run_ai:
         print("❌ --export-pptx requires --run-ai (it needs AI-generated commentary to build the PPTX payloads).")
@@ -3002,6 +3029,35 @@ def main() -> int:
 
     if len(files) > 1:
         _print_final_summary(summaries, args.run_ai)
+
+    # One deck for the whole portfolio. The deliverable is a single combined
+    # file -- the UI has built one since 51dc49e (fdd_app.py calls
+    # combine_presentations over the batch's cached bytes) -- but the CLI only
+    # ever left seven separate .preview.pptx files behind, so "run the batch"
+    # did not actually produce the thing being delivered.
+    exported = [
+        str(entry["pptx"]["out_path"])
+        for entry in summaries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("pptx"), dict)
+        and entry["pptx"].get("out_path")
+        and Path(str(entry["pptx"]["out_path"])).exists()
+    ]
+    if len(exported) > 1:
+        _hr("11. COMBINED DECK (every entity's slides, in order, one file)")
+        from fdd_utils.pptx import combine_presentations
+        label = f"Portfolio_{args.portfolio.replace(',', '-')}" if args.portfolio else "Combined"
+        combined_path = Path(exported[0]).parent / f"{label}_{time.strftime('%Y%m%d_%H%M%S')}.pptx"
+        try:
+            combine_presentations(exported, str(combined_path))
+            print(f"  Merged {len(exported)} entity deck(s) in run order:")
+            for one in exported:
+                print(f"    - {Path(one).name}")
+            print(f"\n  📄 COMBINED DECK SAVED: {combined_path.resolve()}")
+            print("     (the per-entity previews above are kept as well)")
+        except Exception as exc:
+            print(f"  ❌ Could not combine the decks: {type(exc).__name__}: {exc}")
+            print("     The per-entity previews above are unaffected.")
     return 0
 
 

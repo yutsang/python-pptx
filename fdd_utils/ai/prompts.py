@@ -375,7 +375,17 @@ class PromptEngine:
         # reads df.attrs["prompt_analysis_df"] directly, before this
         # formatting step ever runs.
         formatted_analysis_df = prepare_display_dataframe(formatted_analysis_df)
+        # The unit add_language_display_columns just chose has to survive this
+        # merge: df.attrs is the ORIGINAL frame's, which has no unit key, and a
+        # blanket update() would drop the one thing that makes the bare numbers
+        # in this frame readable.
+        unit_attrs = {
+            key: formatted_analysis_df.attrs.get(key)
+            for key in ("display_unit_label", "display_unit_divisor", "display_unit_decimals")
+            if formatted_analysis_df.attrs.get(key) is not None
+        }
         formatted_analysis_df.attrs.update(df.attrs)
+        formatted_analysis_df.attrs.update(unit_attrs)
         return formatted_analysis_df
 
     @staticmethod
@@ -424,6 +434,68 @@ class PromptEngine:
             for parent, children in groups.items()
             if parent and children
         }
+        # The residual, computed. The rule "any difference is itself a component
+        # you have to account for" has been in this block for a while and the
+        # model still writes "其余为上海宝和、嘉兴君道及管理层调整等" -- naming the
+        # remainder without pricing it, which is the single most common
+        # composition warning left after the hierarchy fix. It cannot price it
+        # reliably by summing a list in its head, so the number is worked out
+        # here for the top three and handed over.
+        residual_chi = residual_eng = ""
+        try:
+            latest_col = None
+            if isinstance(analysis_df, pd.DataFrame) and len(analysis_df.columns) > 1:
+                numeric = [
+                    c for c in analysis_df.columns[1:]
+                    if not str(c).startswith("__") and pd.api.types.is_numeric_dtype(analysis_df[c])
+                ]
+                latest_col = numeric[-1] if numeric else None
+            if latest_col is not None:
+                label_col = analysis_df.columns[0]
+                child_names = {c for kids in groups.values() for c in kids}
+                top = [
+                    (str(row[label_col]).strip(), float(row[latest_col]))
+                    for _i, row in analysis_df.iterrows()
+                    if str(row[label_col]).strip() in components
+                    and str(row[label_col]).strip() not in child_names
+                    and isinstance(row[latest_col], (int, float)) and not pd.isna(row[latest_col])
+                ]
+                top = [t for t in top if t[1] != 0]
+                if len(top) > 3:
+                    ranked = sorted(top, key=lambda kv: abs(kv[1]), reverse=True)
+                    total = sum(v for _l, v in top)
+                    rest = ranked[3:]
+                    rest_sum = sum(v for _l, v in rest)
+                    if total != 0 and abs(rest_sum) > 0:
+                        from ..financial_display_format import choose_display_unit, format_in_unit
+                        div, unit, dec = choose_display_unit([v for _l, v in top] + [total], language)
+                        # "人民币万元" names the unit for a table HEADING. Inline
+                        # after a figure it has to read "24.7万元", not
+                        # "24.7人民币万元", so the currency prefix comes off.
+                        inline = unit.replace("人民币", "") if language == "Chi" else unit.replace("CNY ", "")
+                        inline = inline or unit
+                        names = "、".join(l for l, _v in rest[:4])
+                        names_e = ", ".join(l for l, _v in rest[:4])
+                        residual_chi = (
+                            f"【余额差额已算好】本科目共有{len(top)}个顶层构成项，合计"
+                            f"{format_in_unit(total, div, dec)}{inline}。若只列举最大的三项"
+                            f"（{'、'.join(l for l, _v in ranked[:3])}），"
+                            f"剩下的{len(rest)}项合计为**{format_in_unit(rest_sum, div, dec)}{inline}**"
+                            f"（{names}等）。收尾必须写成'其余{format_in_unit(rest_sum, div, dec)}{inline}为…'，"
+                            "把这个金额写出来——只写'其余为…等'而不给金额，读者无法判断那是遗漏还是无名构成项。"
+                        )
+                        residual_eng = (
+                            f"[REMAINDER ALREADY COMPUTED] This account has {len(top)} top-level "
+                            f"components totalling {format_in_unit(total, div, dec)} {inline}. If you "
+                            f"list only the largest three, the remaining {len(rest)} come to "
+                            f"**{format_in_unit(rest_sum, div, dec)} {inline}** ({names_e}). Close with "
+                            f"\"the remaining {format_in_unit(rest_sum, div, dec)} {inline} being ...\" "
+                            "-- state the amount; \"and others\" alone leaves the reader unable to "
+                            "tell an omission from an unnamed component."
+                        )
+        except Exception:
+            residual_chi = residual_eng = ""
+
         hierarchy_chi = hierarchy_eng = ""
         if groups:
             lines_chi = []
@@ -452,6 +524,7 @@ class PromptEngine:
         if language == "Chi":
             return (
                 hierarchy_chi
+                + residual_chi
                 + "【组成披露】该科目的明细组成已随财务数据提供。"
                 "请按组成列举，且每一项都必须带上金额——只写类别名称而不给金额是不合格的。"
                 "在**有金额的最高层级**列举（例如租金收入、物业管理费收入、水电费收入各自的余额），"
@@ -462,6 +535,7 @@ class PromptEngine:
             )
         return (
             hierarchy_eng
+            + residual_eng
             + "COMPOSITION. The account's component lines are supplied with the financial data. "
             "Enumerate the composition and give an AMOUNT for every item -- naming categories without "
             "amounts is not acceptable. Enumerate at the HIGHEST level that carries amounts (e.g. the "
@@ -656,12 +730,20 @@ class PromptEngine:
         # model was being shown the same quantity twice, once labelled and once
         # bare, and took the bare one. Same lesson as the analysis frame
         # earlier: hand over ONE representation, already carrying its unit.
-        from ..financial_display_format import format_value_by_language
+        from ..financial_display_format import choose_display_unit, format_in_unit
+
+        # ONE unit across the breakdown, stated once below -- not a unit per
+        # figure. Mixing them is what put 预付款项 out by ten thousand.
+        _all = [
+            (r.get("values") or {}).get(latest) for r in rows
+            if isinstance((r.get("values") or {}).get(latest), (int, float))
+        ]
+        divisor, unit_label, decimals = choose_display_unit(_all, language)
 
         def _fmt(entry):
             values = entry.get("values") or {}
             if latest and latest in values and isinstance(values[latest], (int, float)):
-                return f"{entry['label']} {format_value_by_language(values[latest], language)}"
+                return f"{entry['label']} {format_in_unit(values[latest], divisor, decimals)}"
             return str(entry["label"])
 
         listed = "、".join(_fmt(r) for r in rows[:10])
@@ -687,7 +769,8 @@ class PromptEngine:
 
         if language == "Chi":
             return (
-                f"【本科目已有做好的明细表】构成项（按最新一期{latest or ''}）："
+                f"【本科目已有做好的明细表】构成项（按最新一期{latest or ''}，"
+                f"**以下金额单位一律为{unit_label}**）："
                 f"{listed}。"
                 "撰写时**必须使用这些构成项名称**，不得使用会计科目代码（如660202）或笼统的"
                 "'其他明细'来代替。"
@@ -709,7 +792,7 @@ class PromptEngine:
             )
         return (
             f"[A READY-MADE BREAKDOWN EXISTS FOR THIS ACCOUNT] Components (latest period "
-            f"{latest or ''}): {listed}. "
+            f"{latest or ''}, **all amounts below are in {unit_label}**): {listed}. "
             "You MUST use these component names -- never an account code (660202) or a vague "
             "'other details'. The real deliverable handles this account in TWO parts, separated "
             "by a line break:\n"
@@ -1559,6 +1642,15 @@ class PromptEngine:
         normalized_table_linked_remarks = self._normalize_prompt_value(table_linked_remarks, language)
         normalized_rhs_remark_summary = self._normalize_prompt_value(rhs_remark_summary, language)
         normalized_user_comment = self._normalize_prompt_value(str(user_comment or "").strip(), language)
+        # The unit goes on the table's HEADING, once, the way the deliverable's
+        # own tables carry "人民币千元" above bare numbers -- rather than on every
+        # figure. Every number under this heading is already in it.
+        unit_label = ""
+        if isinstance(formatted_analysis_df, pd.DataFrame):
+            unit_label = str(formatted_analysis_df.attrs.get("display_unit_label") or "")
+        if unit_label:
+            analysis_label = f"{analysis_label}（单位：{unit_label}）" if language == "Chi" \
+                else f"{analysis_label} (in {unit_label})"
         normalized_analysis_label = self._normalize_prompt_value(analysis_label, language)
         normalized_mapping_key = self._normalize_prompt_value(mapping_key, language)
         trend_summary = build_trend_summary(analysis_df) if isinstance(analysis_df, pd.DataFrame) and not analysis_df.empty else {}

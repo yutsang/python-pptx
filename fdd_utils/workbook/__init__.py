@@ -189,6 +189,7 @@ from .schedules import (  # noqa: F401
     INTERNAL_ROW_KEY,
     PREFERRED_STAGE,
     extract_presentation_detail_table,
+    synthesize_detail_table_from_breakdown,
     infer_partial_year_annualization,
     normalize_financial_schedule,
     _CARRYING_AMOUNT_LABELS,

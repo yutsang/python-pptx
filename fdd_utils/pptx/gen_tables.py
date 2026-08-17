@@ -268,10 +268,19 @@ class _TablesMixin:
 
 
     def _presentation_tables_enabled(self) -> bool:
+        """Default ON since 2026-08-17. It shipped off "until verified against
+        a real export", and the verification never happened -- so seven real
+        entity decks were exported with no per-account breakdown table at all
+        and the absence read as a rendering bug. FDD_SUBTABLES=0/1 overrides
+        config.yml, which is gitignored and per-machine: a machine whose file
+        still says enabled:false cannot be fixed from this repo."""
+        override = os.environ.get("FDD_SUBTABLES")
+        if override is not None and str(override).strip() != "":
+            return str(override).strip().lower() not in ("0", "false", "no", "off")
         try:
-            return bool((self.pptx_settings.get("presentation_tables") or {}).get("enabled", False))
+            return bool((self.pptx_settings.get("presentation_tables") or {}).get("enabled", True))
         except Exception:
-            return False
+            return True
 
 
     def _presentation_table_style(self) -> str:

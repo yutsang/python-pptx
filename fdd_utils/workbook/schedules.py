@@ -1391,6 +1391,83 @@ def _build_prompt_analysis_df(
     return frame
 
 
+
+def synthesize_detail_table_from_breakdown(
+    row_entries: List[Dict[str, Any]],
+    columns: List[Dict[str, Any]],
+    analysis_stage: str,
+    block_title: str,
+) -> Optional[Dict[str, Any]]:
+    """A detail table built from the schedule's OWN breakdown rows, for the
+    sheets that carry no separate report-ready block below the main one.
+
+    extract_presentation_detail_table only finds the second table some
+    databooks put under the main schedule. On this client's files almost no
+    sheet has one -- the run reports "total only, and NO detail table found
+    anywhere on the sheet" for most accounts -- so no subtable could render
+    even with the feature switched on, and the model had no named components
+    to enumerate either.
+
+    The components exist regardless; they are just inside the main schedule,
+    already classified "breakdown" by _row_type and
+    _reclassify_indent_rollup_children. This turns them into the same shape
+    extract_presentation_detail_table returns, so everything downstream --
+    the subtable renderer, _detail_table_guidance, _sublist_text_for_table --
+    works without knowing which of the two sources it came from.
+
+    TOP LEVEL ONLY. A row that rolls up into another (rollup_parent_desc, set
+    only where the children were verified to sum to the parent) is left out,
+    because listing a parent beside its own children is the double-count that
+    produced most of a real run's grounding warnings. Returns None rather than
+    a one-row table: a "breakdown" with a single line says nothing the total
+    does not.
+    """
+    if not row_entries or not columns:
+        return None
+    stage_columns = sorted(
+        [column for column in columns if column["stage"] == analysis_stage],
+        key=lambda column: column["date"],
+    )
+    if not stage_columns:
+        return None
+    periods = [column["date"] for column in stage_columns]
+
+    rows: List[Dict[str, Any]] = []
+    for entry in row_entries:
+        if entry.get("row_type") != "breakdown":
+            continue
+        if entry.get("rollup_parent_desc"):
+            continue                      # a child of a verified rollup
+        values = {
+            column["date"]: entry["values"].get(column["key"])
+            for column in stage_columns
+        }
+        if not any(isinstance(v, (int, float)) and v != 0 for v in values.values()):
+            continue                      # dead component
+        label = str(entry.get("description") or "").strip()
+        if label:
+            rows.append({"label": label, "values": values})
+
+    if len(rows) < 2:
+        return None
+    total_row = None
+    for entry in row_entries:
+        if str(entry.get("row_type") or "").lower() in ("total", "subtotal"):
+            total_row = {
+                "label": str(entry.get("description") or "").strip(),
+                "values": {
+                    column["date"]: entry["values"].get(column["key"])
+                    for column in stage_columns
+                },
+            }
+    return {
+        "header": block_title,
+        "periods": periods,
+        "rows": rows,
+        "total_row": total_row,
+        "synthesized_from": "main_schedule_breakdown",
+    }
+
 def _multiply_factor(profile: Dict[str, Any]) -> int:
     markers = [str(marker).lower() for marker in profile.get("unit_markers") or []]
     if any("cny'000" in marker or "千元" in marker for marker in markers):
@@ -1744,16 +1821,28 @@ def normalize_financial_schedule(
         # The report-ready breakdown below the main schedule, when the sheet
         # has one -- human-readable labels rather than GL codes. See
         # extract_presentation_detail_table.
-        "presentation_detail_table": extract_presentation_detail_table(
-            df=df,
-            desc_col_idx=desc_col_idx,
-            main_block_end_row=data_end_row,
-            columns=columns,
-            multiplier=multiplier,
-            # The account's own period totals, so the candidate block can be
-            # required to SUM TO them. Without this the descriptive-label test
-            # alone still admits a fee-rate workpaper or a rollforward.
-            account_totals_by_date=projection_totals_by_date,
+        # The sheet's own second table wins when it exists -- it is written for
+        # a report and its labels are already human-readable. Falling back to
+        # the main schedule's breakdown rows covers the sheets that have no
+        # such block, which on some databooks is nearly all of them.
+        "presentation_detail_table": (
+            extract_presentation_detail_table(
+                df=df,
+                desc_col_idx=desc_col_idx,
+                main_block_end_row=data_end_row,
+                columns=columns,
+                multiplier=multiplier,
+                # The account's own period totals, so the candidate block can be
+                # required to SUM TO them. Without this the descriptive-label test
+                # alone still admits a fee-rate workpaper or a rollforward.
+                account_totals_by_date=projection_totals_by_date,
+            )
+            or synthesize_detail_table_from_breakdown(
+                row_entries=row_entries,
+                columns=columns,
+                analysis_stage=analysis_stage,
+                block_title=block_title,
+            )
         ),
         "normalized_columns": columns,
         "source_multiplier": multiplier,
