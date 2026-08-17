@@ -2322,6 +2322,7 @@ def export_and_inspect_pptx(
                 template_path=template_path,
                 bs_data=payloads["BS"], is_data=payloads["IS"],
                 output_path=out_path,
+                financials_from=financials_from,
                 project_name=Path(databook_path).stem,
                 language="Chinese" if is_chinese else "english",
                 temp_path=databook_path, selected_sheet=sheet_name,

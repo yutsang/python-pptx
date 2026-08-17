@@ -1392,6 +1392,25 @@ def _build_prompt_analysis_df(
 
 
 
+
+def _first_table_with_rows(primary, fallback_factory):
+    """`primary` when it actually carries rows, otherwise the fallback.
+
+    Exists because extract_presentation_detail_table deliberately returns a
+    truthy dict with an empty "rows" list on its rejection paths, so that a
+    caller can say WHY a summary was turned away rather than just seeing None.
+    That makes `primary or fallback()` wrong: the rejection object is truthy,
+    so the fallback is unreachable. Any diagnostic carried on the rejected
+    object is preserved on the fallback's result, so --explain still has it.
+    """
+    if isinstance(primary, dict) and primary.get("rows"):
+        return primary
+    result = fallback_factory()
+    if isinstance(result, dict) and isinstance(primary, dict) and primary.get("rejections"):
+        result = dict(result)
+        result["rejections"] = primary["rejections"]
+    return result if result is not None else primary
+
 def synthesize_detail_table_from_breakdown(
     row_entries: List[Dict[str, Any]],
     columns: List[Dict[str, Any]],
@@ -1825,7 +1844,15 @@ def normalize_financial_schedule(
         # a report and its labels are already human-readable. Falling back to
         # the main schedule's breakdown rows covers the sheets that have no
         # such block, which on some databooks is nearly all of them.
-        "presentation_detail_table": (
+        #
+        # The fallback tests for USABLE ROWS, not for None. extract_ returns a
+        # truthy {"rows": [], "rejections": [...]} on several paths on purpose,
+        # so a caller can report WHY a summary was turned away -- and a plain
+        # `A or B` reads that as success and never reaches B. Measured on a real
+        # databook: all 18 accounts came back with a table carrying zero rows,
+        # so no subtable could render and the synthesised fallback never ran
+        # once, which is exactly what "still no subtables" looked like.
+        "presentation_detail_table": _first_table_with_rows(
             extract_presentation_detail_table(
                 df=df,
                 desc_col_idx=desc_col_idx,
@@ -1836,13 +1863,13 @@ def normalize_financial_schedule(
                 # required to SUM TO them. Without this the descriptive-label test
                 # alone still admits a fee-rate workpaper or a rollforward.
                 account_totals_by_date=projection_totals_by_date,
-            )
-            or synthesize_detail_table_from_breakdown(
+            ),
+            lambda: synthesize_detail_table_from_breakdown(
                 row_entries=row_entries,
                 columns=columns,
                 analysis_stage=analysis_stage,
                 block_title=block_title,
-            )
+            ),
         ),
         "normalized_columns": columns,
         "source_multiplier": multiplier,

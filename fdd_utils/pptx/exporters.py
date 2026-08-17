@@ -109,6 +109,7 @@ def export_pptx_from_structured_data_combined(
     skip_summary_ai: bool = False,  # AI summary needed for coSummaryShape; parallelized at max_workers=4
     pre_generated_summaries: Optional[Dict[str, str]] = None,  # {"BS": str, "IS": str} — bypass AI in PPTX export
     mappings: Optional[Dict[str, Any]] = None,  # for translating the embedded BS/IS table's row labels when Chinese
+    financials_from: Optional[str] = None,  # workbook the Financials SHEET lives in, when not temp_path
 ):
     from .generation import PowerPointGenerator  # local: exporters imports the later generation; module-level would be a cycle
     try:
@@ -157,6 +158,7 @@ def export_pptx_from_structured_data_combined(
                 language,
                 bs_is_results=bs_is_results,
                 mappings=mappings,
+                financials_path=financials_from,
             )
             _stage_log(f"embed_financial_tables: {time.perf_counter() - stage_started_at:.2f}s")
         if hasattr(generator, "_unused_slides_to_remove") and generator._unused_slides_to_remove:

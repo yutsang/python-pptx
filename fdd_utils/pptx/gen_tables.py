@@ -2021,6 +2021,7 @@ class _TablesMixin:
         language: str,
         bs_is_results: Optional[Dict[str, Any]] = None,
         mappings: Optional[Dict[str, Any]] = None,
+        financials_path: Optional[str] = None,
     ):
         """Embed financial tables: BS to page 1, IS to page 5"""
         try:
@@ -2049,7 +2050,7 @@ class _TablesMixin:
                 try:
                     logger.info("No precomputed BS/IS; extracting fresh")
                     bs_is_results = extract_balance_sheet_and_income_statement(
-                        excel_path,
+                        financials_path or excel_path,
                         sheet_name,
                         debug=False,
                     )
@@ -2099,8 +2100,17 @@ class _TablesMixin:
             # sheet via iterrows() was a ~1-3s hit on big workbooks. Cap to
             # nrows=20 and use vectorised astype(str) instead of iterrows.
             currency_unit = None
+            # The sheet may live in a sibling roll-up ("主表"), not in this
+            # entity's own workbook -- that is what --financials-from means.
+            # Reading it from excel_path threw "Worksheet not found", the
+            # except below swallowed it, and currency_unit stayed None. That
+            # single miss produced BOTH reported symptoms at once, because the
+            # label and the rescale are gated on the same value: the corner
+            # cell fell back to the frame's column name ("Description") and
+            # every figure stayed in raw yuan instead of 千元.
+            unit_source_path = financials_path or excel_path
             try:
-                excel_df = pd.read_excel(excel_path, sheet_name=sheet_name, header=None, nrows=20)
+                excel_df = pd.read_excel(unit_source_path, sheet_name=sheet_name, header=None, nrows=20)
                 blob = ' '.join(
                     excel_df.fillna('').astype(str).agg(' '.join, axis=1).tolist()
                 )
@@ -2112,8 +2122,15 @@ class _TablesMixin:
                     currency_unit = '人民币千元'
                 elif "CNY'000" in blob or "CNY 000" in blob:
                     currency_unit = "CNY'000"
-            except Exception:
-                pass
+            except Exception as exc:
+                # Loud, not silent. This failing means the table renders with
+                # the wrong header AND the wrong scale, and the only previous
+                # trace was the deck looking odd.
+                logger.warning(
+                    "Currency-unit detection failed on %s / sheet %r (%s) -- the table "
+                    "will keep the frame's own column name in its corner cell and will "
+                    "NOT be rescaled to 千元.", unit_source_path, sheet_name, exc,
+                )
 
             # An English-labelled source databook (e.g. Kunshan) will only
             # ever have "CNY'000"/"CNY'M" markers to detect, even when the
