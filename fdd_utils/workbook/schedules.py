@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # re-added: bound by an import in another section of the pre-split module
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Sequence, Union
 from functools import lru_cache
 
 """
@@ -1414,7 +1414,7 @@ def _first_table_with_rows(primary, fallback_factory):
 def synthesize_detail_table_from_breakdown(
     row_entries: List[Dict[str, Any]],
     columns: List[Dict[str, Any]],
-    analysis_stage: str,
+    analysis_stage: Union[str, Sequence[str]],
     block_title: str,
 ) -> Optional[Dict[str, Any]]:
     """A detail table built from the schedule's OWN breakdown rows, for the
@@ -1443,6 +1443,29 @@ def synthesize_detail_table_from_breakdown(
     """
     if not row_entries or not columns:
         return None
+    # Try each candidate stage in order and keep the first that yields a real
+    # breakdown. The caller passes the PROJECTION stage first -- the one the
+    # account's own total actually came from -- because a subtable whose
+    # components come from a different stage than the total the commentary
+    # states cannot add up to it. Measured on a real databook: analysis_stage
+    # alone is "Indicative adjusted" whenever that column merely EXISTS, and on
+    # 12 of 18 accounts that stage held no data at all, so every component was
+    # dropped as dead and only the 3 accounts carrying a 管理层调整 row (which
+    # IS an indicative adjustment, hence non-zero there) produced a table.
+    stages = [analysis_stage] if isinstance(analysis_stage, str) else list(analysis_stage)
+    for stage in stages:
+        built = _synthesize_for_stage(row_entries, columns, stage, block_title)
+        if built is not None:
+            return built
+    return None
+
+
+def _synthesize_for_stage(
+    row_entries: List[Dict[str, Any]],
+    columns: List[Dict[str, Any]],
+    analysis_stage: str,
+    block_title: str,
+) -> Optional[Dict[str, Any]]:
     stage_columns = sorted(
         [column for column in columns if column["stage"] == analysis_stage],
         key=lambda column: column["date"],
@@ -1867,7 +1890,9 @@ def normalize_financial_schedule(
             lambda: synthesize_detail_table_from_breakdown(
                 row_entries=row_entries,
                 columns=columns,
-                analysis_stage=analysis_stage,
+                # Projection stage FIRST: it is where this account's own total
+                # came from, so the components can actually sum to it.
+                analysis_stage=[projection["effective_stage"], analysis_stage],
                 block_title=block_title,
             ),
         ),
