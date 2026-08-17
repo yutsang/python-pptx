@@ -588,13 +588,20 @@ def _reclassify_indent_rollup_children(
         distinct_values = {round(row["values"][projection_column_key], 2) for row in candidates}
         if len(distinct_values) != 1:
             continue  # candidates genuinely disagree -- don't guess
-        matched_parent_desc = str(candidates[0]["description"] or "")
         for sibling_idx in sibling_idxs:
             sibling_entry = row_entry_by_idx.get(sibling_idx)
             if sibling_entry is not None:
                 sibling_entry["row_type"] = "breakdown"
-                if matched_parent_desc:
-                    sibling_entry["rollup_parent_desc"] = matched_parent_desc
+                # Deliberately NOT setting rollup_parent_desc here. This pass
+                # matches a sibling group against a TOTAL row -- which is what
+                # every top-level component of a well-formed schedule does, by
+                # definition. Recording that as "this row is a child" made the
+                # subtable synthesiser, which skips children to avoid
+                # double-counting, skip EVERYTHING: measured on a real file,
+                # 其他应付款 reported 12 of 12 breakdown rows as rollup children
+                # and 0 top-level components, and 固定资产 16 of 16. Only pass 1
+                # sets it, where the parent is another COMPONENT carrying its
+                # own value -- which is the nesting the skip actually exists for.
 
 
 def _fallback_description(description: str, title: str, last_label: Optional[str]) -> str:
@@ -1453,7 +1460,11 @@ def synthesize_detail_table_from_breakdown(
     # 12 of 18 accounts that stage held no data at all, so every component was
     # dropped as dead and only the 3 accounts carrying a 管理层调整 row (which
     # IS an indicative adjustment, hence non-zero there) produced a table.
-    stages = [analysis_stage] if isinstance(analysis_stage, str) else list(analysis_stage)
+    raw_stages = [analysis_stage] if isinstance(analysis_stage, str) else list(analysis_stage)
+    stages: List[str] = []
+    for stage in raw_stages:          # dedupe, order-preserving: the projection
+        if stage and stage not in stages:   # and analysis stage are often the same
+            stages.append(stage)
     local_notes: List[str] = []
     for stage in stages:
         built = _synthesize_for_stage(row_entries, columns, stage, block_title, local_notes)
