@@ -24,6 +24,7 @@ from .helpers import (  # lifted out of PowerPointGenerator
     _presentation_table_for_account,
     _select_presentation_tables,
     _strip_table_handoff,
+    _SUBTABLE_DECISION_KEY,
     _process_markdown_content,
     _read_table_style_id,
     _real_font_size_pt,
@@ -2461,8 +2462,21 @@ class _PackingMixin:
                 for item in structured_data
                 if (table := _presentation_table_for_account(item)) is not None
             ]
-            selected, rejected = _select_presentation_tables(candidates, self.pptx_settings)
-            table_for_item = {id(item): table for item, table in selected}
+            if any(_SUBTABLE_DECISION_KEY in item for item, _t in candidates):
+                # _select_deck_subtables already ruled, with BOTH statements in
+                # view. Re-deciding here would apply a deck-wide cap to one
+                # statement, which is a different (and larger) budget.
+                drawn = {id(item) for item, _t in candidates
+                         if item.get(_SUBTABLE_DECISION_KEY)}
+                rejected = []
+            else:
+                # No deck-level pass ran (a single-statement export, or a
+                # diagnostic). Decide from what is here and say so -- better a
+                # cap scoped to one statement than none at all.
+                selected, rejected = _select_presentation_tables(candidates, self.pptx_settings)
+                drawn = {id(item) for item, _t in selected}
+            table_for_item = {id(item): table for item, table in candidates
+                              if id(item) in drawn}
             for item, reason in rejected:
                 logger.info(
                     "Subtable not drawn for %s: %s",

@@ -524,6 +524,18 @@ _TABLE_PRIORITY_DEFAULT = (
     "NCA", "AR", "AP", "Advances", "OP", "OR", "Tax payable", "IA",
 )
 
+#: The income statement outranks the balance sheet for the deck's whole table
+#: budget, on the user's call: "我認為是全deck5個而且優先是is 因為bs需要用到的
+#: 比較少". A balance-sheet account's question is "how much", which its own
+#: line in the embedded BS grid already answers; an income-statement account's
+#: is "made of what", which only a breakdown answers.
+#:
+#: This is a strict order, not a weighting -- if the income statement alone
+#: fills the budget the balance sheet gets NO table. That is the intended
+#: reading of "全deck5個 + IS優先"; inspect_databook's 3c prints every
+#: rejection, so a balance-sheet shutout is visible before the deck is built.
+_STATEMENT_PRIORITY = ("IS", "BS")
+
 
 def _select_presentation_tables(
     candidates: List[Tuple[Dict[str, Any], Dict[str, Any]]],
@@ -543,8 +555,13 @@ def _select_presentation_tables(
        earns its space by showing MORE than a sentence can carry, and a
        sentence carries about three components comfortably; hence min_rows.
     2. **There is only so much page.** Past a handful, tables stop being
-       exhibits and become the deck. max_per_statement caps them, and
-       _TABLE_PRIORITY_DEFAULT decides which survive.
+       exhibits and become the deck. max_per_deck caps them; _STATEMENT_
+       PRIORITY then _TABLE_PRIORITY_DEFAULT decide which survive.
+
+    The cap is DECK-wide, so this has to be called once with both statements'
+    accounts (see _select_deck_subtables) -- capping each statement separately
+    doubles the real budget. Called with one statement's accounts it still
+    works, it just cannot know what the other statement wants.
 
     A dropped account is NOT losing content: it returns to the ordinary
     commentary pool with its full text (the caller trims the now-dangling
@@ -565,7 +582,7 @@ def _select_presentation_tables(
         return value if value >= 0 else default
 
     min_rows = _int_setting("min_rows", 3)
-    max_tables = _int_setting("max_per_statement", 5)
+    max_tables = _int_setting("max_per_deck", 5)
     priority = tables.get("priority")
     if not isinstance(priority, (list, tuple)) or not priority:
         priority = _TABLE_PRIORITY_DEFAULT
@@ -587,24 +604,30 @@ def _select_presentation_tables(
         substantial.append((item, table))
 
     if max_tables == 0:
-        return [], dropped + [(item, "max_per_statement=0") for item, _ in substantial]
+        return [], dropped + [(item, "max_per_deck=0") for item, _ in substantial]
 
-    def _sort_key(pair: Tuple[Dict[str, Any], Dict[str, Any]]) -> Tuple[int, int, str]:
+    def _sort_key(pair: Tuple[Dict[str, Any], Dict[str, Any]]) -> Tuple[int, int, int, str]:
         item, table = pair
         key = str(item.get("mapping_key") or item.get("account_name") or "").strip().lower()
+        statement = str(item.get("_statement_type") or "").strip().upper()
+        statement_rank = (_STATEMENT_PRIORITY.index(statement)
+                          if statement in _STATEMENT_PRIORITY else len(_STATEMENT_PRIORITY))
         # Absent from the priority list is not a demerit against a LOWER-
         # ranked listed account, only against the listed ones -- so unlisted
         # accounts sort after the list and among themselves by how much their
         # table actually shows.
-        return (rank_of.get(key, len(rank_of)), -len(table.get("rows") or []), key)
+        return (statement_rank, rank_of.get(key, len(rank_of)),
+                -len(table.get("rows") or []), key)
 
     ordered = sorted(substantial, key=_sort_key)
     kept = ordered[:max_tables]
     for item, table in ordered[max_tables:]:
+        statement = str(item.get("_statement_type") or "").strip().upper()
+        note = f" -- {statement} ranks after {_STATEMENT_PRIORITY[0]}" if statement == "BS" else ""
         dropped.append((
             item,
-            f"over max_per_statement={max_tables} "
-            f"({len(table.get('rows') or [])} component(s), ranked below the ones kept)",
+            f"over max_per_deck={max_tables} "
+            f"({len(table.get('rows') or [])} component(s), ranked below the ones kept){note}",
         ))
 
     # Restore the statement's own reading order: the ranking decides WHICH
@@ -613,6 +636,47 @@ def _select_presentation_tables(
     position = {id(item): i for i, (item, _t) in enumerate(candidates)}
     kept.sort(key=lambda pair: position.get(id(pair[0]), 0))
     return kept, dropped
+
+
+#: Set on every account the deck-level pass has ruled on. Its ABSENCE is what
+#: tells _plan_slot_distribution no such pass ran (a single-statement caller,
+#: or a diagnostic), so it can fall back to deciding for itself.
+_SUBTABLE_DECISION_KEY = "_subtable_ok"
+
+
+def _select_deck_subtables(
+    statements: List[Tuple[str, List[Dict[str, Any]]]],
+    settings: Optional[Dict[str, Any]] = None,
+) -> List[Tuple[Dict[str, Any], str]]:
+    """Rules on the WHOLE deck's tables at once, tagging each account.
+
+    max_per_deck cannot be enforced from inside _plan_slot_distribution: that
+    runs once per statement, so a cap applied there is a cap per statement and
+    the deck gets twice what was asked for. Worse, the balance sheet is
+    planned first (slide 1 before slide 5), so a naive running budget would be
+    spent before the income statement was considered at all -- the exact
+    opposite of _STATEMENT_PRIORITY.
+
+    So the decision is made HERE, before any planning, where both statements
+    are visible at once. Each account dict is tagged in place; the tag
+    survives _prepare_structured_data_for_slides' shallow dict() copy.
+
+    Returns the rejections, for the caller to log.
+    """
+    candidates: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for statement_type, items in statements:
+        for item in items or []:
+            table = _presentation_table_for_account(item)
+            if table is None:
+                continue
+            item["_statement_type"] = statement_type
+            candidates.append((item, table))
+
+    kept, dropped = _select_presentation_tables(candidates, settings)
+    keep_ids = {id(item) for item, _table in kept}
+    for item, _table in candidates:
+        item[_SUBTABLE_DECISION_KEY] = id(item) in keep_ids
+    return dropped
 
 
 def _strip_table_handoff(text: str, handoff: str) -> str:

@@ -126,6 +126,19 @@ def export_pptx_from_structured_data_combined(
         generator.load_template()
         _stage_log(f"load_template: {time.perf_counter() - stage_started_at:.2f}s")
 
+        # Rule on every subtable in the deck before either statement is
+        # planned -- the cap is per DECK and the income statement outranks the
+        # balance sheet, neither of which can be honoured from inside the
+        # per-statement planner that runs BS first. See _select_deck_subtables.
+        from .helpers import _select_deck_subtables
+        for rejected_item, reason in _select_deck_subtables(
+            [("BS", bs_data), ("IS", is_data)], generator.pptx_settings,
+        ):
+            _stage_log(
+                f"Subtable not drawn for "
+                f"{rejected_item.get('mapping_key') or rejected_item.get('account_name')}: {reason}"
+            )
+
         pre_summaries = pre_generated_summaries or {}
         if bs_data:
             stage_started_at = time.perf_counter()

@@ -138,18 +138,22 @@ pptx:
     # 管理费用 table under "主要包括管理费用-行政及管理层调整". 3 drops six
     # of that deck's seventeen tables. Set 2 for the old behaviour.
     min_rows: 3
-    # Cap per STATEMENT, not per deck: the planner runs once for the balance
-    # sheet and once for the income statement, and a deck-wide cap applied in
-    # that order would let the balance sheet spend the whole budget before
-    # the income statement was considered at all -- dropping exactly the
-    # 营业收入/营业成本/税金及附加 breakdowns a reader looks for first. So 5
-    # here means up to 5 + 5; halve it for ~5 in the deck.
-    max_per_statement: 5
-    # Ranking used ONLY when more accounts qualify than max_per_statement
-    # allows; blank = the built-in order in helpers._TABLE_PRIORITY_DEFAULT.
-    # Values are mapping keys (mappings.yml), not sheet names. Anything not
-    # listed still gets a table when there is room, ranked after the list by
-    # component count.
+    # Tables in the WHOLE deck, both statements together (not per statement).
+    # Enforced by _select_deck_subtables before either statement is planned,
+    # since the per-statement planner runs BS first and cannot see the budget.
+    max_per_deck: 5
+    # When more accounts qualify than max_per_deck allows, the INCOME
+    # STATEMENT is served first and the balance sheet takes what is left --
+    # a BS account's question is "how much", which the embedded BS grid
+    # already answers, while an IS account's is "made of what". This order is
+    # helpers._STATEMENT_PRIORITY and is strict: an income statement with 5
+    # qualifying accounts leaves the balance sheet none. inspect_databook's
+    # 3c prints every rejection, so check there before an expensive run.
+    #
+    # Within a statement, ranking falls to this list of mapping keys
+    # (mappings.yml, not sheet names); blank = helpers._TABLE_PRIORITY_DEFAULT.
+    # An account not listed still gets a table when there is room, ranked
+    # after the list by component count.
     # priority: [OI, OC, Tax and Surcharges, GA, Selling cost, Fin Exp, NCA, AR]
   commentary_packing:
     # Client-font-aware line fitting. metrics json files are committed IN the repo

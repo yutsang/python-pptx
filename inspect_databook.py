@@ -1512,47 +1512,59 @@ def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame]) -
         # restating its rules -- a diagnostic that models a different
         # algorithm than the one shipping is worse than no diagnostic (the
         # same lesson _plan_slot_distribution's own docstring records).
-        from fdd_utils.pptx.helpers import _select_presentation_tables
+        from fdd_utils.pptx.helpers import _select_deck_subtables, _SUBTABLE_DECISION_KEY
 
         settings = gen.pptx_settings
         tables_cfg = (settings.get("presentation_tables") or {})
         print(f"\n  [3] selection  min_rows={tables_cfg.get('min_rows', 3)}  "
-              f"max_per_statement={tables_cfg.get('max_per_statement', 5)}")
+              f"max_per_deck={tables_cfg.get('max_per_deck', 5)}   (income statement first)")
 
-        # Per STATEMENT, because the cap is per statement -- scoring all 18
-        # accounts as one pool would report a number the deck never draws.
-        # mappings[key]["type"] is the same field build_pptx_payloads splits on.
+        # Run the deck-level selector itself, on both statements at once,
+        # exactly as export_pptx_from_structured_data_combined does -- the cap
+        # is deck-wide, so scoring either statement alone reports a count the
+        # deck never draws. mappings[key]["type"] is the same field
+        # build_pptx_payloads splits on.
         by_statement: Dict[str, list] = {"BS": [], "IS": [], "?": []}
         for r in ok:
             entry = mappings.get(r["mapping"]) or {}
             by_statement.setdefault(str(entry.get("type") or "?"), []).append(r)
 
+        stub_of = {}
+        for statement, group in by_statement.items():
+            for r in group:
+                stub = {"mapping_key": r["mapping"], "account_name": r["account"],
+                        "financial_data": dfs.get(r["account"])}
+                stub_of[id(stub)] = r
+                r["_stub"] = stub
+        rejected = _select_deck_subtables(
+            [(s, [r["_stub"] for r in by_statement.get(s) or []]) for s in ("IS", "BS", "?")],
+            settings,
+        )
+        reason_of = {id(item): reason for item, reason in rejected}
+
         drawn_total = 0
-        for statement in ("BS", "IS", "?"):
+        for statement in ("IS", "BS", "?"):
             group = by_statement.get(statement) or []
             if not group:
                 continue
-            candidates = [
-                ({"mapping_key": r["mapping"], "account_name": r["account"]},
-                 {"rows": [None] * r["n_rows"]})
-                for r in group
-            ]
-            kept, rejected = _select_presentation_tables(candidates, settings)
-            drawn_total += len(kept)
+            drawn = [r for r in group if r["_stub"].get(_SUBTABLE_DECISION_KEY)]
+            drawn_total += len(drawn)
             label = {"BS": "balance sheet", "IS": "income statement"}.get(
                 statement, "unclassified (no type in mappings.yml -- NOT in the deck)")
-            print(f"\n    {label}: {len(kept)} drawn of {len(group)} available")
-            for item, _t in kept:
-                print(f"      ✅ {item['account_name']}")
-            for item, reason in rejected:
-                print(f"      ➖ {item['account_name']}: {reason}")
+            print(f"\n    {label}: {len(drawn)} drawn of {len(group)} available")
+            for r in group:
+                if r["_stub"].get(_SUBTABLE_DECISION_KEY):
+                    print(f"      ✅ {r['account']}  ({r['n_rows']} components)")
+            for r in group:
+                if not r["_stub"].get(_SUBTABLE_DECISION_KEY):
+                    print(f"      ➖ {r['account']}: {reason_of.get(id(r['_stub']), '?')}")
 
         print(f"\n  => {drawn_total} table(s) in this entity's deck, of {len(ok)} available.")
         if drawn_total != len(ok):
             print("     A rejected account is NOT losing content: it keeps its full commentary"
                   "\n     and returns to normal packing, with a dangling '明细如下：' trimmed."
-                  "\n     Tune with pptx.presentation_tables.min_rows / max_per_statement;"
-                  "\n     min_rows=2 + a large max_per_statement is the old draw-everything"
+                  "\n     Tune with pptx.presentation_tables.min_rows / max_per_deck;"
+                  "\n     min_rows=2 + a large max_per_deck is the old draw-everything"
                   "\n     behaviour.")
 
 
