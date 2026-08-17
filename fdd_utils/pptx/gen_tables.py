@@ -681,13 +681,24 @@ class _TablesMixin:
         # uniform width when it already fits without scaling; otherwise fall
         # back to sizing THIS table to its own content (still clamped to
         # available_pt, but against a need that's actually its own).
-        uniform = (getattr(self, "_uniform_table_col_widths_pt", None) or {}).get(n_cols)
-        if uniform and sum(uniform) <= available_pt:
-            column_widths_pt = list(uniform)
+        #
+        # That choice is now MADE ONCE, in _precompute_uniform_table_column_
+        # widths, and hung on the table dict. Deciding it here as well meant
+        # the packer reserved height against one width and the renderer drew
+        # at another, which is precisely how a wrapped label went uncharged.
+        # The two branches below are the fallback for a table that never went
+        # through the precompute (a diagnostic, or a direct render).
+        settled = table.get("_column_widths_pt")
+        if settled and len(settled) == n_cols:
+            column_widths_pt = list(settled)
         else:
-            column_widths_pt = self._measure_presentation_table_column_widths_pt(
-                plan, periods, period_labels, unit_label, is_chinese_databook, available_pt,
-            )
+            uniform = (getattr(self, "_uniform_table_col_widths_pt", None) or {}).get(n_cols)
+            if uniform and sum(uniform) <= available_pt:
+                column_widths_pt = list(uniform)
+            else:
+                column_widths_pt = self._measure_presentation_table_column_widths_pt(
+                    plan, periods, period_labels, unit_label, is_chinese_databook, available_pt,
+                )
         table_width = max(int(Inches(0.7)), int(sum(column_widths_pt) * 12700))
 
         graphic_frame = slide.shapes.add_table(n_rows, n_cols, left, top, table_width, height)

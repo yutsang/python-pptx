@@ -494,6 +494,19 @@ class PowerPointGenerator(
     _TABLE_CELL_PADDING_PT = 5.76
     _TABLE_CHILD_INDENT_PT = 8.64
     _TABLE_MIN_COLUMN_PT = 25.2  # 0.35in floor, guards a pathologically short column
+    # Breathing room granted to the LABEL column out of a slot's UNUSED
+    # width -- never at another column's expense (see
+    # _clamp_column_widths_to_available). It is the only column holding
+    # prose, our measurement does not know PowerPoint's own cell insets,
+    # and a label measured as exactly fitting wraps there, auto-grows its
+    # row, and pushes the table onto the paragraph below. These tables
+    # render at 52-64% of their slot, so this is spent on space that was
+    # empty anyway.
+    _TABLE_LABEL_SAFETY_FRACTION = 0.12
+    # Only used when the template shape can't be read (see
+    # _table_slot_available_pt). 4.78in is what every commentary slot in the
+    # real template measures.
+    _TABLE_SLOT_DEFAULT_WIDTH_PT = 344.0
 
     # A textbox's own top+bottom insets (OOXML default 0.05in each = 7.2pt
     # total). Height formulas that size a box from its TEXT's measured

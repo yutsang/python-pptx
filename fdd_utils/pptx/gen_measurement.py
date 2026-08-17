@@ -70,6 +70,7 @@ Based on the backup methods but implemented fresh for the new system
 from .text import detect_chinese_text, get_font_name_for_text, get_font_size_for_text, get_line_spacing_for_text, get_space_after_for_text, get_space_before_for_text
 from .payloads import _load_pptx_settings, _looks_like_blocked_ai_content, _merge_nested_dict, _normalize_slide_commentary_text, _split_text_sentences, _translate_statement_row_label
 
+import math
 import os
 import re
 import logging
@@ -576,8 +577,7 @@ class _MeasurementMixin:
         return lead_in_pt, table_pt, explain_pt
 
 
-    @classmethod
-    def _presentation_table_height_pt(cls, table: Dict[str, Any]) -> float:
+    def _presentation_table_height_pt(self, table: Dict[str, Any]) -> float:
         """Total table height in points, from the SAME row-height constants
         _render_presentation_table sets as real row heights -- so the space
         reserved during packing and the space actually drawn can't drift
@@ -591,15 +591,30 @@ class _MeasurementMixin:
         # bottom of its slot. is_chinese_databook/source_multiplier change
         # only labels and scale, never the row COUNT, so any value does.
         from .helpers import _build_presentation_table_plan
-        pts = cls._TABLE_TITLE_ROW_PT + cls._TABLE_HEADER_ROW_PT
-        for entry in _build_presentation_table_plan(table, False, 1):
+        is_chinese = bool(table.get("_is_chinese_databook"))
+        plan = _build_presentation_table_plan(table, is_chinese, 1)
+        pts = self._TABLE_TITLE_ROW_PT + self._TABLE_HEADER_ROW_PT
+        for entry in plan:
             kind = entry.get("kind")
             if kind == "total":
-                pts += cls._TABLE_TOTAL_ROW_PT
+                pts += self._TABLE_TOTAL_ROW_PT
             elif kind in ("child", "grouped", "group"):
-                pts += cls._TABLE_CHILD_ROW_PT
+                pts += self._TABLE_CHILD_ROW_PT
             else:
-                pts += cls._TABLE_DATA_ROW_PT
+                pts += self._TABLE_DATA_ROW_PT
+
+        # A label too long for its column wraps, and PowerPoint auto-grows
+        # that row -- so the table draws TALLER than the fixed row heights
+        # above imply, and lands on whatever follows it. Charge for the extra
+        # lines. Only possible once the column width is settled, which
+        # _precompute_uniform_table_column_widths does before packing runs;
+        # with no settled width this falls through to one line per row, the
+        # old behaviour.
+        widths = table.get("_column_widths_pt")
+        if widths:
+            extra_lines = self._table_label_column_lines(plan, widths[0], is_chinese) - len(plan)
+            if extra_lines > 0:
+                pts += extra_lines * self._TABLE_DATA_ROW_PT
         return pts
 
 
@@ -666,14 +681,89 @@ class _MeasurementMixin:
     def _clamp_column_widths_to_available(
         self, widths_pt: List[float], available_pt: Optional[float],
     ) -> List[float]:
-        """Floors each column at the legibility minimum, then scales the
-        whole set down proportionally if it would overflow the slot."""
+        """Fits the columns to the slot, treating the LABEL column as the one
+        worth protecting.
+
+        Every column was sized to exactly its own content plus padding, which
+        left the label column with no margin at all -- and it is the only
+        column whose content is prose. Real PowerPoint adds cell insets of its
+        own on top of ours, so a label measured as exactly fitting can still
+        wrap there, and a wrapped label auto-grows its row past the fixed
+        _TABLE_*_ROW_PT the height estimate assumed. That is how a table ends
+        up taller than the gap reserved for it and lands on the paragraph
+        below (a real export: "TABLE OVERLAPS REAL TEXT").
+
+        So, both directions:
+
+        UNDER budget (the common case -- these tables render at 52-64% of
+        their slot) the leftover is free real estate. Give the label column a
+        margin out of it rather than leaving it stretched tight beside 1.5
+        inches of nothing.
+
+        OVER budget, take it out of the NUMERIC columns first. They hold
+        formatted figures whose width is known exactly and which have slack
+        above the legibility floor; scaling every column proportionally, as
+        this used to, spent the label column's width to buy room for columns
+        that did not need it.
+        """
         widths_pt = [max(self._TABLE_MIN_COLUMN_PT, w) for w in widths_pt]
+        if available_pt is None or not widths_pt:
+            return widths_pt
+
         total_pt = sum(widths_pt)
-        if available_pt is not None and total_pt > available_pt and total_pt > 0:
-            scale = available_pt / total_pt
+        if total_pt <= available_pt:
+            spare = available_pt - total_pt
+            widths_pt[0] += min(spare, widths_pt[0] * self._TABLE_LABEL_SAFETY_FRACTION)
+            return widths_pt
+
+        over_pt = total_pt - available_pt
+        numeric_slack = sum(max(0.0, w - self._TABLE_MIN_COLUMN_PT) for w in widths_pt[1:])
+        if numeric_slack > 0:
+            taken = min(over_pt, numeric_slack)
+            for i in range(1, len(widths_pt)):
+                share = max(0.0, widths_pt[i] - self._TABLE_MIN_COLUMN_PT) / numeric_slack
+                widths_pt[i] -= taken * share
+            over_pt -= taken
+        if over_pt > 0:
+            # The numeric columns are at their floor and it still does not
+            # fit: only now is the label column charged, and the whole set
+            # scales together so the table stays proportionate.
+            scale = available_pt / sum(widths_pt)
             widths_pt = [w * scale for w in widths_pt]
         return widths_pt
+
+
+    def _table_label_column_lines(
+        self, plan: List[Dict[str, Any]], label_width_pt: float, is_chinese_databook: bool,
+    ) -> int:
+        """How many LINES the label column really takes across the whole
+        table -- one per row unless a label is too long for the column, in
+        which case PowerPoint wraps it and auto-grows that row.
+
+        _presentation_table_height_pt used to assume one line per row
+        unconditionally, so a single wrapped label made the drawn table
+        taller than the gap reserved for it. Counting the wrap here is the
+        other half of _clamp_column_widths_to_available's margin: the margin
+        makes wrapping rare, this makes it harmless when it still happens.
+        """
+        from fdd_utils.text_metrics import get_measurer
+
+        packing = self._packing_settings()
+        measurer = get_measurer(
+            _measurer_family(is_chinese_databook, packing), 7.0,
+            is_cjk=is_chinese_databook,
+            metrics_path=_resolve_font_metrics_path(is_chinese_databook, packing),
+        )
+        usable_pt = label_width_pt - self._TABLE_CELL_PADDING_PT
+        if usable_pt <= 1.0:
+            return len(plan)
+        lines = 0
+        for entry in plan:
+            indent_pt = (self._TABLE_CHILD_INDENT_PT
+                         if entry.get("kind") in ("child", "grouped") else 0.0)
+            need_pt = measurer.text_width_pt(entry.get("label", "")) + indent_pt
+            lines += max(1, int(math.ceil(need_pt / usable_pt)))
+        return lines
 
 
     def _precompute_uniform_table_column_widths(
@@ -717,4 +807,59 @@ class _MeasurementMixin:
             existing = by_cols.get(n_cols)
             by_cols[n_cols] = widths if existing is None else [max(a, b) for a, b in zip(existing, widths)]
         self._uniform_table_col_widths_pt = by_cols
+
+        # Settle each table's FINAL widths here, while both statements' tables
+        # are in hand and before anything is packed, and hang them on the
+        # table dict. Two things then become possible that were not:
+        #   - _presentation_table_height_pt can count a wrapped label, because
+        #     it finally knows the column width. It runs during PACKING, long
+        #     before the renderer picks a width, so without this it could only
+        #     assume one line per row -- and a wrapped label is exactly what
+        #     made a real export's table overhang the paragraph below it.
+        #   - the renderer stops re-deciding. It used to choose between the
+        #     uniform set and the table's own content by whether the uniform
+        #     set fitted; that choice is made once, here, so the width the
+        #     packer reserved for and the width drawn cannot disagree.
+        available_pt = self._table_slot_available_pt()
+        for item in (table_items or []):
+            table = item.get("_presentation_table")
+            if not table:
+                continue
+            try:
+                plan = _build_presentation_table_plan(
+                    table, is_chinese_databook, _table_source_multiplier(item),
+                )
+                own = self._measure_presentation_table_column_widths_pt(
+                    plan, table.get("periods") or [], table.get("period_labels") or {},
+                    _table_unit_label(is_chinese_databook), is_chinese_databook,
+                    available_pt=None,
+                )
+                uniform = by_cols.get(len(own))
+                # The uniform set is the element-wise MAX, so it can be wider
+                # than this slot; only take it when it actually fits, exactly
+                # as the renderer used to decide (IMG_0402).
+                chosen = list(uniform) if uniform and sum(uniform) <= available_pt else list(own)
+                table["_column_widths_pt"] = self._clamp_column_widths_to_available(
+                    chosen, available_pt,
+                )
+                table["_is_chinese_databook"] = is_chinese_databook
+            except Exception as exc:
+                logger.debug("Could not settle column widths for %s: %s",
+                             item.get("mapping_key"), exc)
+
+
+    def _table_slot_available_pt(self) -> float:
+        """Width a subtable has to live in, read from the real template shape.
+
+        Every commentary slot in the template is the same width (see
+        _measurement_slot_shape), so one number serves for all of them -- and
+        it must be the REAL one, since it decides whether a label column wraps.
+        """
+        try:
+            shape = self._measurement_slot_shape()
+            if shape is not None and getattr(shape, "width", None):
+                return float(shape.width) * 72.0 / 914400.0
+        except Exception as exc:
+            logger.debug("Could not read the slot width for table sizing: %s", exc)
+        return self._TABLE_SLOT_DEFAULT_WIDTH_PT
 

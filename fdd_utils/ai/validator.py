@@ -714,10 +714,28 @@ def _combine_verdict(clause: str, det: Optional[Dict[str, Any]],
     return {"clause": clause, "supported": supported, "category": category, "reason": reason}
 
 
-_ENUM_ITEM = re.compile(r"[1-9]）\s*[^；;]*?([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
-_ENUM_RUNON = re.compile(r"(?:主要)?(?:包括|包含|为|系)[^。；;]*?"
-                         r"((?:[\u4e00-\u9fff]{2,10}[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)[、及和]?){2,})")
-_RUNON_AMT = re.compile(r"([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+_ENUM_ITEM = re.compile(r"[1-9]）\s*[^；;]*?(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+# The enumeration runs from "主要包括" to the end of that SENTENCE. It used to
+# require each component to be a run of 2-10 CJK characters immediately before
+# its figure, which real labels in one deck do not satisfy:
+#   其他应付款-非关联公司-其他169.0万元   -- hyphens break the CJK run
+#   C0040某物流有限公司7.0万元          -- starts with a counterparty code
+# Both were silently dropped from the sum, and an account whose own sentence
+# adds up exactly was reported as "182.0万元 (60%) unaccounted for". Bounding on
+# the sentence and taking every amount inside it needs no assumption about what
+# a label looks like.
+# 为/系 only count behind 主要. A bare one is the copula in "余额为301.8万元"
+# and anchoring there swept the STATED TOTAL into the component list --
+# the sum came out at exactly twice the total and was reported as a
+# parent-plus-children duplication that was not there.
+_ENUM_RUNON = re.compile(r"(?:主要(?:包括|包含|为|系)|包括|包含)([^。]*)")
+_RUNON_AMT = re.compile(r"(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+# "其余X万元为…" is the closing component _composition_guidance explicitly asks
+# for ("收尾必须写成'其余X万元为…'"). Not counting it made the checker
+# contradict the instruction: a bullet that complied was flagged for the very
+# amount it had just disclosed. 负/- because a contra component is normal --
+# 管理层调整 is routinely negative.
+_RESIDUAL_ITEM = re.compile(r"其余\s*(?:为)?\s*(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 _STATED_TOTAL = re.compile(r"(?:合计|总额|余额合?计?)\s*(?:为)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 _SCALE = {"元": 1.0, "万元": 1e4, "亿元": 1e8}
 
@@ -745,6 +763,17 @@ def check_composition_adds_up(mapping_key: str, text: str) -> List[str]:
         run = _ENUM_RUNON.search(body)
         if run:
             items = _RUNON_AMT.findall(run.group(1))
+    # The closing "其余X万元为…" is a component like any other. Added here
+    # rather than inside the two patterns above because it can sit in either
+    # form -- after a numbered list, or trailing a run-on one -- and because a
+    # run-on span that already swallowed it must not count it twice.
+    residual = _RESIDUAL_ITEM.search(body)
+    if residual:
+        sign, value, unit = residual.groups()
+        signed = float(value.replace(",", "")) * (-1.0 if sign else 1.0)
+        if not any(abs(float(v.replace(",", "")) - abs(signed)) < 1e-9 and u == unit
+                   for v, u in items):
+            items = list(items) + [(f"{signed:.10g}", unit)]
     if not m or len(items) < 2:
         return []
     total = float(m.group(1).replace(",", "")) * _SCALE.get(m.group(2), 1.0)
