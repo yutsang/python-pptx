@@ -2491,10 +2491,18 @@ class _PackingMixin:
         tagged_normal: List[Tuple[int, Dict[str, Any]]] = []
         for pos, item in enumerate(structured_data):
             table = _presentation_table_for_account(item) if tables_enabled else None
-            if table is not None and table_for_item is not None and id(item) not in table_for_item:
-                # Rejected above. The model was told to end its lead-in with
-                # "明细如下：" and that promise now points at nothing, so cut
-                # it; everything else the account wrote is kept verbatim.
+            rejected_here = (table is not None and table_for_item is not None
+                             and id(item) not in table_for_item)
+            if table is None or rejected_here:
+                # No table will be drawn for this account -- either it never
+                # had one, it was settled away before the AI ran (see
+                # settle_subtable_selection), or it lost the cap above. Either
+                # way a "明细如下：" in its text is a promise pointing at
+                # nothing, so cut it; everything else it wrote is kept.
+                # Applied to the table-less case too, not just the rejected
+                # one: once the decision moved ahead of the AI, a rejected
+                # account arrives here already carrying no table, so keying
+                # the cleanup on rejection alone would never fire again.
                 item = dict(item)
                 item["commentary"] = _strip_table_handoff(
                     item.get("commentary", ""),

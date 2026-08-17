@@ -918,6 +918,77 @@ def set_final_fallbacks(results: Dict[str, Dict[str, str]]):
         results[key]["final"] = get_pipeline_result_text(results[key])
 
 
+def settle_subtable_selection(
+    mapping_keys: List[str], dfs: Dict[str, pd.DataFrame],
+) -> List[Tuple[str, str]]:
+    """Decide which accounts get a subtable BEFORE a single prompt is built,
+    and strip the table off the frames that lose.
+
+    The selection used to run at export, long after the commentary was
+    written. So the model was told a table existed for EVERY account that
+    could have one, wrote a lead-in ending "明细如下：" and left the components
+    to the table -- and then the table was taken away. A real deck shipped
+    "管理费用主要包括管理费用-行政及管理层调整。明细如下：" followed by prose,
+    a promise pointing at nothing, and 固定资产 enumerated nine components in
+    the sentence beside a table already listing thirteen.
+
+    Deciding here fixes both at the source: an account with no table is never
+    told it has one, so it writes ordinary prose that names its own
+    components, and an account WITH a table still gets the guidance not to
+    repeat it. This is also the honest answer to "can the model judge whether
+    a table is warranted" -- it can only judge that if it is told, and it
+    cannot be told by a decision taken after it has finished writing.
+
+    Returns the (account, reason) pairs that lost, for the caller to log.
+    """
+    # Local import: the AI package does not otherwise depend on the PPTX one,
+    # and the rule must not be duplicated -- the deck is capped by exactly the
+    # same function that caps it at export (which then finds nothing left to
+    # do, since the losers no longer carry a table).
+    from ..pptx.helpers import _select_deck_subtables
+    from ..pptx.payloads import _load_pptx_settings
+
+    by_statement: Dict[str, List[Dict[str, Any]]] = {}
+    stubs: List[Tuple[str, Dict[str, Any]]] = []
+    for key in mapping_keys:
+        df = dfs.get(key)
+        if df is None or not hasattr(df, "attrs"):
+            continue
+        table = (df.attrs or {}).get("presentation_detail_table")
+        if not table or not table.get("rows"):
+            continue
+        statement = str(((df.attrs.get("integrity") or {}).get("statement_type") or "")).strip().upper()
+        stub = {"mapping_key": key, "account_name": key, "financial_data": df}
+        by_statement.setdefault(statement or "?", []).append(stub)
+        stubs.append((key, stub))
+
+    if not stubs:
+        return []
+
+    try:
+        settings = _load_pptx_settings()
+    except Exception:
+        settings = {}
+    _select_deck_subtables(
+        [(s, by_statement.get(s) or []) for s in ("IS", "BS", "?")], settings,
+    )
+
+    dropped: List[Tuple[str, str]] = []
+    for key, stub in stubs:
+        if stub.get("_subtable_ok"):
+            continue
+        dropped.append((key, "not selected for a subtable"))
+        try:
+            # Removed, not flagged: every downstream reader -- the prompt
+            # builder, _presentation_table_for_account, the packer -- already
+            # treats "no table" correctly, and a second flag they would all
+            # have to honour is one more thing to get out of step.
+            dfs[key].attrs.pop("presentation_detail_table", None)
+        except Exception:
+            pass
+    return dropped
+
+
 def run_ai_pipeline_with_progress(
     mapping_keys: List[str],
     dfs: Dict[str, pd.DataFrame],
@@ -933,6 +1004,7 @@ def run_ai_pipeline_with_progress(
     """Run the 4-agent FDD pipeline with optional progress callbacks."""
     # Normalise UI language codes ("Chn" → "Chi") to match prompt-file keys.
     language = normalize_language_code(language)
+    settle_subtable_selection(mapping_keys, dfs)
     total_items = len([key for key in mapping_keys if key in dfs])
     fdd_config = FDDConfig(language=language, model_type=model_type)
     debug_mode = fdd_config.get_debug_mode()

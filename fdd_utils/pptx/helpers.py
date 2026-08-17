@@ -680,29 +680,51 @@ def _select_deck_subtables(
 
 
 def _strip_table_handoff(text: str, handoff: str) -> str:
-    """Removes a trailing "明细如下：" once its table is gone.
+    """Removes a "明细如下：" whose table is gone, wherever in the text it sits.
 
     The phrase is a promise the model was told to make (see
-    _detail_table_guidance); left pointing at nothing it reads as a
-    rendering failure, which is precisely how the missing tables were
-    reported in the first place.
+    _detail_table_guidance); left pointing at nothing it reads as a rendering
+    failure, which is how the missing tables were reported in the first place.
+    It was only stripped when it TRAILED, on the reasoning that the usual
+    shape -- phrase, then "➢" explanation bullets -- reads fine. Two real
+    bullets say otherwise:
+
+        管理费用主要包括管理费用-行政及管理层调整。明细如下：
+        管理费用-行政于2026年1-6月期间发生15.5万元...        <- no marker at all
+        销售费用主要包括...和管理层调整，明细如下：销售费用-代理及佣金...  <- same line
+
+    Neither is a list. Both promise 明细 and hand over a sentence.
+
+    A LONE "➢" line under the phrase is the same complaint from the other
+    side -- a one-item list, flagged by the user as forced point form -- so it
+    is folded back into the paragraph. Two or more are left alone: that is
+    real point form and reads as intended.
     """
-    stripped = (text or "").rstrip()
-    if not stripped:
-        return stripped
-    lowered = stripped.lower()
-    tail = handoff.lower()
-    if not lowered.endswith(tail):
-        return stripped
-    kept = stripped[: len(stripped) - len(handoff)].rstrip()
-    # "...主要包括 A 及 B。明细如下：" -> the sentence stop is already there.
-    # "...breakdown as follows, the breakdown is set out below" -> a dangling
-    # comma needs one.
-    if kept and kept[-1] in "，,、；;":
-        kept = kept[:-1].rstrip()
-    if kept and kept[-1] not in "。.！!？?":
-        kept += "。" if any("一" <= ch <= "鿿" for ch in kept) else "."
-    return kept
+    body = (text or "").strip()
+    if not body or not handoff:
+        return body
+    idx = body.lower().find(handoff.lower())
+    if idx < 0:
+        return body
+
+    head = body[:idx].rstrip()
+    tail = body[idx + len(handoff):].strip()
+
+    # "...主要包括 A 及 B。" already ends properly; "...和管理层调整，" does not.
+    if head and head[-1] in "，,、；;：:":
+        head = head[:-1].rstrip()
+    is_chinese = any("\u4e00" <= ch <= "\u9fff" for ch in head)
+    if head and head[-1] not in "。.！!？?":
+        head += "。" if is_chinese else "."
+    if not tail:
+        return head
+
+    lines = [ln.strip() for ln in tail.split("\n") if ln.strip()]
+    marked = [ln for ln in lines if ln.startswith(("\u27a2", "\u2023", "\u2022", "-"))]
+    if len(lines) == 1 and len(marked) <= 1:
+        only = lines[0].lstrip("\u27a2\u2023\u2022- ").strip()
+        return f"{head}{only}" if is_chinese else f"{head} {only}"
+    return head + "\n" + "\n".join(lines)
 
 
 def _truncate_text_at_boundary(text: str, limit: int, is_chinese: bool) -> str:
@@ -809,7 +831,9 @@ def _table_source_multiplier(account_data: Dict[str, Any]) -> float:
 _LABEL_CATEGORY_SPLIT = re.compile(r"\s*[-－—]\s*")
 
 
-def _group_plan_rows_by_category(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _group_plan_rows_by_category(
+    entries: List[Dict[str, Any]], title: str = "",
+) -> List[Dict[str, Any]]:
     """Turns a flat run of "CATEGORY-item" rows into a heading plus its items.
 
     A 固定资产 table read as thirteen undifferentiated lines -- 固定资产-房屋
@@ -856,18 +880,27 @@ def _group_plan_rows_by_category(entries: List[Dict[str, Any]]) -> List[Dict[str
     if not grouped_runs or len(grouped_runs) == 1 and len(grouped_runs[0][1]) == len(entries):
         return entries
 
+    own = str(title or "").strip()
     out: List[Dict[str, Any]] = []
     for category, members in runs:
-        if category is not None and len(members) >= 2:
-            out.append({"label": category, "values": {}, "kind": "group"})
-            for member in members:
-                out.append({
-                    **member,
-                    "label": _LABEL_CATEGORY_SPLIT.split(member["label"], maxsplit=1)[1].strip(),
-                    "kind": "grouped",
-                })
-        else:
+        if category is None or len(members) < 2:
             out.extend(members)
+            continue
+        # A heading that repeats the table's own title band says it twice --
+        # the 税金及附加 table would read 税金及附加 / 税金及附加 / 房产税 / ...
+        # Its members still lose the repeated prefix, they simply stay at top
+        # level, which is what "belongs to the account named above" looks like.
+        # A category that is NOT the title (累计折旧 under 固定资产) still gets
+        # its heading, because there it is carrying real information.
+        heading = category != own
+        if heading:
+            out.append({"label": category, "values": {}, "kind": "group"})
+        for member in members:
+            out.append({
+                **member,
+                "label": _LABEL_CATEGORY_SPLIT.split(member["label"], maxsplit=1)[1].strip(),
+                "kind": "grouped" if heading else "data",
+            })
     return out
 
 
@@ -889,7 +922,7 @@ def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: b
         plan.append({"label": row.get("label", ""), "values": _scaled(row.get("values")), "kind": "data"})
         for child in (row.get("children") or []):
             plan.append({"label": child.get("label", ""), "values": _scaled(child.get("values")), "kind": "child"})
-    plan = _group_plan_rows_by_category(plan)
+    plan = _group_plan_rows_by_category(plan, str(table.get("title") or ""))
     total_row = table.get("total_row")
     if total_row:
         plan.append({"label": total_row.get("label", "合计" if is_chinese_databook else "Total"),

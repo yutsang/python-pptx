@@ -1543,6 +1543,13 @@ def _synthesize_for_stage(
         and str(column.get("label") or "").strip() != column["date"]
     }
     return {
+        # "title" is what _render_presentation_table draws in the table's own
+        # navy band; "header" is not read by anything. Setting only "header"
+        # meant every SYNTHESIZED table shipped with a blank title row -- and
+        # since these are synthesized whenever the sheet has no report-ready
+        # block of its own, that was every table in a real deck. The block
+        # title is the account, which is exactly what the band should name.
+        "title": block_title,
         "header": block_title,
         "periods": periods,
         "period_labels": period_labels,
