@@ -735,7 +735,16 @@ _RUNON_AMT = re.compile(r"(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 # contradict the instruction: a bullet that complied was flagged for the very
 # amount it had just disclosed. 负/- because a contra component is normal --
 # 管理层调整 is routinely negative.
-_RESIDUAL_ITEM = re.compile(r"其余\s*(?:为)?\s*(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+#   其余11.1万元为...                      -- amount straight after 其余
+#   其余小额应付款项（如物业管理费、法律服务费等）合计18.9万元
+# The second shape is the normal one when the residual needs describing, and
+# requiring the amount to follow 其余 immediately missed it: a bullet that
+# added up exactly (54.7+16.3+10.0+18.9 = 99.9) was reported as 19%
+# unaccounted for. Non-greedy and bounded inside the clause, so it takes the
+# FIRST amount after 其余 and cannot reach into the next sentence.
+_RESIDUAL_ITEM = re.compile(
+    r"其余[^。；;]{0,40}?(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)"
+)
 _STATED_TOTAL = re.compile(r"(?:合计|总额|余额合?计?)\s*(?:为)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 _SCALE = {"元": 1.0, "万元": 1e4, "亿元": 1e8}
 

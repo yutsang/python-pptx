@@ -496,6 +496,79 @@ class PromptEngine:
         except Exception:
             residual_chi = residual_eng = ""
 
+        # A depreciated asset's total is a NET figure and its components are
+        # not all of the same sign: the gross lines add up, the 累计折旧 lines
+        # subtract. Handed a flat list the model wrote "固定资产净值合计为2.74
+        # 亿元，主要包括固定资产-房屋建筑物2.25亿元、固定资产-机械设备0.17亿元
+        # ..." -- naming GROSS carrying amounts as though they composed the NET
+        # total. It is not an arithmetic slip (the enumeration can even be made
+        # to add up); it is the wrong statement about what the number is, and a
+        # reader takes 2.25亿元 for a net book value it is not. 无形资产, whose
+        # schedule has one gross line, came out right in the same run --
+        # "原值3,744.0万元，扣除累计摊销549.1万元" -- so the shape is learnable
+        # once the split is named.
+        contra_chi = contra_eng = ""
+        try:
+            if 'top' in dir() and top:
+                contra_markers = ("累计折旧", "累计摊销", "减值准备", "跌价准备", "坏账准备")
+                # 管理层调整 is neither cost nor accumulated depreciation. Folded
+                # into the gross class it would overstate "原值" by its own
+                # amount and the stated arithmetic would not tie, so it gets
+                # its own bucket and is only mentioned when it is non-zero.
+                adj_markers = ("管理层调整", "示意性调整", "adjustment", "Adjustment")
+                contra = [(l, v) for l, v in top if any(m in l for m in contra_markers)]
+                adj = [(l, v) for l, v in top
+                       if any(m in l for m in adj_markers)
+                       and not any(m in l for m in contra_markers)]
+                gross = [(l, v) for l, v in top
+                         if not any(m in l for m in contra_markers)
+                         and not any(m in l for m in adj_markers)]
+                if contra and gross:
+                    from ..financial_display_format import choose_display_unit, format_in_unit
+                    div, unit, dec = choose_display_unit([v for _l, v in top], language)
+                    is_chi = language == "Chi"
+                    inline = (unit.replace("人民币", "") if is_chi else unit.replace("CNY ", "")) or unit
+                    sep = "" if is_chi else " "
+                    def _amt(v: float) -> str:
+                        return f"{format_in_unit(v, div, dec)}{sep}{inline}"
+                    g_sum = sum(v for _l, v in gross)
+                    c_sum = sum(v for _l, v in contra)
+                    a_sum = sum(v for _l, v in adj)
+                    g, c = _amt(g_sum), _amt(abs(c_sum))
+                    # Deliberately NOT stating a net here. It would have to be
+                    # derived from the components this function can see, and
+                    # those are the TOP-LEVEL ones -- on a real 固定资产 they
+                    # fall short of the account's own total. Asserting a net
+                    # from them would hand the model a third figure that
+                    # disagrees with the total it is also being given, which is
+                    # a worse failure than the one being fixed. The total is
+                    # already in the data; only the CLASSIFICATION was missing.
+                    adj_chi = f"，另有调整类{_amt(a_sum)}" if adj and a_sum else ""
+                    adj_eng = f", plus adjustments of {_amt(a_sum)}" if adj and a_sum else ""
+                    contra_chi = (
+                        f"【构成项性质：原值 vs 备抵】本科目的合计是**净值**，"
+                        f"而构成项不是同一性质：原值类合计{g}，"
+                        f"备抵类（{'、'.join(l for l, _v in contra[:3])}等）合计{c}{adj_chi}。"
+                        f"**不得写成'净值合计X，主要包括[原值项]…'**——净值不是由原值相加而成的，"
+                        f"这样写会让读者把原值当成账面净值。"
+                        f"正确写法：先写'原值{g}，减累计折旧/摊销{c}，净值[数据中的合计]'，"
+                        f"再在其后说明原值以哪几类资产为主。备抵类金额一律以'减/累计折旧'表述，"
+                        f"不要与原值项并列编号。"
+                    )
+                    contra_eng = (
+                        f"[COMPONENT NATURE: COST vs CONTRA] This account's total is a NET figure, "
+                        f"and its components are not of one nature: gross cost totals {g}, "
+                        f"accumulated depreciation/amortisation/impairment totals {c}{adj_eng}. Do "
+                        f"NOT write \"net book value of X, comprising [gross lines]\" -- the net is "
+                        f"not the sum of the gross figures, and a reader will take a gross carrying "
+                        f"amount for a net one. Write \"cost of {g}, less accumulated depreciation of "
+                        f"{c}, giving a net book value of [the total in the data]\", then say which "
+                        f"asset classes dominate the cost. Never list a contra line as a numbered "
+                        f"sibling of the cost lines. "
+                    )
+        except Exception:
+            contra_chi = contra_eng = ""
+
         hierarchy_chi = hierarchy_eng = ""
         if groups:
             lines_chi = []
@@ -523,7 +596,8 @@ class PromptEngine:
 
         if language == "Chi":
             return (
-                hierarchy_chi
+                contra_chi
+                + hierarchy_chi
                 + residual_chi
                 + "【组成披露】该科目的明细组成已随财务数据提供。"
                 "请按组成列举，且每一项都必须带上金额——只写类别名称而不给金额是不合格的。"
@@ -534,7 +608,8 @@ class PromptEngine:
                 "**列举前先做加法**：把你打算列出的各项金额相加，与合计核对。若两者不等，差额本身就是一个必须交代的组成项——用数据中对应的名称说明它是什么（例如截止性调整、补计提、未解释性质的余额），并把它作为最后一项列出，写成'其余X万元为…'。只列出加总不等于合计的几项而不交代差额，是不完整的披露。不要强行凑数。"
             )
         return (
-            hierarchy_eng
+            contra_eng
+            + hierarchy_eng
             + residual_eng
             + "COMPOSITION. The account's component lines are supplied with the financial data. "
             "Enumerate the composition and give an AMOUNT for every item -- naming categories without "
