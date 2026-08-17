@@ -1416,6 +1416,7 @@ def synthesize_detail_table_from_breakdown(
     columns: List[Dict[str, Any]],
     analysis_stage: Union[str, Sequence[str]],
     block_title: str,
+    notes_out: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """A detail table built from the schedule's OWN breakdown rows, for the
     sheets that carry no separate report-ready block below the main one.
@@ -1453,10 +1454,18 @@ def synthesize_detail_table_from_breakdown(
     # dropped as dead and only the 3 accounts carrying a 管理层调整 row (which
     # IS an indicative adjustment, hence non-zero there) produced a table.
     stages = [analysis_stage] if isinstance(analysis_stage, str) else list(analysis_stage)
+    local_notes: List[str] = []
     for stage in stages:
-        built = _synthesize_for_stage(row_entries, columns, stage, block_title)
+        built = _synthesize_for_stage(row_entries, columns, stage, block_title, local_notes)
         if built is not None:
             return built
+    # Why it declined, written into the caller's own list rather than onto the
+    # function object: extraction runs under a thread pool, and a module-level
+    # scratch value would be overwritten by whichever account finished last.
+    # Two guesses about this threshold have already been wrong, so the answer
+    # comes from the real file rather than from another hypothesis.
+    if notes_out is not None:
+        notes_out.append("; ".join(local_notes) or "no candidate stages")
     return None
 
 
@@ -1465,13 +1474,23 @@ def _synthesize_for_stage(
     columns: List[Dict[str, Any]],
     analysis_stage: str,
     block_title: str,
+    notes: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
+    def _note(text: str) -> None:
+        if notes is not None:
+            notes.append(f"[{analysis_stage}] {text}")
+
     stage_columns = sorted(
         [column for column in columns if column["stage"] == analysis_stage],
         key=lambda column: column["date"],
     )
     if not stage_columns:
+        _note("no columns for this stage")
         return None
+    n_breakdown = sum(1 for e in row_entries if e.get("row_type") == "breakdown")
+    n_children = sum(1 for e in row_entries
+                     if e.get("row_type") == "breakdown" and e.get("rollup_parent_desc"))
+    _note(f"{n_breakdown} breakdown row(s), {n_children} of them rollup children")
     periods = [column["date"] for column in stage_columns]
 
     rows: List[Dict[str, Any]] = []
@@ -1491,6 +1510,7 @@ def _synthesize_for_stage(
             rows.append({"label": label, "values": values})
 
     if len(rows) < 2:
+        _note(f"only {len(rows)} top-level component(s) with a non-zero value -- need 2")
         return None
     total_row = None
     for entry in row_entries:
@@ -1715,6 +1735,8 @@ def normalize_financial_schedule(
     )
     projection_column = projection["column"]
     analysis_stage = PREFERRED_STAGE if any(column["stage"] == PREFERRED_STAGE for column in columns) else projection["effective_stage"]
+    # Per-account, so parallel extraction cannot cross-contaminate the note.
+    _detail_table_notes: List[str] = []
     prompt_analysis_df = _build_prompt_analysis_df(
         block_title=block_title,
         columns=columns,
@@ -1894,8 +1916,12 @@ def normalize_financial_schedule(
                 # came from, so the components can actually sum to it.
                 analysis_stage=[projection["effective_stage"], analysis_stage],
                 block_title=block_title,
+                notes_out=_detail_table_notes,
             ),
         ),
+        # Why no breakdown table was synthesised, when none was. Read by
+        # inspect_databook's 3c so "0 rows" says what stopped it.
+        "presentation_detail_table_reason": "; ".join(_detail_table_notes),
         "normalized_columns": columns,
         "source_multiplier": multiplier,
         "sheet_kind": profile.get("sheet_kind"),

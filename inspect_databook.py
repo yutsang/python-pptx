@@ -1478,6 +1478,7 @@ def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame]) -
             "n_rows": len((table or {}).get("rows") or []),
             "n_periods": len((table or {}).get("periods") or []),
             "reaches_packer": bool(via_payload),
+            "reason": str(attrs.get("presentation_detail_table_reason") or ""),
         })
 
     ok = [r for r in rows if r["reaches_packer"]]
@@ -1487,6 +1488,12 @@ def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame]) -
         print(f"    {r['account'][:13]:<14}{str(r['mapping'])[:11]:<12}"
               f"{'yes' if r['has_attrs_table'] else 'NO':<8}{str(r['source'])[:27]:<28}"
               f"{r['n_rows']:>5}{r['n_periods']:>5}  {'YES' if r['reaches_packer'] else 'no'}")
+
+    declined = [r for r in rows if not r["reaches_packer"] and r["reason"]]
+    if declined:
+        print("\n  Why the synthesised fallback declined, per account:")
+        for r in declined:
+            print(f"    {r['account'][:13]:<14}{r['reason']}")
 
     if not ok:
         print("\n  ❌ NO account reaches the packer. The step that stopped it is the first"
