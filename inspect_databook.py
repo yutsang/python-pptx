@@ -1409,6 +1409,120 @@ def _trace_bs_is_detection_failure(
     print(buf.getvalue())
 
 
+
+def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame], language: str) -> None:
+    """Walk the ACTUAL chain a subtable travels, and say where it stops.
+
+    Written because "still no subtables" had already survived two rounds of
+    reasoning-from-code. Every step below calls the production function rather
+    than re-deriving its logic -- the gate, the lookup and the payload check
+    are the same objects the exporter uses, so this cannot agree with a
+    version of the pipeline that is not shipping. Deterministic, no AI.
+
+    The chain, in order, is:
+      1. pptx.presentation_tables.enabled (or FDD_SUBTABLES) -- the gate
+      2. presentation_tables.style -- "table" draws one, "sublist" folds it
+         into the commentary text instead and NO table shape is ever created
+      3. df.attrs["presentation_detail_table"] on the account's own frame
+      4. dfs[account_key] -- the payload looks the frame up by the account key
+         find_mapping_key resolved, which is not necessarily the tab name
+      5. _presentation_table_for_account -- what the packer actually calls
+    """
+    _hr("3c. SUBTABLE READINESS (why each account will or will not get one)")
+    try:
+        from fdd_utils.pptx import PowerPointGenerator
+        from fdd_utils.pptx.helpers import _presentation_table_for_account
+        from fdd_utils.workbook import find_mapping_key, load_mappings, get_effective_mappings
+    except Exception as exc:
+        print(f"  Could not import the production pieces: {type(exc).__name__}: {exc}")
+        return
+
+    template_path = str(Path(__file__).parent / "fdd_utils" / "template.pptx")
+    try:
+        gen = PowerPointGenerator(template_path, "chinese" if language == "Chi" else "english")
+        enabled = gen._presentation_tables_enabled()
+        style = gen._presentation_table_style()
+    except Exception as exc:
+        print(f"  Could not build the generator (template missing?): {type(exc).__name__}: {exc}")
+        return
+
+    print(f"  [1] gate  pptx.presentation_tables.enabled -> {enabled}")
+    print(f"  [2] style presentation_tables.style        -> {style!r}"
+          + ("   (draws a native table)" if style == "table"
+             else "   ⚠️ 'sublist' folds the table into commentary TEXT -- no table shape is created"))
+    if not enabled:
+        print("\n  ❌ STOPS AT STEP 1: the gate is off, nothing downstream runs.")
+        return
+
+    mappings = get_effective_mappings(load_mappings(), None)
+    rows = []
+    for account_key, df in sorted((dfs or {}).items()):
+        attrs = getattr(df, "attrs", None) or {}
+        table = attrs.get("presentation_detail_table")
+        mapping_key = find_mapping_key(account_key, mappings)
+        # Step 4/5 exactly as the payload builder and packer do it.
+        looked_up = dfs.get(account_key) if account_key in (dfs or {}) else None
+        via_payload = _presentation_table_for_account({"financial_data": looked_up})
+        rows.append({
+            "account": account_key,
+            "mapping": mapping_key or "-",
+            "has_attrs_table": bool(table and table.get("rows")),
+            "source": (table or {}).get("synthesized_from") or ("sheet" if table else "-"),
+            "n_rows": len((table or {}).get("rows") or []),
+            "n_periods": len((table or {}).get("periods") or []),
+            "reaches_packer": bool(via_payload),
+        })
+
+    ok = [r for r in rows if r["reaches_packer"]]
+    print(f"\n  {len(ok)} of {len(rows)} account(s) hand a table to the packer.\n")
+    print(f"    {'account':<14}{'mapping':<12}{'attrs?':<8}{'source':<28}{'rows':>5}{'per':>5}  packer")
+    for r in sorted(rows, key=lambda x: (not x["reaches_packer"], x["account"])):
+        print(f"    {r['account'][:13]:<14}{str(r['mapping'])[:11]:<12}"
+              f"{'yes' if r['has_attrs_table'] else 'NO':<8}{str(r['source'])[:27]:<28}"
+              f"{r['n_rows']:>5}{r['n_periods']:>5}  {'YES' if r['reaches_packer'] else 'no'}")
+
+    if not ok:
+        print("\n  ❌ NO account reaches the packer. The step that stopped it is the first"
+              "\n     column above reading NO -- i.e. the frame carries no"
+              "\n     presentation_detail_table at all, so neither the sheet's own block nor"
+              "\n     synthesize_detail_table_from_breakdown produced one.")
+    elif style != "table":
+        print(f"\n  ⚠️ {len(ok)} table(s) reach the packer but style={style!r}, so they are rendered"
+              "\n     as indented TEXT inside the commentary, not as a table shape. That is why"
+              "\n     the deck shows no subtable even though everything upstream works.")
+    else:
+        print("\n  ✅ Tables reach the packer and the style draws them. If the deck still shows"
+              "\n     none, the next suspect is slot allocation in"
+              "\n     _append_table_accounts_to_distribution, not extraction.")
+
+
+def check_statement_table_units(bs_is_results: Dict[str, Any], language: str) -> None:
+    """What the embedded BS/IS grid will actually print in its unit cell, and
+    at what scale -- the two things reported wrong after the grid started
+    rendering ("人民币千元" became a description, values came out raw)."""
+    _hr("4b. STATEMENT TABLE HEADER + VALUE SCALE (the 人民币千元 cell)")
+    for key in ("balance_sheet", "income_statement"):
+        frame = (bs_is_results or {}).get(key)
+        if frame is None or getattr(frame, "empty", True):
+            print(f"  {key}: (none)")
+            continue
+        cols = list(frame.columns)
+        first_col = str(cols[0])
+        numeric = [c for c in cols[1:] if pd.api.types.is_numeric_dtype(frame[c])]
+        sample = None
+        if numeric:
+            vals = [abs(float(v)) for v in frame[numeric[-1]].tolist()
+                    if isinstance(v, (int, float)) and not pd.isna(v) and v != 0]
+            sample = max(vals) if vals else None
+        print(f"  {key}:")
+        print(f"    first column name : {first_col!r}"
+              + ("   ⚠️ this is what the top-left unit cell prints"
+                 if "人民币" not in first_col and "CNY" not in first_col.upper() else ""))
+        print(f"    columns           : {cols}")
+        if sample is not None:
+            scale = "raw yuan" if sample >= 1e6 else ("千元" if sample >= 1e3 else "small")
+            print(f"    largest |value|   : {sample:,.0f}   -> looks like {scale}")
+
 def check_reconciliation(
     databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "",
     financials_from: Optional[str] = None, show_tab_list: bool = True,
@@ -2545,6 +2659,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
     summary["scaling_mismatch_tabs"] = check_all_tabs_scaling(path, dfs, entity_name=entity_name)
     check_row_structures(dfs)
     check_indent_signals(path, dfs, entity_name=entity_name)
+    check_subtable_readiness(path, dfs, language)
 
     xl = pd.ExcelFile(path)
     summary["total_sheets"] = len(xl.sheet_names)
@@ -2598,6 +2713,21 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             bs_recon_parts.append(bs_recon)
         if is_recon is not None and not is_recon.empty:
             is_recon_parts.append(is_recon)
+
+    # What the embedded grid will print in its unit cell, and at what scale.
+    # Read from the SAME source the exporter uses, so it cannot disagree.
+    try:
+        _sheet_for_units = sheet_names[0] if sheet_names else None
+        if _sheet_for_units:
+            check_statement_table_units(
+                extract_balance_sheet_and_income_statement(
+                    workbook_path=financials_from or path,
+                    sheet_name=_sheet_for_units, debug=False,
+                ),
+                language,
+            )
+    except Exception as _exc:
+        print(f"\n  (statement-table unit check skipped: {type(_exc).__name__}: {_exc})")
 
     combined_bs_recon = pd.concat(bs_recon_parts, ignore_index=True) if bs_recon_parts else None
     combined_is_recon = pd.concat(is_recon_parts, ignore_index=True) if is_recon_parts else None
