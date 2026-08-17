@@ -1508,6 +1508,29 @@ def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame]) -
         print("\n  ✅ Tables reach the packer and the style draws them. If the deck still shows"
               "\n     none, the next suspect is slot allocation in"
               "\n     _append_table_accounts_to_distribution, not extraction.")
+        # An account with a table is pulled OUT of the normal commentary pool and
+        # given a slot to itself (_append_table_accounts_to_distribution). That is
+        # affordable for a handful and not for most of the sheet, so say the
+        # arithmetic here rather than letting a 35-minute batch discover it.
+        try:
+            cap = int(_pptx_cfg().get("max_commentary_slides_per_statement", 4) or 4)
+        except Exception:
+            cap = 4
+        slots = cap * 2  # each slide carries a left and a right slot
+        if len(ok) > slots:
+            print(f"\n  ⚠️  {len(ok)} accounts want a slot of their own, against roughly "
+                  f"{slots} available\n     ({cap} slides per statement x 2 columns). Expect "
+                  "accounts to be squeezed, split\n     or dropped. Check section 9 for "
+                  "OVERFLOW RISK / TABLE OVERLAPS REAL TEXT and\n     section 8 for "
+                  "\"Every account with commentary reached the deck\" before trusting the deck.")
+            small = [r for r in ok if r["n_rows"] <= 2]
+            if small:
+                print(f"\n     {len(small)} of them carry only 2 component(s) -- "
+                      f"{', '.join(r['account'] for r in small[:8])}"
+                      + ("..." if len(small) > 8 else "")
+                      + "\n     A 2-row breakdown costs a whole slot and says little the total "
+                      "does not;\n     raising the minimum component count is the cheapest lever "
+                      "if the deck is now too long.")
 
 
 def check_statement_table_units(bs_is_results: Dict[str, Any]) -> None:
