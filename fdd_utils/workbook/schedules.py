@@ -1514,14 +1514,32 @@ def _synthesize_for_stage(
             column["date"]: entry["values"].get(column["key"])
             for column in stage_columns
         }
-        if not any(isinstance(v, (int, float)) and v != 0 for v in values.values()):
-            continue                      # dead component
         label = str(entry.get("description") or "").strip()
+        if not any(isinstance(v, (int, float)) and v != 0 for v in values.values()):
+            # A breakdown row with no figures of its own is the schedule's own
+            # SECTION LABEL -- 原值 / 累计折旧 / 净值 on a fixed-asset roll
+            # forward. Dropping it as a "dead component" threw away the only
+            # thing that told the three tiers apart, and a real deck shipped
+            # 房屋建筑物 three times (281,740 gross, (57,049) depreciation,
+            # 224,691 net) with nothing to say which was which. Keep it as a
+            # heading; _build_presentation_table_plan renders it as one.
+            if label:
+                rows.append({"label": label, "values": {}, "is_header": True})
+            continue
         if label:
             rows.append({"label": label, "values": values})
 
-    if len(rows) < 2:
-        _note(f"only {len(rows)} top-level component(s) with a non-zero value -- need 2")
+    # Trailing or orphaned headings introduce a section that never arrives.
+    while rows and rows[-1].get("is_header"):
+        rows.pop()
+    rows = [
+        row for i, row in enumerate(rows)
+        if not row.get("is_header") or (i + 1 < len(rows) and not rows[i + 1].get("is_header"))
+    ]
+
+    valued = [r for r in rows if not r.get("is_header")]
+    if len(valued) < 2:
+        _note(f"only {len(valued)} top-level component(s) with a non-zero value -- need 2")
         return None
     total_row = None
     for entry in row_entries:

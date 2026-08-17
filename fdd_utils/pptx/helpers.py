@@ -591,9 +591,15 @@ def _select_presentation_tables(
     kept: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     dropped: List[Tuple[Dict[str, Any], str]] = []
 
+    def _component_count(table: Dict[str, Any]) -> int:
+        # Section labels (原值 / 累计折旧 / 净值) are structure, not components.
+        # Counting them would let a two-item table clear min_rows on the
+        # strength of its own headings.
+        return len([r for r in (table.get("rows") or []) if not r.get("is_header")])
+
     substantial: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     for item, table in candidates:
-        n_rows = len(table.get("rows") or [])
+        n_rows = _component_count(table)
         if n_rows < min_rows:
             dropped.append((
                 item,
@@ -617,7 +623,7 @@ def _select_presentation_tables(
         # accounts sort after the list and among themselves by how much their
         # table actually shows.
         return (statement_rank, rank_of.get(key, len(rank_of)),
-                -len(table.get("rows") or []), key)
+                -_component_count(table), key)
 
     ordered = sorted(substantial, key=_sort_key)
     kept = ordered[:max_tables]
@@ -627,7 +633,7 @@ def _select_presentation_tables(
         dropped.append((
             item,
             f"over max_per_deck={max_tables} "
-            f"({len(table.get('rows') or [])} component(s), ranked below the ones kept){note}",
+            f"({_component_count(table)} component(s), ranked below the ones kept){note}",
         ))
 
     # Restore the statement's own reading order: the ranking decides WHICH
@@ -917,12 +923,25 @@ def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: b
         return {period: (v / divisor if isinstance(v, (int, float)) else v)
                 for period, v in (values or {}).items()}
 
+    rows = table.get("rows") or []
+    # The schedule's OWN section labels (原值 / 累计折旧 / 净值), carried through
+    # as value-less rows. When they are present they are the authority on this
+    # table's structure and the label-prefix heuristic must stand down --
+    # running both would head the same block twice.
+    has_sheet_headings = any(row.get("is_header") for row in rows)
+
     plan: List[Dict[str, Any]] = []
-    for row in (table.get("rows") or []):
-        plan.append({"label": row.get("label", ""), "values": _scaled(row.get("values")), "kind": "data"})
+    for row in rows:
+        if row.get("is_header"):
+            plan.append({"label": row.get("label", ""), "values": {}, "kind": "group"})
+            continue
+        kind = "grouped" if (has_sheet_headings and any(
+            e["kind"] == "group" for e in plan)) else "data"
+        plan.append({"label": row.get("label", ""), "values": _scaled(row.get("values")), "kind": kind})
         for child in (row.get("children") or []):
             plan.append({"label": child.get("label", ""), "values": _scaled(child.get("values")), "kind": "child"})
-    plan = _group_plan_rows_by_category(plan, str(table.get("title") or ""))
+    if not has_sheet_headings:
+        plan = _group_plan_rows_by_category(plan, str(table.get("title") or ""))
     total_row = table.get("total_row")
     if total_row:
         plan.append({"label": total_row.get("label", "合计" if is_chinese_databook else "Total"),

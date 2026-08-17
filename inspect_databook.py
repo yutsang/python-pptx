@@ -1475,7 +1475,10 @@ def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame]) -
             "mapping": mapping_key or "-",
             "has_attrs_table": bool(table and table.get("rows")),
             "source": (table or {}).get("synthesized_from") or ("sheet" if table else "-"),
-            "n_rows": len((table or {}).get("rows") or []),
+            # Section labels are structure, not components -- same rule the
+            # selector uses, so 3c's count matches what min_rows is applied to.
+            "n_rows": len([r for r in ((table or {}).get("rows") or [])
+                           if not (isinstance(r, dict) and r.get("is_header"))]),
             "n_periods": len((table or {}).get("periods") or []),
             "reaches_packer": bool(via_payload),
             "reason": str(attrs.get("presentation_detail_table_reason") or ""),
