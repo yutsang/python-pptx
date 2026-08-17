@@ -1515,17 +1515,50 @@ class PromptEngine:
         fiscal_year_end_month = integrity.get("fiscal_year_end_month")
         fiscal_year_end_day = integrity.get("fiscal_year_end_day")
 
+        # This instruction's worked examples used to spell the unit as a
+        # literal 万元 ("余额为X万元"), and the model follows the EXAMPLE, not the
+        # unit declared on the data table. 预付款项's real balance is 3,091
+        # YUAN; add_language_display_columns correctly chose 人民币元 for the
+        # whole account and handed over the bare number 3,091 -- and the deck
+        # shipped "余额合计为3,091.0万元", out by a factor of ten thousand, while
+        # naming a component "8,183元" in the same sentence. The example has to
+        # carry the account's OWN unit, and the unit has to be stated outright.
+        unit_label = str(attrs.get("display_unit_label") or "").strip()
+        if not unit_label and isinstance(df, pd.DataFrame) and not df.empty:
+            from ..financial_display_format import choose_display_unit
+            numeric = [
+                v for col in df.columns[1:]
+                if pd.api.types.is_numeric_dtype(df[col])
+                for v in df[col].tolist()
+            ]
+            if numeric:
+                unit_label = choose_display_unit(numeric, language)[1]
+        # "人民币万元" heads a table; after a figure it has to read "24.7万元".
+        if language == "Chi":
+            inline_unit = unit_label.replace("人民币", "").strip() or "万元"
+            unit_rule = (
+                f"【单位】本科目所有金额一律以{inline_unit}为单位。数据表中的数字已经是{inline_unit}，"
+                f"直接引用，不得自行换算成元/万元/亿元中的其他单位，也不得在数字后写上与{inline_unit}不同的单位。"
+            ) if unit_label else ""
+        else:
+            inline_unit = unit_label or "CNY"
+            unit_rule = (
+                f"[UNIT] Every amount for this account is in {inline_unit}. The figures in the data "
+                f"table are ALREADY in {inline_unit} -- quote them as they are, never rescale them "
+                f"to a different unit and never write a different unit after them."
+            ) if unit_label else ""
+
         if language == "Chi":
             if statement_type == "BS":
                 return (
                     f"这是资产负债表科目。首句必须仅说明截至{effective_date}的最新期末余额（单一期间，不要罗列所有期间），"
-                    f"并描述其构成（如：'截至{effective_date}余额为X万元，主要为[构成项]'或'截至{effective_date}余额合计X万元，主要包括[各组成项]'）。"
+                    f"并描述其构成（如：'截至{effective_date}余额为X{inline_unit}，主要为[构成项]'或'截至{effective_date}余额合计X{inline_unit}，主要包括[各组成项]'）。"
                     "首句不得罗列所有报告期间余额（避免'截至A、B、C日余额分别为X、Y、Z'式开篇），"
                     "也不得以年度对比句开篇（不得以'X较上年增加/减少'或'X同比上升/下降'作为首句）。"
                     "首句之后，再描述构成项目、对手方/集中度、合同条款及重要备注说明。"
                     "如跨期变动重大且数据支持，可简略提及前期余额，但不得作为开篇。"
                     f"请使用时点表述如【截至{effective_date}】，不要写成期间表述。"
-                    + allowed_dates_chi
+                    + allowed_dates_chi + unit_rule
                 )
             if statement_type == "IS":
                 period_label = build_income_statement_period_label(
@@ -1548,15 +1581,15 @@ class PromptEngine:
                 return (
                     "这是利润表科目。首句必须以构成开篇，描述该科目主要包含哪些项目"
                     "（例如：'X主要从租金收入及物业管理费收入产生营业收入，比例约为50:50'或"
-                    "'主要包括房屋折旧费用A万元、物业管理费B万元、......'）。"
+                    f"'主要包括房屋折旧费用A{inline_unit}、物业管理费B{inline_unit}、......'）。"
                     "不得以孤立的趋势句开篇（避免'营业收入由X增长至Y'式开篇）。"
-                    "对每一重要构成项，应在句中提供所有报告期间的金额（**若本科目已有做好的明细表，则此项不适用**：各期金额由表格列示，正文不得逐项重复）（例如：'物业管理费分别为150万元、180万元、210万元，"
+                    f"对每一重要构成项，应在句中提供所有报告期间的金额（**若本科目已有做好的明细表，则此项不适用**：各期金额由表格列示，正文不得逐项重复）（例如：'物业管理费分别为150{inline_unit}、180{inline_unit}、210{inline_unit}，"
                     "于FY19、FY20、FY21期间发生'），而不是仅提供最新一期的金额。"
                     "构成与多期金额之后，如有重大变动，可在数据/备注支持下说明驱动因素。"
                     f"描述目标期间时，请使用【于{period_label}期间】或【在{period_label}内】等期间表述，"
                     f"不要写成【截至{effective_date}止】或时点余额表述。{partial_note}"
                     "有右侧备注的科目优先讨论。"
-                    + allowed_dates_chi
+                    + allowed_dates_chi + unit_rule
                 )
             return "请根据科目属性正确区分时点表述与期间表述。"
 
@@ -1564,13 +1597,13 @@ class PromptEngine:
             return (
                 f"This is a balance-sheet item. The FIRST sentence must state ONLY the latest period-end balance as at {effective_date} "
                 f"(a single period, not a list of all periods) and describe what it comprises — e.g., 'the balance as at {effective_date} "
-                f"represented CNY X million of [composition]' or 'the balance as at {effective_date} totalled CNY X million, mainly entailing [components]'. "
+                f"represented X {inline_unit} of [composition]' or 'the balance as at {effective_date} totalled X {inline_unit}, mainly entailing [components]'. "
                 f"Do NOT dump all reporting periods in the opening sentence (avoid 'the balance as at A, B and C was X, Y and Z respectively'). "
                 f"Do NOT open with a year-over-year movement sentence ('X increased/decreased from Y to Z'). "
                 f"After the opening, describe composition, counterparty/concentration, terms, and any material remarks supported by the data. "
                 f"Prior-period balances may appear briefly only when the movement is material and the data supports the explanation. "
                 f"Use point-in-time wording such as 'as at {effective_date}', not period-flow wording."
-                + " " + allowed_dates_eng
+                + " " + allowed_dates_eng + " " + unit_rule
             )
         if statement_type == "IS":
             period_label = build_income_statement_period_label(

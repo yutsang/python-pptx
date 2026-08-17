@@ -242,12 +242,11 @@ class _TablesMixin:
 
 
     def _add_table_to_slide(self, slide, df, bounds: Dict[str, int], table_name: str = None):
-        # +3 = title band + stage banner ("示意性调整后"/"Indicative adjusted",
-        # IMG_0399) + date-header row. The banner only exists alongside the
-        # title (both come from _fill_table_placeholder's "if table_name"
-        # block), so a bare header-only table (no table_name) still only
-        # needs +1.
-        total_rows = len(df) + 3 if table_name else len(df) + 1
+        # +2 = title band + date-header row. There used to be a third, a stage
+        # banner repeating "示意性调整后" under each date column (IMG_0399,
+        # reshaped per IMG_0410); the stage is now part of the title, so the
+        # row is gone. A bare header-only table (no table_name) still needs +1.
+        total_rows = len(df) + 2 if table_name else len(df) + 1
         graphic_frame = slide.shapes.add_table(
             total_rows,
             len(df.columns),
@@ -807,8 +806,17 @@ class _TablesMixin:
             kind = entry["kind"]
             is_total = kind == "total"
             is_child = kind == "child"
+            # A category heading over a run of same-category items (see
+            # _group_plan_rows_by_category). It carries no figures -- it names
+            # the block its items belong to.
+            is_group = kind == "group"
+            # Its members are indented like a child, but they are NOT children
+            # of a parent ROW: there is no parent value they roll into, so
+            # they keep ordinary black-on-white and only take the indent.
+            # Giving them the child band would tint most of the table.
+            is_grouped = kind == "grouped"
             row_h = (self._TABLE_TOTAL_ROW_PT if is_total
-                     else self._TABLE_CHILD_ROW_PT if is_child
+                     else self._TABLE_CHILD_ROW_PT if (is_child or is_grouped or is_group)
                      else self._TABLE_DATA_ROW_PT)
             table_shape.rows[row_idx].height = Pt(row_h)
             label_color = CHILD_BLUE if is_child else BLACK
@@ -819,9 +827,9 @@ class _TablesMixin:
             label_fill = (GREY_TOTAL_FILL if is_total
                           else CHILD_ROW_FILL if is_child
                           else None)
-            _set_cell(table_shape.cell(row_idx, 0), entry["label"], bold=is_total,
+            _set_cell(table_shape.cell(row_idx, 0), entry["label"], bold=is_total or is_group,
                       color=label_color, fill=label_fill, size_pt=7.0,
-                      indent_emu=int(Inches(0.12)) if is_child else 0)
+                      indent_emu=int(Inches(0.12)) if (is_child or is_grouped) else 0)
             for j, period in enumerate(periods, start=1):
                 value = entry["values"].get(period)
                 text_val = _format_table_value(value, is_numeric_column=True) if value is not None else ""
@@ -1183,9 +1191,10 @@ class _TablesMixin:
                         slide.shapes._spTree.remove(sp)
 
                         # Add new table at the same position
-                        # Need: 1 row for title, 1 for the stage banner (both
-                        # only when table_name), 1 for the date header, N for data
-                        total_rows = len(df) + 3 if table_name else len(df) + 1
+                        # Need: 1 row for title (only when table_name),
+                        # 1 for the date header, N for data. The stage banner
+                        # that used to sit between them now rides in the title.
+                        total_rows = len(df) + 2 if table_name else len(df) + 1
                         table_shape = slide.shapes.add_table(
                             rows=total_rows,
                             cols=len(df.columns),
@@ -1285,16 +1294,6 @@ class _TablesMixin:
                 header_row_height = Inches(data_row_height.inches + 0.03)
                 title_font_size = Pt(data_font_size.pt + 2)
                 title_row_height = Inches(data_row_height.inches + 0.05)
-                # Stage banner ("示意性调整后"/"Indicative adjusted") sits
-                # directly under the date row. Sized to the DATA tier, not the
-                # header tier: it is a secondary qualifier on the date above
-                # it, not a heading in its own right, and at header size it
-                # rendered a point larger than every figure in the table --
-                # which also made inspect_pptx report the data rows as having
-                # inconsistent font sizes, since it reads this row as one.
-                banner_row_height = header_row_height
-                banner_font_size = data_font_size
-
                 # Hard clamp: the three fixed tiers above are picked from
                 # ROW COUNT alone and don't know this table's actual
                 # available height (varies by template/slide) -- a table
@@ -1307,7 +1306,6 @@ class _TablesMixin:
                     _available_h_in = max(0.1, (bounds.get("height", 0) or 0) / 914400)
                     _needed_h_in = (
                         (title_row_height.inches if table_name else 0.0)
-                        + (banner_row_height.inches if table_name else 0.0)
                         + header_row_height.inches
                         + len(df) * data_row_height.inches
                     )
@@ -1316,15 +1314,9 @@ class _TablesMixin:
                         data_row_height = Inches(max(0.08, data_row_height.inches * _scale))
                         header_row_height = Inches(max(0.09, header_row_height.inches * _scale))
                         title_row_height = Inches(max(0.10, title_row_height.inches * _scale))
-                        banner_row_height = Inches(max(0.09, banner_row_height.inches * _scale))
                         data_font_size = Pt(max(4.5, data_font_size.pt * _scale))
                         header_font_size = Pt(max(5.0, header_font_size.pt * _scale))
                         title_font_size = Pt(max(5.5, title_font_size.pt * _scale))
-                        # Same floor as data_font_size, not the header's --
-                        # the banner tracks the data tier (see above), so a
-                        # higher floor here would let it drift back to being
-                        # larger than the figures on a heavily-clamped table.
-                        banner_font_size = Pt(max(4.5, banner_font_size.pt * _scale))
                 except Exception:
                     pass
 
@@ -1583,86 +1575,28 @@ class _TablesMixin:
 
                         logger.debug("Filled header cell %s: %s", col_idx, cell.text)
 
-                # Stage banner row ("示意性调整后" / "Indicative adjusted"),
-                # directly beneath the date row. Per IMG_0410 (the actual
-                # deliverable, not the earlier IMG_0399 read of it): the two
-                # header rows are DATE on top, stage BELOW it -- the reverse
-                # of the order shipped first -- and the stage label is
-                # repeated under EACH date column separately, not merged into
-                # one banner (column 0 stays blank, matching "人民币千元"
-                # already sitting in the date row's own column 0). A commit
-                # before this one dropped the stage from the header
-                # entirely, reasoning it was "already named" -- IMG_0399
-                # showed it wasn't, and this photo shows the first fix's
-                # shape (merged, banner-first) wasn't right either.
+                # REMOVED (user request): a stage banner row that sat directly
+                # beneath the date row, repeating "示意性调整后"/"Indicative
+                # adjusted" under EVERY date column. Its shape was itself the
+                # result of two corrections -- IMG_0399 showed the stage was
+                # not "already named" by the column headers as an earlier
+                # commit had assumed, and IMG_0410 showed the first fix's
+                # merged, banner-above-date order was wrong too (DATE on top,
+                # stage below, repeated per column, column 0 blank).
                 #
-                # DANGER: _fill_table_placeholder's per-cell colour/border
-                # changes on this exact table caused two real Chinese exports
+                # It is gone because the stage now rides in the table TITLE
+                # ("示意性调整后资产负债表"), which says the same thing in a row
+                # the data was already paying for. Do NOT reinstate it without
+                # also taking the title prefix back off, or the deck states
+                # the stage twice.
+                #
+                # Keeping the record because this table has form: per-cell
+                # colour/border changes on it caused two real Chinese exports
                 # to render COMPLETELY BLANK in real PowerPoint (see
-                # docs/failed-attempts.md). Colours reuse the SAME
-                # eyedropper-sampled constants as the date row directly
-                # above -- each date column's "示意性调整后" cell is the same
-                # HEADER_DATE_BLUE as the date cell it sits under, and column
-                # 0 (blank here) stays HEADER_LABEL_BLUE for vertical
-                # continuity with "人民币千元" above it -- and this row is
-                # gated on the SAME financial_table_header_blue toggle as the
-                # date row -- still a NEW row on this table, not yet seen in
-                # real PowerPoint.
-                if table_name:
-                    try:
-                        banner_row_idx = data_start_row + 1
-                        if len(table.rows) <= banner_row_idx:
-                            table.rows.add_row()
-                        table.rows[banner_row_idx].height = banner_row_height
-                        for col_idx in range(max_cols):
-                            if col_idx >= len(table.columns):
-                                break
-                            cell = table.cell(banner_row_idx, col_idx)
-                            cell.fill.solid()
-                            if _header_blue:
-                                cell.fill.fore_color.rgb = (
-                                    HEADER_LABEL_BLUE if col_idx == 0 else HEADER_DATE_BLUE
-                                )
-                            else:
-                                cell.fill.fore_color.rgb = WHITE
-                            # This row IS the bottom of the header block, so it
-                            # carries the rule that separates the band from the
-                            # data. Its TOP edge is cleared: the date row above
-                            # is the same blue, and the table style's own white
-                            # hairline was cutting the band in half.
-                            _set_cell_border(cell, "bottom", color_rgb="000000", width=Pt(1.0))
-                            _clear_cell_border(cell, "top")
-                            try:
-                                cell.margin_left = Inches(0.04)
-                                cell.margin_right = Inches(0.04)
-                                cell.margin_top = Inches(0.02)
-                                cell.margin_bottom = Inches(0.02)
-                            except Exception:
-                                pass
-                            # " ", never "": an empty <a:t/> is not measured by
-                            # PowerPoint for line height and the row inherits
-                            # the theme default instead, growing it (see the
-                            # data-row loop below, same fix, same reason).
-                            cell.text = (
-                                " " if col_idx == 0
-                                else ("示意性调整后" if is_chinese_mode else "Indicative adjusted")
-                            )
-                            if cell.text_frame.paragraphs:
-                                p = cell.text_frame.paragraphs[0]
-                                p.alignment = PP_ALIGN.CENTER
-                                run = p.runs[0] if p.runs else p.add_run()
-                                run.font.name = 'Arial'
-                                self._set_east_asian_typeface(run)
-                                self._declare_run_language(run)
-                                run.font.size = banner_font_size
-                                run.font.bold = True
-                                run.font.color.rgb = WHITE if _header_blue else BLACK
-                                p.line_spacing = 1.0
-                                _apply_east_asian_line_breaking(p)
-                        header_row_idx = banner_row_idx
-                        data_start_row = banner_row_idx
-                    except Exception:
-                        logger.debug("Could not render stage banner row", exc_info=True)
+                # docs/failed-attempts.md). This removal leaves the header
+                # COLOURS untouched; the only border change is that the date
+                # row now carries the band's bottom rule, which the banner
+                # used to carry.
 
                 # Fill data rows with formatting - show ALL rows (no limit)
                 # Check if table has enough rows, if not, limit to available rows
@@ -2088,12 +2022,18 @@ class _TablesMixin:
             # headers) and no project suffix -- the suffix put the databook's
             # FILE NAME in the band, e.g. "...资产负债表 - Crescent-databook",
             # which is a working artefact, not a table title.
+            # The stage rides in the TITLE rather than in a row of its own.
+            # It used to be a separate banner row under the dates repeating
+            # "示意性调整后" once per date column; folding it up here says the
+            # same thing and gives the row back to the data, which is what the
+            # user asked for. Nothing is lost: that row printed one constant
+            # string for every column, so it never distinguished them.
             if is_chinese_mode:
-                bs_table_name = "资产负债表"
-                is_table_name = "利润表"
+                bs_table_name = "示意性调整后资产负债表"
+                is_table_name = "示意性调整后利润表"
             else:
-                bs_table_name = "Balance sheet"
-                is_table_name = "Income statement"
+                bs_table_name = "Indicative adjusted balance sheet"
+                is_table_name = "Indicative adjusted income statement"
 
             # Detect currency unit from the sheet header. Currency markers live
             # in the first 20 rows (table titles / unit row); reading the full

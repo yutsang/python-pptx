@@ -804,6 +804,73 @@ def _table_source_multiplier(account_data: Dict[str, Any]) -> float:
     return 1
 
 
+#: Splits "固定资产-房屋建筑物" into its category and its item. Fullwidth and
+#: em dashes included because the source workbooks use all three.
+_LABEL_CATEGORY_SPLIT = re.compile(r"\s*[-－—]\s*")
+
+
+def _group_plan_rows_by_category(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Turns a flat run of "CATEGORY-item" rows into a heading plus its items.
+
+    A 固定资产 table read as thirteen undifferentiated lines -- 固定资产-房屋
+    建筑物, 固定资产-机械设备, ..., 累计折旧-房屋建筑物, ... -- which is the
+    schedule's own row order and tells the reader nothing about which block
+    they are in. The grouping is already IN the labels, so no interpretation
+    is needed to recover it:
+
+        固定资产                      累计折旧
+          房屋建筑物  225,000    ->     房屋建筑物  -50,000
+          机械设备     17,000           机械设备    -8,000
+
+    Shortening each member to the part after the category is the other half
+    of the win: the repeated prefix was eating the label column, which is the
+    column that wraps.
+
+    Conservative by construction:
+      - only a run of 2+ CONSECUTIVE rows sharing a category groups, so
+        nothing is reordered and a lone 管理层调整 stays a plain row;
+      - if every row lands in ONE group the grouping is dropped -- a single
+        heading over the whole table costs a row and says nothing;
+      - a table whose rows already carry explicit children is left alone
+        rather than structured twice.
+    """
+    if not entries or any(e.get("kind") != "data" for e in entries):
+        return entries
+
+    def _category(label: str) -> Optional[str]:
+        parts = _LABEL_CATEGORY_SPLIT.split(str(label or "").strip(), maxsplit=1)
+        if len(parts) != 2:
+            return None
+        head, tail = parts[0].strip(), parts[1].strip()
+        return head if head and tail else None
+
+    runs: List[Tuple[Optional[str], List[Dict[str, Any]]]] = []
+    for entry in entries:
+        category = _category(entry["label"])
+        if runs and runs[-1][0] == category and category is not None:
+            runs[-1][1].append(entry)
+        else:
+            runs.append((category, [entry]))
+
+    grouped_runs = [r for r in runs if r[0] is not None and len(r[1]) >= 2]
+    if not grouped_runs or len(grouped_runs) == 1 and len(grouped_runs[0][1]) == len(entries):
+        return entries
+
+    out: List[Dict[str, Any]] = []
+    for category, members in runs:
+        if category is not None and len(members) >= 2:
+            out.append({"label": category, "values": {}, "kind": "group"})
+            for member in members:
+                out.append({
+                    **member,
+                    "label": _LABEL_CATEGORY_SPLIT.split(member["label"], maxsplit=1)[1].strip(),
+                    "kind": "grouped",
+                })
+        else:
+            out.extend(members)
+    return out
+
+
 def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float,
 ) -> List[Dict[str, Any]]:
     """Flattens a presentation table's rows -> children (indented) ->
@@ -822,6 +889,7 @@ def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: b
         plan.append({"label": row.get("label", ""), "values": _scaled(row.get("values")), "kind": "data"})
         for child in (row.get("children") or []):
             plan.append({"label": child.get("label", ""), "values": _scaled(child.get("values")), "kind": "child"})
+    plan = _group_plan_rows_by_category(plan)
     total_row = table.get("total_row")
     if total_row:
         plan.append({"label": total_row.get("label", "合计" if is_chinese_databook else "Total"),

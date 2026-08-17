@@ -582,13 +582,24 @@ class _MeasurementMixin:
         _render_presentation_table sets as real row heights -- so the space
         reserved during packing and the space actually drawn can't drift
         apart from each other."""
-        rows = table.get("rows") or []
+        # Counted off the PLAN, not off table["rows"], because the plan is
+        # what the renderer walks and it no longer maps one-to-one onto the
+        # rows: _group_plan_rows_by_category inserts a heading row above each
+        # run of same-category items. Re-deriving the count here is exactly
+        # the drift this docstring warns about -- one row of silent
+        # disagreement per category is enough to push a tall table off the
+        # bottom of its slot. is_chinese_databook/source_multiplier change
+        # only labels and scale, never the row COUNT, so any value does.
+        from .helpers import _build_presentation_table_plan
         pts = cls._TABLE_TITLE_ROW_PT + cls._TABLE_HEADER_ROW_PT
-        for row in rows:
-            pts += cls._TABLE_DATA_ROW_PT
-            pts += len(row.get("children") or []) * cls._TABLE_CHILD_ROW_PT
-        if table.get("total_row"):
-            pts += cls._TABLE_TOTAL_ROW_PT
+        for entry in _build_presentation_table_plan(table, False, 1):
+            kind = entry.get("kind")
+            if kind == "total":
+                pts += cls._TABLE_TOTAL_ROW_PT
+            elif kind in ("child", "grouped", "group"):
+                pts += cls._TABLE_CHILD_ROW_PT
+            else:
+                pts += cls._TABLE_DATA_ROW_PT
         return pts
 
 
@@ -628,7 +639,11 @@ class _MeasurementMixin:
         # own label text (plus child indent when that row is indented).
         label_candidates_pt = [measurer_header.text_width_pt(unit_label)]
         for entry in plan:
-            indent_pt = self._TABLE_CHILD_INDENT_PT if entry.get("kind") == "child" else 0.0
+            # "grouped" is indented by the renderer exactly as "child" is, so
+            # it has to be measured that way too -- a label measured without
+            # its indent fits a column it will then overflow.
+            indent_pt = (self._TABLE_CHILD_INDENT_PT
+                         if entry.get("kind") in ("child", "grouped") else 0.0)
             label_candidates_pt.append(measurer_data.text_width_pt(entry.get("label", "")) + indent_pt)
         widths_pt = [max(label_candidates_pt) + self._TABLE_CELL_PADDING_PT]
 

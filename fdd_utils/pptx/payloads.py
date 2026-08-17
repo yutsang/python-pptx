@@ -207,6 +207,40 @@ def shorten_company_names(text: str) -> str:
     return body
 
 
+#: A minus sign glued to an amount, e.g. "管理层调整-473.2万元". A report does
+#: not write a negative that way, and here it is worse than a style point: the
+#: account labels in this data are themselves hyphen-joined
+#: ("累计摊销-土地使用权-自用资产", "其他应付款-非关联公司-其他"), so a reader
+#: meeting "管理层调整-473.2万元" cannot tell a negative amount from another
+#: hyphenated segment of the label. Compare the positive "其他应付款-非关联
+#: 公司-其他169.0万元" from the same deck -- identical shape, opposite meaning.
+#:
+#: Guards, each earning its place against a real string in the shipped deck:
+#:   (?<![\d\-])  a digit before it makes this a RANGE, not a sign
+#:                ("2026年1-6月", "2023-01-01"); a hyphen before it is a label
+#:                separator that happens to precede a number.
+#:   (?=[\d])     "NTMK-005中国银行" is a code, but so is anything else
+#:                hyphen-then-digit -- what disqualifies it is the missing
+#:                currency unit below, not this.
+#:   the unit     only 元/千元/万元/亿元. "1-6月" and bare "2024-2025" carry no
+#:                currency unit and are left alone.
+_GLUED_NEGATIVE_AMOUNT = re.compile(
+    r"(?<![\d\-−－])[-−－](?=\d)((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(亿元|万元|千元|元)"
+)
+
+
+def _rewrite_glued_negative_amounts(text: str) -> str:
+    """"...调整-473.2万元" -> "...调整负473.2万元".
+
+    负 rather than 减少/冲减: this is a negative BALANCE, not necessarily a
+    movement, and asserting a direction the data may not support is the kind
+    of unsupported inference the Validator exists to catch. Where the model
+    does know the semantics the prompt asks it to say so outright; this is the
+    floor, not the ceiling.
+    """
+    return _GLUED_NEGATIVE_AMOUNT.sub(r"负\1\2", str(text or ""))
+
+
 def _normalize_slide_commentary_text(text: str) -> str:
     normalized = clean_content_quotes(str(text or ""))
     if not normalized:
@@ -215,6 +249,7 @@ def _normalize_slide_commentary_text(text: str) -> str:
     normalized = re.sub(r"[ \t]+", " ", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
     normalized = shorten_company_names(normalized)
+    normalized = _rewrite_glued_negative_amounts(normalized)
     return normalized.strip()
 
 
