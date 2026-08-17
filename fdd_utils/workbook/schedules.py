@@ -1533,9 +1533,19 @@ def _synthesize_for_stage(
                     for column in stage_columns
                 },
             }
+    # Only where the sheet's own header actually differs from the ISO date --
+    # a header cell that already IS a date renders identically either way, and
+    # a blank one must fall back to the date rather than to "".
+    period_labels = {
+        column["date"]: str(column.get("label") or "").strip()
+        for column in stage_columns
+        if str(column.get("label") or "").strip()
+        and str(column.get("label") or "").strip() != column["date"]
+    }
     return {
         "header": block_title,
         "periods": periods,
+        "period_labels": period_labels,
         "rows": rows,
         "total_row": total_row,
         "synthesized_from": "main_schedule_breakdown",
@@ -1676,6 +1686,15 @@ def normalize_financial_schedule(
                 "stage": stage,
                 "date": parsed_date.strftime("%Y-%m-%d"),
                 "key": f"{stage}|{parsed_date.strftime('%Y-%m-%d')}",
+                # The sheet's own header text, kept for the same reason
+                # extract_presentation_detail_table keeps it (see its
+                # period_cols): the normalised date alone cannot say whether
+                # a column is a year, a year end or an interim cutoff. A
+                # column headed "2023" parses to 2023-01-01, and a real deck
+                # printed exactly that in four subtable headers --
+                # wrong to a reader and 41.7pt wide against a 40.0pt column,
+                # so it also wrapped.
+                "label": _cell_text(df.iloc[date_row_idx, col_idx]),
             }
         )
     columns = _dedupe_columns_by_key(columns)

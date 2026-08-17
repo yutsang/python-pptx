@@ -22,6 +22,8 @@ from .helpers import (  # lifted out of PowerPointGenerator
     _planning_std_lh_pt,
     _prepare_structured_data_for_slides,
     _presentation_table_for_account,
+    _select_presentation_tables,
+    _strip_table_handoff,
     _process_markdown_content,
     _read_table_style_id,
     _real_font_size_pt,
@@ -2447,13 +2449,45 @@ class _PackingMixin:
         """
         tables_enabled = self._presentation_tables_enabled()
         table_style = self._presentation_table_style() if tables_enabled else "table"
+
+        # Not every account that CAN have a table should spend a slot on one
+        # -- see _select_presentation_tables. Decided HERE, before the
+        # lead-in/post-table split below, so a rejected account passes into
+        # the ordinary pool with its commentary intact rather than as a
+        # truncated lead-in with nowhere for the rest to go.
+        if tables_enabled and table_style != "sublist":
+            candidates = [
+                (item, table)
+                for item in structured_data
+                if (table := _presentation_table_for_account(item)) is not None
+            ]
+            selected, rejected = _select_presentation_tables(candidates, self.pptx_settings)
+            table_for_item = {id(item): table for item, table in selected}
+            for item, reason in rejected:
+                logger.info(
+                    "Subtable not drawn for %s: %s",
+                    item.get("mapping_key") or item.get("account_name"), reason,
+                )
+        else:
+            table_for_item = None
+
         table_items: List[Dict[str, Any]] = []
         normal_items: List[Dict[str, Any]] = []
         last_table_pos: Optional[int] = None
         tagged_normal: List[Tuple[int, Dict[str, Any]]] = []
         for pos, item in enumerate(structured_data):
             table = _presentation_table_for_account(item) if tables_enabled else None
-            if table and table_style == "sublist":
+            if table is not None and table_for_item is not None and id(item) not in table_for_item:
+                # Rejected above. The model was told to end its lead-in with
+                # "明细如下：" and that promise now points at nothing, so cut
+                # it; everything else the account wrote is kept verbatim.
+                item = dict(item)
+                item["commentary"] = _strip_table_handoff(
+                    item.get("commentary", ""),
+                    self._TABLE_HANDOFF_CHI if item.get("is_chinese") else self._TABLE_HANDOFF_ENG,
+                )
+                tagged_normal.append((pos, item))
+            elif table and table_style == "sublist":
                 # Fallback style: the account is NEVER pulled out of the
                 # normal packing pool -- the table dict becomes plain text
                 # appended to its own commentary, so it inherits the whole

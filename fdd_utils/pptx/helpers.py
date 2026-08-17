@@ -507,6 +507,140 @@ def _presentation_table_for_account(account_data: Dict[str, Any]) -> Optional[Di
     return table
 
 
+#: Accounts a due-diligence report breaks out as a matter of course, best
+#: first. Used only to RANK once more accounts qualify than max_per_statement
+#: allows -- it is not a whitelist, and an account absent from it still gets a
+#: table when there is room (ranked by component count, i.e. by how much the
+#: table shows that a sentence could not).
+#:
+#: 营业收入/营业成本/税金及附加/管理费用/销售费用/财务费用 lead because the
+#: reader's question about an income statement is always "made of what", and
+#: those breakdowns are the answer. 固定资产/应收账款/应付账款/预收款项 lead the
+#: balance sheet for the same reason. Deliberately absent: 货币资金 (one bank
+#: account), 长期借款 (one loan), 预付款项 (typically two small items) -- their
+#: breakdown is a sentence, not a table.
+_TABLE_PRIORITY_DEFAULT = (
+    "OI", "OC", "Tax and Surcharges", "GA", "Selling cost", "Fin Exp",
+    "NCA", "AR", "AP", "Advances", "OP", "OR", "Tax payable", "IA",
+)
+
+
+def _select_presentation_tables(
+    candidates: List[Tuple[Dict[str, Any], Dict[str, Any]]],
+    settings: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Tuple[Dict[str, Any], Dict[str, Any]]], List[Tuple[Dict[str, Any], str]]]:
+    """Which table-bearing accounts actually get a native table.
+
+    Every account that CAN have a table used to get one. A real entity
+    export then put 17 tables on 6 slides -- five on one page -- and read as
+    a data dump rather than a report. Two independent reasons an account
+    should not spend a whole slot on a table:
+
+    1. **The table says nothing the sentence didn't.** 管理费用's read
+       "主要包括管理费用-行政及管理层调整。明细如下：" above a table whose
+       two rows were 管理费用-行政 and 管理层调整. Same for 长期借款, 预付
+       款项, 销售费用, 货币资金, 应付账款 -- six of the seventeen. A table
+       earns its space by showing MORE than a sentence can carry, and a
+       sentence carries about three components comfortably; hence min_rows.
+    2. **There is only so much page.** Past a handful, tables stop being
+       exhibits and become the deck. max_per_statement caps them, and
+       _TABLE_PRIORITY_DEFAULT decides which survive.
+
+    A dropped account is NOT losing content: it returns to the ordinary
+    commentary pool with its full text (the caller trims the now-dangling
+    "明细如下：" handoff), which is exactly how it rendered before subtables
+    were switched on at all.
+
+    Returns (kept, dropped) where dropped carries a human-readable reason --
+    inspect_databook.py's 3c prints it, so the deck's table count is always
+    explainable without reading this code.
+    """
+    tables = (settings or {}).get("presentation_tables") or {}
+
+    def _int_setting(name: str, default: int) -> int:
+        try:
+            value = int(tables.get(name, default))
+        except (TypeError, ValueError):
+            return default
+        return value if value >= 0 else default
+
+    min_rows = _int_setting("min_rows", 3)
+    max_tables = _int_setting("max_per_statement", 5)
+    priority = tables.get("priority")
+    if not isinstance(priority, (list, tuple)) or not priority:
+        priority = _TABLE_PRIORITY_DEFAULT
+    rank_of = {str(key).strip().lower(): i for i, key in enumerate(priority)}
+
+    kept: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    dropped: List[Tuple[Dict[str, Any], str]] = []
+
+    substantial: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for item, table in candidates:
+        n_rows = len(table.get("rows") or [])
+        if n_rows < min_rows:
+            dropped.append((
+                item,
+                f"only {n_rows} component(s), below min_rows={min_rows} -- "
+                f"the lead-in sentence already names them",
+            ))
+            continue
+        substantial.append((item, table))
+
+    if max_tables == 0:
+        return [], dropped + [(item, "max_per_statement=0") for item, _ in substantial]
+
+    def _sort_key(pair: Tuple[Dict[str, Any], Dict[str, Any]]) -> Tuple[int, int, str]:
+        item, table = pair
+        key = str(item.get("mapping_key") or item.get("account_name") or "").strip().lower()
+        # Absent from the priority list is not a demerit against a LOWER-
+        # ranked listed account, only against the listed ones -- so unlisted
+        # accounts sort after the list and among themselves by how much their
+        # table actually shows.
+        return (rank_of.get(key, len(rank_of)), -len(table.get("rows") or []), key)
+
+    ordered = sorted(substantial, key=_sort_key)
+    kept = ordered[:max_tables]
+    for item, table in ordered[max_tables:]:
+        dropped.append((
+            item,
+            f"over max_per_statement={max_tables} "
+            f"({len(table.get('rows') or [])} component(s), ranked below the ones kept)",
+        ))
+
+    # Restore the statement's own reading order: the ranking decides WHICH
+    # tables survive, never where they land. _append_table_accounts_to_
+    # distribution flows them sequentially and relies on that order.
+    position = {id(item): i for i, (item, _t) in enumerate(candidates)}
+    kept.sort(key=lambda pair: position.get(id(pair[0]), 0))
+    return kept, dropped
+
+
+def _strip_table_handoff(text: str, handoff: str) -> str:
+    """Removes a trailing "明细如下：" once its table is gone.
+
+    The phrase is a promise the model was told to make (see
+    _detail_table_guidance); left pointing at nothing it reads as a
+    rendering failure, which is precisely how the missing tables were
+    reported in the first place.
+    """
+    stripped = (text or "").rstrip()
+    if not stripped:
+        return stripped
+    lowered = stripped.lower()
+    tail = handoff.lower()
+    if not lowered.endswith(tail):
+        return stripped
+    kept = stripped[: len(stripped) - len(handoff)].rstrip()
+    # "...主要包括 A 及 B。明细如下：" -> the sentence stop is already there.
+    # "...breakdown as follows, the breakdown is set out below" -> a dangling
+    # comma needs one.
+    if kept and kept[-1] in "，,、；;":
+        kept = kept[:-1].rstrip()
+    if kept and kept[-1] not in "。.！!？?":
+        kept += "。" if any("一" <= ch <= "鿿" for ch in kept) else "."
+    return kept
+
+
 def _truncate_text_at_boundary(text: str, limit: int, is_chinese: bool) -> str:
     """Cuts `text` to at most `limit` chars at a sentence boundary where
     possible. Shared by the lead-in and the post-table explanation --

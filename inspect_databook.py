@@ -1505,32 +1505,55 @@ def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame]) -
               "\n     as indented TEXT inside the commentary, not as a table shape. That is why"
               "\n     the deck shows no subtable even though everything upstream works.")
     else:
-        print("\n  ✅ Tables reach the packer and the style draws them. If the deck still shows"
-              "\n     none, the next suspect is slot allocation in"
-              "\n     _append_table_accounts_to_distribution, not extraction.")
-        # An account with a table is pulled OUT of the normal commentary pool and
-        # given a slot to itself (_append_table_accounts_to_distribution). That is
-        # affordable for a handful and not for most of the sheet, so say the
-        # arithmetic here rather than letting a 35-minute batch discover it.
-        try:
-            cap = int(_pptx_cfg().get("max_commentary_slides_per_statement", 4) or 4)
-        except Exception:
-            cap = 4
-        slots = cap * 2  # each slide carries a left and a right slot
-        if len(ok) > slots:
-            print(f"\n  ⚠️  {len(ok)} accounts want a slot of their own, against roughly "
-                  f"{slots} available\n     ({cap} slides per statement x 2 columns). Expect "
-                  "accounts to be squeezed, split\n     or dropped. Check section 9 for "
-                  "OVERFLOW RISK / TABLE OVERLAPS REAL TEXT and\n     section 8 for "
-                  "\"Every account with commentary reached the deck\" before trusting the deck.")
-            small = [r for r in ok if r["n_rows"] <= 2]
-            if small:
-                print(f"\n     {len(small)} of them carry only 2 component(s) -- "
-                      f"{', '.join(r['account'] for r in small[:8])}"
-                      + ("..." if len(small) > 8 else "")
-                      + "\n     A 2-row breakdown costs a whole slot and says little the total "
-                      "does not;\n     raising the minimum component count is the cheapest lever "
-                      "if the deck is now too long.")
+        print("\n  ✅ Tables reach the packer and the style draws them.")
+        # Having a table and being DRAWN one are now different things: the
+        # planner keeps min_rows/max_per_statement of them and returns the
+        # rest to ordinary commentary. Run the real selector rather than
+        # restating its rules -- a diagnostic that models a different
+        # algorithm than the one shipping is worse than no diagnostic (the
+        # same lesson _plan_slot_distribution's own docstring records).
+        from fdd_utils.pptx.helpers import _select_presentation_tables
+
+        settings = gen.pptx_settings
+        tables_cfg = (settings.get("presentation_tables") or {})
+        print(f"\n  [3] selection  min_rows={tables_cfg.get('min_rows', 3)}  "
+              f"max_per_statement={tables_cfg.get('max_per_statement', 5)}")
+
+        # Per STATEMENT, because the cap is per statement -- scoring all 18
+        # accounts as one pool would report a number the deck never draws.
+        # mappings[key]["type"] is the same field build_pptx_payloads splits on.
+        by_statement: Dict[str, list] = {"BS": [], "IS": [], "?": []}
+        for r in ok:
+            entry = mappings.get(r["mapping"]) or {}
+            by_statement.setdefault(str(entry.get("type") or "?"), []).append(r)
+
+        drawn_total = 0
+        for statement in ("BS", "IS", "?"):
+            group = by_statement.get(statement) or []
+            if not group:
+                continue
+            candidates = [
+                ({"mapping_key": r["mapping"], "account_name": r["account"]},
+                 {"rows": [None] * r["n_rows"]})
+                for r in group
+            ]
+            kept, rejected = _select_presentation_tables(candidates, settings)
+            drawn_total += len(kept)
+            label = {"BS": "balance sheet", "IS": "income statement"}.get(
+                statement, "unclassified (no type in mappings.yml -- NOT in the deck)")
+            print(f"\n    {label}: {len(kept)} drawn of {len(group)} available")
+            for item, _t in kept:
+                print(f"      ✅ {item['account_name']}")
+            for item, reason in rejected:
+                print(f"      ➖ {item['account_name']}: {reason}")
+
+        print(f"\n  => {drawn_total} table(s) in this entity's deck, of {len(ok)} available.")
+        if drawn_total != len(ok):
+            print("     A rejected account is NOT losing content: it keeps its full commentary"
+                  "\n     and returns to normal packing, with a dangling '明细如下：' trimmed."
+                  "\n     Tune with pptx.presentation_tables.min_rows / max_per_statement;"
+                  "\n     min_rows=2 + a large max_per_statement is the old draw-everything"
+                  "\n     behaviour.")
 
 
 def check_statement_table_units(bs_is_results: Dict[str, Any]) -> None:
