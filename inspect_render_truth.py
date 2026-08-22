@@ -423,31 +423,77 @@ def _collect_model(deck_path: str, want_slide: Optional[int],
 # The ground-truth half (Windows + PowerPoint only)
 # ---------------------------------------------------------------------------
 
-def _attach_powerpoint():
-    """Return (app, started_by_us). Reuses a running PowerPoint when there is
-    one, so this never quits an instance the user already had open with their
-    own work in it."""
+def _attach_powerpoint() -> Tuple[object, bool, str]:
+    """Return (app, started_by_us, binding).
+
+    EARLY binding first (gencache builds a wrapper from PowerPoint's type
+    library, so Lines/Paragraphs are known to be methods and return real range
+    objects). Late binding is the fallback and needs _flag_methods to survive --
+    see _sub_range for what goes wrong when neither is in place.
+
+    Reuses a running PowerPoint when there is one, so this never quits an
+    instance the user already had open with their own work in it.
+    """
     import win32com.client as win32
+    from win32com.client import gencache
+
+    def _early(target):
+        try:
+            return gencache.EnsureDispatch(target)
+        except Exception:
+            return None   # stale/unwritable gen_py cache — fall back, don't die
+
     try:
-        return win32.GetActiveObject("PowerPoint.Application"), False
+        raw = win32.GetActiveObject("PowerPoint.Application")
+        started = False
     except Exception:
-        return win32.Dispatch("PowerPoint.Application"), True
+        raw, started = None, True
+
+    if raw is not None:
+        app = _early(raw)
+        return (app or raw), False, ("early" if app else "late")
+    app = _early("PowerPoint.Application")
+    return (app or win32.Dispatch("PowerPoint.Application")), True, ("early" if app else "late")
+
+
+def _flag_methods(com_obj) -> None:
+    """Tell a LATE-bound wrapper that these names are methods, not properties.
+
+    Without this, pywin32's dynamic dispatch resolves `tr.Lines` as a property
+    GET. PowerPoint answers with a TextRange2, whose default member is Text, and
+    the dynamic wrapper collapses it to that -- so `tr.Lines` comes back as a
+    plain **str** and `.Count` silently becomes str.count. It does not raise;
+    it hands you a bound method of the wrong type. Observed on a real Windows
+    run, which is the whole reason ground truth goes through one helper.
+    """
+    flag = getattr(com_obj, "_FlagAsMethod", None)
+    if flag is None:
+        return   # early-bound: the generated wrapper already knows
+    try:
+        flag("Lines", "Paragraphs", "Runs")
+    except Exception:
+        pass
 
 
 def _sub_range(text_range, member: str, index: Optional[int] = None):
-    """Get TextRange2.Lines()/.Paragraphs(), which are METHODS.
+    """Get TextRange2.Lines() / .Paragraphs(k), which are METHODS.
 
-    VBA lets you write `tr.Lines.Count` because it resolves the default
-    arguments for you; pywin32 does not, and `tr.Lines` there is a bound method
-    whose `.Count` is the method object's own attribute -- it does not raise, it
-    silently returns something meaningless. Every ground-truth number this tool
-    prints comes through here for exactly that reason.
+    VBA fills in their optional arguments for you; pywin32 does not. Every
+    ground-truth number this tool prints comes through here so that the
+    late-binding trap above can only bite in one place -- and so that if it
+    ever bites again it raises instead of quietly reporting nonsense.
     """
+    _flag_methods(text_range)
     attr = getattr(text_range, member)
-    try:
-        return attr() if index is None else attr(index)
-    except TypeError:
-        return attr   # some pywin32/typelib combinations expose it as a property
+    if isinstance(attr, (str, bytes)):
+        raise RuntimeError(
+            f"COM handed back TextRange2.{member} as a plain string instead of a "
+            f"range object. That means this PowerPoint is bound late and "
+            f"_FlagAsMethod did not take. Delete the pywin32 type cache and retry:\n"
+            f"    python -c \"import win32com,shutil,os;"
+            f"shutil.rmtree(os.path.join(os.path.dirname(win32com.__file__),'gen_py'),"
+            f"ignore_errors=True)\"")
+    return attr() if index is None else attr(index)
 
 
 def _normalize_com_text(text: str) -> str:
@@ -458,14 +504,15 @@ def _normalize_com_text(text: str) -> str:
 def _fill_ground_truth(deck_path: str, rows: List[ShapeRow], warnings: List[str]) -> str:
     """Open the deck in real PowerPoint and record what its layout engine did.
     Read-only, closed without saving."""
-    app, started_by_us = _attach_powerpoint()
+    app, started_by_us, binding = _attach_powerpoint()
     version, pres = "", None
     try:
         try:
             app.Visible = True   # PowerPoint refuses invisible automation
         except Exception:
             pass
-        version = f"PowerPoint {getattr(app, 'Version', '?')} build {getattr(app, 'Build', '?')}"
+        version = (f"PowerPoint {getattr(app, 'Version', '?')} "
+                   f"build {getattr(app, 'Build', '?')} ({binding}-bound)")
         # Positional, not keyword: late-bound Dispatch resolves named arguments
         # through GetIDsOfNames and that is not reliable across Office builds.
         # Open(FileName, ReadOnly, Untitled, WithWindow); msoTrue = -1, and
