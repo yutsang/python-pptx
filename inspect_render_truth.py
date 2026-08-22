@@ -140,6 +140,7 @@ class ParaRow:
     space_before_pt: float = 0.0
     selfcheck_ok: bool = True
     text: str = ""
+    real_line_texts: List[str] = field(default_factory=list)
 
     def delta(self, variant: str) -> Optional[int]:
         if self.real_lines is None:
@@ -161,6 +162,7 @@ class ShapeRow:
     real_bound_pt: Optional[float] = None
     is_empty: bool = False
     paras: List[ParaRow] = field(default_factory=list)
+    measurer: object = None      # the one this shape was measured with
 
     @property
     def real_pitch(self) -> Optional[float]:
@@ -369,7 +371,7 @@ def _collect_model(deck_path: str, want_slide: Optional[int],
             row = ShapeRow(slide=s_idx, shape=name or "(unnamed)", slot=_slot_of(name),
                            is_chinese=is_chi, box_w_pt=box.width_pt,
                            box_h_pt=box.height_pt, model_lines=0, model_pt=0.0,
-                           is_empty=not text.strip())
+                           is_empty=not text.strip(), measurer=measurer)
             if row.is_empty:
                 # No paragraphs to walk, and PowerPoint reports HasText false so
                 # ground truth will never match it -- record it as a real,
@@ -631,12 +633,31 @@ def _fill_ground_truth(deck_path: str, rows: List[ShapeRow], warnings: List[str]
                 target.real_bound_pt = float(tr.BoundHeight)
                 n_com = int(_sub_range(tr, "Paragraphs").Count)
                 for p in target.paras:
-                    if p.index <= n_com:
+                    if p.index > n_com:
+                        continue
+                    try:
+                        para_range = _sub_range(tr, "Paragraphs", p.index)
+                        lines = _sub_range(para_range, "Lines")
+                        p.real_lines = int(lines.Count)
+                    except Exception:
+                        p.real_lines = None
+                        continue
+                    # Only where we got it WRONG, because this is one extra COM
+                    # round trip per line and it is only ever read for those.
+                    # Lines(i).Text is the literal text PowerPoint drew on line
+                    # i -- it does not say how wide the model thinks that line
+                    # is, it says where PowerPoint actually broke, which is the
+                    # only thing that can settle WHY it broke there. Guessing at
+                    # the rule from aggregate counts has now been wrong twice
+                    # (mixed-script widths, then punctuation compression).
+                    if p.real_lines != p.lines_c:
                         try:
-                            p.real_lines = int(_sub_range(_sub_range(tr, "Paragraphs", p.index),
-                                                          "Lines").Count)
-                        except Exception:
-                            p.real_lines = None
+                            p.real_line_texts = [
+                                str(_sub_range(para_range, "Lines", i).Text)
+                                for i in range(1, p.real_lines + 1)]
+                        except Exception as exc:
+                            warnings.append(f"slide {s_idx} {com_name} para {p.index}: "
+                                            f"could not read the real line breaks ({exc})")
                 if n_com != len(target.paras):
                     # Not cosmetic: the two sides disagree about what a
                     # paragraph even is, so every per-paragraph delta below it
@@ -746,15 +767,15 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
     print(f"            count; below the nominal {_real_font_size_pt(False) * 1.2:.2f}pt means "
           f"PowerPoint re-ran its own autofit.")
     print("-" * 96)
-    print(f"{'sl':>3} {'shape':<24}{'lang':>5}{'box_h':>8}{'mLines':>7}{'rLines':>7}{'d':>4}"
-          f"{'model_pt':>10}{'BoundH':>9}{'pitch':>7}{'fill%':>8}")
+    print(f"{'sl':>3} {'shape':<22}{'lang':>5}{'box_w':>8}{'box_h':>8}{'mLines':>7}{'rLines':>7}"
+          f"{'d':>4}{'model_pt':>10}{'BoundH':>9}{'pitch':>7}{'fill%':>8}")
     n_shape_bad = 0
     for r in sorted(rows, key=lambda x: (x.slide, x.shape)):
         d = "" if r.real_lines is None else f"{r.real_lines - r.model_lines:+d}"
         if d not in ("", "+0"):
             n_shape_bad += 1
-        print(f"{r.slide:>3} {r.shape[:24]:<24}{'CHI' if r.is_chinese else 'ENG':>5}"
-              f"{r.box_h_pt:8.1f}{r.model_lines:7d}"
+        print(f"{r.slide:>3} {r.shape[:22]:<22}{'CHI' if r.is_chinese else 'ENG':>5}"
+              f"{r.box_w_pt:8.1f}{r.box_h_pt:8.1f}{r.model_lines:7d}"
               f"{(r.real_lines if r.real_lines is not None else ''):>7}{d:>4}{r.model_pt:10.1f}"
               f"{(f'{r.real_bound_pt:.1f}' if r.real_bound_pt is not None else ''):>9}"
               f"{(f'{r.real_pitch:.2f}' if r.real_pitch else ''):>7}"
@@ -853,14 +874,35 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
 
     if show_lines and wrong:
         print("\n" + "-" * 96)
-        print("FULL TEXT OF THE PARAGRAPHS STILL MIS-WRAPPED")
+        print("WHERE POWERPOINT ACTUALLY BROKE THE LINE")
         print("-" * 96)
+        print("  `our_w` is this repo's own width for the text PowerPoint put on that line, and")
+        print("  `limit` is the width we believe it had. A line whose our_w EXCEEDS its limit is")
+        print("  PowerPoint fitting text our widths say cannot fit -- the `over` column is by how")
+        print("  much, and the last characters of that line are what bought the room. That is the")
+        print("  measurement; the rule follows from it. (our_w ignores the bold key run, so a")
+        print("  small positive `over` on line 1 of a bullet is expected and not the finding.)")
+        by_shape = {(r.slide, r.shape): r for r in rows}
         for p in wrong:
             print(f"\n  slide {p.slide} {p.shape} para {p.index} [{p.kind}] "
                   f"A={p.lines_a} B={p.lines_b} C={p.lines_c} real={p.real_lines}"
                   + (f"\n  label drawn: {p.label!r}   packer charged: {p.mapping_key!r}"
                      if p.label else ""))
-            print(f"    {p.text}")
+            shape_row = by_shape.get((p.slide, p.shape))
+            measurer = getattr(shape_row, "measurer", None)
+            if not p.real_line_texts or measurer is None:
+                print(f"    (no line breaks captured)\n    {p.text}")
+                continue
+            box_w = shape_row.box_w_pt
+            hang_w = max(10.0, box_w - BULLET_HANGING_INDENT_PT)
+            print(f"    box_w={box_w:.1f}pt   hanging continuation width={hang_w:.1f}pt")
+            print(f"    {'#':>3}{'our_w':>9}{'limit':>8}{'over':>8}  line as PowerPoint drew it")
+            for i, line in enumerate(p.real_line_texts, start=1):
+                limit = box_w if (i == 1 and p.kind == "bullet") else hang_w
+                our_w = measurer.text_width_pt(line.rstrip("\r\n\x0b"))
+                over = our_w - limit
+                print(f"    {i:>3}{our_w:>9.1f}{limit:>8.1f}{over:>+8.1f}  "
+                      f"{'!! ' if over > 0.5 else '   '}{line.rstrip()}")
 
     print("\n" + "=" * 96)
     net = sum(p.delta("c") for p in scored)
