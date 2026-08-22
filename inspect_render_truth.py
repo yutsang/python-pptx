@@ -47,9 +47,15 @@ It also reports
 ---------------
   * real fill % = BoundHeight / usable box height. The honest answer to "why do
     the pages look under-filled" -- unlike inspect_pptx.py's fill%, this
-    numerator came from PowerPoint.
-  * pitch = BoundHeight / Lines per shape. Below the nominal 10.8pt means
-    PowerPoint re-ran its own autofit shrink and ignored the fontScale we wrote.
+    numerator came from PowerPoint. Commentary slots left ENTIRELY empty are
+    listed too, at a measured 0%: an unused column is the largest under-fill
+    there is and filtering it out made a wasted half-page look like a page
+    that simply had fewer columns.
+  * pitch per shape = BoundHeight with the paragraph gaps taken back out, over
+    the real line count. Below the nominal 10.8pt means PowerPoint re-ran its
+    own autofit shrink and ignored the fontScale we wrote. (Not BoundHeight/
+    Lines: that bundles the gaps in and always reads high, so it could never
+    show a shrink at all.)
   * pitch and gap least-squares-fitted out of the real numbers, both ways round
     on whether the last paragraph's space_after counts -- so 10.8/3.0 gets
     re-measured rather than re-argued. (3.0 was already restored once, 63e4120,
@@ -153,6 +159,7 @@ class ShapeRow:
     model_pt: float
     real_lines: Optional[int] = None
     real_bound_pt: Optional[float] = None
+    is_empty: bool = False
     paras: List[ParaRow] = field(default_factory=list)
 
     @property
@@ -338,11 +345,16 @@ def _collect_model(deck_path: str, want_slide: Optional[int],
                 continue
             tf = shape.text_frame
             text = tf.text or ""
-            if not text.strip():
+            is_slot = name.startswith("textMainBullets")
+            # An EMPTY commentary slot is the largest under-fill there is, so it
+            # has to appear in the fill picture rather than be filtered out of
+            # it. Skipping empties made a page whose whole second column went
+            # unused look like a page that simply had fewer columns.
+            if not text.strip() and not is_slot:
                 continue
             # Commentary slots, plus the unnamed textboxes
             # _render_table_accounts_stack drops beside a table.
-            if not (name.startswith("textMainBullets") or BULLET_MARKER in text):
+            if not (is_slot or BULLET_MARKER in text):
                 continue
             if want_shape and want_shape.lower() not in name.lower():
                 continue
@@ -356,7 +368,15 @@ def _collect_model(deck_path: str, want_slide: Optional[int],
 
             row = ShapeRow(slide=s_idx, shape=name or "(unnamed)", slot=_slot_of(name),
                            is_chinese=is_chi, box_w_pt=box.width_pt,
-                           box_h_pt=box.height_pt, model_lines=0, model_pt=0.0)
+                           box_h_pt=box.height_pt, model_lines=0, model_pt=0.0,
+                           is_empty=not text.strip())
+            if row.is_empty:
+                # No paragraphs to walk, and PowerPoint reports HasText false so
+                # ground truth will never match it -- record it as a real,
+                # measured 0% and move on.
+                row.real_lines, row.real_bound_pt = 0, 0.0
+                rows.append(row)
+                continue
 
             for p_idx, para in enumerate(tf.paragraphs, start=1):
                 p_text = para.text or ""
@@ -577,6 +597,8 @@ def _fill_ground_truth(deck_path: str, rows: List[ShapeRow], warnings: List[str]
 
         by_slide: Dict[int, List[ShapeRow]] = {}
         for r in rows:
+            if r.is_empty:
+                continue   # TextFrame2.HasText is false; already recorded as a real 0%
             by_slide.setdefault(r.slide, []).append(r)
 
         for s_idx, wanted in by_slide.items():
@@ -736,7 +758,8 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
               f"{(r.real_lines if r.real_lines is not None else ''):>7}{d:>4}{r.model_pt:10.1f}"
               f"{(f'{r.real_bound_pt:.1f}' if r.real_bound_pt is not None else ''):>9}"
               f"{(f'{r.real_pitch:.2f}' if r.real_pitch else ''):>7}"
-              f"{(f'{r.real_fill*100:.1f}' if r.real_fill else ''):>8}")
+              f"{(f'{r.real_fill*100:.1f}' if r.real_fill is not None else ''):>8}"
+              + ('  EMPTY' if r.is_empty else ''))
 
     all_paras = [p for r in rows for p in r.paras]
     scored = [p for p in all_paras if p.real_lines is not None]
