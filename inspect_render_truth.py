@@ -428,8 +428,9 @@ def _attach_powerpoint() -> Tuple[object, bool, str]:
 
     EARLY binding first (gencache builds a wrapper from PowerPoint's type
     library, so Lines/Paragraphs are known to be methods and return real range
-    objects). Late binding is the fallback and needs _flag_methods to survive --
-    see _sub_range for what goes wrong when neither is in place.
+    objects). Late binding is the fallback and works too -- see _sub_range,
+    whose call ladder handles both, and the record above it of the two forms
+    that failed on a real Windows run.
 
     Reuses a running PowerPoint when there is one, so this never quits an
     instance the user already had open with their own work in it.
@@ -456,44 +457,88 @@ def _attach_powerpoint() -> Tuple[object, bool, str]:
     return (app or win32.Dispatch("PowerPoint.Application")), True, ("early" if app else "late")
 
 
-def _flag_methods(com_obj) -> None:
-    """Tell a LATE-bound wrapper that these names are methods, not properties.
+# How TextRange2.Lines / .Paragraphs(k) actually have to be called.
+#
+# measure_boundheight.bas does `shp.TextFrame2.TextRange.Lines.Count` and that
+# works, so the member exists. Getting there from Python took three attempts,
+# all recorded here because each one FAILED in a way that looked like the
+# previous fix:
+#
+#   1. `tr.Lines.Count` -- pywin32 late binding resolved Lines as a plain
+#      property get, PowerPoint returned the range, and the dynamic wrapper
+#      collapsed it to its default member (Text). Result: a **str**, no
+#      exception, `.Count` became str.count. Silent wrong answer.
+#   2. `_FlagAsMethod("Lines")` then `tr.Lines()` -- this is the documented
+#      late-binding fix for members that are methods, and it made things worse:
+#      Lines is declared PROPGET in the type library, so invoking it with
+#      DISPATCH_METHOD alone no longer matches any member and COM answers
+#      "Member not found" (-2147352573). Do NOT put _FlagAsMethod back.
+#   3. What works: invoke it explicitly with DISPATCH_PROPERTYGET |
+#      DISPATCH_METHOD and the arguments inline -- a parameterised property
+#      get, which is exactly what VBA is doing when it writes `.Lines` and
+#      `.Paragraphs(k)` with the optional arguments omitted.
+#
+# The ladder below tries the VBA-equivalent form first and keeps the other
+# forms as fallbacks, because early binding (when gencache succeeds) exposes
+# these as ordinary callables instead. Whichever one works is reported, so a
+# future failure says which rung broke rather than just "it broke".
 
-    Without this, pywin32's dynamic dispatch resolves `tr.Lines` as a property
-    GET. PowerPoint answers with a TextRange2, whose default member is Text, and
-    the dynamic wrapper collapses it to that -- so `tr.Lines` comes back as a
-    plain **str** and `.Count` silently becomes str.count. It does not raise;
-    it hands you a bound method of the wrong type. Observed on a real Windows
-    run, which is the whole reason ground truth goes through one helper.
-    """
-    flag = getattr(com_obj, "_FlagAsMethod", None)
-    if flag is None:
-        return   # early-bound: the generated wrapper already knows
+_STRATEGY_USED: List[str] = []
+
+
+def _via_propget(obj, member: str, args: Tuple):
+    """Parameterised property get -- the VBA-equivalent call."""
+    import pythoncom
+    from win32com.client import Dispatch
+    dispid = obj._oleobj_.GetIDsOfNames(0, member)
+    res = obj._oleobj_.Invoke(
+        dispid, 0, pythoncom.DISPATCH_PROPERTYGET | pythoncom.DISPATCH_METHOD,
+        True, *args)
     try:
-        flag("Lines", "Paragraphs", "Runs")
+        return Dispatch(res)
     except Exception:
-        pass
+        return res
+
+
+def _via_call(obj, member: str, args: Tuple):
+    """Early-bound: gencache generated an ordinary method."""
+    return getattr(obj, member)(*args)
+
+
+def _via_attr(obj, member: str, args: Tuple):
+    """Whatever plain attribute access gives, if it happens to be a range."""
+    if args:
+        raise TypeError("attribute access cannot take an index")
+    return getattr(obj, member)
 
 
 def _sub_range(text_range, member: str, index: Optional[int] = None):
-    """Get TextRange2.Lines() / .Paragraphs(k), which are METHODS.
+    """Get TextRange2.Lines / .Paragraphs(k) as a real range object.
 
-    VBA fills in their optional arguments for you; pywin32 does not. Every
-    ground-truth number this tool prints comes through here so that the
-    late-binding trap above can only bite in one place -- and so that if it
-    ever bites again it raises instead of quietly reporting nonsense.
+    Every ground-truth number this tool prints comes through here, so the
+    late-binding traps above can only bite in one place -- and so that a bite
+    RAISES rather than quietly reporting a number that came from somewhere
+    else. `.Count` is touched before returning for exactly that reason: it is
+    the cheapest proof that what came back is a range and not a string.
     """
-    _flag_methods(text_range)
-    attr = getattr(text_range, member)
-    if isinstance(attr, (str, bytes)):
-        raise RuntimeError(
-            f"COM handed back TextRange2.{member} as a plain string instead of a "
-            f"range object. That means this PowerPoint is bound late and "
-            f"_FlagAsMethod did not take. Delete the pywin32 type cache and retry:\n"
-            f"    python -c \"import win32com,shutil,os;"
-            f"shutil.rmtree(os.path.join(os.path.dirname(win32com.__file__),'gen_py'),"
-            f"ignore_errors=True)\"")
-    return attr() if index is None else attr(index)
+    args: Tuple = () if index is None else (index,)
+    failures: List[str] = []
+    for name, fn in (("propget", _via_propget), ("call", _via_call), ("attr", _via_attr)):
+        try:
+            res = fn(text_range, member, args)
+            _ = res.Count          # must really be a range, not a str or a method
+            if name not in _STRATEGY_USED:
+                _STRATEGY_USED.append(name)
+            return res
+        except Exception as exc:
+            failures.append(f"{name}: {type(exc).__name__}: {exc}")
+    raise RuntimeError(
+        f"Could not read TextRange2.{member}"
+        f"{'' if index is None else f'({index})'} through any call form.\n  "
+        + "\n  ".join(failures)
+        + "\n\nThis is the one thing the tool cannot work around. Paste the above "
+          "back;\nthe VBA in measure_boundheight.bas reads the same member "
+          "successfully,\nso the member exists and only the Python call form is wrong.")
 
 
 def _normalize_com_text(text: str) -> str:
@@ -581,6 +626,8 @@ def _fill_ground_truth(deck_path: str, rows: List[ShapeRow], warnings: List[str]
                 app.Quit()
             except Exception:
                 pass
+    if _STRATEGY_USED:
+        version += f", range access via {'/'.join(_STRATEGY_USED)}"
     return version
 
 
