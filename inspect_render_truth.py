@@ -288,6 +288,171 @@ def _alias_index() -> Dict[str, List[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Do the model's assumptions still hold in this deck?
+# ---------------------------------------------------------------------------
+#
+# Every number the packer produces rests on constants that describe the CURRENT
+# renderer and the CURRENT template: 9pt, line spacing 1.0, a 3pt paragraph gap,
+# a 0.15" hanging indent, Arial + Microsoft YaHei. None of them is read from the
+# document. Change the shape or the font and the model does not fail -- it keeps
+# answering, wrongly and silently.
+#
+# So check them. This is the difference between a model that happens to be right
+# and one that is reliable: when an assumption stops holding, something says so.
+#
+# The indent is the reason this section exists. generation.py sets
+#     p_key.left_indent = Inches(0.15); p_key.first_line_indent = Inches(-0.15)
+# inside a try/except -- but python-pptx's _Paragraph has NO such properties
+# (checked: 1.0.2 exposes alignment/level/line_spacing/space_after/space_before
+# and nothing else). Assigning them creates two ordinary Python attributes,
+# writes no XML, and raises nothing for the except to catch. On this machine's
+# template the resulting paragraphs carry an empty <a:pPr>, an empty lstStyle,
+# and are not placeholders -- so marL/indent resolve to 0 and the hanging indent
+# the model subtracts 10.8pt for does not exist. The model therefore gives every
+# WRAPPED line 10.8pt less room than it really has, over-counts lines, and
+# under-fills slots. The user's template is a different file, which is exactly
+# why this is measured per-deck rather than asserted here.
+
+_A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+
+
+def _indent_source(shape, paragraph, prs) -> Tuple[float, float, str]:
+    """(marL_pt, indent_pt, where it came from) for this paragraph.
+
+    Walks the same inheritance chain PowerPoint does, nearest first: the
+    paragraph's own pPr, then the shape's lstStyle lvl1pPr, then the
+    presentation-level defaultTextStyle. Placeholders can inherit further from
+    the layout and master, so those are reported as such rather than guessed at.
+    """
+    def _read(el):
+        if el is None:
+            return None
+        marL, ind = el.get("marL"), el.get("indent")
+        if marL is None and ind is None:
+            return None
+        return (int(marL or 0) / 12700.0, int(ind or 0) / 12700.0)
+
+    got = _read(paragraph._p.find(_A + "pPr"))
+    if got:
+        return got[0], got[1], "paragraph pPr"
+
+    try:
+        lst = shape.text_frame._txBody.find(_A + "lstStyle")
+        got = _read(None if lst is None else lst.find(_A + "lvl1pPr"))
+        if got:
+            return got[0], got[1], "shape lstStyle"
+    except Exception:
+        pass
+
+    try:
+        dts = prs.part._element.find(_A.replace("drawingml/2006/main", "drawingml/2006/main")
+                                     + "defaultTextStyle")
+    except Exception:
+        dts = None
+    got = _read(None if dts is None else dts.find(_A + "lvl1pPr"))
+    if got:
+        return got[0], got[1], "presentation defaultTextStyle"
+
+    where = "nothing declared (placeholder — may still inherit from the layout/master)" \
+        if getattr(shape, "is_placeholder", False) else "nothing declared anywhere"
+    return 0.0, 0.0, where
+
+
+def _check_assumptions(prs, rows: List[ShapeRow], packing: Dict) -> List[str]:
+    """One line per assumption, with what the deck actually says."""
+    out: List[str] = []
+    shapes_by_key = {(r.slide, r.shape): r for r in rows}
+    sizes, spacings, gaps, latins, eas, autofits = set(), set(), set(), set(), set(), set()
+    indents: Dict[Tuple[float, float, str], int] = {}
+    placeholders = set()
+
+    for s_idx, slide in enumerate(prs.slides, start=1):
+        for shape in slide.shapes:
+            key = (s_idx, str(getattr(shape, "name", "") or "") or "(unnamed)")
+            if key not in shapes_by_key or shapes_by_key[key].is_empty:
+                continue
+            tf = shape.text_frame
+            if getattr(shape, "is_placeholder", False):
+                placeholders.add(key[1])
+            try:
+                autofits.add(",".join(e.tag.split("}")[-1] for e in tf._txBody.bodyPr) or "(none)")
+            except Exception:
+                pass
+            for para in tf.paragraphs:
+                if not (para.text or "").strip():
+                    continue
+                if para.line_spacing is not None:
+                    spacings.add(round(float(para.line_spacing), 3))
+                for attr in ("space_after", "space_before"):
+                    v = getattr(para, attr)
+                    if v is not None and v.pt > 0:
+                        gaps.add(round(v.pt, 2))
+                if (para.text or "").lstrip().startswith(BULLET_MARKER):
+                    ind = _indent_source(shape, para, prs)
+                    indents[ind] = indents.get(ind, 0) + 1
+                for run in para.runs:
+                    if run.font.size is not None:
+                        sizes.add(round(run.font.size.pt, 2))
+                    if run.font.name:
+                        latins.add(run.font.name)
+                    try:
+                        rPr = run._r.find(_A + "rPr")
+                        ea = None if rPr is None else rPr.find(_A + "ea")
+                        if ea is not None and ea.get("typeface"):
+                            eas.add(ea.get("typeface"))
+                    except Exception:
+                        pass
+
+    def _cmp(label: str, expected, found, note: str = "") -> None:
+        found_s = ", ".join(str(f) for f in sorted(found)) if found else "(nothing declared)"
+        ok = (len(found) == 1 and next(iter(found)) == expected) if found else False
+        out.append(f"  {'OK  ' if ok else '  !!'} {label:<26} model assumes {expected!r:<20} "
+                   f"deck says {found_s}{('  — ' + note) if note and not ok else ''}")
+
+    _cmp("font size (pt)", _real_font_size_pt(False), sizes)
+    _cmp("line spacing", _real_line_spacing(False), spacings)
+    _cmp("paragraph gap (pt)", _real_para_gap_pt(False), gaps)
+    _cmp("latin typeface", _metrics_family(False, packing), latins,
+         "the metrics table measuring this text belongs to a different family")
+    _cmp("east-asian typeface", _metrics_family(True, packing), eas,
+         "CJK glyph widths come from <a:ea>; if it is absent PowerPoint picks its own fallback")
+
+    for (marL, ind, src), n in sorted(indents.items(), key=lambda kv: -kv[1]):
+        effective_hang = max(0.0, marL) if ind < 0 else 0.0
+        ok = abs(effective_hang - BULLET_HANGING_INDENT_PT) < 0.5
+        out.append(f"  {'OK  ' if ok else '  !!'} {'bullet hanging indent':<26} "
+                   f"model assumes {BULLET_HANGING_INDENT_PT}pt        "
+                   f"deck says marL={marL:.1f}pt indent={ind:.1f}pt "
+                   f"-> {effective_hang:.1f}pt  [{src}, {n} bullets]")
+    if not indents:
+        out.append("       (no ■ bullets found to check the indent against)")
+
+    out.append(f"  {'OK  ' if autofits <= {'noAutofit'} else '  !!'} {'autofit':<26} "
+               f"model assumes {'noAutofit'!r:<20} deck says "
+               f"{', '.join(sorted(autofits)) or '(none)'}")
+    if placeholders:
+        out.append(f"       note: {', '.join(sorted(placeholders))} are PLACEHOLDERS — they can "
+                   f"inherit paragraph properties from the layout/master that are not visible here")
+    return out
+
+
+def _metrics_family(is_chi: bool, packing: Dict) -> str:
+    """Family name of the metrics table actually in use, so the check compares
+    against the ruler rather than against the config's fallback family."""
+    path = _resolve_font_metrics_path(is_chi, packing)
+    if path:
+        try:
+            import json
+            with open(path, encoding="utf-8") as fh:
+                fam = json.load(fh).get("family")
+            if fam:
+                return str(fam)
+        except Exception:
+            pass
+    return _measurer_family(is_chi, packing)
+
+
+# ---------------------------------------------------------------------------
 # The model half (runs anywhere -- this is what --model-only exercises)
 # ---------------------------------------------------------------------------
 
@@ -311,8 +476,7 @@ def _para_kind(text: str, space_after_pt: float, starts_bold: bool) -> str:
     return "continuation"
 
 
-def _collect_model(deck_path: str, want_slide: Optional[int],
-                   want_shape: Optional[str]) -> Tuple[List[ShapeRow], Dict[str, str], List[str]]:
+def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Optional[str]):
     prs = Presentation(deck_path)
     packing = (_load_pptx_settings() or {})
     packing = packing.get("packing", packing)
@@ -448,7 +612,7 @@ def _collect_model(deck_path: str, want_slide: Optional[int],
             if row.paras:
                 row.model_pt -= row.paras[-1].space_after_pt
             rows.append(row)
-    return rows, env, warnings
+    return rows, env, warnings, prs, packing
 
 
 # ---------------------------------------------------------------------------
@@ -746,7 +910,8 @@ VARIANTS = (("a", "today's packer (mapping_key, regular)"),
 
 
 def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
-            warnings: List[str], show_lines: bool, model_only: bool) -> int:
+            warnings: List[str], show_lines: bool, model_only: bool,
+            assumptions: Optional[List[str]] = None) -> int:
     print("=" * 96)
     print("RENDER TRUTH — real PowerPoint layout vs this repo's model")
     print("=" * 96)
@@ -754,6 +919,15 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
     for tag in ("ENG", "CHI"):
         print(f"  [{tag}] {env.get(tag, '?')}")
     print(f"  ground truth: {version or 'SKIPPED (--model-only)'}")
+
+    if assumptions:
+        print("\n" + "-" * 96)
+        print("MODEL ASSUMPTIONS vs THIS DECK  — every number below depends on these holding.")
+        print("                                 A `!!` means the model is measuring something")
+        print("                                 the deck does not actually contain.")
+        print("-" * 96)
+        for line in assumptions:
+            print(line)
 
     if warnings:
         print("\n  !! " + "\n  !! ".join(warnings[:12]))
@@ -947,7 +1121,7 @@ def main() -> int:
         print(f"No such file: {args.deck}", file=sys.stderr)
         return 2
 
-    rows, env, warnings = _collect_model(args.deck, args.slide, args.shape)
+    rows, env, warnings, prs, packing = _collect_model(args.deck, args.slide, args.shape)
     if not rows:
         print("No commentary shapes found. Is this an exported deck rather than the template?",
               file=sys.stderr)
@@ -966,7 +1140,8 @@ def main() -> int:
             return 2
         version = _fill_ground_truth(args.deck, rows, warnings)
 
-    rc = _report(rows, env, version, warnings, args.lines, args.model_only)
+    rc = _report(rows, env, version, warnings, args.lines, args.model_only,
+                 assumptions=_check_assumptions(prs, rows, packing))
     if args.csv:
         _write_csv(args.csv, rows)
     return rc
