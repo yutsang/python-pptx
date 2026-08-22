@@ -157,9 +157,19 @@ class ShapeRow:
 
     @property
     def real_pitch(self) -> Optional[float]:
+        """PowerPoint's real BASELINE-TO-BASELINE pitch, with the paragraph
+        gaps taken back out.
+
+        Not BoundHeight/Lines: that bundles every inter-paragraph gap into the
+        average, so it always reads ABOVE the nominal line height (11.1-11.7pt
+        against a 10.8pt pitch on a real deck) and can never show the thing
+        this column exists to show -- a normAutofit shrink, which makes the
+        pitch smaller, not larger.
+        """
         if not self.real_lines or self.real_bound_pt is None:
             return None
-        return self.real_bound_pt / self.real_lines
+        gaps = _gap_count(self, drop_last=True) * _real_para_gap_pt(self.is_chinese)
+        return (self.real_bound_pt - gaps) / self.real_lines
 
     @property
     def real_fill(self) -> Optional[float]:
@@ -635,6 +645,26 @@ def _fill_ground_truth(deck_path: str, rows: List[ShapeRow], warnings: List[str]
 # Calibration
 # ---------------------------------------------------------------------------
 
+def _gap_count(row: ShapeRow, *, drop_last: bool) -> int:
+    """How many 3pt inter-paragraph gaps this shape's text really contains.
+
+    space_BEFORE counts too. Leaving it out is not a rounding matter: the
+    renderer puts space_before = Pt(3) on every category header after the first
+    (generation.py's p_category), so a slot with three category groups carries
+    two gaps this used to miss entirely. On the first real Windows run that
+    alone pulled the fitted pitch to 10.88pt / gap 3.08pt with an rmse of
+    0.53pt, making the model look ~1% off when the SAME measurements resolve to
+    lines x 10.80 + gaps x 3.00 with a residual of exactly zero on every shape.
+    A calibration that flatters or maligns the thing it calibrates is worse
+    than none.
+    """
+    n = sum(1 for p in row.paras if p.space_after_pt > 0)
+    if drop_last and row.paras and row.paras[-1].space_after_pt > 0:
+        n -= 1
+    n += sum(1 for p in row.paras if p.space_before_pt > 0)
+    return n
+
+
 def _fit_pitch_and_gap(rows: List[ShapeRow]) -> Optional[Dict[str, float]]:
     """Least-squares-fit pitch and gap out of the real measurements:
 
@@ -654,14 +684,8 @@ def _fit_pitch_and_gap(rows: List[ShapeRow]) -> Optional[Dict[str, float]]:
 
     out: Dict[str, float] = {"n": float(len(usable))}
     for label, drop_last in (("gap_per_para", False), ("gap_between_paras", True)):
-        A, b = [], []
-        for r in usable:
-            n_gaps = sum(1 for p in r.paras if p.space_after_pt > 0)
-            if drop_last and r.paras and r.paras[-1].space_after_pt > 0:
-                n_gaps -= 1
-            A.append([r.real_lines, n_gaps])
-            b.append(r.real_bound_pt)
-        A, b = np.array(A, float), np.array(b, float)
+        A = np.array([[r.real_lines, _gap_count(r, drop_last=drop_last)] for r in usable], float)
+        b = np.array([r.real_bound_pt for r in usable], float)
         sol, *_ = np.linalg.lstsq(A, b, rcond=None)
         out[f"{label}_pitch"] = float(sol[0])
         out[f"{label}_gap"] = float(sol[1])
@@ -696,7 +720,9 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
     # ---- per shape -------------------------------------------------------
     print("\n" + "-" * 96)
     print("PER SHAPE   fill% is BoundHeight/box — the numerator came from PowerPoint, not us.")
-    print("            pitch below the nominal line_h means PowerPoint re-ran its own autofit.")
+    print("            pitch is BoundHeight with the paragraph gaps removed, over the real line")
+    print(f"            count; below the nominal {_real_font_size_pt(False) * 1.2:.2f}pt means "
+          f"PowerPoint re-ran its own autofit.")
     print("-" * 96)
     print(f"{'sl':>3} {'shape':<24}{'lang':>5}{'box_h':>8}{'mLines':>7}{'rLines':>7}{'d':>4}"
           f"{'model_pt':>10}{'BoundH':>9}{'pitch':>7}{'fill%':>8}")
