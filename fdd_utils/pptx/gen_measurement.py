@@ -310,8 +310,16 @@ class _MeasurementMixin:
         is_chinese: Optional[bool] = None,
         statement_type: Optional[str] = None,
         whole_box: bool = False,
+        key_prefix: Optional[str] = None,
     ) -> float:
         """Return the physical height of this content expressed in std_lh units.
+
+        key_prefix overrides the "\u25a0 <key> - " run the first paragraph is
+        normally measured with. Pass "" for text that is NOT a bullet lead-in
+        -- a post-table explanation, for instance, which renders its own
+        "\u27a2 " marker. With mapping_key empty the default still built
+        "\u25a0  - ", charging five characters (~20pt) of prefix the
+        explanation never draws.
 
         whole_box=True means this call measures ALL the text in one shape,
         so the final paragraph's trailing space_after can be dropped -- it
@@ -346,7 +354,7 @@ class _MeasurementMixin:
         shape_w = int(getattr(shape, "width", 0) or 0) if shape is not None else 0
         cache_key = (
             bool(category), mapping_key, commentary, slot_name, shape_w,
-            is_chinese, str(statement_type or ""), whole_box,
+            is_chinese, str(statement_type or ""), whole_box, key_prefix,
         )
         cached = self._content_lines_cache.get(cache_key)
         if cached is not None:
@@ -386,7 +394,7 @@ class _MeasurementMixin:
                     total_pt += line_h          # category header: no space_after
 
                 paras = [p for p in commentary.split('\n') if p.strip()] if commentary else []
-                key_prefix = f"\u25a0 {mapping_key} - "
+                prefix = (f"\u25a0 {mapping_key} - " if key_prefix is None else key_prefix)
                 # Hanging indent: wrapped CONTINUATION lines render 0.15"
                 # narrower than the box (see _BULLET_HANGING_INDENT_PT), but
                 # line 1 of the account's own first paragraph (p_key) spans
@@ -397,7 +405,7 @@ class _MeasurementMixin:
                 wrap_w = max(10.0, box.width_pt - self._BULLET_HANGING_INDENT_PT)
                 if paras:
                     first_wrapped = measurer.wrap(
-                        key_prefix + paras[0], wrap_w, first_line_width_pt=box.width_pt,
+                        prefix + paras[0], wrap_w, first_line_width_pt=box.width_pt,
                     )
                     total_pt += len(first_wrapped) * line_h + para_gap
                     for para in paras[1:]:
@@ -567,7 +575,7 @@ class _MeasurementMixin:
                 # line) of under-estimate on a real-shaped account.
                 "", "", _explanation_render_text(post_table_text, is_chinese_databook),
                 slot_name="single", shape=self._measurement_slot_shape(),
-                is_chinese=is_chinese_databook, whole_box=False,
+                is_chinese=is_chinese_databook, whole_box=False, key_prefix="",
             )
             # Like _estimate_lead_in_pt: no safety factor, no insets. The
             # explanation is ordinary flowing text in the column's shared

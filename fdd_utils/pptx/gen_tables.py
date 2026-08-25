@@ -1098,6 +1098,15 @@ class _TablesMixin:
                 para.space_before = Pt(0)
                 para.space_after = Pt(3)
                 para.line_spacing = 1.0
+                # Hang the "➢ " the same way the "■ " bullets hang, so a wrapped
+                # explanation line aligns under its own text instead of under
+                # the marker -- which is what the reference deliverable does for
+                # its ➢ sub-items, and what _calculate_content_lines has always
+                # measured (first line full width, wrapped lines one indent in).
+                # Without it the paragraph rendered a full indent wider than it
+                # was costed: a real export put "➢ 利息支出：..." on 1 line where
+                # the model said 2.
+                _set_paragraph_left_indent(para, int(Inches(0.15)), int(Inches(-0.15)))
                 _apply_east_asian_line_breaking(para)
             except Exception:
                 pass

@@ -86,7 +86,8 @@ from pptx import Presentation
 # The SAME measurer production uses. Imported, never reimplemented -- a fourth
 # copy of the formula is exactly the drift this tool exists to detect.
 from fdd_utils.financial_common import load_yaml_file
-from fdd_utils.text_metrics import get_measurer, text_box_from_shape
+from fdd_utils.text_metrics import (POWERPOINT_LINE_PITCH_FACTOR, get_measurer,
+                                    text_box_from_shape)
 from fdd_utils.pptx.helpers import (
     _measurer_family,
     _real_font_size_pt,
@@ -140,6 +141,7 @@ class ParaRow:
     space_before_pt: float = 0.0
     selfcheck_ok: bool = True
     text: str = ""
+    font_pt: float = 9.0    # this paragraph's own size, NOT the deck default
     real_line_texts: List[str] = field(default_factory=list)
 
     def delta(self, variant: str) -> Optional[int]:
@@ -166,19 +168,41 @@ class ShapeRow:
 
     @property
     def real_pitch(self) -> Optional[float]:
-        """PowerPoint's real BASELINE-TO-BASELINE pitch, with the paragraph
-        gaps taken back out.
+        """PowerPoint's real baseline-to-baseline pitch, normalised to a 9pt
+        line, with the paragraph gaps taken back out.
 
-        Not BoundHeight/Lines: that bundles every inter-paragraph gap into the
+        Two things have to come out before this number means anything.
+
+        The gaps: BoundHeight/Lines bundles every inter-paragraph gap into the
         average, so it always reads ABOVE the nominal line height (11.1-11.7pt
-        against a 10.8pt pitch on a real deck) and can never show the thing
-        this column exists to show -- a normAutofit shrink, which makes the
-        pitch smaller, not larger.
+        against a real 10.8pt) and could never show the one thing this column
+        exists for -- a normAutofit shrink makes the pitch SMALLER.
+
+        The font size: a table slot's blank spacer paragraphs are deliberately
+        sized down (real exports carry 1.0, 3.66, 4.33, 6.33 and 7.0pt runs),
+        so counting them as 9pt lines drags the average below 10.8 and cries
+        "autofit shrink" on a deck with noAutofit set. Each line is weighted by
+        its own size instead, which is why this reads 10.80 on a table slide
+        and only moves when PowerPoint really did shrink something.
         """
         if not self.real_lines or self.real_bound_pt is None:
             return None
+        equiv = self.equivalent_9pt_lines
+        if equiv <= 0:
+            return None
         gaps = _gap_count(self, drop_last=True) * _real_para_gap_pt(self.is_chinese)
-        return (self.real_bound_pt - gaps) / self.real_lines
+        return (self.real_bound_pt - gaps) / equiv
+
+    @property
+    def equivalent_9pt_lines(self) -> float:
+        """Real line count with each line weighted by its paragraph's own font
+        size, so a 1pt spacer line counts as 1/9th of a 9pt line."""
+        base = _real_font_size_pt(self.is_chinese) or 9.0
+        total = 0.0
+        for p in self.paras:
+            n = p.real_lines if p.real_lines is not None else p.lines_b
+            total += n * (p.font_pt / base)
+        return total
 
     @property
     def real_fill(self) -> Optional[float]:
@@ -549,6 +573,17 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                 sa = para.space_after.pt if para.space_after is not None else 0.0
                 sb = para.space_before.pt if para.space_before is not None else 0.0
                 runs = list(para.runs)
+                # _render_table_accounts_stack reserves a table's vertical
+                # space as BLANK paragraphs inside the same frame, and sizes
+                # the last one to a FRACTION of a line -- real exports carry
+                # runs at 1.0, 3.66, 4.33, 6.33 and 7.0pt. Pricing every
+                # paragraph at the deck's 9pt made model_pt overstate every
+                # table slide (by 14.0pt on one real slot) and dragged the
+                # fitted pitch down to 10.11pt, i.e. this file blaming the
+                # model for its own assumption. Same mistake as the
+                # space_before one; inspect_pptx.py already reads the size.
+                _sizes = [r.font.size.pt for r in runs if r.font.size is not None]
+                font_pt = max(_sizes) if _sizes else _real_font_size_pt(is_chi)
                 has_bold = any(bool(r.font.bold) for r in runs)
                 starts_bold = bool(runs and runs[0].font.bold)
                 kind = _para_kind(p_text, sa, starts_bold)
@@ -560,7 +595,11 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                 else:
                     # Production call, unmodified. This is variant B: the text
                     # that is really on the slide, regular weight throughout.
-                    first_w = box.width_pt if kind == "bullet" else None
+                    # Both markers hang: "\u25a0 " on a lead-in and "\u27a2 " on a
+                    # post-table explanation. Line 1 spans the box, wrapped
+                    # lines sit one indent in. A continuation or category
+                    # paragraph is narrow on every line.
+                    first_w = box.width_pt if kind in ("bullet", "explain") else None
                     n_b = max(1, len(measurer.wrap(p_text, hang_w, first_line_width_pt=first_w)))
                     n_a = n_c = n_b
 
@@ -604,7 +643,7 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                     selfcheck_ok=selfcheck_ok, text=p_text,
                 ))
                 row.model_lines += n_b
-                row.model_pt += n_b * line_h + sa + sb
+                row.model_pt += n_b * (font_pt * POWERPOINT_LINE_PITCH_FACTOR) + sa + sb
             # The final paragraph's space_after is invisible padding at the
             # bottom of the frame, not occupied height -- the same correction
             # _calculate_content_lines makes. Whether BoundHeight agrees is one
@@ -891,7 +930,11 @@ def _fit_pitch_and_gap(rows: List[ShapeRow]) -> Optional[Dict[str, float]]:
 
     out: Dict[str, float] = {"n": float(len(usable))}
     for label, drop_last in (("gap_per_para", False), ("gap_between_paras", True)):
-        A = np.array([[r.real_lines, _gap_count(r, drop_last=drop_last)] for r in usable], float)
+        # Weighted, not raw: see ShapeRow.real_pitch. A raw count makes a
+        # table slide's 1pt spacers look like short 9pt lines and pulls the
+        # fitted pitch to 10.11pt on a deck that renders at exactly 10.80.
+        A = np.array([[r.equivalent_9pt_lines, _gap_count(r, drop_last=drop_last)]
+                      for r in usable], float)
         b = np.array([r.real_bound_pt for r in usable], float)
         sol, *_ = np.linalg.lstsq(A, b, rcond=None)
         out[f"{label}_pitch"] = float(sol[0])
@@ -937,9 +980,10 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
     # ---- per shape -------------------------------------------------------
     print("\n" + "-" * 96)
     print("PER SHAPE   fill% is BoundHeight/box — the numerator came from PowerPoint, not us.")
-    print("            pitch is BoundHeight with the paragraph gaps removed, over the real line")
-    print(f"            count; below the nominal {_real_font_size_pt(False) * 1.2:.2f}pt means "
-          f"PowerPoint re-ran its own autofit.")
+    print("            pitch is BoundHeight less the paragraph gaps, over the real line count")
+    print("            weighted by each paragraph's own font size (a table slot's spacers are")
+    print(f"            sized down); below the nominal {_real_font_size_pt(False) * 1.2:.2f}pt "
+          f"means PowerPoint re-ran its own autofit.")
     print("-" * 96)
     print(f"{'sl':>3} {'shape':<22}{'lang':>5}{'box_w':>8}{'box_h':>8}{'mLines':>7}{'rLines':>7}"
           f"{'d':>4}{'model_pt':>10}{'BoundH':>9}{'pitch':>7}{'fill%':>8}")
@@ -1072,7 +1116,7 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
             print(f"    box_w={box_w:.1f}pt   hanging continuation width={hang_w:.1f}pt")
             print(f"    {'#':>3}{'our_w':>9}{'limit':>8}{'over':>8}  line as PowerPoint drew it")
             for i, line in enumerate(p.real_line_texts, start=1):
-                limit = box_w if (i == 1 and p.kind == "bullet") else hang_w
+                limit = box_w if (i == 1 and p.kind in ("bullet", "explain")) else hang_w
                 our_w = measurer.text_width_pt(line.rstrip("\r\n\x0b"))
                 over = our_w - limit
                 print(f"    {i:>3}{our_w:>9.1f}{limit:>8.1f}{over:>+8.1f}  "
