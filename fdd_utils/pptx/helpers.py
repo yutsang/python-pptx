@@ -383,9 +383,19 @@ def _format_table_value(value, is_numeric_column: bool) -> str:
     return text_val
 
 
-def _set_paragraph_left_indent(paragraph, left_indent_emu: int) -> None:
-    """Set a table-cell paragraph's left indent (marL) directly on its
-    <a:pPr> XML, with indent (first-line offset) pinned to 0.
+def _set_paragraph_left_indent(
+    paragraph, left_indent_emu: int, first_line_indent_emu: int = 0,
+) -> None:
+    """Set a paragraph's left indent (marL) and first-line offset (indent)
+    directly on its <a:pPr> XML.
+
+    first_line_indent_emu defaults to 0 (every line at marL). Pass a NEGATIVE
+    value equal to -marL for a hanging indent: line 1 starts back at the left
+    edge and every wrapped line sits at marL. That is the "■ key - text ..."
+    bullet shape the reference deliverable uses, and the shape
+    _calculate_content_lines has always measured (it gives paragraph 1 the full
+    box width via first_line_width_pt and every later line
+    _BULLET_HANGING_INDENT_PT less).
 
     _Paragraph has NO left_indent property in this python-pptx version
     (only alignment/level/line_spacing/font are exposed) -- `paragraph.
@@ -406,7 +416,7 @@ def _set_paragraph_left_indent(paragraph, left_indent_emu: int) -> None:
     """
     pPr = paragraph._p.get_or_add_pPr()
     pPr.set('marL', str(int(left_indent_emu)))
-    pPr.set('indent', '0')
+    pPr.set('indent', str(int(first_line_indent_emu)))
 
 
 def _sublist_text_for_table(table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float = 1,

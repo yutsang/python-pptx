@@ -1066,8 +1066,15 @@ class PowerPointGenerator(
                         p_category = tf.add_paragraph()
                         p_category.level = 0
                         try:
-                            p_category.left_indent = Inches(0.21)
-                            p_category.first_line_indent = Inches(-0.19)
+                            # marL/indent go through _set_paragraph_left_indent because _Paragraph
+                            # has NO left_indent/first_line_indent property -- assigning them just
+                            # creates throwaway instance attributes, writes no XML and raises
+                            # nothing, so the try/except never fired and the hanging indent the
+                            # measurer has always assumed was never actually in the file. Found
+                            # 2026-08-25 by reading the deck back; the same trap was already
+                            # documented on that helper for table cells and never applied here.
+                            _set_paragraph_left_indent(
+                                p_category, int(Inches(0.21)), int(Inches(-0.19)))
                             p_category.space_before = Pt(3) if current_category else Pt(0)
                             p_category.space_after = Pt(0)
                             p_category.line_spacing = 1.0
@@ -1518,8 +1525,8 @@ class PowerPointGenerator(
             p_category = text_frame.add_paragraph()
             p_category.level = 0
             try:
-                p_category.left_indent = Inches(0.21)
-                p_category.first_line_indent = Inches(-0.19)
+                _set_paragraph_left_indent(
+                    p_category, int(Inches(0.21)), int(Inches(-0.19)))
                 p_category.space_before = Pt(0)
                 p_category.space_after = Pt(0)
                 p_category.line_spacing = 1.0
@@ -1554,8 +1561,15 @@ class PowerPointGenerator(
         p_key.level = 0  # No bullet level, we'll use grey character
         try:
             # Set formatting
-            p_key.left_indent = Inches(0.15)  # 0.15" indent
-            p_key.first_line_indent = Inches(-0.15)  # 0.15" special hanging
+            # marL/indent go through _set_paragraph_left_indent because _Paragraph
+            # has NO left_indent/first_line_indent property -- assigning them just
+            # creates throwaway instance attributes, writes no XML and raises
+            # nothing, so the try/except never fired and the hanging indent the
+            # measurer has always assumed was never actually in the file. Found
+            # 2026-08-25 by reading the deck back; the same trap was already
+            # documented on that helper for table cells and never applied here.
+            # Hanging: line 1 starts at the left edge, wrapped lines at 0.15".
+            _set_paragraph_left_indent(p_key, int(Inches(0.15)), int(Inches(-0.15)))
             p_key.space_before = Pt(0)
             p_key.space_after = Pt(3)  # Matches _PARA_SPACE_AFTER (cost estimator)
             p_key.line_spacing = 1.0
@@ -1619,8 +1633,10 @@ class PowerPointGenerator(
                 p_text = text_frame.add_paragraph()
                 p_text.level = 0  # No bullet for continuation
                 try:
-                    p_text.left_indent = Inches(0.15)  # 0.15" indent (same as key text)
-                    p_text.first_line_indent = Inches(0)  # No hanging for continuation lines
+                    # Same 0.15" block indent, but NO hanging -- a continuation
+                    # paragraph is narrow on every line (matches wrap_text's
+                    # first_line_width_pt applying only to the first paragraph).
+                    _set_paragraph_left_indent(p_text, int(Inches(0.15)), 0)
                     p_text.space_before = Pt(0)
                     p_text.space_after = Pt(3)
                     p_text.line_spacing = 1.0

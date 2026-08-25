@@ -326,8 +326,7 @@ class _TablesMixin:
             pass
         p = tf.paragraphs[0]
         try:
-            p.left_indent = Inches(0.15)
-            p.first_line_indent = Inches(-0.15)
+            _set_paragraph_left_indent(p, int(Inches(0.15)), int(Inches(-0.15)))
             p.space_before = Pt(0)
             p.space_after = Pt(0)
             p.line_spacing = 1.0
