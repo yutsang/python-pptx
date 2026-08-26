@@ -24,8 +24,9 @@ predicted 3 cannot be.
 
 What it scores
 --------------
-For every "■ key - ..." bullet it computes three predictions and asks which one
-PowerPoint agrees with:
+For every paragraph it computes competing predictions and asks which one
+PowerPoint agrees with. Each was a plausible-sounding fix; the scoreboard is
+what stops one being written into the packer on a plausible-sounding argument:
 
     A  what the packer does today  regular-weight widths, and the label is the
                                    mapping_key (_account_cost_key), which is NOT
@@ -39,9 +40,15 @@ PowerPoint agrees with:
                                    regular-weight table and has no weight
                                    parameter
 
-If C scores no better than A on real content, the fixes are not worth making and
-the remaining error is somewhere else. That is the point: decide from measured
-truth, before writing anything into the packer.
+    D  C + half-width CJK       whether PowerPoint compresses full-width
+       punctuation             punctuation. Scored on EVERY paragraph kind,
+                               because a global rule has to survive the prose
+                               as well as the bullets
+
+All four have now been measured on real exports and A still wins: B and C tie
+with it on the bullets, and D fixes two paragraphs while breaking four (22/26
+against 24/26) and loses a non-bullet as well (74/75 against 75/75). None of
+them is worth writing into the packer. That is the point of scoring first.
 
 It also reports
 ---------------
@@ -51,11 +58,13 @@ It also reports
     listed too, at a measured 0%: an unused column is the largest under-fill
     there is and filtering it out made a wasted half-page look like a page
     that simply had fewer columns.
-  * pitch per shape = BoundHeight with the paragraph gaps taken back out, over
-    the real line count. Below the nominal 10.8pt means PowerPoint re-ran its
-    own autofit shrink and ignored the fontScale we wrote. (Not BoundHeight/
-    Lines: that bundles the gaps in and always reads high, so it could never
-    show a shrink at all.)
+  * pitch per shape = BoundHeight less that shape's own measured spacing, over
+    its line count weighted by each paragraph's own font size. Below the
+    nominal 10.8pt means PowerPoint re-ran its own autofit. Both corrections
+    are load-bearing: raw BoundHeight/Lines bundles the gaps in and always
+    reads high, and counting a table slot's sized-down spacers as full lines
+    drags it low -- each of which had this tool reporting the model as broken
+    when the model was exact.
   * pitch and gap least-squares-fitted out of the real numbers, both ways round
     on whether the last paragraph's space_after counts -- so 10.8/3.0 gets
     re-measured rather than re-argued. (3.0 was already restored once, 63e4120,
@@ -698,7 +707,7 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                     kind=kind, has_bold=has_bold, chars=len(p_text),
                     lines_a=n_a, lines_b=n_b, lines_c=n_c, lines_d=n_d, label=label,
                     mapping_key=mapping_key, space_after_pt=sa, space_before_pt=sb,
-                    selfcheck_ok=selfcheck_ok, text=p_text,
+                    font_pt=font_pt, selfcheck_ok=selfcheck_ok, text=p_text,
                 ))
                 row.model_lines += n_b
                 row.model_pt += n_b * (font_pt * POWERPOINT_LINE_PITCH_FACTOR) + sa + sb
@@ -1080,9 +1089,28 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
     print("\n" + "-" * 96)
     print(f"SELF-CHECK  local mixed-weight wrapper vs production measurer.wrap(): "
           f"{len(checked) - len(failed)}/{len(checked)} agree")
+    # Second self-check, and it exists because this file got it wrong: a patch
+    # that was meant to pass each paragraph's real font size into its ParaRow
+    # silently failed to apply, so model_pt used the true sizes while every
+    # ParaRow kept the 9.0 default. Nothing broke -- the pitch column just read
+    # 10.40-10.68 on table slides and the fit blamed the model, again. Anything
+    # derived from ParaRow must be able to rebuild model_pt exactly.
+    drift = []
+    for r in rows:
+        if r.is_empty or not r.paras:
+            continue
+        rebuilt = (sum(q.lines_b * (q.font_pt * POWERPOINT_LINE_PITCH_FACTOR) for q in r.paras)
+                   + r.gap_total_pt)
+        if abs(rebuilt - r.model_pt) > 0.01:
+            drift.append((r, rebuilt))
+    print(f"            model_pt rebuildable from the per-paragraph rows: "
+          f"{len(rows) - len(drift)}/{len(rows)} shapes")
     print("-" * 96)
     if failed:
         print("  variant C is NOT trustworthy on the rows listed in the warnings above.")
+    for r, rebuilt in drift:
+        print(f"  !! slide {r.slide} {r.shape}: rows rebuild to {rebuilt:.1f}pt but model_pt is "
+              f"{r.model_pt:.1f}pt — the pitch and CALIBRATION below are NOT trustworthy.")
 
     if model_only:
         print("\n" + "=" * 96)
