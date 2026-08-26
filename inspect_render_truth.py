@@ -77,6 +77,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -86,8 +87,8 @@ from pptx import Presentation
 # The SAME measurer production uses. Imported, never reimplemented -- a fourth
 # copy of the formula is exactly the drift this tool exists to detect.
 from fdd_utils.financial_common import load_yaml_file
-from fdd_utils.text_metrics import (POWERPOINT_LINE_PITCH_FACTOR, get_measurer,
-                                    text_box_from_shape)
+from fdd_utils.text_metrics import (POWERPOINT_LINE_PITCH_FACTOR, _apply_kinsoku,
+                                    get_measurer, text_box_from_shape)
 from fdd_utils.pptx.helpers import (
     _measurer_family,
     _real_font_size_pt,
@@ -134,6 +135,7 @@ class ParaRow:
     lines_a: int            # today's packer
     lines_b: int            # + rendered label
     lines_c: int            # + bold-aware key run
+    lines_d: int = 0        # + full-width CJK punctuation set at half width
     label: str = ""         # the text actually drawn in the bold run
     mapping_key: str = ""   # what the packer would have charged instead
     real_lines: Optional[int] = None
@@ -252,55 +254,71 @@ def _is_cjk_char(ch: str) -> bool:
             or 0xF900 <= cp <= 0xFAFF or 0xFF00 <= cp <= 0xFFEF)
 
 
-def _atomize(text: str) -> List[str]:
-    """Same atoms text_metrics.wrap_paragraph uses: one CJK char, or a maximal
-    run of non-CJK non-space."""
-    out, i, n = [], 0, len(text)
-    while i < n:
-        if text[i].isspace():
-            i += 1
-            continue
-        if _is_cjk_char(text[i]):
-            out.append(text[i]); i += 1
-            continue
-        j = i
-        while j < n and not text[j].isspace() and not _is_cjk_char(text[j]):
-            j += 1
-        out.append(text[i:j]); i = j
-    return out
+# wrap_text_with_metrics' own tokenizer. Mirrored EXACTLY rather than
+# approximated: the local loop used to follow _atomize (the Pillow backend),
+# which DROPS whitespace and only re-inserts a space between two LATIN atoms.
+# "■" is not CJK by _is_cjk_char, so "■ 预付款项" lost both its spaces -- 7.99pt
+# on one real paragraph, enough to change its line count. The deck plainly
+# renders those spaces, so _atomize under-measures; the local loop must not
+# inherit that. The SELF-CHECK is what caught it.
+_TOKEN_RE = re.compile(r"[^\s\u3000-\u9fff\uff00-\uffef]+|[\u3000-\u9fff\uff00-\uffef]|\s+")
+
+#: Full-width marks PowerPoint may set at half width (East Asian punctuation
+#: compression). Whether it actually does is what variant D measures.
+_PUNCT_FULLWIDTH = frozenset("。，、；：？！")
 
 
 def _wrap_runs(runs: Sequence[Tuple[str, bool]], measurer, bold_font,
-               first_width_pt: float, width_pt: float) -> int:
+               first_width_pt: float, width_pt: float, *,
+               punct_squeeze: float = 1.0) -> int:
     """Line count for a paragraph whose runs have DIFFERENT weights.
 
-    A tool-local greedy wrapper, because the production `measurer.wrap()` takes
-    one string at one weight and cannot express "this run is bold". It uses the
-    production measurer for every regular run, so the widths are the same
-    source; only the loop is local. `_selfcheck` below proves that loop agrees
-    with `measurer.wrap()` whenever nothing is bold -- if it ever stops
-    agreeing, the tool says so and variant C is not to be trusted.
+    Tool-local because the production `measurer.wrap()` takes one string at one
+    weight and cannot express "this run is bold". It uses the production
+    measurer for every width and the production tokenizer for every break, so
+    only the loop is local -- and `_selfcheck` proves that loop agrees with
+    `measurer.wrap()` whenever nothing is bold and nothing is squeezed.
+
+    punct_squeeze scales full-width punctuation (1.0 = as the font declares it,
+    0.5 = compressed). Variant D.
     """
     def w(text: str, is_bold: bool) -> float:
         if is_bold and bold_font is not None:
-            return float(bold_font.getlength(text))
-        return measurer.text_width_pt(text)
+            base = float(bold_font.getlength(text))
+        else:
+            base = measurer.text_width_pt(text)
+        if punct_squeeze != 1.0:
+            for ch in text:
+                if ch in _PUNCT_FULLWIDTH:
+                    base -= measurer.text_width_pt(ch) * (1.0 - punct_squeeze)
+        return base
 
-    lines, cur, limit = 1, 0.0, first_width_pt
-    prev_atom = ""
+    lines: List[str] = []
+    cur, cur_w, limit = "", 0.0, first_width_pt
     for text, is_bold in runs:
-        for atom in _atomize(text):
-            sep = 0.0
-            if cur > 0 and prev_atom and not _is_cjk_char(atom[0]) and not _is_cjk_char(prev_atom[-1]):
-                sep = w(" ", is_bold)
-            aw = w(atom, is_bold)
-            if cur > 0 and cur + sep + aw > limit:
-                lines += 1
-                cur, limit = aw, width_pt
+        for tok in _TOKEN_RE.findall(text):
+            tw = w(tok, is_bold)
+            if tok.isspace():
+                # Production keeps a space only when it still fits; it never
+                # starts a line with one.
+                if cur and cur_w + tw <= limit:
+                    cur += tok
+                    cur_w += tw
+                continue
+            if cur and cur_w + tw > limit:
+                lines.append(cur)
+                cur, cur_w, limit = tok, tw, width_pt
             else:
-                cur += sep + aw
-            prev_atom = atom
-    return lines
+                cur += tok
+                cur_w += tw
+    if cur.strip():
+        lines.append(cur)
+    # The last step production takes, and the one this loop used to skip: a
+    # line that begins with a forbidden mark has it pulled back onto the line
+    # above, which DELETES that line when nothing else was on it. Without this
+    # the local count ran one HIGH on a real paragraph -- the opposite of the
+    # whitespace bug, and equally invisible until the SELF-CHECK compared them.
+    return max(1, len(_apply_kinsoku(lines) if lines else [""]))
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +624,7 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                 label = mapping_key = ""
                 selfcheck_ok = True
                 if kind == "blank":
-                    n_a = n_b = n_c = 1
+                    n_a = n_b = n_c = n_d = 1
                 else:
                     # Production call, unmodified. This is variant B: the text
                     # that is really on the slide, regular weight throughout.
@@ -617,6 +635,13 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                     first_w = box.width_pt if kind in ("bullet", "explain") else None
                     n_b = max(1, len(measurer.wrap(p_text, hang_w, first_line_width_pt=first_w)))
                     n_a = n_c = n_b
+                    # Variant D applies to EVERY kind, not just bullets: if
+                    # PowerPoint really compresses punctuation it does so in
+                    # prose too, and the ~75 non-bullet paragraphs are the
+                    # larger half of the evidence.
+                    n_d = _wrap_runs([(p_text, False)], measurer, bold_font,
+                                     first_w if first_w else hang_w, hang_w,
+                                     punct_squeeze=0.5)
 
                     if kind == "bullet":
                         bold_run = next((r.text for r in runs if r.font.bold), "")
@@ -654,6 +679,9 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                             if bold_font is not None:
                                 n_c = _wrap_runs([(head, False), (bold_run, True), (tail, False)],
                                                  measurer, bold_font, first_w, hang_w)
+                            n_d = _wrap_runs([(head, False), (bold_run, bold_font is not None),
+                                              (tail, False)], measurer, bold_font,
+                                             first_w, hang_w, punct_squeeze=0.5)
 
                             # Variant A: what the packer charged -- mapping_key
                             # in place of the rendered label.
@@ -668,7 +696,7 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                 row.paras.append(ParaRow(
                     slide=s_idx, shape=row.shape, slot=row.slot, index=p_idx,
                     kind=kind, has_bold=has_bold, chars=len(p_text),
-                    lines_a=n_a, lines_b=n_b, lines_c=n_c, label=label,
+                    lines_a=n_a, lines_b=n_b, lines_c=n_c, lines_d=n_d, label=label,
                     mapping_key=mapping_key, space_after_pt=sa, space_before_pt=sb,
                     selfcheck_ok=selfcheck_ok, text=p_text,
                 ))
@@ -987,7 +1015,8 @@ def _fit_pitch_and_gap(rows: List[ShapeRow]) -> Optional[Dict[str, float]]:
 
 VARIANTS = (("a", "today's packer (mapping_key, regular)"),
             ("b", "+ rendered label"),
-            ("c", "+ bold-aware key run"))
+            ("c", "+ bold-aware key run"),
+            ("d", "+ half-width CJK punctuation"))
 
 
 def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
@@ -1087,14 +1116,20 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
     # non-bullet paragraphs use one prediction for all three variants
     others = [p for p in scored if p.kind != "bullet"]
     if others:
-        bad = [p for p in others if p.delta("b") != 0]
-        print(f"\n  non-bullet paragraphs: {len(bad)}/{len(others)} mis-wrapped, "
-              f"net {sum(p.delta('b') for p in others):+d} lines")
+        print(f"\n  non-bullet paragraphs ({len(others)}), same question:")
+        for v, name in VARIANTS:
+            if v == "a":
+                continue   # A and B differ only in the bullet label
+            bad = [p for p in others if p.delta(v) != 0]
+            print(f"    {name:<40}{len(others)-len(bad):>6} exact"
+                  f"{(len(others)-len(bad))/len(others)*100:>8.1f}%"
+                  f"{sum(p.delta(v) for p in others):>+9d} lines")
 
     # ---- mis-wrapped paragraphs -----------------------------------------
-    wrong = [p for p in scored if p.delta("c") != 0]
+    best_v = max("abcd", key=lambda v: sum(1 for p in scored if p.delta(v) == 0))
+    wrong = [p for p in scored if p.delta(best_v) != 0]
     print("\n" + "-" * 96)
-    print("STILL MIS-WRAPPED UNDER THE BEST VARIANT (C)  — this is what remains unexplained")
+    print(f"STILL MIS-WRAPPED UNDER THE BEST VARIANT ({best_v.upper()})  — what remains unexplained")
     print("-" * 96)
     if not wrong:
         print(f"  none — all {len(scored)} paragraphs wrapped exactly as variant C predicts")
@@ -1103,8 +1138,8 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
               f"{'real':>5}{'d':>4}  text")
         for p in wrong:
             print(f"{p.slide:>3} {p.shape[:20]:<20}{p.index:>4}{p.kind:>13}"
-                  f"{p.lines_a:>3}{p.lines_b:>3}{p.lines_c:>3}{p.real_lines:>5}"
-                  f"{p.delta('c'):>+4}  {p.text[:30]}")
+                  f"{p.lines_a:>3}{p.lines_b:>3}{p.lines_c:>3}{p.lines_d:>3}"
+                  f"{p.real_lines:>5}{p.delta(best_v):>+4}  {p.text[:30]}")
 
     if any(not p.selfcheck_ok for p in all_paras):
         print("\n  !! the tool-local mixed wrapper disagreed with measurer.wrap() on some "
@@ -1142,14 +1177,11 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
                 print(f"    slide {r.slide} {r.shape}: BoundH={r.real_bound_pt:.1f} "
                       f"gap_total={r.gap_total_pt:.1f} equiv_lines={r.equivalent_9pt_lines:.3f} "
                       f"-> implied {r.real_pitch:.3f}pt   (model_pt={r.model_pt:.1f})")
-                sizes: Dict[float, List[int]] = {}
+                print(f"        {'#':>3}{'kind':>13}{'font':>7}{'nB':>4}{'real':>5}{'sa':>5}{'sb':>5}")
                 for q in r.paras:
-                    n = q.real_lines if q.real_lines is not None else q.lines_b
-                    sizes.setdefault(q.font_pt, []).append(n)
-                for size in sorted(sizes):
-                    ns = sizes[size]
-                    print(f"        {len(ns):>3} para(s) at {size:>5.2f}pt "
-                          f"holding {sum(ns):>3} line(s)")
+                    print(f"        {q.index:>3}{q.kind:>13}{q.font_pt:>7.2f}{q.lines_b:>4}"
+                          f"{(q.real_lines if q.real_lines is not None else '-'):>5}"
+                          f"{q.space_after_pt:>5.1f}{q.space_before_pt:>5.1f}")
 
     if show_lines and wrong:
         print("\n" + "-" * 96)
@@ -1164,7 +1196,7 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
         by_shape = {(r.slide, r.shape): r for r in rows}
         for p in wrong:
             print(f"\n  slide {p.slide} {p.shape} para {p.index} [{p.kind}] "
-                  f"A={p.lines_a} B={p.lines_b} C={p.lines_c} real={p.real_lines}"
+                  f"A={p.lines_a} B={p.lines_b} C={p.lines_c} D={p.lines_d} real={p.real_lines}"
                   + (f"\n  label drawn: {p.label!r}   packer charged: {p.mapping_key!r}"
                      if p.label else ""))
             shape_row = by_shape.get((p.slide, p.shape))
@@ -1184,7 +1216,7 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
                       f"{'!! ' if over > 0.5 else '   '}{line.rstrip()}")
 
     print("\n" + "=" * 96)
-    net = sum(p.delta("c") for p in scored)
+    net = sum(p.delta(best_v) for p in scored)
     print(f"VERDICT: under the best variant, {len(wrong)} of {len(scored)} paragraphs are still "
           f"mis-wrapped\n         (net {net:+d} lines deck-wide); {n_shape_bad} of {len(rows)} "
           f"shapes off on total lines.")
@@ -1196,15 +1228,15 @@ def _write_csv(path: str, rows: List[ShapeRow]) -> None:
     with open(path, "w", newline="", encoding="utf-8-sig") as fh:
         w = csv.writer(fh)
         w.writerow(["slide", "shape", "slot", "para", "kind", "label", "mapping_key",
-                    "chars", "lines_A", "lines_B", "lines_C", "real_lines",
-                    "delta_A", "delta_B", "delta_C", "space_before_pt",
+                    "chars", "lines_A", "lines_B", "lines_C", "lines_D", "real_lines",
+                    "delta_A", "delta_B", "delta_C", "delta_D", "space_before_pt",
                     "space_after_pt", "selfcheck_ok", "text"])
         for r in rows:
             for p in r.paras:
                 w.writerow([p.slide, p.shape, p.slot, p.index, p.kind, p.label,
-                            p.mapping_key, p.chars, p.lines_a, p.lines_b, p.lines_c,
+                            p.mapping_key, p.chars, p.lines_a, p.lines_b, p.lines_c, p.lines_d,
                             "" if p.real_lines is None else p.real_lines,
-                            *["" if p.delta(v) is None else p.delta(v) for v in "abc"],
+                            *["" if p.delta(v) is None else p.delta(v) for v in "abcd"],
                             f"{p.space_before_pt:.2f}", f"{p.space_after_pt:.2f}",
                             int(p.selfcheck_ok), p.text])
     print(f"\nwrote {path}")
