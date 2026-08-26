@@ -190,8 +190,23 @@ class ShapeRow:
         equiv = self.equivalent_9pt_lines
         if equiv <= 0:
             return None
-        gaps = _gap_count(self, drop_last=True) * _real_para_gap_pt(self.is_chinese)
-        return (self.real_bound_pt - gaps) / equiv
+        return (self.real_bound_pt - self.gap_total_pt) / equiv
+
+    @property
+    def gap_total_pt(self) -> float:
+        """Every point of paragraph spacing inside this shape, summed from the
+        paragraphs themselves.
+
+        Not `count x _real_para_gap_pt`: that approximation is what has now put
+        this file wrong about the model three times. model_pt accumulates the
+        real sa/sb of each paragraph and refunds the last one's space_after, so
+        the pitch and the fit have to subtract exactly that, not a nominal
+        stand-in for it.
+        """
+        if not self.paras:
+            return 0.0
+        total = sum(p.space_after_pt + p.space_before_pt for p in self.paras)
+        return total - self.paras[-1].space_after_pt
 
     @property
     def equivalent_9pt_lines(self) -> float:
@@ -616,9 +631,24 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                                                  measurer, bold_font, first_w, hang_w)
                             selfcheck_ok = (n_plain == n_b)
                             if not selfcheck_ok:
+                                # Print the evidence, not just the verdict. The two
+                                # wrappers tokenise differently -- wrap_text_with_
+                                # metrics (the metrics.json backend production uses
+                                # here) keeps whitespace as its own token and charges
+                                # its width, while _atomize (the Pillow backend, and
+                                # what the local loop mirrors) drops whitespace and
+                                # only re-inserts a space between two LATIN atoms. A
+                                # stray space inside CJK prose therefore costs one of
+                                # them nothing and the other ~3pt. Which is right is a
+                                # question for PowerPoint, so show the break-up.
+                                _prod = measurer.wrap(p_text, hang_w,
+                                                      first_line_width_pt=first_w)
                                 warnings.append(
                                     f"slide {s_idx} {name} para {p_idx}: local wrapper says "
-                                    f"{n_plain} lines where measurer.wrap says {n_b}")
+                                    f"{n_plain} lines where measurer.wrap says {n_b}"
+                                    + f"\n       text: {p_text[:90]}"
+                                    + "".join(f"\n       measurer.wrap L{i}: {ln}"
+                                              for i, ln in enumerate(_prod, 1)))
 
                             # Variant C: same text, key run measured bold.
                             if bold_font is not None:
@@ -936,6 +966,14 @@ def _fit_pitch_and_gap(rows: List[ShapeRow]) -> Optional[Dict[str, float]]:
         A = np.array([[r.equivalent_9pt_lines, _gap_count(r, drop_last=drop_last)]
                       for r in usable], float)
         b = np.array([r.real_bound_pt for r in usable], float)
+        # Reported alongside: the pitch each shape implies once its OWN
+        # measured spacing is removed. If the fit and these disagree, the
+        # gap model is what is wrong, not the pitch.
+        implied = [r.real_pitch for r in usable if r.real_pitch]
+        if implied:
+            out['implied_pitch_min'] = min(implied)
+            out['implied_pitch_max'] = max(implied)
+            out['implied_pitch_mean'] = sum(implied) / len(implied)
         sol, *_ = np.linalg.lstsq(A, b, rcond=None)
         out[f"{label}_pitch"] = float(sol[0])
         out[f"{label}_gap"] = float(sol[1])
@@ -1089,6 +1127,29 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
         best_fit = min(("gap_per_para", "gap_between_paras"), key=lambda k: fit[k + "_rmse"])
         print(f"  -> BoundHeight here is best explained by '{best_fit}' "
               f"(n={int(fit['n'])} shapes)")
+        if "implied_pitch_mean" in fit:
+            print(f"  per-shape implied pitch (BoundHeight less that shape's OWN measured "
+                  f"spacing,\n  over its size-weighted line count): "
+                  f"{fit['implied_pitch_min']:.3f} .. {fit['implied_pitch_max']:.3f}pt, "
+                  f"mean {fit['implied_pitch_mean']:.3f}pt")
+
+        nominal = _real_font_size_pt(False) * POWERPOINT_LINE_PITCH_FACTOR
+        odd = [r for r in rows if r.real_pitch and abs(r.real_pitch - nominal) > 0.02]
+        if odd:
+            print(f"\n  {len(odd)} shape(s) do not land on {nominal:.2f}pt. Breaking each one")
+            print("  down rather than reasoning about it -- this is the intermediate:")
+            for r in odd:
+                print(f"    slide {r.slide} {r.shape}: BoundH={r.real_bound_pt:.1f} "
+                      f"gap_total={r.gap_total_pt:.1f} equiv_lines={r.equivalent_9pt_lines:.3f} "
+                      f"-> implied {r.real_pitch:.3f}pt   (model_pt={r.model_pt:.1f})")
+                sizes: Dict[float, List[int]] = {}
+                for q in r.paras:
+                    n = q.real_lines if q.real_lines is not None else q.lines_b
+                    sizes.setdefault(q.font_pt, []).append(n)
+                for size in sorted(sizes):
+                    ns = sizes[size]
+                    print(f"        {len(ns):>3} para(s) at {size:>5.2f}pt "
+                          f"holding {sum(ns):>3} line(s)")
 
     if show_lines and wrong:
         print("\n" + "-" * 96)
