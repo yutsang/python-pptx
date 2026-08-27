@@ -622,6 +622,78 @@ def _load_metrics_table(path: str) -> Optional["MetricsTable"]:
         return None
 
 
+class CompositeMetrics:
+    """East Asian characters from one advance table, everything else from
+    another -- which is what a run actually renders as.
+
+    Every run this codebase writes carries BOTH <a:latin> (Arial) and <a:ea>
+    (Microsoft YaHei), set unconditionally by _set_east_asian_typeface, and
+    PowerPoint picks between them PER CHARACTER. Measuring a Chinese account's
+    whole string with the CJK table therefore prices its digits wrong: msyh
+    sets '1' at 0.586em against Arial's 0.556em.
+
+    In aggregate that is only +0.79%, which is why it was dismissed early. At a
+    wrap boundary it is a whole line. Measured against real PowerPoint on a
+    Chinese export: with one table 24 of 26 bullets matched and two paragraphs
+    were over-counted; per character it was 26 of 26 and 75 of 75 non-bullet
+    paragraphs, net zero, worst case zero -- 101 of 101. Three other candidate
+    fixes were scored the same way and rejected; this is the one that won.
+    Duplicated as `_wrap_runs(latin_measurer=...)` in inspect_render_truth.py,
+    which is how it was tried before being adopted.
+
+    Exposes the same three methods MetricsTable does, so wrap_text_with_metrics
+    consumes it unchanged.
+    """
+
+    def __init__(self, ea: "MetricsTable", latin: "MetricsTable"):
+        self.ea = ea
+        self.latin = latin
+        self.family = f"{ea.family} + {latin.family}"
+        self.units_per_em = ea.units_per_em
+        self.cjk_full_width = ea.cjk_full_width
+
+    def char_width_pt(self, ch: str, size_pt: float) -> float:
+        return (self.ea if _is_cjk_char(ch) else self.latin).char_width_pt(ch, size_pt)
+
+    def text_width_pt(self, text: str, size_pt: float) -> float:
+        return sum(self.char_width_pt(c, size_pt) for c in str(text or ""))
+
+    def line_height_pt(self, size_pt: float, *, line_spacing: float = 1.0) -> float:
+        # Unchanged: vertical pitch never depended on which table supplied the
+        # advance widths (see POWERPOINT_LINE_PITCH_FACTOR).
+        return POWERPOINT_LINE_PITCH_FACTOR * size_pt * line_spacing
+
+
+@lru_cache(maxsize=8)
+def _companion_metrics(path: str) -> Optional["MetricsTable"]:
+    """The opposite-script metrics table sitting beside `path`.
+
+    Found by scanning the same directory for a table whose cjk_full_width
+    differs, rather than by filename convention -- and resolved HERE rather
+    than at each call site on purpose. get_measurer has 18 callers across six
+    modules; threading a second path through all of them is precisely the shape
+    of the bug this session found in _account_cost_key, where five of seven
+    call sites never got the corrected value and nothing complained.
+    """
+    base = _load_metrics_table(path)
+    if base is None:
+        return None
+    try:
+        directory = os.path.dirname(os.path.abspath(path))
+        for name in sorted(os.listdir(directory)):
+            if not name.lower().endswith(".json"):
+                continue
+            candidate = os.path.join(directory, name)
+            if os.path.abspath(candidate) == os.path.abspath(path):
+                continue
+            other = _load_metrics_table(candidate)
+            if other is not None and other.cjk_full_width != base.cjk_full_width:
+                return other
+    except OSError:
+        pass
+    return None
+
+
 class Measurer:
     """One text-measurement interface backed by EITHER the client's real font
     (a MetricsTable loaded from dump_font_metrics.py JSON) OR a Pillow system
@@ -680,6 +752,12 @@ def get_measurer(family: str, size_pt: float, *, is_cjk: bool,
     given; otherwise measure with the resolved system font."""
     mt = _load_metrics_table(metrics_path) if metrics_path else None
     if mt is not None:
+        # Pair it with the opposite-script table when one is available, so each
+        # character is priced by the typeface that will actually draw it.
+        other = _companion_metrics(metrics_path)
+        if other is not None:
+            ea, latin = (mt, other) if mt.cjk_full_width else (other, mt)
+            mt = CompositeMetrics(ea, latin)
         return Measurer(size_pt=size_pt, line_spacing=line_spacing, metrics=mt)
     return Measurer(size_pt=size_pt, line_spacing=line_spacing,
                     font=get_font(family, size_pt, is_cjk=is_cjk))

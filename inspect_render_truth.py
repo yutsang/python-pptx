@@ -1157,7 +1157,10 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
         print(f"\n  ({len(bullets)} bullets scored; 'net lines' is real minus predicted — "
               f"positive means\n   the model UNDER-counts and the slot will overflow, negative "
               f"means it over-counts\n   and the slot is left under-filled)")
-        best = max("abc", key=lambda v: sum(1 for p in bullets if p.delta(v) == 0))
+        # Over every variant, not just the first three -- this said "A" on the
+        # run where E scored 26/26 against A's 24/26.
+        best = max([v for v, _ in VARIANTS],
+                   key=lambda v: sum(1 for p in bullets if p.delta(v) == 0))
         print(f"\n  -> PowerPoint agrees most with variant '{best.upper()}'.")
         if best == "a":
             print("     The proposed fixes do NOT help on this deck; the error is elsewhere.")
@@ -1181,7 +1184,8 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
     print(f"STILL MIS-WRAPPED UNDER THE BEST VARIANT ({best_v.upper()})  — what remains unexplained")
     print("-" * 96)
     if not wrong:
-        print(f"  none — all {len(scored)} paragraphs wrapped exactly as variant C predicts")
+        print(f"  none — all {len(scored)} paragraphs wrapped exactly as variant "
+              f"{best_v.upper()} predicts")
     else:
         print(f"{'sl':>3} {'shape':<20}{'#':>4}{'kind':>13}{'A':>3}{'B':>3}{'C':>3}"
               f"{'real':>5}{'d':>4}  text")
