@@ -145,6 +145,7 @@ class ParaRow:
     lines_b: int            # + rendered label
     lines_c: int            # + bold-aware key run
     lines_d: int = 0        # + full-width CJK punctuation set at half width
+    lines_e: int = 0        # + <a:latin> widths for the non-CJK characters
     label: str = ""         # the text actually drawn in the bold run
     mapping_key: str = ""   # what the packer would have charged instead
     real_lines: Optional[int] = None
@@ -279,7 +280,7 @@ _PUNCT_FULLWIDTH = frozenset("。，、；：？！")
 
 def _wrap_runs(runs: Sequence[Tuple[str, bool]], measurer, bold_font,
                first_width_pt: float, width_pt: float, *,
-               punct_squeeze: float = 1.0) -> int:
+               punct_squeeze: float = 1.0, latin_measurer=None) -> int:
     """Line count for a paragraph whose runs have DIFFERENT weights.
 
     Tool-local because the production `measurer.wrap()` takes one string at one
@@ -294,6 +295,15 @@ def _wrap_runs(runs: Sequence[Tuple[str, bool]], measurer, bold_font,
     def w(text: str, is_bold: bool) -> float:
         if is_bold and bold_font is not None:
             base = float(bold_font.getlength(text))
+        elif latin_measurer is not None:
+            # Variant E. A run carries BOTH <a:latin> and <a:ea>, and PowerPoint
+            # picks per character: CJK from the East Asian typeface, digits and
+            # Latin from the Latin one. We measure the whole string with one
+            # table. Unlike the punctuation guess, this is not a theory about
+            # PowerPoint's typography -- it is what the run properties in the
+            # file literally declare.
+            base = sum((measurer if _is_cjk_char(ch) else latin_measurer).text_width_pt(ch)
+                       for ch in text)
         else:
             base = measurer.text_width_pt(text)
         if punct_squeeze != 1.0:
@@ -595,6 +605,10 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
             is_chi = _is_chinese_text(text)
             measurer = measurers[is_chi]
             bold_font = bold_fonts[is_chi]
+            # <a:latin> is Arial on every run this codebase writes, so variant E
+            # measures the non-CJK characters with the ENG table. On an English
+            # shape both tables are the same one and E collapses onto B.
+            latin_meas = measurers[False] if is_chi else None
             line_h = measurer.line_height_pt()
             hang_w = max(10.0, box.width_pt - BULLET_HANGING_INDENT_PT)
 
@@ -633,7 +647,7 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                 label = mapping_key = ""
                 selfcheck_ok = True
                 if kind == "blank":
-                    n_a = n_b = n_c = n_d = 1
+                    n_a = n_b = n_c = n_d = n_e = 1
                 else:
                     # Production call, unmodified. This is variant B: the text
                     # that is really on the slide, regular weight throughout.
@@ -651,6 +665,9 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                     n_d = _wrap_runs([(p_text, False)], measurer, bold_font,
                                      first_w if first_w else hang_w, hang_w,
                                      punct_squeeze=0.5)
+                    n_e = _wrap_runs([(p_text, False)], measurer, bold_font,
+                                     first_w if first_w else hang_w, hang_w,
+                                     latin_measurer=latin_meas)
 
                     if kind == "bullet":
                         bold_run = next((r.text for r in runs if r.font.bold), "")
@@ -688,9 +705,12 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                             if bold_font is not None:
                                 n_c = _wrap_runs([(head, False), (bold_run, True), (tail, False)],
                                                  measurer, bold_font, first_w, hang_w)
-                            n_d = _wrap_runs([(head, False), (bold_run, bold_font is not None),
-                                              (tail, False)], measurer, bold_font,
-                                             first_w, hang_w, punct_squeeze=0.5)
+                            _runs = [(head, False), (bold_run, bold_font is not None),
+                                     (tail, False)]
+                            n_d = _wrap_runs(_runs, measurer, bold_font, first_w, hang_w,
+                                             punct_squeeze=0.5)
+                            n_e = _wrap_runs(_runs, measurer, bold_font, first_w, hang_w,
+                                             latin_measurer=latin_meas)
 
                             # Variant A: what the packer charged -- mapping_key
                             # in place of the rendered label.
@@ -705,7 +725,7 @@ def _collect_model(deck_path: str, want_slide: Optional[int], want_shape: Option
                 row.paras.append(ParaRow(
                     slide=s_idx, shape=row.shape, slot=row.slot, index=p_idx,
                     kind=kind, has_bold=has_bold, chars=len(p_text),
-                    lines_a=n_a, lines_b=n_b, lines_c=n_c, lines_d=n_d, label=label,
+                    lines_a=n_a, lines_b=n_b, lines_c=n_c, lines_d=n_d, lines_e=n_e, label=label,
                     mapping_key=mapping_key, space_after_pt=sa, space_before_pt=sb,
                     font_pt=font_pt, selfcheck_ok=selfcheck_ok, text=p_text,
                 ))
@@ -1025,7 +1045,8 @@ def _fit_pitch_and_gap(rows: List[ShapeRow]) -> Optional[Dict[str, float]]:
 VARIANTS = (("a", "today's packer (mapping_key, regular)"),
             ("b", "+ rendered label"),
             ("c", "+ bold-aware key run"),
-            ("d", "+ half-width CJK punctuation"))
+            ("d", "+ half-width CJK punctuation"),
+            ("e", "+ <a:latin> widths for digits/latin"))
 
 
 def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
@@ -1154,7 +1175,7 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
                   f"{sum(p.delta(v) for p in others):>+9d} lines")
 
     # ---- mis-wrapped paragraphs -----------------------------------------
-    best_v = max("abcd", key=lambda v: sum(1 for p in scored if p.delta(v) == 0))
+    best_v = max("abcde", key=lambda v: sum(1 for p in scored if p.delta(v) == 0))
     wrong = [p for p in scored if p.delta(best_v) != 0]
     print("\n" + "-" * 96)
     print(f"STILL MIS-WRAPPED UNDER THE BEST VARIANT ({best_v.upper()})  — what remains unexplained")
@@ -1166,7 +1187,7 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
               f"{'real':>5}{'d':>4}  text")
         for p in wrong:
             print(f"{p.slide:>3} {p.shape[:20]:<20}{p.index:>4}{p.kind:>13}"
-                  f"{p.lines_a:>3}{p.lines_b:>3}{p.lines_c:>3}{p.lines_d:>3}"
+                  f"{p.lines_a:>3}{p.lines_b:>3}{p.lines_c:>3}{p.lines_d:>3}{p.lines_e:>3}"
                   f"{p.real_lines:>5}{p.delta(best_v):>+4}  {p.text[:30]}")
 
     if any(not p.selfcheck_ok for p in all_paras):
@@ -1224,7 +1245,7 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
         by_shape = {(r.slide, r.shape): r for r in rows}
         for p in wrong:
             print(f"\n  slide {p.slide} {p.shape} para {p.index} [{p.kind}] "
-                  f"A={p.lines_a} B={p.lines_b} C={p.lines_c} D={p.lines_d} real={p.real_lines}"
+                  f"A={p.lines_a} B={p.lines_b} C={p.lines_c} D={p.lines_d} E={p.lines_e} real={p.real_lines}"
                   + (f"\n  label drawn: {p.label!r}   packer charged: {p.mapping_key!r}"
                      if p.label else ""))
             shape_row = by_shape.get((p.slide, p.shape))
@@ -1256,15 +1277,16 @@ def _write_csv(path: str, rows: List[ShapeRow]) -> None:
     with open(path, "w", newline="", encoding="utf-8-sig") as fh:
         w = csv.writer(fh)
         w.writerow(["slide", "shape", "slot", "para", "kind", "label", "mapping_key",
-                    "chars", "lines_A", "lines_B", "lines_C", "lines_D", "real_lines",
-                    "delta_A", "delta_B", "delta_C", "delta_D", "space_before_pt",
+                    "chars", "lines_A", "lines_B", "lines_C", "lines_D", "lines_E", "real_lines",
+                    "delta_A", "delta_B", "delta_C", "delta_D", "delta_E",
+                    "space_before_pt",
                     "space_after_pt", "selfcheck_ok", "text"])
         for r in rows:
             for p in r.paras:
                 w.writerow([p.slide, p.shape, p.slot, p.index, p.kind, p.label,
-                            p.mapping_key, p.chars, p.lines_a, p.lines_b, p.lines_c, p.lines_d,
+                            p.mapping_key, p.chars, p.lines_a, p.lines_b, p.lines_c, p.lines_d, p.lines_e,
                             "" if p.real_lines is None else p.real_lines,
-                            *["" if p.delta(v) is None else p.delta(v) for v in "abcd"],
+                            *["" if p.delta(v) is None else p.delta(v) for v in "abcde"],
                             f"{p.space_before_pt:.2f}", f"{p.space_after_pt:.2f}",
                             int(p.selfcheck_ok), p.text])
     print(f"\nwrote {path}")
