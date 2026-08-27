@@ -1042,8 +1042,11 @@ def _fit_pitch_and_gap(rows: List[ShapeRow]) -> Optional[Dict[str, float]]:
 # Report
 # ---------------------------------------------------------------------------
 
-VARIANTS = (("a", "today's packer (mapping_key, regular)"),
-            ("b", "+ rendered label"),
+# A is now a HISTORICAL baseline, not what production does: 882ed4e moved
+# _account_cost_key onto the drawn label, so B is today's packer. Keeping A
+# scored is what shows the fix still earning its place on each new deck.
+VARIANTS = (("a", "mapping_key, not the drawn label (pre-882ed4e)"),
+            ("b", "today's packer (rendered label)"),
             ("c", "+ bold-aware key run"),
             ("d", "+ half-width CJK punctuation"),
             ("e", "+ <a:latin> widths for digits/latin"))
@@ -1163,7 +1166,8 @@ def _report(rows: List[ShapeRow], env: Dict[str, str], version: str,
                    key=lambda v: sum(1 for p in bullets if p.delta(v) == 0))
         print(f"\n  -> PowerPoint agrees most with variant '{best.upper()}'.")
         if best == "a":
-            print("     The proposed fixes do NOT help on this deck; the error is elsewhere.")
+            print("     Today's packer is BEHIND the old mapping_key behaviour on this deck —"
+                  "\n     that would be a regression in 882ed4e, not a candidate fix.")
 
     # non-bullet paragraphs use one prediction for all three variants
     others = [p for p in scored if p.kind != "bullet"]
