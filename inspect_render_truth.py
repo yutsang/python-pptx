@@ -868,10 +868,15 @@ def _normalize_com_text(text: str) -> str:
     return str(text or "").replace("\r\n", "\n").replace("\r", "\n").replace("\x0b", "\n").strip()
 
 
-def _fill_ground_truth(deck_path: str, rows: List[ShapeRow], warnings: List[str]) -> str:
+def _fill_ground_truth(deck_path: str, rows: List[ShapeRow], warnings: List[str],
+                       session=None) -> str:
     """Open the deck in real PowerPoint and record what its layout engine did.
     Read-only, closed without saving."""
-    app, started_by_us, binding = _attach_powerpoint()
+    if session is not None:
+        app, started_by_us, binding = session
+        started_by_us = False   # the batch owns it; do not quit per deck
+    else:
+        app, started_by_us, binding = _attach_powerpoint()
     version, pres = "", None
     try:
         try:
@@ -1300,29 +1305,183 @@ def _write_csv(path: str, rows: List[ShapeRow]) -> None:
     print(f"\nwrote {path}")
 
 
+@dataclass
+class DeckSummary:
+    """One line of the batch table -- enough to decide whether a deck needs
+    opening, without printing 100 paragraphs per deck."""
+    name: str
+    slides: int = 0
+    paragraphs: int = 0
+    mis_wrapped: int = 0
+    shapes: int = 0
+    shapes_off: int = 0
+    assumption_fails: int = 0
+    assumption_total: int = 0
+    selfcheck_fails: int = 0
+    empty_slots: int = 0
+    overflow_slots: int = 0
+    fill_pct: float = 0.0
+    best_variant: str = ""
+    error: str = ""
+
+
+def _run_one(deck: str, args, session=None, quiet: bool = False):
+    """Measure one deck. Returns (DeckSummary, rows, details) -- `details` are
+    the lines worth surfacing in a batch (assumption failures, mis-wraps)."""
+    summary = DeckSummary(name=os.path.basename(deck))
+    try:
+        rows, env, warnings, prs, packing = _collect_model(deck, args.slide, args.shape)
+    except Exception as exc:
+        summary.error = f"{type(exc).__name__}: {exc}"
+        return summary, [], []
+    if not rows:
+        summary.error = "no commentary shapes"
+        return summary, [], []
+
+    version = ""
+    if not args.model_only:
+        version = _fill_ground_truth(deck, rows, warnings, session=session)
+    assumptions = _check_assumptions(prs, rows, packing)
+
+    if not quiet:
+        _report(rows, env, version, warnings, args.lines, args.model_only,
+                assumptions=assumptions)
+        return summary, rows, []
+
+    # ---- batch mode: fold the same numbers into one row -------------------
+    paras = [q for r in rows for q in r.paras]
+    scored = [q for q in paras if q.real_lines is not None]
+    best = (max([v for v, _ in VARIANTS],
+                key=lambda v: sum(1 for q in scored if q.delta(v) == 0)) if scored else "b")
+    used = sum(r.real_bound_pt or 0.0 for r in rows)
+    cap = sum(r.box_h_pt for r in rows)
+    summary.slides = len({r.slide for r in rows})
+    summary.paragraphs = len(scored)
+    summary.mis_wrapped = sum(1 for q in scored if q.delta(best) != 0)
+    summary.shapes = len(rows)
+    summary.shapes_off = sum(1 for r in rows
+                             if r.real_lines is not None and r.real_lines != r.model_lines)
+    summary.assumption_total = len(assumptions)
+    summary.assumption_fails = sum(1 for a in assumptions if a.lstrip().startswith("!!"))
+    summary.selfcheck_fails = sum(1 for q in paras if not q.selfcheck_ok)
+    summary.empty_slots = sum(1 for r in rows if r.is_empty)
+    summary.overflow_slots = sum(1 for r in rows
+                                 if r.real_bound_pt and r.real_bound_pt > r.box_h_pt)
+    summary.fill_pct = (used / cap * 100.0) if cap else 0.0
+    summary.best_variant = best
+
+    details: List[str] = []
+    for line in assumptions:
+        if line.lstrip().startswith("!!"):
+            details.append("    assumption: " + line.strip())
+    for q in scored:
+        if q.delta(best) != 0:
+            details.append(f"    slide {q.slide} {q.shape} para {q.index} [{q.kind}] "
+                           f"predicted {getattr(q, 'lines_' + best)} drew {q.real_lines}: "
+                           f"{q.text[:60]}")
+    for w in warnings:
+        details.append("    warning: " + w.splitlines()[0])
+    return summary, rows, details
+
+
+def _batch(decks: List[str], args) -> int:
+    """Every deck through the same measurement, one row each.
+
+    A portfolio is 15 entities. Reading 15 full reports is how a real
+    regression gets skimmed past, so the default here is one line per deck and
+    detail ONLY for the decks with something wrong. One PowerPoint session is
+    opened for the whole batch rather than one per deck.
+    """
+    session = _attach_powerpoint() if not args.model_only else None
+    print("=" * 96)
+    print("RENDER TRUTH — BATCH over " + str(len(decks)) + " deck(s)")
+    print("=" * 96)
+    results = []
+    try:
+        for i, deck in enumerate(decks, 1):
+            print(f"  [{i}/{len(decks)}] {os.path.basename(deck)}", flush=True)
+            results.append(_run_one(deck, args, session=session, quiet=True))
+    finally:
+        if session is not None and session[1]:
+            try:
+                session[0].Quit()
+            except Exception:
+                pass
+
+    print()
+    print("-" * 96)
+    print(f"{'deck':<40}{'sld':>4}{'para':>6}{'bad':>5}{'shapes':>8}{'assum':>7}"
+          f"{'self':>5}{'fill%':>7}{'empty':>6}{'ovfl':>5}  best")
+    print("-" * 96)
+    tot_p = tot_bad = tot_off = tot_shapes = 0
+    for s, _rows, _d in results:
+        if s.error:
+            print(f"{s.name[:40]:<40}  ERROR: {s.error}")
+            continue
+        tot_p += s.paragraphs
+        tot_bad += s.mis_wrapped
+        tot_off += s.shapes_off
+        tot_shapes += s.shapes
+        print(f"{s.name[:40]:<40}{s.slides:>4}{s.paragraphs:>6}{s.mis_wrapped:>5}"
+              f"{s.shapes_off:>5}/{s.shapes:<2}"
+              f"{s.assumption_total - s.assumption_fails:>4}/{s.assumption_total:<2}"
+              f"{s.selfcheck_fails:>5}{s.fill_pct:>7.1f}{s.empty_slots:>6}"
+              f"{s.overflow_slots:>5}  {s.best_variant.upper()}")
+    ok = [s for s, _, _ in results if not s.error]
+    print("-" * 96)
+    print(f"{'TOTAL':<40}{'':>4}{tot_p:>6}{tot_bad:>5}{tot_off:>5}/{tot_shapes:<2}")
+    if tot_p:
+        print()
+        print(f"  paragraph accuracy: {tot_p - tot_bad}/{tot_p} "
+              f"({(tot_p - tot_bad) / tot_p * 100:.2f}%)")
+    if ok:
+        print(f"  mean fill: {sum(s.fill_pct for s in ok) / len(ok):.1f}%   "
+              f"decks with an EMPTY commentary column: "
+              f"{sum(1 for s in ok if s.empty_slots)}/{len(ok)}   "
+              f"with an overflowing slot: {sum(1 for s in ok if s.overflow_slots)}/{len(ok)}")
+        behind = [s for s in ok if s.best_variant == "a"]
+        if behind:
+            print("  !! " + str(len(behind)) + " deck(s) score BETTER on the pre-882ed4e "
+                  "baseline -- that is a REGRESSION, not a candidate fix: "
+                  + ", ".join(s.name for s in behind))
+
+    problems = [(s, d) for s, _r, d in results if d or s.error]
+    if problems:
+        print()
+        print("-" * 96)
+        print("DETAIL — only the decks with something to look at")
+        print("-" * 96)
+        for s, d in problems:
+            print()
+            print("  " + s.name)
+            for line in d[:20]:
+                print(line)
+            if len(d) > 20:
+                print(f"    ... and {len(d) - 20} more")
+    else:
+        print()
+        print("  Nothing to look at: every deck clean on assumptions, wrapping and self-check.")
+    print()
+    print("=" * 96)
+    return 1 if (tot_bad or any(s.assumption_fails or s.selfcheck_fails for s in ok)) else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("deck", help="an EXPORTED .pptx (not the template — it has no commentary)")
+    ap.add_argument("deck", help="an EXPORTED .pptx, or a FOLDER of them for a batch")
     ap.add_argument("--lines", action="store_true",
                     help="print the full text of every still-mis-wrapped paragraph")
     ap.add_argument("--slide", type=int, help="restrict to one slide (1-based)")
     ap.add_argument("--shape", help="restrict to shapes whose name contains this")
-    ap.add_argument("--csv", help="write the per-paragraph table here")
+    ap.add_argument("--csv", help="write the per-paragraph table here (single deck only)")
     ap.add_argument("--model-only", action="store_true",
                     help="skip PowerPoint entirely (exercises the prediction half off Windows)")
     args = ap.parse_args()
 
     if not os.path.exists(args.deck):
-        print(f"No such file: {args.deck}", file=sys.stderr)
+        print("No such path: " + args.deck, file=sys.stderr)
         return 2
 
-    rows, env, warnings, prs, packing = _collect_model(args.deck, args.slide, args.shape)
-    if not rows:
-        print("No commentary shapes found. Is this an exported deck rather than the template?",
-              file=sys.stderr)
-        return 2
-
-    version = ""
     if not args.model_only:
         if sys.platform != "win32":
             print(f"This needs Windows + PowerPoint (running on {sys.platform}). "
@@ -1333,13 +1492,22 @@ def main() -> int:
         except ImportError:
             print("pywin32 is not installed. Run:  pip install pywin32", file=sys.stderr)
             return 2
-        version = _fill_ground_truth(args.deck, rows, warnings)
 
-    rc = _report(rows, env, version, warnings, args.lines, args.model_only,
-                 assumptions=_check_assumptions(prs, rows, packing))
-    if args.csv:
+    if os.path.isdir(args.deck):
+        decks = sorted(os.path.join(args.deck, f) for f in os.listdir(args.deck)
+                       if f.lower().endswith(".pptx") and not f.startswith("~$"))
+        if not decks:
+            print("No .pptx files in " + args.deck, file=sys.stderr)
+            return 2
+        return _batch(decks, args)
+
+    summary, rows, _ = _run_one(args.deck, args, quiet=False)
+    if summary.error:
+        print(summary.error, file=sys.stderr)
+        return 2
+    if args.csv and rows:
         _write_csv(args.csv, rows)
-    return rc
+    return 0
 
 
 if __name__ == "__main__":
