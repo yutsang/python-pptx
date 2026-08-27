@@ -3240,29 +3240,54 @@ def main() -> int:
     # combine_presentations over the batch's cached bytes) -- but the CLI only
     # ever left seven separate .preview.pptx files behind, so "run the batch"
     # did not actually produce the thing being delivered.
-    exported = [
-        str(entry["pptx"]["out_path"])
-        for entry in summaries
-        if isinstance(entry, dict)
-        and isinstance(entry.get("pptx"), dict)
-        and entry["pptx"].get("out_path")
-        and Path(str(entry["pptx"]["out_path"])).exists()
-    ]
+    exported: List[Tuple[str, str]] = []   # (portfolio label, deck path), in run order
+    for entry in summaries:
+        if not (isinstance(entry, dict) and isinstance(entry.get("pptx"), dict)):
+            continue
+        out_path = entry["pptx"].get("out_path")
+        if not out_path or not Path(str(out_path)).exists():
+            continue
+        parsed = parse_portfolio_filename(str(entry.get("file") or ""))
+        exported.append((str(parsed["portfolio"]) if parsed else "", str(out_path)))
+
     if len(exported) > 1:
-        _hr("11. COMBINED DECK (every entity's slides, in order, one file)")
+        _hr("11. COMBINED DECK(S) — every entity's slides, in order")
         from fdd_utils.pptx import combine_presentations
-        label = f"Portfolio_{args.portfolio.replace(',', '-')}" if args.portfolio else "Combined"
-        combined_path = Path(exported[0]).parent / f"{label}_{time.strftime('%Y%m%d_%H%M%S')}.pptx"
-        try:
-            combine_presentations(exported, str(combined_path))
-            print(f"  Merged {len(exported)} entity deck(s) in run order:")
-            for one in exported:
-                print(f"    - {Path(one).name}")
-            print(f"\n  📄 COMBINED DECK SAVED: {combined_path.resolve()}")
-            print("     (the per-entity previews above are kept as well)")
-        except Exception as exc:
-            print(f"  ❌ Could not combine the decks: {type(exc).__name__}: {exc}")
-            print("     The per-entity previews above are unaffected.")
+
+        # ONE FILE PER PORTFOLIO, not one file for the whole run. A portfolio is
+        # the unit that actually gets delivered -- the reference deck's own
+        # running head is "Project Mint.Portfolio I.<entity> (2/4)" -- so
+        # merging I, II and III into a single deck produces something nobody
+        # sends. Grouping here means `--portfolio I,II,III` is one command and
+        # still three deliverables. A run that is not portfolio-scoped, or that
+        # covers exactly one portfolio, keeps the previous single-file
+        # behaviour.
+        groups: Dict[str, List[str]] = {}
+        for label, path in exported:
+            groups.setdefault(label, []).append(path)
+
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        for label in sorted(groups):
+            paths = groups[label]
+            if len(paths) < 2 and len(groups) > 1:
+                print(f"\n  Portfolio {label or '(ungrouped)'}: only one deck, nothing to merge "
+                      f"({Path(paths[0]).name})")
+                continue
+            name = f"Portfolio_{label}" if label else (
+                f"Portfolio_{args.portfolio.replace(',', '-')}" if args.portfolio else "Combined")
+            combined_path = Path(paths[0]).parent / f"{name}_{stamp}.pptx"
+            try:
+                combine_presentations(paths, str(combined_path))
+                print(f"\n  Merged {len(paths)} entity deck(s) in run order"
+                      + (f" for Portfolio {label}" if label else "") + ":")
+                for one in paths:
+                    print(f"    - {Path(one).name}")
+                print(f"  📄 COMBINED DECK SAVED: {combined_path.resolve()}")
+            except Exception as exc:
+                print(f"  ❌ Could not combine Portfolio {label or '(ungrouped)'}: "
+                      f"{type(exc).__name__}: {exc}")
+                print("     The per-entity previews above are unaffected.")
+        print("\n     (the per-entity previews are kept as well)")
     return 0
 
 
