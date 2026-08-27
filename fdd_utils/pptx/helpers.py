@@ -1364,15 +1364,30 @@ def _account_is_chinese(account: Dict) -> bool:
     return contains_predominantly_chinese_text(str((account or {}).get("commentary", "")))
 
 
-def _account_cost_key(account: Dict) -> str:
-    """The key text whose rendered width the cost model should charge:
-    mapping_key plus the continuation marker the renderer appends
-    (' (续)' / \" (cont'd)\") -- previously never charged, so every
-    continuation's first paragraph was measured ~4-9 chars short."""
-    key = str(account.get("mapping_key", account.get("account_name", "")) or "")
+def _account_cost_key(account: Dict, is_chinese_databook: bool = False) -> str:
+    """The key text whose rendered width the cost model should charge: the
+    label the renderer will actually draw, plus the continuation marker it
+    appends (' (续)' / \" (cont'd)\").
+
+    The marker half was always right. The BASE was not -- this charged
+    `mapping_key`, while the renderer writes `display_name_zh or display_name`
+    (generation.py's run_key.text). On a Chinese deck those are different
+    strings: 'CIP' against '在建工程', 'Long-term deferred expenses' against
+    '长期待摊费用'. The gap runs to tens of points, in both directions.
+
+    Worth knowing why this took so long to prove. Measured against real
+    PowerPoint the fix scored a DEAD HEAT with the old behaviour twice --
+    24/26 bullets each -- and was twice rejected as not worth the risk. It only
+    became visible once per-character <a:ea>/<a:latin> pricing landed
+    (CompositeMetrics in text_metrics.py) and the ruler stopped being the
+    dominant error: on the very next run the old behaviour fell to 23/26 while
+    this scored 26/26 at zero net line error. Fixing the biggest error is what
+    made the next one measurable; neither was visible through the other.
+    """
+    key = _rendered_bullet_label(account, is_chinese_databook)
     if account.get("is_continuation"):
-        key += " (续)" if _account_is_chinese(account) else " (cont'd)"
-    return key
+        key = f"{key} (续)" if _account_is_chinese(account) else f"{key} (cont'd)"
+    return str(key or "")
 
 
 def _jieba_word_boundary_snap(text: str, pos: int) -> Optional[int]:

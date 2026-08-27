@@ -938,7 +938,7 @@ class _PackingMixin:
                 prev_cat = cat
             used += self._calculate_content_lines(
                 "",
-                _account_cost_key(account),
+                _account_cost_key(account, getattr(self, "_is_chinese_mode", False)),
                 account.get("commentary", ""),
                 slot_name=slot_name,
                 shape=slot_shape,
@@ -1202,7 +1202,7 @@ class _PackingMixin:
                 is_chinese=is_chinese,
                 shape=cur_shape,
                 statement_type=statement_type,
-                key_prefix=f"■ {_account_cost_key(head_acct)} - ",
+                key_prefix=f"■ {_account_cost_key(head_acct, getattr(self, '_is_chinese_mode', False))} - ",
                 # `gap` above is already capacity + allowance.
                 overflow_allowance_units=0.0,
             )
@@ -1421,7 +1421,7 @@ class _PackingMixin:
                 shape=cur_shape,
                 statement_type=statement_type,
                 min_fill_ratio=0.3,
-                key_prefix=f"■ {_account_cost_key(tail_acct)} - ",
+                key_prefix=f"■ {_account_cost_key(tail_acct, getattr(self, '_is_chinese_mode', False))} - ",
             )
             if not split_result:
                 return False
@@ -1851,7 +1851,7 @@ class _PackingMixin:
                         # off fragment is still worth taking here even
                         # where it wouldn't be for a balance-oriented move.
                         min_fill_ratio=0.15,
-                        key_prefix=f"■ {_account_cost_key(head_acct)} - ",
+                        key_prefix=f"■ {_account_cost_key(head_acct, getattr(self, '_is_chinese_mode', False))} - ",
                         # Also lower than the shared 1.0 default, in step
                         # with this pass's own gap<0.2/text_budget<0.5 gates
                         # above -- same reasoning: this is the last-word,
@@ -2045,7 +2045,7 @@ class _PackingMixin:
             for a_i, account in enumerate(flat_accounts):
                 _acct_cost[(a_i, slot["slot_name"], w_key)] = self._calculate_content_lines(
                     "",
-                    _account_cost_key(account),
+                    _account_cost_key(account, getattr(self, "_is_chinese_mode", False)),
                     account.get("commentary", ""),
                     slot_name=slot["slot_name"],
                     shape=shape,
