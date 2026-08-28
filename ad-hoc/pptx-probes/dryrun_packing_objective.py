@@ -430,11 +430,22 @@ def run(deck: str) -> None:
             # version of this message asserted the second one for both. On the
             # 2026-08-27 exports 8 of the 11 disagreements were the first case.
             over = [str(i + 1) for i, f in enumerate(shipped_fill) if f > 1.0]
+            a_fits = all(f <= 1.0 for f in a_fills)
             print(f"    !! A lands {gap * 100:.0f}pp from what shipped on its worst slot.")
-            if over:
-                print(f"       Shipped runs slot {', '.join(over)} PAST capacity. This dry run")
-                print("       solves at strict capacity first and will not, so it moved a block")
-                print("       production kept. The gap is that tolerance, not the objective.")
+            if over and a_fits:
+                # The one case here that is actionable. Today's objective, on
+                # today's blocks, had an answer with nothing past capacity, and
+                # the deck went out with slots over it anyway. 6 of 28 on the
+                # 2026-08-27 exports.
+                print(f"       A fits every slot inside capacity. The deck shipped slot"
+                      f" {', '.join(over)}")
+                print("       PAST it. A feasible arrangement of these same blocks exists and")
+                print("       the objective already finds it, so the overflow was introduced")
+                print("       after the DP chose. The rebalance passes are what to look at.")
+            elif over:
+                print(f"       Shipped runs slot {', '.join(over)} past capacity and so does A,")
+                print("       which had to climb the relax ladder to answer at all. The content")
+                print("       genuinely exceeds these slots; no objective fixes that.")
             else:
                 print("       Every shipped slot is inside capacity, so the DP could have")
                 print("       produced this and did not: the difference came from the")
