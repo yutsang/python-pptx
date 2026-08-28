@@ -92,6 +92,14 @@ class Statement:
     blocks: List[Block] = field(default_factory=list)
     caps: List[float] = field(default_factory=list)        # usable height per slot
     shipped: List[float] = field(default_factory=list)     # pt actually in each slot
+    # Height in a slot that no Block ends up owning. This started as an
+    # accounting curiosity and turned out to be the reason every "A vs shipped:
+    # 7pp" row existed: `used` charged the category-header paragraph, the block
+    # model did not, so the solver was handed a problem ~4.5pp per slot lighter
+    # than reality and every "this fits" it printed was optimistic by a line.
+    # Keep this reported. A silent leftover is a biased solver.
+    unmodelled: List[float] = field(default_factory=list)
+    unmodelled_text: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +149,13 @@ def _read_statements(deck: str) -> List[Statement]:
             used = 0.0
             open_block: Optional[Block] = None
             pending_category = ""
+            # A category header belongs to the accounts under it -- the packer
+            # cannot leave the header at the foot of one column and the first
+            # account at the head of the next -- so its height rides forward
+            # onto the next block. Anything still pending when the slot ends is
+            # height nothing owns, and gets reported rather than dropped.
+            pending_pt = 0.0
+            pending_texts: List[str] = []
             for para in tf.paragraphs:
                 p_text = para.text or ""
                 sa = para.space_after.pt if para.space_after is not None else 0.0
@@ -157,15 +172,25 @@ def _read_statements(deck: str) -> List[Statement]:
 
                 stripped = p_text.strip()
                 if stripped.startswith(BULLET):
-                    open_block = Block(label=stripped[:28], height_pt=height,
+                    open_block = Block(label=stripped[:28],
+                                       height_pt=height + pending_pt,
                                        category=pending_category, slot_index=slot_i)
                     current.blocks.append(open_block)
                     pending_category = ""
+                    pending_pt = 0.0
+                    pending_texts.clear()
                 elif stripped and sa == 0.0 and not stripped.startswith("➢"):
                     pending_category = stripped[:16]     # category header
+                    pending_pt += height
+                    pending_texts.append(stripped[:16])
                 elif open_block is not None:
                     open_block.height_pt += height       # continuation / explain / spacer
+                else:
+                    pending_pt += height                 # spacer ahead of any block
+                    pending_texts.append(repr(p_text)[:14])
             current.shipped.append(used)
+            current.unmodelled.append(pending_pt)
+            current.unmodelled_text.append(", ".join(pending_texts))
     return [st for st in statements if st.blocks]
 
 
@@ -207,11 +232,17 @@ def _penalty_worst_slot(fills: Sequence[float]) -> float:
 
 #: (label, penalty, slot_count_first)
 #: slot_count_first mirrors gen_packing.py's lexicographic tuple, where the
-#: number of non-empty slots is compared BEFORE the penalty. On real decks A-D
-#: all return the identical layout, which is the finding rather than a bug: the
-#: slot-count term dominates so completely that changing the penalty changes
-#: nothing. Any objective that actually rebalances has to demote that term,
-#: which is what E does -- and E is therefore the one that can also cost a page.
+#: number of non-empty slots is compared BEFORE the penalty.
+#:
+#: An earlier note here said A-D all return the identical layout on real decks.
+#: That was measured on decks that predated the current packer and it is wrong.
+#: On the 2026-08-27 exports (15 entities, 30 statements) A and D differ on 11
+#: of the 30, and where they differ D is far flatter: mean spread between the
+#: fullest and emptiest slot is 18pp for D against 59pp for A and 62pp as
+#: shipped -- at the same slot count. The slot-count term does dominate, but it
+#: leaves more room underneath it than that note claimed. B and E remain
+#: identical to each other by construction (same penalty, and demoting the slot
+#: count changes nothing once the slot count is already forced).
 OBJECTIVES = (
     ("A last-slot exempt (today)", _penalty_last_slot_exempt, True),
     ("B no exemption", _penalty_no_exemption, True),
@@ -221,7 +252,8 @@ OBJECTIVES = (
 )
 
 
-def _solve(st: Statement, penalty_fn, slot_count_first: bool = True) -> Optional[List[int]]:
+def _solve(st: Statement, penalty_fn,
+           slot_count_first: bool = True) -> Optional[Tuple[List[int], float]]:
     """Contiguous partition of blocks into slots, minimising
     (non-empty slots, penalty) exactly as gen_packing.py compares them.
 
@@ -278,7 +310,7 @@ def _solve(st: Statement, penalty_fn, slot_count_first: bool = True) -> Optional
         best = None
         walk(0, 0, [0] * n)
         if best is not None:
-            return best[1]
+            return best[1], mult
     return None
 
 
@@ -317,13 +349,22 @@ def run(deck: str) -> None:
         print(f"\n  {len(st.blocks)} account block(s) over {len(st.caps)} slot(s)")
         print(f"    {'as shipped':<28}{_fmt(shipped_fill)}")
 
+        leftover = sum(st.unmodelled)
+        if leftover > 1.0:
+            where = ", ".join(f"slot {i + 1}: {t}" for i, t in
+                              enumerate(st.unmodelled_text) if st.unmodelled[i] > 1.0)
+            print(f"    leftover {leftover:.1f}pt no block owns -- {where}")
+
         solved: Dict[str, List[float]] = {}
+        degenerate: Dict[str, float] = {}
         for name, fn, first in OBJECTIVES:
-            assign = _solve(st, fn, first)
-            if assign is None:
+            got = _solve(st, fn, first)
+            if got is None:
                 print(f"    {name:<28}(no feasible partition)")
                 continue
+            assign, mult = got
             solved[name] = _fills_from(st, assign)
+            degenerate[name] = mult
 
         a_name = OBJECTIVES[0][0]
         a_fills = solved.get(a_name)
@@ -335,9 +376,22 @@ def run(deck: str) -> None:
             empty, over, mean = _score(solved[name])
             mark = f"   <- A vs shipped: worst slot differs by {gap * 100:.0f}pp" \
                 if (name == a_name and gap is not None) else ""
+            if degenerate.get(name, 1.0) >= 10.0:
+                mark = "   <- DEGENERATE, see below"
             print(f"    {name:<28}{_fmt(solved[name])}"
                   f"   empty={empty} over={over} mean={mean * 100:.0f}%{mark}")
-        if gap is not None and gap > 0.15:
+
+        if any(m >= 10.0 for m in degenerate.values()):
+            # Not a dry-run artefact: gen_packing.py:2118 really does end its
+            # ladder at x10, and at that rung "fewest non-empty slots" is won
+            # outright by putting everything in slot 0. So the DP contributes
+            # nothing here and the shipped layout is the rebalance passes'
+            # work end to end. Do not read the row above as a proposal.
+            print("    !! Solved only at relax x10, where the objective degenerates to")
+            print("       'one slot holds everything'. Production reaches the same rung")
+            print("       (gen_packing.py:2118) -- so for this statement the DP is not")
+            print("       choosing the layout at all. The content simply does not fit.")
+        elif gap is not None and gap > 0.15:
             print(f"    !! A lands {gap * 100:.0f}pp from what shipped on its worst slot, so most")
             print("       of this layout came from the rebalance passes AFTER the DP, not from")
             print("       the objective. Changing the objective would move it less than the")
