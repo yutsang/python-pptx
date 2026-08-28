@@ -2092,6 +2092,28 @@ def run_ai_checks(
     refresh_thread = threading.Thread(target=_tick_refresh, daemon=True)
     refresh_thread.start()
 
+    # The pipeline already logs "[FeedbackLoop] <key>: completed with N
+    # retry(ies)" at INFO and nothing was listening, so the one number that
+    # explains a 10x slow entity was being written and thrown away. Capture it.
+    _fb_lines: List[str] = []
+
+    class _FeedbackLoopCapture(logging.Handler):
+        def emit(self, record):
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return
+            if "[FeedbackLoop]" in msg:
+                _fb_lines.append(msg.replace("[FeedbackLoop] ", "").strip())
+
+    _fb_handler = _FeedbackLoopCapture()
+    _fb_handler.setLevel(logging.INFO)
+    _fb_root = logging.getLogger()
+    _fb_prev_level = _fb_root.level
+    if _fb_root.level > logging.INFO:
+        _fb_root.setLevel(logging.INFO)
+    _fb_root.addHandler(_fb_handler)
+
     start = time.time()
     stage_clock["last_boundary"] = start
     try:
@@ -2111,6 +2133,8 @@ def run_ai_checks(
         stop_refresh.set()
         refresh_thread.join(timeout=2.0)
         pbar.close()
+        _fb_root.removeHandler(_fb_handler)
+        _fb_root.setLevel(_fb_prev_level)
     elapsed = time.time() - start
     print(f"\n5. TIMING: full pipeline for {len(mapping_keys)} mapped accounts took {elapsed:.1f}s "
           f"({elapsed / max(len(mapping_keys), 1):.1f}s/account) on {model_type}"
@@ -2120,6 +2144,30 @@ def run_ai_checks(
         for stage_label, stage_seconds in stage_timing.items():
             per_account = stage_seconds / max(len(mapping_keys), 1)
             print(f"     {stage_label:12s}: {stage_seconds:7.1f}s total, {per_account:6.1f}s/account")
+        # The breakdown above records each stage label ONCE -- the first time it
+        # reports completed == total_eligible (see stage_clock["seen_labels"]).
+        # The feedback loop then re-runs Generator/Auditor/Validator for every
+        # account it retries, and NONE of that lands in a named stage. On one
+        # real portfolio entity the three stages summed to 162s of a 2,601s run:
+        # 94% of the wall-clock was invisible while the per-account rates all
+        # looked normal. A breakdown that silently omits most of the time is
+        # worse than no breakdown, so name the remainder.
+        _named = sum(stage_timing.values())
+        _rest = elapsed - _named
+        _pct = (_rest / elapsed * 100.0) if elapsed > 0 else 0.0
+        print(f"     {'unattributed':12s}: {_rest:7.1f}s total, "
+              f"{_rest / max(len(mapping_keys), 1):6.1f}s/account   "
+              f"({_pct:.0f}% of the run -- feedback-loop retries + orchestration)")
+        if _pct >= 50.0:
+            print(f"     ⚠️  MOST of this run was NOT in the three named stages. "
+                  f"See the retry summary below.")
+    if _fb_lines:
+        _retried = [ln for ln in _fb_lines if "retry" in ln]
+        print(f"   Feedback loop: {len(_retried)} account(s) retried"
+              + (f" -- {', '.join(_retried[:8])}" if _retried else "")
+              + (f" ... and {len(_retried) - 8} more" if len(_retried) > 8 else ""))
+    else:
+        print("   Feedback loop: no account reported a retry.")
 
     _hr("5b. VALIDATOR (subagent_4) ACTUAL VERDICT — the real AI's own judgment, not this "
         "script's regex heuristic below")
