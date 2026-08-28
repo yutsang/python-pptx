@@ -463,8 +463,11 @@ def _check_assumptions(prs, rows: List[ShapeRow], packing: Dict) -> List[str]:
                     v = getattr(para, attr)
                     if v is not None and v.pt > 0:
                         gaps.add(round(v.pt, 2))
-                if (para.text or "").lstrip().startswith(BULLET_MARKER):
-                    ind = _indent_source(shape, para, prs)
+                _t = (para.text or "").lstrip()
+                _marker = (BULLET_MARKER if _t.startswith(BULLET_MARKER)
+                           else ("\u27a2" if _t.startswith("\u27a2") else None))
+                if _marker:
+                    ind = (_marker,) + _indent_source(shape, para, prs)
                     indents[ind] = indents.get(ind, 0) + 1
                 for run in para.runs:
                     if run.font.size is not None:
@@ -493,15 +496,20 @@ def _check_assumptions(prs, rows: List[ShapeRow], packing: Dict) -> List[str]:
     _cmp("east-asian typeface", _metrics_family(True, packing), eas,
          "CJK glyph widths come from <a:ea>; if it is absent PowerPoint picks its own fallback")
 
-    for (marL, ind, src), n in sorted(indents.items(), key=lambda kv: -kv[1]):
+    # Reported per MARKER. The check used to cover only ■, and the two
+    # paragraphs still mis-wrapped across a 1,638-paragraph portfolio run were
+    # both ➢ explanations -- both UNDER-counting, which is the signature of a
+    # first line narrower than modelled, i.e. an indent that did not hang.
+    # An unchecked assumption is exactly what this section exists to stop.
+    for (marker, marL, ind, src), n in sorted(indents.items(), key=lambda kv: -kv[1]):
         effective_hang = max(0.0, marL) if ind < 0 else 0.0
         ok = abs(effective_hang - BULLET_HANGING_INDENT_PT) < 0.5
-        out.append(f"  {'OK  ' if ok else '  !!'} {'bullet hanging indent':<26} "
+        out.append(f"  {'OK  ' if ok else '  !!'} {marker + ' hanging indent':<26} "
                    f"model assumes {BULLET_HANGING_INDENT_PT}pt        "
                    f"deck says marL={marL:.1f}pt indent={ind:.1f}pt "
-                   f"-> {effective_hang:.1f}pt  [{src}, {n} bullets]")
+                   f"-> {effective_hang:.1f}pt  [{src}, {n} paras]")
     if not indents:
-        out.append("       (no ■ bullets found to check the indent against)")
+        out.append("       (no ■ or ➢ paragraphs found to check the indent against)")
 
     out.append(f"  {'OK  ' if autofits <= {'noAutofit'} else '  !!'} {'autofit':<26} "
                f"model assumes {'noAutofit'!r:<20} deck says "
