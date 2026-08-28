@@ -433,15 +433,19 @@ def run(deck: str) -> None:
             a_fits = all(f <= 1.0 for f in a_fills)
             print(f"    !! A lands {gap * 100:.0f}pp from what shipped on its worst slot.")
             if over and a_fits:
-                # The one case here that is actionable. Today's objective, on
-                # today's blocks, had an answer with nothing past capacity, and
-                # the deck went out with slots over it anyway. 6 of 28 on the
-                # 2026-08-27 exports.
-                print(f"       A fits every slot inside capacity. The deck shipped slot"
+                # 6 of 28 on the 2026-08-27 exports. An earlier version of this
+                # message concluded "so a later pass introduced the overflow".
+                # It cannot: this solver partitions a flat list, while the real
+                # DP also honours L/R pairing, slide structure and category
+                # grouping. A partition it reaches may be closed to production.
+                # dp_packing_report.txt settles it and needs no re-export.
+                print(f"       A fits every slot inside capacity; the deck shipped slot"
                       f" {', '.join(over)}")
-                print("       PAST it. A feasible arrangement of these same blocks exists and")
-                print("       the objective already finds it, so the overflow was introduced")
-                print("       after the DP chose. The rebalance passes are what to look at.")
+                print("       past it. A feasible contiguous partition of these blocks exists,")
+                print("       though this solver ignores constraints the real DP honours, so")
+                print("       that does not prove the DP could reach it. dp_packing_report.txt")
+                print("       says which pass the '!' first appears at; read that before")
+                print("       blaming either the objective or the rebalance passes.")
             elif over:
                 print(f"       Shipped runs slot {', '.join(over)} past capacity and so does A,")
                 print("       which had to climb the relax ladder to answer at all. The content")
