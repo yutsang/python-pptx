@@ -100,6 +100,12 @@ class Statement:
     # Keep this reported. A silent leftover is a biased solver.
     unmodelled: List[float] = field(default_factory=list)
     unmodelled_text: List[str] = field(default_factory=list)
+    # Of that leftover, the part written by _reserve_blank_lines
+    # (gen_tables.py:479) -- whitespace-only paragraphs that reserve the height
+    # a detail table is then drawn on top of. It looks like a blank column and
+    # is the opposite: space already committed to a table this solver has no
+    # way to move. Any statement carrying one gets no proposal at all.
+    reservation: List[float] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +162,7 @@ def _read_statements(deck: str) -> List[Statement]:
             # height nothing owns, and gets reported rather than dropped.
             pending_pt = 0.0
             pending_texts: List[str] = []
+            reserved_pt = 0.0
             for para in tf.paragraphs:
                 p_text = para.text or ""
                 sa = para.space_after.pt if para.space_after is not None else 0.0
@@ -188,9 +195,12 @@ def _read_statements(deck: str) -> List[Statement]:
                 else:
                     pending_pt += height                 # spacer ahead of any block
                     pending_texts.append(repr(p_text)[:14])
+                    if p_text and not p_text.strip():
+                        reserved_pt += height            # _reserve_blank_lines
             current.shipped.append(used)
             current.unmodelled.append(pending_pt)
             current.unmodelled_text.append(", ".join(pending_texts))
+            current.reservation.append(reserved_pt)
     return [st for st in statements if st.blocks]
 
 
@@ -235,14 +245,26 @@ def _penalty_worst_slot(fills: Sequence[float]) -> float:
 #: number of non-empty slots is compared BEFORE the penalty.
 #:
 #: An earlier note here said A-D all return the identical layout on real decks.
-#: That was measured on decks that predated the current packer and it is wrong.
-#: On the 2026-08-27 exports (15 entities, 30 statements) A and D differ on 11
-#: of the 30, and where they differ D is far flatter: mean spread between the
-#: fullest and emptiest slot is 18pp for D against 59pp for A and 62pp as
-#: shipped -- at the same slot count. The slot-count term does dominate, but it
-#: leaves more room underneath it than that note claimed. B and E remain
-#: identical to each other by construction (same penalty, and demoting the slot
-#: count changes nothing once the slot count is already forced).
+#: That was measured on decks predating the current packer and it is wrong.
+#:
+#: Re-measured on the 2026-08-27 exports with the category header charged (15
+#: entities, 30 statements, 2 excluded as unmodellable). A now reproduces the
+#: shipped layout on 17 of the remaining 28 -- 12 exactly, 5 differing only by
+#: the empty last column -- so the reconstruction is faithful where it can be.
+#: A and D differ on 10, and where they differ D is far flatter: mean spread
+#: between fullest and emptiest slot 22pp for D against 55pp for A and 61pp as
+#: shipped, at the same slot count and with no slot over capacity. On several
+#: statements that is the difference between shipping 106%/105%/19% and
+#: 81%/78%/69%.
+#:
+#: This is NOT a recommendation to switch to D. docs/failed-attempts.md records
+#: D being replaced once already, and the numbers above come from a solver that
+#: refuses to exceed strict capacity while production routinely does -- which
+#: is most of what the remaining 11 disagreements are. Fix that mismatch before
+#: reading a spread comparison as an argument.
+#:
+#: B and E remain identical to each other by construction: same penalty, and
+#: demoting the slot-count term changes nothing once the slot count is forced.
 OBJECTIVES = (
     ("A last-slot exempt (today)", _penalty_last_slot_exempt, True),
     ("B no exemption", _penalty_no_exemption, True),
@@ -355,6 +377,18 @@ def run(deck: str) -> None:
                               enumerate(st.unmodelled_text) if st.unmodelled[i] > 1.0)
             print(f"    leftover {leftover:.1f}pt no block owns -- {where}")
 
+        # More than a couple of blank lines means a table is drawn over them.
+        # Proposing a layout for such a statement would be fiction: the solver
+        # moves accounts, and the reserved height cannot follow.
+        reserved = sum(st.reservation)
+        if reserved > 30.0:
+            slots = ", ".join(str(i + 1) for i, r in enumerate(st.reservation) if r > 30.0)
+            print(f"    NOT MODELLED -- slot {slots} holds {reserved:.0f}pt reserved by")
+            print("       _reserve_blank_lines (gen_tables.py:479) for a detail table drawn")
+            print("       on top. Reads as a blank column; it is committed space. The solver")
+            print("       cannot move a table, so no proposal is offered for this statement.")
+            continue
+
         solved: Dict[str, List[float]] = {}
         degenerate: Dict[str, float] = {}
         for name, fn, first in OBJECTIVES:
@@ -391,11 +425,21 @@ def run(deck: str) -> None:
             print("       'one slot holds everything'. Production reaches the same rung")
             print("       (gen_packing.py:2118) -- so for this statement the DP is not")
             print("       choosing the layout at all. The content simply does not fit.")
-        elif gap is not None and gap > 0.15:
-            print(f"    !! A lands {gap * 100:.0f}pp from what shipped on its worst slot, so most")
-            print("       of this layout came from the rebalance passes AFTER the DP, not from")
-            print("       the objective. Changing the objective would move it less than the")
-            print("       rows above imply -- read this as pointing at those passes instead.")
+        elif gap is not None and gap > 0.03:
+            # Two different causes produce the same big number, and the first
+            # version of this message asserted the second one for both. On the
+            # 2026-08-27 exports 8 of the 11 disagreements were the first case.
+            over = [str(i + 1) for i, f in enumerate(shipped_fill) if f > 1.0]
+            print(f"    !! A lands {gap * 100:.0f}pp from what shipped on its worst slot.")
+            if over:
+                print(f"       Shipped runs slot {', '.join(over)} PAST capacity. This dry run")
+                print("       solves at strict capacity first and will not, so it moved a block")
+                print("       production kept. The gap is that tolerance, not the objective.")
+            else:
+                print("       Every shipped slot is inside capacity, so the DP could have")
+                print("       produced this and did not: the difference came from the")
+                print("       rebalance passes AFTER the DP. Changing the objective would")
+                print("       move it less than the rows above imply.")
 
 
 def main() -> int:
