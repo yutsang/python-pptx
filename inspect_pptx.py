@@ -658,6 +658,25 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                     f"{_first} and {_again}")
                 _tbl_warnings += 1
             total_warnings += _tbl_warnings
+            # Every data row starting with the same segment means the label
+            # column is spending its width restating the title band above it,
+            # which is the column that wraps. helpers._group_plan_rows_by_category
+            # strips that prefix; this reports whatever still gets through.
+            _title_text = tbl.cell(0, 0).text.strip()
+            _heads = [re.split(r"\s*[-－—]\s*", tbl.cell(r, 0).text.strip(), maxsplit=1)
+                      for r in range(2, n_rows)]
+            _heads = [p[0] for p in _heads if len(p) == 2 and p[0] and p[1]]
+            if len(_heads) >= 2 and len(set(_heads)) == 1:
+                _shared = _heads[0]
+                _print(f"  ⚠️  REPEATED LABEL PREFIX: {len(_heads)} row(s) all start "
+                       f"{_shared!r}"
+                       + (", which is the table's own title" if _shared == _title_text else "")
+                       + " -- the label column is restating the heading")
+                total_warnings += 1
+                warning_details.append(
+                    f"Slide {slide_idx + 1}: table {_t.name!r} repeats the prefix {_shared!r} "
+                    f"on {len(_heads)} rows")
+
             if valueless:
                 # Printed, never a warning: this is what a section heading looks
                 # like, and equally what a real account with no figures in any

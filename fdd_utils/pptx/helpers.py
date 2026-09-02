@@ -893,10 +893,22 @@ def _group_plan_rows_by_category(
             runs.append((category, [entry]))
 
     grouped_runs = [r for r in runs if r[0] is not None and len(r[1]) >= 2]
-    if not grouped_runs or len(grouped_runs) == 1 and len(grouped_runs[0][1]) == len(entries):
+    if not grouped_runs:
         return entries
 
     own = str(title or "").strip()
+    # One group covering every row earns a heading only when it says something
+    # the title band above it does not. Where it merely repeats the title the
+    # heading is dropped, but the rows still shed the prefix -- which is most
+    # of the value here, since that prefix is what makes the label column wrap.
+    # Returning for both cases meant an 营业成本 table whose rows all read
+    # 营业成本-... kept the prefix, while the same table carrying one extra
+    # uncategorised row (管理层调整) dropped it. Two identical tables, formatted
+    # two different ways, decided by whether an unrelated row happened to be
+    # there.
+    if (len(grouped_runs) == 1 and len(grouped_runs[0][1]) == len(entries)
+            and grouped_runs[0][0] != own):
+        return entries
     out: List[Dict[str, Any]] = []
     for category, members in runs:
         if category is None or len(members) < 2:
