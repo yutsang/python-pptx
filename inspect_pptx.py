@@ -594,28 +594,77 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                     vals = [tbl.cell(r, c).text for c in range(1 if r == 0 else n_cols)]
                     _print(f"      r{r:<2} {role:<6} " + " | ".join(repr(v) for v in vals))
 
-            # Two content defects that need no judgement about what the table
-            # ought to say, so they run whether or not the dump was asked for.
-            blank_cells, seen_rows, dup_rows = [], {}, []
+            # Content defects that need no judgement about what the table ought
+            # to say. The first version of this counted every blank data cell,
+            # which turned the thing these tables do deliberately into a defect:
+            # 流动资产 / 累计折旧 and friends are section headings, written as a
+            # label with no figures. One balance sheet reported twenty "empty
+            # cells" that way, every one of them correct output. What actually
+            # goes wrong is a row blank in SOME periods and filled in others, so
+            # the two are separated and only the second is a warning.
+            PLACEHOLDER_LABELS = {"(blank)", "(空白)", "nan", "none", "null",
+                                  "#n/a", "#ref!", "#value!", "#div/0!"}
+            seen_rows, seen_labels = {}, {}
+            dup_rows, dup_labels, hole_rows, valueless, placeholders = [], [], [], [], []
             for r in range(2, n_rows):
                 row_vals = tuple(tbl.cell(r, c).text for c in range(n_cols))
-                blank_cells += [(r, c) for c, v in enumerate(row_vals) if not v.strip()]
+                label, values = row_vals[0], row_vals[1:]
+                if label.strip().lower() in PLACEHOLDER_LABELS:
+                    placeholders.append((r, label))
+                blanks = [c + 1 for c, v in enumerate(values) if not v.strip()]
+                if blanks and len(blanks) < len(values):
+                    hole_rows.append((r, label, blanks))
+                elif blanks:
+                    valueless.append((r, label))
                 if row_vals in seen_rows:
-                    dup_rows.append((seen_rows[row_vals], r, row_vals[0]))
+                    dup_rows.append((seen_rows[row_vals], r, label))
                 else:
                     seen_rows[row_vals] = r
-            if blank_cells:
-                _print(f"  ⚠️  {len(blank_cells)} EMPTY data cell(s): "
-                       f"{blank_cells[:12]}{' ...' if len(blank_cells) > 12 else ''}")
-                total_warnings += 1
+                if label.strip():
+                    prev = seen_labels.get(label)
+                    if prev is None:
+                        seen_labels[label] = (r, values)
+                    elif prev[1] != values:
+                        dup_labels.append((prev[0], r, label))
+
+            _tbl_warnings = 0
+            for _r, _label in placeholders[:6]:
+                _print(f"  ⚠️  PLACEHOLDER LABEL LEAKED: r{_r} is {_label!r}, a "
+                       f"spreadsheet artefact rather than an account name")
                 warning_details.append(
-                    f"Slide {slide_idx + 1}: table {_t.name!r} has {len(blank_cells)} empty data cell(s)")
-            if dup_rows:
-                for first, again, label in dup_rows[:6]:
-                    _print(f"  ⚠️  DUPLICATE data row: r{again} repeats r{first} ({label!r})")
-                total_warnings += 1
+                    f"Slide {slide_idx + 1}: table {_t.name!r} row {_r} label is {_label!r}")
+                _tbl_warnings += 1
+            for _r, _label, _cols in hole_rows[:6]:
+                _print(f"  ⚠️  PARTIAL row: r{_r} {_label!r} is blank in column(s) "
+                       f"{_cols} and filled in the rest")
                 warning_details.append(
-                    f"Slide {slide_idx + 1}: table {_t.name!r} has {len(dup_rows)} duplicate data row(s)")
+                    f"Slide {slide_idx + 1}: table {_t.name!r} row {_r} is partially blank")
+                _tbl_warnings += 1
+            for _first, _again, _label in dup_rows[:6]:
+                _print(f"  ⚠️  DUPLICATE data row: r{_again} repeats r{_first} "
+                       f"exactly ({_label!r})")
+                warning_details.append(
+                    f"Slide {slide_idx + 1}: table {_t.name!r} row {_again} repeats row {_first}")
+                _tbl_warnings += 1
+            for _first, _again, _label in dup_labels[:6]:
+                # Usually a stacked table -- cost, then accumulated depreciation,
+                # then net book value -- where only the middle block was given a
+                # heading row, so the third block reads as the first one repeated
+                # with different numbers against the same account names.
+                _print(f"  ⚠️  SAME LABEL, DIFFERENT NUMBERS: {_label!r} at r{_first} "
+                       f"and r{_again}; a block heading is probably missing between them")
+                warning_details.append(
+                    f"Slide {slide_idx + 1}: table {_t.name!r} reuses a label at rows "
+                    f"{_first} and {_again}")
+                _tbl_warnings += 1
+            total_warnings += _tbl_warnings
+            if valueless:
+                # Printed, never a warning: this is what a section heading looks
+                # like, and equally what a real account with no figures in any
+                # period looks like. Which one it is needs a human.
+                _print(f"  [table {_t.name!r}] {len(valueless)} row(s) carry a label and no "
+                       f"figures in any period: {[l for _i, l in valueless][:8]}"
+                       f"{' ...' if len(valueless) > 8 else ''}")
 
             all_text = " ".join(tbl.cell(r, 0).text for r in range(n_rows))
             table_is_chi = _is_chinese_text(all_text)
