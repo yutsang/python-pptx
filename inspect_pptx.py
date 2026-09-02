@@ -337,7 +337,8 @@ def _spare_below_pt(slide, shape) -> float:
     except Exception:
         return 0.0, ""
 
-def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text: bool = False) -> dict:
+def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text: bool = False,
+                 dump_tables: bool = False) -> dict:
     """Runs the full layout inspection and returns a structured summary
     (used both by this file's own CLI and by inspect_databook.py's combined
     export+inspect flow). Pass quiet=True to suppress the per-slide print
@@ -577,6 +578,44 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
 
             _print(f"  [table {_t.name!r}] left={Emu(_t.left).inches:.2f}in width={table_width_in}in "
                    f"{n_rows}x{n_cols} columns(in)={col_widths_in}{ratio_note}")
+
+            # A native PowerPoint table has no text_frame, so --dump-text
+            # (which walks shapes with one) never showed a single cell of it.
+            # Until this existed the only subtable text that reached the
+            # output was whatever happened to trip the wrap check below --
+            # truncated to 30 chars, capped at 10 rows, and only for cells
+            # too WIDE. Anything wrong with a cell that fits was invisible.
+            # Cells print as repr so an empty string, a lone space and a
+            # non-breaking space are told apart rather than all looking blank.
+            if dump_tables:
+                _print(f"  [table {_t.name!r}] full contents:")
+                for r in range(n_rows):
+                    role = "title" if r == 0 else ("header" if r == 1 else "data")
+                    vals = [tbl.cell(r, c).text for c in range(1 if r == 0 else n_cols)]
+                    _print(f"      r{r:<2} {role:<6} " + " | ".join(repr(v) for v in vals))
+
+            # Two content defects that need no judgement about what the table
+            # ought to say, so they run whether or not the dump was asked for.
+            blank_cells, seen_rows, dup_rows = [], {}, []
+            for r in range(2, n_rows):
+                row_vals = tuple(tbl.cell(r, c).text for c in range(n_cols))
+                blank_cells += [(r, c) for c, v in enumerate(row_vals) if not v.strip()]
+                if row_vals in seen_rows:
+                    dup_rows.append((seen_rows[row_vals], r, row_vals[0]))
+                else:
+                    seen_rows[row_vals] = r
+            if blank_cells:
+                _print(f"  ⚠️  {len(blank_cells)} EMPTY data cell(s): "
+                       f"{blank_cells[:12]}{' ...' if len(blank_cells) > 12 else ''}")
+                total_warnings += 1
+                warning_details.append(
+                    f"Slide {slide_idx + 1}: table {_t.name!r} has {len(blank_cells)} empty data cell(s)")
+            if dup_rows:
+                for first, again, label in dup_rows[:6]:
+                    _print(f"  ⚠️  DUPLICATE data row: r{again} repeats r{first} ({label!r})")
+                total_warnings += 1
+                warning_details.append(
+                    f"Slide {slide_idx + 1}: table {_t.name!r} has {len(dup_rows)} duplicate data row(s)")
 
             all_text = " ".join(tbl.cell(r, 0).text for r in range(n_rows))
             table_is_chi = _is_chinese_text(all_text)
@@ -1215,6 +1254,11 @@ def main() -> int:
                           "(not rounded to the nearest thousand), (3) literal zero-value currency "
                           "mentions that should read as 'nil'/'未发生' instead, (4) '人民币' repeated "
                           "before every number in one Chinese multi-period list sentence.")
+    ap.add_argument("--dump-tables", action="store_true",
+                     help="Print every native table's FULL cell contents, row by row, with each "
+                          "cell as a repr so empty strings, lone spaces and non-breaking spaces "
+                          "are distinguishable. --dump-text cannot show these: a PowerPoint table "
+                          "has no text frame, so it walks straight past them.")
     ap.add_argument("--out", default=None, metavar="FILE",
                     help="also write everything printed here to FILE as UTF-8. Use this "
                          "whenever the output will be pasted somewhere: a Windows console "
@@ -1248,7 +1292,8 @@ def _main_with_args(args) -> int:
     for pptx_file in pptx_files:
         if len(pptx_files) > 1:
             print(f"\n{'=' * 90}\n{pptx_file.name}\n{'=' * 90}")
-        result = inspect_pptx(str(pptx_file), config, dump_text=args.dump_text)
+        result = inspect_pptx(str(pptx_file), config, dump_text=args.dump_text,
+                              dump_tables=args.dump_tables)
         duplicate_count = 0
         wording_flag_count = 0
         if args.dump_text:
