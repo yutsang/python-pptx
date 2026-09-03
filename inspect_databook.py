@@ -3289,6 +3289,7 @@ def main() -> int:
     # ever left seven separate .preview.pptx files behind, so "run the batch"
     # did not actually produce the thing being delivered.
     exported: List[Tuple[str, str]] = []   # (portfolio label, deck path), in run order
+    rollup_skipped: List[Tuple[str, str]] = []   # (portfolio label, deck filename)
     for entry in summaries:
         if not (isinstance(entry, dict) and isinstance(entry.get("pptx"), dict)):
             continue
@@ -3296,6 +3297,18 @@ def main() -> int:
         if not out_path or not Path(str(out_path)).exists():
             continue
         parsed = parse_portfolio_filename(str(entry.get("file") or ""))
+        # The 主表 roll-up is a SOURCE, not an entity: resolve_auto_rollup_targets
+        # reads Financials out of it for the entities that have no sheet of their
+        # own. Processing it as if it were an entity produced eight slides whose
+        # commentary slots are empty -- ~130 characters a page against 600-1500 on
+        # a real entity page -- and merging put them at the FRONT of Portfolio I
+        # and II. Opening the deliverable therefore landed on eight pages showing
+        # a table and no readable text, which reads exactly like the merge having
+        # dropped the commentary. It had not; there was none to drop.
+        # Its own .preview file is still written and kept, so nothing is hidden.
+        if parsed and parsed.get("is_rollup"):
+            rollup_skipped.append((str(parsed["portfolio"]), Path(str(out_path)).name))
+            continue
         exported.append((str(parsed["portfolio"]) if parsed else "", str(out_path)))
 
     if len(exported) > 1:
@@ -3335,6 +3348,11 @@ def main() -> int:
                 print(f"  ❌ Could not combine Portfolio {label or '(ungrouped)'}: "
                       f"{type(exc).__name__}: {exc}")
                 print("     The per-entity previews above are unaffected.")
+        for label, name in rollup_skipped:
+            print(f"\n  Portfolio {label}: left the 主表 roll-up OUT of the combined deck "
+                  f"({name}).\n     It is the source the entities read Financials from, not an "
+                  f"entity, and its\n     own slides carry no commentary. The preview file is "
+                  f"still on disk.")
         print("\n     (the per-entity previews are kept as well)")
     return 0
 
