@@ -818,6 +818,59 @@ def _nest_component_rows(rows: List[Dict[str, Any]], tie_tolerance: float) -> Li
     return nested
 
 
+#: "固定资产-电脑及IT设施" -> "固定资产". The same three dashes the source
+#: workbooks use, kept local: the renderer's copy lives in pptx/helpers.py and
+#: nothing in workbook/ may import from pptx/.
+_ROW_CATEGORY_SPLIT = re.compile(r"\s*[-－—]\s*")
+
+
+def _demote_zero_components(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Takes back the headings that are only zero components in disguise.
+
+    Keeping every figure-less breakdown row as a section label is right for
+    the row it was written for: 累计折旧 on a fixed-asset roll forward names a
+    block and carries no figures of its own. It is wrong for a component that
+    merely happens to be nil, and a real deck shipped
+
+        固定资产-办公电器设备         37
+        [固定资产-电脑及IT设施]                 <- drawn as a section heading
+            累计折旧-房屋建筑物   (38,032)      <- indented underneath it
+
+    where 电脑及IT设施 is an asset class with a nil balance, not a section.
+
+    The discriminator is in the data, so no list of section words is needed:
+    a section label does not share a category with rows that DO carry figures.
+    累计折旧 has no category and no valued namesake, so it survives;
+    固定资产-电脑及IT设施 sits under the same 固定资产 as 固定资产-房屋建筑物,
+    so it is a component, and drops out like any other all-zero row.
+
+    This also unblocks the label-prefix grouping, which is the bigger effect:
+    ONE spurious heading anywhere stands that pass down for the whole table
+    (_build_presentation_table_plan.has_sheet_headings). That is why one
+    货币资金 table printed bare labels and the next kept the account-code
+    prefix on all 36 rows -- the difference between them was a single nil row.
+    """
+    def category(label: Any) -> Optional[str]:
+        parts = _ROW_CATEGORY_SPLIT.split(str(label or "").strip(), maxsplit=1)
+        if len(parts) != 2:
+            return None
+        head, tail = parts[0].strip(), parts[1].strip()
+        return head if head and tail else None
+
+    valued = [row for row in rows if not row.get("is_header")]
+    valued_categories = {category(row["label"]) for row in valued} - {None}
+    valued_labels = {str(row["label"]).strip() for row in valued}
+
+    kept: List[Dict[str, Any]] = []
+    for row in rows:
+        if row.get("is_header"):
+            label = str(row["label"]).strip()
+            if category(label) in valued_categories or label in valued_labels:
+                continue
+        kept.append(row)
+    return kept
+
+
 def extract_presentation_detail_table(
     df: pd.DataFrame,
     desc_col_idx: int,
@@ -1516,18 +1569,22 @@ def _synthesize_for_stage(
         }
         label = str(entry.get("description") or "").strip()
         if not any(isinstance(v, (int, float)) and v != 0 for v in values.values()):
-            # A breakdown row with no figures of its own is the schedule's own
-            # SECTION LABEL -- 原值 / 累计折旧 / 净值 on a fixed-asset roll
+            # A breakdown row with no figures of its own MAY be the schedule's
+            # own SECTION LABEL -- 原值 / 累计折旧 / 净值 on a fixed-asset roll
             # forward. Dropping it as a "dead component" threw away the only
             # thing that told the three tiers apart, and a real deck shipped
             # 房屋建筑物 three times (281,740 gross, (57,049) depreciation,
             # 224,691 net) with nothing to say which was which. Keep it as a
             # heading; _build_presentation_table_plan renders it as one.
+            # _demote_zero_components below then takes back the ones that are
+            # only zero components wearing a heading's clothes.
             if label:
                 rows.append({"label": label, "values": {}, "is_header": True})
             continue
         if label:
             rows.append({"label": label, "values": values})
+
+    rows = _demote_zero_components(rows)
 
     # Trailing or orphaned headings introduce a section that never arrives.
     while rows and rows[-1].get("is_header"):
