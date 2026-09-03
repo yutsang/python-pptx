@@ -66,6 +66,13 @@ def deck_stats(path):
 _COMBINED = re.compile(r"^(?:Portfolio_(.+?)|Combined)_\d{8}_\d{6}\.pptx$", re.I)
 #: Project Mint.Portfolio I.南通通海.preview.pptx -> "I"
 _PREVIEW = re.compile(r"Portfolio[ _]([^.\s_]+)", re.I)
+#: The 主表 roll-up is the source entities read Financials from, not an entity.
+#: inspect_databook.py leaves it out of the merge (77a2949), so a deck built
+#: since then is 8 pages and ~970 characters shorter than the previews folder.
+#: Counting it on the preview side made this tool report "the merge is losing
+#: text" for a deck that was correct -- so both totals are computed and the
+#: matching one is named, which also dates the combined deck.
+ROLLUP_MARK = "主表"
 
 
 def _pairs_in_folder(folder: Path):
@@ -88,9 +95,15 @@ def _pairs_in_folder(folder: Path):
         # A combined file whose label is a join of several (I-II-III) collects
         # every one of them, so a whole-run merge still finds its inputs.
         parts = [p for p in re.split(r"[-,]", label) if p] or [label]
-        previews = [p for part in parts for p in previews_by_label.get(part, [])]
-        out.append((label, combined_by_label[label], sorted(set(previews))))
+        previews = sorted(set(p for part in parts for p in previews_by_label.get(part, [])))
+        out.append((label, combined_by_label[label], previews))
     return out
+
+
+def _split_rollup(previews):
+    """(entity previews, roll-up previews) -- both in the original order."""
+    return ([p for p in previews if ROLLUP_MARK not in p.name],
+            [p for p in previews if ROLLUP_MARK in p.name])
 
 
 def main() -> int:
@@ -132,18 +145,46 @@ def main() -> int:
 
 def _report(combined: Path, previews) -> int:
     c_stats = deck_stats(combined)
-    p_stats, p_origin = [], []
-    for p in previews:
-        s = deck_stats(p)
-        p_stats += s
-        p_origin += [p.name] * len(s)
+    entities, rollups = _split_rollup(previews)
+
+    def stats_of(files):
+        st, origin = [], []
+        for f in files:
+            s = deck_stats(f)
+            st += s
+            origin += [f.name] * len(s)
+        return st, origin
+
+    e_stats, e_origin = stats_of(entities)
+    r_stats, _ = stats_of(rollups)
+    ct = sum(s["chars"] for s in c_stats)
+    e_chars = sum(s["chars"] for s in e_stats)
+    r_chars = sum(s["chars"] for s in r_stats)
+
+    # Which side the combined deck was built from decides what it should equal,
+    # and the answer also says whether the deck predates the roll-up exclusion.
+    includes_rollup = bool(rollups) and abs(ct - (e_chars + r_chars)) < abs(ct - e_chars)
+    if includes_rollup:
+        p_stats, p_origin = stats_of(previews)
+        basis = f"entities + the {len(rollups)} roll-up deck(s)"
+    else:
+        p_stats, p_origin = e_stats, e_origin
+        basis = "entity decks only"
 
     print(f"COMBINED  {combined.name}: {len(c_stats)} slide(s)")
-    print(f"PREVIEWS  {len(previews)} file(s), {len(p_stats)} slide(s) total")
+    print(f"PREVIEWS  {len(previews)} file(s) in the folder; comparing against {basis}")
     for p in previews:
-        print(f"            {p.name}")
+        mark = "  (roll-up" + (", counted" if includes_rollup else ", NOT counted") + ")" \
+            if ROLLUP_MARK in p.name else ""
+        print(f"            {p.name}{mark}")
+    if rollups and not includes_rollup:
+        print(f"            -> this deck was merged WITHOUT the roll-up, which is what "
+              f"inspect_databook.py does now.")
+    elif rollups:
+        print(f"            -> this deck still CONTAINS the roll-up, so it predates that "
+              f"change. Re-merge it with remerge_without_rollup.py.")
 
-    ct, pt = sum(s["chars"] for s in c_stats), sum(s["chars"] for s in p_stats)
+    pt = sum(s["chars"] for s in p_stats)
     ctab = sum(s["tables"] for s in c_stats)
     ptab = sum(s["tables"] for s in p_stats)
     print(f"\nTOTALS    combined {ct:>7} chars, {ctab:>3} tables")
