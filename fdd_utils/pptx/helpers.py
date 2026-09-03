@@ -848,7 +848,7 @@ _LABEL_CATEGORY_SPLIT = re.compile(r"\s*[-－—]\s*")
 
 
 def _group_plan_rows_by_category(
-    entries: List[Dict[str, Any]], title: str = "",
+    entries: List[Dict[str, Any]], title: str = "", depth: int = 0,
 ) -> List[Dict[str, Any]]:
     """Turns a flat run of "CATEGORY-item" rows into a heading plus its items.
 
@@ -897,18 +897,14 @@ def _group_plan_rows_by_category(
         return entries
 
     own = str(title or "").strip()
-    # One group covering every row earns a heading only when it says something
-    # the title band above it does not. Where it merely repeats the title the
-    # heading is dropped, but the rows still shed the prefix -- which is most
-    # of the value here, since that prefix is what makes the label column wrap.
-    # Returning for both cases meant an 营业成本 table whose rows all read
-    # 营业成本-... kept the prefix, while the same table carrying one extra
-    # uncategorised row (管理层调整) dropped it. Two identical tables, formatted
-    # two different ways, decided by whether an unrelated row happened to be
-    # there.
-    if (len(grouped_runs) == 1 and len(grouped_runs[0][1]) == len(entries)
-            and grouped_runs[0][0] != own):
-        return entries
+    # One category covering every row earns no heading -- a heading over the
+    # whole table says what the row beneath it already says -- but those rows
+    # still shed the prefix, which is the part that makes the label column
+    # wrap. Returning untouched instead kept 应缴税费- on every row of an
+    # 应交税费 table, and the bank-account code prefix on every row of a
+    # 货币资金 one.
+    covers_everything = (len(grouped_runs) == 1
+                         and len(grouped_runs[0][1]) == len(entries))
     out: List[Dict[str, Any]] = []
     for category, members in runs:
         if category is None or len(members) < 2:
@@ -920,15 +916,26 @@ def _group_plan_rows_by_category(
         # level, which is what "belongs to the account named above" looks like.
         # A category that is NOT the title (累计折旧 under 固定资产) still gets
         # its heading, because there it is carrying real information.
-        heading = category != own
+        heading = category != own and not covers_everything
         if heading:
             out.append({"label": category, "values": {}, "kind": "group"})
-        for member in members:
-            out.append({
-                **member,
-                "label": _LABEL_CATEGORY_SPLIT.split(member["label"], maxsplit=1)[1].strip(),
-                "kind": "grouped" if heading else "data",
-            })
+        stripped = [
+            {**member,
+             "label": _LABEL_CATEGORY_SPLIT.split(member["label"], maxsplit=1)[1].strip(),
+             "kind": "grouped" if heading else "data"}
+            for member in members
+        ]
+        if heading or depth:
+            out.extend(stripped)
+        else:
+            # Stripping one level only moved the repetition down a level: an
+            # 管理费用 table came out as 行政-保险费 / 行政-审计费 / 行政-AMF /
+            # 员工-工作餐费 ..., with 行政- on ten of fourteen rows. No heading
+            # was added here, so a heading found one level down is the FIRST
+            # visible one and cannot read as a peer of an outer level. Only
+            # that case recurses, which keeps the table at a single heading
+            # level however deep the source account path runs.
+            out.extend(_group_plan_rows_by_category(stripped, "", depth + 1))
     return out
 
 
