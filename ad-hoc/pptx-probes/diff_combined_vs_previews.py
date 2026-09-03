@@ -7,8 +7,13 @@ tested locally against a real export and against a text-box-plus-native-table
 fixture, and text survived both, so this reads the two sides of the user's own
 run instead of guessing which one is wrong.
 
+    python ad-hoc/pptx-probes/diff_combined_vs_previews.py PREVIEW_DIR
     python ad-hoc/pptx-probes/diff_combined_vs_previews.py COMBINED.pptx PREVIEW_DIR
     python ad-hoc/pptx-probes/diff_combined_vs_previews.py COMBINED.pptx a.pptx b.pptx
+
+Given one directory it does the whole folder: every Portfolio_<label>_<stamp>
+deck in it is paired with the .preview decks carrying the same portfolio label,
+newest combined file per label, and each pair is reported in turn.
 
 Previews are concatenated in filename order, which is the order
 inspect_databook.py merges them in. If your run merged a different order the
@@ -26,7 +31,7 @@ Three outcomes, and they point at different code:
 
 Reads only. Writes nothing.
 """
-import os
+import re
 import sys
 from pathlib import Path
 
@@ -57,7 +62,56 @@ def deck_stats(path):
     return [slide_stats(s) for s in Presentation(str(path)).slides]
 
 
+#: Portfolio_I_20260901_214703.pptx -> "I";  Portfolio_I-II-III_....pptx -> "I-II-III"
+_COMBINED = re.compile(r"^(?:Portfolio_(.+?)|Combined)_\d{8}_\d{6}\.pptx$", re.I)
+#: Project Mint.Portfolio I.南通通海.preview.pptx -> "I"
+_PREVIEW = re.compile(r"Portfolio[ _]([^.\s_]+)", re.I)
+
+
+def _pairs_in_folder(folder: Path):
+    """(label, combined, [previews]) for every Portfolio deck in one folder."""
+    combined_by_label, previews_by_label = {}, {}
+    for f in sorted(folder.glob("*.pptx")):
+        if f.name.startswith("~$"):
+            continue
+        m = _COMBINED.match(f.name)
+        if m:
+            label = (m.group(1) or "").upper()
+            # newest wins: the stamp sorts lexically, and sorted() got here first
+            combined_by_label[label] = f
+            continue
+        m = _PREVIEW.search(f.name)
+        if m:
+            previews_by_label.setdefault(m.group(1).upper(), []).append(f)
+    out = []
+    for label in sorted(combined_by_label):
+        # A combined file whose label is a join of several (I-II-III) collects
+        # every one of them, so a whole-run merge still finds its inputs.
+        parts = [p for p in re.split(r"[-,]", label) if p] or [label]
+        previews = [p for part in parts for p in previews_by_label.get(part, [])]
+        out.append((label, combined_by_label[label], sorted(set(previews))))
+    return out
+
+
 def main() -> int:
+    if len(sys.argv) == 2 and Path(sys.argv[1]).is_dir():
+        folder = Path(sys.argv[1])
+        pairs = _pairs_in_folder(folder)
+        if not pairs:
+            print(f"No Portfolio_<label>_<stamp>.pptx found in {folder}. Name the combined "
+                  f"deck explicitly instead:\n    ... COMBINED.pptx {folder}")
+            return 1
+        rc = 0
+        for i, (label, combined, previews) in enumerate(pairs):
+            print(f"\n{'=' * 78}\nPortfolio {label or '(unlabelled)'}\n{'=' * 78}")
+            if not previews:
+                print(f"  {combined.name}: no .preview deck carries this label -- nothing to "
+                      f"compare against.")
+                rc = 1
+                continue
+            rc = _report(combined, previews) or rc
+        return rc
+
     if len(sys.argv) < 3:
         print(__doc__)
         return 2
@@ -73,7 +127,10 @@ def main() -> int:
     if not previews:
         print("No preview .pptx found.")
         return 1
+    return _report(combined, previews)
 
+
+def _report(combined: Path, previews) -> int:
     c_stats = deck_stats(combined)
     p_stats, p_origin = [], []
     for p in previews:
