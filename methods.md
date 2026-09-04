@@ -87,14 +87,19 @@ number outranks the model's, in both directions: it overrides a fabricated
 figure the model defended, and it dismisses a "hallucination" the model flagged
 on a figure that does match.
 
-**⑤ A deliberately narrow gate.** Retry fires **only** on `hallucination`, never
-on `reasoning`. A `reasoning` flag means the numbers are right but an inference
-is not directly provable — which is the analysis an FDD deliverable is *for*
-(the deck renders it in orange on purpose). Retrying on it spends tokens
-punishing good writing and trains the output toward saying less. A ratio-based
-gate was tried and is wrong at any threshold: one fabricated figure inside a
-long correct paragraph dilutes below any sane cut-off, so it misses exactly the
-case it exists for.
+**⑤ A deliberately narrow gate.** The primary trigger is `hallucination`; a
+`reasoning` flag never fires a retry on its own. A `reasoning` flag means the
+numbers are right but an inference is not directly provable — which is the
+analysis an FDD deliverable is *for* (the deck renders it in orange on purpose).
+Retrying on it spends tokens punishing good writing and trains the output toward
+saying less. A ratio of unsupported clauses is the wrong *primary* test: one
+fabricated figure inside a long correct paragraph dilutes below any sane
+cut-off, so a ratio-only gate misses exactly the case it exists for. It was
+therefore demoted rather than deleted — a bullet whose unsupported clauses
+exceed the configured share (0.30 by default) still triggers one retry, as a
+backstop for output that is broadly unsupported rather than specifically wrong.
+That backstop counts every unsupported clause, `reasoning` included, so it is
+the one path by which unprovable inference alone can cost a retry.
 
 **⑥ Feedback names the defect.** The retry does not say "that was wrong, try
 again" — it names the specific amounts that failed grounding, so the next
@@ -112,11 +117,26 @@ the most-drifted version.
 
 ## Known limits
 
-- The grounding pool holds each cell, column totals, sums of short runs of
-  adjacent rows, and figures quoted in the notes. A legitimate figure derived
-  another way — a difference, a ratio, a sum of non-adjacent rows, a
-  cross-statement reference — is **not** in it and will be flagged.
-- Matching carries a tolerance, and the pool is large, so a `data-backed`
-  verdict is weak evidence of correctness rather than proof — weakest where the
-  amounts are small.
-- Neither error rate has been measured.
+- The grounding pool holds each numeric cell, column totals, sums of runs of two
+  to four adjacent rows, figures quoted in the notes, the historical comparison
+  columns, and — for accounts of the same statement type — the same again from
+  every sibling tab. Two consequences pull in opposite directions. A legitimate
+  figure derived another way (a difference, a sum of non-adjacent rows, a
+  cross-statement reference) is **not** in it and will be flagged. And a pool
+  that wide can ground a figure by coincidence, on a tab the sentence is not
+  even about. Bare numbers and percentages are deliberately not extracted as
+  groundable amounts, so a wrong ratio is never caught here at all.
+- Matching carries a tolerance, so a `data-backed` verdict is weak evidence of
+  correctness rather than proof — weakest where the amounts are small. It is
+  also not one meaning: a clause whose only defect is an unverifiable causal
+  claim is demoted back to `data-backed` by a confidence floor instead of being
+  shown as flagged, so the label covers both "the numbers matched" and "nothing
+  here was checkable".
+- Neither error rate has been measured. What *has* been measured, across the
+  archived runs, is how often each verdict occurs: roughly one clause in sixty
+  comes back unsupported, and about a quarter of those are the arithmetic
+  kind — a figure that is not in the pool. The rest are the model's own
+  judgement that an inference is unproven, which is a different thing and is
+  kept on purpose. That rate is measured after the demotion above, so it
+  understates how much went unchecked. Frequency is not accuracy: none of this
+  says how many of those flags are right.
