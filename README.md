@@ -130,21 +130,57 @@ mention — it is enforced deterministically after the model is finished. Two
 attempts to hold the company-name rule through prompting alone did not survive
 real runs.
 
+### 單一科目:撰寫、查核、定案
+
+Solid arrows are the normal path; dotted arrows are what happens when something
+goes wrong. Note where the layout decision sits — the deck-wide ruling on which
+accounts get a detail table is made **before** any prompt is built, so the text
+can only promise a table that will actually be drawn.
+
 ```mermaid
 flowchart TD
-    A[單一科目的資料<br/>表格 · 明細 · 備註] --> B[先算好事實<br/>變動 · 重大性 · 集中度]
-    B --> C[生成初稿<br/>只負責語言與表達]
-    C --> D[覆核<br/>冷讀，不帶上一輪對話]
-    D --> E{是否宣稱因果？}
-    E -- 是 --> F[驗證判斷<br/>唯一需要模型判斷的環節]
-    E -- 否 --> G[逐句核對<br/>算術，不是模型]
-    F --> G
-    G --> H{有無憑空捏造的數字？}
-    H -- 沒有 --> I[接受]
-    H -- 有 --> J[指名錯處<br/>整個科目重寫]
-    J --> C
-    I --> K[比較各次嘗試<br/>留缺陷最少的一次]
-    K --> L[版面編排與匯出]
+    RE[對數結果<br/>決定哪些科目值得寫] --> SUB[表格入選裁決<br/>全份 deck 先定，落選的科目拿走明細表]
+    SUB --> FACT[先算好事實<br/>期間變動 · 重大性 · 構成殘差 · 集中度 · 已核對的層級關係]
+    FACT --> GEN[生成初稿<br/>只負責語言與表達]
+
+    GEN -.->|呼叫逾時| RETRY[重送同一個提示<br/>間隔 0 / 1 / 2 秒]
+    RETRY -.-> GEN
+    GEN -.->|該階段連續失敗| BRK[熔斷<br/>停掉這個階段而不是整份報告]
+    BRK -.-> FB[退回純資料摘要<br/>報告照樣完成]
+
+    GEN --> AUD[覆核<br/>冷讀，不帶上一輪對話]
+    AUD --> CHK[逐句核對<br/>算術，不是模型]
+    CHK --> Q{文字有沒有宣稱因果？}
+    Q -- 有 --> VAL[判斷該因果是否站得住<br/>唯一交給模型裁決的環節]
+    Q -- 沒有 --> GATE
+    VAL --> GATE{缺陷閘}
+
+    GATE -->|出現找不到來源的數字| FEED[指名錯處<br/>整個科目重寫]
+    GATE -->|不可支持的句子佔比過高| FEED
+    FEED --> GEN
+    FEED -.->|次數用盡| ARB
+    GATE -->|通過| ARB[比較各次嘗試<br/>留缺陷最少的一次，不是最後一次]
+
+    ARB --> HS[房屋風格後處理<br/>零餘額寫法 · 單位與小數 · 用字統一]
+    HS --> OUT[該科目定案]
+    FB --> OUT
+```
+
+### 版面編排與匯出
+
+```mermaid
+flowchart TD
+    A[各科目定案文字] --> B[確定性改寫<br/>公司名縮短 · 負數寫法 · 清掉沒有表格的引語]
+    B --> C[執行摘要<br/>匯出前另外呼叫一次模型]
+    C --> D[量度真實高度<br/>用字型度量，不是字數估算]
+    D --> E[分配到欄位<br/>先填滿前面的頁，只讓最後一頁較鬆]
+    E --> F[再平衡<br/>逐個處理主演算法解不掉的型態]
+    F --> G[表格科目<br/>走專用欄位，後續文字接在同一欄之下]
+    G --> H[嵌入 BS/IS 總表]
+    H --> I[寫入模板並存檔]
+    I --> J[最終 deck]
+    J -.->|內容仍然略為超出| K[交給 PowerPoint 自動縮字<br/>安全網，不是計畫]
+    J -.->|只有 CLI 路徑會做| L[匯出後檢查<br/>溢出 · 表格壓字 · 佔位符外洩]
 ```
 
 ---
