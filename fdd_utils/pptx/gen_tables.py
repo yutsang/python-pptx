@@ -842,7 +842,16 @@ class _TablesMixin:
                       indent_emu=int(Inches(0.12)) if (is_child or is_grouped) else 0)
             for j, period in enumerate(periods, start=1):
                 value = entry["values"].get(period)
-                text_val = _format_table_value(value, is_numeric_column=True) if value is not None else ""
+                if value is not None:
+                    text_val = _format_table_value(value, is_numeric_column=True)
+                else:
+                    # A heading row has no figures at all and stays empty. A
+                    # DATA row missing one period is nil there, not unknown,
+                    # and a zero anywhere else in the table already prints
+                    # "-" -- so leaving it blank made the same 管理层调整 row
+                    # read as "- - - 653" in one table and "␣ ␣ ␣ 22,369" in
+                    # the next, which reads as data that failed to load.
+                    text_val = "" if is_group else "-"
                 _set_cell(table_shape.cell(row_idx, j), text_val, bold=is_total,
                           color=label_color, fill=label_fill, size_pt=7.0, align=PP_ALIGN.RIGHT)
 
