@@ -606,6 +606,7 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                                   "#n/a", "#ref!", "#value!", "#div/0!"}
             seen_rows, seen_labels = {}, {}
             dup_rows, dup_labels, hole_rows, valueless, placeholders = [], [], [], [], []
+            last_heading_row = -1
             for r in range(2, n_rows):
                 row_vals = tuple(tbl.cell(r, c).text for c in range(n_cols))
                 label, values = row_vals[0], row_vals[1:]
@@ -616,6 +617,10 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                     hole_rows.append((r, label, blanks))
                 elif blanks:
                     valueless.append((r, label))
+                    # A label with no figures in any period IS the block
+                    # heading, so it marks where one block ends and the next
+                    # begins (see the duplicate-label check below).
+                    last_heading_row = r
                 if row_vals in seen_rows:
                     dup_rows.append((seen_rows[row_vals], r, label))
                 else:
@@ -625,7 +630,17 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                     if prev is None:
                         seen_labels[label] = (r, values)
                     elif prev[1] != values:
-                        dup_labels.append((prev[0], r, label))
+                        # A heading BETWEEN the two occurrences is exactly the
+                        # block boundary this warning asks for, so 房屋建筑物 /
+                        # [累计折旧] / 房屋建筑物 is correct output. Reporting
+                        # it anyway cost four of six warnings on one real
+                        # fixed-asset table and pushed the case that IS wrong
+                        # -- a third block given no heading at all -- past the
+                        # six-line print cap.
+                        if last_heading_row > prev[0]:
+                            seen_labels[label] = (r, values)
+                        else:
+                            dup_labels.append((prev[0], r, label))
 
             _tbl_warnings = 0
             for _r, _label in placeholders[:6]:
