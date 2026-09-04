@@ -2868,8 +2868,16 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         language = "Eng"
         try:
             from fdd_utils.workbook import process_workbook_data
+            # --financials-from applies here too. Left off, this call went
+            # looking for "<entity>Financials" inside the ENTITY workbook,
+            # which has no such sheet -- one bare "Error extracting financial
+            # data: Worksheet named ... not found" on stderr between sections
+            # 4b and 5, from the one call in this file that was not told where
+            # the roll-up lives. Every other caller already passes it.
             state = process_workbook_data(temp_path=path, entity_name=entity_name,
-                                           selected_sheet=selected_sheet_for_ai, debug=False)
+                                           selected_sheet=selected_sheet_for_ai, debug=False,
+                                           financials_from=financials_from,
+                                           financials_sheet=selected_sheet_for_ai if financials_from else None)
             language = state.get("language", "Eng")
         except Exception:
             pass

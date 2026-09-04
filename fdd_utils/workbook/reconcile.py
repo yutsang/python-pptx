@@ -239,14 +239,26 @@ def get_total_from_dfs(dfs_df: pd.DataFrame, date_col: str, debug: bool = False)
         desc_col = dfs_df.columns[0]
         total_keywords = ['合计', '总计', 'total']
         skip_keywords = ['小计', 'subtotal', 'sub-total', 'sub total']
+        # A 小计 is normally a PARTIAL and must not be read as the account's
+        # total: 原值小计 and 累计折旧小计 are two thirds of a fixed-asset roll
+        # forward and neither is what the balance sheet carries. 净值小计 IS --
+        # it is the carrying amount, and on a schedule laid out in tiers it is
+        # the only total the tab has. Skipping it reported 固定资产 and 无形资产
+        # as '⚠️ Not Found' against Financials lines that 净值小计 matches to
+        # the yuan (273,679,708 and 27,217,007 on a real databook).
+        net_keywords = ['净值', '净额', '账面价值', 'net book', 'nbv']
+        fallback = None
         for _, row in dfs_df.iterrows():
             desc = str(row[desc_col])
             desc_lower = desc.lower()
             if any(skip_kw in desc_lower for skip_kw in skip_keywords):
+                if fallback is None and any(kw in desc_lower for kw in net_keywords):
+                    fallback = row[target_date_col]
                 continue
             if any(keyword in desc_lower for keyword in total_keywords):
                 return row[target_date_col]
-        return None
+        # Only once no real total exists anywhere in the tab.
+        return fallback
 
     auxiliary_check_totals_by_date = attrs.get('auxiliary_check_totals_by_date') or {}
     if isinstance(auxiliary_check_totals_by_date, dict):

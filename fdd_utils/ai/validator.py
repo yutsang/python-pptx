@@ -767,16 +767,24 @@ def check_composition_adds_up(mapping_key: str, text: str) -> List[str]:
     if not body.strip():
         return []
     m = _STATED_TOTAL.search(body)
-    items = _ENUM_ITEM.findall(body)
+    # The stated total must not be counted as one of its own parts. In the
+    # run-on form "…合计968.3万元，其中折旧成本为827.6万元，物管费用为73.9万元"
+    # the total sits INSIDE the span the item pattern sweeps, so it was added
+    # to the items: 968.3 + 903.2 = 1,871.5 against a 968.3 total, reported as
+    # "93% unaccounted for" when the real shortfall was 65.1万元. The ratio
+    # lands at 1.93, just outside the "exactly double" guard below. Blanked
+    # rather than cut so every other offset in the clause is unchanged.
+    scan = body if not m else body[:m.start()] + " " * (m.end() - m.start()) + body[m.end():]
+    items = _ENUM_ITEM.findall(scan)
     if not items:
-        run = _ENUM_RUNON.search(body)
+        run = _ENUM_RUNON.search(scan)
         if run:
             items = _RUNON_AMT.findall(run.group(1))
     # The closing "其余X万元为…" is a component like any other. Added here
     # rather than inside the two patterns above because it can sit in either
     # form -- after a numbered list, or trailing a run-on one -- and because a
     # run-on span that already swallowed it must not count it twice.
-    residual = _RESIDUAL_ITEM.search(body)
+    residual = _RESIDUAL_ITEM.search(scan)
     if residual:
         sign, value, unit = residual.groups()
         signed = float(value.replace(",", "")) * (-1.0 if sign else 1.0)
@@ -792,6 +800,20 @@ def check_composition_adds_up(mapping_key: str, text: str) -> List[str]:
     gap = total - listed
     if abs(gap) / total <= 0.01:
         return []
+    # A "其中" drill-down is part of the item before it, not a peer of it:
+    # "…非关联公司-其他169.0万元，其中主要为某税务局166.8万元；…押金83.1万元;
+    # 管理层调整36.7万元；其余13.0万元…" lists four components that hit the
+    # 301.8万元 total exactly, and one figure that is INSIDE the first of them.
+    # Counted as five they came to 468.6 and the account was reported as not
+    # adding up. Dropping any one item and landing on an exact tie is that
+    # shape; testing it arithmetically avoids having to decide what 其中 means
+    # in a sentence, which it does not always mean.
+    values = [float(v.replace(",", "")) * _SCALE.get(u, 1.0) for v, u in items]
+    if len(values) > 2:
+        biggest = max(values)
+        for value in values:
+            if value < biggest and abs(total - (listed - value)) / total <= 0.01:
+                return []
     fmt = lambda v: f"{v/1e4:,.1f}万元"
     # A ratio near a power of ten is a unit error, not an omission: the model
     # took a raw CNY'000 cell and wrote 万元 against it. Worth saying so --

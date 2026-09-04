@@ -939,6 +939,77 @@ def _group_plan_rows_by_category(
     return out
 
 
+def _name_net_block(plan: List[Dict[str, Any]], total_label: Any,
+                    is_chinese_databook: bool) -> List[Dict[str, Any]]:
+    """Names the third block of a roll forward, when the arithmetic says it is
+    the net one.
+
+    A fixed-asset schedule is laid out in three tiers -- cost, accumulated
+    depreciation, net -- but only the middle one carries a label of its own,
+    because 累计折旧 is the only row the sheet writes with no figures. So the
+    deck printed 房屋建筑物 / 机械设备 / 室外工程, then [累计折旧] and the same
+    three names again, then the same three a THIRD time with nothing to say
+    the third block is the carrying amount:
+
+        房屋建筑物   281,740
+        [累计折旧]
+            房屋建筑物   (38,032)
+        房屋建筑物   243,709      <- net, and the reader is not told
+
+    Nothing here is inferred from wording. The third block is only named if
+    every component in it equals its own cost plus its own depreciation, which
+    is what "net" means; one row that does not tie and the plan is returned
+    untouched. The name comes from the table's own total row (净值小计 ->
+    净值) and falls back to 净值 only once the arithmetic has already proved
+    what the block is.
+    """
+    groups = [i for i, entry in enumerate(plan) if entry["kind"] == "group"]
+    if len(groups) != 1:
+        return plan
+    head = groups[0]
+    before, after = plan[:head], plan[head + 1:]
+    if len(before) < 2 or any(e["kind"] not in ("data", "grouped") for e in before + after):
+        return plan
+    # The first block's opening label comes round twice after the heading:
+    # once opening the depreciation block, once opening the third one.
+    starts = [i for i, entry in enumerate(after) if entry["label"] == before[0]["label"]]
+    if len(starts) != 2 or starts[0] != 0:
+        return plan
+    mid, third = after[:starts[1]], after[starts[1]:]
+    if len(mid) < 2 or len(third) < 2:
+        return plan
+
+    cost = {e["label"]: (e["values"] or {}) for e in before}
+    depreciation = {e["label"]: (e["values"] or {}) for e in mid}
+    ties = 0
+    for entry in third:
+        gross, dep = cost.get(entry["label"]), depreciation.get(entry["label"])
+        if gross is None or dep is None:
+            continue                      # e.g. a trailing 管理层调整
+        for period, net in (entry["values"] or {}).items():
+            g, d = gross.get(period), dep.get(period)
+            if not all(isinstance(v, (int, float)) for v in (net, g, d)):
+                continue
+            if abs(net - (g + d)) > max(1.0, abs(net) * 0.005):
+                return plan               # does not tie -- not a net block
+            ties += 1
+    if ties < 2:
+        return plan
+
+    label = str(total_label or "").strip()
+    for suffix in ("小计", "合计", "总计"):
+        if label.endswith(suffix) and len(label) > len(suffix):
+            label = label[: -len(suffix)].strip()
+            break
+    else:
+        label = ""
+    if not label:
+        label = "净值" if is_chinese_databook else "Net book value"
+    return (plan[:head + 1 + len(mid)]
+            + [{"label": label, "values": {}, "kind": "group"}]
+            + [{**entry, "kind": "grouped"} for entry in third])
+
+
 def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float,
 ) -> List[Dict[str, Any]]:
     """Flattens a presentation table's rows -> children (indented) ->
@@ -972,6 +1043,7 @@ def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: b
     if not has_sheet_headings:
         plan = _group_plan_rows_by_category(plan, str(table.get("title") or ""))
     total_row = table.get("total_row")
+    plan = _name_net_block(plan, (total_row or {}).get("label"), is_chinese_databook)
     if total_row:
         plan.append({"label": total_row.get("label", "合计" if is_chinese_databook else "Total"),
                      "values": _scaled(total_row.get("values")), "kind": "total"})
