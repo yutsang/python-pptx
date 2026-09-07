@@ -435,6 +435,10 @@ def build_insight_summary(
     links: Any = None,
     language: str = "Eng",
     max_movements: int = 8,
+    use_llm: bool = False,
+    model_type: Optional[str] = None,
+    model_name: Optional[str] = None,
+    label: str = "",
 ) -> Dict[str, Any]:
     """What the run itself knows about its own weak spots — internal only.
 
@@ -468,6 +472,13 @@ def build_insight_summary(
     ``movement:<account>:<from>-><to>``, ...). When M2's EvidenceIndex lands
     these become its ids; until then they are resolvable by hand, which is the
     acceptance bar the plan set for the sources that have shipped.
+
+    ``use_llm`` adds ONE call per deck (N3 item 4), OFF by default. It rewrites
+    only the ``summary`` paragraph and the ``client_questions`` wording from the
+    findings already assembled below — it reads nothing else and adds no finding
+    of its own. The deterministic originals are kept beside it, so a wrong
+    sentence costs a reviewer thirty seconds and loses no evidence. See
+    ``narrate_insight_summary``.
 
     This must never enter the deck. It is not commentary: it names what the
     databook failed to answer, which is exactly what a client must not read.
@@ -729,7 +740,7 @@ def build_insight_summary(
         )
         instruction = _insight_instruction(issues)
 
-    return {
+    insight = {
         "summary": summary,
         "visible_issues": issues,
         "client_questions": questions,
@@ -749,6 +760,195 @@ def build_insight_summary(
         # before anything fills it.
         "unverified_hypotheses": [],
     }
+    if use_llm:
+        insight = narrate_insight_summary(
+            insight, language=language, model_type=model_type,
+            model_name=model_name, label=label,
+        )
+    return insight
+
+
+# --- optional single-call narration (N3 item 4; OFF by default) -------------
+
+#: Cheap by construction: the model sees the findings, never the databook, so
+#: the call is one short prompt per DECK, not per account. 200 tokens out is
+#: about a paragraph plus a dozen questions.
+_NARRATION_MAX_TOKENS = 700
+_NARRATION_TEMPERATURE = 0.2
+#: Enough findings to write from without turning a per-deck call into a per-run
+#: cost. Findings are already severity-sorted, so the tail is the low-severity
+#: half and the deterministic list keeps all of it either way.
+_NARRATION_MAX_ISSUES = 25
+
+
+def narrate_insight_summary(
+    insight: Dict[str, Any],
+    *,
+    language: str = "Eng",
+    model_type: Optional[str] = None,
+    model_name: Optional[str] = None,
+    label: str = "",
+) -> Dict[str, Any]:
+    """One LLM call per deck that rewrites the insight summary for a reviewer.
+
+    Shaped like ``build_section_summaries``: headless, no ``st.`` call, callable
+    from the batch UI and from ``inspect_databook.py`` alike, and it swallows
+    every failure — the deterministic summary it was handed is a complete
+    answer on its own, so a dead provider must degrade to v1, never to nothing.
+
+    It is deliberately given no data access. Its whole input is the findings
+    ``build_insight_summary`` already assembled, each of which carries the name
+    of the computation it came from, so the model is rewriting verified material
+    rather than inspecting a databook. That is what makes one call per deck
+    enough, and it is why a wrong sentence here cannot invent a defect: the
+    evidence ids stay attached to the deterministic ``visible_issues``, which
+    this function copies through untouched.
+
+    Returns a NEW dict. ``summary`` and ``client_questions`` become the model's;
+    the originals survive as ``deterministic_summary`` /
+    ``deterministic_client_questions``, and ``llm_narration`` records whether the
+    call actually happened. Nothing here may reach the deck — the caller keeps
+    the result beside ``ai_results``, or under ``INSIGHT_SUMMARY_KEY`` if it
+    must travel inside it.
+    """
+    out = dict(insight or {})
+    out.setdefault("llm_narration", {"used": False, "reason": "not attempted"})
+    issues = list(out.get("visible_issues") or [])
+    questions = list(out.get("client_questions") or [])
+    if not issues and not questions:
+        out["llm_narration"] = {"used": False, "reason": "nothing to narrate"}
+        return out
+    try:
+        from ..ai import _PIPELINE_BREAKER
+        open_stage = next((s for s in ("subagent_1", "subagent_2", "subagent_4")
+                           if _PIPELINE_BREAKER.is_open(s)), None)
+        if open_stage:
+            # The same guard build_section_summaries uses. A run whose pipeline
+            # has already tripped the breaker is exactly the run whose insight
+            # summary matters most, and it is also the one where another call
+            # will just burn a timeout.
+            out["llm_narration"] = {"used": False, "reason": f"breaker open on {open_stage}"}
+            return out
+    except Exception:
+        pass
+
+    is_chinese = str(language or "").strip().lower() in {"chi", "chn", "chinese"}
+    findings = "\n".join(
+        f"- [{i.get('severity')}] {i.get('issue')}  (source: {i.get('basis')})"
+        for i in issues[:_NARRATION_MAX_ISSUES]
+    ) or "- (none)"
+    drafted = "\n".join(f"- {q}" for q in questions[:_NARRATION_MAX_ISSUES]) or "- (none)"
+    if is_chinese:
+        system_prompt = (
+            "你是财务尽职调查项目的复核人。以下是系统对本次生成流程自身的确定性检查结果，"
+            "只供项目组内部阅读，绝不会出现在交付给客户的报告里。\n"
+            "把它写成一段复核人看得懂的说明，再整理一份要问客户/管理层的问题清单。\n"
+            "只能使用下面已经列出的内容，不得自行推断新的问题，也不得引入任何数字。"
+        )
+        user_prompt = (
+            f"确定性检查发现（按严重程度排序）：\n{findings}\n\n"
+            f"已草拟的客户问题：\n{drafted}\n\n"
+            f"确定性结论：{out.get('summary')}\n"
+            f"建议先做的事：{out.get('commentary_instruction')}\n\n"
+            "请严格按以下格式输出，不要加标题以外的任何说明文字：\n"
+            "SUMMARY: <一段话，说明这次跑出来的东西哪里可信、哪里要先自己复核>\n"
+            "QUESTIONS:\n- <一条问题>\n- <一条问题>\n"
+        )
+    else:
+        system_prompt = (
+            "You are the reviewer on a financial due diligence engagement. Below "
+            "are the deterministic checks the generation run ran against itself. "
+            "This is internal — it never reaches the client deck.\n"
+            "Write it up as a paragraph a reviewer can act on, then a list of "
+            "questions to put to the client or to management.\n"
+            "Use only what is listed. Do not infer new issues and do not "
+            "introduce any figure that is not already there."
+        )
+        user_prompt = (
+            f"Deterministic findings, most severe first:\n{findings}\n\n"
+            f"Draft client questions:\n{drafted}\n\n"
+            f"Deterministic summary: {out.get('summary')}\n"
+            f"Suggested first action: {out.get('commentary_instruction')}\n\n"
+            "Output exactly this shape and nothing else:\n"
+            "SUMMARY: <one paragraph on what in this run can be trusted and "
+            "what has to be checked by hand first>\n"
+            "QUESTIONS:\n- <one question>\n- <one question>\n"
+        )
+
+    try:
+        from ..ai import AIClient
+        client = AIClient(
+            model_type=model_type or "deepseek",
+            # Not a pipeline stage: an unknown agent name resolves to
+            # DEFAULT_AGENT_CONFIG, and both sampling values are overridden
+            # below anyway. Naming it after itself is what makes the call
+            # identifiable in the provider log.
+            agent_name="insight_summary",
+            language=("Chi" if is_chinese else "Eng"),
+            model_name=model_name,
+        )
+        response = client.get_response(
+            user_prompt,
+            system_prompt=system_prompt,
+            temperature=_NARRATION_TEMPERATURE,
+            max_tokens=_NARRATION_MAX_TOKENS,
+        )
+        content = str((response or {}).get("content") or "").strip()
+    except Exception as exc:
+        logger.warning(
+            "Insight summary narration failed for %s; keeping the deterministic "
+            "summary (this costs nothing but the paragraph): %s", label or "?", exc,
+        )
+        out["llm_narration"] = {"used": False, "reason": f"{type(exc).__name__}: {exc}"}
+        return out
+
+    narrated_summary, narrated_questions = _parse_narration(content)
+    if not narrated_summary and not narrated_questions:
+        out["llm_narration"] = {"used": False, "reason": "unparseable response",
+                                "raw": content[:400]}
+        return out
+    out["deterministic_summary"] = out.get("summary")
+    out["deterministic_client_questions"] = questions
+    if narrated_summary:
+        out["summary"] = narrated_summary
+    if narrated_questions:
+        out["client_questions"] = narrated_questions
+    out["llm_narration"] = {
+        "used": True,
+        "model_type": model_type or "deepseek",
+        "model_name": model_name,
+        "issues_shown": min(len(issues), _NARRATION_MAX_ISSUES),
+        "calls": 1,
+    }
+    return out
+
+
+def _parse_narration(content: str) -> tuple:
+    """Split the narration response into (paragraph, questions).
+
+    Tolerant on purpose: local models wrap the labels in markdown, translate
+    them, or drop the QUESTIONS header entirely. Anything that cannot be read
+    leaves the deterministic text in place rather than half-replacing it.
+    """
+    if not content:
+        return "", []
+    body = re.sub(r"[*_`#]", "", content)
+    summary_match = re.search(
+        r"(?is)\bSUMMARY\s*[:：]\s*(.*?)(?=\n\s*QUESTIONS\s*[:：]|\Z)", body)
+    questions_match = re.search(r"(?is)\bQUESTIONS\s*[:：]\s*(.*)\Z", body)
+    summary = (summary_match.group(1) if summary_match else "").strip()
+    questions: List[str] = []
+    if questions_match:
+        for line in questions_match.group(1).splitlines():
+            item = re.sub(r"^\s*(?:[-*•]|\d+[.)、])\s*", "", line).strip()
+            if item:
+                questions.append(item)
+    if not summary and not questions:
+        # No labels at all: treat the whole reply as the paragraph rather than
+        # throwing away a usable answer over its formatting.
+        collapsed = " ".join(body.split())
+        return (collapsed if collapsed else ""), []
+    return summary, questions
 
 
 def _insight_instruction(issues: List[Dict[str, Any]]) -> str:
@@ -787,6 +987,7 @@ def batch_run_ai_for_entity(
     template_path: Optional[str] = None,
     output_dir: str = "fdd_utils/output",
     progress_callback: Optional[Callable[..., None]] = None,
+    insight_llm: bool = False,
 ) -> Dict[str, Any]:
     """Phase 2 of the batch entity pipeline (AI generation + PPTX export --
     slow). Takes the successful result dict batch_extract_entity_data()
@@ -831,6 +1032,31 @@ def batch_run_ai_for_entity(
         progress_callback=progress_callback,
         user_comments=user_comments or {},
     )
+
+    # Internal insight summary (N3). Free unless insight_llm is set, and it is
+    # filed on `result` / `result["state"]`, never on `ai_results` -- the deck
+    # payload is built from ai_results a few lines below, and the cheapest way
+    # to guarantee no insight text reaches a slide is for it never to be in the
+    # dict the payload builder walks. INSIGHT_SUMMARY_KEY exists for callers
+    # that have no choice; this one does.
+    try:
+        result["insight_summary"] = build_insight_summary(
+            ai_results=ai_results,
+            dfs=dfs,
+            mappings=mappings,
+            reconciliation=reconciliation,
+            resolution=resolution,
+            language=effective_language,
+            use_llm=insight_llm,
+            model_type=model_type,
+            model_name=model_name,
+            label=str(entity_name),
+        )
+    except Exception as exc:
+        # An internal reviewer aid must never be the reason a paid run loses
+        # its deck.
+        logger.warning("Insight summary failed for %s: %s", entity_name, exc)
+        result["insight_summary"] = {}
 
     # Executive summary (coSummaryShape) generation -- mirrors what
     # render_ai_generation_section does for the single-file flow right
@@ -948,6 +1174,10 @@ def batch_run_ai_for_entity(
         # session_state.section_summaries) reuses these instead of
         # falling back to the in-export summary skip.
         "section_summaries": section_summaries,
+        # Beside ai_results, deliberately not inside it -- see the build call
+        # above. render_processed_view can show it in an expander; nothing in
+        # the export path reads this key.
+        "insight_summary": result.get("insight_summary") or {},
         "model_type": model_type,
         "model_name": model_name,
         "use_multithreading": use_multithreading,
@@ -977,6 +1207,7 @@ def batch_process_entity(
     output_dir: str = "fdd_utils/output",
     progress_callback: Optional[Callable[..., None]] = None,
     on_data_ready: Optional[Callable[[Dict[str, Any]], None]] = None,
+    insight_llm: bool = False,
 ) -> Dict[str, Any]:
     """Headless, session_state-free equivalent of the single-file
     process -> reconcile -> AI -> export flow, for driving one entity in
@@ -1024,6 +1255,7 @@ def batch_process_entity(
         template_path=template_path,
         output_dir=output_dir,
         progress_callback=progress_callback,
+        insight_llm=insight_llm,
     )
 # --- end ui/pptx_export.py ---
 

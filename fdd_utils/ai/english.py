@@ -339,8 +339,119 @@ def _enforce_reference_style(text: str) -> str:
     return out
 
 
+# ---------------------------------------------------------------------------
+# normalise_commentary -- the Auditor's mechanical half, written as code
+# ---------------------------------------------------------------------------
+#
+# MEASURED over the 3,516 Generator/Auditor pairs in fdd_utils/logs/ from
+# 2026-06-01 onward (2,106 English + 1,410 Chinese), 2026-09-07:
+#
+#   rule the Auditor prompt polices     Generator     after Auditor
+#   ---------------------------------   ---------     -------------
+#   generic advisory (Chi 建议 ...)            68                 1
+#   fullwidth comma inside a figure            35               114
+#
+# Those are the only two mechanical rules where the Auditor measurably changes
+# anything: the advisory strip is the one thing it demonstrably fixes, and the
+# fullwidth comma is damage it INTRODUCES -- "5，553.5万" makes extract_amounts
+# read 553.5 instead of 5,553.5, so a correct figure is graded as ungrounded.
+# Both are deterministic, so both belong here rather than in a paid call.
+#
+# The English half is deliberately narrower than the Chinese half. Measured,
+# the Auditor removes no English advisory at all (23 hits in, 23 out) -- every
+# English "recommendation" in the corpus is the shape the prompt explicitly
+# sanctions ("it is recommended that this CNY484,441 provision be deducted from
+# net assets"), a quantified consequence of a finding already stated in the same
+# bullet. So only the bare "You should ..." forms are stripped here, which is
+# what _enforce_reference_style already did; "we recommend" / "it is
+# recommended" are left alone on purpose. Do not widen this without re-measuring
+# -- an earlier draft keyed the exception on "contains a digit" and would have
+# deleted 10 of those 23, because they refer back to the figure ("this amount")
+# instead of repeating it.
+
+#: "5，553.5万" -> "5,553.5万". Only between two digits: a fullwidth comma
+#: separating two clauses is correct Chinese punctuation and must survive.
+_FULLWIDTH_COMMA_IN_FIGURE = re.compile(r"(?<=\d)[，﹐](?=\d)")
+
+#: Generic advisory openings. Chinese 建议 is the whole story in the measured
+#: corpus; the English forms are the ones the house style has always banned.
+_ADVISORY_MARKER = re.compile(
+    r"建议|(?i:\byou (?:should|are advised to|may wish to|might want to)\b)"
+)
+
+#: A recommendation carrying its own figure is the sanctioned exception (a
+#: narrow, quantified consequence of a finding), not boilerplate. Keep it.
+_ADVISORY_QUANTIFIED = re.compile(
+    r"\d[\d,]*(?:\.\d+)?\s*(?:万元|亿元|万|亿|元)|(?:CNY|USD|HKD|RMB)\s*-?\d"
+)
+
+#: Sentence terminators, kept with the sentence they end. The ASCII full stop
+#: only counts when whitespace follows it, which is what keeps "CNY1.2 million"
+#: from being read as two sentences. Segments are rejoined with "", so an
+#: over-eager split ("Co., Ltd. The ...") costs nothing.
+_SENTENCE_SPLIT = re.compile(r"(?<=[。；！？;!?])|(?<=\.)(?=\s)")
+
+#: Where a mid-sentence advisory clause may be cut away from its host sentence.
+_CLAUSE_BOUNDARIES = "，,、：:"
+
+
+def _strip_generic_advisory(text: str) -> str:
+    """Drop generic advisory clauses, keeping quantified recommendations.
+
+    Cuts at the nearest clause boundary before the marker so the factual half of
+    a sentence survives ("...该笔贷款将于一年内到期，建议关注其还款安排。" keeps
+    the maturity fact). When nothing factual precedes the marker the whole
+    sentence goes.
+    """
+    out = []
+    for sentence in _SENTENCE_SPLIT.split(text):
+        if not sentence.strip():
+            continue
+        match = _ADVISORY_MARKER.search(sentence)
+        if not match or _ADVISORY_QUANTIFIED.search(sentence[match.start():]):
+            out.append(sentence)
+            continue
+        cut = max((sentence.rfind(ch, 0, match.start()) for ch in _CLAUSE_BOUNDARIES),
+                  default=-1)
+        head = sentence[:cut].strip() if cut > 0 else ""
+        if not head:
+            continue  # nothing but advisory in this sentence
+        # Keep the segment's own leading whitespace: a multi-line "mainly
+        # entailed:" bullet loses its line break otherwise, and the whole point
+        # of that structure is one sub-component per line.
+        head = sentence[:len(sentence) - len(sentence.lstrip())] + head
+        # Re-terminate with the sentence's own ending, or a full stop matching
+        # the script, so the survivor does not run into the next sentence.
+        tail = sentence.rstrip()[-1:]
+        if tail not in "。；！？;!?.":
+            tail = "。" if re.search(r"[\u4e00-\u9fff]", head) else "."
+        out.append(head + tail)
+    return "".join(out)
+
+
+def normalise_commentary(text: str) -> str:
+    """The deterministic half of what the Auditor stage is paid to do.
+
+    Two rules, both measured (see the table above this function): strip generic
+    advisory boilerplate, and repair a fullwidth comma sitting inside a figure.
+    Language-agnostic and safe to run on either script -- it touches no amount's
+    value, so number grounding is unaffected.
+
+    NOT a replacement for the Auditor stage. Dropping that stage needs a real
+    A/B: measured, it also adds ~8% more figures at the same grounding rate,
+    which may be worth paying for even though it is not verification.
+    """
+    if not text or not isinstance(text, str):
+        return text
+    out = _FULLWIDTH_COMMA_IN_FIGURE.sub(",", text)
+    out = _strip_generic_advisory(out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return out.strip()
+
+
 def polish_english_commentary(text: str) -> str:
-    polished = normalize_english_text(text or "")
+    polished = normalise_commentary(text or "")
+    polished = normalize_english_text(polished)
     for pattern in _SECTION_LABEL_PATTERNS:
         polished = re.sub(pattern, "", polished)
     polished = re.sub(r"(?i)^including:\s*", "Including ", polished)

@@ -286,7 +286,22 @@ class FDDConfig:
         # ZERO hallucinations, so the expected extra cost of leaving this on
         # is zero -- it only spends tokens on the runs that need it. Total
         # attempts = 1 + max_retries.
-        defaults: Dict[str, Any] = {"enabled": True, "max_retries": 2, "unsupported_threshold": 0.3}
+        #
+        # repair_mode picks what happens FIRST when a defect gate fires:
+        #   "regenerate"  (default) re-run Generator -> Auditor -> Validator, 3
+        #                 full calls, exactly today's behaviour;
+        #   "patch_first" try a local repair of the proven defect (see ai/
+        #                 repair.py) and only regenerate if a guard refuses. A
+        #                 deterministic scale patch costs nothing; the LLM
+        #                 micro-patch is one ~300-token call.
+        # Defaulted to "regenerate" because config.yml is gitignored and
+        # per-machine: an unconfigured deployment must behave as it did before
+        # the repair path existed, and the value measured on one machine is
+        # never evidence about another's.
+        defaults: Dict[str, Any] = {
+            "enabled": True, "max_retries": 2, "unsupported_threshold": 0.3,
+            "repair_mode": "regenerate",
+        }
         loop_config = processing.get("feedback_loop") or {}
         merged = dict(defaults)
         merged.update(loop_config)

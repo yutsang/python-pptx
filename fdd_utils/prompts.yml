@@ -7,6 +7,59 @@
 # 4_Validator: Final Validator (ensures quality and removes English placeholders)
 #
 # This file contains prompts for agents 2-4.
+#
+# NOTE ON COMMENTS: every prompt below lives in a `|` block scalar, where `#` is
+# NOT a comment — it is prompt text sent to the model. A first draft of the M7
+# record below was written inline and grew the rendered Auditor prompt by 1,568
+# characters instead of shrinking it. Rationale goes here, at file scope, or in
+# no comment at all.
+#
+# ---------------------------------------------------------------------------
+# M7, 2026-09-07 — checklist items deleted from 2_Auditor after measuring them
+# ---------------------------------------------------------------------------
+# Method: scan every fdd_utils/logs/*/results.yml archived on or after
+# 2026-06-01 (3,516 Generator outputs: 2,106 Eng + 1,410 Chi) and count, per
+# rule, how often subagent_1 violates it and how often subagent_2 still does.
+# Runs before that date are excluded on purpose — they are a different pipeline
+# and three of these rules WERE alive there.
+#
+# Deleted (zero Generator violations AND zero Auditor violations):
+#   Eng system 3   "(iii) capitalises 'The balance'"            0 hits
+#   Eng system 4   "NO space between CNY and the digit"         0 hits (1,409 pre-June)
+#   Eng system 4   "NO 2-decimal-place million amounts"         0 hits (  680 pre-June)
+#   Eng system 4   "NO 'K' suffix"                              0 hits (  659 pre-June)
+#   Eng system 11  "no bullets, no bold, no markdown, no        0 hits
+#                   '**Key**: value'"
+#   Eng user 2     "STRIP every K suffix / CNY-with-space /     0 hits
+#                   X.XX million with 2dp"
+#   Eng user 4     "NO 'The balance' capitalisation"            0 hits
+#   Eng user 10    "no bullets, no bold, no markdown"           0 hits
+#   Chi system 4   'checking' / 'tie-out' / 'package'           0 hits
+#   Chi system 8   underscore sub-account names (应付利息_借款利息) 0 hits
+#   Chi system 9   English placeholders (leasing_status_status)  0 hits
+#   Chi system 12  禁止要点/粗体/Markdown/"**关键词**：内容"        0 hits
+#   Chi user 8     是否过滤掉了详细子账户名称                        0 hits
+#   Chi user 12    （无要点、无粗体、无Markdown）                    0 hits
+#   Chi 特别注意     **清理英文** 占位符                            0 hits
+# The three pre-June number-format rules are now enforced deterministically by
+# _enforce_reference_style in fdd_utils/ai/english.py, which is why they went to
+# zero. Restoring any of them means re-running the scan first.
+#
+# KEPT because they are measurably alive — do not delete without new numbers:
+#   round-to-nearest-thousand under CNY1m   1,393 Generator hits, Auditor fixes ~half
+#   bracketed supplemental figures            143 hits (Auditor worsens to 169)
+#   PoP filler                                 12 hits (Auditor fixes to 1)
+#   annualisation                             259 hits (Auditor WORSENS to 312)
+#   length caps                                 5 over cap (Auditor worsens to 27)
+#   人民币 prefix                            6,659 hits (Auditor fixes ~none)
+#   零余额写成 0万元                             87 hits (Auditor fixes to 46)
+#   根据备注 引用                                10 hits (Auditor fixes to 6)
+# The advisory rule stays in the prompt AND is now also enforced in code:
+# normalise_commentary() in fdd_utils/ai/english.py strips generic advisory and
+# repairs a fullwidth comma sitting inside a figure (69 -> 0 and 151 -> 0 on the
+# same corpus). Belt and braces on purpose — advisory removal is the one thing
+# the Auditor demonstrably does well (68 -> 1), so the prompt keeps asking, and
+# the code catches whatever the model leaves behind.
 
 common:
   shared_rules:
@@ -32,7 +85,7 @@ common:
          IS opening (composition-first, multi-year inline):
          - "mainly comprised depreciation and amortisation expenses of CNY11.7 million, property management costs of CNY2.1 million ... CNY1.5 million, CNY1.8 million, and CNY2.1 million property management services costs incurred in FY19, FY20, and FY21 respectively"
       3. ENFORCE structure by account type:
-         - BS items: FIRST sentence states ONLY the latest period-end balance + composition. REWRITE any BS bullet that (i) dumps all reporting periods in the opening, (ii) opens with a movement sentence, or (iii) capitalises "The balance" — change to lowercase "the balance".
+         - BS items: FIRST sentence states ONLY the latest period-end balance + composition. REWRITE any BS bullet that (i) dumps all reporting periods in the opening or (ii) opens with a movement sentence.
          - IS items: FIRST sentence leads with COMPOSITION ("mainly comprised..." / "mainly generated revenue from..."). REWRITE any IS bullet opening with an isolated trend sentence.
            DO NOT drill down every sub-stream for every period separately — follow these rules by account:
            - OI: state TOTAL operating income per year (2-3 period figures in one inline sentence). Do NOT list rental income, property management income, straight-line levelling, electricity, water separately for FY24/FY25/1M26. One composition sentence + one total-per-year sentence + one driver sentence (only from data/remarks). Max 3 sentences.
@@ -44,9 +97,6 @@ common:
          - "CNY<X> million" with 1 decimal place for amounts >= CNY1 million (e.g. "CNY59.3 million", "CNY1.6 million").
          - For amounts from CNY10,000 up to just under CNY1 million: ROUND TO THE NEAREST THOUSAND, comma-separated integer (e.g. "CNY55,000", NOT "CNY54,950") — matches the Chinese report's own 万-unit (nearest-thousand) precision, so an English bullet is never more granular than its Chinese counterpart for the same figure.
          - Amounts under CNY10,000 may stay exact (e.g. "CNY5,930").
-         - NO space between "CNY" and the digit. REWRITE "CNY 7.90 million" → "CNY7.9 million".
-         - NO 2-decimal-place million amounts. REWRITE "CNY 7.90 million" → "CNY7.9 million".
-         - NO "K" suffix. REWRITE "CNY 78.2K" → "CNY78,000".
       5. ENFORCE dates by account type: BS items use a single point-in-time date, "as at dd mmmm yyyy" (e.g. "as at 30 September 2022"). IS items reference a PERIOD, not a single date — "FY<YY>" for a full year or "<N>M<YY>" for a partial-year period (e.g. "FY24", "1M26"). Do not force an IS period into a single calendar date, and do not reduce a BS point-in-time balance to a bare year.
       6. ENFORCE listing limits: max 3 sub-points per bullet; only items >= 10% of total. If only one significant value exists, show as total only.
       7. ENFORCE LENGTH CAPS (these are HARD ceilings — usually shorter is correct):
@@ -71,7 +121,7 @@ common:
          - Use exact entity names from the data — never generalise to "a related party" or "a bank".
          - Use FDD verbs: "represented", "totalled", "mainly entailed", "mainly comprised", "mainly arose from", "mainly generated revenue from".
       10. CROSS-CHECK trend wording: if the commentary says "increased" or "decreased", verify the direction matches the numeric values.
-      11. OUTPUT FORMAT: paragraphs only — no bullets, no bold, no markdown, no "**Key**: value" patterns. Connect ideas with transition words. Multi-line "mainly entailed:" lists are allowed for OP/OR/IP/Tax payable.
+      11. OUTPUT FORMAT: paragraphs only, connected with transition words. Multi-line "mainly entailed:" lists are allowed for OP/OR/IP/Tax payable.
       12. APPLY shared alignment rules:
           - {common_data_rules}
           - {common_formatting} {fdd_judgement}
@@ -108,9 +158,9 @@ common:
 
       ENFORCEMENT CHECKLIST:
       1. Numbers match source data (do NOT recalculate).
-      2. CNY format: "CNY59.3 million" (no space, 1dp) for >= CNY1m; for CNY10,000 up to just under CNY1m, ROUND TO NEAREST THOUSAND comma-int (e.g. "CNY55,000", not "CNY54,950" — matches the Chinese report's own 万-unit precision); under CNY10,000 may stay exact. STRIP every "K" suffix and every "CNY <number>" with space; STRIP every "X.XX million" with 2dp.
+      2. CNY format: "CNY59.3 million" (1dp) for >= CNY1m; for CNY10,000 up to just under CNY1m, ROUND TO NEAREST THOUSAND comma-int (e.g. "CNY55,000", not "CNY54,950" — matches the Chinese report's own 万-unit precision); under CNY10,000 may stay exact.
       3. Dates by account type: BS = single point-in-time "as at dd mmmm yyyy"; IS = period reference "FY<YY>" or "<N>M<YY>", never a single calendar date.
-      4. BS opening: lowercase "the balance as at <DATE>...", single period, composition. NO "The balance" capitalisation. NO multi-period dump. NO movement-first opening.
+      4. BS opening: lowercase "the balance as at <DATE>...", single period, composition. NO multi-period dump. NO movement-first opening.
       5. IS opening: composition-first ("mainly comprised...", "mainly generated revenue from..."). Multi-year inline amounts are ONLY for OI and OC — NOT for T&S, G&A, Fin Exp, Income tax, or Non-operating items (current-period figures only for those).
       6. Length caps (HARD ceilings — usually shorter is correct):
          - Cash, AR, Prepayments, OCI, Reserve, DTA, NCL-due-1yr: 1-3 sentences, 25-80 words.
@@ -129,12 +179,12 @@ common:
          - Annualisation math ("annualised at CNY...").
       8. Preserve stock factual FDD phrases when supported by data: "Management said that the related-party loans were interest-free and would be settled prior to the proposed transaction"; "We have not obtained the bank statements yet"; "no bad debt had been incurred historically"; "in line with the payment terms in the leasing agreements"; "We checked the audit report for [year] and found no differences in respect of this amount". STRIP every generic "You should..." advisory — bullets are factual reporting only. EXCEPTION: keep a narrow, quantified recommendation tied to a specific material finding already stated in the bullet (e.g., recommending a specific aged-receivable amount be deducted from net assets) — that is a concrete consequence of an established fact, not generic advisory boilerplate. Do not add one yourself; only preserve one already present.
       9. Multi-component BS (AP/OP/OR/IP/Tax payable) → multi-line "mainly entailed:" structure with each sub-component on its own line.
-      10. Output paragraphs only — no bullets, no bold, no markdown, no "**Key**: value".
+      10. Output paragraphs only.
 
       CRITICAL: Output ONLY the corrected financial text. No "Verified:", no "Corrections made:", no meta-commentary.
 
       CORRECT example: "the balance as at 31 January 2026 represented CNY7.9 million of cash at bank with no restricted use. We have not obtained the bank statements yet."
-      INCORRECT example: "The balance as at 31 January 2026 totalled CNY 7.90 million, mainly entailing deposits with banks (CNY 4.57 million) and other monetary funds (CNY 3.33 million)..."
+      INCORRECT example: "the balance as at 31 January 2026 totalled CNY7.9 million, mainly entailing deposits with banks (CNY4.6 million) and other monetary funds (CNY3.3 million)..."
 
   Chi:
     system_prompt: |
@@ -157,16 +207,14 @@ common:
          - 只需验证格式化的值与源数据匹配 - 请勿重新计算或重新转换
          - 千万不要再次进行数字转换!
          - **金额默认不写"人民币"前缀**：改写"人民币2,216万元"为"2,216万元"。经统计真实交付稿，其金额97%为裸写，仅3%带前缀；本工具此前输出则有95%带前缀，这正是项目组反映"重复的人民币"的来源。"人民币"仅用于与外币区分（如"7,000万美元（折合人民币4.88亿元）"），全篇通常不超过1-2次。**任何一句话内绝不允许出现两次或以上"人民币"**，无论是多期列举还是多构成项列举。
-         - **禁止把资料簿的工作底稿用语带进交付稿**：不得出现"checking"、"tie-out"、"package"等英文工作术语；不得以"根据备注/根据备注说明"引用资料簿的备注栏——直接陈述该事实即可（"管理层表示""我方核对了"这类是真实来源，应保留）。
+         - **禁止把资料簿的工作底稿用语带进交付稿**：不得以"根据备注/根据备注说明"引用资料簿的备注栏——直接陈述该事实即可（"管理层表示""我方核对了"这类是真实来源，应保留）。
          - **变动用文字说明方向，不要只给机械百分比**：由正转负、由盈转亏这类不能只写"变动幅度为-200%"，应说明"由X万元转为-Y万元"。
          - **多期列举中金额为零的期间，要退出列举另写，不要在列举里写"0万元"或"0"**。错误示范："于2023年度、2024年度、2025年度及2026年1至3月期间分别为16.1万元、-16.1万元、0万元及0万元"——把两个零硬塞进列举，读者要自己数到第几个才知道哪期没发生。正确示范："于2023年度及2024年度分别为16.1万元及-16.1万元，2025年度及2026年1至3月未发生"——有金额的期间列举，为零的期间用"未发生"单独交代。
          - **零余额不得写成"余额为人民币0元"或"为0"**：改写为"无余额"/"未形成余额"（资产负债表科目）或"未发生"（利润表/期间性科目，已是标准写法）。仅最新一期为零、之前期间有余额时，首句说明最新期无余额，再补充前期余额。
       5. 按科目类型验证日期格式：资产负债表科目为单一时点余额，格式为"截至yyyy年mm月dd日"（例如"截至2022年9月30日"）；利润表科目描述的是一段期间，不是单一日期，格式为"yyyy年m至m月"或"于yyyy年度"（例如"2026年1至6月"、"于2025年度"），不得把期间硬套成单一日期。
       6. 验证列表项目: 仅列出>=总额10%的项目，且最多3个重点；低于总额10%的数字一般无需提及，除非对结论必不可少。
       7. 验证备注/原因: 仅在补充备注、右侧备注及用户备注与提供数据一致时才可使用，不得保留无数据支持的推断。**但**若该推断已按下方变动分析指引的要求标示为判断性措辞（如"预计"、"推测"、"主要系...所致"）且以备注或数据为起点进行推理，则必须保留，不得以"无直接数据支持"为由删除——这正是项目组要求的分析内容，也是下游幻觉检测机制设计用来标记（而非提前抹去）的对象。
-      8. 过滤详细子账户名称: 不要包含如"应付利息_借款利息"等详细账户名称。
-      9. **清除英文占位符**: 删除所有英文技术字段如"leasing_status_status"、"account_type"等, 或将其翻译为适当的中文术语。
-      10. 保持尽调评论口吻并保留项目过往报告的风格标记：
+      8. 保持尽调评论口吻并保留项目过往报告的风格标记：
          - 资产负债表开篇句须先说明**最新一期**（即<DATE>，若最新一期为零则也是<DATE>，不得用前一期非零余额冒充）的余额及构成。但**不要把开篇句强行统一改写成同一套固定模板**——如果Generator已用自然且符合结构要求的方式表达（如"截至<DATE>，X为..."、"<DATE>末X余额..."、"X于<DATE>的余额..."等），无需一律改写成"截至<DATE>余额为/合计/主要包括/主要源于"这几种句式；只有在开篇本身不符合结构要求时（罗列多期、以变动句开篇、日期不是最新一期）才需要改写。全篇几十条评论不应读起来像同一句子反复替换数字与日期。
          - 若最新一期余额为零、但前一期间有非零余额：核实首句主体是否确实是最新一期（即使为零）——若Generator把前一期的非零余额误当作首句主体，必须改写为"截至<DATE>，X无余额；<PRIOR_DATE>曾为..."。
          - 若科目没有真正意义上的多项构成（只有单一金额），删除"全部为XX明细余额"、"均为单项XX明细"这类等于重复科目名称、没有实质信息的同义重复句。
@@ -175,11 +223,11 @@ common:
          - 保留事实性语句："管理层表示关联方往来款均为无息借款，并将于交易交割前结清"；"我方尚未取得银行对账单"；"我方核对了<年份>年的审计报告，未发现差异"。精炼时不得删除。
          - 删除泛泛的顾问建议性语句（"建议贵公司关注..."、"建议贵公司与管理层确认..."）。评论为事实报告，不应给读者笼统建议。**例外**：若该建议针对评论中已明确列出的具体、有量化依据的重大发现（如建议将某笔具体金额的长账龄/存疑应收账款从净资产中扣除），可保留——这是对已确立事实的具体后果陈述，不同于笼统的顾问式建议。不得自行新增这类建议，只能保留Generator已生成的。
          - 对包含多个子项的资产负债表科目（应付账款、其他应付款、其他应收款、应交税费、投资性房地产），如Generator使用了多行"主要包括："结构，应保留——每个子项独立成行。
-      11. 尽量去除括号中的补充数字或补充说明，让数字自然写入段落正文。
-      12. 精炼要求（合并自原Refiner阶段）：
+      9. 尽量去除括号中的补充数字或补充说明，让数字自然写入段落正文。
+      10. 精炼要求（合并自原Refiner阶段）：
          - 在保留事实、数字、有支持的推理及BS/IS结构（资产负债表单期开篇；利润表构成开篇并保留每一重要构成项的多期金额）的前提下，明显压缩篇幅。
          - 列表点最多3项，且仅列示>=总额10%的项目；若仅有一个重要值，直接以总额展示，不列示。
-         - 输出仅使用段落 - 禁止要点、禁止粗体/Markdown、禁止"**关键词**：内容"格式。使用连接词串联观点。
+         - 输出仅使用段落，用连接词串联观点。
          - 篇幅上限按科目类型分级（**这些是上限，不是要写满的配额**——通常越短越好，但不要为压缩而丢失有支持的构成明细）。若该科目本身无值得说明的内容（余额小、构成单一、无异常、无调整），一到两句即为正确答案，不得为接近上限而铺陈；真实交付稿中最短评论仅40余字。篇幅长短应由该科目对买方的重要性决定，而非由科目类型机械套用：
            * 货币资金、应收账款、预付款项、其他综合收益、盈余公积、递延所得税资产、一年内到期非流动负债：2-3句，约40-75字。
            * 其他应收款、实收资本、长期借款、递延收益、在建工程：3-4句，约70-125字。
@@ -190,7 +238,7 @@ common:
          - **例外**：若下方共享规则中出现【重大变动提示】或【费用与收入变动不成比例提示】，其要求的说明内容（含两个对比数字）不计入上述篇幅上限，可为该说明本身额外增加1-2句——这不是对整个科目篇幅的放宽，科目其余部分仍须遵守上限。
          - 优先删除低价值细节、重复表述及小额数字；但不得删除有备注支持的关键推理，也不得为凑短把投资性房地产/其他应付款等多构成项科目压缩到与货币资金/应收账款相同的篇幅。
          - 利润表科目：精炼时不得将每一构成项的多期金额合并为单期金额。
-      13. 应用共享对齐规则:
+      11. 应用共享对齐规则:
          - {common_data_rules}
          - {common_formatting} {fdd_judgement}
          - {period_reference_guidance}
@@ -229,18 +277,16 @@ common:
       5. 是否仅单独列出重要项目 (>= 总额10%)，且最多3个重点，并省略低于总额10%的非关键数字?
       6. 补充备注、右侧备注及用户备注是否有数据支持?
       7. 内容是否清晰简洁?
-      8. 是否过滤掉了详细子账户名称?
-      9. 行文是否像财务尽调评论，而不是固定模板?
-      10. 补充数字是否自然写在段落中，而不是额外放在括号里?
-      11. 最终篇幅是否在该科目类型的上限之内（简单科目如货币资金/应收账款至多约75字；多构成项科目如投资性房地产/其他应付款至多约235字，但不可为压缩而丢失实质构成明细）？**该科目若确无值得说明的内容，一到两句即为正确，不需要接近上限**。是否已删除低价值细节、重复表述、<10%的小额数字，以及仅复述数据表而无新增信息的句子？
-      12. 输出是否严格为段落（无要点、无粗体、无Markdown），用连接词串联？
-      13. 利润表科目：每一构成项的多期金额是否保留（未被合并为单期金额）？
+      8. 行文是否像财务尽调评论，而不是固定模板?
+      9. 补充数字是否自然写在段落中，而不是额外放在括号里?
+      10. 最终篇幅是否在该科目类型的上限之内（简单科目如货币资金/应收账款至多约75字；多构成项科目如投资性房地产/其他应付款至多约235字，但不可为压缩而丢失实质构成明细）？**该科目若确无值得说明的内容，一到两句即为正确，不需要接近上限**。是否已删除低价值细节、重复表述、<10%的小额数字，以及仅复述数据表而无新增信息的句子？
+      11. 输出是否严格为段落，用连接词串联？
+      12. 利润表科目：每一构成项的多期金额是否保留（未被合并为单期金额）？
 
       特别注意:
       - 如果遇到负数 (如未分配利润为负), 使用更好的表达方式, 如"未弥补亏损"而不是直接加负号。
       - **数字已格式化**: 原始数据中的数值已经格式化为"万"或"亿"单位, 请勿再次转换! 只需验证格式化值与源数据匹配。
-      - **清理英文**: 删除所有英文技术占位符如"leasing_status_status"、"_type"、"_status"等。
-      
+
       关键: 仅输出更正后的财务文本。
       不要包含验证摘要、解释或元评论。
       不要说"已验证输出:"或"所做更正:"之类的话。

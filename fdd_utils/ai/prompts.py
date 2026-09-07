@@ -1247,6 +1247,159 @@ class PromptEngine:
             "this point rather than exceed the cap."
         )
 
+    # Wording for the RATIO edge kinds, the only ones allowed into a prompt.
+    # Membership of this dict is what makes a kind quotable: the tie,
+    # reconciliation and rollup edges facts.py also builds are absent on
+    # purpose, and an unrecognised kind renders nothing rather than a generic
+    # sentence that would have to guess what the ratio means.
+    # (Chinese noun, English noun, unit word Chi, unit word Eng.)
+    _CROSS_ACCOUNT_PHRASING: Dict[str, Tuple[str, str, str, str]] = {
+        "receivable_days": ("回款周期", "collection period", "天", "days"),
+        "payable_days": ("付款周期", "payment period", "天", "days"),
+        "inventory_days": ("存货周转天数", "inventory days", "天", "days"),
+        "advance_days": ("预收对应的收入天数", "days of revenue billed in advance", "天", "days"),
+        "prepayment_days": ("预付对应的成本天数", "days of cost prepaid", "天", "days"),
+        "expense_to_revenue": ("占收入比重", "share of revenue", "%", "%"),
+    }
+
+    @staticmethod
+    def _format_ratio(value: float) -> str:
+        """One decimal below ten, none above.
+
+        A flat 0 decimals rendered a real, stable 'G&A at 0.2/0.4/0.4% of
+        sales' as '0%, 0% and 0%' -- three zeros presented as a verified
+        finding. A flat 1 decimal reads as false precision on '163.2 days'.
+        """
+        return f"{value:.1f}" if abs(value) < 10 else f"{value:.0f}"
+
+    @classmethod
+    def _cross_account_guidance(
+        cls,
+        cross_account_facts: Optional[Dict[str, Any]],
+        mapping_key: Optional[str],
+        language: str,
+    ) -> str:
+        """The one cross-account relationship this account has that PASSED its
+        numeric test, as a single quotable sentence.
+
+        Every account is otherwise written from its own tab alone, so the
+        commentary cannot say anything that needs two tabs at once -- which is
+        the analysis-depth gap the project team keeps reporting. What makes it
+        safe to close is not the wording but where the arithmetic happens:
+        facts.py computes each candidate ratio over both accounts' own totals,
+        over full periods only, tests it against a stated band, and stores the
+        result either way. Only ``passed`` edges are readable from here, and
+        only the ones where THIS account is the source -- 'AR equates to 126
+        days of revenue' belongs in AR's commentary and is a non-sequitur in
+        the revenue account's, though the revenue account is the same edge's
+        target.
+
+        A rejected candidate is not softened into a hedge and is not mentioned
+        at all. It goes to the internal insight summary as a hypothesis. That
+        is the whole point: 'the model may only assert what a numeric test
+        already confirmed' is a rule the code enforces, not one the prompt
+        asks for.
+
+        The contract is the one _data_insight_guidance and
+        _variance_analysis_guidance already work to and that has never
+        produced a hallucination flag: the figure is computed in Python,
+        handed over as a stated fact, and the model is forbidden to derive a
+        second one from it. Ratios are also invisible to the grounding
+        matcher, which is money-expressions-only, so a bare ratio has nothing
+        to ground and nothing to fail -- the ban is the only thing standing
+        between a quoted ratio and an invented one.
+        """
+        if not isinstance(cross_account_facts, dict) or not mapping_key:
+            return ""
+        try:
+            from .facts import cross_account_links_for
+        except Exception:  # pragma: no cover - defensive
+            return ""
+        edges = cross_account_links_for(
+            cross_account_facts, str(mapping_key), passed_only=True, source_only=True)
+        edges = [e for e in edges if str(e.get("kind")) in cls._CROSS_ACCOUNT_PHRASING]
+        if not edges:
+            return ""
+        edge = edges[0]
+        phrasing = cls._CROSS_ACCOUNT_PHRASING[str(edge["kind"])]
+        noun_chi, noun_eng, unit_chi, unit_eng = phrasing
+        values = (edge.get("evidence") or {}).get("values") or {}
+        periods = [p for p in edge.get("periods") or [] if p in values]
+        if len(periods) < 2:
+            return ""
+        labels = (cross_account_facts.get("labels") or {})
+        target_key = str(edge.get("target") or "")
+        target_name = str(labels.get(target_key) or target_key)
+        # The unit rides on EVERY number, not just the last. "about 9.3, 8.7
+        # and 9.0% of revenue" reads as though only the last one is a
+        # percentage; a reader scanning it can take 9.3 for a multiple.
+        suffix = "%" if str(edge["kind"]) == "expense_to_revenue" else ""
+        numbers = [cls._format_ratio(float(values[p])) + suffix for p in periods]
+        period_text_chi = "、".join(periods)
+        period_text_eng = ", ".join(periods[:-1]) + f" and {periods[-1]}"
+        number_chi = "、".join(numbers)
+        number_eng = ", ".join(numbers[:-1]) + f" and {numbers[-1]}"
+
+        # A direction clause only where the series actually moved. Three
+        # numbers with no verb is a table, not a finding; three numbers with
+        # "narrowing" is the sentence a reviewer can act on. 20% of the first
+        # period is the same materiality step the movement checks use.
+        first, last = float(values[periods[0]]), float(values[periods[-1]])
+        trend_chi = trend_eng = ""
+        if abs(first) > 0 and abs(last - first) >= abs(first) * 0.2:
+            if last > first:
+                trend_chi, trend_eng = "呈上升趋势", "trending upward"
+            else:
+                trend_chi, trend_eng = "呈下降趋势", "trending downward"
+
+        if str(edge["kind"]) == "expense_to_revenue":
+            fact_chi = (
+                f"本科目于{period_text_chi}分别相当于同期「{target_name}」的约{number_chi}"
+                + (f"，{trend_chi}。" if trend_chi else "。")
+            )
+            fact_eng = (
+                f"This account ran at about {number_eng} of '{target_name}' for the same "
+                f"periods ({period_text_eng})"
+                + (f", {trend_eng}." if trend_eng else ".")
+            )
+        else:
+            fact_chi = (
+                f"以同期「{target_name}」推算，本科目于{period_text_chi}分别相当于"
+                f"约{number_chi}{unit_chi}，即{noun_chi}"
+                + (f"，{trend_chi}。" if trend_chi else "。")
+            )
+            fact_eng = (
+                f"Measured against '{target_name}' for the same periods, this account equates "
+                f"to about {number_eng} {unit_eng} at {period_text_eng} -- the {noun_eng}"
+                + (f", {trend_eng}." if trend_eng else ".")
+            )
+
+        if language == "Chi":
+            return (
+                "【跨科目已核实事实（系统已算出并通过数值检验，可直接引用）】" + fact_chi
+                + "该结论由系统按两个科目各自的合计数逐期计算并已通过区间检验，可直接采用；"
+                "但**不得据此自行推算其他比率、天数或份额**，自行推算的数字等同编造，"
+                "亦不得改用未列出的期间。"
+                "若备注可解释该水平或其变动，请在同一句内归因，并以'主要系…所致'等措辞标示为判断；"
+                "若备注中并无依据，请如实指出成因尚待与管理层确认，不得臆造原因。"
+                "**篇幅要求：这不是额外增加的句子。**请用它取代一句原本只在复述表格已有金额的描述，"
+                "本科目的整体句数上限不变；若无句子可取代，宁可不写。"
+            )
+        return (
+            "[CROSS-ACCOUNT FACT -- COMPUTED AND NUMERICALLY VERIFIED, QUOTE DIRECTLY] "
+            + fact_eng
+            + " This was computed from both accounts' own totals period by period and has passed "
+            "its band test, so it may be used as stated -- but do NOT derive any further ratio, "
+            "day count or share yourself, and do not restate it over periods not listed above; a "
+            "self-derived figure is fabrication. Where the notes explain the level or its "
+            "movement, attribute it in the same sentence and mark the inference as judgement "
+            "('mainly attributable to...'); where they do not, say the driver remains to be "
+            "confirmed with management rather than inventing one."
+            " **On length: this is not an extra sentence.** Use it in place of one that merely "
+            "recites figures the table already shows; this account's sentence cap is unchanged. "
+            "If there is nothing to replace, drop this point rather than exceed the cap."
+        )
+
     @staticmethod
     def _variance_analysis_guidance(
         df: Optional[pd.DataFrame],
@@ -2004,6 +2157,11 @@ class PromptEngine:
         dynamic_mapping_context = {}
         if isinstance(df, pd.DataFrame):
             dynamic_mapping_context = dict(df.attrs.get("dynamic_mapping_context") or {})
+        # Pulled out BEFORE _normalize_prompt_value, which walks dicts and
+        # lists recursively: the fact table is a few thousand nested entries
+        # and normalising it would cost more per call than building it did,
+        # for a value no template ever interpolates directly.
+        cross_account_facts = kwargs.pop("cross_account_facts", None)
         normalized_kwargs = self._normalize_prompt_value(kwargs, language)
         format_params = {
             "key": self._normalize_prompt_value(mapping_key, language),
@@ -2029,6 +2187,16 @@ class PromptEngine:
             "analytical_lens_guidance": self._analytical_lens_guidance(df, language),
             "data_insight_guidance": self._data_insight_guidance(
                 df, language, peer_context=kwargs.get("peer_context"), mapping_key=mapping_key,
+            ),
+            # Registered here even though no YAML template carries the
+            # placeholder yet -- _safe_format catches a KeyError and returns
+            # the template UNSUBSTITUTED, so a placeholder without a key
+            # silently kills every other substitution in that prompt. Having
+            # the key first means adding {cross_account_guidance} to
+            # mappings.yml or prompts.yml later is a safe one-line edit. Until
+            # then the block is appended after rendering (see below).
+            "cross_account_guidance": self._cross_account_guidance(
+                cross_account_facts, mapping_key, language,
             ),
             "detail_table_guidance": self._detail_table_guidance(df, language),
             "composition_guidance": self._composition_guidance(df, language),
@@ -2121,6 +2289,28 @@ class PromptEngine:
 
         rendered_system_prompt = self._safe_format(system_prompt, format_params)
         rendered_user_prompt = self._safe_format(user_prompt_template, format_params)
+
+        # The cross-account fact reaches the GENERATOR, which writes the
+        # sentence, and the AUDITOR, which would otherwise delete it. The
+        # Auditor's measured failure mode in this repo is erasing analysis it
+        # cannot see the basis for, and prompts.yml already hands it
+        # {variance_analysis_guidance} for exactly that reason -- a computed
+        # fact the Generator was given and the Auditor was not is a fact that
+        # gets cut. The Validator is left out on purpose: it checks assertions
+        # against the data and adds no content, and a ratio is invisible to the
+        # money-expression matcher anyway, so the tokens would buy nothing.
+        #
+        # Appended rather than substituted because no YAML template carries
+        # the placeholder yet and the YAML files are outside this change. If
+        # one is added later, this skips itself rather than printing the block
+        # twice.
+        cross_block = str(format_params.get("cross_account_guidance") or "").strip()
+        if cross_block and self.normalize_agent_name(agent_name) in ("1_Generator", "2_Auditor"):
+            placeholder = "{cross_account_guidance}"
+            if placeholder not in str(system_prompt or "") and placeholder not in str(user_prompt_template or ""):
+                cross_label = "跨科目已核实事实" if language == "Chi" else "Cross-account verified fact"
+                rendered_user_prompt = self._append_markdown_section(
+                    rendered_user_prompt, cross_label, cross_block)
 
         if self.normalize_agent_name(agent_name) == "1_Generator":
             previous_content = str(kwargs.get("previous_content") or "").strip()

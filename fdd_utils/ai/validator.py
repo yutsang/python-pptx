@@ -620,7 +620,17 @@ _WINDOW_SUM_REL_TOL = 0.005
 
 #: classify_miss's own rule. Both numbers are load-bearing and measured; see
 #: SourceIndex.classify_miss before touching either.
-_SCALE_MISS_FACTORS = (1000.0, 0.001, 10000.0, 0.0001)
+#:
+#: The 100x pair is not symmetry for its own sake -- it is the commonest unit
+#: confusion this pipeline actually produces, and leaving it out made every
+#: instance land in AMOUNT_UNSUPPORTED (a full rewrite) instead of
+#: AMOUNT_SCALE_ERROR (a one-token repair). A real shipped bullet stated an
+#: accounts-payable balance of 6.2亿元 against a tab totalling CNY6.2 million:
+#: the frame's display unit is millions, the model read 6.2 and reached for 亿
+#: instead of 百万, and 亿/百万 is 100. 10x covers the same slip one step down
+#: (万 vs 十万). The Chinese magnitude ladder is 万=1e4 and 亿=1e8, so an error
+#: here is almost never a clean 1e3.
+_SCALE_MISS_FACTORS = (100.0, 0.01, 1000.0, 0.001, 10000.0, 0.0001, 10.0, 0.1)
 _SCALE_MISS_REL_TOL = 0.005
 
 

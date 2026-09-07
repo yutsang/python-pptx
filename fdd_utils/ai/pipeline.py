@@ -17,8 +17,9 @@ from .config import FDDConfig, get_safe_default_data_format, normalize_language_
 from .english import _iso_to_long_date, polish_english_commentary
 from .validator import format_validator_feedback_for_reprompt, parse_validator_response, strip_thinking, verify_commentary
 from .logging import PipelineRunLogger, coerce_plain
-from .prompts import PromptEngine, _DEFAULT_MAPPINGS_FILE, _DEFAULT_PROMPTS_FILE, get_prompt_engine, resolve_prompt_asset_path
+from .prompts import PromptEngine, PromptStylePack, _DEFAULT_MAPPINGS_FILE, _DEFAULT_PROMPTS_FILE, get_prompt_engine, resolve_prompt_asset_path
 from .client import AIClient
+from .repair import repair_content, repairable_reviews
 
 
 import hashlib
@@ -769,6 +770,30 @@ def _store_agent_result(
             state.note_degraded(event["degraded"])
 
 
+def apply_house_style(content: str, language: str, statement_type: str = "") -> str:
+    """House style enforced as code, not only as prompt text. Both rules exist
+    in the prompts already; these are the same rules where they cannot be
+    ignored. Neither touches an amount, so number-grounding is unaffected.
+
+    Lifted out of _finalize_agent_content (which is its only production caller)
+    so a repair can re-apply EXACTLY this and nothing else after splicing a
+    patch. What deliberately stays outside it: parse_validator_response, which
+    would re-parse a bullet as a validator JSON envelope, and clean_agent_output,
+    which a patch applies itself to the model's own reply before the splice.
+
+    Measured idempotent on real output: re-applying polish_english_commentary to
+    24 English archived finals and humanise_zero_balance + humanise_report_
+    language to 104 Chinese ones produced zero differences -- which is what lets
+    a repair compare styled-once content against styled-twice content directly.
+    """
+    if language != "Eng":
+        content = humanise_zero_balance(content, statement_type)
+        content = humanise_report_language(content)
+    if language == "Eng":
+        content = polish_english_commentary(content)
+    return content
+
+
 def _finalize_agent_content(
     *,
     agent_name: str,
@@ -788,14 +813,7 @@ def _finalize_agent_content(
         }
     else:
         content = clean_agent_output(raw_content)
-    # House style enforced as code, not only as prompt text. Both rules exist
-    # in the prompts already; these are the same rules where they cannot be
-    # ignored. Neither touches an amount, so number-grounding is unaffected.
-    if language != "Eng":
-        content = humanise_zero_balance(content, statement_type)
-        content = humanise_report_language(content)
-    if language == "Eng":
-        content = polish_english_commentary(content)
+    content = apply_house_style(content, language, statement_type)
     if agent_name == "subagent_4" and metadata:
         metadata["final_content"] = content
     return content, metadata
@@ -997,11 +1015,12 @@ def process_single_agent_item(
 ) -> Tuple[str, str, Dict[str, Any]]:
     """Run one account through a single agent stage.
 
-    `run_state` is ADDITIVE — `dfs` stays, because three of this function's
-    call sites omit `dfs` entirely (the pre-existing peer_context/siblings gap)
-    and replacing the parameter would force a prompt-changing decision inside a
-    milestone whose gate is verdict-identical output. Restoring the missing
-    context on those paths is a separate change.
+    `run_state` is ADDITIVE — `dfs` stays. It was left alone through the
+    state-machine milestone because three call sites omitted `dfs` entirely (the
+    peer_context/siblings gap) and closing that gap changes prompts, which that
+    milestone's verdict-identical gate did not allow. All three now pass it: the
+    two feedback-retry calls, and the Reprompt path's Generator, which was the
+    last one left and is fixed alongside the repair path.
 
     Nothing here writes a transition — see _queue_phase_event for why.
     """
@@ -2146,6 +2165,126 @@ def _evaluate_feedback_needed(
     return needed, ratio, (defective or unsupported)
 
 
+def _sibling_dfs_for(
+    key: str,
+    dfs: Optional[Dict[str, pd.DataFrame]],
+    prompt_manager: PromptEngine,
+    statement_type: str,
+) -> Optional[List[Any]]:
+    """Every OTHER account's df of the same statement type — the sibling set the
+    production verify_commentary call was given.
+
+    Same construction as process_single_agent_item's own (:1137-1143). Repeated
+    rather than shared because re-verifying a patch against a DIFFERENT sibling
+    set is a different grounding pool, and that manufactures defects that were
+    never in the text; M1 step 6 folds all three sites into RunState.siblings.
+    """
+    if not dfs or not statement_type:
+        return None
+    return [
+        other_df for other_key, other_df in dfs.items()
+        if other_key != key
+        and prompt_manager.get_mapping_component(other_key, component="type") == statement_type
+    ]
+
+
+def _attempt_patch_first(
+    *,
+    key: str,
+    dfs: Dict[str, pd.DataFrame],
+    results: Dict[str, Dict[str, str]],
+    ai_helper,
+    prompt_manager: PromptEngine,
+    logger: PipelineRunLogger,
+    state: Optional[AccountState],
+    snapshot: Callable[[str], Dict[str, Any]],
+    attempts: List[Dict[str, Any]],
+) -> bool:
+    """Repair the proven defects in place before spending a full-chain retry.
+
+    Returns True when the stored text was replaced by a verified patch. A retry
+    today is 3 full calls; a patch is 0 (deterministic) or 1 ~300-token call.
+
+    This is the ONLY caller of the repair module in production, and it is behind
+    processing.feedback_loop.repair_mode, which defaults to "regenerate" — an
+    unconfigured deployment never reaches this function.
+    """
+    entry = results.get(key) or {}
+    validation = entry.get("agent_4_validation") or {}
+    reviews = validation.get("clause_reviews") or []
+    defective = count_defective_clauses(reviews)
+    # A ratio-only trigger means nothing was PROVEN wrong — there is no defect
+    # with a known correct value, so there is nothing a patch could act on.
+    if not defective or not repairable_reviews(defective):
+        return False
+    content = str(validation.get("final_content") or "")
+    df = dfs.get(key)
+    if not content.strip() or df is None:
+        return False
+    try:
+        statement_type = prompt_manager.get_mapping_component(key, component="type") or ""
+    except Exception:  # pragma: no cover - defensive
+        statement_type = ""
+
+    codes = sorted({str(r.get("code")) for r in repairable_reviews(defective)})
+    if state is not None:
+        state.transition(PHASE_DEFECTIVE, "repair_gate: %s defective clause(s)" % len(defective))
+        state.transition(PHASE_REPAIRING, "patch_first: %s" % ",".join(codes))
+    try:
+        outcome = repair_content(
+            content=content,
+            clause_reviews=reviews,
+            df=df,
+            sibling_dfs=_sibling_dfs_for(key, dfs, prompt_manager, statement_type),
+            language=getattr(ai_helper, "language", "Eng"),
+            statement_type=statement_type,
+            mapping_key=key,
+            ai_helper=ai_helper,
+            logger=logger,
+            style_pack=PromptStylePack(getattr(ai_helper, "language", "Eng")),
+        )
+    except Exception as exc:  # pragma: no cover - a repair must never break a run
+        logger.logger.warning("[Repair] %s: %s", key, exc)
+        if state is not None:
+            state.transition(PHASE_REGENERATING, "repair_error: %s" % str(exc)[:80])
+        return False
+
+    if outcome["log"]:
+        results[key].setdefault("repair_log", []).extend(outcome["log"])
+        if state is not None:
+            state.repairs.extend(outcome["log"])
+    if not outcome["changed"]:
+        reason = next((str(item.get("reason")) for item in reversed(outcome["log"]) if item.get("reason")), "no patch")
+        logger.logger.info("[Repair] %s: no patch applied (%s) — falling through to regeneration", key, reason)
+        if state is not None:
+            state.transition(PHASE_REGENERATING, "repair_guard_failed: %s" % reason[:80])
+        return False
+
+    # All three keys, unconditionally, mirroring the arbiter's own triple below.
+    # subagent_4 is not optional: _snapshot resolves content as subagent_4 ->
+    # subagent_2 -> subagent_1 and never reads "final", and most accounts have no
+    # subagent_4 at this point (the Validator is selective). Written BEFORE the
+    # snapshot, or the attempt the arbiter ranks is the unpatched text.
+    verified = [item for item in outcome["log"] if item.get("verified")]
+    results[key]["subagent_4"] = outcome["content"]
+    results[key]["agent_4_validation"] = {
+        "final_content": outcome["content"],
+        "clause_reviews": outcome["clause_reviews"],
+    }
+    results[key]["final"] = outcome["content"]
+    attempts.append(snapshot("patch_%s" % len(verified)))
+    if state is not None:
+        state.transition(
+            PHASE_GROUNDED,
+            "patch_verified: %s" % ",".join(str(item.get("code")) for item in verified),
+        )
+    logger.logger.info(
+        "[Repair] %s: %s patch(es) verified (%s) — retry avoided for those defect(s)",
+        key, len(verified), ",".join(str(item.get("mode")) for item in verified),
+    )
+    return True
+
+
 def _run_feedback_loop_for_key(
     key: str,
     dfs: Dict[str, pd.DataFrame],
@@ -2185,6 +2324,19 @@ def _run_feedback_loop_for_key(
         }
 
     attempts: List[Dict[str, Any]] = [_snapshot("original")]
+
+    # Patch-first: try to repair the proven defects in place BEFORE spending a
+    # full three-call retry on them. Off by default (repair_mode "regenerate"),
+    # so an unconfigured deployment behaves exactly as it does today. If the
+    # patch clears the account, the loop below finds nothing to do and returns
+    # 0 retries; if a guard refuses, the account is already in REGENERATING and
+    # the loop re-reads the same defect on its way there.
+    if str(feedback_config.get("repair_mode", "regenerate") or "regenerate").strip().lower() == "patch_first":
+        _attempt_patch_first(
+            key=key, dfs=dfs, results=results, ai_helper=ai_helper,
+            prompt_manager=prompt_manager, logger=logger, state=state,
+            snapshot=_snapshot, attempts=attempts,
+        )
 
     for retry_num in range(1, max_retries + 1):
         needs_feedback, ratio, unsupported = _evaluate_feedback_needed(results, key, threshold)
@@ -2432,6 +2584,12 @@ def run_generator_reprompt(
             logger,
             previous_output=previous_output,
             user_comment=(user_comments or {}).get(key, ""),
+            # dfs for the same reason the Validator call below already passes
+            # it: without it this regeneration loses BOTH its peer context and
+            # the sibling grounding, so a reprompted account was rebuilt from a
+            # strictly smaller prompt than the pass it is replacing — the same
+            # defect that was fixed on the feedback-retry path.
+            dfs=dfs,
             run_state=run_state,
         )
         updated_result = dict(existing_result) if isinstance(existing_result, dict) else {}
@@ -2508,6 +2666,7 @@ __all__ = [
     "TERMINAL_PHASES",
     "AccountState",
     "RunState",
+    "apply_house_style",
     "clean_agent_output",
     "extract_final_contents",
     "load_prompts_and_format",
