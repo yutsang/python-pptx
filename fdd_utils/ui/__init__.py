@@ -129,9 +129,11 @@ from .sidebar import (  # noqa: F401
     _safe_stem,
 )
 from .pptx_export import (  # noqa: F401
+    INSIGHT_SUMMARY_KEY,
     batch_extract_entity_data,
     batch_process_entity,
     batch_run_ai_for_entity,
+    build_insight_summary,
     build_section_summaries,
     generate_pptx_presentation,
     logger,

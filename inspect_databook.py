@@ -158,7 +158,7 @@ from fdd_utils.workbook import (
     reconcile_financial_statements,
     suggest_rollup_sheet_for_entity,
 )
-from fdd_utils.ui import derive_reconciliation_matched_keys
+from fdd_utils.ui import build_insight_summary, derive_reconciliation_matched_keys
 from fdd_utils.financial_common import get_pipeline_result_text
 
 pd.set_option("display.width", 200)
@@ -281,7 +281,15 @@ def check_font_metrics_available() -> Dict[str, bool]:
 # 1. Tab read summary
 # ---------------------------------------------------------------------------
 
-def check_tab_read_summary(databook_path: str, entity_name: str = "") -> Dict[str, pd.DataFrame]:
+def check_tab_read_summary(databook_path: str, entity_name: str = "",
+                           resolution_out: Optional[Dict[str, Any]] = None) -> Dict[str, pd.DataFrame]:
+    """resolution_out, when a dict is passed, is filled in place with the
+    resolver's own output. It was computed here and discarded; section 5d's
+    insight summary reads the per-account scores and unresolved_sheets out of
+    it, and on a run WITHOUT --run-ai there is no other place that has it (the
+    process_workbook_data call that would carry it only happens under
+    --run-ai). An out-parameter rather than a second return value so every
+    existing call site keeps working unchanged."""
     _hr("1. TAB READ SUMMARY")
     xl = pd.ExcelFile(databook_path)
     print(f"Sheets found in workbook: {xl.sheet_names}")
@@ -290,6 +298,8 @@ def check_tab_read_summary(databook_path: str, entity_name: str = "") -> Dict[st
         databook_path=databook_path, entity_name=entity_name, mode="All",
         return_resolution=True,
     )
+    if resolution_out is not None and isinstance(resolution, dict):
+        resolution_out.update(resolution)
     print(f"\nDetected language: {language}")
     print(f"Tabs successfully parsed into dfs: {len(dfs)} of {len(xl.sheet_names)} sheets")
     dfs_keys_normalized = {str(k).strip() for k in dfs.keys()}
@@ -1941,6 +1951,7 @@ def run_ai_checks(
     bs_recon: Optional[pd.DataFrame], is_recon: Optional[pd.DataFrame],
     limit: Optional[int] = None, workers: Optional[int] = None,
     accounts: Optional[List[str]] = None,
+    resolution: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     _hr("5-7. AI-DEPENDENT CHECKS (running full pipeline once — this costs real tokens/time)")
     from fdd_utils.ai import run_ai_pipeline_with_progress, SUBAGENT_SEQUENCE
@@ -2215,6 +2226,75 @@ def run_ai_checks(
             for line in str(text).splitlines() or [""]:
                 print(f"     {line}")
 
+    # -- 5d ---------------------------------------------------------------
+    # Claim contracts (M5) then the insight summary (N3). Both are internal
+    # and neither touches the text: the contract verdicts land on their own
+    # results key (never clause_reviews, which would perturb the retry gate
+    # and colour the deck) and the insight summary is not put on `results` at
+    # all, so no path exists from here into build_pptx_structured_payloads.
+    #
+    # NOTE: the in-pipeline hook (after set_final_fallbacks, gated on
+    # processing.claim_contracts.enabled) is NOT wired yet -- pipeline.py was
+    # being edited concurrently when this landed. This call is the same hook
+    # applied from outside, over the returned results, so the failure rates
+    # can be read before anything acts on them.
+    claim_tally: Dict[str, Any] = {}
+    from fdd_utils.ai.contracts import (
+        attach_claim_contracts, claim_contracts_enabled, summarise_claim_contracts,
+    )
+    _hr("5d. INSIGHT SUMMARY (internal — never enters the deck)")
+    if claim_contracts_enabled():
+        try:
+            _checked = attach_claim_contracts(results, dfs, language)
+            claim_tally = summarise_claim_contracts(_checked)
+        except Exception as _exc:
+            print(f"  (claim contracts skipped: {type(_exc).__name__}: {_exc})")
+        print("CLAIM CONTRACTS (measurement only — nothing retries or patches on these):")
+        if not claim_tally:
+            print("  No account's prompt injected any of the four instructions.")
+        for _det, _row in sorted(claim_tally.items()):
+            _rate = 100.0 * _row["passed"] / max(_row["fired"], 1)
+            print(f"  {_det:32s} fired={_row['fired']:3d}  pass={_row['passed']:3d}  "
+                  f"fail={_row['failed']:3d}  ({_rate:.0f}% carried out)")
+            if _row["failing_accounts"]:
+                print(f"      not carried out by: {', '.join(_row['failing_accounts'][:8])}"
+                      + (" ..." if len(_row["failing_accounts"]) > 8 else ""))
+        print()
+    else:
+        print("(claim contracts off — set processing.claim_contracts.enabled: true in "
+              "fdd_utils/config.yml to measure them)\n")
+
+    try:
+        _insight = build_insight_summary(
+            ai_results=results,
+            dfs=dfs,
+            mappings=get_effective_mappings(load_mappings(), resolution),
+            reconciliation=(bs_recon, is_recon),
+            resolution=resolution,
+            language=language,
+        )
+    except Exception as _exc:
+        _insight = {}
+        print(f"  (insight summary failed: {type(_exc).__name__}: {_exc})")
+    if _insight:
+        print(_insight["summary"])
+        print("\nVISIBLE ISSUES (deterministic — each carries the computation it came from):")
+        if not _insight["visible_issues"]:
+            print("  (none)")
+        for _issue in _insight["visible_issues"]:
+            print(f"  [{_issue['severity']:8s}] {_issue['issue']}")
+            print(f"             basis={_issue['basis']}  "
+                  f"evidence={_issue['evidence_ids'][:4]}"
+                  + (" ..." if len(_issue["evidence_ids"]) > 4 else ""))
+        print("\nQUESTIONS FOR THE CLIENT:")
+        if not _insight["client_questions"]:
+            print("  (none)")
+        for _q in _insight["client_questions"]:
+            print(f"  - {_q}")
+        _ext = _insight["external_research"]
+        print(f"\nEXTERNAL RESEARCH NEEDED: {_ext['needed']} — {_ext['reason']}")
+        print(f"WHAT TO DO FIRST: {_insight['commentary_instruction']}")
+
     _hr("6-7. NUMERIC GROUNDING + UNIT-LABEL SWEEP (this script's own independent check)")
     all_warnings: List[str] = []
     checked_count = 0
@@ -2291,6 +2371,11 @@ def run_ai_checks(
         "grounding_warnings": len(all_warnings),
         "stage_timing": stage_timing,
         "results": results,
+        # 5d. Internal only. Deliberately kept OUT of `results` so there is no
+        # path from here into the deck -- build_pptx_structured_payloads is
+        # handed `results`, never this dict.
+        "claim_contracts": claim_tally,
+        "insight_summary": _insight,
     }
 
 
@@ -2778,7 +2863,9 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
     check_font_metrics_available()
 
     summary: Dict[str, Any] = {"file": Path(path).name, "status": "ok"}
-    dfs = check_tab_read_summary(path, entity_name=entity_name)
+    extraction_resolution: Dict[str, Any] = {}
+    dfs = check_tab_read_summary(path, entity_name=entity_name,
+                                 resolution_out=extraction_resolution)
     summary["tabs_parsed"] = len(dfs)
 
     if dump_tab_name:
@@ -2866,6 +2953,37 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
     if combined_is_recon is not None:
         summary["is_match"] = combined_is_recon["Match"].value_counts().to_dict()
 
+    if not run_ai:
+        # The extraction-side half of the insight summary, free and offline.
+        # Everything it reads -- reconciliation breaks, resolution scores near
+        # the floor, unresolved sheets, unmapped accounts, untied breakdown
+        # tables -- exists before any LLM call, and having to pay for a
+        # 12-minute run to see it would make it useless as a pre-flight check.
+        # The AI-sourced half (clause defects, retries, claim contracts) is
+        # simply absent here; build_insight_summary omits, never fakes.
+        _hr("5d. INSIGHT SUMMARY — EXTRACTION HALF (internal; no AI ran, "
+            "so nothing text-side is included)")
+        try:
+            _pre = build_insight_summary(
+                ai_results={}, dfs=dfs,
+                mappings=get_effective_mappings(load_mappings(), extraction_resolution or None),
+                reconciliation=(combined_bs_recon, combined_is_recon),
+                resolution=extraction_resolution or None,
+            )
+            print(_pre["summary"])
+            for _issue in _pre["visible_issues"]:
+                print(f"  [{_issue['severity']:8s}] {_issue['issue']}")
+                print(f"             basis={_issue['basis']}")
+            if not _pre["visible_issues"]:
+                print("  (no deterministic finding on the extraction side)")
+            if _pre["client_questions"]:
+                print("\nQUESTIONS FOR THE CLIENT:")
+                for _q in _pre["client_questions"]:
+                    print(f"  - {_q}")
+            summary["insight_summary"] = _pre
+        except Exception as _exc:
+            print(f"  (insight summary failed: {type(_exc).__name__}: {_exc})")
+
     if run_ai:
         # sheet_names is legitimately [] here when no Financials-like sheet was
         # found (see above) -- process_workbook_data's selected_sheet and
@@ -2873,6 +2991,10 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         # run_ai_checks's signature) both tolerate None just fine.
         selected_sheet_for_ai = sheet_names[0] if sheet_names else None
         language = "Eng"
+        # Section 5d's insight summary reads resolution scores and
+        # unresolved_sheets. `state` already carries both and was previously
+        # read for `language` alone.
+        resolution_for_insight: Optional[Dict[str, Any]] = None
         try:
             from fdd_utils.workbook import process_workbook_data
             # --financials-from applies here too. Left off, this call went
@@ -2886,12 +3008,13 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                                            financials_from=financials_from,
                                            financials_sheet=selected_sheet_for_ai if financials_from else None)
             language = state.get("language", "Eng")
+            resolution_for_insight = state.get("resolution")
         except Exception:
             pass
         ai_summary = run_ai_checks(
             path, selected_sheet_for_ai, dfs, entity_name, model_type, model_name, language,
             combined_bs_recon, combined_is_recon, limit=limit, workers=workers,
-            accounts=accounts,
+            accounts=accounts, resolution=resolution_for_insight,
         )
         summary["ai"] = ai_summary
 

@@ -177,6 +177,7 @@ def replay_run(
     dfs: Dict[str, Any],
     *,
     use_archived_llm_reviews: bool = True,
+    direction_out: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Re-run verify_commentary over every account's final text.
 
@@ -202,11 +203,19 @@ def replay_run(
             continue
         archived = ((result.get("agent_4_validation") or {}).get("clause_reviews")
                     if isinstance(result.get("agent_4_validation"), dict) else None)
+        # M3's direction findings ride an out-parameter, deliberately outside
+        # clause_reviews: in production they must not colour the deck or move
+        # the unsupported ratio until their false-positive rate is known.
+        found: List[Dict[str, Any]] = []
         reviews = verify_commentary(
             text, df,
             archived if use_archived_llm_reviews else None,
             sibling_dfs=sibling_dfs_for_account(key, dfs, prompt_manager),
+            direction_findings=found,
         )
+        if direction_out is not None:
+            for finding in found:
+                direction_out.append(dict(finding, account=key))
         for i, review in enumerate(reviews):
             records.append({
                 "account": key,
@@ -216,6 +225,11 @@ def replay_run(
                 "category": review.get("category"),
                 "reason": review.get("reason", ""),
                 "text_source": source_field,
+                # Optional since M1: absent on a supported review, and on any
+                # review produced before typed defects landed.
+                "code": review.get("code"),
+                "span": review.get("span"),
+                "expected": review.get("expected"),
             })
     return records
 
@@ -263,8 +277,15 @@ def print_defect_table(records: List[Dict[str, Any]]) -> None:
         print(f"\n  {account}  ({len(rows)} unsupported of {total} reviews)")
         for r in rows:
             clause = _clause_key(r["clause"])
-            print(f"    [{r['category']}] {clause[:88]}")
+            print(f"    [{r['category']}/{r.get('code')}] {clause[:80]}")
             print(f"        reason: {_clause_key(r['reason'])[:110]}")
+
+    print("\n--- DEFECT CODES ---")
+    coded = Counter(r.get("code") for r in unsupported)
+    if not coded:
+        print("  (none)")
+    for code, count in coded.most_common():
+        print(f"  {str(code):<26} {count:>4}")
 
     print("\n--- TOTALS ---")
     accounts = {r["account"] for r in records}
@@ -276,6 +297,24 @@ def print_defect_table(records: List[Dict[str, Any]]) -> None:
     for category, count in Counter(r["category"] for r in records).most_common():
         flagged = sum(1 for r in unsupported if r["category"] == category)
         print(f"      {str(category):<16} {count:>5} total, {flagged:>4} unsupported")
+
+
+def print_direction_findings(findings: List[Dict[str, Any]], reviews: int) -> None:
+    """M3's report-only channel.
+
+    Printed apart from the defect table on purpose: these findings are NOT
+    clause_reviews and must not be read as part of the unsupported count. The
+    number that matters here is how often the detector fires at all — it stays
+    report-only until that rate has been read on a real book and the firings
+    hand-checked.
+    """
+    print("\n--- DIRECTION FINDINGS (report-only channel, NOT clause_reviews) ---")
+    if not findings:
+        print("  (none fired)")
+    for finding in findings:
+        print(f"  {finding.get('account')}: {_clause_key(finding.get('clause', ''))[:90]}")
+        print(f"      {_clause_key(finding.get('reason', ''))[:150]}")
+    print(f"  fired {len(findings)} time(s) over {reviews} clause reviews")
 
 
 # --------------------------------------------------------------------------
@@ -424,7 +463,10 @@ def run_decoys(
         for v in sample:
             for mode, sampler in DECOY_MODES.items():
                 decoy = abs(v) * sampler(rng)
-                hit = source.matches(decoy)
+                # matches() returns the matched fact (or None) since M2b, so the
+                # acceptance tally has to test for presence, not truthiness of a
+                # bool it no longer gets.
+                hit = source.matches(decoy) is not None
                 tried += 1
                 accepted += int(hit)
                 per_mode[mode] += 1
@@ -507,7 +549,9 @@ def main() -> None:
     print(f"rebuilt {len(dfs)} dfs in {time.perf_counter() - started:.1f}s")
     check_pairing(results, dfs, args.databook, run_dir)
 
-    records = replay_run(results, dfs, use_archived_llm_reviews=not args.no_llm_reviews)
+    direction: List[Dict[str, Any]] = []
+    records = replay_run(results, dfs, use_archived_llm_reviews=not args.no_llm_reviews,
+                         direction_out=direction)
     agree, comparable = archived_agreement(results, records)
     print(f"\nbaseline fidelity: replay reproduces {agree}/{comparable} archived verdicts "
           f"({100.0 * agree / max(comparable, 1):.1f}%) — a gap here is code drift since the run, "
@@ -519,6 +563,8 @@ def main() -> None:
               f"by_category={dict(Counter(r['category'] for r in records))}")
     else:
         print_defect_table(records)
+
+    print_direction_findings(direction, len(records))
 
     if args.snapshot:
         write_snapshot(args.snapshot, records, {

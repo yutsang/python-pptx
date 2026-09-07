@@ -18,6 +18,40 @@ import re
 from typing import Any, Dict, List
 
 
+#: The defect vocabulary every deterministic detector writes into a
+#: clause_review's optional `code` key. A plain frozenset, not an Enum: the
+#: codes are carried in dicts that get yaml.dump'd into the run archive and
+#: json'd into the UI, so they have to be plain strings on the wire anyway, and
+#: an Enum would only add a .value at every write site.
+#:
+#: Routing (M4): AMOUNT_SCALE_ERROR and DATE_UNSUPPORTED are patchable — the
+#: source figure is known. Every COMPOSITION_* code routes to regeneration
+#: (a sentence whose parts do not add up cannot be fixed by swapping a token),
+#: and so do both LLM_* codes.
+#:
+#: LLM_UNSUPPORTED_FACT is the dominant class, not an afterthought: measured
+#: across 247 archived run folders (25,136 clause reviews, 418 unsupported) it
+#: covers 123 LLM-prose hallucinations against 99 deterministic amount misses.
+#: UNCATEGORIZED exists so the M6 histogram has no unlabelled bucket -- 25
+#: archived reviews carry `category: None`.
+#: CLAIM_MISSING is reserved for M5's claim contracts and must NEVER enter
+#: clause_reviews: an entry there perturbs the unsupported-ratio retry gate and
+#: colours the exported client deck.
+DEFECT_CODES = frozenset({
+    "AMOUNT_UNSUPPORTED",
+    "AMOUNT_SCALE_ERROR",
+    "DATE_UNSUPPORTED",
+    "DIRECTION_MISMATCH",
+    "COMPOSITION_GAP",
+    "COMPOSITION_UNIT_ERROR",
+    "COMPOSITION_DOUBLE_COUNT",
+    "LLM_UNSUPPORTED_CAUSE",
+    "LLM_UNSUPPORTED_FACT",
+    "UNCATEGORIZED",
+    "CLAIM_MISSING",
+})
+
+
 # Qwen3 (and other reasoning models) emit a <think>...</think> block before the
 # answer. With no reasoning parser on the server it arrives inline in the content
 # and pollutes BOTH the bullet text and any JSON. Strip it everywhere, tolerating a
@@ -146,13 +180,24 @@ def format_validator_feedback_for_reprompt(clause_reviews: List[Dict[str, Any]],
     if language == "Chi":
         header = "验证器标记了以下不支持的内容需要修正:\n"
         template = "- 分句: \"{clause}\" — 问题: {reason}"
+        fix_scale = "（写错数量级：来源数字为 {expected:,.0f}，请照此改写）"
     else:
         header = "The validator flagged the following unsupported clauses for correction:\n"
         template = '- Clause: "{clause}" — Issue: {reason}'
-    items = [
-        template.format(clause=str(r.get("clause", ""))[:120], reason=str(r.get("reason", ""))[:200])
-        for r in unsupported[:5]
-    ]
+        fix_scale = "(wrong scale; the source figure is {expected:,.0f} — use it)"
+    items = []
+    for r in unsupported[:5]:
+        reason = str(r.get("reason", ""))[:200]
+        # A typed defect carrying an `expected` says what the right figure is.
+        # "wrong scale; the source figure is 7.8万元 (sheet 'Cash' row 12)" is a
+        # correctable instruction; "not found in source data" is a shrug, and
+        # the model answers it by deleting the sentence. This improves the
+        # EXISTING regeneration retry, before any patch machinery lands.
+        if r.get("code") == "AMOUNT_SCALE_ERROR" and isinstance(r.get("expected"), (int, float)):
+            reason = f"{reason} {fix_scale.format(expected=float(r['expected']))}"
+        elif r.get("code") == "DATE_UNSUPPORTED" and r.get("expected"):
+            reason = f"{reason} [{r.get('code')} -> {r.get('expected')}]"
+        items.append(template.format(clause=str(r.get("clause", ""))[:120], reason=reason))
     return header + "\n".join(items)
 
 
@@ -165,12 +210,13 @@ def _fallback_clause_reviews(final_content: str) -> List[Dict[str, Any]]:
     is only the no-JSON safety net that keeps the shape valid and stops re-loops.
     """
     reviews: List[Dict[str, Any]] = []
-    for _start, _end, clause in segment_clauses(final_content):
+    for start, end, clause in segment_clauses(final_content):
         reviews.append({
             "clause": clause,
             "supported": True,
             "category": "data-backed",
             "reason": "Auto-segmented (validator JSON unparseable).",
+            "span": [int(start), int(end)],
         })
     return reviews
 
@@ -404,15 +450,43 @@ def _to_float(token: str) -> Optional[float]:
         return None
 
 
-def extract_amounts(clause: str) -> List[float]:
-    """Extract absolute money amounts (scaled to base units) from a clause.
+# An amount's span is NOT the regex's group(0). Every pattern above stops at the
+# digits-plus-scale-word and deliberately leaves the currency out on one side or
+# the other: _AMT_WAN matches "7.8万" out of "7.8万元", _AMT_GROUPED matches
+# "1,234,567" out of "1,234,567元", and _AMT_CUR_PREFIX matches "人民币1,234,567"
+# but stops before its 元. A patch that rewrote group(0) would leave the unit
+# dangling or duplicated ("人民币7.8万元" -> "人民币9.1万元元"), which is what
+# broke two earlier attempts at this. So the stored span extends over a
+# following unit/currency word and back over a leading currency prefix.
+#
+# The trailing guard refuses a suffix immediately followed by a digit, so the
+# "CNY" of "…1,234 CNY5,678" is read as the NEXT amount's prefix rather than
+# swallowed as this one's suffix.
+_AMT_SUFFIX_RE = re.compile(r"[ \t]{0,3}(?:元|圆|yuan|million|mn|RMB|CNY)", re.IGNORECASE)
+_AMT_PREFIX_RE = re.compile(r"(?:人民币|人民幣|CNY|RMB|USD|HKD|US\$|\$)[ \t]{0,3}$", re.IGNORECASE)
 
-    Scale-bearing forms (million / 万 / 亿 / m / K) are parsed first and their
-    matched text blanked so a following currency-prefix/grouped pass cannot
-    double-count the same figure (e.g. 'CNY5.8 million' must yield 5.8e6, not
-    also 5.8).
+
+def _patch_span(text: str, start: int, end: int) -> Tuple[int, int]:
+    """Widen a raw regex match to the span a repair would have to rewrite."""
+    suffix = _AMT_SUFFIX_RE.match(text, end)
+    if suffix and not text[suffix.end():suffix.end() + 1].isdigit():
+        end = suffix.end()
+    prefix = _AMT_PREFIX_RE.search(text, 0, start)
+    if prefix:
+        start = prefix.start()
+    return (start, end)
+
+
+def extract_amount_spans(clause: str) -> List[Tuple[float, int, int]]:
+    """Every money amount in `clause` as (value, start, end).
+
+    Offsets index `clause` itself: the per-pass blanking below substitutes a
+    same-width run of spaces, and the fullwidth-comma normalisation swaps a
+    same-width character, so nothing shifts. `clause[start:end]` is the amount
+    WITH its unit/currency (see _patch_span), which is the unit of text a repair
+    replaces.
     """
-    amounts: List[float] = []
+    amounts: List[Tuple[float, int, int]] = []
     # A fullwidth comma inside a figure is a thousands separator, not a clause
     # break. The Auditor introduces them -- measured across archived runs, they
     # go from 13 occurrences in Generator output to 46 in Auditor output -- and
@@ -434,10 +508,24 @@ def extract_amounts(clause: str) -> List[float]:
         def _sub(m: "re.Match") -> str:
             v = _to_float(m.group(1))
             if v is not None:
-                amounts.append(v * scale)
+                start, end = _patch_span(work, m.start(), m.end())
+                amounts.append((v * scale, start, end))
             return " " * len(m.group(0))
         work = rx.sub(_sub, work)
+    amounts.sort(key=lambda triple: triple[1])
     return amounts
+
+
+def extract_amounts(clause: str) -> List[float]:
+    """Extract absolute money amounts (scaled to base units) from a clause.
+
+    Scale-bearing forms (million / 万 / 亿 / m / K) are parsed first and their
+    matched text blanked so a following currency-prefix/grouped pass cannot
+    double-count the same figure (e.g. 'CNY5.8 million' must yield 5.8e6, not
+    also 5.8). Values only; extract_amount_spans carries the offsets a repair
+    needs.
+    """
+    return [value for value, _s, _e in extract_amount_spans(clause)]
 
 
 _BARE_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
@@ -503,11 +591,174 @@ def _numbers_in_text(text: str) -> List[float]:
     return out
 
 
-class SourceIndex:
-    """Numeric values present in an account's source data, for grounding amounts."""
+#: Every fact carries `kind`. It is not decoration: `classify_miss` looks at
+#: `cell`/`column_total` ONLY, the window-sum tolerance is picked by it, and M4's
+#: repair router refuses to cite anything synthetic as a patch source.
+FACT_KINDS = frozenset({
+    "cell", "column_total", "window_sum", "analysis_cell",
+    "note_number", "annualized_note", "sibling_cell", "date",
+})
 
-    def __init__(self, values: List[float]):
-        self.values = [v for v in values if v is not None]
+#: Facts a scale classification and a repair may cite: the account's own real
+#: cells and the column totals of its own frame. Nothing synthetic, nothing from
+#: another tab, nothing scraped out of a note blob.
+#:
+#: `analysis_cell` -- the account's OWN multi-period frame, which is also what
+#: the Generator was shown -- is in the set, though the plan's rule named only
+#: cell/column_total. Measured on two real books by corrupting every own cell
+#: x1000: without it 75.4%/82.2% of corruptions resolve to exactly one scale
+#: factor and 14.8%/3.6% resolve to none (the true source was a historical
+#: period that lives only in the analysis frame); with it, 89.1%/83.9% resolve
+#: uniquely, 0%/1.9% resolve to none, and ambiguity rises by 1.0pp/0.0pp. It is
+#: still the account's own df, which is the part of the rule that carries the
+#: result -- siblings, window sums and note-blob numbers stay out.
+_OWN_HARD_KINDS = ("cell", "column_total", "analysis_cell")
+
+#: Tolerance for an adjacent-window sum, against max(500, 5%) for a real cell.
+#: See SourceIndex.matches for why the two differ.
+_WINDOW_SUM_REL_TOL = 0.005
+
+#: classify_miss's own rule. Both numbers are load-bearing and measured; see
+#: SourceIndex.classify_miss before touching either.
+_SCALE_MISS_FACTORS = (1000.0, 0.001, 10000.0, 0.0001)
+_SCALE_MISS_REL_TOL = 0.005
+
+
+def _fact(value, kind: str, *, sheet=None, row_idx=None, row_desc=None,
+          col_label=None, multiplier=None, row_range=None) -> Dict[str, Any]:
+    """One source fact, with every field coerced to a plain builtin.
+
+    Coercion is not tidiness. These records are written into the run archive by
+    an unsanitized `yaml.dump` and into the UI by `json.dumps`, and a numpy
+    scalar or a pandas Timestamp arriving there raises or emits a
+    `!!python/object` tag that nothing can read back. Values that cannot be
+    coerced become None rather than travelling as their original object.
+    """
+    def _s(v):
+        return None if v is None else str(v)
+
+    def _i(v):
+        try:
+            return None if v is None else int(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _f(v):
+        try:
+            return None if v is None else float(v)
+        except (TypeError, ValueError):
+            return None
+
+    rec: Dict[str, Any] = {
+        "value": _f(value),
+        "kind": str(kind),
+        "sheet": _s(sheet),
+        "row_desc": _s(row_desc),
+        "col_label": _s(col_label),
+        "multiplier": _f(multiplier),
+    }
+    # Synthetic kinds span rows, so they carry a row_range where a cell carries
+    # a row_idx (the plan's shape). Spans are plain 2-element int lists.
+    if row_range is not None:
+        lo, hi = row_range
+        rec["row_range"] = [_i(lo), _i(hi)]
+    else:
+        rec["row_idx"] = _i(row_idx)
+    return rec
+
+
+def describe_fact(fact: Optional[Dict[str, Any]]) -> str:
+    """Human-readable provenance for one fact, for a reason string or a prompt."""
+    if not isinstance(fact, dict):
+        return "unknown source"
+    value = fact.get("value")
+    # A date fact's value is a "YYYY-MM-DD" string, not a number.
+    head = f"{value:,.0f}" if isinstance(value, (int, float)) else str(value)
+    bits = [head, f"({fact.get('kind')}"]
+    if fact.get("sheet"):
+        bits.append(f"sheet '{fact['sheet']}'")
+    if fact.get("row_idx") is not None:
+        bits.append(f"row {fact['row_idx']}")
+    elif fact.get("row_range"):
+        lo, hi = fact["row_range"]
+        bits.append(f"rows {lo}-{hi}")
+    if fact.get("row_desc"):
+        bits.append(f"'{str(fact['row_desc'])[:40]}'")
+    if fact.get("col_label"):
+        bits.append(f"col {fact['col_label']}")
+    return bits[0] + " " + " ".join(bits[1:]) + ")"
+
+
+def _frame_sheet(df) -> Optional[str]:
+    attrs = getattr(df, "attrs", None) or {}
+    integrity = attrs.get("integrity") or {}
+    return attrs.get("source_sheet_name") or integrity.get("sheet_name") or attrs.get("block_title")
+
+
+def _frame_multiplier(df):
+    attrs = getattr(df, "attrs", None) or {}
+    return attrs.get("source_multiplier")
+
+
+def _row_provenance(df) -> Tuple[List[Optional[str]], List[Optional[int]], List[Optional[str]]]:
+    """(row_desc, row_idx, row_type) per POSITIONAL row of `df`.
+
+    row_desc comes from the frame's first column (the block-title column, whose
+    cells are the line-item descriptions); row_idx from INTERNAL_ROW_KEY, which
+    is the raw sheet row and the only thing that points back at the workbook;
+    row_type from attrs['row_types_by_description'] ('detail' / 'breakdown' /
+    'subtotal' / 'total').
+    """
+    n = len(df.index)
+    descs: List[Optional[str]] = [None] * n
+    idxs: List[Optional[int]] = [None] * n
+    types: List[Optional[str]] = [None] * n
+    try:
+        label_col = next((c for c in df.columns if c != INTERNAL_ROW_KEY), None)
+        row_types = (getattr(df, "attrs", None) or {}).get("row_types_by_description") or {}
+        if label_col is not None:
+            for pos, cell in enumerate(df[label_col].tolist()):
+                descs[pos] = None if cell is None else str(cell)
+                types[pos] = row_types.get(descs[pos])
+        if INTERNAL_ROW_KEY in df.columns:
+            for pos, cell in enumerate(df[INTERNAL_ROW_KEY].tolist()):
+                try:
+                    idxs[pos] = int(cell)
+                except (TypeError, ValueError):
+                    idxs[pos] = None
+    except Exception:
+        pass
+    return descs, idxs, types
+
+
+class SourceIndex:
+    """Source facts present in an account's data, for grounding amounts.
+
+    Stores fact RECORDS (value + provenance), not bare floats: a verdict of
+    "matched source data" was unfalsifiable after the fact, which is why
+    measuring the pool's behaviour needed a bit-exact reimplementation of this
+    class. `self.values` is kept as the parallel float list because the decoy
+    harness and diagnostics report pool size from it.
+    """
+
+    def __init__(self, values: List[Any]):
+        # Accepts either a bare List[float] (the CLI/diagnostic path, which has
+        # no frame to draw provenance from) or a list of fact records. Bare
+        # floats become kind="cell" with null provenance, so classify_miss still
+        # returns a scale verdict for them -- just with source_ref=None.
+        self.facts: List[Dict[str, Any]] = []
+        for item in values or []:
+            if item is None:
+                continue
+            if isinstance(item, dict):
+                if item.get("value") is not None:
+                    self.facts.append(item)
+            else:
+                coerced = _fact(item, "cell")
+                if coerced["value"] is not None:
+                    self.facts.append(coerced)
+        self.values: List[float] = [f["value"] for f in self.facts]
+        self.date_facts: List[Dict[str, Any]] = []
 
     @staticmethod
     def _adjacent_window_sums(col_vals: List[float], max_window: int = 4) -> List[float]:
@@ -518,7 +769,12 @@ class SourceIndex:
         that were never a labelled subtotal in the sheet). Bounded to small
         windows, not a full subset-sum search, to keep this O(n) and keep the
         false-negative risk (a genuinely wrong number coincidentally matching
-        some arbitrary window) low."""
+        some arbitrary window) low.
+
+        Kept as the plain-list form for callers with no frame (the CLI mirrors
+        it); _window_facts below is what the pool actually uses, and it applies
+        the bounds recorded there.
+        """
         sums: List[float] = []
         n = len(col_vals)
         for window in range(2, max_window + 1):
@@ -527,27 +783,97 @@ class SourceIndex:
         return sums
 
     @classmethod
-    def _column_values(cls, df, skip_cols: tuple = ()) -> List[float]:
-        values: List[float] = []
+    def _window_facts(cls, cells: List[Dict[str, Any]], row_types: List[Optional[str]],
+                      max_window: int = 4) -> List[Dict[str, Any]]:
+        """Adjacent-window sums, bounded three ways.
+
+        These sums turn n rows into ~4n unlabelled acceptors, and measurement
+        made them the single largest remaining acceptor of decoy figures once
+        siblings and the formatted columns were out of the pool: with them
+        stubbed out entirely, decoy acceptance fell from 41.4% to 35.7% on one
+        book. Deleting them is not an option — the case they were added for is
+        real and documented above (four adjacent Other-payables line items cited
+        as one figure) — so they are bounded instead:
+
+        * MAIN FRAME ONLY. The caller passes windows=False for the nested
+          analysis frame, for sibling tabs and for note-blob numbers. A window
+          over another tab's rows was never a claim anyone wrote.
+        * NO TOTAL OR SUBTOTAL ROW inside the window, and every row in the
+          window must share one row_type. A run that mixes a parent line with
+          the breakdown lines underneath it (AR lists 8 counterparties under
+          租金收入) is a double-count, not a grouping, and a run that swallows
+          Total is the column total plus noise.
+        * matched at a tighter tolerance than a real cell (see `matches`).
+
+        Unknown row types are treated as their own group, so a frame carrying no
+        row_types_by_description keeps the old behaviour.
+        """
+        facts: List[Dict[str, Any]] = []
+        n = len(cells)
+        for window in range(2, max_window + 1):
+            for start in range(0, n - window + 1):
+                chunk = cells[start:start + window]
+                types = {row_types[c["_pos"]] for c in chunk}
+                if len(types) != 1:
+                    continue
+                if next(iter(types)) in ("total", "subtotal"):
+                    continue
+                first, last = chunk[0], chunk[-1]
+                facts.append(_fact(
+                    sum(c["value"] for c in chunk), "window_sum",
+                    sheet=first.get("sheet"),
+                    row_range=(first.get("row_idx"), last.get("row_idx")),
+                    row_desc=f"{first.get('row_desc')}…{last.get('row_desc')}",
+                    col_label=first.get("col_label"),
+                    multiplier=first.get("multiplier"),
+                ))
+        return facts
+
+    @classmethod
+    def _column_facts(cls, df, skip_cols: tuple = (), *, cell_kind: str = "cell",
+                      total_kind: str = "column_total", windows: bool = True) -> List[Dict[str, Any]]:
+        facts: List[Dict[str, Any]] = []
+        descs, row_idxs, row_types = _row_provenance(df)
+        sheet = _frame_sheet(df)
+        multiplier = _frame_multiplier(df)
         for col in df.columns:
             if col in skip_cols:
                 continue
             series = df[col]
-            col_vals: List[float] = []
+            cells: List[Dict[str, Any]] = []
             if getattr(series, "dtype", None) is not None and series.dtype.kind in "if":
-                col_vals = [float(v) for v in series.dropna().tolist()]
+                pairs = [(pos, float(v)) for pos, v in enumerate(series.tolist())
+                         if v is not None and v == v]  # NaN != NaN — same set dropna() gave
             else:
-                for cell in series.tolist():
+                pairs = []
+                for pos, cell in enumerate(series.tolist()):
                     v = _to_float(cell) if isinstance(cell, (int, float, str)) else None
                     if v is not None:
-                        col_vals.append(v)
-            values += col_vals
+                        pairs.append((pos, v))
+            for pos, value in pairs:
+                rec = _fact(value, cell_kind, sheet=sheet, row_idx=row_idxs[pos],
+                            row_desc=descs[pos], col_label=col, multiplier=multiplier)
+                rec["_pos"] = pos
+                cells.append(rec)
+            facts += cells
             # Add the column total — commentary frequently cites a total that
             # isn't a single cell; including it avoids false hallucination flags.
-            if col_vals:
-                values.append(sum(col_vals))
-            values += cls._adjacent_window_sums(col_vals)
-        return values
+            if cells:
+                facts.append(_fact(
+                    sum(c["value"] for c in cells), total_kind, sheet=sheet,
+                    row_range=(row_idxs[cells[0]["_pos"]], row_idxs[cells[-1]["_pos"]]),
+                    row_desc="column total", col_label=col, multiplier=multiplier,
+                ))
+            if windows:
+                facts += cls._window_facts(cells, row_types)
+        for rec in facts:
+            rec.pop("_pos", None)
+        return facts
+
+    @classmethod
+    def _column_values(cls, df, skip_cols: tuple = ()) -> List[float]:
+        """Float-only view of _column_facts, for callers that want the old shape."""
+        return [f["value"] for f in cls._column_facts(df, skip_cols=skip_cols)]
 
     @staticmethod
     def _non_amount_cols(df) -> tuple:
@@ -570,11 +896,22 @@ class SourceIndex:
         )
 
     @classmethod
-    def _values_for_one_df(cls, df) -> List[float]:
-        values: List[float] = []
+    def _facts_for_one_df(cls, df, *, own: bool = True) -> List[Dict[str, Any]]:
+        """Every fact one frame contributes.
+
+        `own=False` is a sibling tab: its facts are all filed as `sibling_cell`
+        so `classify_miss` and any repair can exclude them by kind alone, and it
+        contributes no adjacent-window sums.
+        """
+        facts: List[Dict[str, Any]] = []
         if df is None or not hasattr(df, "columns"):
-            return values
-        values += cls._column_values(df, skip_cols=cls._non_amount_cols(df))
+            return facts
+        cls_sheet = _frame_sheet(df)
+        cell_kind = "cell" if own else "sibling_cell"
+        total_kind = "column_total" if own else "sibling_cell"
+        facts += cls._column_facts(df, skip_cols=cls._non_amount_cols(df),
+                                   cell_kind=cell_kind, total_kind=total_kind,
+                                   windows=own)
         # df is `projection_df` — a SINGLE latest-period snapshot. Multi-year
         # trend commentary ("increased from CNY384M as at 2023-12-31 to
         # CNY709M as at 2024-12-31") is written from df.attrs["prompt_analysis_df"]
@@ -589,12 +926,19 @@ class SourceIndex:
         # above, which had gone without it.
         analysis_df = df.attrs.get("prompt_analysis_df")
         if analysis_df is not None and hasattr(analysis_df, "columns"):
-            values += cls._column_values(analysis_df, skip_cols=cls._non_amount_cols(analysis_df))
+            facts += cls._column_facts(
+                analysis_df, skip_cols=cls._non_amount_cols(analysis_df),
+                cell_kind="analysis_cell" if own else "sibling_cell",
+                total_kind="analysis_cell" if own else "sibling_cell",
+                windows=False,
+            )
         # Also ground against numbers cited in the supporting notes / remarks
         # (df.attrs), e.g. registered capital "7000万美元" that never appears in
         # the numeric table. Without this they were false-flagged as hallucinations.
         text_values = _numbers_in_text(_attr_text_blob(df))
-        values += text_values
+        note_kind = "note_number" if own else "sibling_cell"
+        facts += [_fact(v, note_kind, sheet=cls_sheet, row_desc="notes/remarks")
+                  for v in text_values]
         # Detail/remark-row figures (e.g. a stamp-duty sub-line that only ever
         # appears inside a note, never as its own numeric-table row) have no
         # pre-calculated annualized column the way a main account row does
@@ -613,12 +957,21 @@ class SourceIndex:
             annualization_months = integrity.get("annualization_months")
         if isinstance(annualization_months, (int, float)) and 0 < annualization_months < 12:
             factor = 12.0 / annualization_months
-            values += [v * factor for v in text_values]
-        return values
+            facts += [
+                _fact(v * factor, "annualized_note" if own else "sibling_cell",
+                      sheet=cls_sheet, row_desc=f"notes/remarks x{factor:.4g} (annualized)")
+                for v in text_values
+            ]
+        return facts
+
+    @classmethod
+    def _values_for_one_df(cls, df) -> List[float]:
+        """Float-only view of _facts_for_one_df, for callers that want the old shape."""
+        return [f["value"] for f in cls._facts_for_one_df(df)]
 
     @classmethod
     def from_df(cls, df, sibling_dfs: Optional[List[Any]] = None) -> "SourceIndex":
-        values: List[float] = cls._values_for_one_df(df)
+        facts: List[Dict[str, Any]] = cls._facts_for_one_df(df)
         # Commentary for one account sometimes legitimately cites a figure that
         # actually lives on a DIFFERENT tab — e.g. "Other payables" explaining
         # accrued interest by naming the CNY198.0 million bank loan it relates
@@ -639,8 +992,10 @@ class SourceIndex:
         # Without them (plus the two exclusions above) those fall to 48.7% and
         # 45.6%; ad-hoc/workbench/replay_verification.py --decoys, sampling
         # differently, reads 94.8% -> 39.4% and 85.9% -> 42.1% on two books. Not
-        # yet a discriminating check — the adjacent-window sums are what is left
-        # (see _adjacent_window_sums) — but no longer one that accepts anything.
+        # yet a discriminating check — the adjacent-window sums were what was
+        # left — but no longer one that accepts anything. The window sums have
+        # since been bounded too (see _window_facts), taking decoy acceptance to
+        # 30-34% on four books.
         # So the DEFAULT FLIPPED TO OFF (processing.grounding_include_siblings,
         # false); set it true to get the behaviour described above back for a
         # file that needs it. 711 of 30,370 replayed archived clause verdicts
@@ -648,11 +1003,19 @@ class SourceIndex:
         # way.
         if get_safe_grounding_include_siblings():
             for sib in sibling_dfs or []:
-                values += cls._values_for_one_df(sib)
-        return cls(values)
+                facts += cls._facts_for_one_df(sib, own=False)
+        index = cls(facts)
+        index.date_facts = _harvest_source_date_facts(df)
+        return index
 
-    def matches(self, target: float) -> bool:
-        """±5% tolerance (rounding noise) at every scale; near-exact below that.
+    def matches(self, target: float) -> Optional[Dict[str, Any]]:
+        """The first source fact this amount matches, or None.
+
+        Returns the FACT, not a bool, so a caller can say which value grounded
+        the clause; `if source.matches(x)` still reads as before because a fact
+        record is never empty.
+
+        ±5% tolerance (rounding noise) at every scale; near-exact below that.
 
         Compares MAGNITUDES: extract_amounts() drops the leading sign, so a negative
         source cell (e.g. retained earnings -70,769,000) must still match a clause
@@ -670,45 +1033,170 @@ class SourceIndex:
         A flat 500 floor covers near-exact small values that used to hit the
         max(1,...) branch; 5% (matching the >=1m tier) covers 万-rounding at
         any sub-million magnitude.
+
+        A window_sum is held to a tighter tolerance than a real cell. The 5%
+        band exists for how a writer ROUNDS a figure (11,555 written as
+        "1.2万元"); a window sum is not a figure anyone read off the sheet, it
+        is one of ~4n synthetic aggregates, and giving each of them a 5% band
+        is what made them the largest remaining acceptor of decoys. The
+        documented case they exist for -- four adjacent Other-payables lines
+        cited as "CNY322,116" -- is an EXACT sum, so it survives the tighter
+        band; a 万-rounded grouping of small lines no longer does, and that
+        cost is recorded rather than hidden.
         """
         t = abs(target)
-        for v in self.values:
-            a = abs(v)
+        for fact in self.facts:
+            a = abs(fact["value"])
             if a == 0:
                 # A genuine zero source cell should only match a target that
                 # ALSO rounds to zero — the 万-rounding tolerance below is
                 # for rounding noise around a real nonzero figure, not for
                 # letting an arbitrary small number match "nothing there".
                 if round(t) == 0:
-                    return True
+                    return fact
+                continue
+            if fact["kind"] == "window_sum":
+                if abs(t - a) <= _WINDOW_SUM_REL_TOL * a:
+                    return fact
                 continue
             if abs(t - a) <= max(500.0, 0.05 * a):
-                return True
-        return False
+                return fact
+        return None
+
+    def classify_miss(self, target: float) -> Dict[str, Any]:
+        """Why an amount missed: a scale error with a source, or unsupported.
+
+        This deliberately does NOT reuse `matches()`. Measured on the reference
+        databook with the production pool, of 226 real cell values corrupted
+        x1000: 82 (36%) were still accepted by the pool so nothing was ever
+        flagged, 135 (60%) flagged with TWO scale factors matching, and only 9
+        (4%) resolved to exactly one -- which would make a repair's uniqueness
+        guard refuse essentially every case. The cause is the pool's breadth
+        (window sums, siblings, note-blob numbers, annualized variants)
+        combined with max(500, 5%).
+
+        So this has its own tight lookup: the account's OWN cells and column
+        totals only (see _OWN_HARD_KINDS), at <=0.5% relative with no absolute
+        floor. Re-measured with exactly that rule on the same 226 corruptions,
+        218 (96%) resolved to exactly one factor and none escaped detection; on
+        the two books available here, 829/830 corruptions give 89.1%/83.9%
+        unique and 4.9%/3.4% ambiguous. Widening either half of the rule undoes
+        the result -- the pool's own tolerance is what destroyed it.
+        """
+        t = abs(target)
+        candidates = [f for f in self.facts if f["kind"] in _OWN_HARD_KINDS and f["value"]]
+        hits: List[Dict[str, Any]] = []
+        for factor in _SCALE_MISS_FACTORS:
+            scaled = t * factor
+            for fact in candidates:
+                a = abs(fact["value"])
+                if a and abs(scaled - a) <= _SCALE_MISS_REL_TOL * a:
+                    hits.append({"factor": float(factor), "source_ref": fact,
+                                 "expected": float(fact["value"])})
+                    break
+        if hits:
+            unique = len({h["factor"] for h in hits}) == 1
+            best = hits[0]
+            return {
+                "code": "AMOUNT_SCALE_ERROR",
+                "factor": best["factor"],
+                "expected": best["expected"],
+                "source_ref": best["source_ref"],
+                # A repair may only act on a unique factor; two factors matching
+                # means the source cannot say which figure was meant.
+                "ambiguous": not unique,
+                "candidates": [h["factor"] for h in hits],
+            }
+        nearest = None
+        for fact in candidates:
+            a = abs(fact["value"])
+            if a and abs(t - a) <= 0.20 * a:
+                if nearest is None or abs(t - a) < abs(t - abs(nearest["value"])):
+                    nearest = fact
+        # `nearest` is a READING HINT only, never a patch source: within 20% it
+        # is as likely to be the neighbouring line item as the intended one.
+        return {"code": "AMOUNT_UNSUPPORTED", "nearest": nearest}
 
 
-def ground_amounts(clause: str, source: SourceIndex) -> Optional[Dict[str, Any]]:
+def ground_amounts(clause: str, source: SourceIndex, *, offset: int = 0) -> Optional[Dict[str, Any]]:
     """Deterministic verdict for a clause based on its money amounts.
 
     Returns None when the clause has no groundable amount (defer to the LLM/soft
-    judgement). Otherwise returns a clause-review dict with a confidence.
+    judgement). Otherwise returns a clause-review dict with a confidence, a
+    defect `code`, and one `amounts` entry per figure carrying its span, whether
+    it matched, and the fact that matched it.
+
+    `offset` is the clause's start in the CONTENT the spans must index --
+    verify_commentary passes the clause start it gets from segment_clauses, so
+    every span stored here is in agent_4_validation["final_content"]
+    coordinates, not clause-relative ones. Getting that wrong is silent: a
+    clause-relative span still slices to plausible-looking text.
     """
-    amounts = extract_amounts(clause)
-    if not amounts:
+    triples = extract_amount_spans(clause)
+    if not triples:
         return None
-    unmatched = [a for a in amounts if not source.matches(a)]
+    entries: List[Dict[str, Any]] = []
+    unmatched: List[Dict[str, Any]] = []
+    for value, start, end in triples:
+        fact = source.matches(value)
+        entry: Dict[str, Any] = {
+            "value": float(value),
+            "span": [int(start + offset), int(end + offset)],
+            "matched": fact is not None,
+            "source_ref": fact,
+        }
+        if fact is None:
+            entry.update(source.classify_miss(value))
+            unmatched.append(entry)
+        entries.append(entry)
+
     if unmatched:
-        return {
+        scale_errors = [e for e in unmatched if e.get("code") == "AMOUNT_SCALE_ERROR"]
+        # A scale error is the more specific finding and the only patchable one,
+        # so it names the verdict when any unmatched amount is one.
+        lead = scale_errors[0] if scale_errors else unmatched[0]
+        code = lead["code"]
+        parts = []
+        for entry in unmatched:
+            if entry.get("code") == "AMOUNT_SCALE_ERROR":
+                parts.append(
+                    f"{entry['value']:,.0f} is off by a factor of {entry['factor']:g} — "
+                    f"the source figure is {describe_fact(entry['source_ref'])}"
+                    + (" [ambiguous: more than one scale factor fits]" if entry.get("ambiguous") else "")
+                )
+            elif entry.get("nearest"):
+                parts.append(
+                    f"{entry['value']:,.0f} not found in source data within tolerance "
+                    f"(nearest source figure: {describe_fact(entry['nearest'])})"
+                )
+            else:
+                parts.append(f"{entry['value']:,.0f} not found in source data within tolerance")
+        review: Dict[str, Any] = {
             "supported": False,
             "category": "hallucination",
             "conf": 0.9,
-            "reason": f"Amount(s) {', '.join(f'{u:,.0f}' for u in unmatched)} not found in source data within tolerance.",
+            "code": code,
+            "amounts": entries,
+            "reason": "Amount(s): " + "; ".join(parts) + ".",
         }
+        if lead.get("code") == "AMOUNT_SCALE_ERROR" and not lead.get("ambiguous"):
+            review["expected"] = lead["expected"]
+        return review
+
+    # Provenance in the reason, replacing the bare "All amounts matched source
+    # data within tolerance." -- that sentence made the verdict unfalsifiable
+    # after the fact, which is exactly why measuring this pool's behaviour
+    # needed a bit-exact reimplementation of SourceIndex rather than a read of
+    # the archive.
+    shown = "; ".join(f"{e['value']:,.0f} = {describe_fact(e['source_ref'])}" for e in entries[:3])
+    if len(entries) > 3:
+        shown += f"; +{len(entries) - 3} more"
     return {
         "supported": True,
         "category": "data-backed",
         "conf": 1.0,
-        "reason": "All amounts matched source data within tolerance.",
+        "amounts": entries,
+        "reason": f"Amounts matched source data within tolerance: {shown}.",
     }
 
 
@@ -757,7 +1245,8 @@ _CONF_DEFAULT_REASONING = 0.5
 
 
 def _combine_verdict(clause: str, det: Optional[Dict[str, Any]],
-                     llm: Optional[Dict[str, Any]], highlight_min_conf: float) -> Dict[str, Any]:
+                     llm: Optional[Dict[str, Any]], highlight_min_conf: float,
+                     *, span: Optional[Tuple[int, int]] = None) -> Dict[str, Any]:
     """Merge deterministic number-grounding with the LLM's soft judgement.
 
     Precedence: a deterministic unmatched-amount hallucination is authoritative
@@ -768,30 +1257,54 @@ def _combine_verdict(clause: str, det: Optional[Dict[str, Any]],
     """
     llm_cat = str((llm or {}).get("category") or "").lower()
     llm_supported = bool((llm or {}).get("supported")) if llm else True
+    code: Optional[str] = None
 
     if det and det["category"] == "hallucination":
         category, supported, conf, reason = "hallucination", False, _CONF_DET_HALLUCINATION, det["reason"]
+        code = det.get("code") or "AMOUNT_UNSUPPORTED"
     elif det and det["category"] == "data-backed":
         if llm and llm_cat == "reasoning" and not llm_supported:
             category, supported, conf = "reasoning", False, _CONF_LLM_FLAG
             reason = (llm or {}).get("reason") or "Numbers verified; inference not directly supported."
+            code = "LLM_UNSUPPORTED_CAUSE"
         else:
             # numbers matched -> drop any LLM 'hallucination' false positive
             category, supported, conf, reason = "data-backed", True, _CONF_DET_DATA_BACKED, det["reason"]
     elif llm and llm_cat in ("reasoning", "hallucination") and not llm_supported:
         category, supported, conf = llm_cat, False, _CONF_LLM_FLAG
         reason = (llm or {}).get("reason") or "Flagged by validator."
+        # The third branch: an LLM flag on a clause with no groundable amount.
+        # Measured across 247 archived runs this is the DOMINANT defect class
+        # (123 prose hallucinations against 99 arithmetic misses), so it gets a
+        # code of its own rather than being routed to regeneration unlabelled.
+        code = "LLM_UNSUPPORTED_FACT" if llm_cat == "hallucination" else "LLM_UNSUPPORTED_CAUSE"
     elif _has_causal_language(clause):
         category, supported, conf = "reasoning", False, _CONF_DEFAULT_REASONING
         reason = "Causal/inference clause with no figure to verify against source."
+        # Same defect as an LLM-raised reasoning flag -- an asserted cause with
+        # nothing behind it -- reached without the LLM. The code names the
+        # defect, not the detector that found it.
+        code = "LLM_UNSUPPORTED_CAUSE"
     else:
         category, supported, conf, reason = "data-backed", True, _CONF_DET_DATA_BACKED, "No checkable figure; no causal claim."
 
     # Confidence gate: low-confidence flags are demoted so they don't highlight
     # inline (keeps false positives low — the user's stated priority).
     if not supported and conf < highlight_min_conf:
-        category, supported = "data-backed", True
-    return {"clause": clause, "supported": supported, "category": category, "reason": reason}
+        category, supported, code = "data-backed", True, None
+    out: Dict[str, Any] = {"clause": clause, "supported": supported, "category": category, "reason": reason}
+    # Optional keys only. Every existing consumer reads the four above and must
+    # keep working on a review that carries none of these.
+    if span is not None:
+        out["span"] = [int(span[0]), int(span[1])]
+    out["conf"] = float(conf)
+    if code:
+        out["code"] = code if code in DEFECT_CODES else "UNCATEGORIZED"
+    if det and det.get("amounts"):
+        out["amounts"] = det["amounts"]
+    if det and det.get("expected") is not None and not supported:
+        out["expected"] = det["expected"]
+    return out
 
 
 _ENUM_ITEM = re.compile(r"[1-9]）\s*[^；;]*?(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
@@ -830,6 +1343,16 @@ _SCALE = {"元": 1.0, "万元": 1e4, "亿元": 1e8}
 
 
 def check_composition_adds_up(mapping_key: str, text: str) -> List[str]:
+    """Message-only wrapper over _composition_findings.
+
+    Kept because inspect_databook.py:2232 collects these as plain warning
+    strings; the typed form below is what the verifier reads, so the category
+    no longer has to be recovered by substring-matching the English message.
+    """
+    return [message for _code, message in _composition_findings(mapping_key, text)]
+
+
+def _composition_findings(mapping_key: str, text: str) -> List[Tuple[str, str]]:
     """Does an enumerated composition actually reach the total it states?
 
     The model is asked to add its items up before writing them and to account
@@ -902,28 +1425,33 @@ def check_composition_adds_up(mapping_key: str, text: str) -> List[str]:
     ratio = listed / total if total else 0
     for _mult, _label in ((10.0, "10x"), (100.0, "100x"), (0.1, "1/10")):
         if abs(ratio - _mult) / _mult <= 0.05:
-            return [
+            return [(
+                "COMPOSITION_UNIT_ERROR",
                 f"[{mapping_key}] composition is {_label} the stated total "
                 f"({fmt(listed)} vs {fmt(total)}) -- this is a UNIT error, not a "
                 f"missing component: a raw CNY'000 figure written as 万元."
-            ]
+            )]
     if abs(ratio - 2.0) <= 0.05:
-        return [
+        return [(
+            "COMPOSITION_DOUBLE_COUNT",
             f"[{mapping_key}] composition is exactly double the stated total "
             f"({fmt(listed)} vs {fmt(total)}) -- a parent line and the lines "
             f"that make it up have both been listed."
-        ]
-    return [
+        )]
+    return [(
+        "COMPOSITION_GAP",
         f"[{mapping_key}] composition does not reach the stated total: "
         f"{len(items)} item(s) sum to {fmt(listed)} against {fmt(total)}, "
         f"leaving {fmt(gap)} ({abs(gap)/total:.0%}) unaccounted for. The reader "
         f"cannot tell whether the rest is an omission or a component with no name."
-    ]
+    )]
 
 
 def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[Dict[str, Any]]] = None,
                       *, highlight_min_conf: float = 0.6,
-                      sibling_dfs: Optional[List[Any]] = None) -> List[Dict[str, Any]]:
+                      sibling_dfs: Optional[List[Any]] = None,
+                      source: Optional[SourceIndex] = None,
+                      direction_findings: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """Authoritative clause_reviews: deterministic number-grounding layered over the
     LLM's soft reasoning judgement. Each clause is a verbatim substring of
     final_content, so highlighting matches by exact offset. Returns the existing
@@ -932,16 +1460,36 @@ def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[
     sibling_dfs (optional): other accounts' DataFrames — same statement type as
     this account, per caller — so a legitimate cross-tab reference (e.g. an
     "Other payables" note citing the bank loan balance that actually lives on
-    the "Long-term loans" tab) can be grounded instead of false-flagged."""
-    source = SourceIndex.from_df(df, sibling_dfs=sibling_dfs)
+    the "Long-term loans" tab) can be grounded instead of false-flagged.
+
+    source (optional): a prebuilt SourceIndex, so a caller holding one per
+    account does not rebuild it per call. Absent, it is built here, which is
+    what the CLI and every diagnostic rely on.
+
+    direction_findings (optional): an out-parameter. When a list is passed, M3's
+    direction check appends its findings to it. They deliberately do NOT go into
+    the returned clause_reviews — a review there with category "hallucination"
+    buys a paid retry on the first run, and one with "reasoning" still colours
+    the sentence in the exported client deck and counts toward the
+    unsupported-ratio gate. Report-only until the false-positive rate has been
+    read on a real book."""
+    if source is None:
+        source = SourceIndex.from_df(df, sibling_dfs=sibling_dfs)
     llm_reviews = llm_clause_reviews or []
     out: List[Dict[str, Any]] = []
-    for _s, _e, clause in segment_clauses(final_content):
-        det = ground_amounts(clause, source)
+    # The (start, end) segment_clauses returns used to be discarded here, and
+    # every consumer downstream re-found the clause by string search. They are
+    # the coordinate system every span in this module is expressed in, so they
+    # are carried through: the clause's own span, and the offset that rebases
+    # ground_amounts' clause-relative amount spans onto final_content.
+    for start, end, clause in segment_clauses(final_content):
+        det = ground_amounts(clause, source, offset=start)
         llm = _lookup_llm_review(clause, llm_reviews)
-        out.append(_combine_verdict(clause, det, llm, highlight_min_conf))
+        out.append(_combine_verdict(clause, det, llm, highlight_min_conf, span=(start, end)))
     out.extend(_composition_reviews(final_content))
-    out.extend(_date_reviews(final_content, df))
+    out.extend(_date_reviews(final_content, df, source=source))
+    if direction_findings is not None:
+        direction_findings.extend(collect_direction_findings(final_content, df))
     return out
 
 
@@ -971,22 +1519,39 @@ def _composition_reviews(final_content: str) -> List[Dict[str, Any]]:
     """
     body = str(final_content or "")
     reviews: List[Dict[str, Any]] = []
-    for message in check_composition_adds_up("", body):
+    # The category used to be recovered by substring-matching the English
+    # message ("UNIT error" in detail) -- a rule that would have gone silently
+    # wrong the day the wording changed. _composition_findings hands back the
+    # code the check already knew.
+    for code, message in _composition_findings("", body):
         detail = message.split("] ", 1)[-1]
-        certain = ("UNIT error" in detail) or ("exactly double" in detail)
+        certain = code in ("COMPOSITION_UNIT_ERROR", "COMPOSITION_DOUBLE_COUNT")
         # Anchor on the sentence stating the total, so the deck highlights the
         # claim rather than the whole paragraph.
         match = _STATED_TOTAL.search(body)
         clause = body
+        span = [0, len(body)]
         if match:
             start = body.rfind("。", 0, match.start()) + 1
             end = body.find("。", match.end())
-            clause = body[start: (end + 1) if end >= 0 else len(body)].strip() or body
+            end = (end + 1) if end >= 0 else len(body)
+            sentence = body[start:end]
+            lead = len(sentence) - len(sentence.lstrip())
+            stripped = sentence.strip()
+            if stripped:
+                clause = stripped
+                span = [start + lead, start + lead + len(stripped)]
         reviews.append({
             "clause": clause,
             "supported": False,
             "category": "hallucination" if certain else "reasoning",
             "reason": detail,
+            "code": code,
+            "span": span,
+            # Every COMPOSITION_* code routes to regeneration, never to a patch:
+            # a sentence whose parts do not add up cannot be fixed by swapping
+            # one token, because which token is wrong is exactly what is unknown.
+            "conf": _CONF_DET_HALLUCINATION if certain else _CONF_LLM_FLAG,
         })
     return reviews
 
@@ -1016,40 +1581,66 @@ def _dates_in(value) -> set:
     return found
 
 
-def _harvest_source_dates(df) -> set:
-    """Dates the account's own data actually contains -- period columns, the
-    effective date, and any date written into a cell, note or detail row.
+def _harvest_source_date_facts(df) -> List[Dict[str, Any]]:
+    """Dates the account's own data actually contains, as facts with a source.
 
     Notes and remarks are included on purpose: a loan maturity or a lease end
     date is a legitimate date to quote and is not a period column. Grounding
     against the whole source, not just the period set, is the same contract
-    SourceIndex already uses for amounts."""
-    allowed: set = set()
+    SourceIndex already uses for amounts.
+
+    Each date carries WHERE it came from (a column label, an attrs key) because
+    dates are the largest deterministic defect class -- replaying archived
+    account texts gave 47 DATE_UNSUPPORTED against 34 amount misses -- and a
+    date patch with nothing to cite cannot be checked by the reader."""
+    facts: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    def add(value, col_label: str) -> None:
+        for y, m, d in _dates_in(value):
+            if (y, m, d) in seen:
+                return
+            seen.add((y, m, d))
+            facts.append(_fact_date(y, m, d, sheet=_frame_sheet(df), col_label=col_label))
+
     if df is None:
-        return allowed
+        return facts
     attrs = getattr(df, "attrs", None) or {}
     integrity = attrs.get("integrity") or {}
     for key in ("effective_date", "raw_effective_date"):
-        allowed |= _dates_in(integrity.get(key))
+        add(integrity.get(key), f"integrity.{key}")
     try:
         for col in df.columns:
-            allowed |= _dates_in(col)
+            add(col, "column header")
             for cell in df[col].tolist():
-                allowed |= _dates_in(cell)
+                add(cell, str(col))
     except Exception:
         pass
     table = attrs.get("presentation_detail_table") or {}
     for period in (table.get("periods") or []):
-        allowed |= _dates_in(period)
+        add(period, "presentation_detail_table.periods")
     for row in (table.get("rows") or []):
-        allowed |= _dates_in(row.get("label") if isinstance(row, dict) else row)
+        add(row.get("label") if isinstance(row, dict) else row, "presentation_detail_table.rows")
     for bucket in ("supporting_notes", "adjacent_detail_rows"):
         for item in (attrs.get(bucket) or []):
-            allowed |= _dates_in(item)
-    return allowed
+            add(item, bucket)
+    return facts
 
 
-def _date_reviews(final_content: str, df) -> List[Dict[str, Any]]:
+def _fact_date(year: int, month: int, day: int, *, sheet=None, col_label=None) -> Dict[str, Any]:
+    rec = _fact(0.0, "date", sheet=sheet, col_label=col_label)
+    rec["value"] = f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+    rec["date"] = [int(year), int(month), int(day)]
+    return rec
+
+
+def _harvest_source_dates(df) -> set:
+    """The (y, m, d) set behind _harvest_source_date_facts. Same contract as
+    before; the facts carry the provenance the `expected` candidate needs."""
+    return {tuple(fact["date"]) for fact in _harvest_source_date_facts(df)}
+
+
+def _date_reviews(final_content: str, df, *, source: Optional[SourceIndex] = None) -> List[Dict[str, Any]]:
     """Any date in the commentary that appears NOWHERE in the account's source.
 
     A real 21-slide deck shipped "截至2232年01月01日", "较1770年01月01日",
@@ -1074,7 +1665,9 @@ def _date_reviews(final_content: str, df) -> List[Dict[str, Any]]:
     body = str(final_content or "")
     if not body:
         return []
-    allowed = _harvest_source_dates(df)
+    date_facts = (source.date_facts if source is not None and source.date_facts
+                  else _harvest_source_date_facts(df))
+    allowed = {tuple(fact["date"]): fact for fact in date_facts}
     if not allowed:
         return []
     first_seen: Dict[tuple, Any] = {}
@@ -1092,17 +1685,179 @@ def _date_reviews(final_content: str, df) -> List[Dict[str, Any]]:
     for (y, m, d), match in first_seen.items():
         start = body.rfind("。", 0, match.start()) + 1
         end = body.find("。", match.end())
-        clause = body[start: (end + 1) if end >= 0 else len(body)].strip() or body
+        end = (end + 1) if end >= 0 else len(body)
+        sentence = body[start:end]
+        lead = len(sentence) - len(sentence.lstrip())
+        clause = sentence.strip() or body
+        clause_span = ([start + lead, start + lead + len(clause)] if sentence.strip()
+                       else [0, len(body)])
+        # `expected` is the source date nearest the invented one, so a repair
+        # has a candidate to cite rather than a list to choose from. It is a
+        # candidate, not a certainty -- the reason still names every source date.
+        nearest = min(allowed.values(), key=lambda f: abs(_date_ordinal(f["date"]) - _date_ordinal((y, m, d))))
         reviews.append({
             "clause": clause,
             "supported": False,
             "category": "hallucination",
+            "code": "DATE_UNSUPPORTED",
+            "conf": _CONF_DET_HALLUCINATION,
+            "span": clause_span,
+            # The offending date's OWN span, so a patch rewrites the date and
+            # not the sentence around it.
+            "amounts": [{
+                "value": f"{y:04d}-{m:02d}-{d:02d}",
+                "span": [match.start(), match.end()],
+                "matched": False,
+                "source_ref": None,
+                "code": "DATE_UNSUPPORTED",
+            }],
+            "expected": nearest["value"],
+            "source_ref": nearest,
             "reason": (
                 f"日期 {y}年{m:02d}月{d:02d}日 并未出现在本科目的任何来源数据中"
-                f"（来源日期为：{known}）。日期不得自行推断或编造。"
+                f"（来源日期为：{known}；最接近的来源日期：{nearest['value']}"
+                f"，来自 {nearest.get('col_label')}）。日期不得自行推断或编造。"
             ),
         })
     return reviews
+
+
+def _date_ordinal(parts) -> int:
+    """A comparable day number for a (y, m, d) that may not be a real date.
+
+    `datetime` refuses 2232-02-31, and the whole point here is dates the model
+    invented, so this is deliberately arithmetic rather than a calendar."""
+    y, m, d = (int(p) for p in parts)
+    return y * 372 + m * 31 + d
+
+
+_PCT_IN_CLAUSE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_DIR_UP = re.compile(r"增加|增长|上升|increase[sd]?|rose", re.IGNORECASE)
+_DIR_DOWN = re.compile(r"减少|下降|decrease[sd]?|fell|declined", re.IGNORECASE)
+#: A percentage may be off the movement's own by rounding only.
+_DIR_PCT_TOL_PP = 0.5
+
+
+def collect_direction_findings(final_content: str, df) -> List[Dict[str, Any]]:
+    """_direction_reviews behind a swallow-everything guard.
+
+    A brand-new detector must never be able to take the whole deterministic pass
+    down: verify_commentary's other checks are what the retry gate and the deck
+    highlighting run on, and an exception here would cost an account its
+    clause_reviews entirely.
+    """
+    try:
+        return _direction_reviews(final_content, df)
+    except Exception:
+        return []
+
+
+def _direction_reviews(final_content: str, df) -> List[Dict[str, Any]]:
+    """Clauses that quote a movement's own percentage and then name the wrong
+    direction ("下降18.4%" against a +18.4% move).
+
+    Report-only, on its own channel (see verify_commentary's direction_findings
+    out-parameter) — NOT a clause_review. Record shape follows M5's contract
+    findings so both channels read the same way.
+
+    Movements come from `df.attrs["significant_movements"]`, precomputed at
+    build time and present top-level on every variant. build_significant_
+    movements is NOT called on the variant frame: it is dead there and crashes
+    on the `*_formatted` columns.
+
+    Know what that list is not. The "Significant movements" section the model
+    reads is RECOMPUTED in prompts.py from the filtered frame, and both lists
+    are capped at 3, so they can be disjoint; and the percentage a bullet most
+    often quotes is the ACCOUNT TOTAL's move from _variance_analysis_guidance,
+    which need not appear in either list. So this cannot ask "does the
+    commentary agree with movement 1" — it has to anchor on the clause's own
+    subject, and stay silent about everything it cannot pair:
+
+      * the movement's description (or its display alias) must appear in the
+        SAME clause;
+      * the clause must quote a percentage within 0.5pp of abs(percent_change);
+      * the clause must carry a direction word, and only one kind of it.
+
+    Mandatory skips: percent_change None (a from-nil movement, which is NOT the
+    sign-flip case and has no percentage to quote); from_value and to_value
+    differing in sign; either value negative. Positive-to-positive only is what
+    keeps 亏损扩大 and contra lines out — a negative base yields a signed −200%
+    for what a reader correctly calls an increase. And if two supplied movements
+    match one magnitude with opposite signs, the clause is ambiguous and is
+    skipped rather than guessed at.
+    """
+    body = str(final_content or "")
+    attrs = getattr(df, "attrs", None) or {}
+    movements = [m for m in (attrs.get("significant_movements") or []) if isinstance(m, dict)]
+    if not body or not movements:
+        return []
+    alias_map = attrs.get("display_description_map") or {}
+
+    usable = []
+    for movement in movements:
+        pct = movement.get("percent_change")
+        from_v, to_v = movement.get("from_value"), movement.get("to_value")
+        if pct is None or from_v is None or to_v is None:
+            continue
+        if from_v < 0 or to_v < 0 or (from_v > 0) != (to_v > 0):
+            continue
+        description = str(movement.get("description") or "")
+        if not description:
+            continue
+        names = {description}
+        alias = alias_map.get(description)
+        if alias:
+            names.add(str(alias))
+        usable.append((movement, float(pct), names))
+    if not usable:
+        return []
+
+    findings: List[Dict[str, Any]] = []
+    for start, end, clause in segment_clauses(body):
+        quoted = [float(m.group(1)) for m in _PCT_IN_CLAUSE.finditer(clause)]
+        if not quoted:
+            continue
+        says_up, says_down = bool(_DIR_UP.search(clause)), bool(_DIR_DOWN.search(clause))
+        if says_up == says_down:  # neither word, or both — nothing to contradict
+            continue
+        paired = [
+            (movement, pct) for movement, pct, names in usable
+            if any(name in clause for name in names)
+            and any(abs(q - abs(pct)) <= _DIR_PCT_TOL_PP for q in quoted)
+        ]
+        if not paired:
+            continue
+        if len({pct > 0 for _m, pct in paired}) > 1:
+            continue
+        movement, pct = paired[0]
+        if (pct > 0) == says_up:
+            continue
+        findings.append({
+            "claim_id": f"direction::{movement.get('description')}::{abs(pct):.1f}",
+            "kind": "direction",
+            "detector": "direction_mismatch",
+            "code": "DIRECTION_MISMATCH",
+            "clause": clause,
+            "span": [int(start), int(end)],
+            "conf": 0.8,
+            "patch_hint": ("increase" if pct > 0 else "decrease"),
+            "reason": (
+                f"'{movement.get('description')}' moved {pct:+.1f}% from "
+                f"{movement.get('from_period')} to {movement.get('to_period')} "
+                f"({movement.get('from_value'):,.0f} -> {movement.get('to_value'):,.0f}), "
+                f"but the clause quoting that percentage calls it "
+                f"{'an increase' if says_up else 'a decrease'}."
+            ),
+            "facts": {
+                "description": str(movement.get("description")),
+                "from_period": str(movement.get("from_period")),
+                "to_period": str(movement.get("to_period")),
+                "from_value": float(movement.get("from_value")),
+                "to_value": float(movement.get("to_value")),
+                "percent_change": float(pct),
+            },
+        })
+    return findings
 
 
 def build_highlighted_commentary_html(final_content: str, clause_reviews: List[Dict[str, Any]]) -> str:

@@ -17,13 +17,17 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import logging
 import math
+import os
 import re
 
 import pandas as pd
 
 from ..financial_common import cell_text, coerce_numeric
 from ..keyword_registry import UNIT_THOUSAND_MARKERS
+
+logger = logging.getLogger(__name__)
 
 
 PREFERRED_STAGE = "Indicative adjusted"
@@ -134,8 +138,12 @@ def _select_entity_block(
         )
 
     default_block = next((block for block in blocks if block["stage_row_idx"] == default_stage_row_idx), blocks[0])
+    # `blocks` rides out with the selection: this is the only place that knows
+    # a sheet holds N entity blocks, and it used to be built and thrown away.
+    # The workbook semantic profile reads it; normalize_financial_schedule
+    # ignores the extra key.
     if not entity_name:
-        return {**default_block, "strict_entity_match": False}
+        return {**default_block, "strict_entity_match": False, "blocks": blocks}
 
     entity_text = str(entity_name).strip().lower()
     strict_matches = [
@@ -172,7 +180,7 @@ def _select_entity_block(
         if score > best_score:
             best_score = score
             best_block = block
-    return {**best_block, "strict_entity_match": strict_entity_match}
+    return {**best_block, "strict_entity_match": strict_entity_match, "blocks": blocks}
 
 
 def _local_date_row_index(df: pd.DataFrame, stage_row_idx: int) -> int:
@@ -399,18 +407,115 @@ def _extract_indent_signal_rows(ws, df: pd.DataFrame, desc_col_idx: int) -> List
     return rows
 
 
+# How far down a sheet to look for the first numeric cell of a value column
+# when sampling number_format. A real schedule's first figure sits in the first
+# few rows after the header; scanning the whole grid for every column would turn
+# a 0.3s pass into a multi-second one for no extra signal.
+_STYLE_NUMBER_FORMAT_SCAN_ROWS = 200
+
+
+def _extract_sheet_style_signals(ws, df: pd.DataFrame, desc_col_idx: int) -> Dict[str, Any]:
+    """Every cell-style signal collected for one sheet in the single openpyxl
+    styles pass below: indent (the original signal), bold on the description
+    cell, Excel outline level, merged ranges, and the number_format of the
+    first numeric cell of each value column.
+
+    Outline level is a more direct grouping signal than indent, and
+    number_format is what would close the display-scale blind spot (a
+    thousands-separated or scaled format shows a different number than the
+    stored value). Both are SIGNALS ONLY -- nothing here may override a
+    numeric verification.
+
+    UNVERIFIED ON THIS MACHINE. All four local databooks are style-stripped
+    copies: across 439/1038/537/688 non-empty description cells there were
+    zero bold cells, zero indents > 0, zero outline levels > 0, zero merged
+    ranges, and every numeric cell's number_format was "General". So this
+    collector has never been seen returning a non-default value; it must be
+    checked against a real client databook before anything consumes it. In
+    particular there is NO local evidence that bold marks total rows -- do not
+    build on that assumption.
+    """
+    indent_rows = _extract_indent_signal_rows(ws, df, desc_col_idx)
+
+    bold_rows: List[int] = []
+    for row_idx, _level, _label in indent_rows:
+        try:
+            font = ws.cell(row=row_idx + 1, column=desc_col_idx + 1).font
+            if font is not None and bool(font.bold):
+                bold_rows.append(row_idx)
+        except Exception:
+            continue
+
+    outline_levels: Dict[int, int] = {}
+    try:
+        # Iterate the dimensions that EXIST rather than indexing row_dimensions
+        # by row number -- openpyxl materializes a RowDimension on lookup, so
+        # indexing every row would allocate one object per row for nothing.
+        for excel_row, dimension in ws.row_dimensions.items():
+            level = int(getattr(dimension, "outline_level", 0) or 0)
+            if level > 0:
+                outline_levels[int(excel_row) - 1] = level
+    except Exception:
+        outline_levels = {}
+
+    try:
+        merged_ranges = [str(cell_range) for cell_range in ws.merged_cells.ranges]
+    except Exception:
+        merged_ranges = []
+
+    number_formats: Dict[int, str] = {}
+    scan_rows = min(len(df), _STYLE_NUMBER_FORMAT_SCAN_ROWS)
+    for col_idx in range(desc_col_idx + 1, len(df.columns)):
+        for row_idx in range(scan_rows):
+            try:
+                cell = ws.cell(row=row_idx + 1, column=col_idx + 1)
+            except Exception:
+                break
+            value = cell.value
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            number_formats[col_idx] = str(cell.number_format or "General")
+            break
+
+    has_signal = bool(
+        any(level > 0 for _, level, _ in indent_rows)
+        or bold_rows
+        or outline_levels
+        or merged_ranges
+        or any(fmt != "General" for fmt in number_formats.values())
+    )
+    return {
+        "indent_rows": indent_rows,
+        "bold_rows": bold_rows,
+        "outline_levels": outline_levels,
+        "merged_ranges": merged_ranges,
+        "number_formats": number_formats,
+        "has_signal": has_signal,
+        "indent_row_count": sum(1 for _, level, _ in indent_rows if level > 0),
+        "bold_row_count": len(bold_rows),
+        "outline_row_count": len(outline_levels),
+        "merged_range_count": len(merged_ranges),
+    }
+
+
 @lru_cache(maxsize=4)
-def _build_indent_signal_index(workbook_path: str) -> Dict[str, List[Tuple[int, int, str]]]:
-    """Precomputes the indent-level signal for every sheet's description
-    column via exactly ONE openpyxl load, entirely synchronous, done for
-    ALL sheets upfront rather than lazily per-sheet. normalize_financial_schedule's
-    real caller (extract_normalized_data_from_excel) fans out across a
-    ThreadPoolExecutor, and openpyxl's Workbook/Worksheet objects are not
-    documented as safe for concurrent multi-threaded construction/access --
-    computing this here, once, before any worker thread can touch it, avoids
-    that risk by construction rather than relying on incidental GIL behavior.
-    Cached per workbook_path, same convention as load_workbook_frames/profile_workbook.
-    Only sheets with at least one real indent level (>0) are kept."""
+def _build_workbook_style_index(workbook_path: str) -> Dict[str, Dict[str, Any]]:
+    """Every sheet's cell-style signals via exactly ONE openpyxl load, entirely
+    synchronous, done for ALL sheets upfront rather than lazily per-sheet.
+    normalize_financial_schedule's real caller (extract_normalized_data_from_excel)
+    fans out across a ThreadPoolExecutor, and openpyxl's Workbook/Worksheet
+    objects are not documented as safe for concurrent multi-threaded
+    construction/access -- computing this here, once, before any worker thread
+    can touch it, avoids that risk by construction rather than relying on
+    incidental GIL behavior. Cached per workbook_path, same convention as
+    load_workbook_frames/profile_workbook.
+
+    A sheet is kept when ANY collected signal is non-default, not only when it
+    has an indent > 0: the older indent-only filter dropped the whole sheet on
+    precisely the files that lack indents, which would have thrown away the
+    bold/outline/merge/number_format fields as well. The narrower indent-only
+    retention still exists, one level up, in _build_indent_signal_index.
+    """
     try:
         from openpyxl import load_workbook as _load_workbook_raw
         wb_raw = _load_workbook_raw(workbook_path, data_only=True)
@@ -420,17 +525,53 @@ def _build_indent_signal_index(workbook_path: str) -> Dict[str, List[Tuple[int, 
         workbook_frames = load_workbook_frames(workbook_path)
     except Exception:
         return {}
-    index: Dict[str, List[Tuple[int, int, str]]] = {}
+    index: Dict[str, Dict[str, Any]] = {}
     for sheet_name, df in workbook_frames.items():
         if sheet_name not in wb_raw.sheetnames or df is None or df.empty:
             continue
         desc_col_idx = _find_description_column(df)
         if desc_col_idx is None:
             continue
-        rows = _extract_indent_signal_rows(wb_raw[sheet_name], df, desc_col_idx)
-        if any(level > 0 for _, level, _ in rows):
-            index[sheet_name] = rows
+        signals = _extract_sheet_style_signals(wb_raw[sheet_name], df, desc_col_idx)
+        if signals["has_signal"]:
+            index[sheet_name] = signals
+    if not index:
+        # Say so out loud: a vacuous pass and a workbook with no style
+        # information look identical to every consumer otherwise, and all four
+        # local test databooks are in fact style-stripped.
+        logger.info(
+            "No cell-style signals (indent/bold/outline/merge/number_format) anywhere in %s "
+            "-- style-derived hints are unavailable for this workbook.",
+            os.path.basename(workbook_path),
+        )
     return index
+
+
+def workbook_style_signals(workbook_path: str) -> Dict[str, Dict[str, Any]]:
+    """Per-sheet style signals for diagnostics/profiling. Same cached pass as
+    _build_indent_signal_index -- no second openpyxl load."""
+    return _build_workbook_style_index(workbook_path)
+
+
+@lru_cache(maxsize=4)
+def _build_indent_signal_index(workbook_path: str) -> Dict[str, List[Tuple[int, int, str]]]:
+    """{sheet_name: [(row_idx, indent_level, description), ...]} for sheets that
+    carry at least one real indent level (> 0). A view over
+    _build_workbook_style_index, so it costs no extra openpyxl load.
+
+    The indent-only retention is deliberate and NOT the bug the style index
+    fixes: _reclassify_indent_rollup_children and the CLI's check_indent_signals
+    both read this index, and both treat "sheet absent" as "no indent signal on
+    this tab". Retaining a sheet here because it happened to have a merged title
+    cell would leave those consumers looking at an all-zero-indent row list --
+    a no-op for the reclassifier, but a misleading diagnostic. The style fields
+    that must survive an indent-free workbook live in the style index instead.
+    """
+    return {
+        sheet_name: signals["indent_rows"]
+        for sheet_name, signals in _build_workbook_style_index(workbook_path).items()
+        if any(level > 0 for _, level, _ in signals["indent_rows"])
+    }
 
 
 def _infer_indent_hierarchy(rows: List[Tuple[int, int, str]]) -> Dict[int, List[int]]:

@@ -367,6 +367,415 @@ def build_section_summaries(
     return section_summaries
 
 
+# ---------------------------------------------------------------------------
+# Internal insight summary (N3 v1) -- for the reviewer, NEVER for the deck
+# ---------------------------------------------------------------------------
+
+#: Sentinel key a caller may use if the summary must travel with `ai_results`.
+#: Follows the __run_health__ / __BS_summary__ convention: it is not a
+#: mapping_key, so build_pptx_structured_payloads' `find_mapping_key` guard
+#: (payloads.py:484-486) skips it and no insight text can reach a slide.
+#: build_insight_summary itself neither reads nor writes this key -- the CLI
+#: keeps the summary beside the results, not inside them.
+INSIGHT_SUMMARY_KEY = "__insight_summary__"
+
+#: A resolution score this close to the 45.0 acceptance floor won a mapping by
+#: a margin no one should trust. The floor itself is in the resolver; this is
+#: only the width of the band that gets escalated to a human.
+_RESOLUTION_FLOOR = 45.0
+_RESOLUTION_WARN_BAND = 10.0
+
+#: build_significant_movements ranks every row of the analysis frame, total and
+#: subtotal rows included. Those restate the account's own movement, which
+#: already has its own finding, so they are dropped from the question list.
+_TOTAL_LABELS = ("total", "subtotal", "合计", "總計", "小计", "小計", "总计", "合計")
+
+#: _change_direction's vocabulary, in words a reviewer can put in an email.
+_MOVEMENT_VERBS = {
+    "increase": "rise", "decrease": "fall", "flat": "stay flat",
+    "new_increase": "appear from nil", "new_decrease": "appear from nil as a negative",
+}
+
+
+def _is_total_label(description: str) -> bool:
+    low = str(description or "").strip().lower()
+    return any(marker in low for marker in _TOTAL_LABELS)
+
+
+def _sheet_name_of(entry: Any) -> str:
+    """`unresolved_sheets` entries used to be bare names and are now per-sheet
+    diagnostic dicts (sheet_name, best_score, floor_missed_by, reason ...).
+    Both shapes appear in archived runs, so read the name out of either --
+    printing the whole dict inline made a finding unreadable."""
+    if isinstance(entry, dict):
+        return str(entry.get("sheet_name") or entry.get("name") or entry)
+    return str(entry)
+
+
+def _insight_num(value: Any) -> Optional[float]:
+    """float or None. numpy scalars coerced deliberately: this dict is meant to
+    be yaml.dump'd into the run folder, and a numpy.int64 anywhere in it raises
+    RepresenterError at the very end of a paid run (logging.py:243/247)."""
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_insight_summary(
+    *,
+    ai_results: Dict[str, Any],
+    dfs: Optional[Dict[str, Any]] = None,
+    mappings: Optional[Dict[str, Any]] = None,
+    reconciliation: Any = None,
+    resolution: Optional[Dict[str, Any]] = None,
+    evidence: Any = None,
+    links: Any = None,
+    language: str = "Eng",
+    max_movements: int = 8,
+) -> Dict[str, Any]:
+    """What the run itself knows about its own weak spots — internal only.
+
+    **v1 makes no LLM call.** Every field is assembled from material the
+    pipeline already computes and then discards:
+
+    - the run-health tally filed under ``__run_health__`` (how much of the
+      commentary actually came from the model at all);
+    - ``clause_reviews`` counts and categories per account;
+    - ``feedback_retries`` / ``feedback_arbiter``;
+    - ``claim_contract`` verdicts, when M5 is enabled (absent otherwise);
+    - ``build_trend_summary`` / ``build_significant_movements`` over the same
+      nested analysis frame the Generator prompt was built from — computed
+      inside prompt rendering and thrown away there;
+    - reconciliation ❌ Diff / ⚠️ Match rows;
+    - resolution scores sitting within 10 points of the 45.0 floor;
+    - ``build_account_mapping_diagnostics``, which has been written, exported
+      through two ``__init__`` files and imported into ``ai_panel.py`` since it
+      was added, and never once called;
+    - ``presentation_detail_table["tie_status"]``, computed and never read.
+
+    ``evidence`` (M2) and ``links`` (N2) are accepted and ignored until those
+    milestones land — the plan's own rule is that a field sourced from a
+    milestone that has not shipped is omitted, not faked.
+
+    Returns ``{summary, visible_issues, client_questions, external_research,
+    commentary_instruction, unverified_hypotheses}``. ``visible_issues`` entries
+    are ``{issue, basis, evidence_ids, severity}`` where ``basis`` names the
+    computation the claim came from and every ``evidence_id`` is a stable,
+    self-describing handle (``clause:<account>#<n>``, ``recon:BS:<row>``,
+    ``movement:<account>:<from>-><to>``, ...). When M2's EvidenceIndex lands
+    these become its ids; until then they are resolvable by hand, which is the
+    acceptance bar the plan set for the sources that have shipped.
+
+    This must never enter the deck. It is not commentary: it names what the
+    databook failed to answer, which is exactly what a client must not read.
+    """
+    from ..workbook import (
+        build_account_mapping_diagnostics,
+        build_significant_movements,
+        build_trend_summary,
+    )
+
+    ai_results = ai_results or {}
+    dfs = dfs or {}
+    accounts = {k: v for k, v in ai_results.items()
+                if isinstance(v, dict) and not str(k).startswith("__")}
+    # With no AI results at all -- the free, no-LLM path -- the extraction-side
+    # half still has everything it needs, so name the accounts from the frames
+    # instead of reporting an empty run. Every AI-sourced section below is
+    # keyed off `accounts` and simply produces nothing.
+    account_names = sorted(accounts) or sorted(dfs)
+
+    issues: List[Dict[str, Any]] = []
+    questions: List[str] = []
+    counts: Dict[str, int] = {}
+
+    def add(issue: str, basis: str, evidence_ids: List[str], severity: str) -> None:
+        issues.append({"issue": issue, "basis": basis,
+                       "evidence_ids": list(evidence_ids), "severity": severity})
+        counts[severity] = counts.get(severity, 0) + 1
+
+    # -- 1. Run health --------------------------------------------------
+    health = ai_results.get("__run_health__")
+    if isinstance(health, dict):
+        if health.get("zero_successful_calls"):
+            add("Not one LLM call succeeded — every bullet in this run is deterministic "
+                f"filler. First failure: {health.get('first_failure') or 'none recorded'}",
+                "__run_health__.zero_successful_calls",
+                ["run_health:zero_successful_calls"], "critical")
+        for field, label in (
+            ("accounts_on_fallback_bullet", "fell back to a deterministic bullet"),
+            ("accounts_on_passthrough", "shipped an earlier stage's text unchanged"),
+            ("accounts_on_error_text", "shipped error placeholder text"),
+            ("accounts_without_prompt", "had no prompt at all"),
+        ):
+            hit = list(health.get(field) or [])
+            if hit:
+                add(f"{len(hit)} account(s) {label}: {', '.join(map(str, hit[:6]))}"
+                    + (" ..." if len(hit) > 6 else ""),
+                    f"__run_health__.{field}", [f"run_health:{field}"], "high")
+        failed = int(health.get("calls_failed") or 0)
+        if failed and not health.get("zero_successful_calls"):
+            add(f"{failed} LLM attempt(s) failed and were retried or skipped; the deck is "
+                "built from what came back.", "__run_health__.calls_failed",
+                ["run_health:calls_failed"], "medium")
+
+    # -- 2. Verifier defects -------------------------------------------
+    for key, result in sorted(accounts.items()):
+        reviews = ((result.get("agent_4_validation") or {}).get("clause_reviews")
+                   if isinstance(result.get("agent_4_validation"), dict) else None) or []
+        flagged = [(i, r) for i, r in enumerate(reviews)
+                   if isinstance(r, dict) and not r.get("supported", True)]
+        if not flagged:
+            continue
+        categories = sorted({str(r.get("category") or "?") for _i, r in flagged})
+        severity = "high" if any("halluc" in c for c in categories) else "medium"
+        add(f"{key}: {len(flagged)} of {len(reviews)} clause(s) unsupported ({', '.join(categories)})",
+            "clause_reviews", [f"clause:{key}#{i}" for i, _r in flagged], severity)
+
+    # -- 3. Retries and arbitration ------------------------------------
+    retried = {k: v.get("feedback_retries") for k, v in accounts.items() if v.get("feedback_retries")}
+    if retried:
+        add(f"{len(retried)} account(s) needed a feedback retry: "
+            + ", ".join(f"{k}×{v}" for k, v in sorted(retried.items())),
+            "feedback_retries", [f"retry:{k}" for k in sorted(retried)], "medium")
+    for key, result in sorted(accounts.items()):
+        arbiter = result.get("feedback_arbiter")
+        if isinstance(arbiter, dict) and arbiter:
+            add(f"{key}: the arbiter kept an earlier attempt ({arbiter.get('reason') or arbiter})",
+                "feedback_arbiter", [f"arbiter:{key}"], "medium")
+
+    # -- 4. Claim contracts (M5; absent unless enabled) -----------------
+    contract_failures: Dict[str, List[str]] = {}
+    for key, result in accounts.items():
+        verdicts = result.get("claim_contract")
+        if not isinstance(verdicts, dict):
+            continue
+        for claim_id, verdict in verdicts.items():
+            if str(verdict) == "fail":
+                contract_failures.setdefault(str(claim_id).rsplit(":", 1)[-1], []).append(key)
+    for detector, keys in sorted(contract_failures.items()):
+        add(f"{len(keys)} account(s) did not carry out the injected '{detector}' instruction: "
+            + ", ".join(sorted(keys)[:6]) + (" ..." if len(keys) > 6 else ""),
+            "claim_contract", [f"claim:{k}:{detector}" for k in sorted(keys)], "medium")
+
+    # -- 5. Movements the data shows (from the frame the prompt used) ---
+    # build_trend_summary / build_significant_movements run inside
+    # PromptEngine.render_prompt and are discarded there. Re-running them over
+    # the same nested frame costs nothing and is the only place in this repo
+    # that keeps what they found.
+    movements: List[Dict[str, Any]] = []
+    for key in sorted(dfs):
+        df = dfs.get(key)
+        attrs = getattr(df, "attrs", {}) or {}
+        analysis = attrs.get("prompt_analysis_df")
+        if analysis is None or getattr(analysis, "empty", True):
+            continue
+        # A question is only worth asking the client when the databook does not
+        # already answer it. An account carrying notes or row-linked remarks
+        # may well explain the movement in prose this layer cannot read, so
+        # asserting "nothing states a cause" there would be a claim about
+        # material never examined.
+        if attrs.get("supporting_notes") or attrs.get("adjacent_detail_rows"):
+            continue
+        try:
+            trend = build_trend_summary(analysis) or {}
+            for item in build_significant_movements(analysis) or []:
+                description = str(item.get("description") or "").strip()
+                if _is_total_label(description):
+                    # The account's own total already has its own finding (the
+                    # material-movement claim); the useful question is which
+                    # component moved.
+                    continue
+                movements.append({
+                    "account": key,
+                    "description": description,
+                    "from_period": str(item.get("from_period") or trend.get("start_period") or ""),
+                    "to_period": str(item.get("to_period") or trend.get("end_period") or ""),
+                    "pct_change": _insight_num(item.get("pct_change")),
+                    "delta": _insight_num(item.get("delta")),
+                    "direction": str(item.get("direction") or trend.get("series_direction") or ""),
+                })
+        except Exception as exc:  # a malformed analysis frame must not kill the summary
+            logger.debug("Insight summary: movement scan failed for %s: %s", key, exc)
+    # Rank on the percentage where there is one, otherwise on the absolute
+    # delta scaled below every percentage, so a from-nil movement (no
+    # meaningful percentage, by build_significant_movements' own rule) still
+    # sorts by size instead of collapsing to zero and sinking to the bottom.
+    movements.sort(key=lambda m: (m.get("pct_change") is not None,
+                                  abs(m.get("pct_change") or m.get("delta") or 0.0)),
+                   reverse=True)
+    for m in movements[:max_movements]:
+        question = (
+            f"{m['account']} — what drove {m['description'] or 'this line'} to "
+            f"{_MOVEMENT_VERBS.get(m['direction'], 'move')} between {m['from_period']} and "
+            f"{m['to_period']}"
+            + (f" ({m['pct_change']:+.0f}%)" if m.get("pct_change") is not None else "")
+            + "? This tab carries no notes or side remarks at all."
+        )
+        if question not in questions:
+            questions.append(question)
+
+    # -- 6. Reconciliation ---------------------------------------------
+    # The four statuses mean four different things and must not be lumped:
+    # '⚠️ Match' is NOT a break -- the values already agree, and the flag only
+    # marks a zero sitting next to a non-zero period (the CLI's section 4
+    # explains this at length). Reporting it as a finding sends a reviewer
+    # chasing a number that ties.
+    recon_frames = []
+    if reconciliation is not None:
+        recon_frames = [f for f in (reconciliation if isinstance(reconciliation, (list, tuple))
+                                    else [reconciliation]) if f is not None]
+    for stmt, frame in zip(("BS", "IS"), recon_frames):
+        try:
+            if getattr(frame, "empty", True) or "Match" not in frame.columns:
+                continue
+            label_col = frame.columns[0]
+            for needle, severity, wording in (
+                ("❌ Diff", "high",
+                 "the summary and the supporting tab disagree"),
+                ("⚠️ Interim Diff", "medium",
+                 "the latest (partial) period differs, though the prior period ties"),
+                ("⚠️ Not Found", "medium",
+                 "no supporting tab was found for this summary row"),
+            ):
+                rows = frame[frame["Match"].astype(str).str.startswith(needle, na=False)]
+                if rows.empty:
+                    continue
+                names = [str(v) for v in rows[label_col].tolist()]
+                add(f"{stmt}: {len(names)} row(s) where {wording}: {', '.join(names[:6])}"
+                    + (" ..." if len(names) > 6 else ""),
+                    "reconciliation", [f"recon:{stmt}:{n}" for n in names], severity)
+                if needle == "❌ Diff":
+                    questions.append(
+                        f"{stmt} — the summary and the supporting tab disagree on "
+                        f"{', '.join(names[:4])}; which figure is the one to report?"
+                    )
+        except Exception as exc:
+            logger.debug("Insight summary: reconciliation scan failed for %s: %s", stmt, exc)
+
+    # -- 7. Mapping confidence -----------------------------------------
+    resolved = ((resolution or {}).get("resolved") or {}) if isinstance(resolution, dict) else {}
+    weak = []
+    for mapping_key, chosen in resolved.items():
+        score = _insight_num((chosen or {}).get("score"))
+        if score is None or score >= _RESOLUTION_FLOOR + _RESOLUTION_WARN_BAND:
+            continue
+        weak.append((str(mapping_key), score, str((chosen or {}).get("sheet_name") or "")))
+    for mapping_key, score, sheet in sorted(weak):
+        add(f"{mapping_key} was matched to sheet '{sheet}' with a score of {score:.1f}, within "
+            f"{_RESOLUTION_WARN_BAND:.0f} of the {_RESOLUTION_FLOOR:.0f} acceptance floor",
+            "resolution.score", [f"resolution:{mapping_key}"], "medium")
+        questions.append(f"Confirm that tab '{sheet}' is the supporting schedule for {mapping_key}.")
+    unresolved = [_sheet_name_of(s) for s in
+                  ((resolution or {}).get("unresolved_sheets") or [])] if isinstance(resolution, dict) else []
+    if unresolved:
+        add(f"{len(unresolved)} sheet(s) matched no account and are absent from the deck: "
+            f"{', '.join(unresolved[:6])}" + (" ..." if len(unresolved) > 6 else ""),
+            "resolution.unresolved_sheets",
+            [f"unresolved:{s}" for s in unresolved], "medium")
+
+    # -- 8. Accounts that will never reach a slide ----------------------
+    if mappings:
+        try:
+            diagnostics = build_account_mapping_diagnostics(account_names, mappings)
+            orphans = diagnostics[diagnostics["classification"] == "other"]
+            if not orphans.empty:
+                names = [str(v) for v in orphans["account_name"].tolist()]
+                add(f"{len(names)} account(s) have no BS/IS mapping, so their commentary is "
+                    f"generated, paid for and dropped before the deck: {', '.join(names[:6])}"
+                    + (" ..." if len(names) > 6 else ""),
+                    "build_account_mapping_diagnostics",
+                    [f"mapping:{n}" for n in names], "high")
+        except Exception as exc:
+            logger.debug("Insight summary: mapping diagnostics failed: %s", exc)
+
+    # -- 9. Detail tables that do not tie -------------------------------
+    untied, unchecked = [], 0
+    for key in sorted(dfs):
+        table = getattr(dfs.get(key), "attrs", {}).get("presentation_detail_table")
+        if not isinstance(table, dict):
+            continue
+        status = str(table.get("tie_status") or "")
+        if not status or status == "not checked":
+            unchecked += 1
+        elif "differs on 0" not in status:
+            untied.append((key, status))
+    for key, status in untied:
+        add(f"{key}: its breakdown table {status} against the account total",
+            "presentation_detail_table.tie_status", [f"tie:{key}"], "medium")
+    if unchecked:
+        add(f"{unchecked} breakdown table(s) were never tie-tested (synthesized from the "
+            "sheet rather than detected, which runs no tie test at all)",
+            "presentation_detail_table.tie_status", ["tie:unchecked"], "low")
+
+    # -- assembly -------------------------------------------------------
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    issues.sort(key=lambda i: order.get(i["severity"], 9))
+
+    if not issues:
+        summary = (f"{len(account_names)} account(s) with nothing flagged: no failed LLM "
+                   "calls, no unsupported clauses, no reconciliation breaks and no low-confidence "
+                   "mappings. Review the text itself; this layer only sees what it can compute.")
+        instruction = "No deterministic defect to act on. Read the commentary on its own merits."
+    else:
+        head = issues[0]
+        summary = (
+            f"{len(account_names)} account(s); {len(issues)} deterministic finding(s) "
+            + ", ".join(f"{n} {sev}" for sev, n in sorted(counts.items(), key=lambda kv: order.get(kv[0], 9)))
+            + f". Most severe: {head['issue']}"
+        )
+        instruction = _insight_instruction(issues)
+
+    return {
+        "summary": summary,
+        "visible_issues": issues,
+        "client_questions": questions,
+        "external_research": {
+            # v1 has no deterministic trigger for this. Every finding above is
+            # answerable from the databook or by asking management, and the
+            # plan forbids an unverified industry claim reaching a prompt --
+            # so this stays false until N4 supplies a real trigger.
+            "needed": False,
+            "reason": "No finding here requires information from outside the databook; "
+                      "every open item is a question for management.",
+        },
+        "commentary_instruction": instruction,
+        # Nothing in v1 may hypothesise: no LLM call, and N2's verified
+        # relationships (the only sanctioned source of a cross-account guess)
+        # have not landed. Kept in the shape so the field's meaning is fixed
+        # before anything fills it.
+        "unverified_hypotheses": [],
+    }
+
+
+def _insight_instruction(issues: List[Dict[str, Any]]) -> str:
+    """One line telling the reviewer what to do first, keyed off the top issue's
+    basis rather than its wording, so it survives a rephrasing."""
+    basis = str((issues[0] or {}).get("basis") or "")
+    if basis.startswith("__run_health__"):
+        return ("Do not send this deck. Fix the provider/model configuration and re-run — "
+                "some or all of the commentary is not model output.")
+    if basis == "clause_reviews":
+        return ("Read the flagged clauses against the tab before sending: the verifier could "
+                "not find those figures in this account's own numbers.")
+    if basis == "reconciliation":
+        return ("Settle the reconciliation breaks first — commentary written on a figure the "
+                "summary and the tab disagree about will have to be rewritten anyway.")
+    if basis.startswith("resolution"):
+        return ("Confirm the low-confidence tab-to-account matches before reading the "
+                "commentary; a wrong match makes every figure in that bullet wrong.")
+    if basis == "build_account_mapping_diagnostics":
+        return ("Add the unmapped accounts to mappings.yml or accept that their commentary is "
+                "discarded — it is being generated and paid for either way.")
+    if basis == "claim_contract":
+        return ("The prompt computed a figure or an opening the text did not use. Check whether "
+                "the instruction or the detector is at fault before changing either.")
+    return "Work the findings below in severity order."
+
+
 def batch_run_ai_for_entity(
     *,
     extracted: Dict[str, Any],

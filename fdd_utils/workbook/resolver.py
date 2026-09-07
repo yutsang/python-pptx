@@ -147,15 +147,27 @@ def _semantic_alignment_adjustment(candidate_norm: str, alias_norm: str) -> floa
     return adjustment
 
 
+# A hidden tab is a working copy, an old version or a scratch sheet in every
+# real databook seen so far -- never the tab a deliverable should quote. Until
+# the profile carried openpyxl's sheet_state it could not be told apart from a
+# visible one, so a hidden sheet could outscore the visible tab and win the
+# mapping key outright. A penalty rather than the -100 veto that template_nav
+# gets: there is no evidence yet that a hidden tab is NEVER the only copy of an
+# account, so it stays eligible when nothing visible competes with it.
+# NOT EXERCISED LOCALLY: 0 hidden sheets across all four local databooks.
+_HIDDEN_SHEET_PENALTY = -25.0
+
+
 def _sheet_type_bonus(profile: Dict[str, Any], mapping_type: str) -> float:
     sheet_kind = profile.get("sheet_kind")
     if sheet_kind in ("financial_summary", "template_nav"):
         return -100.0
+    hidden_penalty = _HIDDEN_SHEET_PENALTY if profile.get("is_hidden") else 0.0
     if sheet_kind == "support_schedule":
-        return -20.0
+        return -20.0 + hidden_penalty
     if profile.get("has_indicative_stage"):
-        return 8.0
-    return 0.0
+        return 8.0 + hidden_penalty
+    return hidden_penalty
 
 
 # Below this score, a match is almost always an incidental single-word title
@@ -173,6 +185,11 @@ def _sheet_type_bonus(profile: Dict[str, Any], mapping_type: str) -> float:
 # an unrecognized stage-label vocabulary still tends to score well above this
 # via name/title similarity, so raising the floor here doesn't hide genuine
 # CANONICAL_STAGE_LABELS gaps.
+# Where it is APPLIED moved: _candidate_sheets_for_mapping used to drop
+# below-floor candidates outright, which left an unresolved sheet with no
+# record of how close it got. They are now built and tagged `below_floor`, and
+# _above_floor_candidates does the dropping at the two ranking sites. The floor
+# value and its effect on resolution are unchanged.
 _LOW_CONFIDENCE_MATCH_FLOOR = 45.0
 
 
@@ -196,16 +213,27 @@ def _candidate_sheets_for_mapping(mapping_key: str, config: Dict[str, Any], prof
                     matched_alias = alias
         if best_score <= 0:
             continue
-        if best_score < _LOW_CONFIDENCE_MATCH_FLOOR:
-            continue
+        # Below-floor candidates used to be dropped right here, before the dict
+        # below was ever built, which left a sheet whose best alias scored 30
+        # with no entry anywhere -- exactly the sheet the unresolved-reason
+        # "no_alias_scored_above_45" has to explain. They are now built and
+        # tagged instead; the floor is applied at the ranking sites
+        # (_available_candidates and the ranked_keys sort), so resolution
+        # behaviour is unchanged and only the diagnostics gain the entry.
+        # Anything reading candidate_map for RESOLUTION must filter on
+        # below_floor.
+        below_floor = best_score < _LOW_CONFIDENCE_MATCH_FLOOR
         total_score = best_score + base_score
-        if total_score <= 0:
+        if total_score <= 0 and not below_floor:
             continue
         candidates.append(
             {
                 "sheet_name": sheet_name,
                 "title": profile.get("title"),
                 "score": round(total_score, 2),
+                "alias_score": round(best_score, 2),
+                "below_floor": below_floor,
+                "floor_missed_by": round(_LOW_CONFIDENCE_MATCH_FLOOR - best_score, 2) if below_floor else 0.0,
                 "matched_alias": matched_alias,
                 "exact_alias_match": _is_exact_alias_match(sheet_name, profile.get("title"), matched_alias),
                 "sheet_kind": profile.get("sheet_kind"),
@@ -512,7 +540,7 @@ def _discover_dynamic_sheet_resolutions(
     financial_context: Dict[str, Any],
     workbook_frames: Dict[str, Any],
     normalized_totals_cache: Dict[Tuple[str, str], Dict[str, float]],
-    used_sheets: set[str],
+    used_sheets: Dict[str, str],
     mappings: Dict[str, Any],
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     resolved: Dict[str, Dict[str, Any]] = {}
@@ -544,7 +572,7 @@ def _discover_dynamic_sheet_resolutions(
                 continue
             resolved[account_name] = discovered
             dynamic_mappings[account_name] = config
-            used_sheets.add(sheet_name)
+            used_sheets[sheet_name] = account_name
             break
     return resolved, dynamic_mappings
 
@@ -722,12 +750,18 @@ def _build_candidate_map(
     return candidate_map
 
 
+def _above_floor_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The candidates that may actually resolve a mapping key. candidate_map
+    also carries below-floor entries now, for diagnostics only."""
+    return [candidate for candidate in candidates if not candidate.get("below_floor")]
+
+
 def _available_candidates(
     candidates: List[Dict[str, Any]],
-    used_sheets: set[str],
+    used_sheets: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     return [
-        candidate for candidate in candidates
+        candidate for candidate in _above_floor_candidates(candidates)
         if candidate["sheet_name"] not in used_sheets
     ]
 
@@ -917,6 +951,106 @@ def resolve_ambiguous_candidate(
     return {**fallback, "resolution_method": "deterministic_fallback"}
 
 
+# The closed set of reasons a sheet can end a run unresolved. Consumers switch
+# on the prefix, so keep this list short and keep any new value additive.
+#   no_alias_scored_above_45  no candidate reached _LOW_CONFIDENCE_MATCH_FLOOR
+#                             (best_candidate_key/best_score/floor_missed_by say
+#                             how close it got; absent entirely when nothing
+#                             scored at all)
+#   sheet_taken_by_<key>      the sheet DID score above the floor for <key>, but
+#                             <key> was resolved to another tab, so this one
+#                             never got a slot. <key> is read back through
+#                             used_sheets (sheet -> key that claimed it), which
+#                             is why that is a dict and no longer a bare set.
+#   sheet_kind_excluded       structurally not a schedule (no stage row found,
+#                             sheet_kind == "other") and nothing matched it
+#                             either -- most often a nav/notes tab, sometimes a
+#                             real schedule whose stage vocabulary is unknown
+#   normalization_error       resolved fine, then failed to normalize; merged in
+#                             later by extract_normalized_data_from_excel, which
+#                             is where normalization_errors first exists
+_UNRESOLVED_REASON_NO_ALIAS = "no_alias_scored_above_45"
+_UNRESOLVED_REASON_SHEET_KIND = "sheet_kind_excluded"
+_UNRESOLVED_REASON_NORMALIZATION = "normalization_error"
+
+# Which sheet kinds are worth reporting as unresolved at all. "other" was added
+# to the original financial_schedule-only filter so a sheet whose stage
+# vocabulary is unrecognised stops being invisible -- measured 0/1/1/0 extra
+# sheets across the four local databooks.
+_UNRESOLVED_REPORTED_SHEET_KINDS = ("financial_schedule", "other")
+
+
+def _best_candidate_by_sheet(candidate_map: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+    """candidate_map is keyed by mapping key; invert it to the best-scoring
+    candidate per SHEET, which is what an unresolved sheet needs to explain
+    itself. Includes below-floor entries -- they are the whole point here."""
+    best: Dict[str, Dict[str, Any]] = {}
+    for candidates in candidate_map.values():
+        for candidate in candidates:
+            sheet_name = candidate.get("sheet_name")
+            if not sheet_name:
+                continue
+            current = best.get(sheet_name)
+            if current is None or float(candidate.get("score", 0)) > float(current.get("score", 0)):
+                best[sheet_name] = candidate
+    return best
+
+
+def _build_unresolved_sheet_entries(
+    profiles: Dict[str, Dict[str, Any]],
+    candidate_map: Dict[str, List[Dict[str, Any]]],
+    used_sheets: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    best_by_sheet = _best_candidate_by_sheet(candidate_map)
+    entries: List[Dict[str, Any]] = []
+    for sheet_name, profile in sorted(profiles.items()):
+        sheet_kind = profile.get("sheet_kind")
+        if sheet_kind not in _UNRESOLVED_REPORTED_SHEET_KINDS or sheet_name in used_sheets:
+            continue
+        best = best_by_sheet.get(sheet_name)
+        best_candidate_key = best.get("mapping_key") if best else None
+        best_score = float(best.get("score", 0.0)) if best else 0.0
+        alias_score = float(best.get("alias_score", best_score)) if best else 0.0
+        floor_missed_by = round(max(0.0, _LOW_CONFIDENCE_MATCH_FLOOR - alias_score), 2)
+
+        taken_by_sheet = None
+        if best and not best.get("below_floor"):
+            # It cleared the floor, so the only way it is still unassigned is
+            # that its key went to another tab.
+            taken_by_sheet = next(
+                (sheet for sheet, key in used_sheets.items() if key == best_candidate_key),
+                None,
+            )
+        if taken_by_sheet is not None:
+            reason = f"sheet_taken_by_{used_sheets[taken_by_sheet]}"
+        elif best is None and sheet_kind == "other":
+            reason = _UNRESOLVED_REASON_SHEET_KIND
+        else:
+            reason = _UNRESOLVED_REASON_NO_ALIAS
+
+        entries.append(
+            {
+                "sheet_name": sheet_name,
+                "sheet_kind": sheet_kind,
+                "title": profile.get("title"),
+                "stage_labels": list(profile.get("stage_labels") or []),
+                "date_labels": list(profile.get("date_labels") or []),
+                "unit_markers": list(profile.get("unit_markers") or []),
+                "is_hidden": bool(profile.get("is_hidden")),
+                "best_candidate_key": best_candidate_key,
+                "best_score": round(best_score, 2),
+                # best_score carries the sheet-type bonus, so it can sit above
+                # the floor while the alias score that the floor actually tests
+                # sat below it. Both are reported so the pair reads honestly.
+                "best_alias_score": round(alias_score, 2),
+                "floor_missed_by": floor_missed_by,
+                "taken_by_sheet": taken_by_sheet,
+                "reason": reason,
+            }
+        )
+    return entries
+
+
 def resolve_workbook_mappings(
     workbook_path: str,
     profiles: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -938,16 +1072,18 @@ def resolve_workbook_mappings(
 
     resolved: Dict[str, Dict[str, Any]] = {}
     candidate_map = _build_candidate_map(mappings, profiles)
-    used_sheets: set[str] = set()
+    # {sheet_name: mapping_key that claimed it} -- a bare set until the
+    # unresolved-sheet reasons needed to name the key holding a sheet.
+    used_sheets: Dict[str, str] = {}
     ambiguities: Dict[str, List[Dict[str, Any]]] = {}
     override_issues: List[Dict[str, Any]] = []
     dynamic_mappings: Dict[str, Dict[str, Any]] = {}
 
-    ranked_keys = sorted(
-        candidate_map,
-        key=lambda key: candidate_map[key][0]["score"] if candidate_map[key] else -1,
-        reverse=True,
-    )
+    def _best_above_floor_score(key: str) -> float:
+        above_floor = _above_floor_candidates(candidate_map[key])
+        return above_floor[0]["score"] if above_floor else -1
+
+    ranked_keys = sorted(candidate_map, key=_best_above_floor_score, reverse=True)
     for mapping_key in ranked_keys:
         override_sheet = mapping_overrides.get(mapping_key)
         if override_sheet:
@@ -984,7 +1120,7 @@ def resolve_workbook_mappings(
                     resolved[mapping_key] = resolved_override
                     if dynamic_config is not None:
                         dynamic_mappings[mapping_key] = dynamic_config
-                    used_sheets.add(override_sheet)
+                    used_sheets[override_sheet] = mapping_key
                     continue
 
         available_candidates = _available_candidates(candidate_map[mapping_key], used_sheets)
@@ -1028,7 +1164,7 @@ def resolve_workbook_mappings(
             else:
                 resolved_candidate = _resolve_top_ranked_candidate(ranked_available_candidates)
         resolved[mapping_key] = resolved_candidate
-        used_sheets.add(resolved_candidate["sheet_name"])
+        used_sheets[resolved_candidate["sheet_name"]] = mapping_key
 
     dynamic_override_keys = [
         key for key in mapping_overrides.keys()
@@ -1081,7 +1217,7 @@ def resolve_workbook_mappings(
         resolved[mapping_key] = resolved_override
         if dynamic_config is not None:
             dynamic_mappings[mapping_key] = dynamic_config
-        used_sheets.add(override_sheet)
+        used_sheets[override_sheet] = mapping_key
 
     discovered_resolved, discovered_dynamic_mappings = _discover_dynamic_sheet_resolutions(
         workbook_path=workbook_path,
@@ -1095,11 +1231,7 @@ def resolve_workbook_mappings(
     resolved.update(discovered_resolved)
     dynamic_mappings.update(discovered_dynamic_mappings)
 
-    unresolved_sheets = sorted(
-        sheet_name
-        for sheet_name, profile in profiles.items()
-        if profile.get("sheet_kind") == "financial_schedule" and sheet_name not in used_sheets
-    )
+    unresolved_sheets = _build_unresolved_sheet_entries(profiles, candidate_map, used_sheets)
 
     return {
         "profiles": profiles,

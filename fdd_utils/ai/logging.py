@@ -4,12 +4,53 @@ from __future__ import annotations
 Run logging for the FDD AI pipeline.
 """
 
+import json
 import logging
+import math
 import os
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 import yaml
+
+
+def coerce_plain(value: Any) -> Any:
+    """Recursively reduce a value to types json.dumps and yaml.dump can write.
+
+    Neither serializer has a sanitizer hook: hand ``yaml.dump`` a ``numpy.int64``
+    and it writes a ``!!python/object/apply`` tag; hand ``json.dumps`` one and it
+    raises ``TypeError`` — at the very END of a paid run, after every LLM call
+    has been spent. Everything that rides on ``results`` or on the audit log
+    passes through here first.
+
+    ``.item()`` is what catches the numpy scalars that are NOT Python subclasses
+    (``int64``, ``bool_``); ``float64`` and ``str_`` already are, and the
+    explicit ``int()``/``float()``/``str()`` calls strip them anyway. A
+    non-finite float becomes ``None``: NaN/Infinity are not legal JSON, and a
+    log line that cannot be parsed is worse than a missing number.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): coerce_plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [coerce_plain(v) for v in value]
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return coerce_plain(item())
+        except Exception:
+            pass
+    return str(value)
 
 
 class PipelineRunLogger:
@@ -29,6 +70,7 @@ class PipelineRunLogger:
         self.log_file = os.path.join(self.run_folder, "processing.log")
         self.log_data_file = os.path.join(self.run_folder, "data.yml")
         self.results_file = os.path.join(self.run_folder, "results.yml")
+        self.audit_file = os.path.join(self.run_folder, "audit.jsonl")
 
         self.logger = logging.getLogger(f"ContentGeneration_{self.run_id}")
         self.logger.setLevel(logging.DEBUG if debug_mode else logging.INFO)
@@ -195,6 +237,27 @@ class PipelineRunLogger:
             "prompt_cache_miss_tokens": result.get("prompt_cache_miss_tokens"),
             "prompt_cache_hit_ratio": result.get("prompt_cache_hit_ratio"),
         }
+
+    def write_audit_log(self, lines: Iterable[Dict[str, Any]]) -> str:
+        """Write ``audit.jsonl`` — one line per account, each line that
+        account's STATE PATH.
+
+        Deliberately not a dump of the final dict. A dump answers "what did
+        this account end up as"; the question a reviewer actually has is "why
+        did it end up like this", and only the ordered transitions with their
+        causes answer that. ``data.yml``/``results.yml`` already hold the
+        contents, so nothing here repeats them beyond the counts a path needs
+        to be readable on its own.
+
+        JSONL rather than one JSON document so a run that dies mid-write still
+        leaves every completed account readable, and so ``grep``/``jq`` can
+        walk it a line at a time. Every value goes through ``coerce_plain``.
+        """
+        with open(self.audit_file, "w", encoding="utf-8") as file:
+            for line in lines:
+                file.write(json.dumps(coerce_plain(line), ensure_ascii=False, sort_keys=True))
+                file.write("\n")
+        return self.audit_file
 
     def log_error(self, agent_name: str, mapping_key: str, error: Exception):
         self.logger.error("[%s] Error processing %s: %s", self._display_name(agent_name), mapping_key, error)

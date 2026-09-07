@@ -14,6 +14,7 @@ steps can resolve tabs and normalize values using real workbook metadata.
 
 from functools import lru_cache
 import logging
+import os
 import re
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -367,18 +368,191 @@ def profile_sheet(df: pd.DataFrame, sheet_name: str) -> Dict[str, Any]:
     }
 
 
+def _preflight_sheet_metadata(workbook_path: str) -> Dict[str, Dict[str, Any]]:
+    """{sheet_name: {is_hidden, sheet_state, max_row, max_column}} from the
+    read-only openpyxl preflight pass.
+
+    Deliberately joined HERE and not inside profile_sheet: profile_sheet takes
+    (df, sheet_name) with no workbook path and has seven callers (four of them
+    in the CLI) that only ever hold a DataFrame, and preflight.py already
+    imports this module, so a module-level import back would be an import
+    cycle -- hence the function-local import below. Every consumer must read
+    the joined keys with .get(..., default) so the df-only callers keep working.
+
+    Cost: preflight is not otherwise called on the CLI or production path, so
+    this adds one cached read-only openpyxl pass (measured 0.05s cold, 0.000s
+    warm on a 25-sheet book). Failures are swallowed -- the joined fields are
+    diagnostic enrichment, never a precondition for profiling.
+    """
+    try:
+        from .preflight import build_workbook_preflight  # local: preflight imports inspector, module-level would be a cycle
+        preflight = build_workbook_preflight(workbook_path)
+    except Exception as exc:  # pragma: no cover - defensive, preflight is best-effort here
+        logger.debug("Preflight metadata unavailable for %s: %s", workbook_path, exc)
+        return {}
+    metadata: Dict[str, Dict[str, Any]] = {}
+    for sheet in preflight.get("sheets", []) or []:
+        name = sheet.get("name")
+        if not name:
+            continue
+        metadata[name] = {
+            "sheet_state": sheet.get("sheet_state", "visible"),
+            "is_hidden": bool(sheet.get("is_hidden")),
+            "is_blank_preview": bool(sheet.get("is_blank_preview")),
+            "max_row": int(sheet.get("max_row") or 0),
+            "max_column": int(sheet.get("max_column") or 0),
+        }
+    return metadata
+
+
 @lru_cache(maxsize=8)
 def profile_workbook(workbook_path: str) -> Dict[str, Dict[str, Any]]:
     started = time.perf_counter()
     workbook_frames = load_workbook_frames(workbook_path)
+    preflight_metadata = _preflight_sheet_metadata(workbook_path)
     profiles: Dict[str, Dict[str, Any]] = {}
     for sheet_name, df in workbook_frames.items():
-        profiles[sheet_name] = profile_sheet(df, sheet_name)
+        profile = profile_sheet(df, sheet_name)
+        profile.update(preflight_metadata.get(sheet_name, {}))
+        profiles[sheet_name] = profile
+    hidden = [name for name, profile in profiles.items() if profile.get("is_hidden")]
     logger.debug(
-        "Workbook profiler scanned %s sheets from %s in %.2fs",
+        "Workbook profiler scanned %s sheets (%s hidden) from %s in %.2fs",
         len(profiles),
+        len(hidden),
         workbook_path,
         time.perf_counter() - started,
     )
     return profiles
+
+
+# ---------------------------------------------------------------------------
+# Workbook semantic profile (N1)
+#
+# One run-scoped, in-memory view of everything the deterministic code already
+# knows about a workbook: per-sheet structure, the openpyxl sheet metadata,
+# how many entity blocks each schedule holds, which sheets stayed unresolved
+# and why, and whether the file carries any cell-style signal at all.
+#
+# NO workbook_id, NO content hash, NO cache file, NO cross-run persistence --
+# a stated non-goal. It is rebuilt from the existing lru_caches on every run
+# and dies with the run.
+# ---------------------------------------------------------------------------
+
+
+def _entity_blocks_for_sheet(df: pd.DataFrame, sheet_name: str, profile: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The entity blocks _select_entity_block already builds and throws away.
+
+    It is the only place that knows a sheet holds N entity blocks; the profile
+    keeps the titles so a caller can see a multi-entity tab without re-deriving
+    it. Only the summary fields are kept -- the raw `context` string is a
+    5-row text dump per block and has no consumer here.
+    """
+    stage_row_idx = profile.get("stage_row_idx")
+    if stage_row_idx is None:
+        return []
+    try:
+        from .schedules import _select_entity_block  # local: schedules imports inspector, module-level would be a cycle
+        selected = _select_entity_block(df, sheet_name, int(stage_row_idx), None)
+    except Exception as exc:  # pragma: no cover - block detection is best-effort enrichment
+        logger.debug("Entity block detection failed for %s: %s", sheet_name, exc)
+        return []
+    blocks = []
+    for block in selected.get("blocks") or []:
+        blocks.append(
+            {
+                "stage_row_idx": block.get("stage_row_idx"),
+                "date_row_idx": block.get("date_row_idx"),
+                "data_end_row": block.get("data_end_row"),
+                "block_title": block.get("block_title"),
+                "block_entity_name": block.get("block_entity_name"),
+            }
+        )
+    return blocks
+
+
+def build_workbook_semantic_profile(
+    workbook_path: str,
+    profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+    resolution: Optional[Dict[str, Any]] = None,
+    workbook_frames: Optional[Dict[str, pd.DataFrame]] = None,
+) -> Dict[str, Any]:
+    started = time.perf_counter()
+    profiles = profiles if profiles is not None else profile_workbook(workbook_path)
+    workbook_frames = workbook_frames if workbook_frames is not None else load_workbook_frames(workbook_path)
+    resolution = resolution or {}
+
+    resolved = resolution.get("resolved") or {}
+    sheet_to_mapping_key = {
+        str(info.get("sheet_name")): mapping_key
+        for mapping_key, info in resolved.items()
+        if info.get("sheet_name")
+    }
+
+    try:
+        from .schedules import workbook_style_signals  # local: schedules imports inspector, module-level would be a cycle
+        style_signals = workbook_style_signals(workbook_path)
+    except Exception as exc:  # pragma: no cover - style collection is best-effort enrichment
+        logger.debug("Style signals unavailable for %s: %s", workbook_path, exc)
+        style_signals = {}
+
+    sheets: Dict[str, Dict[str, Any]] = {}
+    for sheet_name, profile in profiles.items():
+        df = workbook_frames.get(sheet_name)
+        blocks = (
+            _entity_blocks_for_sheet(df, sheet_name, profile)
+            if df is not None and profile.get("sheet_kind") in ("financial_schedule", "financial_summary")
+            else []
+        )
+        sheet_styles = style_signals.get(sheet_name) or {}
+        sheets[sheet_name] = {
+            **profile,
+            "mapping_key": sheet_to_mapping_key.get(sheet_name),
+            "entity_block_count": len(blocks),
+            "entity_blocks": blocks,
+            "style_signals": {
+                "indent_rows": sheet_styles.get("indent_row_count", 0),
+                "bold_rows": sheet_styles.get("bold_row_count", 0),
+                "outline_rows": sheet_styles.get("outline_row_count", 0),
+                "merged_ranges": sheet_styles.get("merged_range_count", 0),
+                "number_formats": sheet_styles.get("number_formats", {}),
+            },
+        }
+
+    hidden_sheets = sorted(name for name, profile in profiles.items() if profile.get("is_hidden"))
+    kind_counts: Dict[str, int] = {}
+    for profile in profiles.values():
+        kind_counts[str(profile.get("sheet_kind"))] = kind_counts.get(str(profile.get("sheet_kind")), 0) + 1
+
+    profile_payload = {
+        "workbook_name": os.path.basename(workbook_path),
+        "sheet_count": len(profiles),
+        "hidden_sheets": hidden_sheets,
+        "sheet_kind_counts": kind_counts,
+        "sheets": sheets,
+        "multi_entity_sheets": sorted(
+            name for name, sheet in sheets.items() if sheet.get("entity_block_count", 0) > 1
+        ),
+        "resolution": {
+            "resolved_count": len(resolved),
+            "scores": {
+                mapping_key: info.get("score")
+                for mapping_key, info in resolved.items()
+            },
+            "sheet_by_mapping_key": {
+                mapping_key: info.get("sheet_name") for mapping_key, info in resolved.items()
+            },
+            "unresolved_sheets": list(resolution.get("unresolved_sheets") or []),
+            "ambiguous_keys": sorted((resolution.get("ambiguities") or {}).keys()),
+        },
+        "style_signals_available": bool(style_signals),
+    }
+    logger.debug(
+        "Built workbook semantic profile for %s (%s sheets, %s hidden) in %.2fs",
+        profile_payload["workbook_name"],
+        profile_payload["sheet_count"],
+        len(hidden_sheets),
+        time.perf_counter() - started,
+    )
+    return profile_payload
 # --- end workbook/inspector.py ---

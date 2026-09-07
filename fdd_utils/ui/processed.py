@@ -142,24 +142,35 @@ def _render_resolver_diagnostics(resolution: Dict[str, Any], display_keys: list[
             "Method": info.get("resolution_method", ""),
             "Score": info.get("score", ""),
             "Alias": info.get("matched_alias", ""),
+            "Why": "",
             "In DFS": "yes" if info.get("sheet_name", "") in display_keys else "no",
         })
-    for sheet_name in unresolved:
+    # unresolved_sheets carries a dict per sheet (sheet_name plus the reason it
+    # stayed unresolved, its best candidate key and score), not a bare name --
+    # iterating it as strings silently rendered dict reprs in the Sheet column.
+    for entry in unresolved:
+        is_dict = isinstance(entry, dict)
+        sheet_name = entry.get("sheet_name", "") if is_dict else str(entry)
         rows.append({
-            "Mapping Key": "-",
+            "Mapping Key": (entry.get("best_candidate_key") if is_dict else None) or "-",
             "Sheet": sheet_name,
             "Method": "UNRESOLVED",
-            "Score": "",
-            "Alias": "",
+            "Score": entry.get("best_score", "") if is_dict else "",
+            "Alias": entry.get("detail", "") if is_dict else "",
+            "Why": entry.get("reason", "") if is_dict else "",
             "In DFS": "yes" if sheet_name in display_keys else "no",
         })
+    listed_sheets = {entry.get("sheet_name") for entry in unresolved if isinstance(entry, dict)}
     for sheet_name, detail in norm_errors.items():
+        if sheet_name in listed_sheets:
+            continue  # already listed above with reason == "normalization_error"
         rows.append({
             "Mapping Key": "-",
             "Sheet": sheet_name,
             "Method": "NORM ERROR",
             "Score": "",
             "Alias": str(detail),
+            "Why": "normalization_error",
             "In DFS": "no",
         })
     if rows:

@@ -22,6 +22,7 @@ Focus: 示意性調整後 / Indicative adjusted section, header hierarchy, multi
 
 from .inspector import load_workbook_frames, profile_workbook
 from .preflight import _build_workbook_preflight_cached
+from .schedules import _build_indent_signal_index, _build_workbook_style_index
 
 import pandas as pd
 import re
@@ -269,4 +270,10 @@ def clear_workbook_caches():
     profile_workbook.cache_clear()
     _build_workbook_preflight_cached.cache_clear()
     get_table_inspection.cache_clear()
+    # The openpyxl styles pass and its indent view were missing here: a new
+    # upload reusing a path already seen in this process kept the old file's
+    # indent/bold/outline signals. Now that the workbook profile is rebuilt per
+    # run from these caches, this is the invalidation that matters.
+    _build_workbook_style_index.cache_clear()
+    _build_indent_signal_index.cache_clear()
 # --- end workbook/table_debug.py ---

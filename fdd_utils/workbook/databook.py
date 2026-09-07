@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional
 
 
-from .inspector import load_workbook_frames, profile_workbook
+from .inspector import build_workbook_semantic_profile, load_workbook_frames, profile_workbook
 from .schedules import INTERNAL_ROW_KEY, _build_indent_signal_index, normalize_financial_schedule
 from .resolver import resolve_workbook_mappings
 import pandas as pd
@@ -330,6 +330,52 @@ def build_dataframe_variants_from_normalized_results(
     }
 
 
+def _merge_normalization_error_reasons(resolution: Dict[str, Any], profiles: Dict[str, Dict[str, Any]]) -> None:
+    """Add a `normalization_error` entry to resolution["unresolved_sheets"] for
+    every sheet that resolved to a mapping key and then failed to normalize.
+
+    Done here rather than in resolve_workbook_mappings because
+    normalization_errors does not exist yet when that function returns -- it is
+    created and filled in by the ThreadPoolExecutor loop above. A sheet in this
+    state is genuinely unresolved from the deliverable's point of view: it holds
+    an account nobody will ever see.
+    """
+    errors = resolution.get("normalization_errors") or {}
+    if not errors:
+        return
+    entries = list(resolution.get("unresolved_sheets") or [])
+    already_listed = {
+        entry.get("sheet_name") for entry in entries if isinstance(entry, dict)
+    }
+    sheet_to_mapping_key = {
+        info.get("sheet_name"): mapping_key
+        for mapping_key, info in (resolution.get("resolved") or {}).items()
+    }
+    for sheet_name, detail in errors.items():
+        if sheet_name in already_listed:
+            continue
+        profile = profiles.get(sheet_name) or {}
+        entries.append(
+            {
+                "sheet_name": sheet_name,
+                "sheet_kind": profile.get("sheet_kind"),
+                "title": profile.get("title"),
+                "stage_labels": list(profile.get("stage_labels") or []),
+                "date_labels": list(profile.get("date_labels") or []),
+                "unit_markers": list(profile.get("unit_markers") or []),
+                "is_hidden": bool(profile.get("is_hidden")),
+                "best_candidate_key": sheet_to_mapping_key.get(sheet_name),
+                "best_score": 0.0,
+                "best_alias_score": 0.0,
+                "floor_missed_by": 0.0,
+                "taken_by_sheet": None,
+                "reason": "normalization_error",
+                "detail": str(detail),
+            }
+        )
+    resolution["unresolved_sheets"] = sorted(entries, key=lambda entry: str(entry.get("sheet_name")))
+
+
 def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=None, mapping_overrides=None):
     """
     Build integrity-aware normalized schedule payloads for the workbook.
@@ -445,6 +491,22 @@ def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=No
                 }
                 workbook_list.append(sheet_name)
                 entity_scopes.append((profiles.get(sheet_name) or {}).get("entity_scope", "single"))
+
+    _merge_normalization_error_reasons(resolution, profiles)
+    # Built HERE, not in process_workbook_data: the CLI's free diagnostic path
+    # never calls process_workbook_data (that call sits inside `if run_ai:`), so
+    # hanging the profile there would make it unbuildable without a ~12-minute
+    # paid run. This function is crossed exactly once by both entry points, and
+    # databook_path/profiles/workbook_frames/resolution are all already in scope.
+    # Carried on `resolution` because it already rides everywhere the caller
+    # needs it and the addition is purely additive -- nothing is written to disk,
+    # and nothing here survives the run.
+    resolution["workbook_profile"] = build_workbook_semantic_profile(
+        workbook_path=databook_path,
+        profiles=profiles,
+        resolution=resolution,
+        workbook_frames=workbook_frames,
+    )
 
     overall_result_type = 'multiple' if any(scope == 'multiple' for scope in entity_scopes) else 'single'
     report_language = _detect_report_language_from_profiles(profiles)

@@ -16,16 +16,18 @@ Unified AI pipeline and prompt-loading surface for FDD.
 from .config import FDDConfig, get_safe_default_data_format, normalize_language_code
 from .english import _iso_to_long_date, polish_english_commentary
 from .validator import format_validator_feedback_for_reprompt, parse_validator_response, strip_thinking, verify_commentary
-from .logging import PipelineRunLogger
+from .logging import PipelineRunLogger, coerce_plain
 from .prompts import PromptEngine, _DEFAULT_MAPPINGS_FILE, _DEFAULT_PROMPTS_FILE, get_prompt_engine, resolve_prompt_asset_path
 from .client import AIClient
 
 
+import hashlib
 import multiprocessing
 import os
 import re
 import threading
 import concurrent.futures
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -194,6 +196,254 @@ def _log_run_health(logger: PipelineRunLogger, health: Dict[str, Any], total_ite
         )
     else:
         logger.logger.info(line)
+
+
+#: Sentinel key under which run_ai_pipeline_with_progress files the run folder
+#: and the serialized RunState. Same convention and the same safety argument as
+#: RUN_HEALTH_KEY above: it is not a mapping_key, so build_pptx_structured_payloads
+#: (find_mapping_key returns None → continue) and the UI's summary loop skip it,
+#: and it carries no "final" so extract_final_contents never sees it.
+#:
+#: It exists because run_ai_pipeline_with_progress returns ONLY `results` and
+#: never exposes the run folder, so without a sentinel no caller could reach the
+#: state or the audit log at all.
+RUN_STATE_KEY = "__run__"
+
+#: Running proof that the stages_done eligibility test in run_agent_stage picks
+#: exactly the accounts the `previous_agent not in results[key]` membership
+#: probe used to. Read by ad-hoc/workbench/replay_pipeline_state.py; a mismatch
+#: is also logged at ERROR and falls back to the old probe.
+_ELIGIBILITY_PARITY = {"checks": 0, "mismatches": 0}
+
+
+# ---------------------------------------------------------------------------
+# Explicit run state (plan M1 steps 1-4)
+# ---------------------------------------------------------------------------
+#
+# TWO AXES, DELIBERATELY SEPARATED — collapsing them is what made an earlier
+# draft of this unimplementable.
+#
+#   stages_done  which stages have run. Order-independent, and a direct
+#                restatement of the membership test run_agent_stage used to do
+#                against `results[key]`. This is what stage ELIGIBILITY reads.
+#   phase        the state of the account's TEXT. This is what a router reads.
+#
+# A single phase test cannot decide eligibility: the Generator's entry phase is
+# PLANNED, the Auditor's is DRAFTED and the Validator's would be GROUNDED, and
+# _get_agent_stage_context has nothing to derive the requirement from.
+PHASE_PLANNED = "PLANNED"
+PHASE_DRAFTED = "DRAFTED"
+#: GROUNDED means "arithmetic has been applied", and it is reached at the
+#: AUDITOR stage, not after it: verify_commentary fires for subagent_2 as well
+#: as subagent_4 (see process_single_agent_item), so an account is grounded one
+#: stage earlier than a naive draft→audit→verify reading assumes. The Validator
+#: therefore RE-ENTERS GROUNDED (a self-edge) rather than advancing; whether the
+#: LLM Validator also ran is a transition CAUSE, not a separate phase. There is
+#: deliberately no AUDITED or VERIFIED phase — "which stages ran" is stages_done.
+PHASE_GROUNDED = "GROUNDED"
+PHASE_DEFECTIVE = "DEFECTIVE"
+#: Unreachable until the local-repair milestone (M4) lands. Named now so the
+#: vocabulary is fixed and the audit log does not change shape when it does.
+PHASE_REPAIRING = "REPAIRING"
+PHASE_REGENERATING = "REGENERATING"
+PHASE_ACCEPTED = "ACCEPTED"
+PHASE_ARBITRATED = "ARBITRATED"
+#: FAILED is ONLY the two placeholder-text branches at the bottom of
+#: process_single_agent_item ("Content generation failed / incomplete for ...").
+#: The deterministic fallback bullet is NOT a failure: that account goes on
+#: through the Auditor and Validator and produces real output, so it stays on
+#: the normal path with a `degraded` cause recorded instead. Marking it FAILED
+#: would both lose it from the ACCEPTED tally and satisfy "every account reached
+#: a terminal phase" for the wrong reason. Note even the placeholder text is
+#: stored like any other content and the account keeps going — FAILED is a label
+#: on the outcome, not a stop.
+PHASE_FAILED = "FAILED"
+
+#: DEFECTIVE is in here because the final sweep uses it as a VERDICT: reviews
+#: present, defects present, and the feedback loop either disabled or unable to
+#: clear them. Mid-run it is not terminal — it is the gate the retry path leaves
+#: from — but nothing is mid-run by the time the sweep has finished.
+TERMINAL_PHASES = frozenset({PHASE_ACCEPTED, PHASE_ARBITRATED, PHASE_FAILED, PHASE_DEFECTIVE})
+
+
+class AccountState:
+    """The *why* half of one account's run. `results[key]` remains the *what*.
+
+    `results[key]` is untouched by design — nine consumers read it — so nothing
+    here duplicates its contents. What lives here is the record the dict cannot
+    hold: the ordered path the account took, why each step happened, and how it
+    degraded along the way.
+
+    THREADING: exactly one thread ever writes one AccountState. In the stage
+    loop that is the main thread (workers accumulate metadata["phase_events"]
+    and _store_agent_result drains them — see process_single_agent_item); in the
+    feedback loop it is that key's own worker, which no other thread shares.
+    """
+
+    def __init__(self, mapping_key: str) -> None:
+        self.mapping_key = mapping_key
+        self.stages_done: set = set()
+        self.phase = PHASE_PLANNED
+        #: Non-terminal degradation: fallback_bullet | stage_passthrough_after_error
+        #: | no_prompt | circuit_breaker. The account still produced output.
+        self.degraded: List[str] = []
+        self.attempts: List[Dict[str, Any]] = []
+        self.defects: List[Dict[str, Any]] = []
+        self.repairs: List[Dict[str, Any]] = []  # M4
+        self.contract: Dict[str, Any] = {}       # M5
+        self.transitions: List[Dict[str, str]] = []
+
+    def transition(self, to_phase: str, cause: str) -> None:
+        """Record a move. `from` is always the current phase, so a path read
+        top to bottom is always continuous — that continuity is the audit
+        log's only structural guarantee and it is free as long as nothing
+        assigns `phase` directly."""
+        self.transitions.append({"from": self.phase, "to": to_phase, "cause": str(cause)})
+        self.phase = to_phase
+
+    def note_degraded(self, cause: str) -> None:
+        cause = str(cause)
+        if cause not in self.degraded:
+            self.degraded.append(cause)
+
+    def mark_stage(self, agent_name: str) -> None:
+        self.stages_done.add(agent_name)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return coerce_plain({
+            "mapping_key": self.mapping_key,
+            "phase": self.phase,
+            "terminal": self.phase in TERMINAL_PHASES,
+            "stages_done": sorted(self.stages_done),
+            "degraded": list(self.degraded),
+            "transitions": list(self.transitions),
+            "attempts": list(self.attempts),
+            "defects": list(self.defects),
+            "repairs": list(self.repairs),
+            "contract": dict(self.contract),
+        })
+
+
+class RunState:
+    """Every derived fact for the duration of ONE run, plus one slot per account.
+
+    NOT cross-run memory — nothing here survives the process, and nothing from a
+    previous run influences this one. It also unlocks NO resumability: `results`
+    and `run_data` are both written once, in PipelineRunLogger.finalize, so a run
+    that dies at the eighteenth account still restarts from zero. An in-memory
+    RunState dies with the process exactly as `results` does. It makes a resume
+    predicate expressible, nothing more.
+
+    The fact half is built ONCE, before the stage loop, and is read-only during
+    it. Most of it is reserved for later milestones and is empty today; the names
+    are fixed now so the shape does not move under them:
+
+        profile    the workbook semantic profile (N1)
+        siblings   {key -> [df]}, replacing the two duplicated build sites (M2)
+        evidence   {key -> EvidenceIndex} (M2)
+        facts      {(key, ISO period) -> total} (N2)
+        links      verified cross-account edges, each with its numeric test (N2)
+
+    `peer` is built here rather than per call site because _build_peer_context is
+    silently None on the retry and reprompt paths today — but the call sites are
+    NOT switched over in this milestone: doing so changes prompts, and this
+    milestone's gate is verdict-identical output.
+    """
+
+    def __init__(
+        self,
+        dfs: Optional[Dict[str, pd.DataFrame]],
+        mapping_keys: List[str],
+        run_folder: str = "",
+    ) -> None:
+        # ---- fact half ----
+        self.dfs = dfs or {}
+        self.profile: Optional[Dict[str, Any]] = None
+        self.siblings: Dict[str, Any] = {}
+        self.evidence: Dict[str, Any] = {}
+        self.facts: Dict[Any, Any] = {}
+        try:
+            self.peer = _build_peer_context(dfs)
+        except Exception:  # pragma: no cover - defensive; a missing peer is not fatal
+            self.peer = None
+        self.links: List[Dict[str, Any]] = []
+
+        # ---- process half ----
+        # Same key set create_result_shell uses. An account in mapping_keys but
+        # absent from dfs gets no result shell today, so it must get no
+        # AccountState either — otherwise it sits in PLANNED forever and breaks
+        # the "every account reached a terminal phase" check for a reason that
+        # has nothing to do with the pipeline.
+        self.accounts: Dict[str, AccountState] = {
+            key: AccountState(key) for key in mapping_keys if key in self.dfs
+        }
+        self.deck: Dict[str, Any] = {}
+        self.run_folder = run_folder
+
+    def account(self, mapping_key: str) -> Optional[AccountState]:
+        return self.accounts.get(mapping_key)
+
+    def phase_tally(self) -> Dict[str, int]:
+        return dict(Counter(state.phase for state in self.accounts.values()))
+
+    def transition_causes(self) -> Dict[str, int]:
+        return dict(Counter(
+            t["cause"] for state in self.accounts.values() for t in state.transitions
+        ))
+
+    def as_dict(self) -> Dict[str, Any]:
+        return coerce_plain({
+            "run_folder": self.run_folder,
+            "phase_tally": self.phase_tally(),
+            "accounts_not_terminal": sorted(
+                key for key, state in self.accounts.items()
+                if state.phase not in TERMINAL_PHASES
+            ),
+            "degraded_accounts": {
+                key: list(state.degraded)
+                for key, state in self.accounts.items() if state.degraded
+            },
+            "accounts": {key: state.as_dict() for key, state in self.accounts.items()},
+        })
+
+
+def _record_recovered_grounding(state: Optional[AccountState], cause: str) -> None:
+    """Grounding attached by a late recovery pass, without reviving a FAILED
+    account.
+
+    MEASURED, replaying an archived dead run (every LLM call a hard 400): 8
+    accounts shipped the error-placeholder string, the recovery pass then
+    grounded that string — it contains no amount, so it has no unsupported
+    clause — and the final sweep read "reviews present, no defect" and called
+    all 26 ACCEPTED, on a deck that was entirely deterministic filler. Running
+    arithmetic over a placeholder is not grounding; the reviews are still
+    attached (the deck's highlighting reads them), only the phase is held.
+    """
+    if state is None:
+        return
+    if state.phase == PHASE_FAILED:
+        state.transition(PHASE_FAILED, "%s: placeholder text, phase held" % cause)
+    else:
+        state.transition(PHASE_GROUNDED, cause)
+
+
+def _queue_phase_event(metadata: Dict[str, Any], **event: Any) -> Dict[str, Any]:
+    """Park a state change a WORKER observed, for the main thread to record.
+
+    THE RULE THAT MAKES THIS SAFE: no phase transition is ever recorded from a
+    worker thread. verify_commentary and every degradation branch below run
+    inside process_single_agent_item on a ThreadPoolExecutor worker and return
+    BEFORE _store_agent_result runs on the main thread, so recording at the
+    observation site would append transitions out of ORDER for every account —
+    the path would stop being a path.
+
+    So the worker queues; _store_agent_result drains, in order, one writer.
+    The key is popped back off in _store_agent_result before anything is filed,
+    so `results` never sees it and stays byte-identical to what it was.
+    """
+    metadata = dict(metadata or {})
+    metadata.setdefault("phase_events", []).append(event)
+    return metadata
 
 
 # Active pipeline stages, in order. The Refiner (subagent_3 / 3_Refiner) is
@@ -459,7 +709,14 @@ def _store_agent_result(
     agent_name: str,
     content: str,
     metadata: Dict[str, Any],
+    state: Optional[AccountState] = None,
 ) -> None:
+    # The ONLY place a stage transition is written. Popped before anything is
+    # filed, so `results` is byte-identical with and without state tracking --
+    # in particular an otherwise-empty metadata stays empty and still writes no
+    # "<agent>_metadata" record.
+    phase_events = (metadata or {}).pop("phase_events", None) if isinstance(metadata, dict) else None
+
     results[mapping_key][agent_name] = content
     if agent_name == "subagent_4":
         results[mapping_key]["agent_4_validation"] = metadata
@@ -482,6 +739,34 @@ def _store_agent_result(
         # collide with the single agent_4_validation record everything else
         # reads.
         results[mapping_key]["%s_metadata" % agent_name] = metadata
+
+    if state is None:
+        return
+
+    state.mark_stage(agent_name)
+    if agent_name == "subagent_1":
+        state.transition(PHASE_DRAFTED, "generator")
+    elif agent_name == "subagent_2" and (metadata or {}).get("clause_reviews"):
+        # Conditional on the reviews actually being there: the Auditor reaches
+        # this line with empty metadata when its LLM call failed and the worker
+        # passed the previous stage's text through, and nothing was grounded
+        # then. Same condition as the agent_4_validation write above.
+        state.transition(PHASE_GROUNDED, "arithmetic")
+    elif agent_name == "subagent_4":
+        state.transition(PHASE_GROUNDED, "llm_validator")
+
+    if (metadata or {}).get("used_fallback"):
+        # Degraded, NOT failed: this account keeps going and produces real
+        # output. See PHASE_FAILED.
+        state.note_degraded("fallback_bullet")
+
+    # Drained after the stage transition, so a placeholder that the Generator
+    # produced reads PLANNED -> DRAFTED -> FAILED rather than jumping.
+    for event in phase_events or []:
+        if event.get("to"):
+            state.transition(event["to"], event.get("cause", ""))
+        if event.get("degraded"):
+            state.note_degraded(event["degraded"])
 
 
 def _finalize_agent_content(
@@ -708,11 +993,24 @@ def process_single_agent_item(
     user_comment: str = "",
     dfs: Optional[Dict[str, pd.DataFrame]] = None,
     health: Optional[_RunHealth] = None,
+    run_state: Optional[RunState] = None,
 ) -> Tuple[str, str, Dict[str, Any]]:
-    """Run one account through a single agent stage."""
+    """Run one account through a single agent stage.
+
+    `run_state` is ADDITIVE — `dfs` stays, because three of this function's
+    call sites omit `dfs` entirely (the pre-existing peer_context/siblings gap)
+    and replacing the parameter would force a prompt-changing decision inside a
+    milestone whose gate is verdict-identical output. Restoring the missing
+    context on those paths is a separate change.
+
+    Nothing here writes a transition — see _queue_phase_event for why.
+    """
     # A caller that wants no tally still gets one; it is simply discarded.
     # Keeps the eight recording sites below free of None checks.
     health = health or _RunHealth()
+    # "the LLM was never even asked" is a different degradation from "the LLM
+    # was asked and failed", and only the breaker path can tell them apart.
+    _breaker_skipped = False
     try:
         logger.log_agent_start(agent_name, mapping_key)
         agent_cfg = ai_helper.get_agent_settings(agent_name)
@@ -736,11 +1034,11 @@ def process_single_agent_item(
         if agent_name == "subagent_1" and (not system_prompt or not user_prompt):
             placeholder = f"Content generation skipped for {mapping_key}: No prompts available"
             health.record_no_prompt(mapping_key)
-            return mapping_key, placeholder, {}
+            return mapping_key, placeholder, _queue_phase_event({}, degraded="no_prompt")
 
         if not system_prompt or not user_prompt:
             health.record_no_prompt(mapping_key)
-            return mapping_key, previous_output, {}
+            return mapping_key, previous_output, _queue_phase_event({}, degraded="no_prompt")
 
         # Auto-reprompt on timeout. The user does not want to see "AI call
         # timed out" placeholder text in the commentary; retry up to twice
@@ -758,6 +1056,7 @@ def process_single_agent_item(
                 "[%s] %s: circuit breaker OPEN — skipping LLM call, using fallback",
                 agent_name, mapping_key,
             )
+            _breaker_skipped = True
             raise RuntimeError("Circuit breaker open for this stage")
 
         response = None
@@ -882,6 +1181,10 @@ def process_single_agent_item(
         return mapping_key, content, metadata
     except Exception as exc:
         logger.log_error(agent_name, mapping_key, exc)
+        # Queued, not recorded: this still runs on a worker thread.
+        events: Dict[str, Any] = {}
+        if _breaker_skipped:
+            events = _queue_phase_event(events, degraded="circuit_breaker")
         if agent_name == "subagent_1":
             fallback = _build_deterministic_fallback_bullet(mapping_key, df, ai_helper.language)
             if fallback:
@@ -890,14 +1193,25 @@ def process_single_agent_item(
                     agent_name, mapping_key,
                 )
                 health.record_fallback(mapping_key, str(exc)[:120])
-                return mapping_key, fallback, {"used_fallback": True, "fallback_reason": str(exc)[:120]}
+                events.update({"used_fallback": True, "fallback_reason": str(exc)[:120]})
+                return mapping_key, fallback, events
             health.record_error_text(mapping_key)
-            return mapping_key, f"Content generation failed for {mapping_key}: {str(exc)[:100]}", {}
+            return (
+                mapping_key,
+                f"Content generation failed for {mapping_key}: {str(exc)[:100]}",
+                _queue_phase_event(events, to=PHASE_FAILED, cause="error_placeholder_text"),
+            )
         if previous_output and str(previous_output).strip():
             health.record_passthrough(mapping_key)
-            return mapping_key, previous_output, {}
+            return mapping_key, previous_output, _queue_phase_event(
+                events, degraded="stage_passthrough_after_error",
+            )
         health.record_error_text(mapping_key)
-        return mapping_key, f"Content generation incomplete for {mapping_key}: {str(exc)[:100]}", {}
+        return (
+            mapping_key,
+            f"Content generation incomplete for {mapping_key}: {str(exc)[:100]}",
+            _queue_phase_event(events, to=PHASE_FAILED, cause="error_placeholder_text"),
+        )
 
 
 def _build_deterministic_fallback_bullet(
@@ -982,6 +1296,7 @@ def run_agent_stage(
     total_items: int = 0,
     user_comments: Optional[Dict[str, str]] = None,
     health: Optional[_RunHealth] = None,
+    run_state: Optional[RunState] = None,
 ):
     """Run all items for a single agent stage."""
     max_workers = _resolve_max_workers(ai_helper, max_workers)
@@ -992,13 +1307,38 @@ def run_agent_stage(
 
     agent_num, agent_label, previous_agent = _get_agent_stage_context(agent_name)
 
+    # Eligibility reads stages_done, not phase. stages_done is a direct
+    # restatement of the membership probe below -- "has this account been
+    # through the previous stage?" -- so equality with the old behaviour is
+    # provable rather than argued, and the old probe is kept beside it to prove
+    # it on every real run rather than once in a harness. It is a dict lookup
+    # per account per stage; the cost is not measurable.
+    legacy_eligible_keys = []
     eligible_keys = []
     for key in mapping_keys:
         if key not in dfs or key not in results:
             continue
-        if previous_agent and previous_agent not in results[key]:
+        if not previous_agent or previous_agent in results[key]:
+            legacy_eligible_keys.append(key)
+        state = run_state.account(key) if run_state is not None else None
+        if state is None:
+            continue
+        if previous_agent and previous_agent not in state.stages_done:
             continue
         eligible_keys.append(key)
+
+    if run_state is None:
+        eligible_keys = legacy_eligible_keys
+    else:
+        _ELIGIBILITY_PARITY["checks"] += 1
+        if eligible_keys != legacy_eligible_keys:
+            _ELIGIBILITY_PARITY["mismatches"] += 1
+            logger.logger.error(
+                "[%s] stages_done eligibility disagrees with the membership test it "
+                "replaced: %s vs %s. Falling back to the membership test",
+                agent_name, eligible_keys, legacy_eligible_keys,
+            )
+            eligible_keys = legacy_eligible_keys
 
     if use_multithreading and len(eligible_keys) > 1:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1016,13 +1356,17 @@ def run_agent_stage(
                     (user_comments or {}).get(key, ""),
                     dfs,
                     health,
+                    run_state,
                 )
                 futures[future] = key
 
             completed = 0
             for future in as_completed(futures):
                 mapping_key, content, metadata = future.result()
-                _store_agent_result(results, mapping_key, agent_name, content, metadata)
+                _store_agent_result(
+                    results, mapping_key, agent_name, content, metadata,
+                    state=run_state.account(mapping_key) if run_state is not None else None,
+                )
                 completed += 1
                 _notify_stage_progress(
                     progress_callback,
@@ -1047,8 +1391,12 @@ def run_agent_stage(
                 (user_comments or {}).get(key, ""),
                 dfs,
                 health,
+                run_state,
             )
-            _store_agent_result(results, mapping_key, agent_name, content, metadata)
+            _store_agent_result(
+                results, mapping_key, agent_name, content, metadata,
+                state=run_state.account(mapping_key) if run_state is not None else None,
+            )
             completed += 1
             _notify_stage_progress(
                 progress_callback,
@@ -1167,6 +1515,11 @@ def run_ai_pipeline_with_progress(
         model_name=model_name,
     )
     results = create_result_shell(mapping_keys, dfs)
+    # Built HERE and not at the top of the function: settle_subtable_selection
+    # mutates df.attrs (it strips the detail table off the frames that lose a
+    # slot), and the fact half has to be built from the settled frames or it
+    # describes a workbook the prompts were never given.
+    run_state = RunState(dfs, mapping_keys, run_folder=logger.run_folder)
     health = _RunHealth()
 
     logger.logger.info(
@@ -1200,6 +1553,15 @@ def run_ai_pipeline_with_progress(
                 "%s handled by deterministic verification only",
                 len(stage_keys), len(mapping_keys), skipped,
             )
+            # A no-op transition, deliberately: "the Validator did not run here,
+            # and it was a decision" is a different fact from "the Validator
+            # never got to this account", and only a recorded cause separates
+            # them. Main thread, before the stage fans out.
+            _selected = set(stage_keys)
+            for _key in mapping_keys:
+                _state = run_state.account(_key)
+                if _state is not None and _key not in _selected:
+                    _state.transition(_state.phase, "validator_skipped: no_causal_claim")
         if not stage_keys:
             continue
         logger.logger.info("Running %s stage", agent_label)
@@ -1217,6 +1579,7 @@ def run_ai_pipeline_with_progress(
             total_items=total_items,
             user_comments=user_comments,
             health=health,
+            run_state=run_state,
         )
 
     if validator_mode == "selective":
@@ -1226,6 +1589,7 @@ def run_ai_pipeline_with_progress(
         # Validator -- number-grounding only, no LLM call, no rewrite.
         _apply_deterministic_verification(
             results=results, dfs=dfs, prompt_manager=prompt_manager, logger=logger,
+            run_state=run_state,
         )
 
     # --- Feedback loop: re-run generator+validator for accounts with too many unsupported clauses ---
@@ -1257,6 +1621,7 @@ def run_ai_pipeline_with_progress(
                         user_comments=user_comments,
                         progress_callback=progress_callback,
                         health=health,
+                        run_state=run_state,
                     ): key
                     for key in eligible_keys
                 }
@@ -1282,6 +1647,7 @@ def run_ai_pipeline_with_progress(
                     user_comments=user_comments,
                     progress_callback=progress_callback,
                     health=health,
+                    run_state=run_state,
                 )
                 if retries > 0:
                     logger.logger.info("[FeedbackLoop] %s: completed with %s retry(ies)", key, retries)
@@ -1312,17 +1678,183 @@ def run_ai_pipeline_with_progress(
         max_workers=max_workers,
         user_comments=user_comments,
         health=health,
+        run_state=run_state,
     )
+
+    _sweep_final_phases(results, run_state, logger)
 
     # Attached LAST, after set_final_fallbacks and the ensure pass have finished
     # walking `results` -- both iterate every key and would otherwise write a
-    # "final" onto the tally.
+    # "final" onto the tally. Same for the run sentinel below it.
     health_summary = health.as_dict()
     _log_run_health(logger, health_summary, total_items)
     results[RUN_HEALTH_KEY] = health_summary
+    results[RUN_STATE_KEY] = {
+        "run_folder": logger.run_folder,
+        "audit_log": _write_run_audit_log(logger, run_state, results),
+        "state": run_state.as_dict(),
+        "defect_codes": _defect_code_frequency(run_state),
+        "eligibility_parity": dict(_ELIGIBILITY_PARITY),
+    }
 
     logger.finalize(results)
     return results
+
+
+def _sweep_final_phases(
+    results: Dict[str, Dict[str, str]],
+    run_state: RunState,
+    logger: PipelineRunLogger,
+) -> None:
+    """Give every account a terminal phase, on every run, gated on nothing.
+
+    ACCEPTED has no site anywhere else in the pipeline, and the nearest
+    candidate -- _evaluate_feedback_needed -- is reachable only inside
+    `if feedback_config.get("enabled")`, a per-machine config value. An outcome
+    tally that silently empties when one machine's config.yml differs from
+    another's is not a tally, so this sweep is not gated on anything.
+
+    Two phases are already decided and are NOT swept:
+
+      ARBITRATED  the arbiter gave it a terminal phase and it still carries
+                  defects, so the DEFECTIVE branch below would overwrite an
+                  informative label with a coarser one.
+      FAILED      MEASURED on a replay of an archived dead run (every LLM call a
+                  hard 400): 8 accounts took the error-placeholder branch, the
+                  deterministic sweep then attached clause_reviews to the
+                  placeholder string, it contained no defective clause, and all
+                  26 accounts came out ACCEPTED — on a deck that was entirely
+                  filler. Grounding a placeholder is not acceptance.
+    """
+    for key, state in run_state.accounts.items():
+        result = results.get(key) or {}
+        reviews = ((result.get("agent_4_validation") or {}).get("clause_reviews") or []
+                   if isinstance(result, dict) else [])
+        # Harvested for EVERY account, before the skip below. An arbitrated
+        # account is by definition the one that still carries defects, so it is
+        # the one a reviewer opens the audit log for; leaving its defects out
+        # because its phase was already decided would empty the per-run defect
+        # table of exactly the rows that matter.
+        state.defects = _clause_defect_records(reviews)
+        if state.phase in (PHASE_ARBITRATED, PHASE_FAILED):
+            continue
+        if not reviews:
+            # Nothing was ever grounded here. That is the same outcome as the
+            # placeholder branches, so it gets the same label.
+            state.transition(PHASE_FAILED, "final_sweep: no_clause_reviews")
+            continue
+        defective = count_defective_clauses(reviews)
+        if defective:
+            state.transition(
+                PHASE_DEFECTIVE, "final_sweep: %s defective clause(s) unresolved" % len(defective),
+            )
+        else:
+            state.transition(PHASE_ACCEPTED, "final_sweep: no defective clause")
+
+    tally = run_state.phase_tally()
+    stranded = [k for k, s in run_state.accounts.items() if s.phase not in TERMINAL_PHASES]
+    logger.logger.info(
+        "Run outcome: %s | %s account(s) with a non-terminal phase: %s",
+        " ".join("%s=%s" % (phase, count) for phase, count in sorted(tally.items())),
+        len(stranded), stranded or "none",
+    )
+
+
+def _clause_defect_records(reviews: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The unsupported clauses, in the shape the audit log files them.
+
+    `code`/`span`/`source_ref` are OPTIONAL and absent today -- the typed defect
+    codes are a later step in this milestone, landing in validator.py. Reading
+    them through .get() now means the audit line does not change shape when they
+    arrive.
+    """
+    records = []
+    for review in reviews or []:
+        if not isinstance(review, dict) or review.get("supported"):
+            continue
+        records.append({
+            "code": review.get("code"),
+            "span": review.get("span"),
+            "category": review.get("category"),
+            "reason": str(review.get("reason") or "")[:400],
+            "source_ref": review.get("source_ref"),
+            "clause": str(review.get("clause") or "")[:200],
+        })
+    return records
+
+
+def _defect_code_frequency(run_state: RunState) -> Dict[str, int]:
+    """Per-run defect-code histogram. `null` until validator.py emits codes;
+    the category is carried alongside so the table says something in the
+    meantime."""
+    counter: Counter = Counter()
+    for state in run_state.accounts.values():
+        for defect in state.defects:
+            counter["%s/%s" % (defect.get("code"), defect.get("category"))] += 1
+    return dict(counter)
+
+
+def _account_audit_line(
+    run_id: str,
+    key: str,
+    state: AccountState,
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """One account's state path, self-contained enough to answer "why did this
+    account end up like this?" read top to bottom."""
+    validation = (result.get("agent_4_validation") or {}) if isinstance(result, dict) else {}
+    reviews = validation.get("clause_reviews") or []
+    # WHICH TEXT THE SPANS INDEX. Clause and amount offsets are defined against
+    # agent_4_validation["final_content"] -- the stored string, which for some
+    # accounts is NOT results["final"]. Naming and hashing it here is what lets
+    # a later reader tell whether a stored span still means anything.
+    spans_text = validation.get("final_content")
+    spans_text = spans_text if isinstance(spans_text, str) else ""
+    final_text = str((result.get("final") or "") if isinstance(result, dict) else "")
+    line = dict(state.as_dict())
+    line.update({
+        "run_id": run_id,
+        "account": key,
+        "feedback_retries": (result.get("feedback_retries") if isinstance(result, dict) else None),
+        "feedback_arbiter": (result.get("feedback_arbiter") if isinstance(result, dict) else None),
+        "evidence": {
+            "clauses_reviewed": len(reviews),
+            "clauses_unsupported": sum(
+                1 for r in reviews if isinstance(r, dict) and not r.get("supported")
+            ),
+            "clauses_defective": len(count_defective_clauses(reviews)),
+        },
+        "spans_index": {
+            "text": "agent_4_validation.final_content",
+            "sha1": hashlib.sha1(spans_text.encode("utf-8")).hexdigest() if spans_text else None,
+            "length": len(spans_text),
+            "same_as_final": bool(spans_text) and spans_text == final_text,
+        },
+    })
+    return line
+
+
+def _write_run_audit_log(
+    logger: PipelineRunLogger,
+    run_state: RunState,
+    results: Dict[str, Dict[str, str]],
+) -> str:
+    lines = [
+        _account_audit_line(logger.run_id, key, state, results.get(key) or {})
+        for key, state in sorted(run_state.accounts.items())
+    ]
+    try:
+        path = logger.write_audit_log(lines)
+    except Exception as exc:  # pragma: no cover - a log is never worth losing a run over
+        logger.logger.warning("[Audit] could not write audit.jsonl: %s", exc)
+        return ""
+    logger.logger.info(
+        "[Audit] %s account path(s) -> %s | %s transition(s) | causes: %s",
+        len(lines), path,
+        sum(len(s.transitions) for s in run_state.accounts.values()),
+        run_state.transition_causes(),
+    )
+    return path
 
 
 def _ensure_clause_reviews_on_final(
@@ -1336,6 +1868,7 @@ def _ensure_clause_reviews_on_final(
     max_workers: Optional[int],
     user_comments: Optional[Dict[str, str]] = None,
     health: Optional[_RunHealth] = None,
+    run_state: Optional[RunState] = None,
 ) -> None:
     """Re-run Validator on accounts whose final commentary lacks clause_reviews."""
     needs_validation: List[str] = []
@@ -1402,11 +1935,17 @@ def _ensure_clause_reviews_on_final(
                 user_comment=(user_comments or {}).get(key, ""),
                 dfs=dfs,
                 health=health,
+                run_state=run_state,
             )
             if isinstance(metadata, dict) and metadata.get("clause_reviews"):
                 # Keep the original final text (don't overwrite); just attach
                 # clause_reviews so highlighting works.
+                metadata.pop("phase_events", None)  # this write bypasses _store_agent_result
                 results[key]["agent_4_validation"] = metadata
+                _state = run_state.account(key) if run_state is not None else None
+                if _state is not None:
+                    _state.mark_stage("subagent_4")
+                    _record_recovered_grounding(_state, "ensure_validation_after_stage_failure")
                 logger.logger.info(
                     "[EnsureValidation] %s: validated %s clause(s)", key,
                     len(metadata.get("clause_reviews", [])),
@@ -1527,6 +2066,7 @@ def _apply_deterministic_verification(
     dfs: Dict[str, pd.DataFrame],
     prompt_manager: PromptEngine,
     logger: PipelineRunLogger,
+    run_state: Optional[RunState] = None,
 ) -> None:
     """Attach clause_reviews to every account the LLM Validator skipped.
 
@@ -1563,6 +2103,16 @@ def _apply_deterministic_verification(
         # payload builder) all read subagent_4 as "the validated text".
         # Nothing rewrote it here, so it is the Auditor's own output.
         result.setdefault("subagent_4", content)
+        # EXPECT ZERO OF THESE ON A HEALTHY RUN. The loop above `continue`s on
+        # any account that already has clause_reviews, and the Auditor attaches
+        # them to every account it processes -- so reaching this line means a
+        # stage failed for that account and the grounding was recovered here
+        # instead. Recorded with its own cause so the count is assertable rather
+        # than assumed; ad-hoc/workbench/replay_pipeline_state.py asserts it.
+        _record_recovered_grounding(
+            run_state.account(key) if run_state is not None else None,
+            "grounding_recovered_after_stage_failure",
+        )
         done += 1
     if done:
         logger.logger.info(
@@ -1607,10 +2157,18 @@ def _run_feedback_loop_for_key(
     user_comments: Optional[Dict[str, str]] = None,
     progress_callback: Optional[Callable[..., None]] = None,
     health: Optional[_RunHealth] = None,
+    run_state: Optional[RunState] = None,
 ) -> int:
-    """Run feedback loop for a single key. Returns number of retries performed."""
+    """Run feedback loop for a single key. Returns number of retries performed.
+
+    Transitions ARE written from here even though this can run on a worker
+    thread — which does not break the one-writer rule: the pool fans out over
+    KEYS, so exactly one thread ever touches this account's AccountState, and
+    the ordering the rule protects is per-account.
+    """
     max_retries = int(feedback_config.get("max_retries", 2))
     threshold = float(feedback_config.get("unsupported_threshold", 0.3))
+    state = run_state.account(key) if run_state is not None else None
 
     def _snapshot(label: str) -> Dict[str, Any]:
         """One attempt, with the score the arbiter below ranks it by."""
@@ -1631,7 +2189,17 @@ def _run_feedback_loop_for_key(
     for retry_num in range(1, max_retries + 1):
         needs_feedback, ratio, unsupported = _evaluate_feedback_needed(results, key, threshold)
         if not needs_feedback:
+            if state is not None:
+                state.attempts = [
+                    {"label": a["label"], "defects": a["defects"], "reviewed": a["reviewed"]}
+                    for a in attempts
+                ]
             return retry_num - 1
+        if state is not None:
+            state.transition(
+                PHASE_DEFECTIVE,
+                "defect_gate: %s unsupported clause(s), ratio %.2f" % (len(unsupported), ratio),
+            )
 
         logger.logger.info(
             "[FeedbackLoop] %s: retry %s/%s (unsupported_ratio=%.2f, threshold=%.2f, unsupported_count=%s)",
@@ -1667,6 +2235,15 @@ def _run_feedback_loop_for_key(
         )
         results[key]["subagent_1"] = gen_content
         results[key]["feedback_retry_%s_agent_1" % retry_num] = gen_content
+        # These two writes bypass _store_agent_result, so the transitions have
+        # to be explicit. Routing them through the store instead is NOT a
+        # refactor: it would file an agent_4_validation record that the Auditor
+        # write below currently discards, changing what the next
+        # _evaluate_feedback_needed reads. This is not a rare path — 99 of 4,219
+        # archived account records carry feedback_retries.
+        if state is not None:
+            state.transition(PHASE_REGENERATING, "feedback_retry_%s" % retry_num)
+            state.transition(PHASE_DRAFTED, "generator_retry_%s" % retry_num)
 
         # Re-run Auditor (polish) so the validator sees refined output, not raw
         # generator output. Skipping this step caused more clauses to be flagged
@@ -1684,6 +2261,8 @@ def _run_feedback_loop_for_key(
         )
         results[key]["subagent_2"] = audit_content
         results[key]["feedback_retry_%s_agent_2" % retry_num] = audit_content
+        if state is not None and (_audit_meta or {}).get("clause_reviews"):
+            state.transition(PHASE_GROUNDED, "arithmetic_retry_%s" % retry_num)
 
         # Re-run validator on the polished output
         _key, val_content, val_metadata = process_single_agent_item(
@@ -1693,7 +2272,7 @@ def _run_feedback_loop_for_key(
             dfs=dfs,
             health=health,
         )
-        _store_agent_result(results, key, "subagent_4", val_content, val_metadata)
+        _store_agent_result(results, key, "subagent_4", val_content, val_metadata, state=state)
         results[key]["feedback_retry_%s_agent_4" % retry_num] = val_content
         results[key]["feedback_retries"] = retry_num
         attempts.append(_snapshot("retry_%s" % retry_num))
@@ -1713,8 +2292,24 @@ def _run_feedback_loop_for_key(
     # verify_commentary, not an LLM judgment -- and break ties toward the
     # LATEST, which has had the most correction feedback applied.
     still_bad, _ratio, _unsupported = _evaluate_feedback_needed(results, key, threshold)
+    if state is not None:
+        state.attempts = [
+            {"label": a["label"], "defects": a["defects"], "reviewed": a["reviewed"]}
+            for a in attempts
+        ]
     if still_bad and attempts:
         best = min(attempts, key=lambda a: (a["defects"], -attempts.index(a)))
+        if state is not None:
+            # The last retry's Validator left this GROUNDED; the gate has just
+            # said it is still defective, so the path goes back through
+            # DEFECTIVE before the arbiter terminates it.
+            state.transition(
+                PHASE_DEFECTIVE, "defect_gate_after_%s retry(ies)" % max_retries,
+            )
+            state.transition(
+                PHASE_ARBITRATED,
+                "retries_exhausted: kept '%s' (%s defect(s))" % (best["label"], best["defects"]),
+            )
         results[key]["feedback_arbiter"] = {
             "chosen": best["label"],
             "scores": {a["label"]: a["defects"] for a in attempts},
@@ -1778,7 +2373,20 @@ def run_generator_reprompt(
     user_comments: Optional[Dict[str, str]] = None,
     model_name: Optional[str] = None,
 ) -> Dict[str, Dict[str, str]]:
-    """Regenerate selected items, then immediately revalidate the revised output."""
+    """Regenerate selected items, then immediately revalidate the revised output.
+
+    IN SCOPE for run state, deliberately. This is a second live entry point that
+    never touches run_ai_pipeline_with_progress — its own bare `results` dict,
+    Generator then Validator with the Auditor skipped, direct writes that never
+    reach _store_agent_result, no sweep and no feedback loop — and its output is
+    merged into session_state.ai_results and exported. Leaving it stateless
+    would mean an account could reach the deck with no recorded path at all.
+
+    What it does NOT get is the RUN_STATE_KEY sentinel: this dict is MERGED into
+    an existing ai_results, so a sentinel written here would travel into a
+    results dict that already has one from the full run. The audit log is
+    written to this reprompt's own run folder instead.
+    """
     # Mirror run_ai_pipeline_with_progress: normalise "Chn" → "Chi" so the Chinese
     # reprompt path resolves prompts and applies Chinese styling (not English).
     language = normalize_language_code(language)
@@ -1792,6 +2400,7 @@ def run_generator_reprompt(
         model_name=model_name,
     )
     results: Dict[str, Dict[str, str]] = {}
+    run_state = RunState(dfs, mapping_keys, run_folder=logger.run_folder)
 
     logger.logger.info(
         "Starting reprompt + validator flow with %s items | model=%s | language=%s",
@@ -1812,6 +2421,8 @@ def run_generator_reprompt(
                     previous_output = str(candidate)
                     break
 
+        state = run_state.account(key)
+
         mapping_key, content, _metadata = process_single_agent_item(
             "subagent_1",
             key,
@@ -1821,9 +2432,18 @@ def run_generator_reprompt(
             logger,
             previous_output=previous_output,
             user_comment=(user_comments or {}).get(key, ""),
+            run_state=run_state,
         )
         updated_result = dict(existing_result) if isinstance(existing_result, dict) else {}
         updated_result["subagent_1"] = content
+        if state is not None:
+            state.mark_stage("subagent_1")
+            state.transition(PHASE_DRAFTED, "generator_reprompt")
+            for _event in (_metadata or {}).pop("phase_events", None) or []:
+                if _event.get("to"):
+                    state.transition(_event["to"], _event.get("cause", ""))
+                if _event.get("degraded"):
+                    state.note_degraded(_event["degraded"])
 
         _validator_key, validator_content, validator_metadata = process_single_agent_item(
             "subagent_4",
@@ -1835,13 +2455,32 @@ def run_generator_reprompt(
             previous_output=content,
             user_comment=(user_comments or {}).get(key, ""),
             dfs=dfs,
+            run_state=run_state,
+        )
+        _validator_events = (
+            (validator_metadata or {}).pop("phase_events", None)
+            if isinstance(validator_metadata, dict) else None
         )
         updated_result["subagent_4"] = validator_content
         updated_result["agent_4_validation"] = validator_metadata
         updated_result["final"] = validator_content
         updated_result["reprompt_mode"] = "generator_reprompt_validated"
         results[mapping_key] = updated_result
+        if state is not None:
+            state.mark_stage("subagent_4")
+            # DRAFTED -> GROUNDED with the Auditor skipped: this path runs the
+            # Generator then the Validator, and verify_commentary fires inside
+            # the Validator stage, so the grounding still happens — one stage
+            # later than in the full pipeline.
+            state.transition(PHASE_GROUNDED, "llm_validator_reprompt")
+            for _event in _validator_events or []:
+                if _event.get("to"):
+                    state.transition(_event["to"], _event.get("cause", ""))
+                if _event.get("degraded"):
+                    state.note_degraded(_event["degraded"])
 
+    _sweep_final_phases(results, run_state, logger)
+    _write_run_audit_log(logger, run_state, results)
     logger.finalize(results)
     return results
 
@@ -1864,7 +2503,11 @@ def extract_final_contents(results: Dict[str, Dict[str, str]]) -> Dict[str, str]
 
 __all__ = [
     "RUN_HEALTH_KEY",
+    "RUN_STATE_KEY",
     "SUBAGENT_SEQUENCE",
+    "TERMINAL_PHASES",
+    "AccountState",
+    "RunState",
     "clean_agent_output",
     "extract_final_contents",
     "load_prompts_and_format",
