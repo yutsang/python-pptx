@@ -294,6 +294,30 @@ def build_dataframe_variants_from_normalized_results(
                 extracted_df.attrs["source_sheet_name"] = str(sheet)
                 extracted_df.attrs["display_key"] = display_key
 
+            if spec["variant"] == "analysis" and normalized.get("prompt_analysis_df") is not None:
+                # The analysis variant IS the prompt_analysis_df, so schedules.py
+                # deliberately strips that key from its own attrs (see the comment at
+                # the end of _build_normalized_schedule: a frame referencing ITSELF
+                # made .copy() recurse forever on Python 3.13+). The side effect was
+                # that everything gating on attrs["prompt_analysis_df"] -- the
+                # analysis-periods section, trend_summary/significant_movements and
+                # all of _composition_guidance -- rendered nothing for this variant.
+                # Attaching the ORIGINAL unfiltered source_df is a different object
+                # whose own attrs lack the key, so there is no cycle; detail_default
+                # and detail_original have carried a nested frame in production for
+                # a long time. Filtered rows must NOT be used here: filter_detail_
+                # accounts drops exactly the component rows, and the *_formatted
+                # string columns crash build_trend_summary's float().
+                # Guarded on the key being present in the normalized payload because
+                # source_df falls back to projection_df above, and projection_df's
+                # attrs DO carry prompt_analysis_df -- attaching that would rebuild
+                # the cycle. Measured on four real databooks (24/24, 26/26, 19/19,
+                # 27/27 accounts): nothing was skipped. The "Non-operating income
+                # has no prompt_analysis_df" case the plan predicted turned out to
+                # be a probe artifact -- that sheet's display_key carries a
+                # trailing space, which the probe did not strip and this function
+                # does (:255) -- so the guard stays anyway, on the real condition.
+                extracted_df.attrs["prompt_analysis_df"] = source_df
             spec["dfs"][display_key] = extracted_df.reset_index(drop=True)
             spec["workbook_list"].append(display_key)
 

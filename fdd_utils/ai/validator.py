@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # re-added: bound by an import in another section of the pre-split module
 from ..workbook import INTERNAL_ROW_KEY
+from .config import get_safe_grounding_include_siblings
 from typing import Any, Dict, List, Optional
 from typing import Any, Dict, Optional, Tuple
 
@@ -379,6 +380,21 @@ _AMT_YI = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*亿")
 _AMT_WAN = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*万")
 _AMT_CUR_PREFIX = re.compile(r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)\s*(\d[\d,]*(?:\.\d+)?)", re.IGNORECASE)
 _AMT_GROUPED = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?)")
+# The suffixes the model actually writes, which nothing here used to read: the
+# Generator emits thousands as "CNY 835.3K" and remarks carry a bare "198m" for
+# millions. Both parsed as 835.3 / 198 -- off by three and six orders of
+# magnitude -- and only the (over-broad) grounding pool kept them from being
+# flagged. Trailing guard is (?![A-Za-z0-9]) rather than \b so "5m2" and the
+# "mn"/"million" spellings _AMT_MILLION already owns are left alone.
+#
+# The number needs TWO integer digits or an explicit decimal. A single bare
+# digit is refused because segment_clauses cuts on ". " and archived text
+# contains broken decimals ("CNY 971. 4K"), so a clause can BEGIN "4K as at 31
+# December 2020" -- measured, 7 of the first 26 replayed flips were exactly that
+# fragment being read as CNY4,000. Real writes always carry the decimal
+# ("687.0K") or several digits ("198m"), so nothing legitimate is lost.
+_AMT_THOUSAND = re.compile(r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)?\s*(\d[\d,]+(?:\.\d+)?|\d+\.\d+)\s*[Kk](?![A-Za-z0-9])")
+_AMT_BARE_MILLION = re.compile(r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)?\s*(\d[\d,]+(?:\.\d+)?|\d+\.\d+)\s*[mM](?![A-Za-z0-9])")
 
 
 def _to_float(token: str) -> Optional[float]:
@@ -391,16 +407,29 @@ def _to_float(token: str) -> Optional[float]:
 def extract_amounts(clause: str) -> List[float]:
     """Extract absolute money amounts (scaled to base units) from a clause.
 
-    Scale-bearing forms (million / 万 / 亿) are parsed first and their matched text
-    blanked so a following currency-prefix/grouped pass cannot double-count the
-    same figure (e.g. 'CNY5.8 million' must yield 5.8e6, not also 5.8).
+    Scale-bearing forms (million / 万 / 亿 / m / K) are parsed first and their
+    matched text blanked so a following currency-prefix/grouped pass cannot
+    double-count the same figure (e.g. 'CNY5.8 million' must yield 5.8e6, not
+    also 5.8).
     """
     amounts: List[float] = []
-    work = clause
+    # A fullwidth comma inside a figure is a thousands separator, not a clause
+    # break. The Auditor introduces them -- measured across archived runs, they
+    # go from 13 occurrences in Generator output to 46 in Auditor output -- and
+    # without this normalisation "5，271.8万元" parses as 271.8万 plus a stray 5,
+    # i.e. an order of magnitude low, which then reads as a fabricated figure.
+    # The wide grounding pool used to hide this by matching the wrong value
+    # anyway; once the pool was narrowed it surfaces as a false hallucination.
+    # Substituting a same-width character keeps every offset into `clause`
+    # valid, which the clause spans downstream depend on.
+    work = clause.replace("，", ",")
     # Each pass blanks the span it consumed so a later, looser pass cannot
     # re-count the same figure (e.g. 'CNY5.8 million' -> 5.8e6 only; 'CNY54,950'
-    # -> 54950 once, not also via the grouped-thousands pass).
+    # -> 54950 once, not also via the grouped-thousands pass). The spelled-out
+    # 'million'/'mn' pass MUST stay ahead of the bare-'m' one, or the latter
+    # eats "5.8 m" out of "5.8 million" and leaves "illion" behind.
     for rx, scale in ((_AMT_MILLION, 1e6), (_AMT_YI, 1e8), (_AMT_WAN, 1e4),
+                      (_AMT_BARE_MILLION, 1e6), (_AMT_THOUSAND, 1e3),
                       (_AMT_CUR_PREFIX, 1.0), (_AMT_GROUPED, 1.0)):
         def _sub(m: "re.Match") -> str:
             v = _to_float(m.group(1))
@@ -413,12 +442,22 @@ def extract_amounts(clause: str) -> List[float]:
 
 _BARE_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
+#: attrs keys deliberately withheld from every prompt, so they must not ground
+#: anything either. `working_remark_notes` collects the rows that
+#: _build_working_remark_note diverts (schedules.py: they `continue` instead of
+#: becoming row_entries), meaning the model never sees those figures. Grounding
+#: against them certifies the model correct on numbers it was never shown —
+#: measured, half their material numbers reached the pool.
+_ATTR_KEYS_WITHHELD_FROM_PROMPTS = ("working_remark_notes",)
+
 
 def _attr_text_blob(df) -> str:
-    """Concatenate all free-text in df.attrs (supporting_notes, table_linked_remarks,
-    adjacent_detail_rows, rhs context, etc.) so figures cited in the NOTES — not just
-    the numeric table — can ground a clause. Many legitimate figures (registered
-    capital, audit fees, USD amounts) live only in the remarks.
+    """Concatenate the free-text in df.attrs that the model is actually shown
+    (supporting_notes, table_linked_remarks, adjacent_detail_rows, rhs context,
+    etc.) so figures cited in the NOTES — not just the numeric table — can ground
+    a clause. Many legitimate figures (registered capital, audit fees, USD
+    amounts) live only in the remarks. Keys in
+    _ATTR_KEYS_WITHHELD_FROM_PROMPTS are skipped.
 
     Also stringifies bare int/float leaf values, not just strings -- confirmed via
     real screenshots that adjacent_detail_rows' own primary value (e.g. a "房产税"
@@ -446,7 +485,9 @@ def _attr_text_blob(df) -> str:
             for vv in v:
                 walk(vv)
 
-    for value in attrs.values():
+    for key, value in attrs.items():
+        if key in _ATTR_KEYS_WITHHELD_FROM_PROMPTS:
+            continue
         walk(value)
     return " ".join(parts)
 
@@ -508,12 +549,32 @@ class SourceIndex:
             values += cls._adjacent_window_sums(col_vals)
         return values
 
+    @staticmethod
+    def _non_amount_cols(df) -> tuple:
+        """Columns that are not financial amounts and must never enter the pool.
+
+        INTERNAL_ROW_KEY holds raw sheet row indices. The `*_formatted` columns
+        are the bigger contaminant: they carry the display-scaled string of the
+        same figure, so every real amount also entered the pool divided by its
+        display divisor, plus a mass of small values that match almost anything.
+        Measured on the reference databook, dropping both takes the pooled
+        small-value count from 90/83/56 to 0 and makes matches(317.0) False on 6
+        of 8 sampled accounts. Nothing real is lost — the raw numeric column for
+        the same date is already pooled — and across 1,171 real matched
+        citations these two tiers produced ZERO sole matches.
+        `_build_peer_context` and the CLI's `_numeric_values_from_df` already
+        skipped them; SourceIndex was the only place that did not.
+        """
+        return (INTERNAL_ROW_KEY,) + tuple(
+            col for col in df.columns if str(col).endswith("_formatted")
+        )
+
     @classmethod
     def _values_for_one_df(cls, df) -> List[float]:
         values: List[float] = []
         if df is None or not hasattr(df, "columns"):
             return values
-        values += cls._column_values(df)
+        values += cls._column_values(df, skip_cols=cls._non_amount_cols(df))
         # df is `projection_df` — a SINGLE latest-period snapshot. Multi-year
         # trend commentary ("increased from CNY384M as at 2023-12-31 to
         # CNY709M as at 2024-12-31") is written from df.attrs["prompt_analysis_df"]
@@ -522,11 +583,13 @@ class SourceIndex:
         # too, every correctly-written historical-period number is invisible to
         # this grounding pool and gets falsely flagged as "hallucination", which
         # _combine_verdict then treats as authoritative over the LLM's own
-        # (correct) judgement. INTERNAL_ROW_KEY is excluded — it holds raw sheet
-        # row indices, not financial amounts.
+        # (correct) judgement. INTERNAL_ROW_KEY was excluded here from the start —
+        # it holds raw sheet row indices, not financial amounts; the same
+        # exclusion (now also covering `*_formatted`) applies to the main frame
+        # above, which had gone without it.
         analysis_df = df.attrs.get("prompt_analysis_df")
         if analysis_df is not None and hasattr(analysis_df, "columns"):
-            values += cls._column_values(analysis_df, skip_cols=(INTERNAL_ROW_KEY,))
+            values += cls._column_values(analysis_df, skip_cols=cls._non_amount_cols(analysis_df))
         # Also ground against numbers cited in the supporting notes / remarks
         # (df.attrs), e.g. registered capital "7000万美元" that never appears in
         # the numeric table. Without this they were false-flagged as hallucinations.
@@ -567,8 +630,25 @@ class SourceIndex:
         # it lives on a sibling tab. sibling_dfs is deliberately bounded by the
         # caller (same statement type, e.g. all BS tabs for a BS account) —
         # not the whole workbook — to keep the false-negative risk low.
-        for sib in sibling_dfs or []:
-            values += cls._values_for_one_df(sib)
+        #
+        # That case is real and the path stays. What later measurement on four
+        # real databooks (96 accounts) showed is what it cost: sibling values are
+        # 91.3% of the pool but carry 1.2% of the real grounding load, and with
+        # them in, the pool accepted 94.4% of figures made by multiplying a real
+        # cell by a random 1.15-8.0 factor and 90.9% of tenfold unit errors.
+        # Without them (plus the two exclusions above) those fall to 48.7% and
+        # 45.6%; ad-hoc/workbench/replay_verification.py --decoys, sampling
+        # differently, reads 94.8% -> 39.4% and 85.9% -> 42.1% on two books. Not
+        # yet a discriminating check — the adjacent-window sums are what is left
+        # (see _adjacent_window_sums) — but no longer one that accepts anything.
+        # So the DEFAULT FLIPPED TO OFF (processing.grounding_include_siblings,
+        # false); set it true to get the behaviour described above back for a
+        # file that needs it. 711 of 30,370 replayed archived clause verdicts
+        # (2.3%) flip supported -> unsupported as a result; none flip the other
+        # way.
+        if get_safe_grounding_include_siblings():
+            for sib in sibling_dfs or []:
+                values += cls._values_for_one_df(sib)
         return cls(values)
 
     def matches(self, target: float) -> bool:

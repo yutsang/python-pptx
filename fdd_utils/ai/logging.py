@@ -184,6 +184,16 @@ class PipelineRunLogger:
             "estimated_total_tokens": result.get("estimated_total_tokens"),
             "expected_max_output_tokens": expected_max_output_tokens,
             "token_usage_source": token_usage_source,
+            # Prompt-cache counters, when the provider reports them. Prompt
+            # tokens are ~96% of spend here and both later stages send a
+            # byte-identical system prompt on every account, so whether any of
+            # that is being cached is the largest open question about cost --
+            # and until these land in the run log it cannot be answered from an
+            # archived run. None on providers that report nothing.
+            "cached_prompt_tokens": result.get("cached_prompt_tokens"),
+            "prompt_cache_hit_tokens": result.get("prompt_cache_hit_tokens"),
+            "prompt_cache_miss_tokens": result.get("prompt_cache_miss_tokens"),
+            "prompt_cache_hit_ratio": result.get("prompt_cache_hit_ratio"),
         }
 
     def log_error(self, agent_name: str, mapping_key: str, error: Exception):

@@ -73,6 +73,129 @@ class _StageCircuitBreaker:
 _PIPELINE_BREAKER = _StageCircuitBreaker(threshold=4)
 
 
+#: Sentinel key under which run_ai_pipeline_with_progress files its health
+#: tally on the results dict. Follows the existing __BS_summary__ /
+#: __IS_summary__ precedent: it is not a mapping_key, so every consumer that
+#: resolves a key through mappings.yml (build_pptx_structured_payloads,
+#: the UI's summary loop) skips it, and the ones that filter on "final"
+#: (extract_final_contents) never see it either.
+RUN_HEALTH_KEY = "__run_health__"
+
+
+class _RunHealth:
+    """How much of this run's commentary actually came from the LLM.
+
+    Measured across 255 archived runs: five of them finished normally having
+    made ZERO successful LLM calls and shipped 17-19 deterministic fallback
+    bullets as the deck's entire commentary (run_20260714_223603,
+    run_20260715_081202, run_20260715_090949, run_20260717_001202,
+    run_20260717_001303). The cause was a hard 400 — a model name the
+    provider did not recognise — not rate limiting, so retrying could never
+    help. Nothing in the log summary, the return value or the deck told those
+    runs apart from a clean one, because ``process_single_agent_item``
+    degrades in four separate places and every one of them returns normally.
+
+    Thread-safe: the stages run in a ThreadPoolExecutor.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.calls_succeeded = 0
+        self.calls_failed = 0  # individual attempts, so retries count separately
+        self.calls_skipped_breaker = 0
+        self.stage_successes: Dict[str, int] = {}
+        self.fallback_accounts: Dict[str, str] = {}
+        self.passthrough_accounts: set = set()
+        self.error_text_accounts: set = set()
+        self.no_prompt_accounts: set = set()
+        self.first_failure = ""
+
+    def record_success(self, agent_name: str) -> None:
+        with self._lock:
+            self.calls_succeeded += 1
+            self.stage_successes[agent_name] = self.stage_successes.get(agent_name, 0) + 1
+
+    def record_failed_attempt(self, exc: BaseException) -> None:
+        with self._lock:
+            self.calls_failed += 1
+            if not self.first_failure:
+                # The first failure is the diagnostic one. In all five dead
+                # runs every later failure was a verbatim copy of it.
+                self.first_failure = str(exc)[:200]
+
+    def record_breaker_skip(self) -> None:
+        with self._lock:
+            self.calls_skipped_breaker += 1
+
+    def record_fallback(self, mapping_key: str, reason: str) -> None:
+        with self._lock:
+            self.fallback_accounts[mapping_key] = reason
+
+    def record_passthrough(self, mapping_key: str) -> None:
+        with self._lock:
+            self.passthrough_accounts.add(mapping_key)
+
+    def record_error_text(self, mapping_key: str) -> None:
+        with self._lock:
+            self.error_text_accounts.add(mapping_key)
+
+    def record_no_prompt(self, mapping_key: str) -> None:
+        with self._lock:
+            self.no_prompt_accounts.add(mapping_key)
+
+    def stage_succeeded(self, agent_name: str) -> int:
+        with self._lock:
+            return self.stage_successes.get(agent_name, 0)
+
+    def as_dict(self) -> Dict[str, Any]:
+        """Plain types only — this rides on the results dict, which is
+        yaml.dump'd into both results.yml and the archived run log."""
+        with self._lock:
+            return {
+                "calls_succeeded": self.calls_succeeded,
+                "calls_failed": self.calls_failed,
+                "calls_skipped_breaker": self.calls_skipped_breaker,
+                "stage_successes": dict(self.stage_successes),
+                "accounts_on_fallback_bullet": sorted(self.fallback_accounts),
+                "accounts_on_passthrough": sorted(self.passthrough_accounts),
+                "accounts_on_error_text": sorted(self.error_text_accounts),
+                "accounts_without_prompt": sorted(self.no_prompt_accounts),
+                "first_failure": self.first_failure,
+                "zero_successful_calls": self.calls_succeeded == 0,
+                # The one flag a caller may refuse to export on. Deliberately
+                # NOT an exception: a degraded deck is sometimes exactly what
+                # the user asked to look at, so the decision stays with them.
+                "safe_to_export": self.calls_succeeded > 0,
+            }
+
+
+def _log_run_health(logger: PipelineRunLogger, health: Dict[str, Any], total_items: int) -> None:
+    """One line saying how much of the run was real. ERROR when none of it was."""
+    line = (
+        "Run health: %s LLM call(s) succeeded, %s attempt(s) failed, %s skipped by an "
+        "open circuit breaker | of %s account(s): %s on a deterministic fallback bullet, "
+        "%s on stage passthrough, %s on error placeholder text, %s with no prompt"
+        % (
+            health["calls_succeeded"],
+            health["calls_failed"],
+            health["calls_skipped_breaker"],
+            total_items,
+            len(health["accounts_on_fallback_bullet"]),
+            len(health["accounts_on_passthrough"]),
+            len(health["accounts_on_error_text"]),
+            len(health["accounts_without_prompt"]),
+        )
+    )
+    if health["zero_successful_calls"]:
+        logger.logger.error(
+            "%s | NOT ONE LLM CALL SUCCEEDED — every bullet in this run is deterministic "
+            "filler and the deck is not a deliverable. First failure: %s",
+            line, health["first_failure"] or "none recorded",
+        )
+    else:
+        logger.logger.info(line)
+
+
 # Active pipeline stages, in order. The Refiner (subagent_3 / 3_Refiner) is
 # DORMANT by design — its config/prompts are retained for reference but it is
 # deliberately omitted here, so the runtime is a 3-stage pipeline despite the
@@ -349,6 +472,16 @@ def _store_agent_result(
         # overwrites it when it runs. "final" is deliberately NOT set here: the
         # Validator, when it runs, produces the later text.
         results[mapping_key]["agent_4_validation"] = metadata
+    elif metadata:
+        # Every OTHER agent's metadata used to be dropped on the floor right
+        # here. subagent_1 is the only stage that can emit a deterministic
+        # fallback bullet, and its used_fallback/fallback_reason died at this
+        # line -- which is a large part of why five archived runs shipped a
+        # deck whose entire commentary was fallback bullets with nothing in
+        # the results saying so. Filed under its own key so it can never
+        # collide with the single agent_4_validation record everything else
+        # reads.
+        results[mapping_key]["%s_metadata" % agent_name] = metadata
 
 
 def _finalize_agent_content(
@@ -574,8 +707,12 @@ def process_single_agent_item(
     previous_output: str = "",
     user_comment: str = "",
     dfs: Optional[Dict[str, pd.DataFrame]] = None,
+    health: Optional[_RunHealth] = None,
 ) -> Tuple[str, str, Dict[str, Any]]:
     """Run one account through a single agent stage."""
+    # A caller that wants no tally still gets one; it is simply discarded.
+    # Keeps the eight recording sites below free of None checks.
+    health = health or _RunHealth()
     try:
         logger.log_agent_start(agent_name, mapping_key)
         agent_cfg = ai_helper.get_agent_settings(agent_name)
@@ -598,9 +735,11 @@ def process_single_agent_item(
 
         if agent_name == "subagent_1" and (not system_prompt or not user_prompt):
             placeholder = f"Content generation skipped for {mapping_key}: No prompts available"
+            health.record_no_prompt(mapping_key)
             return mapping_key, placeholder, {}
 
         if not system_prompt or not user_prompt:
+            health.record_no_prompt(mapping_key)
             return mapping_key, previous_output, {}
 
         # Auto-reprompt on timeout. The user does not want to see "AI call
@@ -614,6 +753,7 @@ def process_single_agent_item(
         # through to the deterministic fallback. Reset between stages so each
         # stage gets a fresh chance.
         if _PIPELINE_BREAKER.is_open(agent_name):
+            health.record_breaker_skip()
             logger.logger.warning(
                 "[%s] %s: circuit breaker OPEN — skipping LLM call, using fallback",
                 agent_name, mapping_key,
@@ -640,6 +780,7 @@ def process_single_agent_item(
                 response = _run_ai_call(ai_helper, user_prompt, system_prompt, agent_name, timeout=call_timeout)
                 last_exc = None
                 _PIPELINE_BREAKER.record_success(agent_name)
+                health.record_success(agent_name)
                 if attempt > 1:
                     logger.logger.info(
                         "[%s] %s: succeeded on retry %s/2",
@@ -648,6 +789,7 @@ def process_single_agent_item(
                 break
             except (TimeoutError, Exception) as exc:
                 last_exc = exc
+                health.record_failed_attempt(exc)
                 logger.logger.warning(
                     "[%s] %s: AI call attempt %s failed (%s); %s",
                     agent_name, mapping_key, attempt, str(exc)[:80],
@@ -747,10 +889,14 @@ def process_single_agent_item(
                     "[%s] %s: AI unavailable after retries; using deterministic data-only fallback",
                     agent_name, mapping_key,
                 )
+                health.record_fallback(mapping_key, str(exc)[:120])
                 return mapping_key, fallback, {"used_fallback": True, "fallback_reason": str(exc)[:120]}
+            health.record_error_text(mapping_key)
             return mapping_key, f"Content generation failed for {mapping_key}: {str(exc)[:100]}", {}
         if previous_output and str(previous_output).strip():
+            health.record_passthrough(mapping_key)
             return mapping_key, previous_output, {}
+        health.record_error_text(mapping_key)
         return mapping_key, f"Content generation incomplete for {mapping_key}: {str(exc)[:100]}", {}
 
 
@@ -835,6 +981,7 @@ def run_agent_stage(
     progress_callback=None,
     total_items: int = 0,
     user_comments: Optional[Dict[str, str]] = None,
+    health: Optional[_RunHealth] = None,
 ):
     """Run all items for a single agent stage."""
     max_workers = _resolve_max_workers(ai_helper, max_workers)
@@ -868,6 +1015,7 @@ def run_agent_stage(
                     results[key].get(previous_agent, "") if previous_agent else "",
                     (user_comments or {}).get(key, ""),
                     dfs,
+                    health,
                 )
                 futures[future] = key
 
@@ -898,6 +1046,7 @@ def run_agent_stage(
                 results[key].get(previous_agent, "") if previous_agent else "",
                 (user_comments or {}).get(key, ""),
                 dfs,
+                health,
             )
             _store_agent_result(results, mapping_key, agent_name, content, metadata)
             completed += 1
@@ -1018,6 +1167,7 @@ def run_ai_pipeline_with_progress(
         model_name=model_name,
     )
     results = create_result_shell(mapping_keys, dfs)
+    health = _RunHealth()
 
     logger.logger.info(
         "Starting FDD pipeline with %s items | model=%s | language=%s | multithreading=%s",
@@ -1066,6 +1216,7 @@ def run_ai_pipeline_with_progress(
             progress_callback=progress_callback,
             total_items=total_items,
             user_comments=user_comments,
+            health=health,
         )
 
     if validator_mode == "selective":
@@ -1105,6 +1256,7 @@ def run_ai_pipeline_with_progress(
                         feedback_config=feedback_config,
                         user_comments=user_comments,
                         progress_callback=progress_callback,
+                        health=health,
                     ): key
                     for key in eligible_keys
                 }
@@ -1129,6 +1281,7 @@ def run_ai_pipeline_with_progress(
                     feedback_config=feedback_config,
                     user_comments=user_comments,
                     progress_callback=progress_callback,
+                    health=health,
                 )
                 if retries > 0:
                     logger.logger.info("[FeedbackLoop] %s: completed with %s retry(ies)", key, retries)
@@ -1140,9 +1293,15 @@ def run_ai_pipeline_with_progress(
     # didn't produce clause_reviews (timeout, parse failure, etc.), run a
     # one-shot validator pass on the final text. Runs only for accounts that
     # need it, in parallel.
-    # Reset the Validator breaker first so a tripped main-run stage doesn't make
-    # this re-validation pass fail-fast for every account.
-    _PIPELINE_BREAKER.reset_stage("subagent_4")
+    #
+    # It used to call _PIPELINE_BREAKER.reset_stage("subagent_4") first, so a
+    # Validator stage that had tripped the breaker would not make this pass
+    # fail-fast for every account. That reversed the breaker's whole purpose on
+    # exactly the runs it existed for: measured over 255 archived runs this pass
+    # fired 6 times, five of them after the Validator had already died on a hard
+    # 400, and it then re-sent every account to an endpoint that had just failed
+    # 84 times. The reset is gone; the health gates now live inside
+    # _ensure_clause_reviews_on_final (M8.2).
     _ensure_clause_reviews_on_final(
         results=results,
         dfs=dfs,
@@ -1152,7 +1311,15 @@ def run_ai_pipeline_with_progress(
         use_multithreading=use_multithreading,
         max_workers=max_workers,
         user_comments=user_comments,
+        health=health,
     )
+
+    # Attached LAST, after set_final_fallbacks and the ensure pass have finished
+    # walking `results` -- both iterate every key and would otherwise write a
+    # "final" onto the tally.
+    health_summary = health.as_dict()
+    _log_run_health(logger, health_summary, total_items)
+    results[RUN_HEALTH_KEY] = health_summary
 
     logger.finalize(results)
     return results
@@ -1168,6 +1335,7 @@ def _ensure_clause_reviews_on_final(
     use_multithreading: bool,
     max_workers: Optional[int],
     user_comments: Optional[Dict[str, str]] = None,
+    health: Optional[_RunHealth] = None,
 ) -> None:
     """Re-run Validator on accounts whose final commentary lacks clause_reviews."""
     needs_validation: List[str] = []
@@ -1187,6 +1355,40 @@ def _ensure_clause_reviews_on_final(
     if not needs_validation:
         return
 
+    # This pass was written for a Validator that failed TRANSIENTLY on a
+    # handful of accounts. Both gates below exist because that is not what it
+    # actually met: in five of the six archived runs where it fired, the
+    # Validator had already died on a hard 400 for every single account, and
+    # the pass simply paid for a fourth round of the same error.
+    if health is not None and not health.stage_succeeded("subagent_4"):
+        logger.logger.warning(
+            "[EnsureValidation] skipped for %s account(s): the Validator made no "
+            "successful call anywhere in this run, so a fourth pass can only repeat it",
+            len(needs_validation),
+        )
+        return
+    if _PIPELINE_BREAKER.is_open("subagent_4"):
+        logger.logger.warning(
+            "[EnsureValidation] skipped for %s account(s): the Validator circuit breaker "
+            "is open. It is deliberately NOT reset here — resetting it is what turned a "
+            "fail-fast into a full extra pass against a failing endpoint",
+            len(needs_validation),
+        )
+        return
+
+    corpus = sum(
+        1 for r in results.values()
+        if isinstance(r, dict) and str(r.get("final") or "").strip()
+    )
+    if corpus and len(needs_validation) / corpus > 0.20:
+        logger.logger.warning(
+            "[EnsureValidation] %s of %s account(s) (%.0f%%) finished with no "
+            "clause_reviews. That is a SYSTEMIC Validator failure, not the few transient "
+            "timeouts this pass was written for; it is running anyway, but the fourth "
+            "pass is being paid for a problem that belongs upstream",
+            len(needs_validation), corpus, len(needs_validation) / corpus * 100,
+        )
+
     logger.logger.info(
         "[EnsureValidation] %s account(s) need fresh clause_reviews", len(needs_validation),
     )
@@ -1199,6 +1401,7 @@ def _ensure_clause_reviews_on_final(
                 previous_output=final_text,
                 user_comment=(user_comments or {}).get(key, ""),
                 dfs=dfs,
+                health=health,
             )
             if isinstance(metadata, dict) and metadata.get("clause_reviews"):
                 # Keep the original final text (don't overwrite); just attach
@@ -1239,8 +1442,18 @@ RETRIABLE_CLAUSE_CATEGORIES = ("hallucination",)
 _INFERENCE_MARKERS_CHI = (
     "主要系", "主要由于", "所致", "导致", "预计", "推测", "预期",
     "反映", "结合其性质", "表明", "拉低", "带动", "归因", "驱动",
-    "原因", "系.*所致", "受.*影响",
+    "原因",
 )
+#: "受X影响" is a cause, but its two halves are separated by whatever X is, so
+#: it cannot be a substring test. It and "系.*所致" sat in the tuple above as
+#: literal strings and were tested with `in`, which means neither could ever
+#: match anything — for as long as they had been there. "系.*所致" is simply
+#: dropped: the bare "所致" already in the tuple catches every case it could.
+#: This one is now a real search, bounded to a short span so it cannot bridge
+#: a sentence break and pair an unrelated 受 with a later 影响.
+#: NOTE this WIDENS Validator selection and therefore costs LLM calls that
+#: were never being made.
+_INFERENCE_PATTERNS_CHI = (re.compile(r"受[^。；;\n]{1,20}影响"),)
 _INFERENCE_MARKERS_ENG = (
     "mainly due to", "driven by", "attributable to", "reflecting", "as a result of",
     "expected to", "indicates that", "suggests that", "because of", "owing to",
@@ -1280,6 +1493,7 @@ def commentary_asserts_inference(text: str) -> bool:
     lowered = body.lower()
     return (
         any(m in body for m in _INFERENCE_MARKERS_CHI)
+        or any(p.search(body) for p in _INFERENCE_PATTERNS_CHI)
         or any(m in lowered for m in _INFERENCE_MARKERS_ENG)
     )
 
@@ -1392,6 +1606,7 @@ def _run_feedback_loop_for_key(
     feedback_config: Dict[str, Any],
     user_comments: Optional[Dict[str, str]] = None,
     progress_callback: Optional[Callable[..., None]] = None,
+    health: Optional[_RunHealth] = None,
 ) -> int:
     """Run feedback loop for a single key. Returns number of retries performed."""
     max_retries = int(feedback_config.get("max_retries", 2))
@@ -1437,11 +1652,18 @@ def _run_feedback_loop_for_key(
         base_user_comment = (user_comments or {}).get(key, "")
         combined_comment = ("%s\n\n%s" % (base_user_comment, feedback_text)).strip() if feedback_text else base_user_comment
 
-        # Re-run generator with feedback
+        # Re-run generator with feedback.
+        # dfs is passed for the same reason the Validator call below does: it is
+        # what feeds _build_peer_context and the sibling grounding. Omitting it
+        # here meant a retried account was re-generated from a STRICTLY SMALLER
+        # prompt than the attempt that failed — no peer context, no siblings —
+        # so the retry was handicapped exactly where it needed the most help.
         _key, gen_content, _meta = process_single_agent_item(
             "subagent_1", key, dfs.get(key), ai_helper, prompt_manager, logger,
             previous_output=previous_output,
             user_comment=combined_comment,
+            dfs=dfs,
+            health=health,
         )
         results[key]["subagent_1"] = gen_content
         results[key]["feedback_retry_%s_agent_1" % retry_num] = gen_content
@@ -1453,6 +1675,12 @@ def _run_feedback_loop_for_key(
             "subagent_2", key, dfs.get(key), ai_helper, prompt_manager, logger,
             previous_output=gen_content,
             user_comment=base_user_comment,
+            # Without dfs the Auditor loses both its peer context AND its
+            # sibling_dfs, which is what verify_commentary grounds a figure
+            # borrowed from another account against — so a retry produced
+            # clause_reviews built on less evidence than the original pass.
+            dfs=dfs,
+            health=health,
         )
         results[key]["subagent_2"] = audit_content
         results[key]["feedback_retry_%s_agent_2" % retry_num] = audit_content
@@ -1463,6 +1691,7 @@ def _run_feedback_loop_for_key(
             previous_output=audit_content,
             user_comment=base_user_comment,
             dfs=dfs,
+            health=health,
         )
         _store_agent_result(results, key, "subagent_4", val_content, val_metadata)
         results[key]["feedback_retry_%s_agent_4" % retry_num] = val_content
@@ -1634,6 +1863,7 @@ def extract_final_contents(results: Dict[str, Dict[str, str]]) -> Dict[str, str]
 
 
 __all__ = [
+    "RUN_HEALTH_KEY",
     "SUBAGENT_SEQUENCE",
     "clean_agent_output",
     "extract_final_contents",

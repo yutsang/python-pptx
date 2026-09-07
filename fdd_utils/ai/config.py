@@ -150,6 +150,17 @@ def get_safe_default_data_format(
         return DEFAULT_DATA_FORMAT
 
 
+def get_safe_grounding_include_siblings() -> bool:
+    """FDDConfig.get_grounding_include_siblings for callers with no config in
+    hand (SourceIndex.from_df, and the CLI/diagnostics that call it). Falls back
+    to the same default when config.yml is absent or no provider is configured —
+    config.yml is gitignored and per-machine, so this must work without it."""
+    try:
+        return FDDConfig().get_grounding_include_siblings()
+    except Exception:
+        return False
+
+
 class FDDConfig:
     """Configuration manager for the financial databook pipeline."""
 
@@ -245,6 +256,27 @@ class FDDConfig:
         ~80% of accounts assert no causal claim at all."""
         mode = str(self.get_processing_config().get("validator_mode", "selective") or "selective").lower()
         return mode if mode in {"selective", "always"} else "selective"
+
+    def get_grounding_include_siblings(self) -> bool:
+        """Whether SourceIndex pools OTHER accounts' tabs when grounding amounts.
+
+        Defaults to FALSE. Siblings were added for a real reason, recorded at
+        SourceIndex.from_df: an "Other payables" note citing a bank loan balance
+        that only exists on the "Long-term loans" tab was being flagged as a
+        hallucination. That case is genuine, and the code path is kept for it.
+
+        What was not known then is the price. Measured on four real databooks
+        (96 accounts): sibling values are 91.3% of the grounding pool and carry
+        1.2% of the real grounding load, and with them in, the pool accepted
+        94.4% of figures built by multiplying a real cell by a random 1.15-8.0
+        factor and 90.9% of tenfold unit errors. Turning them off (with the
+        *_formatted and withheld-remark exclusions that landed alongside) takes
+        those to 48.7% and 45.6%, and the median pool per account from 7,801
+        values to 427. A pool that accepts almost anything is not a check, so the
+        default flipped to off; set processing.grounding_include_siblings: true
+        to restore the old behaviour on a file that needs it.
+        """
+        return bool(self.get_processing_config().get("grounding_include_siblings", False))
 
     def get_feedback_loop_config(self) -> Dict[str, Any]:
         processing = self.get_processing_config()

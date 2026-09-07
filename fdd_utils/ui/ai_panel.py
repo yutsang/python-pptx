@@ -194,11 +194,15 @@ def _run_demo_ai(
     from .pptx_export import logger  # local: breaks the ai_panel<->pptx_export import cycle
     import json as _json
     import math as _math
-    demo_path = Path(__file__).parent / "demo_results.json"
+    # The tracked file is fdd_utils/demo_results.json, one level up from this
+    # package — `Path(__file__).parent` pointed at fdd_utils/ui/ and the miss
+    # was swallowed, so demo mode silently replayed nothing. Log the resolved
+    # path on failure so the next such breakage is visible.
+    demo_path = Path(__file__).resolve().parent.parent / "demo_results.json"
     try:
         all_results: dict = _json.loads(demo_path.read_text(encoding="utf-8"))
     except Exception as exc:
-        logger.warning("Could not load demo_results.json: %s", exc)
+        logger.warning("Could not load demo results from %s: %s", demo_path, exc)
         all_results = {}
 
     # Pipeline is now 3 stages: Generator → Auditor (Polish) → Validator

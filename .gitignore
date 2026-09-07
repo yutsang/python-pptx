@@ -153,3 +153,6 @@ docs/
 
 # Diagnostic output (see fdd_utils/pptx/gen_packing.py's DP packing report)
 dp_packing_report.txt
+
+# Recorded eval baselines are keyed to per-machine databooks -- never commit
+ad-hoc/workbench/golden_verdicts.json

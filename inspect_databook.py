@@ -2363,6 +2363,13 @@ def export_and_inspect_pptx(
     }
     _dropped = []
     for _account_key in ai_results or {}:
+        if str(_account_key).startswith("__"):
+            # Run-level sentinel, not an account. The pipeline files its health
+            # tally under __run_health__ in the same dict (the demo path uses
+            # __BS_summary__ the same way), and these have no mappings.yml entry
+            # by design -- without this guard every run reports one phantom
+            # dropped account.
+            continue
         _mk = find_mapping_key(_account_key, mappings)
         if not _mk:
             # No entry in mappings.yml at all. build_pptx_structured_payloads

@@ -207,6 +207,32 @@ class AIClient:
             return '', ''
 
     @staticmethod
+    def _read_cache_usage(usage: Any) -> Dict[str, Optional[int]]:
+        """Read whatever prompt-cache counters the provider happened to send.
+
+        Providers disagree on the shape: OpenAI-style nests
+        `prompt_tokens_details.cached_tokens`, DeepSeek puts
+        `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` straight on the
+        usage object, and local vLLM/SGLang sends neither. Every read is a
+        getattr with a default, so a provider without the field logs None
+        rather than raising. Reading only — no request parameter changes here.
+        """
+        if usage is None:
+            return {}
+        details = getattr(usage, 'prompt_tokens_details', None)
+        if isinstance(details, dict):
+            # OpenAI-compatible gateways sometimes pass the nested block
+            # through unparsed, as a plain dict.
+            cached_prompt_tokens = details.get('cached_tokens')
+        else:
+            cached_prompt_tokens = getattr(details, 'cached_tokens', None)
+        return {
+            'cached_prompt_tokens': cached_prompt_tokens,
+            'prompt_cache_hit_tokens': getattr(usage, 'prompt_cache_hit_tokens', None),
+            'prompt_cache_miss_tokens': getattr(usage, 'prompt_cache_miss_tokens', None),
+        }
+
+    @staticmethod
     def _estimate_text_tokens(text: Optional[str]) -> int:
         normalized = str(text or "").strip()
         if not normalized:
@@ -229,6 +255,9 @@ class AIClient:
         prompt_tokens: Optional[int] = None,
         completion_tokens: Optional[int] = None,
         total_tokens: Optional[int] = None,
+        cached_prompt_tokens: Optional[int] = None,
+        prompt_cache_hit_tokens: Optional[int] = None,
+        prompt_cache_miss_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         system_prompt = str(system_prompt or "")
         user_prompt = str(user_prompt or "")
@@ -248,6 +277,17 @@ class AIClient:
                 if prompt_tokens is not None or completion_tokens is not None
                 else estimated_total_tokens
             )
+        )
+
+        # The two provider shapes name the same quantity differently; normalise
+        # to one ratio so consumers do not have to know which provider ran.
+        cache_hit_tokens = (
+            prompt_cache_hit_tokens if prompt_cache_hit_tokens is not None else cached_prompt_tokens
+        )
+        prompt_cache_hit_ratio = (
+            round(cache_hit_tokens / prompt_tokens, 4)
+            if cache_hit_tokens is not None and prompt_tokens
+            else None
         )
 
         if prompt_tokens is not None or completion_tokens is not None or total_tokens is not None:
@@ -281,6 +321,10 @@ class AIClient:
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
+            "cached_prompt_tokens": cached_prompt_tokens,
+            "prompt_cache_hit_tokens": prompt_cache_hit_tokens,
+            "prompt_cache_miss_tokens": prompt_cache_miss_tokens,
+            "prompt_cache_hit_ratio": prompt_cache_hit_ratio,
             "estimated_system_prompt_tokens": estimated_system_prompt_tokens,
             "estimated_user_prompt_tokens": estimated_user_prompt_tokens,
             "estimated_prompt_tokens": estimated_prompt_tokens,
@@ -632,7 +676,8 @@ class AIClient:
             prompt_tokens = getattr(usage, 'prompt_tokens', None) if usage is not None else None
             completion_tokens = getattr(usage, 'completion_tokens', None) if usage is not None else None
             total_tokens = getattr(usage, 'total_tokens', None) if usage is not None else None
-            
+            cache_usage = self._read_cache_usage(usage)
+
             response_payload = {
                 'content': content,
                 'mode': 'ai',
@@ -658,6 +703,7 @@ class AIClient:
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
+                    **cache_usage,
                 )
             )
             response_payload["temperature"] = temperature

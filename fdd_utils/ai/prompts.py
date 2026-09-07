@@ -20,7 +20,12 @@ from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 
-from ..financial_display_format import add_language_display_columns, prepare_display_dataframe, stringify_display_dataframe
+from ..financial_display_format import (
+    add_language_display_columns,
+    format_in_unit,
+    prepare_display_dataframe,
+    stringify_display_dataframe,
+)
 from ..financial_json_converter import df_to_json_str
 from ..workbook import build_significant_movements, build_trend_summary, find_mapping_key
 from ..financial_common import (
@@ -337,6 +342,13 @@ class PromptEngine:
                         numeric = coerce_numeric(text)
                         if numeric is not None:
                             value = format_value_by_language(numeric, language)
+                elif key_text != "Description" and isinstance(value, (int, float)) and not isinstance(value, bool):
+                    # Same treatment for a cell that arrives already numeric.
+                    # Only the str branch above existed, so a float remark value
+                    # went through pandas' markdown writer untouched and reached
+                    # the model as "4.56998e+06" -- measured on 14 of 24 accounts
+                    # in the reference databook.
+                    value = format_value_by_language(value, language)
                 cleaned_row[key_text] = value
             if cleaned_row:
                 cleaned_rows.append(cleaned_row)
@@ -387,6 +399,52 @@ class PromptEngine:
         formatted_analysis_df.attrs.update(df.attrs)
         formatted_analysis_df.attrs.update(unit_attrs)
         return formatted_analysis_df
+
+    @staticmethod
+    def _label_with_unit(label: str, unit_label: str, language: str) -> str:
+        if not unit_label:
+            return label
+        return f"{label}（单位：{unit_label}）" if language == "Chi" else f"{label} (in {unit_label})"
+
+    @staticmethod
+    def _format_analysis_facts(payload: Any, divisor: float, decimals: int) -> Any:
+        """Put the derived trend / movement figures in the SAME unit as the
+        analysis table printed directly above them.
+
+        build_trend_summary and build_significant_movements hand back raw base
+        units, and until the analysis variant carried its source frame again
+        (databook.py, M0) neither section had ever rendered in production, so
+        nothing had caught that. Left alone they print one figure three ways in
+        one prompt: 34.15 in the analysis table, 35207596.0 in the trend
+        summary, and 3.41464e+07 wherever pandas' markdown writer decides a
+        float is wide enough for an exponent -- measured on 17 of 23 accounts.
+        A model told to quote supplied figures cannot pick between those.
+
+        percent_of_total_change is dropped here: it is the internal ranking
+        metric build_significant_movements uses to decide what is significant,
+        and a share-of-total-movement percentage is not something the
+        commentary can say.
+        """
+        if isinstance(payload, list):
+            return [PromptEngine._format_analysis_facts(item, divisor, decimals) for item in payload]
+        if not isinstance(payload, dict):
+            return payload
+        formatted: Dict[str, Any] = {}
+        for key, value in payload.items():
+            key_text = str(key)
+            if key_text == "percent_of_total_change":
+                continue
+            if isinstance(value, (dict, list)):
+                formatted[key] = PromptEngine._format_analysis_facts(value, divisor, decimals)
+            elif (
+                (key_text.endswith("_value") or key_text in ("delta", "net_change"))
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            ):
+                formatted[key] = format_in_unit(value, divisor, decimals)
+            else:
+                formatted[key] = value
+        return formatted
 
     @staticmethod
     def _composition_guidance(df: Optional[pd.DataFrame], language: str) -> str:
@@ -1756,9 +1814,7 @@ class PromptEngine:
         unit_label = ""
         if isinstance(formatted_analysis_df, pd.DataFrame):
             unit_label = str(formatted_analysis_df.attrs.get("display_unit_label") or "")
-        if unit_label:
-            analysis_label = f"{analysis_label}（单位：{unit_label}）" if language == "Chi" \
-                else f"{analysis_label} (in {unit_label})"
+        analysis_label = self._label_with_unit(analysis_label, unit_label, language)
         normalized_analysis_label = self._normalize_prompt_value(analysis_label, language)
         normalized_mapping_key = self._normalize_prompt_value(mapping_key, language)
         trend_summary = build_trend_summary(analysis_df) if isinstance(analysis_df, pd.DataFrame) and not analysis_df.empty else {}
@@ -1767,6 +1823,18 @@ class PromptEngine:
             if isinstance(analysis_df, pd.DataFrame) and not analysis_df.empty
             else []
         )
+        # Same unit and the same thousands separators as the analysis table
+        # above; done here rather than at each render site so the json payload
+        # (the shipped default data_format) is fixed too, not only markdown.
+        # No divisor means no display formatting ran on the analysis frame, so
+        # fall back to plain separated base units.
+        analysis_divisor = 1.0
+        analysis_decimals = 0
+        if isinstance(formatted_analysis_df, pd.DataFrame) and formatted_analysis_df.attrs.get("display_unit_divisor"):
+            analysis_divisor = float(formatted_analysis_df.attrs["display_unit_divisor"])
+            analysis_decimals = int(formatted_analysis_df.attrs.get("display_unit_decimals") or 0)
+        trend_summary = self._format_analysis_facts(trend_summary, analysis_divisor, analysis_decimals)
+        significant_movements = self._format_analysis_facts(significant_movements, analysis_divisor, analysis_decimals)
         trend_summary = self._normalize_prompt_value(trend_summary, language)
         significant_movements = self._normalize_prompt_value(significant_movements, language)
         integrity = df.attrs.get("integrity") or {}
@@ -1867,16 +1935,23 @@ class PromptEngine:
                 analysis_block = normalized_analysis_df.to_markdown(index=False).strip()
                 rendered = self._append_markdown_section(rendered, normalized_analysis_label, analysis_block)
             if trend_summary:
-                trend_lines = [
-                    f"- {key}: {value}"
-                    for key, value in trend_summary.items()
-                    if value not in (None, "", [], {})
-                ]
+                trend_lines = []
+                for key, value in trend_summary.items():
+                    if value in (None, "", [], {}):
+                        continue
+                    if isinstance(value, dict):
+                        # largest_increase / largest_decrease -- a raw dict repr
+                        # puts quotes and braces around figures the model is
+                        # meant to quote verbatim.
+                        value = ", ".join(f"{inner_key}={inner_value}" for inner_key, inner_value in value.items())
+                    trend_lines.append(f"- {key}: {value}")
                 if trend_lines:
                     trend_label = "Trend summary" if language == "Eng" else "趋势摘要"
+                    trend_label = self._label_with_unit(trend_label, unit_label, language)
                     rendered = self._append_markdown_section(rendered, trend_label, "\n".join(trend_lines))
             if significant_movements:
                 change_label = "Significant movements" if language == "Eng" else "重大变动"
+                change_label = self._label_with_unit(change_label, unit_label, language)
                 rendered = self._append_markdown_table_section(rendered, change_label, significant_movements)
 
         if data_format != "json" and normalized_supporting_notes:
