@@ -117,21 +117,25 @@ the most-drifted version.
 
 ## Known limits
 
-- The grounding pool holds each numeric cell, column totals, sums of runs of two
-  to four adjacent rows, figures quoted in the notes, the historical comparison
-  columns, and — for accounts of the same statement type — the same again from
-  every sibling tab. Two consequences pull in opposite directions. A legitimate
-  figure derived another way (a difference, a sum of non-adjacent rows, a
-  cross-statement reference) is **not** in it and will be flagged. And a pool
-  that wide can ground a figure by coincidence, on a tab the sentence is not
-  even about. Bare numbers and percentages are deliberately not extracted as
-  groundable amounts, so a wrong ratio is never caught here at all.
-- Matching carries a tolerance, so a `data-backed` verdict is weak evidence of
-  correctness rather than proof — weakest where the amounts are small. It is
-  also not one meaning: a clause whose only defect is an unverifiable causal
-  claim is demoted back to `data-backed` by a confidence floor instead of being
-  shown as flagged, so the label covers both "the numbers matched" and "nothing
-  here was checkable".
+- **The pool is too wide to discriminate, and this is the headline limit.** It
+  holds each numeric cell, column totals, sums of runs of two to four adjacent
+  rows, figures quoted in the notes, the historical comparison columns, and —
+  for accounts of the same statement type — the same again from every sibling
+  tab. Measured on real databooks: sibling tabs are ~91% of the pool and an
+  account's own cells under 1% of it; a real amount multiplied by a random
+  factor is still accepted ~88% of the time, and a ten-fold unit error on a
+  real citation ~80% of the time. Restricting the pool to the account's own
+  data takes both to roughly a third. Marker ④ above is therefore true in
+  principle and weak in practice: the judge is arithmetic, but at present it is
+  arithmetic against almost the whole statement.
+- What it does still catch: a figure derived a way the pool has no route to —
+  a difference, a sum of non-adjacent rows, a cross-statement reference — is
+  genuinely absent and is flagged. Bare numbers and percentages are deliberately
+  not extracted as amounts, so a wrong ratio is never caught here at all.
+- A `data-backed` verdict is also not one meaning: a clause whose only defect is
+  an unverifiable causal claim is demoted back to `data-backed` by a confidence
+  floor instead of being shown as flagged, so the label covers both "the numbers
+  matched" and "nothing here was checkable".
 - Neither error rate has been measured. What *has* been measured, across the
   archived runs, is how often each verdict occurs: roughly one clause in sixty
   comes back unsupported, and about a quarter of those are the arithmetic

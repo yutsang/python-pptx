@@ -14,16 +14,42 @@ streamlit run fdd_app.py
 
 ---
 
-## Pipeline Overview
+## Pipeline
+
+Solid arrows are the normal path; dotted arrows are what happens when something
+goes wrong. Two placements are worth noticing. The deck-wide ruling on which
+accounts get a detail table happens **before** any prompt is written, so the
+text can only promise a table that will actually be drawn. And the check that
+decides whether commentary is trustworthy is arithmetic over the account's own
+figures — the model is asked to judge exactly one thing, whether a stated cause
+holds up.
 
 ```mermaid
 flowchart TD
-    A[Excel 底稿] --> B[識別與對應<br/>判斷分頁性質，對應到科目]
-    B --> C[標準化<br/>抽取調整後各期，建立資料表]
-    C --> D[對數<br/>分頁合計 vs 財務報表 BS/IS]
-    D --> E[AI 撰寫與查核<br/>生成 → 覆核 → 驗證]
-    E --> F[版面編排<br/>把文字分配到模板的欄位]
-    F --> G[最終簡報 .pptx]
+    XL[Excel 底稿] --> RES[識別與對應<br/>判斷分頁性質，對應到科目]
+    RES --> NORM[標準化<br/>抽取調整後各期，建立資料表]
+    NORM --> REC[對數<br/>分頁合計 vs 財務報表]
+    REC --> SUB[表格入選裁決<br/>全份 deck 先定，落選的拿走明細表]
+    SUB --> FACT[先算好事實<br/>期間變動 · 重大性 · 構成殘差 · 集中度]
+
+    FACT --> GEN[生成初稿<br/>只負責語言與表達]
+    GEN -.->|逾時或失敗| HAR[重送 · 階段熔斷<br/>最後退回純資料摘要]
+    HAR -.-> AUD
+    GEN --> AUD[覆核<br/>冷讀，不帶上一輪對話]
+    AUD --> CHK[逐句核對<br/>算術，不是模型]
+    CHK --> VAL[宣稱因果時才判斷<br/>唯一交給模型裁決的環節]
+    VAL --> GATE{有無找不到來源的數字？}
+    GATE -->|有| RE[指名錯處，重寫該科目]
+    RE --> GEN
+    GATE -->|沒有| ARB[比較各次嘗試<br/>留缺陷最少的，不是最後一次]
+    RE -.->|次數用盡| ARB
+
+    ARB --> HS[房屋風格後處理<br/>零餘額寫法 · 單位小數 · 公司名縮短]
+    HS --> SUM[執行摘要<br/>匯出前另外呼叫一次模型]
+    SUM --> PACK[量度真實高度並分配欄位<br/>字型度量，不是字數估算]
+    PACK --> OUT[最終簡報 .pptx]
+    OUT -.->|仍略為超出| AF[PowerPoint 自動縮字<br/>安全網，不是計畫]
+    OUT -.->|只有 CLI 路徑| QA[匯出後檢查<br/>溢出 · 表格壓字 · 佔位符外洩]
 ```
 
 ---
@@ -130,59 +156,6 @@ mention — it is enforced deterministically after the model is finished. Two
 attempts to hold the company-name rule through prompting alone did not survive
 real runs.
 
-### 單一科目:撰寫、查核、定案
-
-Solid arrows are the normal path; dotted arrows are what happens when something
-goes wrong. Note where the layout decision sits — the deck-wide ruling on which
-accounts get a detail table is made **before** any prompt is built, so the text
-can only promise a table that will actually be drawn.
-
-```mermaid
-flowchart TD
-    RE[對數結果<br/>決定哪些科目值得寫] --> SUB[表格入選裁決<br/>全份 deck 先定，落選的科目拿走明細表]
-    SUB --> FACT[先算好事實<br/>期間變動 · 重大性 · 構成殘差 · 集中度 · 已核對的層級關係]
-    FACT --> GEN[生成初稿<br/>只負責語言與表達]
-
-    GEN -.->|呼叫逾時| RETRY[重送同一個提示<br/>間隔 0 / 1 / 2 秒]
-    RETRY -.-> GEN
-    GEN -.->|該階段連續失敗| BRK[熔斷<br/>停掉這個階段而不是整份報告]
-    BRK -.-> FB[退回純資料摘要<br/>報告照樣完成]
-
-    GEN --> AUD[覆核<br/>冷讀，不帶上一輪對話]
-    AUD --> CHK[逐句核對<br/>算術，不是模型]
-    CHK --> Q{文字有沒有宣稱因果？}
-    Q -- 有 --> VAL[判斷該因果是否站得住<br/>唯一交給模型裁決的環節]
-    Q -- 沒有 --> GATE
-    VAL --> GATE{缺陷閘}
-
-    GATE -->|出現找不到來源的數字| FEED[指名錯處<br/>整個科目重寫]
-    GATE -->|不可支持的句子佔比過高| FEED
-    FEED --> GEN
-    FEED -.->|次數用盡| ARB
-    GATE -->|通過| ARB[比較各次嘗試<br/>留缺陷最少的一次，不是最後一次]
-
-    ARB --> HS[房屋風格後處理<br/>零餘額寫法 · 單位與小數 · 用字統一]
-    HS --> OUT[該科目定案]
-    FB --> OUT
-```
-
-### 版面編排與匯出
-
-```mermaid
-flowchart TD
-    A[各科目定案文字] --> B[確定性改寫<br/>公司名縮短 · 負數寫法 · 清掉沒有表格的引語]
-    B --> C[執行摘要<br/>匯出前另外呼叫一次模型]
-    C --> D[量度真實高度<br/>用字型度量，不是字數估算]
-    D --> E[分配到欄位<br/>先填滿前面的頁，只讓最後一頁較鬆]
-    E --> F[再平衡<br/>逐個處理主演算法解不掉的型態]
-    F --> G[表格科目<br/>走專用欄位，後續文字接在同一欄之下]
-    G --> H[嵌入 BS/IS 總表]
-    H --> I[寫入模板並存檔]
-    I --> J[最終 deck]
-    J -.->|內容仍然略為超出| K[交給 PowerPoint 自動縮字<br/>安全網，不是計畫]
-    J -.->|只有 CLI 路徑會做| L[匯出後檢查<br/>溢出 · 表格壓字 · 佔位符外洩]
-```
-
 ---
 
 ## Known limits
@@ -190,28 +163,34 @@ flowchart TD
 Stated because a tool that hides its blind spots is harder to trust than one
 that names them.
 
-- **The grounding pool is broad, and that cuts both ways.** It holds each
-  numeric cell, column totals, sums of runs of two to four adjacent rows,
-  figures quoted in the notes, the historical comparison columns, and — for
-  accounts of the same statement type — the same again from every sibling tab.
-  So a figure derived another way (a difference, a sum of non-adjacent rows, a
-  cross-statement reference) is not in it and will be flagged; and a pool that
-  wide can also ground a figure by coincidence, on a tab the sentence is not
-  even about. Bare numbers and percentages are deliberately not treated as
-  groundable amounts at all, so a wrong ratio is never caught here.
-- **A `data-backed` verdict is weak evidence, not proof.** Matching carries a
-  tolerance, so the verdict is weakest exactly where the amounts are small. It
-  is also not a single meaning: a clause whose only defect is an unverifiable
-  causal claim is demoted back to `data-backed` by a confidence floor rather
-  than shown as flagged, so the label covers both "the numbers matched" and
-  "nothing here was checkable".
+- **The number check barely discriminates today, and this is the most important
+  thing on this page.** The pool an amount is checked against contains not only
+  the account's own cells, column totals, adjacent-row sums and note figures,
+  but the same again from *every other tab of the same statement*. Measured on
+  real databooks, sibling tabs are about 91% of the pool, and an account's own
+  cells are well under 1% of it. The consequence is not subtle: feed the check a
+  deliberately wrong figure — a real amount multiplied by a random factor — and
+  it is accepted around 88% of the time; a ten-fold unit error on a real
+  citation still passes about 80% of the time. Restricting the pool to the
+  account's own data drops both to roughly a third. So `data-backed` currently
+  means "a number of about this size exists somewhere in this statement", not
+  "this figure is right". Treat it accordingly until the pool is narrowed.
+- **A `data-backed` verdict is also not one meaning.** A clause whose only
+  defect is an unverifiable causal claim is demoted back to `data-backed` by a
+  confidence floor rather than shown as flagged, so the label covers both "the
+  numbers matched" and "nothing here was checkable".
+- **What the check does still catch**, and why it is not worthless: a figure
+  derived a way the pool has no route to — a difference, a sum of non-adjacent
+  rows, a cross-statement reference — is genuinely absent and is flagged. Bare
+  numbers and percentages are deliberately not extracted as amounts, so a wrong
+  ratio is never caught here at all.
 - **Unsupported clauses are rare, and most are judgement rather than
   arithmetic.** Across the archived runs, roughly one clause in sixty comes back
-  unsupported. About a quarter of those are the arithmetic kind — a figure the
-  grounding pool cannot find. The remaining three quarters are the model's own
-  opinion that something is unsupported, which no amount of recomputation
-  settles. Note the rate is measured *after* the confidence demotion above, so
-  it understates how much went unchecked.
+  unsupported. About a quarter of those are the arithmetic kind; the remaining
+  three quarters are the model's own opinion that something is unsupported,
+  which no amount of recomputation settles. Read that rate together with the
+  first bullet: the arithmetic share is low partly because the arithmetic test
+  is easy to pass. It is also measured *after* the confidence demotion above.
 - **Extraction depth is the real ceiling on analysis.** When a workpaper's
   breakdown does not survive extraction, no amount of verification or prompting
   recovers it. This is a per-firm structural problem rather than an industry one.
