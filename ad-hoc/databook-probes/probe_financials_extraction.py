@@ -8,8 +8,12 @@ and no frame, because the handler only logged the traceback under debug. That
 is now fixed, but the fastest way to see the cause is to call the extractor
 directly: no AI, no export, seconds, free.
 
-    PYTHONPATH=. python ad-hoc/databook-probes/probe_financials_extraction.py "<roll-up.xlsx>"
-    PYTHONPATH=. python ad-hoc/databook-probes/probe_financials_extraction.py "<roll-up.xlsx>" --sheet "<entity>Financials"
+    python ad-hoc/databook-probes/probe_financials_extraction.py "<roll-up.xlsx>"
+    python ad-hoc/databook-probes/probe_financials_extraction.py "<roll-up.xlsx>" --sheet "<entity>Financials"
+
+Run it from the repo root. It puts the root on sys.path itself, so no
+PYTHONPATH is needed -- the other ad-hoc scripts all require `PYTHONPATH=.`,
+which is Unix shell syntax that cmd.exe rejects outright.
 
 With no --sheet it tries every sheet whose name ends in "Financials", which is
 how a roll-up file names its one sheet per entity. For each it prints either the
@@ -21,8 +25,11 @@ Fine to paste into a working conversation; do not put it anywhere public.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import traceback
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import pandas as pd
 
