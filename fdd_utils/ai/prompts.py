@@ -277,8 +277,11 @@ class PromptEngine:
         components = set(analysis_df.attrs.get("component_descriptions") or [])
         first_col = analysis_df.columns[0]
         filtered = analysis_df[
+            # str(value) first: under pandas' new string dtype astype(str) keeps
+            # missing values as np.nan, so a blank description row would reach
+            # .strip() as a float and take the whole prompt build down.
             analysis_df[first_col].astype(str).map(
-                lambda value: value.strip() in visible_rows or value.strip() in components
+                lambda value: str(value).strip() in visible_rows or str(value).strip() in components
             )
         ].copy()
         filtered.attrs["component_descriptions"] = list(components)

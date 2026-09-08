@@ -28,6 +28,32 @@ def load_required_yaml_file(path: str) -> Dict[str, Any]:
     return config
 
 
+def row_text(row: Any) -> str:
+    """Whitespace-joined text of one DataFrame row, for keyword matching.
+
+    Deliberately NOT `" ".join(row.astype(str).values)`, which is what every
+    call site used to be. Under pandas' new string dtype -- the default from
+    pandas 3.0, and reachable in 2.3 via future.infer_string -- astype(str)
+    returns a `str`-dtype Series that KEEPS missing values as np.nan instead of
+    materialising the literal "nan". np.nan is a Python float, so the join then
+    dies with "sequence item 0: expected str instance, float found".
+
+    That is not hypothetical: a roll-up workbook whose header rows begin with a
+    blank cell hit it on all seven entities of a real portfolio run, and because
+    the extractor swallowed the traceback it surfaced only as both statements
+    coming back empty -- which in turn cost the reconciliation (nothing to
+    compare against, so it fell back to every extracted account) and the deck's
+    BS and IS tables. It passes on pandas 2.1, so the machine that develops this
+    and the machine that runs it disagreed silently.
+
+    str() per element gives byte-identical output to the old astype(str) path on
+    both pandas generations (NaN -> "nan", 1.5 -> "1.5", a Timestamp -> the same
+    "%Y-%m-%d %H:%M:%S"), so this is a compatibility fix, not a behaviour change.
+    Use cell_text() instead where blanks should read as empty rather than "nan".
+    """
+    return " ".join(str(value) for value in row.values)
+
+
 def cell_text(value: Any) -> str:
     if value is None or pd.isna(value):
         return ""

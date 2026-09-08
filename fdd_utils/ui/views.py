@@ -128,7 +128,11 @@ def _build_rhs_display_dataframe(
     }
     if visible_display_labels:
         rhs_df = rhs_df[
-            rhs_df["__display_key"].astype(str).map(lambda value: value.strip() in visible_display_labels)
+            # str(value), not value.strip(): astype(str) leaves missing values
+            # as np.nan under pandas' new string dtype, so a blank cell reaches
+            # the lambda as a float and .strip() raises. See row_text() in
+            # financial_common for the same incompatibility in its joining form.
+            rhs_df["__display_key"].astype(str).map(lambda value: str(value).strip() in visible_display_labels)
         ].copy()
         if rhs_df.empty:
             rhs_df = pd.DataFrame(adjacent_detail_rows)
@@ -217,7 +221,7 @@ def build_account_display_dataframe(df: pd.DataFrame | None) -> pd.DataFrame | N
         if visible_rows and len(display_df.columns) > 0:
             first_col = display_df.columns[0]
             filtered_df = display_df[
-                display_df[first_col].astype(str).map(lambda value: value.strip() in visible_rows)
+                display_df[first_col].astype(str).map(lambda value: str(value).strip() in visible_rows)
             ].copy()
             if not filtered_df.empty:
                 display_df = filtered_df

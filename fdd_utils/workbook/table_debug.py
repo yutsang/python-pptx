@@ -21,6 +21,7 @@ Focus: 示意性調整後 / Indicative adjusted section, header hierarchy, multi
 """
 
 from .inspector import load_workbook_frames, profile_workbook
+from ..financial_common import row_text
 from .preflight import _build_workbook_preflight_cached
 from .schedules import _build_indent_signal_index, _build_workbook_style_index
 
@@ -87,7 +88,7 @@ def _find_header_rows(df: pd.DataFrame) -> List[Tuple[int, str]]:
     """Find all header rows (Indicative adjusted) and their section type. Returns [(row_idx, 'BS'|'IS'|'')]."""
     found = []
     for idx, row in df.iterrows():
-        row_str = ' '.join(row.astype(str).values)
+        row_str = row_text(row)
         if 'Indicative adjusted' not in row_str and '示意性调整后' not in row_str and '示意性調整後' not in row_str:
             continue
         row_lower = row_str.lower()
@@ -116,7 +117,7 @@ def inspect_sheet(df: pd.DataFrame, sheet_name: str = "Sheet") -> TableInspectio
     if not header_rows:
         # Fallback: any row with Indicative adjusted
         for idx, row in df.iterrows():
-            row_str = ' '.join(row.astype(str).values)
+            row_str = row_text(row)
             if 'Indicative adjusted' in row_str or '示意性调整后' in row_str:
                 header_rows = [(idx, '')]
                 break
@@ -156,7 +157,7 @@ def inspect_sheet(df: pd.DataFrame, sheet_name: str = "Sheet") -> TableInspectio
             date_display = parsed.strftime('%Y-%m-%d') if parsed else str(date_str)
             indicative_cols.append((col_idx, date_display, None))
         
-        date_row_str = ' '.join(date_row.astype(str).values)
+        date_row_str = row_text(date_row)
         multiply_by_1000 = "CNY'000" in date_row_str or "人民币千元" in date_row_str
         if not inspection.multiplier_note:
             inspection.multiplier_note = "×1000 (CNY'000 / 人民币千元)" if multiply_by_1000 else "No multiplier"

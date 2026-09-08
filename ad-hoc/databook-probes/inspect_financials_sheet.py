@@ -37,6 +37,7 @@ sys.path.insert(0, ".")
 
 import pandas as pd
 
+from fdd_utils.financial_common import row_text
 from fdd_utils.workbook import (
     _find_section_end_row,
     _POST_IS_SECTION_MARKERS,
@@ -103,7 +104,7 @@ def main() -> int:
     def _scan(keywords):
         hits = []
         for idx in range(len(df)):
-            row_str = " ".join(df.iloc[idx].astype(str).values).lower()
+            row_str = row_text(df.iloc[idx]).lower()
             for kw in keywords:
                 if kw.lower() in row_str:
                     hits.append((idx, kw))

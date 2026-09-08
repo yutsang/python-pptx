@@ -30,7 +30,7 @@ from datetime import datetime
 from typing import Any, Dict, Tuple, Optional, List
 import warnings
 
-from ..financial_common import cell_text, coerce_numeric, normalize_financial_date_label
+from ..financial_common import cell_text, coerce_numeric, normalize_financial_date_label, row_text
 
 warnings.simplefilter(action='ignore', category=UserWarning)
 
@@ -500,11 +500,11 @@ def _build_financial_result(
         return None
 
     date_row = df.iloc[date_row_idx]
-    header_texts = [' '.join(date_row.astype(str).values)]
+    header_texts = [row_text(date_row)]
     if date_row_idx - 1 >= 0:
-        header_texts.append(' '.join(df.iloc[date_row_idx - 1].astype(str).values))
+        header_texts.append(row_text(df.iloc[date_row_idx - 1]))
     if date_row_idx + 1 < len(df):
-        header_texts.append(' '.join(df.iloc[date_row_idx + 1].astype(str).values))
+        header_texts.append(row_text(df.iloc[date_row_idx + 1]))
     header_blob = ' '.join(header_texts)
     multiply_by_1000 = multiply_values and contains_thousand_unit_marker(header_blob)
 
@@ -657,7 +657,7 @@ def extract_financial_table(
     # Detect header row candidates with "Indicative adjusted" or "示意性调整后"
     header_row_candidates = []
     for idx, row in df.iterrows():
-        row_str = ' '.join(row.astype(str).values)
+        row_str = row_text(row)
         if _contains_indicative_marker(row_str):
             header_row_candidates.append(idx)
 
@@ -755,11 +755,11 @@ def extract_financial_table(
         print(f"=" * 80)
     
     # Check if CNY'000 multiplier needed
-    header_texts = [' '.join(date_row.astype(str).values)]
+    header_texts = [row_text(date_row)]
     if date_row_idx - 1 >= 0:
-        header_texts.append(' '.join(df.iloc[date_row_idx - 1].astype(str).values))
+        header_texts.append(row_text(df.iloc[date_row_idx - 1]))
     if date_row_idx + 1 < len(df):
-        header_texts.append(' '.join(df.iloc[date_row_idx + 1].astype(str).values))
+        header_texts.append(row_text(df.iloc[date_row_idx + 1]))
     header_blob = ' '.join(header_texts)
     multiply_by_1000 = multiply_values and contains_thousand_unit_marker(header_blob)
 
@@ -1007,7 +1007,7 @@ def _find_section_end_row(df: pd.DataFrame, start_row: int) -> int:
     run_start = None
     consecutive = 0
     for idx in range(start_row + 1, n):
-        row_str = " ".join(df.iloc[idx].astype(str).values).lower()
+        row_str = row_text(df.iloc[idx]).lower()
         if any(marker in row_str for marker in _POST_IS_SECTION_MARKERS):
             return idx
         if any(marker in row_str for marker in _RATIO_ROW_MARKERS):
@@ -1085,7 +1085,7 @@ def extract_balance_sheet_and_income_statement(
         ]
         
         for idx, row in df.iterrows():
-            row_str = ' '.join(row.astype(str).values).lower()
+            row_str = row_text(row).lower()
             if any(kw.lower() in row_str for kw in bs_keywords):
                 bs_start_row = idx
                 if debug:
@@ -1105,7 +1105,7 @@ def extract_balance_sheet_and_income_statement(
         ]
         
         for idx, row in df.iterrows():
-            row_str = ' '.join(row.astype(str).values).lower()
+            row_str = row_text(row).lower()
             if any(kw.lower() in row_str for kw in is_keywords):
                 is_start_row = idx
                 if debug:
@@ -1117,7 +1117,7 @@ def extract_balance_sheet_and_income_statement(
             # keyword matches any case ("BALANCE SHEET" / "Balance Sheet").
             relaxed_bs_keywords = ["资产负债表", "資產負債表", "balance sheet"]
             for idx, row in df.iterrows():
-                row_str = ' '.join(row.astype(str).values).lower()
+                row_str = row_text(row).lower()
                 if any(keyword in row_str for keyword in relaxed_bs_keywords):
                     bs_start_row = idx
                     if debug:
@@ -1127,7 +1127,7 @@ def extract_balance_sheet_and_income_statement(
         if is_start_row is None:
             relaxed_is_keywords = ["利润表", "利潤表", "income statement", "profit and loss"]
             for idx, row in df.iterrows():
-                row_str = ' '.join(row.astype(str).values).lower()
+                row_str = row_text(row).lower()
                 if any(keyword in row_str for keyword in relaxed_is_keywords):
                     is_start_row = idx
                     if debug:
