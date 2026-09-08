@@ -117,17 +117,16 @@ the most-drifted version.
 
 ## Known limits
 
-- **The pool is too wide to discriminate, and this is the headline limit.** It
-  holds each numeric cell, column totals, sums of runs of two to four adjacent
-  rows, figures quoted in the notes, the historical comparison columns, and —
-  for accounts of the same statement type — the same again from every sibling
-  tab. Measured on real databooks: sibling tabs are ~91% of the pool and an
-  account's own cells under 1% of it; a real amount multiplied by a random
-  factor is still accepted ~88% of the time, and a ten-fold unit error on a
-  real citation ~80% of the time. Restricting the pool to the account's own
-  data takes both to roughly a third. Marker ④ above is therefore true in
-  principle and weak in practice: the judge is arithmetic, but at present it is
-  arithmetic against almost the whole statement.
+- **The pool still admits about a third of wrong magnitudes.** It holds each
+  numeric cell, column totals, bounded sums of runs of adjacent rows, figures
+  quoted in the notes and the historical comparison columns — the account's own
+  data. It used to fold in every other tab of the same statement as well, which
+  made sibling tabs ~91% of it and the account's own cells under 1%, and left a
+  real amount multiplied by a random factor accepted ~88% of the time and a
+  tenfold unit error ~80% of the time. Narrowed, the same tests give ~31% and
+  ~27%. Marker ④ is now true in practice as well as principle, but a third is
+  not zero: a wrong figure that happens to land near a real one in its own
+  account still passes.
 - What it does still catch: a figure derived a way the pool has no route to —
   a difference, a sum of non-adjacent rows, a cross-statement reference — is
   genuinely absent and is flagged. Bare numbers and percentages are deliberately

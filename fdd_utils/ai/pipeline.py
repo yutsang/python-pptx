@@ -1042,6 +1042,7 @@ def process_single_agent_item(
             data_format=ai_helper.data_format,
             user_comment=user_comment,
             peer_context=_build_peer_context(dfs),
+            cross_account_facts=(run_state.facts if run_state is not None else None),
             analysis_thresholds=(getattr(ai_helper, "full_config", None) or {}).get("analysis"),
             **_agent_prompt_kwargs(agent_name, mapping_key, prompt_manager, previous_output, agent_config=agent_cfg),
         )
@@ -1539,6 +1540,22 @@ def run_ai_pipeline_with_progress(
     # slot), and the fact half has to be built from the settled frames or it
     # describes a workbook the prompts were never given.
     run_state = RunState(dfs, mapping_keys, run_folder=logger.run_folder)
+    # Cross-account facts and the relationships that survived a numeric test.
+    # Built ONCE here, off the settled frames, and read from RunState by every
+    # prompt render -- the alternative is what peer_context still does, which is
+    # to rebuild the same thing on every call and come out differently on the
+    # paths that forget to pass dfs. Only verified links reach a prompt; a
+    # hypothesis that failed its test goes to the internal insight summary and
+    # nowhere near the deck.
+    try:
+        from .facts import build_cross_account_facts
+
+        run_state.facts = build_cross_account_facts(
+            dfs, type_lookup=lambda k: prompt_manager.get_mapping_component(k, component="type"),
+        )
+    except Exception as exc:  # a fact table is an enrichment, never a gate
+        logger.logger.warning("[CrossAccountFacts] skipped: %s", exc)
+        run_state.facts = {}
     health = _RunHealth()
 
     logger.logger.info(

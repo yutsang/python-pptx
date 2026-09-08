@@ -163,18 +163,17 @@ real runs.
 Stated because a tool that hides its blind spots is harder to trust than one
 that names them.
 
-- **The number check barely discriminates today, and this is the most important
-  thing on this page.** The pool an amount is checked against contains not only
-  the account's own cells, column totals, adjacent-row sums and note figures,
-  but the same again from *every other tab of the same statement*. Measured on
-  real databooks, sibling tabs are about 91% of the pool, and an account's own
-  cells are well under 1% of it. The consequence is not subtle: feed the check a
-  deliberately wrong figure — a real amount multiplied by a random factor — and
-  it is accepted around 88% of the time; a ten-fold unit error on a real
-  citation still passes about 80% of the time. Restricting the pool to the
-  account's own data drops both to roughly a third. So `data-backed` currently
-  means "a number of about this size exists somewhere in this statement", not
-  "this figure is right". Treat it accordingly until the pool is narrowed.
+- **The number check discriminates, but not perfectly, and the history is worth
+  knowing.** An amount used to be tested against a pool that folded in every
+  other tab of the same statement, which made sibling tabs about 91% of it and
+  the account's own cells under 1%. Feeding that pool a real figure multiplied
+  by a random factor got it accepted around 88% of the time, and a tenfold unit
+  error passed about 80% of the time — so `data-backed` asserted little beyond
+  "a number of about this size exists somewhere in this statement". The pool is
+  now the account's own data by default, and the same tests come back at roughly
+  31% and 27%. That is a working check rather than a rubber stamp, but a third
+  of deliberately wrong magnitudes still pass, so the verdict is evidence and
+  not proof.
 - **A `data-backed` verdict is also not one meaning.** A clause whose only
   defect is an unverifiable causal claim is demoted back to `data-backed` by a
   confidence floor rather than shown as flagged, so the label covers both "the
