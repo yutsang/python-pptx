@@ -226,6 +226,23 @@ def _hr(title: str = "") -> None:
         print("=" * 78)
 
 
+def real_accounts(results: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The account entries of a pipeline results dict, without the sentinels.
+
+    The pipeline files run-level records in the same dict under dunder keys
+    (__run__ for RunState, __run_health__ for the harness tally; the demo path
+    uses __BS_summary__ the same way). They are not accounts and have no
+    commentary, so every loop that treats a key as an account has to skip them
+    -- the first real Portfolio run reported both sentinels as accounts that
+    "came back with EMPTY final output", i.e. two invented missing-commentary
+    warnings per entity.
+    """
+    return {
+        key: value for key, value in (results or {}).items()
+        if not str(key).startswith("__")
+    }
+
+
 def check_font_metrics_available() -> Dict[str, bool]:
     """Load both client font-metrics files before anything expensive runs.
 
@@ -2172,13 +2189,26 @@ def run_ai_checks(
         if _pct >= 50.0:
             print(f"     ⚠️  MOST of this run was NOT in the three named stages. "
                   f"See the retry summary below.")
-    if _fb_lines:
-        _retried = [ln for ln in _fb_lines if "retry" in ln]
-        print(f"   Feedback loop: {len(_retried)} account(s) retried"
-              + (f" -- {', '.join(_retried[:8])}" if _retried else "")
+    # Count off the results dict, not off _fb_lines. The capture handler above
+    # is attached to the ROOT logger, but fdd_utils/ai/logging.py sets
+    # propagate = False on the run logger, so no [FeedbackLoop] record ever
+    # reaches it -- the first real Portfolio run printed "no account reported a
+    # retry" on an entity whose own insight summary listed five. feedback_retries
+    # is what the pipeline itself recorded, and is the same field the insight
+    # summary reads, so the two lines can no longer disagree.
+    _retried = {
+        key: (content or {}).get("feedback_retries")
+        for key, content in real_accounts(results).items()
+        if (content or {}).get("feedback_retries")
+    }
+    if _retried:
+        _shown = ", ".join(f"{k}×{v}" for k, v in sorted(_retried.items())[:8])
+        print(f"   Feedback loop: {len(_retried)} account(s) retried -- {_shown}"
               + (f" ... and {len(_retried) - 8} more" if len(_retried) > 8 else ""))
     else:
         print("   Feedback loop: no account reported a retry.")
+    if _fb_lines:
+        print(f"   ({len(_fb_lines)} [FeedbackLoop] log line(s) also captured)")
 
     _hr("5b. VALIDATOR (subagent_4) ACTUAL VERDICT — the real AI's own judgment, not this "
         "script's regex heuristic below")
@@ -2189,7 +2219,7 @@ def run_ai_checks(
         "itself judged it grounded; compare that against whether checks 6-7 also flag it\n"
         "to tell apart a real Validator misjudgment from a false positive in this script.\n"
     )
-    for key, content in (results or {}).items():
+    for key, content in real_accounts(results).items():
         reviews = ((content or {}).get("agent_4_validation") or {}).get("clause_reviews") or []
         if not reviews:
             print(f"  {key}: no clause_reviews recorded (Validator may not have run / returned unparsed output).")
@@ -2299,7 +2329,8 @@ def run_ai_checks(
     all_warnings: List[str] = []
     checked_count = 0
     empty_accounts: List[str] = []
-    for key, content in (results or {}).items():
+    _accounts = real_accounts(results)
+    for key, content in _accounts.items():
         # "final" is the pipeline's actual output field (fdd_utils/ai.py
         # get_pipeline_result_text) — NOT "final_content", which only exists
         # inside the raw agent_4_validation sub-dict, not at this top level.
@@ -2310,7 +2341,7 @@ def run_ai_checks(
         checked_count += 1
         all_warnings.extend(check_numeric_grounding(key, text, {key: dfs.get(key)} if key in dfs else dfs))
         all_warnings.extend(check_composition_adds_up(key, text))
-    print(f"Checked {checked_count} of {len(results or {})} account(s) with non-empty output.")
+    print(f"Checked {checked_count} of {len(_accounts)} account(s) with non-empty output.")
     if empty_accounts:
         print(
             f"⚠️  {len(empty_accounts)} account(s) came back with EMPTY final output — this is a\n"

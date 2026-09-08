@@ -1296,10 +1296,17 @@ def extract_balance_sheet_and_income_statement(
                 print(f"  - Columns: {list(results['income_statement'].columns)}")
         
     except Exception as e:
-        logger.error("Error extracting financial data: %s", e)
-        if debug:
-            import traceback
-            logger.debug("Full traceback for financial extraction error:", exc_info=True)
+        # exc_info unconditionally, not only under debug. Losing this raises
+        # BOTH statements at once: reconciliation then has nothing to compare
+        # against and falls back to every extracted account, and the deck's BS
+        # and IS overview tables are skipped entirely. A real portfolio run hit
+        # it on all seven entities and the only evidence was this one line with
+        # no frame in it, which is not enough to find the cause -- the traceback
+        # costs nothing on a path that has already failed.
+        logger.error(
+            "Error extracting financial data from sheet %r of %r: %s: %s",
+            sheet_name, workbook_path, type(e).__name__, e, exc_info=True,
+        )
     
     return results
 
