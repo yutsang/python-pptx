@@ -97,6 +97,16 @@ processing:
   #   python inspect_databook_to_pptx.py --databook X --pptx Y --style-profile
   #   python inspect_databook_to_pptx.py --databook X --pptx Y --check-claims
   inject_mapping_patterns: true
+  # Input-token budget per LLM call. A 65-component account rendered past a
+  # 32,768-token provider limit three runs in a row and shipped no commentary.
+  # When the estimated prompt exceeds max_input_tokens - headroom_tokens, the
+  # smallest components are left out of what is SHOWN (never a rollup parent;
+  # never the three largest), the model is told how many and what they sum to,
+  # and that sum is grounded. Set max_input_tokens to your provider's limit;
+  # 0 disables. headroom covers the reply and estimation error.
+  prompt_budget:
+    max_input_tokens: 32768
+    headroom_tokens: 4096
   debug_mode: false
   feedback_loop:
     enabled: true

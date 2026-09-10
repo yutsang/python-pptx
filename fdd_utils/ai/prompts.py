@@ -275,16 +275,23 @@ class PromptEngine:
         # alone would drop them straight back out. They are what lets a bullet
         # say "包括：1）...2）..." instead of quoting one total, so keep them.
         components = set(analysis_df.attrs.get("component_descriptions") or [])
+        # Components the prompt budget decided not to show (see
+        # _apply_prompt_budget). They stay in df.attrs -- reconciliation and the
+        # verifier's pool read the frame there -- and are only left out of what
+        # is RENDERED, for every stage alike, so the Auditor sees exactly what
+        # the Generator saw.
+        excluded = set(df.attrs.get("prompt_budget_exclude") or [])
+        shown_components = components - excluded
         first_col = analysis_df.columns[0]
         filtered = analysis_df[
             # str(value) first: under pandas' new string dtype astype(str) keeps
             # missing values as np.nan, so a blank description row would reach
             # .strip() as a float and take the whole prompt build down.
             analysis_df[first_col].astype(str).map(
-                lambda value: str(value).strip() in visible_rows or str(value).strip() in components
+                lambda value: str(value).strip() in visible_rows or str(value).strip() in shown_components
             )
         ].copy()
-        filtered.attrs["component_descriptions"] = list(components)
+        filtered.attrs["component_descriptions"] = list(shown_components)
         # Carried too, or the hierarchy is lost the moment the frame is copied.
         filtered.attrs["rollup_groups"] = dict(analysis_df.attrs.get("rollup_groups") or {})
         return filtered if not filtered.empty else analysis_df
@@ -296,11 +303,16 @@ class PromptEngine:
         visible_rows = visible_descriptions(df)
         if not visible_rows:
             return adjacent_detail_rows
+        excluded = set(df.attrs.get("prompt_budget_exclude") or [])
         filtered = [
             row for row in adjacent_detail_rows
             if str(row.get("Description", "")).strip() in visible_rows
+            and str(row.get("Description", "")).strip() not in excluded
         ]
-        return filtered or adjacent_detail_rows
+        return filtered or [
+            row for row in adjacent_detail_rows
+            if str(row.get("Description", "")).strip() not in excluded
+        ]
 
     @staticmethod
     def _should_skip_prompt_metadata_key(key_text: str, include_description: bool = False) -> bool:
@@ -404,7 +416,12 @@ class PromptEngine:
         if not isinstance(df, pd.DataFrame):
             return []
         remarks = df.attrs.get("table_linked_remarks") or []
-        return [remark for remark in remarks if isinstance(remark, dict)]
+        excluded = set(df.attrs.get("prompt_budget_exclude") or [])
+        return [
+            remark for remark in remarks
+            if isinstance(remark, dict)
+            and str(remark.get("description") or "").strip() not in excluded
+        ]
 
     def _build_analysis_prompt_df(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
         analysis_df = self._filter_prompt_analysis_df(df)
@@ -745,11 +762,59 @@ class PromptEngine:
                 "attach it to the parent as \"of which ...\" -- never as a sibling numbered item. "
             )
 
+        # What the prompt budget left out. The model is shown fewer components
+        # than the total is made of, and the rule below ("add the items up")
+        # would otherwise make it invent a name for the gap. Say what the gap is.
+        omitted_chi = omitted_eng = ""
+        try:
+            budget = df.attrs.get("prompt_budget") if isinstance(df, pd.DataFrame) else None
+            if isinstance(budget, dict) and budget.get("components_dropped"):
+                from ..financial_display_format import choose_display_unit, format_in_unit
+                latest_vals = []
+                if isinstance(analysis_df, pd.DataFrame) and len(analysis_df.columns) > 1:
+                    numeric_cols = [c for c in analysis_df.columns[1:]
+                                    if not str(c).startswith("__") and pd.api.types.is_numeric_dtype(analysis_df[c])]
+                    if numeric_cols:
+                        latest_vals = [float(v) for v in analysis_df[numeric_cols[-1]].tolist()
+                                       if v is not None and v == v]
+                div, unit, dec = choose_display_unit(latest_vals + [float(budget["dropped_sum"])], language)
+                inline = unit.replace("人民币", "") if language == "Chi" else unit.replace("CNY ", "")
+                inline = inline or unit
+                n = len(budget["components_dropped"])
+                shown = format_in_unit(float(budget["dropped_sum"]), div, dec)
+                # The figure as printed, back in base units, so the verifier
+                # grounds what the model was told to write and not only the
+                # exact sum -- display rounding put a remainder outside
+                # tolerance once already (see prompt_residual).
+                try:
+                    analysis_df.attrs["prompt_budget_residual"] = {
+                        "amount": float(budget["dropped_sum"]),
+                        "display_amount": float(str(shown).replace(",", "")) * float(div),
+                        "count": n,
+                    }
+                except Exception:
+                    pass
+                omitted_chi = (
+                    f"【已省略的较小构成项】为控制篇幅，本科目另有{n}项金额较小的构成项未在上表列出，"
+                    f"其最新一期合计为**{shown}{inline}**，已计入本科目合计。列举构成时，把它们作为最后一项写成"
+                    f"'其余{shown}{inline}为其他较小项目'——不要为这笔差额另外猜一个名称，也不要把它当作遗漏。"
+                )
+                omitted_eng = (
+                    f"[SMALLER COMPONENTS NOT SHOWN] To keep the prompt within limits, {n} smaller "
+                    f"component(s) of this account are not in the table above; their latest-period "
+                    f"total is **{shown} {inline}** and it IS included in the account total. When "
+                    f"enumerating, close with \"the remaining {shown} {inline} being other smaller "
+                    f"items\" -- do not invent a name for that gap and do not treat it as an omission. "
+                )
+        except Exception:
+            omitted_chi = omitted_eng = ""
+
         if language == "Chi":
             return (
                 contra_chi
                 + hierarchy_chi
                 + residual_chi
+                + omitted_chi
                 + "【组成披露】该科目的明细组成已随财务数据提供。"
                 "请按组成列举，且每一项都必须带上金额——只写类别名称而不给金额是不合格的。"
                 "在**有金额的最高层级**列举（例如租金收入、物业管理费收入、水电费收入各自的余额），"
@@ -762,6 +827,7 @@ class PromptEngine:
             contra_eng
             + hierarchy_eng
             + residual_eng
+            + omitted_eng
             + "COMPOSITION. The account's component lines are supplied with the financial data. "
             "Enumerate the composition and give an AMOUNT for every item -- naming categories without "
             "amounts is not acceptable. Enumerate at the HIGHEST level that carries amounts (e.g. the "
@@ -2238,7 +2304,169 @@ class PromptEngine:
             self.logger.warning("Missing prompt key %s. Available keys: %s", exc, list(format_params.keys()))
             return template
 
+    # -- prompt budget ----------------------------------------------------
+    #
+    # A 65-component account rendered at an estimated 35,232 tokens against a
+    # 32,768-token input limit, three real runs in a row, and shipped NO
+    # commentary each time: the provider rejected the call, the account fell
+    # back to a deterministic bullet, and the insight summary told the user not
+    # to send the deck. Everything was shown, so nothing was written.
+    #
+    # The budget is applied to the rendered prompt, not to a row count, and it
+    # drops ROLLUP UNITS from the smallest up -- a parent with all its verified
+    # children, or a lone component -- never a child without its parent. A flat
+    # cut would break the named parent/child pairs that stopped the model from
+    # double-counting (see the note in _composition_guidance), and a real run
+    # this week showed exactly that failure when the pairing was missing:
+    # 「预付账款-营销费用类4.7万元；V0699…4.5万元」 summed to 9.2 against 5.6.
+    # The three largest units are never dropped, because the remainder guidance
+    # names them.
+    #
+    # What was dropped is recorded on df.attrs["prompt_budget"] (audit) and
+    # df.attrs["prompt_budget_exclude"] (read by the three render-time filters),
+    # so every later stage renders the same subset the Generator saw. The
+    # dropped units' latest-period sum is stashed as a prompt_residual fact, so
+    # 「其余N项合计Y」 grounds. df.attrs["prompt_analysis_df"] itself is not
+    # touched: reconciliation and the verifier's pool read the full frame.
+
+    @staticmethod
+    def _prompt_budget() -> Tuple[int, int]:
+        """(max_input_tokens, headroom_tokens); 0 disables. Per-machine config."""
+        try:
+            from ..financial_common import load_yaml_file
+            for candidate in ("fdd_utils/config.yml", "fdd_utils/config.example.yml"):
+                cfg = load_yaml_file(candidate)
+                if cfg:
+                    budget = (cfg.get("processing") or {}).get("prompt_budget") or {}
+                    limit = int(budget.get("max_input_tokens", 32768) or 0)
+                    headroom = int(budget.get("headroom_tokens", 4096) or 0)
+                    return limit, headroom
+        except Exception:
+            pass
+        return 32768, 4096
+
+    @staticmethod
+    def _rollup_units(analysis_df: pd.DataFrame) -> List[Tuple[float, List[str]]]:
+        """Droppable items, smallest first: [(|latest value|, [description])].
+
+        An item is one component the prompt may leave out without changing
+        what any shown figure means: a verified rollup CHILD (its parent's
+        amount already includes it, and the model is told so), or a component
+        in no verified group. A rollup PARENT is never an item -- dropping it
+        while its children stay is the double-count the named pairs exist to
+        prevent -- so an account made of one parent and sixty-three children
+        (the real case that overflowed) yields sixty-three items, not one unit.
+
+        The same description can occur on several rows (one tenant listed
+        under four revenue categories), so a value is the SUM of |latest| over
+        every row carrying that name, and excluding the name excludes all of
+        them.
+        """
+        components = [str(c) for c in (analysis_df.attrs.get("component_descriptions") or [])]
+        groups = {str(p): [str(c) for c in kids]
+                  for p, kids in (analysis_df.attrs.get("rollup_groups") or {}).items()}
+        parents = set(groups)
+        label_col = analysis_df.columns[0]
+        numeric = [c for c in analysis_df.columns[1:]
+                   if not str(c).startswith("__") and pd.api.types.is_numeric_dtype(analysis_df[c])]
+        latest = numeric[-1] if numeric else None
+        value_of: Dict[str, float] = {}
+        if latest is not None:
+            for _i, row in analysis_df.iterrows():
+                try:
+                    v = row[latest]
+                    name = str(row[label_col]).strip()
+                    value_of[name] = value_of.get(name, 0.0) + (0.0 if pd.isna(v) else abs(float(v)))
+                except Exception:
+                    continue
+        items: List[Tuple[float, List[str]]] = []
+        for name in dict.fromkeys(components):          # distinct, in order
+            if name in parents:
+                continue
+            items.append((value_of.get(name, 0.0), [name]))
+        items.sort(key=lambda t: t[0])
+        return items
+
     def render_prompt(
+        self,
+        agent_name: str,
+        language: str,
+        mapping_key: str,
+        df: Optional[pd.DataFrame] = None,
+        data_format: str = "markdown",
+        **kwargs,
+    ) -> Tuple[str, str]:
+        system_prompt, user_prompt = self._render_prompt_once(
+            agent_name, language, mapping_key, df, data_format, **kwargs,
+        )
+        if not isinstance(df, pd.DataFrame):
+            return system_prompt, user_prompt
+        limit, headroom = self._prompt_budget()
+        if limit <= 0:
+            return system_prompt, user_prompt
+        from .client import AIClient
+        estimate = AIClient._estimate_text_tokens(system_prompt) + AIClient._estimate_text_tokens(user_prompt)
+        if estimate <= limit - headroom:
+            return system_prompt, user_prompt
+
+        analysis_df = df.attrs.get("prompt_analysis_df")
+        if not isinstance(analysis_df, pd.DataFrame) or analysis_df.empty:
+            return system_prompt, user_prompt
+        units = self._rollup_units(analysis_df)
+        droppable = units[:-3] if len(units) > 3 else []
+        if not droppable:
+            return system_prompt, user_prompt
+
+        # Drop the smallest units first, doubling how many each pass, until the
+        # estimate fits or nothing droppable is left. Each pass re-renders, so
+        # the estimate is of the prompt as it would actually be sent.
+        dropped: List[Tuple[float, List[str]]] = []
+        k = 1
+        while droppable:
+            take, droppable = droppable[:k], droppable[k:]
+            dropped.extend(take)
+            dropped_names = [d for _v, members in dropped for d in members]
+            df.attrs["prompt_budget_exclude"] = dropped_names
+            # Provisional record so _composition_guidance can render the
+            # "not shown" line in THIS pass; finalised below with the estimate.
+            df.attrs["prompt_budget"] = {
+                "components_dropped": dropped_names,
+                "dropped_sum": float(sum(v for v, _m in dropped)),
+            }
+            system_prompt, user_prompt = self._render_prompt_once(
+                agent_name, language, mapping_key, df, data_format, **kwargs,
+            )
+            estimate = AIClient._estimate_text_tokens(system_prompt) + AIClient._estimate_text_tokens(user_prompt)
+            if estimate <= limit - headroom:
+                break
+            k *= 2
+
+        dropped_sum = sum(v for v, _m in dropped)
+        dropped_names = [d for _v, members in dropped for d in members]
+        df.attrs["prompt_budget"] = {
+            "limit": limit, "headroom": headroom, "estimate": int(estimate),
+            "units_total": len(units), "units_dropped": len(dropped),
+            "components_dropped": dropped_names, "dropped_sum": float(dropped_sum),
+            "fits": bool(estimate <= limit - headroom),
+        }
+        # Ground the figure the model may now quote for what it was not shown.
+        # _composition_guidance stashes the displayed form when it renders the
+        # line; this is the fallback for an account with no composition block.
+        try:
+            analysis_df.attrs.setdefault("prompt_budget_residual", {
+                "amount": float(dropped_sum), "count": len(dropped_names)})
+        except Exception:
+            pass
+        self.logger.info(
+            "[PromptBudget] %s/%s: kept %d of %d droppable item(s), dropped %d component(s) summing %.0f, "
+            "estimate %d vs limit %d-%d%s",
+            mapping_key, agent_name, len(units) - len(dropped), len(units), len(dropped_names),
+            dropped_sum, estimate, limit, headroom,
+            "" if estimate <= limit - headroom else " -- STILL OVER after dropping everything droppable",
+        )
+        return system_prompt, user_prompt
+
+    def _render_prompt_once(
         self,
         agent_name: str,
         language: str,

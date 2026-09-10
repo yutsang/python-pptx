@@ -74,10 +74,16 @@ def prompt_sizes(dfs, language, pe, limits=(8192, 16384, 32768)):
         try:
             blob = render(pe, language, key, df, "markdown")
         except Exception as exc:  # noqa: BLE001
-            rows.append((-1, key, f"RENDER FAILED: {type(exc).__name__}: {exc}", 0))
+            rows.append((-1, key, f"RENDER FAILED: {type(exc).__name__}: {exc}", 0, 0.0))
             continue
         cjk = len(AIClient._CJK_CHAR_RE.findall(blob))
-        rows.append((est(blob), key, "", len(blob), cjk / max(len(blob), 1)))
+        budget = df.attrs.get("prompt_budget") if df is not None else None
+        note = ""
+        if isinstance(budget, dict) and budget.get("components_dropped"):
+            note = "  budget: dropped %d of %d, %s" % (
+                len(budget["components_dropped"]), budget.get("units_total", "?"),
+                "fits" if budget.get("fits") else "STILL OVER")
+        rows.append((est(blob), key, note, len(blob), cjk / max(len(blob), 1)))
     rows.sort(reverse=True)
 
     print("\n" + "=" * 78)
@@ -85,12 +91,12 @@ def prompt_sizes(dfs, language, pe, limits=(8192, 16384, 32768)):
     print("=" * 78)
     print(f"  {'tokens':>8}  {'chars':>8}  {'CJK':>5}  account")
     for tokens, key, err, chars, share in rows:
-        if err:
+        if err and not err.startswith("  budget:"):
             print(f"  {'-':>8}  {'-':>8}  {'-':>5}  {key}  {err}")
             continue
         over = [f"{lim // 1024}k" for lim in limits if tokens > lim]
         flag = ("   *** OVER " + ", ".join(over) + " ***") if over else ""
-        print(f"  {tokens:>8,}  {chars:>8,}  {share:>4.0%}  {key}{flag}")
+        print(f"  {tokens:>8,}  {chars:>8,}  {share:>4.0%}  {key}{flag}{err}")
     real = [r for r in rows if r[0] >= 0]
     if real:
         top = real[0]

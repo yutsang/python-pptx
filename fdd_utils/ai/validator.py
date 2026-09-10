@@ -1050,6 +1050,17 @@ class SourceIndex:
                     shown = residual.get(key_name)
                     if shown is not None:
                         facts.append(_fact(shown, "prompt_residual", sheet=cls_sheet, row_desc=label))
+            # What the prompt budget left out, as one figure: the model was told
+            # N smaller components exist and what they sum to, so 「其余N项合计Y」
+            # is an instructed statement, same as the remainder above.
+            budget_residual = analysis_df.attrs.get("prompt_budget_residual")
+            if own and isinstance(budget_residual, dict) and budget_residual.get("amount"):
+                desc = ("sum of the %s component(s) the prompt budget did not show"
+                        % budget_residual.get("count"))
+                facts.append(_fact(budget_residual["amount"], "prompt_residual", sheet=cls_sheet, row_desc=desc))
+                if budget_residual.get("display_amount") is not None:
+                    facts.append(_fact(budget_residual["display_amount"], "prompt_residual",
+                                       sheet=cls_sheet, row_desc=desc + " [as displayed]"))
             if own:
                 facts += cls._period_movement_facts(analysis_df, cls_sheet)
         # Also ground against numbers cited in the supporting notes / remarks
