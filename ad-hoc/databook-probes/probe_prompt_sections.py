@@ -52,6 +52,52 @@ def render(pe, language, key, df, data_format):
     return (sys_p or "") + "\n" + (usr_p or "")
 
 
+def prompt_sizes(dfs, language, pe, limits=(8192, 16384, 32768)):
+    """How big is each account's Generator prompt, and does it fit?
+
+    This is the only place the question can be answered for an account whose
+    call FAILS. A failed call writes no usage record, so the token table in
+    inspect_run.py is built entirely from calls that succeeded -- and the
+    prompt worth measuring is always the one that was rejected. A real run
+    came back "Range of input length should be [1, 32768]" while every prompt
+    that report could see topped out at 10,425.
+
+    Same estimator the client uses before every call, so these numbers are
+    comparable with the ones the run log prints. Free: renders prompts, calls
+    nothing.
+    """
+    from fdd_utils.ai.client import AIClient
+    est = AIClient._estimate_text_tokens
+
+    rows = []
+    for key, df in dfs.items():
+        try:
+            blob = render(pe, language, key, df, "markdown")
+        except Exception as exc:  # noqa: BLE001
+            rows.append((-1, key, f"RENDER FAILED: {type(exc).__name__}: {exc}", 0))
+            continue
+        rows.append((est(blob), key, "", len(df) if df is not None else 0))
+    rows.sort(reverse=True)
+
+    print("\n" + "=" * 78)
+    print("  PROMPT SIZE PER ACCOUNT (subagent_1, markdown) — estimated tokens")
+    print("=" * 78)
+    print(f"  {'tokens':>8}  {'rows':>5}  account")
+    for tokens, key, err, nrows in rows:
+        if err:
+            print(f"  {'-':>8}  {'-':>5}  {key}  {err}")
+            continue
+        over = [str(lim) for lim in limits if tokens > lim]
+        flag = ("   *** OVER " + ", ".join(over) + " ***") if over else ""
+        print(f"  {tokens:>8,}  {nrows:>5}  {key}{flag}")
+    real = [r for r in rows if r[0] >= 0]
+    if real:
+        top = real[0]
+        print(f"\n  largest: {top[1]} at {top[0]:,} tokens from {top[3]} extracted row(s).")
+        print("  A prompt over the provider's input limit comes back as 'Range of input")
+        print("  length exceeds limited' and that account ships a deterministic bullet.")
+
+
 def matrix(dfs, language, pe, keys):
     rows = []
     for k in keys:
@@ -156,6 +202,8 @@ def main(path, entity="", before=False):
 
     show("BEFORE (attach stripped)" if before else "AFTER (shipped code)",
          matrix(dfs, language, pe, keys))
+
+    prompt_sizes(dfs, language, pe)
 
     check_formatting(dfs, language, pe)
 

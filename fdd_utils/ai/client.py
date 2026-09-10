@@ -714,9 +714,26 @@ class AIClient:
             return response_payload
             
         except Exception as e:
-            self.logger.error(f"Error getting response: {e}")
+            # Say how big the input WAS, not only that it was too big. A failed
+            # call writes no usage record, so the per-stage token table is built
+            # entirely from calls that SUCCEEDED -- and the one prompt worth
+            # measuring is always the one that failed. A real run came back
+            # "Range of input length should be [1, 32768]" while every prompt
+            # the table could see topped out at 10,425, which reads as if the
+            # limit were being hit by nothing at all. The estimate is computed
+            # from the prompt text, so it is available whether or not the
+            # provider ever answered.
+            self.logger.error(
+                "Error getting response: %s | estimated prompt tokens: %s "
+                "(system %s + user %s), max_tokens: %s",
+                e,
+                self._estimate_text_tokens(system_prompt) + self._estimate_text_tokens(user_prompt),
+                self._estimate_text_tokens(system_prompt),
+                self._estimate_text_tokens(user_prompt),
+                max_tokens,
+            )
             raise
-    
+
     def _heuristic_response(self, user_prompt: str) -> str:
         """
         Generate heuristic response without AI (rule-based).
