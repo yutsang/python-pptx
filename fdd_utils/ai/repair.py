@@ -441,6 +441,19 @@ def _pre_style_guards(original_sentence: str, patched_sentence: str) -> Optional
     for doubled in _DOUBLED_UNITS:
         if doubled in patched_sentence and doubled not in original_sentence:
             return "doubled unit token '%s'" % doubled
+    # Two different dates (or amounts) in one sentence may not become one.
+    # Every guard below counts tokens; none of them noticed that a sentence
+    # reading 「自2024年1月1日起形成，此前截至2023年1月1日无余额」 had been
+    # patched into 「自2024年12月31日起形成，此前截至2024年12月31日无余额」 --
+    # the defective date was the one replaced, exactly one date was added, and
+    # the result passed verified=True and shipped. It cannot be true: a balance
+    # does not form on the day it is stated not to exist. The same shape for
+    # amounts ("A 2.1万元、B 2.1万元" from two different figures) is refused
+    # for the same reason.
+    if len(set(_dates_in_text(patched_sentence))) < len(set(_dates_in_text(original_sentence))):
+        return "two different dates collapsed into one"
+    if len(set(_amount_counter(patched_sentence))) < len(set(_amount_counter(original_sentence))):
+        return "two different amounts collapsed into one"
     return None
 
 
@@ -481,6 +494,20 @@ def _post_style_guards(
         expected = target.get("expected")
         if expected is not None and added and not _same_figure(list(added)[0], float(expected)):
             return "the replacement amount is not the expected source figure"
+        # With no expected figure (AMOUNT_UNSUPPORTED), the only reference is
+        # the nearest source figure the classifier found. A replacement that is
+        # FURTHER from it than the original was is a guess in the wrong
+        # direction -- 0.06亿 patched to 0.07亿 against a source of 0.06亿 was
+        # refused, but only downstream as "new defect after the patch", which
+        # reads as if the repair had done something. Name the real reason.
+        nearest = target.get("nearest")
+        if expected is None and added and isinstance(nearest, dict) and nearest.get("value") is not None:
+            ref = abs(float(nearest["value"]))
+            was, now = abs(float(target["value"])), abs(float(list(added)[0]))
+            if abs(now - ref) > abs(was - ref):
+                return "the replacement moved away from the nearest source figure (%s)" % (
+                    describe_fact(nearest)
+                )
         if dates_removed or dates_added:
             return "date set changed"
     elif target["kind"] == "date":
