@@ -16,40 +16,77 @@ streamlit run fdd_app.py
 
 ## Pipeline
 
-Solid arrows are the normal path; dotted arrows are what happens when something
-goes wrong. Two placements are worth noticing. The deck-wide ruling on which
-accounts get a detail table happens **before** any prompt is written, so the
-text can only promise a table that will actually be drawn. And the check that
-decides whether commentary is trustworthy is arithmetic over the account's own
-figures — the model is asked to judge exactly one thing, whether a stated cause
-holds up.
+**藍**是程式算出來的，**橙**是模型寫的，**灰虛線**是出錯時的退路。橙色只有四
+塊，而且其中三塊都只是在寫字；模型唯一一次做裁決，是判斷一句因果講不講得通。
+金額、對數、重試與否、留哪一次、版面怎麼排，全部藍色。
+
+兩個位置值得留意。哪些科目配明細表，是在寫任何 prompt **之前**就全份 deck 一
+次裁決完的，所以文字不可能承諾一張畫不出來的表。而決定一段評論可不可信的，
+是對該科目自身數字做的算術；模型只被問一件事——它說的那個原因站不站得住。
 
 ```mermaid
 flowchart TD
-    XL[Excel 底稿] --> RES[識別與對應<br/>判斷分頁性質，對應到科目]
-    RES --> NORM[標準化<br/>抽取調整後各期，建立資料表]
-    NORM --> REC[對數<br/>分頁合計 vs 財務報表]
-    REC --> SUB[表格入選裁決<br/>全份 deck 先定，落選的拿走明細表]
-    SUB --> FACT[先算好事實<br/>期間變動 · 重大性 · 構成殘差 · 集中度]
+    classDef det fill:#E8F0FE,stroke:#1A56DB,stroke-width:2px,color:#0B2A6B
+    classDef llm fill:#FFF1E0,stroke:#E8710A,stroke-width:2px,color:#7A3E00
+    classDef edge fill:#FFFFFF,stroke:#5F6368,stroke-width:2px,color:#202124
+    classDef weak fill:#F1F3F4,stroke:#9AA0A6,stroke-width:1px,color:#5F6368
+    classDef gate fill:#FEF7E0,stroke:#B06000,stroke-width:2px,color:#5C3A00
 
-    FACT --> GEN[生成初稿<br/>只負責語言與表達]
-    GEN -.->|逾時或失敗| HAR[重送 · 階段熔斷<br/>最後退回純資料摘要]
-    HAR -.-> AUD
-    GEN --> AUD[覆核<br/>冷讀，不帶上一輪對話]
-    AUD --> CHK[逐句核對<br/>算術，不是模型]
-    CHK --> VAL[宣稱因果時才判斷<br/>唯一交給模型裁決的環節]
-    VAL --> GATE{有無找不到來源的數字？}
-    GATE -->|有| RE[指名錯處，重寫該科目]
-    RE --> GEN
-    GATE -->|沒有| ARB[比較各次嘗試<br/>留缺陷最少的，不是最後一次]
-    RE -.->|次數用盡| ARB
+    XL["Excel 底稿"]
+    OUT["最終簡報 .pptx"]
 
-    ARB --> HS[房屋風格後處理<br/>零餘額寫法 · 單位小數 · 公司名縮短]
-    HS --> SUM[執行摘要<br/>匯出前另外呼叫一次模型]
-    SUM --> PACK[量度真實高度並分配欄位<br/>字型度量，不是字數估算]
-    PACK --> OUT[最終簡報 .pptx]
-    OUT -.->|仍略為超出| AF[PowerPoint 自動縮字<br/>安全網，不是計畫]
-    OUT -.->|只有 CLI 路徑| QA[匯出後檢查<br/>溢出 · 表格壓字 · 佔位符外洩]
+    subgraph S1["① 先把事實算清楚 — 全程無模型"]
+        direction TB
+        RES["識別與對應<br/>分頁性質 · 科目"]
+        NORM["標準化<br/>調整後各期"]
+        REC["對數<br/>分頁合計 vs 財務報表"]
+        SUB["表格入選裁決<br/>全份 deck 一次定"]
+        FACT["事實表<br/>期間變動 · 重大性<br/>構成殘差 · 集中度"]
+        RES --> NORM --> REC --> SUB --> FACT
+    end
+
+    subgraph S2["② 模型只負責語言"]
+        direction TB
+        GEN["生成初稿"]
+        AUD["覆核<br/>冷讀，不帶上一輪對話"]
+        GEN --> AUD
+    end
+
+    subgraph S3["③ 判決 — 算術先行"]
+        direction TB
+        CHK["逐句核對金額<br/>算術，不是模型"]
+        VAL["宣稱因果時才判斷<br/>唯一交給模型的裁決"]
+        CHK --> VAL
+    end
+
+    GATE{"有找不到<br/>來源的數字？"}
+    RE["指名錯處<br/>只重寫該科目"]
+    ARB["仲裁<br/>留缺陷最少那次<br/>不是最後一次"]
+    HS["房屋風格<br/>零餘額 · 單位小數 · 公司名"]
+    SUM["執行摘要"]
+    PACK["量度真實高度並分欄<br/>字型度量，不是字數估算"]
+    HAR["逾時重送 · 階段熔斷<br/>最後退回純資料摘要"]
+    QA["匯出後檢查<br/>溢出 · 壓字 · 佔位符"]
+
+    XL --> RES
+    FACT --> GEN
+    AUD --> CHK
+    VAL --> GATE
+    GATE -->|"有"| RE
+    RE -->|"最多 3 次"| GEN
+    GATE -->|"沒有"| ARB
+    RE -.->|"次數用盡"| ARB
+    ARB --> HS --> SUM --> PACK --> OUT
+
+    GEN -.->|"呼叫失敗"| HAR
+    HAR -.-> CHK
+    OUT -.->|"僅 CLI"| QA
+
+    class XL,RES,NORM,REC,SUB,FACT,CHK,RE,ARB,HS,PACK det
+    class GEN,AUD,VAL,SUM llm
+    class GATE gate
+    class HAR,QA weak
+    class OUT edge
 ```
 
 ---
