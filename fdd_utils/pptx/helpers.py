@@ -867,8 +867,10 @@ def _group_plan_rows_by_category(
     column that wraps.
 
     Conservative by construction:
-      - only a run of 2+ CONSECUTIVE rows sharing a category groups, so
-        nothing is reordered and a lone 管理层调整 stays a plain row;
+      - a category needs 2+ rows anywhere in the table to group, and a lone
+        管理层调整 stays a plain row at its own position. Members ARE pulled
+        together, which moves rows -- see the comment on the collection below
+        for why repeating a heading turned out to be the worse of the two;
       - if every row lands in ONE group the grouping is dropped -- a single
         heading over the whole table costs a row and says nothing;
       - a table whose rows already carry explicit children is left alone
@@ -884,17 +886,37 @@ def _group_plan_rows_by_category(
         head, tail = parts[0].strip(), parts[1].strip()
         return head if head and tail else None
 
-    runs: List[Tuple[Optional[str], List[Dict[str, Any]]]] = []
+    # A category's members are collected across the WHOLE table, not only where
+    # they happen to be adjacent. Rows arrive sorted by value, so a category is
+    # normally scattered: a real 在建工程 table printed 工程管理费 as a heading
+    # THREE times -- once over each pair that happened to sit together -- and
+    # 物业运营 again further down, while the rows between the repeats kept the
+    # prefix the grouping exists to remove. Consecutive-only runs were chosen so
+    # that nothing moved; the price was a deck that repeats a heading, which is
+    # worse than a moved row. Each group now takes the position of its FIRST
+    # member, so the largest item still leads its group and the group lands
+    # where it used to start; every ungrouped row stays exactly where it was.
+    members_by_category: Dict[str, List[Dict[str, Any]]] = {}
     for entry in entries:
         category = _category(entry["label"])
-        if runs and runs[-1][0] == category and category is not None:
-            runs[-1][1].append(entry)
-        else:
-            runs.append((category, [entry]))
+        if category is not None:
+            members_by_category.setdefault(category, []).append(entry)
 
-    grouped_runs = [r for r in runs if r[0] is not None and len(r[1]) >= 2]
-    if not grouped_runs:
+    grouping = {c for c, members in members_by_category.items() if len(members) >= 2}
+    if not grouping:
         return entries
+
+    runs: List[Tuple[Optional[str], List[Dict[str, Any]]]] = []
+    emitted: set = set()
+    for entry in entries:
+        category = _category(entry["label"])
+        if category in grouping:
+            if category in emitted:
+                continue
+            emitted.add(category)
+            runs.append((category, members_by_category[category]))
+        else:
+            runs.append((None, [entry]))
 
     own = str(title or "").strip()
     # One category covering every row earns no heading -- a heading over the
@@ -903,8 +925,8 @@ def _group_plan_rows_by_category(
     # wrap. Returning untouched instead kept 应缴税费- on every row of an
     # 应交税费 table, and the bank-account code prefix on every row of a
     # 货币资金 one.
-    covers_everything = (len(grouped_runs) == 1
-                         and len(grouped_runs[0][1]) == len(entries))
+    covers_everything = (len(grouping) == 1
+                         and len(members_by_category[next(iter(grouping))]) == len(entries))
     out: List[Dict[str, Any]] = []
     for category, members in runs:
         if category is None or len(members) < 2:
