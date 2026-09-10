@@ -597,6 +597,7 @@ def _numbers_in_text(text: str) -> List[float]:
 FACT_KINDS = frozenset({
     "cell", "column_total", "window_sum", "analysis_cell",
     "note_number", "annualized_note", "sibling_cell", "date",
+    "prompt_residual",
 })
 
 #: Facts a scale classification and a repair may cite: the account's own real
@@ -942,6 +943,29 @@ class SourceIndex:
                 total_kind="analysis_cell" if own else "sibling_cell",
                 windows=False,
             )
+            # The residual the PROMPT computed and told the model to write.
+            # prompts.py works out "the largest three come to X, the remaining N
+            # come to Y" and instructs the bullet to close with "其余Y为…". Y is
+            # a difference, and this pool holds cells, column totals and windows
+            # -- never a difference -- so the model obeyed and the verifier then
+            # called the number it had just been handed a hallucination. A real
+            # run did that twice in one entity, and the repair pass spent an LLM
+            # call on each, both returning the text unchanged, which is what
+            # happens when nothing was wrong.
+            #
+            # Read, never re-derived: this is the figure that was actually
+            # issued. Filed under its own kind and deliberately NOT in
+            # _OWN_HARD_KINDS -- it is synthetic, so it grounds the clause
+            # without ever being citable as a repair source or steering a scale
+            # classification.
+            residual = analysis_df.attrs.get("prompt_residual")
+            if own and isinstance(residual, dict) and residual.get("amount") is not None:
+                facts.append(_fact(
+                    residual["amount"], "prompt_residual", sheet=cls_sheet,
+                    row_desc="remainder handed to the model (total of %s component(s) less the "
+                             "largest %s)" % (residual.get("component_count"),
+                                              len(residual.get("listed") or [])),
+                ))
         # Also ground against numbers cited in the supporting notes / remarks
         # (df.attrs), e.g. registered capital "7000万美元" that never appears in
         # the numeric table. Without this they were false-flagged as hallucinations.

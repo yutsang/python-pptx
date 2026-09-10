@@ -554,6 +554,36 @@ class PromptEngine:
                             "-- state the amount; \"and others\" alone leaves the reader unable to "
                             "tell an omission from an unnamed component."
                         )
+                        # Leave the figure where the verifier can find it.
+                        # rest_sum is derived here, handed to the model, and the
+                        # model is INSTRUCTED to quote it -- but it is a
+                        # difference, and the grounding pool holds cells, column
+                        # totals and windows, never a difference. So the model
+                        # obeyed, the verifier could not find the number it had
+                        # just been given, and called it a hallucination; the
+                        # repair pass then spent an LLM call failing to "fix" a
+                        # figure this file computed. A real run did that twice in
+                        # one entity ("其余0.03亿元…", "其余92.8万元…"), both
+                        # returned unchanged with "the targeted defect is still
+                        # there after the patch", which is exactly what happens
+                        # when nothing was wrong.
+                        #
+                        # Stashed on the ORIGINAL nested frame, not on a copy --
+                        # analysis_df here is df.attrs["prompt_analysis_df"]
+                        # itself, and verify_commentary receives that same df --
+                        # so the verifier reads the one number that was actually
+                        # issued rather than re-deriving it and risking a second,
+                        # differently-wrong answer.
+                        try:
+                            analysis_df.attrs["prompt_residual"] = {
+                                "amount": float(rest_sum),
+                                "total": float(total),
+                                "component_count": len(top),
+                                "listed": [l for l, _v in ranked[:3]],
+                                "remaining": [l for l, _v in rest],
+                            }
+                        except Exception:
+                            pass
         except Exception:
             residual_chi = residual_eng = ""
 
