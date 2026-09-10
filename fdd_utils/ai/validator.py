@@ -1658,6 +1658,33 @@ def _harvest_source_date_facts(df) -> List[Dict[str, Any]]:
     for bucket in ("supporting_notes", "adjacent_detail_rows"):
         for item in (attrs.get(bucket) or []):
             add(item, bucket)
+    # The multi-period analysis frame, which is what the Generator was actually
+    # shown. The amount pool has taken `analysis_cell` from here since it was
+    # measured (see _OWN_HARD_KINDS) for exactly this reason -- "the true source
+    # was a historical period that lives only in the analysis frame" -- and the
+    # date pool was never given the same frame.
+    #
+    # What that cost, on a real run with repairs enabled: an account whose main
+    # frame carries ONE period column ('...2026-06-30 annualised') cited
+    # 2024-12-31 and 2025-12-31, which are real period ends living only here.
+    # Both were flagged DATE_UNSUPPORTED and the repair rewrote them. The same
+    # happened to 2024-01-01, a real column on the analysis frame, which came
+    # out as 2024-12-31 -- a correct date turned into a wrong one, verified and
+    # shipped. Two of those repairs produced text that cannot be true: a balance
+    # "formed on 2024-12-31, with none as at 2024-12-31", and a loan maturing on
+    # the balance sheet date instead of its real term end.
+    #
+    # Widening this does not weaken the check it exists for: the invented dates
+    # in the docstring above (2232年, 1770年, 1938年) are in no frame at all.
+    analysis_df = attrs.get("prompt_analysis_df")
+    if analysis_df is not None and hasattr(analysis_df, "columns"):
+        try:
+            for col in analysis_df.columns:
+                add(col, "analysis frame column header")
+                for cell in analysis_df[col].tolist():
+                    add(cell, "analysis frame %s" % col)
+        except Exception:
+            pass
     return facts
 
 
