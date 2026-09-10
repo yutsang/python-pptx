@@ -273,6 +273,33 @@ def section_cost(folder):
                 break
 
 
+def section_evidence(folder):
+    print(f"\n{RULE}\n6b. EVIDENCE ON DISK (what each account was graded against)\n{RULE}")
+    try:
+        from fdd_utils.ai.evidence import list_evidence
+        evs = list_evidence(folder)
+    except Exception as exc:
+        print(f"  could not load: {exc}")
+        return
+    if not evs:
+        print("  no evidence/ folder -- an older run, or one that died before finalize")
+        return
+    sizes = sorted(ev.pool_size for ev in evs.values())
+    print(f"  {len(evs)} account(s); pool size min/median/max {sizes[0]}/{sizes[len(sizes)//2]}/{sizes[-1]}")
+    empty = [k for k, ev in evs.items() if not ev.facts]
+    if empty:
+        print(f"  *** EMPTY pool on {len(empty)} account(s): {empty[:6]} -- those verdicts grounded against nothing")
+    import collections
+    secs = collections.Counter(sec for ev in evs.values() for sec in (ev.shown or {}).get("sections", []))
+    print(f"  guidance sections reaching prompts: {dict(secs)}")
+    dropped = {k: ev.shown.get("components_dropped") for k, ev in evs.items()
+               if (ev.shown or {}).get("components_dropped")}
+    if dropped:
+        print(f"  prompt budget dropped components on: {dropped}")
+    big = sorted(((ev.shown or {}).get("prompt_tokens_est") or 0, k) for k, ev in evs.items())[-3:]
+    print(f"  largest Generator prompts (est.): {[(k, t) for t, k in reversed(big)]}")
+
+
 def section_extras(results):
     print(f"\n{RULE}\n7. DIRECTION FINDINGS / CLAIM CONTRACTS\n{RULE}")
     dir_n = 0
@@ -309,6 +336,7 @@ def report(folder, flags_limit):
         section_repairs(results)
         section_flags(results, flags_limit)
     section_cost(folder)
+    section_evidence(folder)
     if accounts:
         section_extras(results)
 

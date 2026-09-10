@@ -724,12 +724,33 @@ def _store_agent_result(
     content: str,
     metadata: Dict[str, Any],
     state: Optional[AccountState] = None,
+    run_state: Optional["RunState"] = None,
 ) -> None:
     # The ONLY place a stage transition is written. Popped before anything is
     # filed, so `results` is byte-identical with and without state tracking --
     # in particular an otherwise-empty metadata stays empty and still writes no
     # "<agent>_metadata" record.
     phase_events = (metadata or {}).pop("phase_events", None) if isinstance(metadata, dict) else None
+    # The account's evidence, same rule: built on a worker, filed here. The
+    # Generator stage contributes `shown` (what was rendered); the first
+    # grounding stage contributes the pool. Both merge into one record.
+    if isinstance(metadata, dict):
+        shown = metadata.pop("evidence_shown", None)
+        built = metadata.pop("evidence", None)
+        if run_state is not None and (shown is not None or built is not None):
+            current = run_state.evidence.get(mapping_key)
+            if built is not None:
+                if current is not None and current.shown and not built.shown:
+                    built.shown = dict(current.shown)
+                run_state.evidence[mapping_key] = built
+                current = built
+            if shown is not None:
+                if current is None:
+                    from .evidence import AccountEvidence
+                    current = AccountEvidence(mapping_key=mapping_key, shown=dict(shown))
+                    run_state.evidence[mapping_key] = current
+                else:
+                    current.shown = dict(shown)
 
     results[mapping_key][agent_name] = content
     if agent_name == "subagent_4":
@@ -1064,6 +1085,17 @@ def process_single_agent_item(
             logger.log_debug("PROMPT_SYSTEM", mapping_key, "Agent=%s len=%s" % (agent_name, len(system_prompt)), system_prompt)
             logger.log_debug("PROMPT_USER", mapping_key, "Agent=%s len=%s" % (agent_name, len(user_prompt)), user_prompt)
 
+        # What the Generator was actually shown, recorded once per account.
+        # Carried back on metadata (this is a worker thread) and filed on the
+        # main thread by _store_agent_result, the same way phase events are.
+        evidence_shown: Optional[Dict[str, Any]] = None
+        if agent_name == "subagent_1" and df is not None:
+            try:
+                from .evidence import describe_shown
+                evidence_shown = describe_shown(mapping_key, df, system_prompt, user_prompt)
+            except Exception as exc:  # pragma: no cover - a record is never worth the stage
+                logger.logger.warning("[Evidence] %s: could not describe prompt: %s", mapping_key, exc)
+
         if agent_name == "subagent_1" and (not system_prompt or not user_prompt):
             placeholder = f"Content generation skipped for {mapping_key}: No prompts available"
             health.record_no_prompt(mapping_key)
@@ -1174,9 +1206,35 @@ def process_single_agent_item(
                         if other_key != mapping_key
                         and prompt_manager.get_mapping_component(other_key, component="type") == statement_type
                     ]
+                # ONE pool per account. Built at the first grounding (the
+                # Auditor stage, after the Generator's render has stashed the
+                # computed remainder and the budget residual on the frame) and
+                # reused by the Validator, the retry loop and the final sweep.
+                # Before this, every stage rebuilt its own from df.attrs, and
+                # the three defects of the "checker saw less than the model"
+                # shape lived in the gaps between those rebuilds.
+                from .evidence import compile_account_evidence
+                existing = run_state.evidence.get(mapping_key) if run_state is not None else None
+                # A record with `shown` but no facts is the Generator stage's
+                # contribution, not a pool. Reusing it graded a whole replay
+                # against an EMPTY pool while every parity check stayed green
+                # (they compare key names, not verdicts). Only a built pool
+                # is reused.
+                if existing is not None and existing.facts:
+                    source = existing.source_index()
+                    evidence_built = None
+                else:
+                    evidence_built = compile_account_evidence(
+                        mapping_key, df,
+                        language=str(getattr(ai_helper, "language", "") or ""),
+                        statement_type=str(statement_type or ""),
+                        sibling_dfs=sibling_dfs,
+                        shown=(existing.shown if existing is not None else None),
+                    )
+                    source = evidence_built.source_index()
                 reviews = verify_commentary(
                     content, df, metadata.get("clause_reviews"),
-                    sibling_dfs=sibling_dfs,
+                    sibling_dfs=sibling_dfs, source=source,
                 )
                 if agent_name == "subagent_2":
                     # The Auditor has no metadata of its own; give it the same
@@ -1185,6 +1243,8 @@ def process_single_agent_item(
                     metadata = dict(metadata or {})
                     metadata["final_content"] = content
                 metadata["clause_reviews"] = reviews
+                if evidence_built is not None:
+                    metadata["evidence"] = evidence_built
             except Exception as exc:  # pragma: no cover - defensive
                 logger.logger.warning("[verify_commentary] %s: %s", mapping_key, exc)
 
@@ -1211,6 +1271,9 @@ def process_single_agent_item(
                 previous_output=previous_output,
             ),
         )
+        if evidence_shown is not None:
+            metadata = dict(metadata or {})
+            metadata["evidence_shown"] = evidence_shown
         return mapping_key, content, metadata
     except Exception as exc:
         logger.log_error(agent_name, mapping_key, exc)
@@ -1399,6 +1462,7 @@ def run_agent_stage(
                 _store_agent_result(
                     results, mapping_key, agent_name, content, metadata,
                     state=run_state.account(mapping_key) if run_state is not None else None,
+                    run_state=run_state,
                 )
                 completed += 1
                 _notify_stage_progress(
@@ -1429,6 +1493,7 @@ def run_agent_stage(
             _store_agent_result(
                 results, mapping_key, agent_name, content, metadata,
                 state=run_state.account(mapping_key) if run_state is not None else None,
+                run_state=run_state,
             )
             completed += 1
             _notify_stage_progress(
@@ -1738,9 +1803,11 @@ def run_ai_pipeline_with_progress(
     health_summary = health.as_dict()
     _log_run_health(logger, health_summary, total_items)
     results[RUN_HEALTH_KEY] = health_summary
+    evidence_files = _write_run_evidence(logger, run_state)
     results[RUN_STATE_KEY] = {
         "run_folder": logger.run_folder,
         "audit_log": _write_run_audit_log(logger, run_state, results),
+        "evidence_files": evidence_files,
         "state": run_state.as_dict(),
         "defect_codes": _defect_code_frequency(run_state),
         "eligibility_parity": dict(_ELIGIBILITY_PARITY),
@@ -1882,6 +1949,7 @@ def _account_audit_line(
     key: str,
     state: AccountState,
     result: Dict[str, Any],
+    account_evidence: Any = None,
 ) -> Dict[str, Any]:
     """One account's state path, self-contained enough to answer "why did this
     account end up like this?" read top to bottom."""
@@ -1906,6 +1974,12 @@ def _account_audit_line(
                 1 for r in reviews if isinstance(r, dict) and not r.get("supported")
             ),
             "clauses_defective": len(count_defective_clauses(reviews)),
+            # The pool the clauses were graded against and what the Generator
+            # was shown -- the half of an audit that says what a verdict was
+            # checked AGAINST. Full records in <run>/evidence/<account>.json.
+            "pool_size": (account_evidence.pool_size if account_evidence is not None else None),
+            "dates_allowed": (len(account_evidence.dates) if account_evidence is not None else None),
+            "shown": (dict(account_evidence.shown) if account_evidence is not None else None),
         },
         "spans_index": {
             "text": "agent_4_validation.final_content",
@@ -1917,13 +1991,37 @@ def _account_audit_line(
     return line
 
 
+def _write_run_evidence(logger: PipelineRunLogger, run_state: RunState) -> Dict[str, str]:
+    """One JSON file per account under <run>/evidence/: the pool it was graded
+    against and what it was shown. This is what lets a figure be traced after
+    the process ends -- the audit log says which clauses were flagged, this
+    says what they were checked AGAINST. Never worth losing a run over."""
+    written: Dict[str, str] = {}
+    folder = getattr(logger, "run_folder", None)
+    if not folder:
+        return written
+    try:
+        from .evidence import write_evidence
+        for key, ev in sorted(run_state.evidence.items()):
+            try:
+                written[key] = os.path.relpath(write_evidence(folder, ev), folder)
+            except Exception as exc:
+                logger.logger.warning("[Evidence] %s: could not write: %s", key, exc)
+    except Exception as exc:  # pragma: no cover
+        logger.logger.warning("[Evidence] skipped: %s", exc)
+    if written:
+        logger.logger.info("[Evidence] %s account(s) written under %s/evidence/", len(written), folder)
+    return written
+
+
 def _write_run_audit_log(
     logger: PipelineRunLogger,
     run_state: RunState,
     results: Dict[str, Dict[str, str]],
 ) -> str:
     lines = [
-        _account_audit_line(logger.run_id, key, state, results.get(key) or {})
+        _account_audit_line(logger.run_id, key, state, results.get(key) or {},
+                            account_evidence=run_state.evidence.get(key))
         for key, state in sorted(run_state.accounts.items())
     ]
     try:
@@ -2177,7 +2275,21 @@ def _apply_deterministic_verification(
                 if other_key != key
                 and prompt_manager.get_mapping_component(other_key, component="type") == statement_type
             ] if statement_type else None
-            reviews = verify_commentary(content, df, None, sibling_dfs=sibling_dfs)
+            # Same pool the Auditor and Validator graded against, when one was
+            # built; an account that reached neither stage gets its pool built
+            # here and filed, so it is on disk like the others.
+            existing = run_state.evidence.get(key) if run_state is not None else None
+            if existing is None or not existing.facts:
+                from .evidence import compile_account_evidence
+                built = compile_account_evidence(
+                    key, df, statement_type=str(statement_type or ""), sibling_dfs=sibling_dfs,
+                    shown=(existing.shown if existing is not None else None),
+                )
+                if run_state is not None:
+                    run_state.evidence[key] = built
+                existing = built
+            reviews = verify_commentary(content, df, None, sibling_dfs=sibling_dfs,
+                                        source=existing.source_index())
         except Exception as exc:
             logger.logger.warning("[DeterministicVerify] %s: %s", key, exc)
             continue
