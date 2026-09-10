@@ -597,7 +597,7 @@ def _numbers_in_text(text: str) -> List[float]:
 FACT_KINDS = frozenset({
     "cell", "column_total", "window_sum", "analysis_cell",
     "note_number", "annualized_note", "sibling_cell", "date",
-    "prompt_residual",
+    "prompt_residual", "period_movement",
 })
 
 #: Facts a scale classification and a repair may cite: the account's own real
@@ -886,6 +886,78 @@ class SourceIndex:
         """Float-only view of _column_facts, for callers that want the old shape."""
         return [f["value"] for f in cls._column_facts(df, skip_cols=skip_cols)]
 
+    @classmethod
+    def _period_movement_facts(cls, analysis_df, sheet) -> List[Dict[str, Any]]:
+        """Each row's change between ADJACENT periods of the analysis frame.
+
+        "净值较上年末下降0.06亿元" was flagged as a hallucination. It is not:
+        the analysis table the Generator is handed carries 净值小计 at 1.98 for
+        the prior period and 1.92 for the latest, and 1.98 - 1.92 = 0.06 exactly.
+        The model did correct arithmetic on the numbers in front of it, and the
+        pool held both endpoints but not the difference, so the one figure an FDD
+        bullet exists to state -- how much a balance moved -- could not be
+        grounded. Two of six defects on a real run were this, both ranked high,
+        both sent to a repair that could only make them worse.
+
+        Adjacent periods only, so this is the movement a reader means by
+        "较上年末": no first-to-last spans, no cross-row differences, nothing
+        between non-neighbouring columns. A row that did not move contributes
+        nothing. On the real frame above that is +63% pool values, which is a
+        genuine widening and the reason for the narrow rule -- filed under its
+        own kind and OUT of _OWN_HARD_KINDS, so a movement grounds a clause but
+        can never be cited as a repair source or steer a scale classification.
+        """
+        facts: List[Dict[str, Any]] = []
+        try:
+            # This module does not import pandas -- every frame here is
+            # duck-typed, the same way _column_facts reads one. A first cut used
+            # pd.api.types/pd.isna, which are NameErrors this except swallowed,
+            # so the whole thing silently produced nothing.
+            skip = set(cls._non_amount_cols(analysis_df))
+            columns = [c for c in list(analysis_df.columns)[1:] if c not in skip]
+            descs, row_idxs, _types = _row_provenance(analysis_df)
+
+            def column_values(col) -> Optional[List[Optional[float]]]:
+                series = analysis_df[col]
+                dtype = getattr(series, "dtype", None)
+                if dtype is not None and getattr(dtype, "kind", "") in "if":
+                    return [float(v) if v is not None and v == v else None
+                            for v in series.tolist()]
+                out: List[Optional[float]] = []
+                for cell in series.tolist():
+                    out.append(_to_float(cell) if isinstance(cell, (int, float, str)) else None)
+                return out if any(v is not None for v in out) else None
+
+            resolved = [(col, column_values(col)) for col in columns]
+            periods = [(col, vals) for col, vals in resolved if vals is not None]
+            if len(periods) < 2:
+                return facts
+            for (prev_col, prev_vals), (curr_col, curr_vals) in zip(periods, periods[1:]):
+                for pos in range(min(len(prev_vals), len(curr_vals))):
+                    prev_v, curr_v = prev_vals[pos], curr_vals[pos]
+                    if prev_v is None or curr_v is None:
+                        continue
+                    delta = curr_v - prev_v
+                    if abs(delta) < 1e-9:
+                        continue
+                    facts.append(_fact(
+                        delta, "period_movement", sheet=sheet,
+                        row_idx=row_idxs[pos] if pos < len(row_idxs) else None,
+                        row_desc=descs[pos] if pos < len(descs) else None,
+                        col_label="%s -> %s" % (prev_col, curr_col),
+                    ))
+                    # A bullet states a fall as a positive magnitude -- "下降
+                    # 0.06亿元", not "-0.06". Both signs are the same movement.
+                    facts.append(_fact(
+                        -delta, "period_movement", sheet=sheet,
+                        row_idx=row_idxs[pos] if pos < len(row_idxs) else None,
+                        row_desc=descs[pos] if pos < len(descs) else None,
+                        col_label="%s -> %s (magnitude)" % (prev_col, curr_col),
+                    ))
+        except Exception:
+            return facts
+        return facts
+
     @staticmethod
     def _non_amount_cols(df) -> tuple:
         """Columns that are not financial amounts and must never enter the pool.
@@ -966,6 +1038,8 @@ class SourceIndex:
                              "largest %s)" % (residual.get("component_count"),
                                               len(residual.get("listed") or [])),
                 ))
+            if own:
+                facts += cls._period_movement_facts(analysis_df, cls_sheet)
         # Also ground against numbers cited in the supporting notes / remarks
         # (df.attrs), e.g. registered capital "7000万美元" that never appears in
         # the numeric table. Without this they were false-flagged as hallucinations.
