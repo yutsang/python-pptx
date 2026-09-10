@@ -1032,12 +1032,18 @@ class SourceIndex:
             # classification.
             residual = analysis_df.attrs.get("prompt_residual")
             if own and isinstance(residual, dict) and residual.get("amount") is not None:
-                facts.append(_fact(
-                    residual["amount"], "prompt_residual", sheet=cls_sheet,
-                    row_desc="remainder handed to the model (total of %s component(s) less the "
-                             "largest %s)" % (residual.get("component_count"),
-                                              len(residual.get("listed") or [])),
-                ))
+                desc = ("remainder handed to the model (total of %s component(s) less the "
+                        "largest %s)" % (residual.get("component_count"),
+                                         len(residual.get("listed") or [])))
+                facts.append(_fact(residual["amount"], "prompt_residual", sheet=cls_sheet, row_desc=desc))
+                # The figure as the instruction PRINTED it, when display rounding
+                # moved it outside tolerance of the exact one (12,750 shown as
+                # "0.01 million"). The model writes what it was told to write.
+                for key_name, label in (("display_amount", desc + " [as displayed]"),
+                                        ("display_total", "component total as displayed to the model")):
+                    shown = residual.get(key_name)
+                    if shown is not None:
+                        facts.append(_fact(shown, "prompt_residual", sheet=cls_sheet, row_desc=label))
             if own:
                 facts += cls._period_movement_facts(analysis_df, cls_sheet)
         # Also ground against numbers cited in the supporting notes / remarks

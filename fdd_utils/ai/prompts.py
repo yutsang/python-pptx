@@ -575,9 +575,27 @@ class PromptEngine:
                         # issued rather than re-deriving it and risking a second,
                         # differently-wrong answer.
                         try:
+                            # Two values, on purpose. `amount` is the exact sum.
+                            # `display_amount` is what the instruction above
+                            # actually PRINTS, parsed back to base units -- and
+                            # that is the figure the model will write, because
+                            # it was told to write it. They differ whenever the
+                            # display unit is coarser than the pool's tolerance:
+                            # a real remainder of 12,750 rendered as "0.01
+                            # million" (10,000), and 10,000 against 12,750 is
+                            # outside max(500, 5%). Found by
+                            # probe_prompt_grounds_itself.py on its first run,
+                            # offline; the verifier grounds both.
+                            def _back_to_base(text: str) -> Optional[float]:
+                                try:
+                                    return float(str(text).replace(",", "")) * float(div)
+                                except Exception:
+                                    return None
                             analysis_df.attrs["prompt_residual"] = {
                                 "amount": float(rest_sum),
+                                "display_amount": _back_to_base(format_in_unit(rest_sum, div, dec)),
                                 "total": float(total),
+                                "display_total": _back_to_base(format_in_unit(total, div, dec)),
                                 "component_count": len(top),
                                 "listed": [l for l, _v in ranked[:3]],
                                 "remaining": [l for l, _v in rest],
