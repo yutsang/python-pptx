@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -170,6 +171,7 @@ def install_patches(outputs: Dict[Tuple[str, str], str], out_dir: Path) -> Archi
     pipeline._run_ai_call = provider
     pipeline.process_single_agent_item = traced_item
     pipeline.PipelineRunLogger = ScratchLogger
+    provider.log_dir = str(out_dir)
     return provider
 
 
@@ -307,6 +309,89 @@ def check_audit_log(path: str, expected: int) -> Tuple[bool, str]:
 
 # --------------------------------------------------------------------------
 
+class _Killed(BaseException):
+    """Raised by the provider to simulate the process dying mid-run. A
+    BaseException so nothing in the pipeline's `except Exception` catches it
+    and files a fallback -- a real death files nothing."""
+
+
+def _kill_and_resume(args, pipeline, provider, mapping_keys, dfs, model_type, language) -> int:
+    """Run 1 dies after N calls. Run 2 resumes from run 1's checkpoint. Run 3 is
+    uninterrupted. Runs 2 and 3 must agree on every account's final text."""
+    import hashlib
+    # The UNBOUND method: the patch goes on the class, so the replacement is
+    # called with `self` and must pass it on. Binding here would pass self
+    # twice, raise TypeError inside the pipeline's own `except Exception`,
+    # and be filed as an ordinary failed call -- the run then "completes".
+    original_call = ArchiveProvider.__call__
+    calls = {"n": 0}
+
+    def dying_call(self, *a, **kw):
+        calls["n"] += 1
+        if calls["n"] > args.kill_after:
+            raise _Killed()
+        return original_call(self, *a, **kw)
+
+    def _final_hashes(results):
+        return {k: hashlib.sha1(str((v or {}).get("final") or "").encode("utf-8")).hexdigest()
+                for k, v in results.items() if not str(k).startswith("__") and isinstance(v, dict)}
+
+    # --- run 1: dies ---------------------------------------------------------
+    ArchiveProvider.__call__ = dying_call
+    died_folder = None
+    try:
+        pipeline.run_ai_pipeline_with_progress(
+            mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, language=language,
+            use_multithreading=False,   # serial, so "after N calls" is exact
+        )
+        print("run 1 did NOT die -- --kill-after is larger than the run; nothing to test")
+        return 1
+    except _Killed:
+        pass
+    finally:
+        ArchiveProvider.__call__ = original_call
+    import glob as _glob
+    folders = sorted(_glob.glob(os.path.join(provider.log_dir, "run_*")))
+    died_folder = folders[-1]
+    lines = pipeline.PipelineRunLogger.read_checkpoints(died_folder)
+    done_keys = {l.get("mapping_key") for l in lines}
+    print(f"run 1 died after {args.kill_after} call(s): {len(lines)} checkpoint line(s), "
+          f"{len(done_keys)} account(s) with at least one completed stage, folder {os.path.basename(died_folder)}")
+    if not lines:
+        print("FAIL  no checkpoint lines were written before the kill")
+        return 1
+
+    # --- run 2: resumes ------------------------------------------------------
+    served_before = provider.served
+    resumed = pipeline.run_ai_pipeline_with_progress(
+        mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, language=language,
+        use_multithreading=False, resume_from=died_folder,
+    )
+    served_resume = provider.served - served_before
+    print(f"run 2 resumed: {served_resume} call(s) paid (run 1 had paid {args.kill_after}); "
+          f"resumed_from={os.path.basename(str((resumed.get(pipeline.RUN_STATE_KEY) or {}).get('resumed_from') or ''))}")
+
+    # --- run 3: uninterrupted, the reference -----------------------------------
+    served_before = provider.served
+    straight = pipeline.run_ai_pipeline_with_progress(
+        mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, language=language,
+        use_multithreading=False,
+    )
+    served_straight = provider.served - served_before
+    print(f"run 3 straight through: {served_straight} call(s)")
+
+    h2, h3 = _final_hashes(resumed), _final_hashes(straight)
+    same = [k for k in h3 if h2.get(k) == h3[k]]
+    diff = [k for k in h3 if h2.get(k) != h3[k]]
+    ok_text = not diff
+    ok_cost = args.kill_after + served_resume <= served_straight + len(done_keys)
+    print(f"{'PASS' if ok_text else 'FAIL'}  final text identical on {len(same)}/{len(h3)} account(s)"
+          + (f"; differs: {diff[:6]}" if diff else ""))
+    print(f"{'PASS' if ok_cost else 'FAIL'}  calls paid: died {args.kill_after} + resumed {served_resume} "
+          f"vs straight {served_straight} (resume re-pays at most the stage in flight per account)")
+    return 0 if (ok_text and ok_cost) else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("databook", help="the .xlsx this run was produced from (REQUIRED — see module docstring)")
@@ -315,6 +400,10 @@ def main() -> int:
     ap.add_argument("--sheet", default=None, help="Financials sheet; auto-resolved when omitted")
     ap.add_argument("--out", default=None, help="where the replay's run folder goes (default: a temp dir)")
     ap.add_argument("--no-threads", action="store_true", help="run the stages serially")
+    ap.add_argument("--kill-after", type=int, default=0,
+                    help="R2 resume test: kill the run after this many served calls, then resume "
+                         "it from its own checkpoint and compare per-account final text against "
+                         "an uninterrupted replay. Zero tokens either way.")
     ap.add_argument("--vocab-runs", type=int, default=0,
                     help="how many archived results.yml to read for the results-key baseline (0 = all)")
     args = ap.parse_args()
@@ -343,6 +432,9 @@ def main() -> int:
     language = meta.get("language") or "Chi"
     model_type = meta.get("model_type") or "deepseek"
     print(f"replaying {len(mapping_keys)} account(s) | language={language} | model_type={model_type}")
+
+    if args.kill_after:
+        return _kill_and_resume(args, pipeline, provider, mapping_keys, dfs, model_type, language)
 
     results = pipeline.run_ai_pipeline_with_progress(
         mapping_keys=mapping_keys,

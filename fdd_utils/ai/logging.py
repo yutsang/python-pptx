@@ -9,7 +9,7 @@ import logging
 import math
 import os
 from datetime import datetime
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import yaml
 
@@ -237,6 +237,50 @@ class PipelineRunLogger:
             "prompt_cache_miss_tokens": result.get("prompt_cache_miss_tokens"),
             "prompt_cache_hit_ratio": result.get("prompt_cache_hit_ratio"),
         }
+
+    def checkpoint_stage(self, mapping_key: str, agent_name: str,
+                         account_result: Dict[str, Any], state_dict: Dict[str, Any]) -> None:
+        """Append one line to ``checkpoint.jsonl``: the account's result dict and
+        state AS THEY STAND after this stage was filed.
+
+        ``results`` and ``data.yml`` are written once, at finalize, so a run
+        that dies at the eighteenth account of the Auditor stage used to restart
+        from zero -- every Generator call paid again. Written on the main
+        thread only (the same rule phase transitions follow), after
+        _store_agent_result has filed the stage, so a line is never a
+        half-state. Appended, not rewritten: a die mid-append loses one line,
+        not the file. Never worth losing a run over."""
+        try:
+            path = os.path.join(self.run_folder, "checkpoint.jsonl")
+            record = coerce_plain({
+                "mapping_key": mapping_key,
+                "agent_name": agent_name,
+                "result": account_result,
+                "state": state_dict,
+            })
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as exc:  # pragma: no cover
+            self.logger.warning("[Checkpoint] %s/%s not written: %s", mapping_key, agent_name, exc)
+
+    @staticmethod
+    def read_checkpoints(run_folder: str) -> List[Dict[str, Any]]:
+        """Every complete line of a run's checkpoint.jsonl, in order. A
+        truncated last line (the run died mid-append) is skipped, not fatal."""
+        path = os.path.join(run_folder, "checkpoint.jsonl")
+        out: List[Dict[str, Any]] = []
+        if not os.path.exists(path):
+            return out
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    continue
+        return out
 
     def write_audit_log(self, lines: Iterable[Dict[str, Any]]) -> str:
         """Write ``audit.jsonl`` — one line per account, each line that

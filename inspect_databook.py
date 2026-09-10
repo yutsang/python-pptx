@@ -1969,6 +1969,7 @@ def run_ai_checks(
     limit: Optional[int] = None, workers: Optional[int] = None,
     accounts: Optional[List[str]] = None,
     resolution: Optional[Dict[str, Any]] = None,
+    resume_from: Optional[str] = None,
 ) -> Dict[str, Any]:
     _hr("5-7. AI-DEPENDENT CHECKS (running full pipeline once — this costs real tokens/time)")
     from fdd_utils.ai import run_ai_pipeline_with_progress, SUBAGENT_SEQUENCE
@@ -2155,7 +2156,7 @@ def run_ai_checks(
             # same databook took minutes longer here than in the UI.
             mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, model_name=model_name,
             language=language, use_multithreading=True, max_workers=effective_workers,
-            progress_callback=_tqdm_progress,
+            progress_callback=_tqdm_progress, resume_from=resume_from,
         )
     finally:
         stop_refresh.set()
@@ -2872,7 +2873,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                  workers: Optional[int] = None, dump_tab_name: Optional[str] = None,
                  accounts: Optional[List[str]] = None, export_pptx: bool = False,
                  pptx_out_dir: Optional[str] = None, financials_from: Optional[str] = None,
-                 financials_sheet: Optional[str] = None) -> Dict[str, Any]:
+                 financials_sheet: Optional[str] = None, resume_from: Optional[str] = None) -> Dict[str, Any]:
     _hr(f"INSPECTING: {path}")
 
     # Resolved and checked before anything expensive runs: with --run-ai the
@@ -3045,7 +3046,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         ai_summary = run_ai_checks(
             path, selected_sheet_for_ai, dfs, entity_name, model_type, model_name, language,
             combined_bs_recon, combined_is_recon, limit=limit, workers=workers,
-            accounts=accounts, resolution=resolution_for_insight,
+            accounts=accounts, resolution=resolution_for_insight, resume_from=resume_from,
         )
         summary["ai"] = ai_summary
 
@@ -3232,6 +3233,11 @@ def main() -> int:
                          "the Financials summary from there while breakdown tabs (dfs) still come "
                          "from `path` as normal. Requires --financials-sheet. Only valid when "
                          "`path` is a single file.")
+    ap.add_argument("--resume", default=None, metavar="RUN_ID",
+                    help="with --run-ai: seed every stage a previous run completed from its "
+                         "checkpoint.jsonl (fdd_utils/logs/run_<RUN_ID>/), so only the stages it "
+                         "did not reach are paid for again. A run that died at the eighteenth "
+                         "account used to restart from zero. One databook at a time.")
     ap.add_argument("--financials-sheet", default=None, metavar="SHEET_NAME",
                     help="sheet name within --financials-from to use as the Financials summary "
                          "(e.g. '南通通海Financials'). No auto-matching by entity name -- named "
@@ -3441,7 +3447,8 @@ def main() -> int:
                                    dump_tab_name=args.dump_tab, accounts=accounts_filter,
                                    export_pptx=args.export_pptx, pptx_out_dir=args.pptx_out,
                                    financials_from=financials_from,
-                                   financials_sheet=financials_sheet)
+                                   financials_sheet=financials_sheet,
+                                   resume_from=args.resume)
             summaries.append(summary)
         except Exception as exc:
             print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")

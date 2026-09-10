@@ -725,6 +725,7 @@ def _store_agent_result(
     metadata: Dict[str, Any],
     state: Optional[AccountState] = None,
     run_state: Optional["RunState"] = None,
+    logger: Optional[PipelineRunLogger] = None,
 ) -> None:
     # The ONLY place a stage transition is written. Popped before anything is
     # filed, so `results` is byte-identical with and without state tracking --
@@ -802,6 +803,14 @@ def _store_agent_result(
             state.transition(event["to"], event.get("cause", ""))
         if event.get("degraded"):
             state.note_degraded(event["degraded"])
+    # The stage is filed and the transitions applied: this is the one moment
+    # the account's result and state agree, so it is the one moment to
+    # checkpoint them.
+    if logger is not None:
+        logger.checkpoint_stage(
+            mapping_key, agent_name, results.get(mapping_key) or {},
+            state.as_dict() if state is not None else {},
+        )
 
 
 def apply_house_style(content: str, language: str, statement_type: str = "") -> str:
@@ -1414,12 +1423,20 @@ def run_agent_stage(
     for key in mapping_keys:
         if key not in dfs or key not in results:
             continue
+        # A resumed run seeds results[key][agent] and stages_done from the
+        # checkpoint; an account that already has THIS stage is not run again.
+        # Applied to both lists so the parity check below stays meaningful. In
+        # a fresh run neither has the stage yet, so nothing changes.
+        already_done = agent_name in results[key] and str(results[key].get(agent_name) or "").strip() != ""
         if not previous_agent or previous_agent in results[key]:
-            legacy_eligible_keys.append(key)
+            if not already_done:
+                legacy_eligible_keys.append(key)
         state = run_state.account(key) if run_state is not None else None
         if state is None:
             continue
         if previous_agent and previous_agent not in state.stages_done:
+            continue
+        if already_done and agent_name in state.stages_done:
             continue
         eligible_keys.append(key)
 
@@ -1462,7 +1479,7 @@ def run_agent_stage(
                 _store_agent_result(
                     results, mapping_key, agent_name, content, metadata,
                     state=run_state.account(mapping_key) if run_state is not None else None,
-                    run_state=run_state,
+                    run_state=run_state, logger=logger,
                 )
                 completed += 1
                 _notify_stage_progress(
@@ -1493,7 +1510,7 @@ def run_agent_stage(
             _store_agent_result(
                 results, mapping_key, agent_name, content, metadata,
                 state=run_state.account(mapping_key) if run_state is not None else None,
-                run_state=run_state,
+                run_state=run_state, logger=logger,
             )
             completed += 1
             _notify_stage_progress(
@@ -1584,6 +1601,72 @@ def settle_subtable_selection(
     return dropped
 
 
+def _seed_from_checkpoint(
+    resume_from: str,
+    logger: PipelineRunLogger,
+    results: Dict[str, Dict[str, str]],
+    run_state: RunState,
+    mapping_keys: List[str],
+) -> Optional[str]:
+    """Replay a previous run's checkpoint.jsonl into results and RunState.
+
+    Each checkpoint line is an account's result dict and state as they stood
+    after one stage was filed; the LAST line per account wins, and only
+    accounts in this run's mapping_keys are seeded. stages_done drives the
+    eligibility test in run_agent_stage, so a seeded stage is simply not run
+    again. The earlier run's evidence files are loaded too, so a resumed
+    account is graded against the pool it was already graded against.
+    Returns the folder that was used, or None when nothing was seeded.
+    """
+    folder = resume_from
+    if not os.path.isdir(folder):
+        candidate = os.path.join(logger.log_dir, "run_%s" % str(resume_from).replace("run_", ""))
+        folder = candidate if os.path.isdir(candidate) else ""
+    if not folder:
+        logger.logger.warning("[Resume] no run folder for %r; starting from zero", resume_from)
+        return None
+    lines = PipelineRunLogger.read_checkpoints(folder)
+    if not lines:
+        logger.logger.warning("[Resume] %s has no checkpoint lines; starting from zero", folder)
+        return None
+    wanted = set(mapping_keys)
+    latest: Dict[str, Dict[str, Any]] = {}
+    for line in lines:
+        key = str(line.get("mapping_key") or "")
+        if key in wanted:
+            latest[key] = line
+    seeded_stages = 0
+    for key, line in latest.items():
+        result = line.get("result") or {}
+        state_dict = line.get("state") or {}
+        if not isinstance(result, dict):
+            continue
+        results[key] = dict(result)
+        state = run_state.account(key)
+        if state is not None and isinstance(state_dict, dict):
+            state.stages_done = set(state_dict.get("stages_done") or [])
+            state.phase = str(state_dict.get("phase") or state.phase)
+            state.degraded = list(state_dict.get("degraded") or [])
+            state.transitions = list(state_dict.get("transitions") or [])
+            state.attempts = list(state_dict.get("attempts") or [])
+            state.defects = list(state_dict.get("defects") or [])
+            state.repairs = list(state_dict.get("repairs") or [])
+            state.contract = dict(state_dict.get("contract") or {})
+            seeded_stages += len(state.stages_done)
+    try:
+        from .evidence import list_evidence
+        for key, ev in list_evidence(folder).items():
+            if key in latest:
+                run_state.evidence[key] = ev
+    except Exception as exc:
+        logger.logger.warning("[Resume] evidence not reloaded: %s", exc)
+    logger.logger.info(
+        "[Resume] seeded %d account(s), %d completed stage(s), from %s",
+        len(latest), seeded_stages, folder,
+    )
+    return folder
+
+
 def run_ai_pipeline_with_progress(
     mapping_keys: List[str],
     dfs: Dict[str, pd.DataFrame],
@@ -1595,8 +1678,15 @@ def run_ai_pipeline_with_progress(
     progress_callback: Optional[Callable[..., None]] = None,
     user_comments: Optional[Dict[str, str]] = None,
     model_name: Optional[str] = None,
+    resume_from: Optional[str] = None,
 ) -> Dict[str, Dict[str, str]]:
-    """Run the 4-agent FDD pipeline with optional progress callbacks."""
+    """Run the 4-agent FDD pipeline with optional progress callbacks.
+
+    `resume_from`: a previous run id (or run folder) whose checkpoint.jsonl
+    seeds every stage that already completed, so only the stages the earlier
+    run did not reach are paid for again. The new run gets its own folder; the
+    seed is recorded on __run__["resumed_from"].
+    """
     # Normalise UI language codes ("Chn" → "Chi") to match prompt-file keys.
     language = normalize_language_code(language)
     settle_subtable_selection(mapping_keys, dfs)
@@ -1635,6 +1725,10 @@ def run_ai_pipeline_with_progress(
         logger.logger.warning("[CrossAccountFacts] skipped: %s", exc)
         run_state.facts = {}
     health = _RunHealth()
+
+    resumed_from = None
+    if resume_from:
+        resumed_from = _seed_from_checkpoint(resume_from, logger, results, run_state, mapping_keys)
 
     logger.logger.info(
         "Starting FDD pipeline with %s items | model=%s | language=%s | multithreading=%s",
@@ -1806,6 +1900,7 @@ def run_ai_pipeline_with_progress(
     evidence_files = _write_run_evidence(logger, run_state)
     results[RUN_STATE_KEY] = {
         "run_folder": logger.run_folder,
+        "resumed_from": resumed_from,
         "audit_log": _write_run_audit_log(logger, run_state, results),
         "evidence_files": evidence_files,
         "state": run_state.as_dict(),
