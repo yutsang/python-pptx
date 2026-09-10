@@ -906,6 +906,12 @@ class SourceIndex:
         genuine widening and the reason for the narrow rule -- filed under its
         own kind and OUT of _OWN_HARD_KINDS, so a movement grounds a clause but
         can never be cited as a repair source or steer a scale classification.
+
+        Price paid, measured (replay_verification.py --decoys, same workbook,
+        same archived run, this method monkeypatched to return [] for the
+        control): overall false-accept 30.1% -> 31.8%, +1.7pp across 2,455
+        decoys; the worst single class (scale_div10) 35.2% -> 37.3%. Well
+        under the 40% ceiling the plan set for narrowing it to total rows only.
         """
         facts: List[Dict[str, Any]] = []
         try:
