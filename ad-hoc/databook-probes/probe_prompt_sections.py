@@ -76,24 +76,29 @@ def prompt_sizes(dfs, language, pe, limits=(8192, 16384, 32768)):
         except Exception as exc:  # noqa: BLE001
             rows.append((-1, key, f"RENDER FAILED: {type(exc).__name__}: {exc}", 0))
             continue
-        rows.append((est(blob), key, "", len(df) if df is not None else 0))
+        cjk = len(AIClient._CJK_CHAR_RE.findall(blob))
+        rows.append((est(blob), key, "", len(blob), cjk / max(len(blob), 1)))
     rows.sort(reverse=True)
 
     print("\n" + "=" * 78)
     print("  PROMPT SIZE PER ACCOUNT (subagent_1, markdown) — estimated tokens")
     print("=" * 78)
-    print(f"  {'tokens':>8}  {'rows':>5}  account")
-    for tokens, key, err, nrows in rows:
+    print(f"  {'tokens':>8}  {'chars':>8}  {'CJK':>5}  account")
+    for tokens, key, err, chars, share in rows:
         if err:
-            print(f"  {'-':>8}  {'-':>5}  {key}  {err}")
+            print(f"  {'-':>8}  {'-':>8}  {'-':>5}  {key}  {err}")
             continue
-        over = [str(lim) for lim in limits if tokens > lim]
+        over = [f"{lim // 1024}k" for lim in limits if tokens > lim]
         flag = ("   *** OVER " + ", ".join(over) + " ***") if over else ""
-        print(f"  {tokens:>8,}  {nrows:>5}  {key}{flag}")
+        print(f"  {tokens:>8,}  {chars:>8,}  {share:>4.0%}  {key}{flag}")
     real = [r for r in rows if r[0] >= 0]
     if real:
         top = real[0]
-        print(f"\n  largest: {top[1]} at {top[0]:,} tokens from {top[3]} extracted row(s).")
+        # The CJK share is printed because it is the one number the estimate
+        # turns on and the one nobody had measured: len/4 assumed there was no
+        # CJK at all, and put a prompt the provider rejected at 32,768 tokens
+        # comfortably inside it. See AIClient._estimate_text_tokens.
+        print(f"\n  largest: {top[1]} at {top[0]:,} tokens ({top[3]:,} chars, {top[4]:.0%} CJK).")
         print("  A prompt over the provider's input limit comes back as 'Range of input")
         print("  length exceeds limited' and that account ships a deterministic bullet.")
 

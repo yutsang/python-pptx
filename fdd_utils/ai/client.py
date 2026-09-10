@@ -232,12 +232,45 @@ class AIClient:
             'prompt_cache_miss_tokens': getattr(usage, 'prompt_cache_miss_tokens', None),
         }
 
+    # CJK ideographs plus the fullwidth/CJK punctuation blocks that Chinese
+    # prompts are full of (，。（）：《》 and the fullwidth digits).
+    _CJK_CHAR_RE = _re_client.compile(
+        r"[　-〿㐀-䶿一-鿿豈-﫿＀-￯]"
+    )
+
     @staticmethod
     def _estimate_text_tokens(text: Optional[str]) -> int:
+        """Rough token count, counting CJK separately from everything else.
+
+        len/4 is the English heuristic and it is badly wrong on a Chinese
+        prompt. What that cost, on a real run: the provider rejected a call
+        with "Range of input length should be [1, 32768]" while this function
+        put that same prompt at 25,633 -- comfortably inside the limit. The
+        report and the provider disagreed, and the report was believed.
+
+        The same run bounds the true rate, because one prompt failed and the
+        next-largest did not:
+
+            应付账款   67,288 chars  succeeded  ->  rate <= 32768/67288 = 0.487
+            货币资金  102,529 chars  FAILED     ->  rate >  32768/102529 = 0.320
+
+        So the real rate is between 0.32 and 0.49 tokens per character where
+        this assumed 0.25. Counting a CJK character as one token and
+        everything else at the usual four-per-token lands inside that band for
+        any CJK share between roughly a fifth and a third of the text, which is
+        what these prompts look like -- Chinese labels and prose around ASCII
+        numbers, dates and markdown tables.
+
+        Still an estimate, and deliberately the pessimistic one: over-stating a
+        prompt flags a risk early, while under-stating it is what hid this. It
+        feeds reporting and log metadata only -- no budget, no gate, nothing
+        that decides whether a call is made.
+        """
         normalized = str(text or "").strip()
         if not normalized:
             return 0
-        return max(1, math.ceil(len(normalized) / 4))
+        cjk = len(AIClient._CJK_CHAR_RE.findall(normalized))
+        return max(1, math.ceil(cjk + (len(normalized) - cjk) / 4))
 
     def _build_logging_metadata(
         self,
