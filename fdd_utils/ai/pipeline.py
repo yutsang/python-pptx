@@ -165,10 +165,23 @@ class _RunHealth:
                 "accounts_without_prompt": sorted(self.no_prompt_accounts),
                 "first_failure": self.first_failure,
                 "zero_successful_calls": self.calls_succeeded == 0,
-                # The one flag a caller may refuse to export on. Deliberately
-                # NOT an exception: a degraded deck is sometimes exactly what
-                # the user asked to look at, so the decision stays with them.
-                "safe_to_export": self.calls_succeeded > 0,
+                # Deliberately NOT an exception: a degraded deck is sometimes
+                # exactly what the user asked to look at, so the decision stays
+                # with them. Nothing gates on this -- the export path gates on
+                # zero_successful_calls -- so it exists to be READ, and it has
+                # to mean what its name says. It used to be calls_succeeded > 0,
+                # which is just the negation of zero_successful_calls, so a run
+                # that shipped an account as a deterministic fallback bullet
+                # reported safe_to_export True on the same screen as its own
+                # insight summary saying "Do not send this deck". Two fields
+                # disagreeing about the same run is worse than either answer.
+                "safe_to_export": (
+                    self.calls_succeeded > 0
+                    and not self.fallback_accounts
+                    and not self.passthrough_accounts
+                    and not self.error_text_accounts
+                    and not self.no_prompt_accounts
+                ),
             }
 
 

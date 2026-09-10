@@ -212,16 +212,34 @@ def section_cost(folder):
         print("  data.yml not written yet (it is written at the very end of a run)")
         return
     per_stage = collections.defaultdict(lambda: [0, 0, 0, 0])  # prompt, completion, cached, calls
-    for account in (data.get("processing_results") or {}).values():
+    # Provider-reported counts first, the local estimate second. A provider that
+    # returns no usage block leaves prompt_tokens None, and reading only that
+    # printed a table of zeros -- on the very run whose failure was
+    # "Range of input length should be [1, 32768]", i.e. the one run where
+    # prompt size was the whole question. estimated_prompt_tokens is computed
+    # from the prompt text before the call, so it is there either way.
+    biggest = []
+    sources = collections.Counter()
+    for key, account in (data.get("processing_results") or {}).items():
         for agent, rec in (account or {}).items():
             if not isinstance(rec, dict):
                 continue
+            prompt = rec.get("prompt_tokens")
+            if prompt is None:
+                prompt = rec.get("estimated_prompt_tokens") or 0
+                sources["estimated"] += 1
+            else:
+                sources[rec.get("token_usage_source") or "provider"] += 1
+            completion = (rec.get("completion_tokens")
+                          if rec.get("completion_tokens") is not None
+                          else rec.get("estimated_output_tokens") or 0)
             slot = per_stage[agent]
-            slot[0] += rec.get("prompt_tokens") or 0
-            slot[1] += rec.get("completion_tokens") or 0
+            slot[0] += prompt or 0
+            slot[1] += completion or 0
             slot[2] += (rec.get("prompt_cache_hit_tokens")
                         or rec.get("cached_prompt_tokens") or 0)
             slot[3] += 1
+            biggest.append((prompt or 0, key, agent))
     tp = tc = tk = 0
     print(f"  {'stage':<14}{'calls':>7}{'prompt tok':>13}{'completion':>12}{'cached':>11}{'cache %':>9}")
     for agent, (p, c, k, n) in sorted(per_stage.items()):
@@ -230,9 +248,29 @@ def section_cost(folder):
     if tp:
         print(f"  {'TOTAL':<14}{'':>7}{tp:>13,}{tc:>12,}{tk:>11,}{100*tk/max(tp,1):>8.1f}%")
         print(f"\n  prompt share of all tokens: {100*tp/max(tp+tc,1):.1f}%")
+        print(f"  counted from: {dict(sources)}"
+              + ("   (estimated = the provider returned no usage block)"
+                 if sources.get("estimated") else ""))
         if tk == 0:
             print("  cached = 0 everywhere: either the provider reports no cache")
             print("  counters, or nothing is being cached. Both are worth knowing.")
+
+    # The account that failed on context length is not the one with the most
+    # tokens overall, it is the one whose SINGLE prompt was longest -- so name
+    # them rather than leaving a per-stage total to be divided by hand.
+    if biggest:
+        biggest.sort(reverse=True)
+        print("\n  largest single prompts (a provider limit applies to ONE call):")
+        for tokens, key, agent in biggest[:6]:
+            print(f"    {tokens:>8,}  {key} / {agent}")
+        top = biggest[0][0]
+        for limit in (32768, 16384, 8192):
+            if top > limit * 0.8:
+                print(f"\n    the largest is {100 * top / limit:.0f}% of a {limit:,}-token"
+                      f" context window. A call over the limit comes back as\n"
+                      f"    'Range of input length exceeds limited' and that account"
+                      f" falls back to a deterministic bullet.")
+                break
 
 
 def section_extras(results):
