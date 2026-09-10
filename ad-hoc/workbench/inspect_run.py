@@ -273,6 +273,56 @@ def section_cost(folder):
                 break
 
 
+_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) - .*?INFO - \[(\w+)\] Processed: (.+?) \| Duration: ([\d.]+)s")
+
+
+def section_timeline(log_text):
+    """R3-a: how much of the wall clock is the stage BARRIER, as opposed to
+    LLM time or retries. All accounts go through the Generator before any goes
+    through the Auditor; workers sit idle from the moment the last-but-one
+    Generator finishes until the last one does. This section measures that
+    idle from the log's own timestamps, so the decision to chain stages
+    per-account (or not) rests on a number rather than a hunch."""
+    import datetime as _dt
+    print(f"\n{RULE}\n6c. STAGE TIMELINE (barrier idle vs LLM time)\n{RULE}")
+    events = []
+    for line in log_text.splitlines():
+        m = _TS.match(line)
+        if not m:
+            continue
+        ts = _dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S") + _dt.timedelta(milliseconds=int(m.group(2)))
+        events.append((ts, m.group(3), m.group(4), float(m.group(5))))
+    if not events:
+        print("  no '[Stage] Processed:' lines with timestamps in processing.log")
+        return
+    by_stage = {}
+    for ts, stage, acct, dur in events:
+        by_stage.setdefault(stage, []).append((ts, dur))
+    order = [s for s in ("Generator", "Auditor", "Refiner", "Validator") if s in by_stage]
+    wall = (events[-1][0] - min(ts for ts, *_ in events)).total_seconds()
+    print(f"  {'stage':<11}{'calls':>6}{'first done':>12}{'last done':>11}{'spread':>8}{'sum LLM':>9}{'tail idle*':>11}")
+    total_idle = 0.0
+    for i, stage in enumerate(order):
+        rows = sorted(by_stage[stage])
+        first, last = rows[0][0], rows[-1][0]
+        spread = (last - first).total_seconds()
+        llm = sum(d for _t, d in rows)
+        # tail idle: from the second-to-last completion to the last one, the
+        # window in which at most one worker is busy while the rest wait for
+        # the barrier. A lower bound on barrier cost.
+        tail = (rows[-1][0] - rows[-2][0]).total_seconds() if len(rows) > 1 else 0.0
+        total_idle += tail
+        print(f"  {stage:<11}{len(rows):>6}{first.strftime('%H:%M:%S'):>12}{last.strftime('%H:%M:%S'):>11}"
+              f"{spread:>8.1f}{llm:>9.1f}{tail:>11.1f}")
+    print(f"\n  wall clock (first start to last completion): {wall:.1f}s")
+    print(f"  *tail idle summed over stages: {total_idle:.1f}s = {100*total_idle/max(wall,1):.0f}% of wall clock")
+    print("  Rule from the plan: chain stages per account only if this is over 20%.")
+    if wall and 100 * total_idle / wall > 20:
+        print("  -> over 20%: R3 step 2 (per-account chaining) is worth building.")
+    else:
+        print("  -> under 20%: the barrier is not where the time goes; R3 stops here.")
+
+
 def section_evidence(folder):
     print(f"\n{RULE}\n6b. EVIDENCE ON DISK (what each account was graded against)\n{RULE}")
     try:
@@ -336,6 +386,7 @@ def report(folder, flags_limit):
         section_repairs(results)
         section_flags(results, flags_limit)
     section_cost(folder)
+    section_timeline(log_text)
     section_evidence(folder)
     if accounts:
         section_extras(results)
