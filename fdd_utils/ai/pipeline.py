@@ -1744,6 +1744,22 @@ def run_ai_pipeline_with_progress(
         "state": run_state.as_dict(),
         "defect_codes": _defect_code_frequency(run_state),
         "eligibility_parity": dict(_ELIGIBILITY_PARITY),
+        # The FACT half, persisted. RunState.as_dict() carries only the process
+        # half -- which phase each account reached, what was flagged, what was
+        # repaired -- and that is everything an audit of the PIPELINE needs. It
+        # is not enough to audit a FIGURE, or to answer a later question about
+        # one, because it says nothing about what the databook held: facts were
+        # computed before the stage loop, read into the prompts, and dropped
+        # when the process ended. Anything asking "where did this number come
+        # from" afterwards had to re-open the workbook and re-derive it, with no
+        # guarantee of deriving it the same way.
+        #
+        # `totals` is skipped on purpose: its keys are (account, period) tuples,
+        # which do not survive yaml.dump, and `series` is the same numbers keyed
+        # by strings. `links` is kept whole, failed edges included, because each
+        # edge carries the numeric test it passed or failed -- an edge that
+        # FAILED is the more interesting one to an auditor.
+        "facts": _persistable_facts(run_state.facts),
     }
 
     logger.finalize(results)
@@ -1830,6 +1846,24 @@ def _clause_defect_records(reviews: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "clause": str(review.get("clause") or "")[:200],
         })
     return records
+
+
+_PERSISTED_FACT_SECTIONS = (
+    "series", "labels", "periods", "full_periods", "statement_types", "links", "sources",
+)
+
+
+def _persistable_facts(facts: Any) -> Dict[str, Any]:
+    """The yaml-safe sections of build_cross_account_facts' return value.
+
+    Empty dict when facts were never built (the builder is wrapped in a
+    try/except at the call site, so a workbook it chokes on still runs).
+    """
+    if not isinstance(facts, dict):
+        return {}
+    return coerce_plain({
+        name: facts[name] for name in _PERSISTED_FACT_SECTIONS if name in facts
+    })
 
 
 def _defect_code_frequency(run_state: RunState) -> Dict[str, int]:
