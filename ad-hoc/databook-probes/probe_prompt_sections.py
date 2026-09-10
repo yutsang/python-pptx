@@ -6,6 +6,7 @@ rendered prompt (no scientific notation; trend-summary figures in the same unit
 as the analysis table printed above them).
 
     python ad-hoc/databook-probes/probe_prompt_sections.py <databook.xlsx> [entity] [--before]
+    python ad-hoc/databook-probes/probe_prompt_sections.py <databook.xlsx> --dump 固定资产
 
 --before strips attrs["prompt_analysis_df"] from every account to reproduce the
 pre-M0 behaviour, so the same run prints a comparable BEFORE matrix.
@@ -20,7 +21,6 @@ import sys
 # directory, so put the repo root on it here instead of asking the caller.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import re
-import sys
 
 from fdd_utils.financial_display_format import format_in_unit
 from fdd_utils.workbook import build_trend_summary, process_workbook_data
@@ -181,7 +181,29 @@ def check_formatting(dfs, language, pe):
         print(f"    {key}: {detail}")
 
 
-def main(path, entity="", before=False):
+def dump_prompt(dfs, language, pe, want):
+    """Print one account's Generator prompt verbatim.
+
+    The question this exists for keeps coming back in the same shape: the
+    verifier flagged a figure, and deciding whether that flag is right needs to
+    know what number the model was actually GIVEN. A flagged 0.06亿元 is a
+    false positive if the prompt handed over 0.06亿元 and a real defect if the
+    prompt said 643.2万元 and the model rounded it into a different number.
+    Nothing else in this repo prints the prompt, so that was being argued from
+    inference. Free: renders, calls nothing.
+    """
+    key = next((k for k in dfs if str(k).strip() == str(want).strip()), None)
+    if key is None:
+        print(f"\nno account named {want!r}. Present: {sorted(dfs)}")
+        return
+    print("\n" + "=" * 78)
+    print(f"  GENERATOR PROMPT VERBATIM — {key}")
+    print("=" * 78)
+    print(render(pe, language, key, dfs[key], "markdown"))
+    print("=" * 78)
+
+
+def main(path, entity="", before=False, dump=""):
     state = process_workbook_data(temp_path=path, entity_name=entity, selected_sheet=None)
     dfs = state["dfs"]
     language = state.get("language") or "Eng"
@@ -204,6 +226,10 @@ def main(path, entity="", before=False):
           "| has nested prompt_analysis_df:", first.attrs.get("prompt_analysis_df") is not None,
           "| has significant_movements:", first.attrs.get("significant_movements") is not None,
           "| component_descriptions:", len(first.attrs.get("component_descriptions") or []))
+
+    if dump:
+        dump_prompt(dfs, language, pe, dump)
+        return
 
     show("BEFORE (attach stripped)" if before else "AFTER (shipped code)",
          matrix(dfs, language, pe, keys))
@@ -239,4 +265,10 @@ def main(path, entity="", before=False):
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if a != "--before"]
-    main(args[0], args[1] if len(args) > 1 else "", before="--before" in sys.argv)
+    _dump = ""
+    if "--dump" in sys.argv:
+        _i = sys.argv.index("--dump")
+        _dump = sys.argv[_i + 1] if _i + 1 < len(sys.argv) else ""
+        args = [a for a in args if a not in ("--dump", _dump)]
+    main(args[0], args[1] if len(args) > 1 else "",
+         before="--before" in sys.argv, dump=_dump)
