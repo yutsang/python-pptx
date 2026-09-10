@@ -358,6 +358,48 @@ class PromptEngine:
         return cleaned_rows
 
     @staticmethod
+    def _compact_table_linked_remarks(rows: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        """The same observations without the raw dict list behind them.
+
+        Each rhs_columns entry carried two renderings of one thing: `summary`
+        ("造价咨询费 | 2024-05-31: 29375.0; mapping: 工程款; 资本化: Y") and
+        `remarks`, the list of dicts the summary was built from, with three
+        metadata fields per item that are nearly always empty. Both went into
+        the prompt as a markdown table, so the model read every observation
+        twice, the second time as Python repr. Measured on a real account
+        (33 rhs entries): summary 2,413 characters, remarks 14,208 -- and the
+        表格关联备注 block was 64% of the largest prompt on that workbook,
+        10,653 of 16,762 tokens, against 1,101 for the analysis table it was
+        supposed to annotate. This is the block that pushed a 65-component
+        account past the provider's input limit and left it with no commentary.
+
+        Kept, losslessly: the metadata that is ever non-empty is folded into a
+        short `labels` column ("Detail 6=审计调整; Detail 10=审定数"), because
+        which column is the audited figure is information. Nothing else in
+        `remarks` is not already in `summary`. df.attrs is untouched, so the
+        verifier's note-number pool (which walks attrs, not this list) does not
+        move.
+        """
+        out: list[Dict[str, Any]] = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            slim = {k: v for k, v in row.items() if k != "remarks"}
+            labels: list[str] = []
+            for item in row.get("remarks") or []:
+                if not isinstance(item, dict):
+                    continue
+                tags = [str(item.get(k) or "").strip()
+                        for k in ("table_header", "indicative_adjusted_row", "date_row")]
+                tags = [t for t in tags if t]
+                if tags:
+                    labels.append("%s=%s" % (item.get("header"), "/".join(dict.fromkeys(tags))))
+            if labels:
+                slim["labels"] = "; ".join(labels)
+            out.append(slim)
+        return out
+
+    @staticmethod
     def _table_linked_remarks(df: Optional[pd.DataFrame]) -> list[Dict[str, Any]]:
         if not isinstance(df, pd.DataFrame):
             return []
@@ -2009,7 +2051,9 @@ class PromptEngine:
         normalized_supporting_notes = self._normalize_prompt_value(supporting_notes, language)
         prompt_ready_adjacent_detail_rows = self._prompt_ready_adjacent_detail_rows(adjacent_detail_rows, format_language)
         normalized_adjacent_detail_rows = self._normalize_prompt_value(prompt_ready_adjacent_detail_rows, language)
-        normalized_table_linked_remarks = self._normalize_prompt_value(table_linked_remarks, language)
+        normalized_table_linked_remarks = self._normalize_prompt_value(
+            self._compact_table_linked_remarks(table_linked_remarks), language,
+        )
         normalized_rhs_remark_summary = self._normalize_prompt_value(rhs_remark_summary, language)
         normalized_user_comment = self._normalize_prompt_value(str(user_comment or "").strip(), language)
         # The unit goes on the table's HEADING, once, the way the deliverable's
