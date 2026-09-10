@@ -5,15 +5,24 @@ results.yml and audit.jsonl. No databook, no LLM call, no cost. Safe to run
 while a run is still going; anything not written yet is reported as missing
 rather than crashing.
 
-    PYTHONPATH=. python ad-hoc/workbench/inspect_run.py            # newest run
-    PYTHONPATH=. python ad-hoc/workbench/inspect_run.py --run 20260908_101500
-    PYTHONPATH=. python ad-hoc/workbench/inspect_run.py --last 3   # compare runs
+    python ad-hoc/workbench/inspect_run.py            # newest run
+    python ad-hoc/workbench/inspect_run.py --run 20260908_101500
+    python ad-hoc/workbench/inspect_run.py --last 3   # compare runs
 
 WARNING: sections 5 and 6 print commentary verbatim, so the output carries
 client figures and account names. Fine to paste into a working conversation;
 do not put it anywhere public.
 """
 from __future__ import annotations
+
+import os
+import sys
+
+# Runs from the repo root on Windows too: every ad-hoc script documented
+# "PYTHONPATH=. python ...", which is Unix shell syntax that cmd.exe rejects
+# before python starts. Invoked by path, sys.path[0] is this script's own
+# directory, so put the repo root on it here instead of asking the caller.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import argparse
 import collections

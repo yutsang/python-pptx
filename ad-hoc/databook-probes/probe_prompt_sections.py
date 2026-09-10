@@ -10,6 +10,15 @@ as the analysis table printed above them).
 --before strips attrs["prompt_analysis_df"] from every account to reproduce the
 pre-M0 behaviour, so the same run prints a comparable BEFORE matrix.
 """
+
+import os
+import sys
+
+# Runs from the repo root on Windows too: every ad-hoc script documented
+# "PYTHONPATH=. python ...", which is Unix shell syntax that cmd.exe rejects
+# before python starts. Invoked by path, sys.path[0] is this script's own
+# directory, so put the repo root on it here instead of asking the caller.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import re
 import sys
 
