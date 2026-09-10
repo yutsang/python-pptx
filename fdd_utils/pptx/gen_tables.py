@@ -551,15 +551,6 @@ class _TablesMixin:
                         is_chinese_databook=is_chinese_databook, needs_continuation=False,
                         font_size_pt=9, clause_reviews=clause_reviews,
                     )
-                    # The template ships one empty paragraph; drop it as soon
-                    # as real content exists so every measurement below sees
-                    # only what will render.
-                    if (template_empty_p is not None
-                            and template_empty_p.getparent() is not None
-                            and not (template_empty_p.text or "").strip()):
-                        template_empty_p.getparent().remove(template_empty_p)
-                        template_empty_p = None
-                    cursor_pt = _measured_content_pt()
                 except Exception as exc:
                     logger.warning("Could not render lead-in for account %s: %s", mapping_key, exc)
             else:
@@ -568,7 +559,26 @@ class _TablesMixin:
                 self._append_continuation_line_to_frame(
                     tf, display_name, is_chinese_databook, std_lh_pt,
                 )
-                cursor_pt = _measured_content_pt()
+
+            # The template ships one empty paragraph; drop it as soon as real
+            # content exists, and BEFORE measuring -- on BOTH paths.
+            #
+            # Dropping it only on the lead path left it in the frame while a
+            # CONTINUED fragment measured, so cursor_pt carried a phantom 9pt
+            # line (10.8pt at the 1.2 pitch). Every table below was placed
+            # that much too low, and the paragraph was then removed after the
+            # loop, lifting the reserved blank band out from under them. A real
+            # portfolio slide showed exactly that: its first table sat 12.8pt
+            # below its band's top where the two tables under it on the same
+            # slide sat at 2.0pt, and the 10.8pt of overhang landed on a
+            # paragraph of real text. The removal after the loop stays as the
+            # safety net for a frame that reached neither branch.
+            if (template_empty_p is not None
+                    and template_empty_p.getparent() is not None
+                    and not (template_empty_p.text or "").strip()):
+                template_empty_p.getparent().remove(template_empty_p)
+                template_empty_p = None
+            cursor_pt = _measured_content_pt()
 
             if table and wants_table:
                 # Only the LAST table in this column carries the source
