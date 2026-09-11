@@ -2053,7 +2053,17 @@ def run_ai_checks(
             effective_workers = int(_processing_workers)
             workers_source = "processing.max_workers in config.yml"
         else:
-            effective_workers = 4 if model_type == "local" else 2
+            # 4 for every provider. It was `4 if local else 2`, which is the
+            # exact INVERSE of the pipeline's own _resolve_max_workers ("local"
+            # -> 1, everything else -> 4) -- two files disagreeing about one
+            # setting, in opposite directions. The CLI's number is the one with
+            # a real measurement behind it: a 21-account local run finished 47
+            # steps in 204s at 4 workers. The pipeline's own default still
+            # stands for callers that pass nothing (the Streamlit path), so the
+            # UI and the CLI can still run a local model at different
+            # concurrencies -- worth settling, but not by quietly flipping a
+            # documented default from here.
+            effective_workers = 4
             workers_source = "built-in default — no max_workers set in config.yml"
     print(f"Running pipeline for {len(mapping_keys)} MAPPED accounts (of {len(dfs)} total tabs), "
           f"model_type={model_type}, model_name={model_name}, workers={effective_workers} ({workers_source})...")
@@ -3296,13 +3306,14 @@ def main() -> int:
                          "the Financials summary from there while breakdown tabs (dfs) still come "
                          "from `path` as normal. Requires --financials-sheet. Only valid when "
                          "`path` is a single file.")
-    ap.add_argument("--entity-workers", type=int, default=4, metavar="N",
-                    help="run N databooks at once when `path` is a folder (default 4; pass 1 for "
-                         "the old one-after-another behaviour). This is a SECOND level of "
-                         "concurrency: each entity also runs --workers account threads inside "
-                         "it, so the model sees up to N x --workers calls at once. Each entity "
-                         "keeps its own progress bar row, and its output is buffered and printed "
-                         "whole in FILE order, so neither the bars nor the log interleave.")
+    ap.add_argument("--entity-workers", type=int, default=1, metavar="N",
+                    help="run N DATABOOKS at once when `path` is a folder (default 1, one after "
+                         "another). Note this is NOT the account concurrency -- accounts inside "
+                         "one databook already run --workers at a time, and that is the setting "
+                         "worth reaching for first. This is a SECOND level on top of it, so the "
+                         "model sees up to N x --workers calls at once; opt in only when the "
+                         "endpoint has the headroom. Each databook keeps its own progress bar "
+                         "row and its report is printed whole in FILE order.")
     ap.add_argument("--resume", default=None, metavar="RUN_ID",
                     help="with --run-ai: seed every stage a previous run completed from its "
                          "checkpoint.jsonl (fdd_utils/logs/run_<RUN_ID>/), so only the stages it "
