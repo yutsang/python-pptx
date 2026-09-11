@@ -123,6 +123,8 @@ import re
 import sys
 import threading
 import time
+import traceback
+from concurrent.futures import ThreadPoolExecutor
 from itertools import combinations
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -3220,6 +3222,47 @@ def resolve_auto_rollup_targets(files: List[Path]) -> Dict[Path, Tuple[Path, str
     return targets
 
 
+class _PerEntityStdout:
+    """Keeps each entity's output whole when several run at once.
+
+    `inspect_one` prints a thousand lines and the reader depends on them being
+    one contiguous block per entity. Running entities concurrently through a
+    thread pool interleaves them into something unreadable, and the usual fix --
+    contextlib.redirect_stdout -- swaps a GLOBAL, so with threads it is not a
+    fix at all: whichever thread redirects last owns every other thread's
+    output too.
+
+    So the swap happens once, and the proxy routes by thread: a worker that has
+    registered a buffer writes into it, anything else (the main thread, a
+    library) goes straight through to the real stream. Each entity's block is
+    then printed whole, in file order, as it becomes available.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._buffers: Dict[int, io.StringIO] = {}
+
+    def register(self) -> None:
+        self._buffers[threading.get_ident()] = io.StringIO()
+
+    def take(self) -> str:
+        buf = self._buffers.pop(threading.get_ident(), None)
+        return buf.getvalue() if buf is not None else ""
+
+    def write(self, data):
+        buf = self._buffers.get(threading.get_ident())
+        return (buf or self._stream).write(data)
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", help="databook .xlsx file, or a folder to scan every .xlsx in it")
@@ -3233,6 +3276,13 @@ def main() -> int:
                          "the Financials summary from there while breakdown tabs (dfs) still come "
                          "from `path` as normal. Requires --financials-sheet. Only valid when "
                          "`path` is a single file.")
+    ap.add_argument("--entity-workers", type=int, default=1, metavar="N",
+                    help="run N databooks at once when `path` is a folder (default 1, i.e. one "
+                         "after another as before). This is a SECOND level of concurrency: each "
+                         "entity already runs --workers account threads inside it, so the LLM "
+                         "sees up to N x --workers calls at once. On a seven-entity portfolio at "
+                         "N=3 the wall clock is about a third. Each entity's output is buffered "
+                         "and printed whole, in file order, so the log stays readable.")
     ap.add_argument("--resume", default=None, metavar="RUN_ID",
                     help="with --run-ai: seed every stage a previous run completed from its "
                          "checkpoint.jsonl (fdd_utils/logs/run_<RUN_ID>/), so only the stages it "
@@ -3436,25 +3486,65 @@ def main() -> int:
 
     accounts_filter = [a.strip() for a in args.accounts.split(",") if a.strip()] if args.accounts else None
 
+    def _run_one(f) -> Dict[str, Any]:
+        auto_hit = auto_rollup_targets.get(f)
+        return inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model,
+                           args.model_name, limit=args.limit, workers=args.workers,
+                           dump_tab_name=args.dump_tab, accounts=accounts_filter,
+                           export_pptx=args.export_pptx, pptx_out_dir=args.pptx_out,
+                           financials_from=args.financials_from or (str(auto_hit[0]) if auto_hit else None),
+                           financials_sheet=args.financials_sheet or (auto_hit[1] if auto_hit else None),
+                           resume_from=args.resume)
+
+    def _failed(f, exc) -> Dict[str, Any]:
+        print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        return {"file": f.name, "status": f"FAILED: {exc}"}
+
+    entity_workers = max(1, int(args.entity_workers or 1))
     summaries: List[Dict[str, Any]] = []
-    for f in files:
+    if entity_workers == 1 or len(files) < 2:
+        for f in files:
+            try:
+                summaries.append(_run_one(f))
+            except Exception as exc:
+                summaries.append(_failed(f, exc))
+    else:
+        total = entity_workers * max(1, int(args.workers or 1)) if args.run_ai else entity_workers
+        print(f"\nRunning {len(files)} databook(s) {entity_workers} at a time"
+              + (f" x {args.workers} account worker(s) = up to {total} concurrent AI call(s)"
+                 if args.run_ai else "")
+              + ". Each entity's output is printed whole, in file order, as it finishes.")
+        if args.run_ai and total > 8:
+            print(f"  ⚠️  {total} concurrent calls is a lot for one model endpoint. If the run comes "
+                  f"out SLOWER than sequential, the server is queueing -- lower --entity-workers.")
+        proxy = _PerEntityStdout(sys.stdout)
+        sys.stdout = proxy
+
+        def _buffered(f):
+            proxy.register()
+            try:
+                return _run_one(f), proxy.take()
+            except Exception as exc:
+                entry = _failed(f, exc)
+                return entry, proxy.take()
+
         try:
-            auto_hit = auto_rollup_targets.get(f)
-            financials_from = args.financials_from or (str(auto_hit[0]) if auto_hit else None)
-            financials_sheet = args.financials_sheet or (auto_hit[1] if auto_hit else None)
-            summary = inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model,
-                                   args.model_name, limit=args.limit, workers=args.workers,
-                                   dump_tab_name=args.dump_tab, accounts=accounts_filter,
-                                   export_pptx=args.export_pptx, pptx_out_dir=args.pptx_out,
-                                   financials_from=financials_from,
-                                   financials_sheet=financials_sheet,
-                                   resume_from=args.resume)
-            summaries.append(summary)
-        except Exception as exc:
-            print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
-            import traceback
-            traceback.print_exc()
-            summaries.append({"file": f.name, "status": f"FAILED: {exc}"})
+            with ThreadPoolExecutor(max_workers=entity_workers) as pool:
+                # Submitted in file order and read back in file order, so a fast
+                # entity finishing first does not reorder the log; only the
+                # WALL CLOCK overlaps, never the report.
+                futures = [pool.submit(_buffered, f) for f in files]
+                for f, future in zip(files, futures):
+                    try:
+                        entry, text = future.result()
+                    except Exception as exc:
+                        entry, text = _failed(f, exc), ""
+                    proxy._stream.write(text)
+                    proxy._stream.flush()
+                    summaries.append(entry)
+        finally:
+            sys.stdout = proxy._stream
 
     if len(files) > 1:
         _print_final_summary(summaries, args.run_ai)
