@@ -241,6 +241,78 @@ def _rewrite_glued_negative_amounts(text: str) -> str:
     return _GLUED_NEGATIVE_AMOUNT.sub(r"负\1\2", str(text or ""))
 
 
+#: 「于A年度、B年度、C年度及D期间分别为W、X、Y及Z」. Every period must open with a
+#: four-digit year, which is what keeps the frame from swallowing the subject in
+#: front of it: a looser pattern rewrote 「折旧摊销于2023年度…」 into
+#: 「…，折旧摊销于2023年度未发生」, carrying the account name into the tail.
+_PERIOD_TOKEN = r"\d{4}年[^、及和，。；;]{0,14}?"
+# 于 / 在 / nothing at all -- a real deck writes all three ("X于2023年度…",
+# "X在2023年度…", "X：2023年度、2024年度…分别为"). The prefix can be dropped
+# safely only because every period token must still open with a four-digit year.
+_PERIOD_SERIES_SENTENCE = re.compile(
+    r"(于|在)?((?:" + _PERIOD_TOKEN + r"[、及和])+" + _PERIOD_TOKEN + r")"
+    r"(?:期间|期末)?\s*分别为\s*"
+    r"((?:-?[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)\s*[、及和]?\s*)+)"
+)
+_SERIES_AMOUNT = re.compile(r"(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+
+
+def rewrite_nil_periods_out_of_series(text: str) -> str:
+    """Pull the nil periods out of a multi-period enumeration.
+
+    prompts.yml has asked for this since it was written, in as many words and
+    with a worked example of the wrong form. A seven-entity run shipped about
+    forty of them anyway, which is the same lesson the company-name rule taught:
+    a rule stated only in the prompt is a request, and the model declines it
+    often enough to matter. shorten_company_names removed 139 legal names from
+    that same run without the prompt having to win the argument.
+
+    「代理及佣金于2023年度、2024年度、2025年度及2026年1-6月期间分别为0万元、
+     2.4万元、0万元及4.4万元」
+      -> 「代理及佣金于2024年度及2026年1-6月期间分别为2.4万元及4.4万元，
+          2023年度及2025年度未发生」
+
+    Positional, not semantic: the periods and the amounts are paired in order,
+    and if the two lists are not the same length nothing is touched. A series
+    that is nil in EVERY period is left alone -- that is a different sentence
+    and a different rule.
+    """
+    body = str(text or "")
+    if "分别为" not in body:
+        return body
+
+    def _fix(match: "re.Match") -> str:
+        # Keep the lead the sentence used, INCLUDING none: 「营业成本-折旧成本：
+        # 2023年度、…分别为」 reads wrong as 「：于2024年度…」.
+        lead = match.group(1) or ""
+        frame, amounts_blob = match.group(2), match.group(3)
+        periods = [p.strip() for p in re.split(r"[、及和]", frame) if p.strip()]
+        pairs = _SERIES_AMOUNT.findall(amounts_blob)
+        if len(periods) != len(pairs) or len(periods) < 2:
+            return match.group(0)
+        kept, nil = [], []
+        for period, (value, unit) in zip(periods, pairs):
+            try:
+                zero = float(value.replace(",", "")) == 0.0
+            except ValueError:
+                return match.group(0)
+            (nil if zero else kept).append((period, value + unit))
+        if not nil or not kept:
+            return match.group(0)
+        if len(kept) == 1:
+            head = "%s%s为%s" % (lead, kept[0][0], kept[0][1])
+        else:
+            head = "%s%s期间分别为%s" % (
+                lead,
+                "、".join(p for p, _a in kept[:-1]) + "及" + kept[-1][0],
+                "、".join(a for _p, a in kept[:-1]) + "及" + kept[-1][1],
+            )
+        tail = ("、".join(p for p, _a in nil[:-1]) + "及" + nil[-1][0]) if len(nil) > 1 else nil[0][0]
+        return "%s，%s未发生" % (head, tail)
+
+    return _PERIOD_SERIES_SENTENCE.sub(_fix, body)
+
+
 def _normalize_slide_commentary_text(text: str) -> str:
     normalized = clean_content_quotes(str(text or ""))
     if not normalized:
@@ -250,6 +322,7 @@ def _normalize_slide_commentary_text(text: str) -> str:
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
     normalized = shorten_company_names(normalized)
     normalized = _rewrite_glued_negative_amounts(normalized)
+    normalized = rewrite_nil_periods_out_of_series(normalized)
     return normalized.strip()
 
 
