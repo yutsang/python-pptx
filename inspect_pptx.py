@@ -147,6 +147,13 @@ class ShapeInfo:
     overflow: bool
     font_sizes_pt: tuple
     autofit_scale: float = 1.0
+    #: (is_blank, chars, font_pt, wrapped_lines, cost_pt) per real paragraph.
+    #: A slot can be over capacity with almost no text in it, because the space
+    #: a floated table occupies is reserved as BLANK paragraphs in this same
+    #: frame. Without this breakdown the printed line says chars=251 used=33.0L
+    #: and reads as a text-too-long problem, which is the wrong diagnosis and
+    #: sends you to the splitter instead of to the table.
+    para_detail: tuple = ()
 
 
 def _autofit_font_scale(shape) -> float:
@@ -338,7 +345,7 @@ def _spare_below_pt(slide, shape) -> float:
         return 0.0, ""
 
 def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text: bool = False,
-                 dump_tables: bool = False) -> dict:
+                 dump_tables: bool = False, explain_overflow: bool = False) -> dict:
     """Runs the full layout inspection and returns a structured summary
     (used both by this file's own CLI and by inspect_databook.py's combined
     export+inspect flow). Pass quiet=True to suppress the per-slide print
@@ -840,6 +847,7 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
             # of a line, so each paragraph's own font size has to be read
             # rather than assumed.
             para_bands: List[Tuple[bool, float, float]] = []  # (is_blank, top_pt, bottom_pt)
+            para_detail: List[Tuple[bool, int, float, int, float]] = []
             content_pt = 0.0
             try:
                 real_paras = list(shape.text_frame.paragraphs)
@@ -854,6 +862,7 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                     p_gap = p_obj.space_after.pt if p_obj.space_after is not None else 0.0
                     if not p_text.strip():
                         para_bands.append((True, _y, _y + p_pitch))
+                        para_detail.append((True, len(p_text), max(sizes) if sizes else 9.0, 1, p_pitch + p_gap))
                         content_pt += p_pitch + p_gap
                         _y += p_pitch + p_gap
                         continue
@@ -863,6 +872,7 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                     )))
                     h = n * line_h
                     para_bands.append((False, _y, _y + h))
+                    para_detail.append((False, len(p_text), max(sizes) if sizes else 9.0, n, h + p_gap))
                     content_pt += h + p_gap
                     _y += h + p_gap
             else:
@@ -911,6 +921,7 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 overflow=content_units > capacity + _OVERFLOW_TOLERANCE_LINES,
                 font_sizes_pt=_actual_font_sizes_pt(shape),
                 autofit_scale=_autofit_font_scale(shape),
+                para_detail=tuple(para_detail),
             ))
 
         for i, info in enumerate(infos):
@@ -950,6 +961,22 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                    f"chars={info.n_chars:4d} capacity={info.capacity_lines:5.1f}L used={info.content_units:5.1f}L "
                    f"fill={info.fill_ratio:.0%} font_pt={list(info.font_sizes_pt)} "
                    f"(raw wraps_to={info.wrapped_lines:3d}L, NOT comparable to capacity){flag_str}{_spare_str}")
+            if explain_overflow and info.para_detail:
+                _blank = [d for d in info.para_detail if d[0]]
+                _real = [d for d in info.para_detail if not d[0]]
+                _bpt = sum(d[4] for d in _blank)
+                _rpt = sum(d[4] for d in _real)
+                _print(f"        ├─ {len(_real):2d} text paragraph(s): {_rpt:6.1f}pt "
+                       f"({_rpt/std_lh if std_lh else 0:4.1f}L)   sizes={sorted({d[2] for d in _real})}")
+                _print(f"        ├─ {len(_blank):2d} BLANK reservation paragraph(s): {_bpt:6.1f}pt "
+                       f"({_bpt/std_lh if std_lh else 0:4.1f}L)   sizes={sorted({d[2] for d in _blank})}")
+                if _bpt > _rpt and info.overflow:
+                    _print("        └─ the BLANK band is the larger half: this slot is over capacity "
+                           "because of the table floated over it, NOT because the commentary is long. "
+                           "Cap the table's rows or move it, splitting the text will not help.")
+                elif info.overflow:
+                    _print("        └─ the TEXT is the larger half: this is a commentary-length "
+                           "or splitter problem.")
 
         # 1. L/R collision: a page with no table/summary (i.e. NOT the
         # designed single-column table slide) but only a single unsplit slot.
@@ -1342,6 +1369,12 @@ def main() -> int:
                           "cell as a repr so empty strings, lone spaces and non-breaking spaces "
                           "are distinguishable. --dump-text cannot show these: a PowerPoint table "
                           "has no text frame, so it walks straight past them.")
+    ap.add_argument("--explain-overflow", action="store_true",
+                     help="Under every flagged commentary box, split its measured height into text "
+                          "paragraphs and BLANK reservation paragraphs. A floated table's vertical "
+                          "space lives in the same text frame as blank paragraphs, so a slot can "
+                          "read chars=251 used=33.0L fill=127% and be over capacity because of the "
+                          "TABLE, not the commentary. Free, and it decides which of the two to fix.")
     ap.add_argument("--out", default=None, metavar="FILE",
                     help="also write everything printed here to FILE as UTF-8. Use this "
                          "whenever the output will be pasted somewhere: a Windows console "
@@ -1376,7 +1409,8 @@ def _main_with_args(args) -> int:
         if len(pptx_files) > 1:
             print(f"\n{'=' * 90}\n{pptx_file.name}\n{'=' * 90}")
         result = inspect_pptx(str(pptx_file), config, dump_text=args.dump_text,
-                              dump_tables=args.dump_tables)
+                              dump_tables=args.dump_tables,
+                              explain_overflow=args.explain_overflow)
         duplicate_count = 0
         wording_flag_count = 0
         if args.dump_text:
