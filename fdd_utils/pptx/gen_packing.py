@@ -2422,6 +2422,66 @@ class _PackingMixin:
         return rebuilt
 
 
+    def _table_block_exceeds_every_slot(
+        self, item: Dict[str, Any], table: Dict[str, Any], *,
+        max_slides: int, start_slide: int, is_chinese_databook: bool,
+    ) -> Tuple[bool, str]:
+        """Is this account's lead-in plus its table taller than the biggest
+        slot in the deck?
+
+        min_rows and max_per_deck decide whether a table is worth drawing and
+        how many the deck may carry. Neither asks whether the one chosen
+        actually FITS, and the ranking prefers the biggest table among equals
+        (-_component_count in _select_presentation_tables), so the account most
+        likely to overflow is the one most likely to be picked. A real export
+        put a 36-row table in a slot that holds 26 lines: the reserved band
+        alone measured 27.8 lines, over capacity before a word of commentary,
+        and the deck shipped an OVERFLOW RISK that no amount of re-packing or
+        text-splitting could have cleared.
+
+        The lead-in and the table are one block -- _render_parts draws
+        ("lead", "table") together and only the explanation continues onto the
+        next slot -- so that pair is what has to fit. Compared against the
+        LARGEST slot available, plus the same tail tolerance the packer
+        honours, which makes this a test of impossibility rather than of
+        taste: true here means no arrangement of this deck can place the
+        table. Returns the reason too, so the log says which it was.
+        """
+        try:
+            lead_pt, table_pt, _explain_pt = self._estimate_table_account_parts_pt(
+                item, table, is_chinese_databook,
+            )
+        except Exception:
+            # Fail OPEN -- an unmeasurable table keeps today's behaviour rather
+            # than vanishing. Logged because a silent False here is exactly how
+            # this check would stop working without anyone noticing: writing
+            # this test with a malformed fixture made every size "fit", and the
+            # swallow was the reason the run looked like a pass.
+            logger.info("Table fit check skipped for %s: could not measure its height",
+                        item.get("mapping_key") or item.get("account_name"))
+            return False, ""
+        best_cap = 0.0
+        for slide_idx in range(max(1, int(max_slides or 1))):
+            actual_slide_idx = start_slide - 1 + slide_idx
+            for slot_name in self._slot_names_for_actual_slide(actual_slide_idx, start_slide):
+                try:
+                    best_cap = max(best_cap, float(self._slot_capacity_pt(slide_idx, slot_name, start_slide)))
+                except Exception:
+                    continue
+        if best_cap <= 0:
+            return False, ""
+        std_lh = _planning_std_lh_pt(is_chinese_databook)
+        allowance = best_cap + self._tail_overflow_tolerance_units() * std_lh
+        block_pt = float(lead_pt) + float(table_pt)
+        if block_pt <= allowance:
+            return False, ""
+        return True, (
+            "lead-in + table needs %.0fpt (%.1f lines), the largest slot allows %.0fpt "
+            "(%.1f lines) -- it cannot fit anywhere in this deck"
+            % (block_pt, block_pt / std_lh if std_lh else 0.0,
+               allowance, allowance / std_lh if std_lh else 0.0)
+        )
+
     def _plan_slot_distribution(
         self,
         structured_data: List[Dict],
@@ -2493,6 +2553,17 @@ class _PackingMixin:
             table = _presentation_table_for_account(item) if tables_enabled else None
             rejected_here = (table is not None and table_for_item is not None
                              and id(item) not in table_for_item)
+            if table is not None and not rejected_here:
+                # The cap said this table is worth drawing. Geometry gets the
+                # last word on whether it can be.
+                _too_tall, _why = self._table_block_exceeds_every_slot(
+                    item, table, max_slides=max_slides, start_slide=start_slide,
+                    is_chinese_databook=is_chinese_databook,
+                )
+                if _too_tall:
+                    logger.info("Subtable not drawn for %s: %s",
+                                item.get("mapping_key") or item.get("account_name"), _why)
+                    rejected_here = True
             if table is None or rejected_here:
                 # No table will be drawn for this account -- either it never
                 # had one, it was settled away before the AI ran (see
