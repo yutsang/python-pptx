@@ -254,6 +254,19 @@ _PERIOD_SERIES_SENTENCE = re.compile(
     r"(?:期间|期末)?\s*分别为\s*"
     r"((?:-?[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)\s*[、及和]?\s*)+)"
 )
+# The same series written the other way round -- 「分别为0万元、29.4万元…，于2023
+# 年度、2024年度…期间发生」. Seven of the eight nil mentions left in a real deck
+# after the first pass were this shape; it pairs exactly as well, just in the
+# reverse order, so there is no reason to leave it alone.
+_PERIOD_SERIES_REVERSED = re.compile(
+    r"分别为\s*((?:-?[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)\s*[、及和]?\s*)+)"
+    r"[，,]\s*(于|在)?((?:" + _PERIOD_TOKEN + r"[、及和])+" + _PERIOD_TOKEN + r")"
+    # 发生/列示 is REQUIRED, and that is the whole point: the period token is
+    # non-greedy, so with an all-optional tail the engine stopped at 「2026年」
+    # and left 「1至6月期间发生」 stranded after the rewrite. A mandatory
+    # terminator forces the token out to its full 「2026年1至6月」.
+    r"(?:期间|期末)?\s*(?:发生|列示)"
+)
 _SERIES_AMOUNT = re.compile(r"(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 
 
@@ -310,7 +323,60 @@ def rewrite_nil_periods_out_of_series(text: str) -> str:
         tail = ("、".join(p for p, _a in nil[:-1]) + "及" + nil[-1][0]) if len(nil) > 1 else nil[0][0]
         return "%s，%s未发生" % (head, tail)
 
-    return _PERIOD_SERIES_SENTENCE.sub(_fix, body)
+    def _fix_reversed(match: "re.Match") -> str:
+        amounts_blob, lead, frame = match.group(1), match.group(2) or "于", match.group(3)
+        periods = [p.strip() for p in re.split(r"[、及和]", frame) if p.strip()]
+        pairs = _SERIES_AMOUNT.findall(amounts_blob)
+        if len(periods) != len(pairs) or len(periods) < 2:
+            return match.group(0)
+        kept, nil = [], []
+        for period, (value, unit) in zip(periods, pairs):
+            try:
+                zero = float(value.replace(",", "")) == 0.0
+            except ValueError:
+                return match.group(0)
+            (nil if zero else kept).append((period, value + unit))
+        if not nil or not kept:
+            return match.group(0)
+        if len(kept) == 1:
+            head = "%s%s为%s" % (lead, kept[0][0], kept[0][1])
+        else:
+            head = "%s%s期间分别为%s" % (
+                lead,
+                "、".join(p for p, _a in kept[:-1]) + "及" + kept[-1][0],
+                "、".join(a for _p, a in kept[:-1]) + "及" + kept[-1][1],
+            )
+        tail = ("、".join(p for p, _a in nil[:-1]) + "及" + nil[-1][0]) if len(nil) > 1 else nil[0][0]
+        return "%s，%s未发生" % (head, tail)
+
+    body = _PERIOD_SERIES_SENTENCE.sub(_fix, body)
+    return _PERIOD_SERIES_REVERSED.sub(_fix_reversed, body)
+
+
+_OVERPRECISE = re.compile(r"(-?[\d,]+)\.(\d{2,})\s*(万元)|(-?[\d,]+)\.(\d{3,})\s*(亿元)")
+
+
+def round_to_house_precision(text: str) -> str:
+    """万元 to one decimal, 亿元 to two -- which prompts.yml has asked for all
+    along ("万元保留**1位小数**、亿元保留**2位小数**").
+
+    A real deck shipped 「押金余额较上年末增长4.9787万元」. Four decimals on a
+    万元 figure is a raw division printed as-is, and it is the kind of thing a
+    reader notices before anything else on the page. Only ever REDUCES
+    precision; a figure already at or under the house rule is untouched.
+    """
+    def _fix(match: "re.Match") -> str:
+        whole, frac, unit = (match.group(1), match.group(2), match.group(3))
+        places = 1
+        if whole is None:
+            whole, frac, unit, places = match.group(4), match.group(5), match.group(6), 2
+        try:
+            value = float(whole.replace(",", "") + "." + frac)
+        except ValueError:
+            return match.group(0)
+        return "{:,.{p}f}{u}".format(value, p=places, u=unit)
+
+    return _OVERPRECISE.sub(_fix, str(text or ""))
 
 
 def _normalize_slide_commentary_text(text: str) -> str:
@@ -323,6 +389,7 @@ def _normalize_slide_commentary_text(text: str) -> str:
     normalized = shorten_company_names(normalized)
     normalized = _rewrite_glued_negative_amounts(normalized)
     normalized = rewrite_nil_periods_out_of_series(normalized)
+    normalized = round_to_house_precision(normalized)
     return normalized.strip()
 
 

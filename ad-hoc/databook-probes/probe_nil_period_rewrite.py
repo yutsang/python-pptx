@@ -18,7 +18,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from fdd_utils.pptx.payloads import rewrite_nil_periods_out_of_series as fix  # noqa: E402
+from fdd_utils.pptx.payloads import (  # noqa: E402
+    rewrite_nil_periods_out_of_series as fix,
+    round_to_house_precision,
+)
 
 CASES = [
     ("代理及佣金于2023年度、2024年度、2025年度及2026年1-6月期间分别为0万元、2.4万元、0万元及4.4万元。",
@@ -33,8 +36,15 @@ CASES = [
     ("折旧摊销于2023年度、2024年度、2025年度及2026年1-6月期间分别为0.0万元、1,732.9万元、1,731.9万元及865.9万元",
      "0.0 counts as nil too", True),
 
+    # --- reversed order: amounts first, then the frame --------------------
     ("代理及佣金分别为0万元、15.0万元、4.4万元及0万元，于2023年度、2024年度、2025年度及2026年1至6月期间发生",
-     "amounts BEFORE the frame -- not the shape this handles", False),
+     "amounts BEFORE the frame -- seven of the eight survivors of the first pass", True),
+
+    ("三代手续费返还分别为0万元、9.6万元、0万元、0万元，于2023年度、2024年度、2025年度及2026年1至6月期间发生",
+     "one real period out of four", True),
+
+    ("加计抵减分别为0万元、0.4万元、0万元、0万元，于同期发生",
+     "KNOWN LIMIT: 于同期 names no periods to pair with", False),
 
     ("代理及佣金在2023年度、2024年度、2025年度及2026年1-6月期间分别为0万元、29.4万元、20.4万元及7.0万元",
      "在, not 于", True),
@@ -72,6 +82,21 @@ def main() -> int:
         else:
             print("      AFTER  (unchanged)")
         print()
+    # 万元 one decimal, 亿元 two -- the same "stated in the prompt, ignored in
+    # the output" shape, from the same deck.
+    print("-" * 72)
+    for before, after_want in [
+        ("押金余额较上年末增长4.9787万元", "押金余额较上年末增长5.0万元"),
+        ("净值为1.9234亿元", "净值为1.92亿元"),
+        ("余额为1,128.3万元", "余额为1,128.3万元"),
+        ("合计为5,930元", "合计为5,930元"),
+        ("占比约4.9787%", "占比约4.9787%"),
+    ]:
+        got = round_to_house_precision(before)
+        good = got == after_want
+        ok = ok and good
+        print("%s  %s -> %s" % ("    " if good else "FAIL", before, got))
+    print()
     print("ALL CASES PASS" if ok else "FAILURES ABOVE")
     return 0 if ok else 1
 
