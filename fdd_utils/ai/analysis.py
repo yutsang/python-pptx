@@ -45,6 +45,7 @@ CODES = (
     "CONCENTRATION",         # one counterparty carrying an account
     "GOVERNMENT_COUNTERPARTY",  # deposits with a bureau -- refundability
     "RELATED_PARTY",         # intra-group balances
+    "INPUT_VAT_CREDIT",      # 留抵进项税 -- recoverable, and not a negative balance
     "NEGATIVE_BALANCE",      # a credit where a debit belongs, or the reverse
     "STATIC_BALANCE",        # no movement at all across every period
     "NO_DETAIL",             # a total with nothing behind it
@@ -124,6 +125,8 @@ _ROLE_KEYS = {
                "R/E", "Retained earnings", "Reserve"),
     "other_receivable": ("OR",),
     "other_payable": ("OP",),
+    "cash": ("Cash",),
+    "tax_payable": ("Tax payable", "Taxes payable"),
 }
 
 _ROLE_TERMS = {
@@ -138,6 +141,8 @@ _ROLE_TERMS = {
                "share capital", "paid-in capital", "retained earning", "capital reserve"),
     "other_receivable": ("其他应收款", "other receivable"),
     "other_payable": ("其他应付款", "other payable"),
+    "cash": ("货币资金", "银行存款", "cash and bank", "cash at bank"),
+    "tax_payable": ("应交税费", "应交税金", "tax payable", "taxes payable"),
 }
 
 # Rows that are an adjustment or a balancing figure, not a real component. They
@@ -159,14 +164,43 @@ _ADJUSTMENT = ("管理层调整", "示意性调整", "直线法调整", "截止�
 # a real workbook labels arm's-length lines "其他应付款-非关联公司-押金", and a
 # plain substring test on 关联公司 marks every one of them as related-party --
 # the exact opposite of what the label says.
+# 集团 was in this list and was the single worst term in the module. An ordinary
+# arm's-length CUSTOMER is routinely named 「...供应链管理集团有限公司」, and that
+# one substring reported the same third party as intra-group across five
+# accounts of a real run, including bank rows in 货币资金. 集团 is part of an
+# ordinary Chinese company name, not a statement of relationship. Removed; the
+# remaining terms each name a relationship rather than a corporate form.
 _RELATED = ("内部单位往来", "关联方", "关联公司", "关联企业", "母公司", "子公司", "同一控制",
-            "股东借款", "股东往来", "投资基金", "合伙企业", "集团",
+            "股东借款", "股东往来", "股权投资基金",
             "related part", "intercompany", "inter-company", "shareholder", "affiliate")
 _NOT_RELATED = ("非关联", "非关聯", "third-party", "third party", "non-related")
 
+#: Below this, a related-party balance is a bookkeeping remnant, not a
+#: completion issue. A real run reported 1,211元 at 「约0%」 of its account as a
+#: finding, which is noise wearing a finding's clothes.
+_RELATED_FLOOR_SHARE = 5.0
+_RELATED_FLOOR_ABS = 500_000.0
+
+#: A reversed component below this is a rounding remnant. A real run reported
+#: 「增值税_减免税款」 at -280元 as a wrong-direction balance.
+_REVERSED_FLOOR_ABS = 10_000.0
+
 _GOV = ("财政局", "税务局", "国家税务", "地方税务", "社保", "公积金中心", "管委会", "财政厅")
+# Rows that are negative BY CONSTRUCTION, so a sign test on them carries no
+# information. Beyond the depreciation/provision contras this started with, a
+# real run produced two findings that are simply how the account is built:
+#   在建工程-转出成本 -2.72亿元   the transfer INTO fixed assets; CIP nets to the
+#                                residue and the transfer is the normal event
+#   应缴税费-应交增值税-进项税额 -2803.7万元   input VAT is a debit inside a
+#                                credit account; every VAT schedule looks so
+# Neither is a wrong-direction balance. The input-VAT credit is a real finding
+# in its own right and gets its own rule below rather than a sign complaint.
 _CONTRA = ("累计折旧", "累计摊销", "减值准备", "跌价准备", "坏账准备",
-           "accumulated depreciation", "accumulated amortis", "impairment", "provision")
+           "转出成本", "转出", "结转", "进项税额", "待抵扣进项",
+           "accumulated depreciation", "accumulated amortis", "impairment", "provision",
+           "transferred out", "input vat")
+
+_INPUT_VAT = ("进项税额", "待抵扣进项", "留抵", "input vat")
 
 
 def _has_role(view: AccountView, role: str, alias: str = "") -> bool:
@@ -197,6 +231,36 @@ def _is_total(label: str) -> bool:
 def _is_contra(label: str) -> bool:
     low = str(label).lower()
     return any(m.lower() in low for m in _CONTRA)
+
+
+def _leaf_components(view: "AccountView") -> Dict[str, float]:
+    """Components with the category rows taken out.
+
+    These workbooks list a category and its members in the same column --
+    其他应付款-非关联公司-押金 sits beside the twenty-odd vendors that make it up.
+    Summing that list double-counts, and it double-counts in a way that looks
+    like a finding: the category is then exactly 50% of the sum, so a real run
+    reported 「其他应付款-非关联公司-押金」 as the largest counterparty at 50% of
+    the account. It is not a counterparty at all.
+
+    No indent survives into the evidence pool, so the level is recovered by
+    arithmetic instead: a component equal to the sum of all the others is a
+    parent of them, not a peer. Dropping it can expose another, so the test
+    repeats. It under-reports when two sibling categories both carry children
+    (neither equals the rest), and under-reporting is the safe direction --
+    a missed concentration is silence, a phantom one is a wrong finding.
+    """
+    latest = {k: v for k, v in view.component_latest().items()
+              if v and not _is_total(k) and not _is_contra(k)}
+    for _pass in range(4):
+        if len(latest) < 3:
+            break
+        name, value = max(latest.items(), key=lambda kv: abs(kv[1]))
+        others = sum(abs(v) for k, v in latest.items() if k != name)
+        if others <= 0 or abs(abs(value) - others) > max(abs(value), others) * 0.02:
+            break
+        latest.pop(name)
+    return latest
 
 
 def _find(views: Dict[str, AccountView], role: str,
@@ -248,6 +312,19 @@ def _rule_implied_rate(views: Dict[str, AccountView]) -> List[Observation]:
     cp, cv = cost.latest()
     if not lv or not cv or lv == 0:
         return out
+    # 财务费用 is not interest. A real workbook's tab carries five components --
+    # interest, bank charges, FX, discount, less interest income -- and dividing
+    # the whole account by the loan overstates the rate by whatever the other
+    # four come to. Use the interest line when the tab names one.
+    basis_label = cost.key
+    interest_only = {k: v for k, v in _leaf_components(cost).items()
+                     if any(t in str(k) for t in ("利息支出", "利息费用", "借款利息"))
+                     or "interest expense" in str(k).lower()}
+    if interest_only:
+        cv = sum(interest_only.values())
+        basis_label = "、".join(sorted(interest_only, key=lambda k: -abs(interest_only[k]))[:2])
+    if not cv:
+        return out
     # The interest line is a period figure; the loan is a balance. Annualise the
     # expense when the period is a stub, using the account's own period spacing.
     months = None
@@ -264,7 +341,7 @@ def _rule_implied_rate(views: Dict[str, AccountView]) -> List[Observation]:
         out.append(Observation(
             code="IMPLIED_RATE", severity=severity, accounts=[loan.key, cost.key],
             finding=("%s余额%s，%s年化后%s，隐含融资成本约%.1f%%。%s"
-                     % (loan.key, _fmt(lv), cost.key, _fmt(annualised), rate, note)),
+                     % (loan.key, _fmt(lv), basis_label, _fmt(annualised), rate, note)),
             question=("请确认该利率与借款合同条款是否一致，以及本期是否有利息资本化计入在建工程或固定资产。"
                       if severity == "high" or note else
                       "请确认借款合同的计息基准及是否存在资本化利息。"),
@@ -350,6 +427,28 @@ def _rule_cip_transfer(views: Dict[str, AccountView]) -> List[Observation]:
     cip_move = float(cip.series.get(curr, 0.0) or 0.0) - float(cip.series.get(prev, 0.0) or 0.0)
     fa_move = float(fa.series.get(curr, 0.0) or 0.0) - float(fa.series.get(prev, 0.0) or 0.0)
     if cip_move >= 0 or abs(cip_move) < 1000:
+        # A tab can present the whole year's activity and net to a residue, so
+        # the balance never moves while a 转出成本 line carries the entire
+        # transfer into fixed assets. That is the event worth reporting; the
+        # flat series is not evidence that nothing happened.
+        transfers = {k: v for k, v in cip.component_latest().items()
+                     if v < 0 and any(t in str(k) for t in ("转出", "结转", "转固"))}
+        _cp, cip_end = cip.latest()
+        if not transfers:
+            return out
+        moved = sum(abs(v) for v in transfers.values())
+        gross = sum(v for k, v in fa.component_latest().items() if v > 0 and not _is_contra(k))
+        share = (moved / gross * 100.0) if gross else 0.0
+        out.append(Observation(
+            code="CIP_TRANSFER", severity="medium", accounts=[cip.key, fa.key],
+            finding=("%s本期转出%s，期末余额仅%s；%s%s。"
+                     % (cip.key, _fmt(moved), _fmt(cip_end or 0.0), fa.key,
+                        ("原值%s，转出金额约占其%.0f%%" % (_fmt(gross), share)) if gross
+                        else "未提供原值明细")),
+            question="请提供在建工程转固明细及转固时点，并确认转固后的折旧起算日与竣工结算状态。",
+            numbers=[moved] + ([gross] if gross else []),
+            basis="CIP transfer-out components vs FA gross components",
+        ))
         return out
     covered = fa_move / abs(cip_move) * 100.0 if cip_move else 0.0
     if covered >= 60:
@@ -398,8 +497,12 @@ def _rule_concentration(views: Dict[str, AccountView], threshold: float = 50.0) 
     for view in views.values():
         if not any(_has_role(view, r) for r in ("receivable", "advance", "other_receivable", "other_payable")):
             continue
-        latest = {k: v for k, v in view.component_latest().items() if v and not _is_contra(k)}
-        if len(latest) < 2:
+        latest = {k: v for k, v in _leaf_components(view).items() if not _is_adjustment(k)}
+        # With two components one of them is always at least half, so "one
+        # counterparty carries this account" is arithmetic, not a finding. A real
+        # run reported 「管理层调整-应收租金」 at 69% of a two-row account: an
+        # adjustment, in a list too short to concentrate.
+        if len(latest) < 3:
             continue
         total = sum(abs(v) for v in latest.values())
         if total <= 0:
@@ -457,13 +560,20 @@ def _rule_related_party(views: Dict[str, AccountView]) -> List[Observation]:
     for view in views.values():
         if view.statement_type == "IS":
             continue
-        latest = {k: v for k, v in view.component_latest().items()
-                  if v and not _is_contra(k) and _is_related(k)}
+        # A bank row is not a counterparty relationship. 货币资金 rows carry the
+        # bank AND, in some workbooks, the customer the account collects for, so
+        # a name test on them reported the entity's own bank balances as
+        # intra-group in a real run. Cash is out of scope for this rule.
+        if _has_role(view, "cash"):
+            continue
+        latest = {k: v for k, v in _leaf_components(view).items() if _is_related(k)}
         if not latest:
             continue
         total_related = sum(abs(v) for v in latest.values())
         _p, total = view.latest()
         share = (total_related / abs(total) * 100.0) if total else 0.0
+        if share < _RELATED_FLOOR_SHARE and total_related < _RELATED_FLOOR_ABS:
+            continue
         names = "、".join(sorted(latest, key=lambda k: -abs(latest[k]))[:3])
         out.append(Observation(
             code="RELATED_PARTY", severity="high" if share >= 50 else "medium",
@@ -488,13 +598,18 @@ def _rule_negative_balance(views: Dict[str, AccountView]) -> List[Observation]:
         _p, total = view.latest()
         if not total:
             continue
-        wrong = {k: v for k, v in view.component_latest().items()
-                 if v and not _is_contra(k) and not _is_adjustment(k) and (v < 0) != (total < 0)}
+        wrong = {k: v for k, v in _leaf_components(view).items()
+                 if not _is_adjustment(k) and (v < 0) != (total < 0)
+                 and abs(v) >= _REVERSED_FLOOR_ABS}
         if not wrong:
             continue
         name, value = max(wrong.items(), key=lambda kv: abs(kv[1]))
+        # A reversed component larger than the account it sits in is a different
+        # statement from one worth a few percent of it.
+        ratio = abs(value) / abs(total) * 100.0
+        severity = "high" if ratio >= 100 else ("medium" if ratio >= 10 else "low")
         out.append(Observation(
-            code="NEGATIVE_BALANCE", severity="medium", accounts=[view.key],
+            code="NEGATIVE_BALANCE", severity=severity, accounts=[view.key],
             finding=("%s合计%s，但构成项「%s」为%s，方向与科目相反（共%d项）。"
                      % (view.key, _fmt(total), name, _fmt(value), len(wrong))),
             question="请说明该反向余额的成因（多收、退款未结转、错记科目），以及是否应重分类。",
@@ -513,6 +628,13 @@ def _rule_static_balance(views: Dict[str, AccountView]) -> List[Observation]:
         values = [float(view.series[p]) for p in view.periods if view.series.get(p) is not None]
         values = [v for v in values if v]
         if len(values) < 3 or len(set(round(v, 2) for v in values)) != 1:
+            continue
+        # A flat balance is not a quiet account when the components show the
+        # period's activity netting to a residue. 在建工程 held 12,212元 in all
+        # three periods while 2.72亿元 passed through it, and "未发生任何变动"
+        # about that account is simply false -- CIP_TRANSFER has the real story.
+        activity = max((abs(v) for v in view.component_latest().values()), default=0.0)
+        if activity > abs(values[0]) * 10:
             continue
         out.append(Observation(
             code="STATIC_BALANCE", severity="low", accounts=[view.key],
@@ -558,6 +680,38 @@ def _rule_untied_equity(views: Dict[str, AccountView], unmatched: Iterable[str])
     )]
 
 
+def _rule_input_vat_credit(views: Dict[str, AccountView]) -> List[Observation]:
+    """An input-VAT credit sitting inside the tax-payable account.
+
+    Input VAT is a debit in a credit account, so it is not a wrong-direction
+    balance -- the sign rule used to report it as one. What it actually is, at
+    size, is a recoverable amount a buyer should be paying for: a 留抵 balance
+    is set against future output VAT, and whether it survives a change of
+    control is a real question. Reported on its own terms."""
+    out: List[Observation] = []
+    for view in views.values():
+        if not _has_role(view, "tax_payable"):
+            continue
+        credits = {k: v for k, v in view.component_latest().items()
+                   if v < 0 and any(t.lower() in str(k).lower() for t in _INPUT_VAT)}
+        if not credits:
+            continue
+        amount = sum(abs(v) for v in credits.values())
+        _p, total = view.latest()
+        if amount < 1e6:
+            continue
+        out.append(Observation(
+            code="INPUT_VAT_CREDIT", severity="high" if amount >= 1e7 else "medium",
+            accounts=[view.key],
+            finding=("%s中留抵进项税额%s，本科目净额仅%s，进项税额为可抵扣资产而非负债。"
+                     % (view.key, _fmt(amount), _fmt(total or 0.0))),
+            question="请说明留抵进项税额的形成期间及预计抵扣时点，并确认交割后该留抵税额能否继续由标的公司使用。",
+            numbers=[amount] + ([abs(total)] if total else []),
+            basis="input-VAT components inside the tax-payable account",
+        ))
+    return out
+
+
 _RULES = (
     _rule_implied_rate,
     _rule_receivable_days,
@@ -567,6 +721,7 @@ _RULES = (
     _rule_concentration,
     _rule_related_party,
     _rule_government_counterparty,
+    _rule_input_vat_credit,
     _rule_negative_balance,
     _rule_static_balance,
     _rule_no_detail,
