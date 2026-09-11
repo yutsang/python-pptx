@@ -264,6 +264,27 @@ class RunMemory:
                 "failed": sum(1 for e in edges if not e.get("passed")),
                 "provenance": ["results.yml:__run__.facts.links"]}
 
+    def insights(self, code: Optional[str] = None) -> Dict[str, Any]:
+        """Analyst observations over the whole run -- cross-account arithmetic,
+        concentration, related parties, scope gaps.
+
+        Computed from the persisted evidence, not from the databook, so the same
+        observations are available months later and every figure in them is a
+        figure the pool holds. `code` narrows to one rule (see analysis.CODES).
+        """
+        from .analysis import analyse, views_from_evidence
+        facts = (self.results.get(RUN_STATE_KEY) or {}).get("facts") or {}
+        unmatched = []
+        for section in ("balance_sheet", "income_statement"):
+            unmatched.extend((self.results.get(RUN_STATE_KEY) or {}).get("unmatched", {}).get(section, []))
+        views = views_from_evidence(self.evidence, facts)
+        obs = [o.as_dict() for o in analyse(views, unmatched)]
+        if code:
+            obs = [o for o in obs if o["code"].lower() == str(code).strip().lower()]
+        return {"run_id": self.run_id, "observations": obs, "count": len(obs),
+                "codes": sorted({o["code"] for o in obs}),
+                "provenance": ["evidence/*.json", "results.yml:__run__.facts"]}
+
     def tokens(self) -> Dict[str, Any]:
         per_stage: Dict[str, Dict[str, int]] = {}
         for acct in (self.data.get("processing_results") or {}).values():
@@ -312,6 +333,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "series": {"args": ["key"], "help": "the account's total by period"},
     "links": {"args": ["key"], "help": "cross-account relationships touching the account, passed and failed"},
     "tokens": {"args": [], "help": "token use per stage"},
+    "insights": {"args": ["code"], "help": "analyst observations over the whole databook -- implied "
+                 "borrowing cost, receivable days, concentration, related-party and government "
+                 "counterparties, CIP transfers, depreciation, untied equity. Pass code=null for all"},
 }
 
 

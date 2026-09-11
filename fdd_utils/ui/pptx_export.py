@@ -424,6 +424,27 @@ def _insight_num(value: Any) -> Optional[float]:
         return None
 
 
+def _unmatched_rows(reconciliation: Any) -> List[str]:
+    """Statement rows the reconciliation could not tie to a schedule tab. The
+    equity rule needs them and they are already in the frame the caller passes."""
+    rows: List[str] = []
+    frames = reconciliation if isinstance(reconciliation, (list, tuple)) else [reconciliation]
+    for frame in frames:
+        try:
+            if frame is None or not hasattr(frame, "columns"):
+                continue
+            if "Match" not in frame.columns or "Financials_Account" not in frame.columns:
+                continue
+            for _i, row in frame.iterrows():
+                if "Not Found" in str(row.get("Match") or ""):
+                    name = str(row.get("Financials_Account") or "").strip()
+                    if name:
+                        rows.append(name)
+        except Exception:
+            continue
+    return rows
+
+
 def build_insight_summary(
     *,
     ai_results: Dict[str, Any],
@@ -460,9 +481,20 @@ def build_insight_summary(
       was added, and never once called;
     - ``presentation_detail_table["tie_status"]``, computed and never read.
 
-    ``evidence`` (M2) and ``links`` (N2) are accepted and ignored until those
-    milestones land — the plan's own rule is that a field sourced from a
-    milestone that has not shipped is omitted, not faked.
+    ``links`` (N2) is accepted and ignored until that milestone lands — the
+    plan's own rule is that a field sourced from a milestone that has not
+    shipped is omitted, not faked.
+
+    ``evidence`` HAS landed, and with it the other half of this section. Every
+    finding above is about how the RUN behaved: clauses flagged, retries,
+    reconciliation rows with no tab. That is quality control. What a reviewer
+    actually wants to know — what the borrowing costs, which counterparty
+    carries an account, what is intra-group and will not survive completion,
+    whether construction in progress landed in fixed assets — is arithmetic
+    over the same numbers, and `analysis.analyse` computes it. Those
+    observations are appended with basis="analysis.<CODE>" and their questions
+    join the client list, ahead of the template ones, because a priced finding
+    beats "what drove X to appear from nil".
 
     Returns ``{summary, visible_issues, client_questions, external_research,
     commentary_instruction, unverified_hypotheses}``. ``visible_issues`` entries
@@ -721,6 +753,30 @@ def build_insight_summary(
         add(f"{unchecked} breakdown table(s) were never tie-tested (synthesized from the "
             "sheet rather than detected, which runs no tie test at all)",
             "presentation_detail_table.tie_status", ["tie:unchecked"], "low")
+
+    # -- analyst observations (the other half) ---------------------------
+    #
+    # Everything above is about how the RUN behaved. These are about what the
+    # NUMBERS say: implied borrowing cost, receivable days, who carries an
+    # account, what is intra-group, whether CIP landed in fixed assets. Same
+    # arithmetic, same figures, no model. Their questions go to the FRONT of the
+    # client list -- a priced finding beats "what drove X to appear from nil".
+    analyst_questions: List[str] = []
+    try:
+        from ..ai.analysis import analyse, views_from_evidence, views_from_frames
+        run_record = (ai_results or {}).get("__run__") if isinstance(ai_results, dict) else None
+        cross_facts = (run_record or {}).get("facts") or {}
+        views = (views_from_evidence(evidence, cross_facts) if evidence
+                 else views_from_frames(dfs or {}, cross_facts))
+        for obs in analyse(views, unmatched_statement_rows=_unmatched_rows(reconciliation)):
+            add(obs.finding, "analysis.%s" % obs.code,
+                ["analysis:%s:%s" % (obs.code, a) for a in obs.accounts], obs.severity)
+            if obs.question:
+                analyst_questions.append("%s — %s" % ("、".join(obs.accounts), obs.question))
+    except Exception:
+        pass
+    if analyst_questions:
+        questions[:0] = analyst_questions
 
     # -- assembly -------------------------------------------------------
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
