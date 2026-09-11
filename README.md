@@ -16,18 +16,26 @@ streamlit run fdd_app.py
 
 ## Pipeline
 
-**藍**是程式算出來的，**橙**是模型寫的，**灰虛線**是出錯時的退路。橙色只有四
-塊，而且其中三塊都只是在寫字；模型唯一一次做裁決，是判斷一句因果講不講得通。
-金額、對數、重試與否、留哪一次、版面怎麼排，全部藍色。
+**藍**是程式算出來的，**橙**是模型寫的，**綠**是這一次跑完留在硬碟上的，
+**灰虛線**是出錯時的退路。橙色只有四塊，其中三塊都只是在寫字；模型唯一一次做
+裁決，是判斷一句因果講不講得通。金額、對數、重試與否、留哪一次、版面怎麼排，
+全部藍色。
 
-兩個位置值得留意。哪些科目配明細表，是在寫任何 prompt **之前**就全份 deck 一
-次裁決完的，所以文字不可能承諾一張畫不出來的表。而決定一段評論可不可信的，
-是對該科目自身數字做的算術；模型只被問一件事——它說的那個原因站不站得住。
+看圖先看綠色那個六角形。**prompt 從它渲染，驗證者也讀它**——同一份東西。這條
+分岔是整套設計的地基：檢查者看見的絕不會比模型少。曾經兩邊各自重建一份，縫隙
+裡出過五次同一種錯，每次都是模型引用了一個檢查者根本不知道的數字，然後被判
+「查無此數」。
+
+另外兩個位置值得留意。哪些科目配明細表，是在寫任何 prompt **之前**就全份 deck
+一次裁決完的，所以文字不可能承諾一張畫不出來的表。而這一次跑完之後，證據池不
+會消失：幾個月後不用再開 Excel，也答得出某個數字是哪一格來的。
 
 ```mermaid
 flowchart TD
-    classDef det fill:#E8F0FE,stroke:#1A56DB,stroke-width:2px,color:#0B2A6B
-    classDef llm fill:#FFF1E0,stroke:#E8710A,stroke-width:2px,color:#7A3E00
+    classDef det  fill:#E8F0FE,stroke:#1A56DB,stroke-width:2px,color:#0B2A6B
+    classDef llm  fill:#FFF1E0,stroke:#E8710A,stroke-width:2px,color:#7A3E00
+    classDef pool fill:#E6F4EA,stroke:#137333,stroke-width:3px,color:#0B3D1E
+    classDef keep fill:#F0F7F2,stroke:#137333,stroke-width:2px,color:#0B3D1E
     classDef edge fill:#FFFFFF,stroke:#5F6368,stroke-width:2px,color:#202124
     classDef weak fill:#F1F3F4,stroke:#9AA0A6,stroke-width:1px,color:#5F6368
     classDef gate fill:#FEF7E0,stroke:#B06000,stroke-width:2px,color:#5C3A00
@@ -44,6 +52,8 @@ flowchart TD
         FACT["事實表<br/>期間變動 · 重大性<br/>構成殘差 · 集中度"]
         RES --> NORM --> REC --> SUB --> FACT
     end
+
+    EV{{"每個科目一個證據池<br/>模型獲准引用的每一格<br/>來源分頁 · 行 · 期間 · 乘數"}}
 
     subgraph S2["② 模型只負責語言"]
         direction TB
@@ -62,14 +72,25 @@ flowchart TD
     GATE{"有找不到<br/>來源的數字？"}
     RE["指名錯處<br/>只重寫該科目"]
     ARB["仲裁<br/>留缺陷最少那次<br/>不是最後一次"]
-    HS["房屋風格<br/>零餘額 · 單位小數 · 公司名"]
+    HS["房屋風格<br/>零期間退出列舉 · 單位小數 · 公司名"]
     SUM["執行摘要"]
     PACK["量度真實高度並分欄<br/>字型度量，不是字數估算"]
     HAR["逾時重送 · 階段熔斷<br/>最後退回純資料摘要"]
     QA["匯出後檢查<br/>溢出 · 壓字 · 佔位符"]
 
+    subgraph S4["④ 這一次跑完留下來的"]
+        direction LR
+        DISK[("證據池 · 稽核軌跡<br/>階段斷點 · 逐句判決")]
+        ANA["分析層<br/>隱含利率 · 週轉天數<br/>轉固 · 集中度 · 留抵稅"]
+        ASK["提問<br/>答案受同一把尺"]
+        DISK --> ANA
+        DISK --> ASK
+    end
+
     XL --> RES
-    FACT --> GEN
+    FACT --> EV
+    EV -->|"prompt 由此渲染"| GEN
+    EV -->|"驗證者讀同一份"| CHK
     AUD --> CHK
     VAL --> GATE
     GATE -->|"有"| RE
@@ -78,12 +99,18 @@ flowchart TD
     RE -.->|"次數用盡"| ARB
     ARB --> HS --> SUM --> PACK --> OUT
 
+    EV ==> DISK
+    ANA -.->|"寫入內部發現清單"| SUM
+
     GEN -.->|"呼叫失敗"| HAR
     HAR -.-> CHK
+    GEN -.->|"死在中途就從斷點接回"| DISK
     OUT -.->|"僅 CLI"| QA
 
-    class XL,RES,NORM,REC,SUB,FACT,CHK,RE,ARB,HS,PACK det
+    class XL,RES,NORM,REC,SUB,FACT,CHK,RE,ARB,HS,PACK,ANA det
     class GEN,AUD,VAL,SUM llm
+    class EV pool
+    class DISK,ASK keep
     class GATE gate
     class HAR,QA weak
     class OUT edge
