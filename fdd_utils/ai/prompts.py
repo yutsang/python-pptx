@@ -581,6 +581,30 @@ class PromptEngine:
                     and isinstance(row[latest_col], (int, float)) and not pd.isna(row[latest_col])
                 ]
                 top = [t for t in top if t[1] != 0]
+                # A description that appears on SEVERAL rows makes every number
+                # below meaningless, and the block states them as fact.
+                #
+                # A 固定资产 frame carries 房屋建筑物 three times -- once in the
+                # gross block, once under 累计折旧, once in the net block -- so
+                # summing rows gave "19个顶层构成项，合计3.83亿元" for an account
+                # whose net value is 1.92亿, and named "最大的三项（固定资产-房屋
+                # 建筑物、固定资产-房屋建筑物、累计折旧-房屋建筑物）" with the same
+                # line twice. An AR frame repeats a counterparty across service
+                # lines, which inflated its total from 440,599 to 755,636.
+                # Measured across three local workbooks: 4 of 6 remainder blocks
+                # were computed this way.
+                #
+                # Aggregating by name is right for the counterparty case and
+                # wrong for the gross/contra/net case (it would make 房屋建筑物
+                # 2.17 + 1.63), and telling the two apart needs the frame's
+                # block structure, which is not carried here. So the block is
+                # withheld rather than guessed: an unstated remainder leaves the
+                # composition check to catch a bad enumeration, while a stated
+                # wrong one is BELIEVED -- it is also added to the grounding
+                # pool, so it silently authorises the figure it got wrong.
+                _names = [l for l, _v in top]
+                if len(_names) != len(set(_names)):
+                    top = []
                 if len(top) > 3:
                     ranked = sorted(top, key=lambda kv: abs(kv[1]), reverse=True)
                     total = sum(v for _l, v in top)
