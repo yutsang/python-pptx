@@ -2064,7 +2064,7 @@ def run_ai_checks(
     # 3 stages ever fire a progress callback.
     stage_count = len(SUBAGENT_SEQUENCE)
     total_steps = stage_count * len(mapping_keys)
-    pbar = tqdm(total=total_steps, desc="AI pipeline", unit="step")
+    pbar = tqdm(total=total_steps, **_entity_bar_kwargs("AI pipeline"))
     seen_step = {"n": 0}
     progress_lock = threading.Lock()
 
@@ -3222,6 +3222,26 @@ def resolve_auto_rollup_targets(files: List[Path]) -> Dict[Path, Tuple[Path, str
     return targets
 
 
+#: Which progress-bar row the entity running on THIS thread owns, and what to
+#: call it. Several databooks now run at once and each starts its own
+#: "AI pipeline" bar; without a row of its own every one of them redraws over
+#: the others and the display becomes a single flickering line. Set by the
+#: entity pool, read by the bar itself -- a thread-local rather than a
+#: parameter because the bar is created deep inside inspect_one.
+_ENTITY_CTX = threading.local()
+
+
+def _entity_bar_kwargs(desc: str, *, unit: str = "step") -> Dict[str, Any]:
+    position = getattr(_ENTITY_CTX, "position", None)
+    if position is None:
+        return {"desc": desc, "unit": unit}
+    label = str(getattr(_ENTITY_CTX, "label", "") or "")
+    if len(label) > 22:
+        label = label[:21] + "…"
+    return {"desc": f"{label:<22} {desc}", "unit": unit,
+            "position": position, "leave": False}
+
+
 class _PerEntityStdout:
     """Keeps each entity's output whole when several run at once.
 
@@ -3276,13 +3296,13 @@ def main() -> int:
                          "the Financials summary from there while breakdown tabs (dfs) still come "
                          "from `path` as normal. Requires --financials-sheet. Only valid when "
                          "`path` is a single file.")
-    ap.add_argument("--entity-workers", type=int, default=1, metavar="N",
-                    help="run N databooks at once when `path` is a folder (default 1, i.e. one "
-                         "after another as before). This is a SECOND level of concurrency: each "
-                         "entity already runs --workers account threads inside it, so the LLM "
-                         "sees up to N x --workers calls at once. On a seven-entity portfolio at "
-                         "N=3 the wall clock is about a third. Each entity's output is buffered "
-                         "and printed whole, in file order, so the log stays readable.")
+    ap.add_argument("--entity-workers", type=int, default=4, metavar="N",
+                    help="run N databooks at once when `path` is a folder (default 4; pass 1 for "
+                         "the old one-after-another behaviour). This is a SECOND level of "
+                         "concurrency: each entity also runs --workers account threads inside "
+                         "it, so the model sees up to N x --workers calls at once. Each entity "
+                         "keeps its own progress bar row, and its output is buffered and printed "
+                         "whole in FILE order, so neither the bars nor the log interleave.")
     ap.add_argument("--resume", default=None, metavar="RUN_ID",
                     help="with --run-ai: seed every stage a previous run completed from its "
                          "checkpoint.jsonl (fdd_utils/logs/run_<RUN_ID>/), so only the stages it "
@@ -3503,12 +3523,26 @@ def main() -> int:
 
     entity_workers = max(1, int(args.entity_workers or 1))
     summaries: List[Dict[str, Any]] = []
+    # One bar for the folder, always on row 0, so "how far through the seven
+    # databooks am I" is answerable without reading a thousand lines of report.
+    # Bars go to stderr and the reports to stdout, so they never fight for the
+    # same line; the finished reports are handed to tqdm.write, which clears
+    # the bars, writes, and redraws them underneath.
+    outer = tqdm(total=len(files), desc="Databooks", unit="file",
+                 position=0, leave=True) if len(files) > 1 else None
     if entity_workers == 1 or len(files) < 2:
         for f in files:
+            if outer is not None:
+                _ENTITY_CTX.position, _ENTITY_CTX.label = 1, f.stem
+                outer.set_postfix_str(f.stem[:28])
             try:
                 summaries.append(_run_one(f))
             except Exception as exc:
                 summaries.append(_failed(f, exc))
+            if outer is not None:
+                outer.update(1)
+        if outer is not None:
+            outer.close()
     else:
         total = entity_workers * max(1, int(args.workers or 1)) if args.run_ai else entity_workers
         print(f"\nRunning {len(files)} databook(s) {entity_workers} at a time"
@@ -3521,8 +3555,18 @@ def main() -> int:
         proxy = _PerEntityStdout(sys.stdout)
         sys.stdout = proxy
 
+        # One bar row per worker, handed out on first use and kept for the life
+        # of the thread -- the pool reuses its threads, so a row belongs to a
+        # worker rather than to an entity, and rows never exceed entity_workers.
+        rows: Dict[int, int] = {}
+        rows_lock = threading.Lock()
+
         def _buffered(f):
             proxy.register()
+            ident = threading.get_ident()
+            with rows_lock:
+                _ENTITY_CTX.position = rows.setdefault(ident, len(rows) + 1)
+            _ENTITY_CTX.label = f.stem
             try:
                 return _run_one(f), proxy.take()
             except Exception as exc:
@@ -3533,18 +3577,31 @@ def main() -> int:
             with ThreadPoolExecutor(max_workers=entity_workers) as pool:
                 # Submitted in file order and read back in file order, so a fast
                 # entity finishing first does not reorder the log; only the
-                # WALL CLOCK overlaps, never the report.
-                futures = [pool.submit(_buffered, f) for f in files]
+                # WALL CLOCK overlaps, never the report. The bar, in contrast,
+                # advances on REAL completion via a callback -- it is there to
+                # say how much is left, and waiting for the in-order read would
+                # make it lie whenever an early file is the slow one.
+                futures = []
+                for f in files:
+                    future = pool.submit(_buffered, f)
+                    if outer is not None:
+                        future.add_done_callback(lambda _f: outer.update(1))
+                    futures.append(future)
                 for f, future in zip(files, futures):
                     try:
                         entry, text = future.result()
                     except Exception as exc:
                         entry, text = _failed(f, exc), ""
-                    proxy._stream.write(text)
-                    proxy._stream.flush()
+                    if text:
+                        tqdm.write(text, file=proxy._stream, end="")
+                    else:
+                        proxy._stream.flush()
                     summaries.append(entry)
         finally:
             sys.stdout = proxy._stream
+            if outer is not None:
+                outer.close()
+                print("\n" * min(entity_workers, 6))
 
     if len(files) > 1:
         _print_final_summary(summaries, args.run_ai)
