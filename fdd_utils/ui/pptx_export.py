@@ -575,6 +575,17 @@ def build_insight_summary(
             continue
         categories = sorted({str(r.get("category") or "?") for _i, r in flagged})
         severity = "high" if any("halluc" in c for c in categories) else "medium"
+        # A composition gap carries its own size, and the sizes are not
+        # comparable: one real portfolio run produced fourteen of these ranging
+        # from 2% to 220%, every one reported as the same "1 of 11 clause(s)
+        # unsupported" at medium. The 2% is a rounding remnant with every
+        # component named; the 220% is an account whose negative balances were
+        # left out entirely. Sorted together they hide each other.
+        _gaps = [int(g) for _i, r in flagged
+                 for g in re.findall(r"\((\d+)%\) unaccounted", str(r.get("reason") or ""))]
+        if _gaps and severity != "high":
+            _worst = max(_gaps)
+            severity = "high" if _worst >= 50 else ("medium" if _worst >= 10 else "low")
         add(f"{key}: {len(flagged)} of {len(reviews)} clause(s) unsupported ({', '.join(categories)})",
             "clause_reviews", [f"clause:{key}#{i}" for i, _r in flagged], severity)
 

@@ -1469,6 +1469,20 @@ _RUNON_AMT = re.compile(r"(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 _RESIDUAL_ITEM = re.compile(
     r"其余[^。；;]{0,40}?(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)"
 )
+# The same closing component written the other way the model actually writes it:
+# 「其他小额应付款项（如法律服务费、维修费等）合计为负42.1万元」. Only 其余 was
+# matched, so a real run summed three named items to 55.9万元 against a 9.5万元
+# total and reported 488% unaccounted for -- the 42.1 that closes it was sitting
+# in the sentence, spelled 其他 rather than 其余.
+_RESIDUAL_OTHER = re.compile(
+    r"其他[^。；;]{0,40}?合计\s*(?:约)?\s*(?:为)?\s*(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)"
+)
+#: 「分别为」 introduces the SAME line across several PERIODS, not several
+#: components. A real run summed 0 + 182.1 + 150.0 + 65.9 = 398.0万元 against a
+#: 131.8万元 total and called it 202% unaccounted for; the four figures were one
+#: account in 2023, 2024, 2025 and 2026H1. The span is cut here rather than the
+#: whole check abandoned, so 「主要包括A、B，分别占比…」 keeps A and B.
+_PERIOD_SERIES = re.compile(r"分别|respectively", re.I)
 _STATED_TOTAL = re.compile(r"(?:合计|总额|余额合?计?)\s*(?:为)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 _SCALE = {"元": 1.0, "万元": 1e4, "亿元": 1e8}
 
@@ -1513,12 +1527,16 @@ def _composition_findings(mapping_key: str, text: str) -> List[Tuple[str, str]]:
     if not items:
         run = _ENUM_RUNON.search(scan)
         if run:
-            items = _RUNON_AMT.findall(run.group(1))
+            span = run.group(1)
+            _series = _PERIOD_SERIES.search(span)
+            if _series:
+                span = span[:_series.start()]
+            items = _RUNON_AMT.findall(span)
     # The closing "其余X万元为…" is a component like any other. Added here
     # rather than inside the two patterns above because it can sit in either
     # form -- after a numbered list, or trailing a run-on one -- and because a
     # run-on span that already swallowed it must not count it twice.
-    residual = _RESIDUAL_ITEM.search(scan)
+    residual = _RESIDUAL_ITEM.search(scan) or _RESIDUAL_OTHER.search(scan)
     if residual:
         sign, value, unit = residual.groups()
         signed = float(value.replace(",", "")) * (-1.0 if sign else 1.0)
@@ -1543,6 +1561,19 @@ def _composition_findings(mapping_key: str, text: str) -> List[Tuple[str, str]]:
     # shape; testing it arithmetically avoids having to decide what 其中 means
     # in a sentence, which it does not always mean.
     values = [float(v.replace(",", "")) * _SCALE.get(u, 1.0) for v, u in items]
+    # A line that restates the total is a parent, not a component. 「货币资金余额
+    # 为1,128.3万元，主要为银行存款-人民币户余额1,128.3万元，其中…」 lists the
+    # whole account again before breaking it down, and counting it put the items
+    # at 133% of the total. Dropped and re-tested rather than reported.
+    _restate = [v for v in values if abs(v - total) / total <= 0.01]
+    if _restate and len(values) - len(_restate) >= 2:
+        values = [v for v in values if abs(v - total) / total > 0.01]
+        items = [(v, u) for v, u in items
+                 if abs(float(v.replace(",", "")) * _SCALE.get(u, 1.0) - total) / total > 0.01]
+        listed = sum(values)
+        gap = total - listed
+        if abs(gap) / total <= 0.01:
+            return []
     if len(values) > 2:
         biggest = max(values)
         for value in values:
