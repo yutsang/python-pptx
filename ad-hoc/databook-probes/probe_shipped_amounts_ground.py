@@ -43,6 +43,10 @@ def main() -> int:
     ap.add_argument("--run", required=True)
     ap.add_argument("--account", default=None, help="limit to one account")
     ap.add_argument("--context", type=int, default=46, help="characters of context each side")
+    ap.add_argument("--near", default=None, metavar="AMOUNT",
+                    help="for an amount the pool cannot find, list the facts NEAREST to it. The "
+                         "flag message names one source picked by a scale heuristic, which can "
+                         "be an unrelated row; the neighbours say what is actually there.")
     ap.add_argument("--trace", default=None, metavar="AMOUNT",
                     help="instead of sweeping, show WHICH fact in --account's pool matches this "
                          "amount (base units, e.g. 19100000). A figure that grounds is not "
@@ -52,6 +56,28 @@ def main() -> int:
     args = ap.parse_args()
 
     memory = RunMemory(args.run)
+
+    if args.near is not None:
+        if not args.account:
+            sys.exit("--near needs --account")
+        key = memory.resolve(args.account) or args.account
+        target = float(args.near)
+        record = memory.evidence.get(key)
+        facts = list(getattr(record, "facts", None) or [])
+        ranked = sorted(
+            (f for f in facts if isinstance(f.get("value"), (int, float)) and f["value"]),
+            key=lambda f: abs(abs(float(f["value"])) - abs(target)))[:10]
+        print("\n[%s] nearest facts to %s  (pool holds %d)" % (key, format(target, ",.0f"), len(facts)))
+        for f in ranked:
+            value = abs(float(f["value"]))
+            off = (value - abs(target)) / abs(target) * 100.0 if target else 0.0
+            print("  %14s  %+7.1f%%  %-14s %s %s"
+                  % (format(value, ",.0f"), off, f.get("kind"),
+                     f.get("row_desc") or "", f.get("col_label") or ""))
+        print("\nA figure written as 0.0X亿元 carries a half-ulp of 0.005亿 = 500,000, so any")
+        print("neighbour inside that band is what the text actually means, whatever the")
+        print("verifier's 5% band says.")
+        return 0
 
     if args.trace is not None:
         if not args.account:
