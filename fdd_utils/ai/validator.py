@@ -422,6 +422,36 @@ def _append_clause_span(spans: List[Tuple[int, int, str]], text: str, start: int
 # Money expressions only — bare integers/years/percentages are intentionally NOT
 # treated as groundable amounts (keeps false-positive hallucination flags low).
 _AMT_MILLION = re.compile(r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)?\s*(\d[\d,]*(?:\.\d+)?)\s*(?:million|mn)\b", re.IGNORECASE)
+#: A figure carries only the precision it was WRITTEN with. 「0.01亿元」 is a
+#: two-decimal 亿元 rendering, so it means anything within 0.005亿 = 500,000 of
+#: 1,000,000 -- the text simply does not distinguish 1,062,997 from 1,000,000.
+#: Checking such a figure at +/-5% (= +/-50,000 here) is ten times tighter than
+#: the notation, and a check tighter than its own input produces false positives
+#: by construction: a real deck flagged 「装修工程0.01亿元」 as a hallucination in
+#: four consecutive runs, against an analysis_cell of 1,062,997 sitting +6.3%
+#: away. The list it appears in sums to the account's net value.
+#:
+#: Only bites when the unit is coarse for the magnitude. 「43.1万元」 gets a
+#: half-ulp of 500 and 「1.63亿元」 of 500,000, both far under the 5% band that
+#: already applies, so nothing else moves.
+_WRITTEN_UNIT_SCALE = (("亿", 1e8), ("億", 1e8), ("万", 1e4), ("萬", 1e4))
+_WRITTEN_NUMBER = re.compile(r"(\d[\d,]*)(?:\.(\d+))?")
+
+
+def display_half_ulp(written: str) -> float:
+    """Half the last place of `written`, in base units. 0.0 if unreadable."""
+    match = _WRITTEN_NUMBER.search(str(written or ""))
+    if not match:
+        return 0.0
+    decimals = len(match.group(2) or "")
+    scale = 1.0
+    for token, value in _WRITTEN_UNIT_SCALE:
+        if token in written:
+            scale = value
+            break
+    return 0.5 * (10.0 ** -decimals) * scale
+
+
 _AMT_YI = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*亿")
 _AMT_WAN = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*万")
 _AMT_CUR_PREFIX = re.compile(r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)\s*(\d[\d,]*(?:\.\d+)?)", re.IGNORECASE)
@@ -1171,7 +1201,7 @@ class SourceIndex:
         index.date_facts = _harvest_source_date_facts(df)
         return index
 
-    def matches(self, target: float) -> Optional[Dict[str, Any]]:
+    def matches(self, target: float, floor: float = 0.0) -> Optional[Dict[str, Any]]:
         """The first source fact this amount matches, or None.
 
         Returns the FACT, not a bool, so a caller can say which value grounded
@@ -1219,10 +1249,10 @@ class SourceIndex:
                     return fact
                 continue
             if fact["kind"] == "window_sum":
-                if abs(t - a) <= _WINDOW_SUM_REL_TOL * a:
+                if abs(t - a) <= max(_WINDOW_SUM_REL_TOL * a, float(floor or 0.0)):
                     return fact
                 continue
-            if abs(t - a) <= max(500.0, 0.05 * a):
+            if abs(t - a) <= max(500.0, 0.05 * a, float(floor or 0.0)):
                 return fact
         return None
 
@@ -1301,7 +1331,8 @@ def ground_amounts(clause: str, source: SourceIndex, *, offset: int = 0) -> Opti
     entries: List[Dict[str, Any]] = []
     unmatched: List[Dict[str, Any]] = []
     for value, start, end in triples:
-        fact = source.matches(value)
+        # The floor is what the figure was WRITTEN with -- see display_half_ulp.
+        fact = source.matches(value, floor=display_half_ulp(clause[start:end]))
         entry: Dict[str, Any] = {
             "value": float(value),
             "span": [int(start + offset), int(end + offset)],
