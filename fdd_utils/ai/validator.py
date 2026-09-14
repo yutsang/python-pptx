@@ -1088,10 +1088,42 @@ class SourceIndex:
             annualization_months = integrity.get("annualization_months")
         if isinstance(annualization_months, (int, float)) and 0 < annualization_months < 12:
             factor = 12.0 / annualization_months
+            # ...but only for numbers that are actually a PARTIAL period. The
+            # blob carries prior-year figures too, and multiplying those files a
+            # quantity nobody computed: a real run wrote 「较2025年度1,910.0万元
+            # 减少63%」 and grounded it against 955.0万元 x 2, where 955.0万元 is
+            # the 2025 FULL YEAR. prompts.yml:806 forbids exactly that ('把不足一年
+            # 的期间与整年比较时，两边必须都用年化金额，或都用未年化金额') and the
+            # pool was agreeing with the model against the prompt.
+            #
+            # A remark number is treated as already-annual when it matches a
+            # value in one of the frame's EARLIER period columns and not the
+            # final one. The stamp-duty case the widening exists for is
+            # untouched by that test: its raw figure lives only in the partial
+            # column, so x12/months stays in the pool.
+            full_year, partial = [], []
+            if analysis_df is not None and hasattr(analysis_df, "columns"):
+                try:
+                    amount_cols = [c for c in analysis_df.columns
+                                   if c not in cls._non_amount_cols(analysis_df)]
+                    for position, column in enumerate(amount_cols):
+                        bucket = partial if position == len(amount_cols) - 1 else full_year
+                        for value in analysis_df[column]:
+                            if isinstance(value, (int, float)) and value == value and value:
+                                bucket.append(abs(float(value)))
+                except Exception:
+                    full_year, partial = [], []
+
+            def _near(value: float, pool: List[float]) -> bool:
+                target = abs(float(value))
+                return any(abs(target - other) <= max(1.0, 0.005 * max(target, other))
+                           for other in pool)
+
             facts += [
                 _fact(v * factor, "annualized_note" if own else "sibling_cell",
                       sheet=cls_sheet, row_desc=f"notes/remarks x{factor:.4g} (annualized)")
                 for v in text_values
+                if not (_near(v, full_year) and not _near(v, partial))
             ]
         return facts
 

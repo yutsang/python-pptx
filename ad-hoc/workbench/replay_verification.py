@@ -142,11 +142,17 @@ def check_pairing(results: Dict[str, Any], dfs: Dict[str, Any], databook: str, r
     evidence available that the pair is the right one. It is necessary, not
     sufficient: two workbooks from the same template share an account vocabulary.
     """
-    missing = sorted(set(results) - set(dfs))
+    # The run's two sentinels (__run__, __run_health__) are not accounts and
+    # never have a df. Counting them made this guard refuse every run written
+    # since the state layer landed -- "2 account(s) in the results have no df
+    # here: ['__run__', '__run_health__']" -- which is the same sentinels-as-
+    # accounts mistake a680047 fixed elsewhere and this tool never got.
+    missing = sorted(k for k in (set(results) - set(dfs)) if not str(k).startswith("__"))
     if missing:
         sys.exit(
             f"❌ REFUSING TO REPLAY — wrong databook for this run.\n"
-            f"   run:      {run_dir.name} ({len(results)} accounts)\n"
+            f"   run:      {run_dir.name} "
+            f"({len([k for k in results if not str(k).startswith('__')])} accounts)\n"
             f"   databook: {databook} ({len(dfs)} accounts)\n"
             f"   {len(missing)} account(s) in the results have no df here: {missing}\n"
             f"   Available: {sorted(dfs)}\n"
