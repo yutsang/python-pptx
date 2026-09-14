@@ -86,7 +86,9 @@ def main() -> int:
         if nb or pb:
             rows.append((key, nb, na, pb, pa, before, after))
 
-    print("RUN %s   %d account(s) with commentary\n" % (os.path.basename(folder), len(rows)))
+    # `rows` holds only the accounts that HAD something to fix -- calling that
+    # "accounts with commentary" overstated the corpus every time it printed.
+    print("RUN %s   %d account(s) carried something to fix\n" % (os.path.basename(folder), len(rows)))
     print("%-12s %-14s %s" % ("account", "nil in list", "over-precise 万元/亿元"))
     print("-" * 62)
     for key, nb, na, pb, pa, _b, _a in rows:
