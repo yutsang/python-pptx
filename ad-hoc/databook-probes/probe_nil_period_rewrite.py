@@ -58,12 +58,24 @@ CASES = [
     ("截至2024-05-31，应收账款余额合计人民币0万元，主要系经管理层调整后净额无余额",
      "an account's OWN nil balance reads 无余额 (prompts.yml:213)", True),
 
-    # --- KNOWN LIMIT: no period frame next to the amounts, so nothing to pair --
-    ("税金及附加-土地使用税同期分别为0万元、47.3万元、47.3万元及23.7万元",
-     "KNOWN LIMIT: 同期 refers to a frame in an earlier sentence", False),
+    # --- the frame is elsewhere in the BULLET, not in this sentence ---------
+    ("2023年度、2024年度、2025年度及2026年1至6月期间，三代手续费返还分别为0万元、9.6万元、0万元及0万元，"
+     "加计抵减分别为0万元、0.4万元、0万元及0万元",
+     "one frame, TWO series under it -- the second has no frame of its own", True),
 
+    ("税金及附加-房产税于2023年度、2024年度、2025年度及2026年1至6月期间分别为0万元、253.5万元、209.1万元及92.5万元；"
+     "税金及附加-印花税分别为0万元、0.9万元、0.6万元及0.2万元",
+     "the frame is two clauses back", True),
+
+    ("管理费用-员工于2023年度、2024年度、2025年度及2026年1-6月期间均未发生；"
+     "管理费用-行政分别为0万元、194.0万元、108.5万元及61.9万元，于同期发生",
+     "于同期 resolved against the bullet's own earlier frame", True),
+
+    ("其余0.0万元为管理层调整等。", "a residual of nothing is a clause that says nothing", True),
+
+    # --- KNOWN LIMIT: no period frame next to the amounts, so nothing to pair --
     ("管理费用-行政分别为0万元、194.0万元、108.5万元及61.9万元",
-     "KNOWN LIMIT: no frame anywhere -- which period is nil cannot be known", False),
+     "KNOWN LIMIT: no frame ANYWHERE in the text -- which period is nil is unknowable", False),
 
     # --- must not be touched ----------------------------------------------
     ("营业收入-租赁费于2024年度、2025年度及2026年1-6月分别为1,076.3万元、955.0万元及494.1万元。",

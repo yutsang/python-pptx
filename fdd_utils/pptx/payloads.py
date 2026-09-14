@@ -270,7 +270,55 @@ _PERIOD_SERIES_REVERSED = re.compile(
     # terminator forces the token out to its full 「2026年1至6月」.
     r"(?:期间|期末)?\s*(?:发生|列示)"
 )
+#: 「2023年度、2024年度、2025年度及2026年1至6月期间，三代手续费返还分别为…」 --
+#: the frame, a comma, then a NAMED series. The name is short by construction so
+#: this cannot reach back across a clause boundary.
+_FRAMED_NAMED_SERIES = re.compile(
+    r"((?:" + _PERIOD_TOKEN + r"[、及和])+" + _PERIOD_TOKEN + r")(?:期间|期末)?\s*[，,]\s*"
+    r"([^，。；;：:]{1,24}?)分别为\s*(?:人民币|人民幣|CNY|RMB)?\s*"
+    r"((?:(?:人民币|人民幣|CNY|RMB)?\s*-?[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)\s*[、及和]?\s*)+)"
+)
 _SERIES_AMOUNT = re.compile(r"(?:人民币|人民幣|CNY|RMB)?\s*(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+
+
+#: A bare 「X分别为A、B、C、D」 with no frame of its own, optionally closed by
+#: 「，于同期发生」. Resolved against the last frame seen EARLIER IN THE SAME
+#: BULLET -- which is where the frame usually is. Six of the seven survivors of
+#: the sentence-local passes were this: the writer states the periods once and
+#: then runs several series under them.
+_BARE_SERIES = re.compile(
+    r"分别为\s*(?:人民币|人民幣|CNY|RMB)?\s*"
+    r"((?:(?:人民币|人民幣|CNY|RMB)?\s*-?[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)\s*[、及和]?\s*)+)"
+    r"(?:\s*[，,]\s*(?:于|在)?同期(?:发生|列示)?)?"
+)
+_ANY_FRAME = re.compile(r"(?:" + _PERIOD_TOKEN + r"[、及和])+" + _PERIOD_TOKEN + r"(?=期间|期末|[，,。；;])")
+
+
+def _split_series(periods, pairs):
+    """(kept, nil) as [(period, "12.3万元"), ...], or None when unpairable."""
+    if len(periods) != len(pairs) or len(periods) < 2:
+        return None
+    kept, nil = [], []
+    for period, (value, unit) in zip(periods, pairs):
+        try:
+            zero = float(value.replace(",", "")) == 0.0
+        except ValueError:
+            return None
+        (nil if zero else kept).append((period, value + unit))
+    if not nil or not kept:
+        return None
+    return kept, nil
+
+
+def _join(items, index):
+    picked = [item[index] for item in items]
+    return picked[0] if len(picked) == 1 else "、".join(picked[:-1]) + "及" + picked[-1]
+
+
+def _phrase(kept, nil, lead="于"):
+    head = ("%s%s为%s" % (lead, kept[0][0], kept[0][1]) if len(kept) == 1
+            else "%s%s期间分别为%s" % (lead, _join(kept, 0), _join(kept, 1)))
+    return "%s，%s未发生" % (head, _join(nil, 0))
 
 
 def rewrite_nil_periods_out_of_series(text: str) -> str:
@@ -280,80 +328,89 @@ def rewrite_nil_periods_out_of_series(text: str) -> str:
     with a worked example of the wrong form. A seven-entity run shipped about
     forty of them anyway, which is the same lesson the company-name rule taught:
     a rule stated only in the prompt is a request, and the model declines it
-    often enough to matter. shorten_company_names removed 139 legal names from
-    that same run without the prompt having to win the argument.
+    often enough to matter.
 
-    「代理及佣金于2023年度、2024年度、2025年度及2026年1-6月期间分别为0万元、
-     2.4万元、0万元及4.4万元」
-      -> 「代理及佣金于2024年度及2026年1-6月期间分别为2.4万元及4.4万元，
-          2023年度及2025年度未发生」
+    Four shapes, because a real deck writes all four:
 
-    Positional, not semantic: the periods and the amounts are paired in order,
-    and if the two lists are not the same length nothing is touched. A series
-    that is nil in EVERY period is left alone -- that is a different sentence
-    and a different rule.
+      于A、B、C、D期间分别为W、X、Y、Z          frame first, then amounts
+      A、B、C、D期间，某项分别为W、X、Y、Z      frame, then a NAMED series
+      分别为W、X、Y、Z，于A、B、C、D期间发生    amounts first, frame after
+      某项分别为W、X、Y、Z[，于同期发生]        no frame -- use the bullet's last
+
+    The fourth is why this works on a whole bullet rather than a sentence at a
+    time. The writer states the periods once and runs several series under them,
+    so the frame for 「加计抵减分别为0万元、0.4万元、0万元及0万元」 is two clauses
+    back. Pairing is positional and the counts must match exactly; anything that
+    does not pair is left alone.
     """
     body = str(text or "")
     if "分别为" not in body:
         return body
 
     def _fix(match: "re.Match") -> str:
-        # Keep the lead the sentence used, INCLUDING none: 「营业成本-折旧成本：
-        # 2023年度、…分别为」 reads wrong as 「：于2024年度…」.
         lead = match.group(1) or ""
-        frame, amounts_blob = match.group(2), match.group(3)
-        periods = [p.strip() for p in re.split(r"[、及和]", frame) if p.strip()]
-        pairs = _SERIES_AMOUNT.findall(amounts_blob)
-        if len(periods) != len(pairs) or len(periods) < 2:
-            return match.group(0)
-        kept, nil = [], []
-        for period, (value, unit) in zip(periods, pairs):
-            try:
-                zero = float(value.replace(",", "")) == 0.0
-            except ValueError:
-                return match.group(0)
-            (nil if zero else kept).append((period, value + unit))
-        if not nil or not kept:
-            return match.group(0)
-        if len(kept) == 1:
-            head = "%s%s为%s" % (lead, kept[0][0], kept[0][1])
-        else:
-            head = "%s%s期间分别为%s" % (
-                lead,
-                "、".join(p for p, _a in kept[:-1]) + "及" + kept[-1][0],
-                "、".join(a for _p, a in kept[:-1]) + "及" + kept[-1][1],
-            )
-        tail = ("、".join(p for p, _a in nil[:-1]) + "及" + nil[-1][0]) if len(nil) > 1 else nil[0][0]
-        return "%s，%s未发生" % (head, tail)
+        split = _split_series(
+            [p.strip() for p in re.split(r"[、及和]", match.group(2)) if p.strip()],
+            _SERIES_AMOUNT.findall(match.group(3)))
+        return match.group(0) if split is None else _phrase(*split, lead=lead)
+
+    def _fix_framed_named(match: "re.Match") -> str:
+        frame, name, amounts = match.group(1), match.group(2), match.group(3)
+        split = _split_series(
+            [p.strip() for p in re.split(r"[、及和]", frame) if p.strip()],
+            _SERIES_AMOUNT.findall(amounts))
+        # The frame is consumed along with the series: restating it and then
+        # immediately contradicting it ("2023年度…期间，X于2024年度为…") reads
+        # like two sentences fighting.
+        return match.group(0) if split is None else name + _phrase(*split)
 
     def _fix_reversed(match: "re.Match") -> str:
-        amounts_blob, lead, frame = match.group(1), match.group(2) or "于", match.group(3)
-        periods = [p.strip() for p in re.split(r"[、及和]", frame) if p.strip()]
-        pairs = _SERIES_AMOUNT.findall(amounts_blob)
-        if len(periods) != len(pairs) or len(periods) < 2:
-            return match.group(0)
-        kept, nil = [], []
-        for period, (value, unit) in zip(periods, pairs):
-            try:
-                zero = float(value.replace(",", "")) == 0.0
-            except ValueError:
-                return match.group(0)
-            (nil if zero else kept).append((period, value + unit))
-        if not nil or not kept:
-            return match.group(0)
-        if len(kept) == 1:
-            head = "%s%s为%s" % (lead, kept[0][0], kept[0][1])
-        else:
-            head = "%s%s期间分别为%s" % (
-                lead,
-                "、".join(p for p, _a in kept[:-1]) + "及" + kept[-1][0],
-                "、".join(a for _p, a in kept[:-1]) + "及" + kept[-1][1],
-            )
-        tail = ("、".join(p for p, _a in nil[:-1]) + "及" + nil[-1][0]) if len(nil) > 1 else nil[0][0]
-        return "%s，%s未发生" % (head, tail)
+        split = _split_series(
+            [p.strip() for p in re.split(r"[、及和]", match.group(3)) if p.strip()],
+            _SERIES_AMOUNT.findall(match.group(1)))
+        return match.group(0) if split is None else _phrase(*split, lead=match.group(2) or "于")
 
-    body = _PERIOD_SERIES_SENTENCE.sub(_fix, body)
-    return _PERIOD_SERIES_REVERSED.sub(_fix_reversed, body)
+    # ONE left-to-right pass over the ORIGINAL text. Rewriting in stages and
+    # then looking for a frame does not work: the earlier stage consumes or
+    # reshapes the very frame the later one needs, and a run where the frame had
+    # been rewritten to three periods refused to pair a four-amount series --
+    # correctly, against text that no longer said what the writer wrote.
+    spans = []
+    for pattern, kind in ((_PERIOD_SERIES_SENTENCE, "own"),
+                          (_FRAMED_NAMED_SERIES, "named"),
+                          (_PERIOD_SERIES_REVERSED, "rev"),
+                          (_BARE_SERIES, "bare")):
+        for match in pattern.finditer(body):
+            spans.append((match.start(), -(match.end() - match.start()), kind, match))
+    spans.sort()
+
+    frames = [(m.end(), m.group(0)) for m in _ANY_FRAME.finditer(body)]
+
+    out, cursor = [], 0
+    for start_at, _neg_len, kind, match in spans:
+        if start_at < cursor:
+            continue                      # already covered by a more specific span
+        if kind == "own":
+            periods, amounts, lead, name = match.group(2), match.group(3), match.group(1) or "", ""
+        elif kind == "named":
+            periods, amounts, lead, name = match.group(1), match.group(3), "于", match.group(2)
+        elif kind == "rev":
+            periods, amounts, lead, name = match.group(3), match.group(1), match.group(2) or "于", ""
+        else:
+            earlier = [text for end_at, text in frames if end_at <= start_at]
+            if not earlier:
+                continue
+            periods, amounts, lead, name = earlier[-1], match.group(1), "于", ""
+        split = _split_series(
+            [p.strip() for p in re.split(r"[、及和]", periods) if p.strip()],
+            _SERIES_AMOUNT.findall(amounts))
+        if split is None:
+            continue
+        out.append(body[cursor:start_at])
+        out.append(name + _phrase(*split, lead=lead))
+        cursor = match.end()
+    out.append(body[cursor:])
+    return "".join(out)
 
 
 _OVERPRECISE = re.compile(r"(-?[\d,]+)\.(\d{2,})\s*(万元)|(-?[\d,]+)\.(\d{3,})\s*(亿元)")
@@ -391,6 +448,19 @@ _NIL_BALANCE = re.compile(
 )
 
 
+#: 「其余0.0万元为管理层调整等」. A residual of nothing is a clause that says
+#: nothing -- prompts.yml already forbids 「等于重复科目名称、没有新增信息」
+#: filler. Cut to the clause boundary, never across a sentence end.
+_NIL_RESIDUAL = re.compile(r"[，,、；;]\s*其余\s*-?0(?:\.0+)?\s*(?:万元|亿元|元)[^。；;]*")
+_NIL_RESIDUAL_ALONE = re.compile(r"(?:^|(?<=[。；;]))\s*其余\s*-?0(?:\.0+)?\s*(?:万元|亿元|元)[^。；;]*[。；;]?")
+
+
+def drop_nil_residual(text: str) -> str:
+    """Delete a residual clause whose residual is zero."""
+    body = _NIL_RESIDUAL.sub("", str(text or ""))
+    return _NIL_RESIDUAL_ALONE.sub("", body)
+
+
 def rewrite_nil_balance(text: str) -> str:
     """An account with no balance reads 「无余额」, not 「余额合计0万元」."""
     return _NIL_BALANCE.sub("无余额", str(text or ""))
@@ -408,6 +478,7 @@ def _normalize_slide_commentary_text(text: str) -> str:
     normalized = rewrite_nil_periods_out_of_series(normalized)
     normalized = round_to_house_precision(normalized)
     normalized = rewrite_nil_balance(normalized)
+    normalized = drop_nil_residual(normalized)
     return normalized.strip()
 
 
