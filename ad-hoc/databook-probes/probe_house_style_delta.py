@@ -27,7 +27,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from fdd_utils.pptx.payloads import _normalize_slide_commentary_text  # noqa: E402
+from fdd_utils.pptx.payloads import (  # noqa: E402
+    _normalize_slide_commentary_text, _ANY_FRAME, _BARE_SERIES, _SERIES_AMOUNT,
+)
 
 LOG_ROOT = os.path.join("fdd_utils", "logs")
 
@@ -95,11 +97,27 @@ def main() -> int:
 
     remaining = [(k, b, a) for k, nb, na, _pb, _pa, b, a in rows if na]
     if remaining:
-        print("\nREMAINING -- read these; a survivor is a miss until shown otherwise:")
+        print("\nREMAINING -- read these; a survivor is a miss until shown otherwise.")
+        print("Each one prints the pairing decision, so the cause needs no guessing:")
         for key, _b, after in remaining:
             for sentence in re.split(r"[。；;]", after):
-                if NIL.search(sentence):
-                    print("  [%s] %s" % (key, sentence.strip()[:120]))
+                if not NIL.search(sentence):
+                    continue
+                print("\n  [%s] %s" % (key, sentence.strip()[:160]))
+                # WHY it was not paired: the frame in force, and the two counts.
+                at = after.index(sentence)
+                frames = [m.group(0) for m in _ANY_FRAME.finditer(after[:at + len(sentence)])]
+                series = [m for m in _BARE_SERIES.finditer(sentence)]
+                amounts = len(_SERIES_AMOUNT.findall(series[0].group(1))) if series else 0
+                if not frames:
+                    print("        frame in force: NONE found anywhere before it"
+                          "  ->  %d amount(s) cannot be paired" % amounts)
+                else:
+                    periods = [p for p in re.split(r"[、及和]", frames[-1]) if p.strip()]
+                    print("        frame in force: %s  (%d period(s))" % (frames[-1], len(periods)))
+                    print("        this series:    %d amount(s)  ->  %s"
+                          % (amounts, "counts match, so this is a MISS"
+                             if amounts == len(periods) else "counts differ, correctly refused"))
     if args.show:
         print("\nREWRITES")
         for key, nb, na, _pb, _pa, b, a in rows:

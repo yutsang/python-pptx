@@ -281,6 +281,10 @@ _FRAMED_NAMED_SERIES = re.compile(
 _SERIES_AMOUNT = re.compile(r"(?:人民币|人民幣|CNY|RMB)?\s*(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 
 
+#: A frame ends at 期间/期末, at punctuation, or straight into 分别为 -- a real
+#: deck writes 「于2023年、2024年、2025年及2026年1-6月分别为…」 with no 期间 at
+#: all, and requiring one made the bullet-scoped pass see no frame and leave
+#: three nil mentions standing.
 #: A bare 「X分别为A、B、C、D」 with no frame of its own, optionally closed by
 #: 「，于同期发生」. Resolved against the last frame seen EARLIER IN THE SAME
 #: BULLET -- which is where the frame usually is. Six of the seven survivors of
@@ -291,7 +295,7 @@ _BARE_SERIES = re.compile(
     r"((?:(?:人民币|人民幣|CNY|RMB)?\s*-?[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)\s*[、及和]?\s*)+)"
     r"(?:\s*[，,]\s*(?:于|在)?同期(?:发生|列示)?)?"
 )
-_ANY_FRAME = re.compile(r"(?:" + _PERIOD_TOKEN + r"[、及和])+" + _PERIOD_TOKEN + r"(?=期间|期末|[，,。；;])")
+_ANY_FRAME = re.compile(r"(?:" + _PERIOD_TOKEN + r"[、及和])+" + _PERIOD_TOKEN + r"(?=期间|期末|分别为|[，,。；;])")
 
 
 def _split_series(periods, pairs):
