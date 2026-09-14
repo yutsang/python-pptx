@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from fdd_utils.pptx.payloads import (  # noqa: E402
-    rewrite_nil_periods_out_of_series as fix,
+    _normalize_slide_commentary_text as fix,
     round_to_house_precision,
 )
 
@@ -51,6 +51,12 @@ CASES = [
 
     ("营业成本-折旧成本：2023年度、2024年度、2025年度及2026年1-6月分别为0万元、1,654.9万元、1,655.1万元及827.6万元",
      "no lead word at all, just a colon -- and none is added back", True),
+
+    ("其他收益于2021年度、2022年度、2023年度及2024年1-5月期间分别为人民币0万元、92.0万元、0万元及0万元",
+     "人民币 in front of the figures -- blind spot found by probe_house_style_delta", True),
+
+    ("截至2024-05-31，应收账款余额合计人民币0万元，主要系经管理层调整后净额无余额",
+     "an account's OWN nil balance reads 无余额 (prompts.yml:213)", True),
 
     # --- KNOWN LIMIT: no period frame next to the amounts, so nothing to pair --
     ("税金及附加-土地使用税同期分别为0万元、47.3万元、47.3万元及23.7万元",

@@ -252,14 +252,17 @@ _PERIOD_TOKEN = r"\d{4}年[^、及和，。；;]{0,14}?"
 _PERIOD_SERIES_SENTENCE = re.compile(
     r"(于|在)?((?:" + _PERIOD_TOKEN + r"[、及和])+" + _PERIOD_TOKEN + r")"
     r"(?:期间|期末)?\s*分别为\s*"
-    r"((?:-?[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)\s*[、及和]?\s*)+)"
+    # 「分别为人民币0万元、92.0万元…」 -- the currency word sits between 分别为 and
+    # the first digit and stopped the match dead. A real run kept three nil
+    # mentions for exactly this, while the probe filed them as unpairable.
+    r"(?:人民币|人民幣|CNY|RMB)?\s*((?:(?:人民币|人民幣|CNY|RMB)?\s*-?[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)\s*[、及和]?\s*)+)"
 )
 # The same series written the other way round -- 「分别为0万元、29.4万元…，于2023
 # 年度、2024年度…期间发生」. Seven of the eight nil mentions left in a real deck
 # after the first pass were this shape; it pairs exactly as well, just in the
 # reverse order, so there is no reason to leave it alone.
 _PERIOD_SERIES_REVERSED = re.compile(
-    r"分别为\s*((?:-?[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)\s*[、及和]?\s*)+)"
+    r"分别为\s*" r"(?:人民币|人民幣|CNY|RMB)?\s*((?:(?:人民币|人民幣|CNY|RMB)?\s*-?[\d,]+(?:\.\d+)?\s*(?:万元|亿元|元)\s*[、及和]?\s*)+)"
     r"[，,]\s*(于|在)?((?:" + _PERIOD_TOKEN + r"[、及和])+" + _PERIOD_TOKEN + r")"
     # 发生/列示 is REQUIRED, and that is the whole point: the period token is
     # non-greedy, so with an all-optional tail the engine stopped at 「2026年」
@@ -267,7 +270,7 @@ _PERIOD_SERIES_REVERSED = re.compile(
     # terminator forces the token out to its full 「2026年1至6月」.
     r"(?:期间|期末)?\s*(?:发生|列示)"
 )
-_SERIES_AMOUNT = re.compile(r"(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+_SERIES_AMOUNT = re.compile(r"(?:人民币|人民幣|CNY|RMB)?\s*(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 
 
 def rewrite_nil_periods_out_of_series(text: str) -> str:
@@ -379,6 +382,20 @@ def round_to_house_precision(text: str) -> str:
     return _OVERPRECISE.sub(_fix, str(text or ""))
 
 
+#: 「应收账款余额合计人民币0万元」. prompts.yml line 213 asks for 「无余额」 and
+#: forbids 「余额为0元」. Anchored on the word 余额 immediately before the figure,
+#: so it can only ever hit an account's own balance and never a zero inside a
+#: composition list.
+_NIL_BALANCE = re.compile(
+    r"余额(?:合计|总计)?\s*(?:为|是)?\s*(?:人民币|人民幣|CNY|RMB)?\s*-?0(?:\.0+)?\s*(?:万元|亿元|元)"
+)
+
+
+def rewrite_nil_balance(text: str) -> str:
+    """An account with no balance reads 「无余额」, not 「余额合计0万元」."""
+    return _NIL_BALANCE.sub("无余额", str(text or ""))
+
+
 def _normalize_slide_commentary_text(text: str) -> str:
     normalized = clean_content_quotes(str(text or ""))
     if not normalized:
@@ -390,6 +407,7 @@ def _normalize_slide_commentary_text(text: str) -> str:
     normalized = _rewrite_glued_negative_amounts(normalized)
     normalized = rewrite_nil_periods_out_of_series(normalized)
     normalized = round_to_house_precision(normalized)
+    normalized = rewrite_nil_balance(normalized)
     return normalized.strip()
 
 
