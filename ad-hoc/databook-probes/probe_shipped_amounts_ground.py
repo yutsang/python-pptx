@@ -43,9 +43,45 @@ def main() -> int:
     ap.add_argument("--run", required=True)
     ap.add_argument("--account", default=None, help="limit to one account")
     ap.add_argument("--context", type=int, default=46, help="characters of context each side")
+    ap.add_argument("--trace", default=None, metavar="AMOUNT",
+                    help="instead of sweeping, show WHICH fact in --account's pool matches this "
+                         "amount (base units, e.g. 19100000). A figure that grounds is not "
+                         "automatically a figure the pipeline computed -- this says which one it "
+                         "matched and how, so a pool that is too wide can be told from a figure "
+                         "that is simply real.")
     args = ap.parse_args()
 
     memory = RunMemory(args.run)
+
+    if args.trace is not None:
+        if not args.account:
+            sys.exit("--trace needs --account")
+        key = memory.resolve(args.account) or args.account
+        result = memory.trace_amount(key, float(args.trace))
+        print("\n[%s] %s" % (key, format(float(args.trace), ",.0f")))
+        # trace_amount returns ONE fact under "fact" plus a rendered "source" --
+        # not a "matches" list. Guessing the shape printed "no fact matches it"
+        # directly under "grounded: True", which is the kind of contradiction a
+        # reader would rightly stop trusting the whole probe over.
+        print("  grounded: %s" % result.get("grounded"))
+        if result.get("source"):
+            print("  matched : %s" % result["source"])
+        fact = result.get("fact") or {}
+        if fact:
+            print("  kind    : %s" % fact.get("kind"))
+            print("  fact    : %s" % {k: v for k, v in fact.items() if v not in (None, "")})
+            # cell / column_total / analysis_cell are figures that exist in the
+            # workbook. Anything else is something the pipeline DERIVED, and a
+            # derived match is the one worth arguing about.
+            hard = fact.get("kind") in ("cell", "column_total", "analysis_cell")
+            print("  reading : %s" % ("a real cell in the workbook" if hard
+                                      else "a DERIVED value -- check whether it should exist at all"))
+        elif result.get("grounded"):
+            print("  (grounded but no fact returned -- read run_memory.trace_amount)")
+        else:
+            print("  no fact in the pool matches it")
+        return 0
+
     accounts = [args.account] if args.account else memory.accounts()
 
     checked = missed = 0
