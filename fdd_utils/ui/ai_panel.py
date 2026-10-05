@@ -720,7 +720,9 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                             selected_pipeline_dfs = build_selected_pipeline_dfs(session_state)
                             updated_results = run_generator_reprompt(
                                 mapping_keys=[key],
-                                dfs={key: selected_pipeline_dfs[key]},
+                                # The whole workbook: the peer context and the
+                                # cross-account facts are built from it.
+                                dfs=selected_pipeline_dfs,
                                 existing_results=session_state.ai_results,
                                 model_type=session_state.get("model_type", "local"),
                                 model_name=session_state.get("model_name"),

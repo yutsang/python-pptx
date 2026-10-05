@@ -2699,6 +2699,13 @@ def _run_feedback_loop_for_key(
             user_comment=combined_comment,
             dfs=dfs,
             health=health,
+            # run_state for the same reason: it carries the cross-account
+            # facts (without it this render passed cross_account_facts=None,
+            # so a retried account lost the verified-links block its first
+            # draft had) and the account's evidence pool, which the Auditor
+            # and Validator below then reuse instead of compiling a second one.
+            # Read-only here: nothing in process_single_agent_item writes it.
+            run_state=run_state,
         )
         results[key]["subagent_1"] = gen_content
         results[key]["feedback_retry_%s_agent_1" % retry_num] = gen_content
@@ -2725,6 +2732,7 @@ def _run_feedback_loop_for_key(
             # clause_reviews built on less evidence than the original pass.
             dfs=dfs,
             health=health,
+            run_state=run_state,
         )
         results[key]["subagent_2"] = audit_content
         results[key]["feedback_retry_%s_agent_2" % retry_num] = audit_content
@@ -2738,6 +2746,7 @@ def _run_feedback_loop_for_key(
             user_comment=base_user_comment,
             dfs=dfs,
             health=health,
+            run_state=run_state,
         )
         _store_agent_result(results, key, "subagent_4", val_content, val_metadata, state=state)
         results[key]["feedback_retry_%s_agent_4" % retry_num] = val_content
@@ -2849,10 +2858,19 @@ def run_generator_reprompt(
     merged into session_state.ai_results and exported. Leaving it stateless
     would mean an account could reach the deck with no recorded path at all.
 
-    What it does NOT get is the RUN_STATE_KEY sentinel: this dict is MERGED into
-    an existing ai_results, so a sentinel written here would travel into a
-    results dict that already has one from the full run. The audit log is
-    written to this reprompt's own run folder instead.
+    The returned dict is MERGED into an existing ai_results (ai_panel.py does a
+    plain dict.update), so a fresh RUN_STATE_KEY sentinel written here would
+    replace the full run's with a one-account record. What it returns instead,
+    when existing_results carries one, is that run's own record with the
+    re-prompted accounts' state replaced and the reprompt's folder listed
+    under "reprompts". Before, the merged results kept describing the text
+    this call had just replaced. Audit log and evidence go to the reprompt's
+    own run folder.
+
+    `dfs` should be the whole workbook, not the one account: the peer context
+    and the cross-account facts are built from it. The UI passed {key: df},
+    and a re-prompted draft lost the revenue context and the verified-links
+    block the draft it replaced had been written with.
     """
     # Mirror run_ai_pipeline_with_progress: normalise "Chn" → "Chi" so the Chinese
     # reprompt path resolves prompts and applies Chinese styling (not English).
@@ -2868,6 +2886,11 @@ def run_generator_reprompt(
     )
     results: Dict[str, Dict[str, str]] = {}
     run_state = RunState(dfs, mapping_keys, run_folder=logger.run_folder)
+    try:
+        run_state.facts = build_run_facts(dfs, prompt_manager)
+    except Exception as exc:  # an enrichment, never a gate -- same as the full run
+        logger.logger.warning("[CrossAccountFacts] skipped: %s", exc)
+        run_state.facts = {}
 
     logger.logger.info(
         "Starting reprompt + validator flow with %s items | model=%s | language=%s",
@@ -2909,6 +2932,7 @@ def run_generator_reprompt(
         )
         updated_result = dict(existing_result) if isinstance(existing_result, dict) else {}
         updated_result["subagent_1"] = content
+        shown = (_metadata or {}).pop("evidence_shown", None) if isinstance(_metadata, dict) else None
         if state is not None:
             state.mark_stage("subagent_1")
             state.transition(PHASE_DRAFTED, "generator_reprompt")
@@ -2934,6 +2958,17 @@ def run_generator_reprompt(
             (validator_metadata or {}).pop("phase_events", None)
             if isinstance(validator_metadata, dict) else None
         )
+        # Popped, as _store_agent_result does on the main path: left in, the
+        # AccountEvidence object rode into agent_4_validation, and from there
+        # into session_state.ai_results and (stringified) results.yml.
+        built = (validator_metadata or {}).pop("evidence", None) if isinstance(validator_metadata, dict) else None
+        if built is None and shown is not None:
+            from .evidence import AccountEvidence
+            built = AccountEvidence(mapping_key=key)
+        if built is not None:
+            if shown is not None:
+                built.shown = dict(shown)
+            run_state.evidence[key] = built
         updated_result["subagent_4"] = validator_content
         updated_result["agent_4_validation"] = validator_metadata
         updated_result["final"] = validator_content
@@ -2954,8 +2989,49 @@ def run_generator_reprompt(
 
     _sweep_final_phases(results, run_state, logger)
     _write_run_audit_log(logger, run_state, results)
+    evidence_files = _write_run_evidence(logger, run_state)
+    run_record = (existing_results or {}).get(RUN_STATE_KEY)
+    if isinstance(run_record, dict):
+        results[RUN_STATE_KEY] = _merge_reprompt_into_run_record(
+            run_record, run_state, logger.run_folder, evidence_files,
+        )
     logger.finalize(results)
     return results
+
+
+def _merge_reprompt_into_run_record(
+    run_record: Dict[str, Any],
+    run_state: RunState,
+    reprompt_folder: str,
+    evidence_files: Dict[str, str],
+) -> Dict[str, Any]:
+    """The full run's RUN_STATE_KEY record with the re-prompted accounts' state
+    swapped in, and every count derived from the accounts recomputed. A copy:
+    the caller's record is left as it was."""
+    import copy
+
+    merged = copy.deepcopy(run_record)
+    state = merged.setdefault("state", {})
+    accounts = state.setdefault("accounts", {})
+    for key, acct in run_state.accounts.items():
+        accounts[key] = acct.as_dict()
+    rows = {k: a for k, a in accounts.items() if isinstance(a, dict)}
+    state["phase_tally"] = dict(Counter(a.get("phase") for a in rows.values()))
+    state["accounts_not_terminal"] = sorted(
+        k for k, a in rows.items() if a.get("phase") not in TERMINAL_PHASES
+    )
+    state["degraded_accounts"] = {k: list(a["degraded"]) for k, a in rows.items() if a.get("degraded")}
+    codes: Counter = Counter()
+    for a in rows.values():
+        for defect in a.get("defects") or []:
+            codes["%s/%s" % (defect.get("code"), defect.get("category"))] += 1
+    merged["defect_codes"] = dict(codes)
+    merged.setdefault("reprompts", []).append({
+        "accounts": sorted(run_state.accounts),
+        "run_folder": reprompt_folder,
+        "evidence_files": dict(evidence_files),
+    })
+    return coerce_plain(merged)
 
 
 def save_results(results: Dict[str, Dict[str, str]], output_path: str = "fdd_utils/output/results.yml"):
