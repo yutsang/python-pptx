@@ -112,6 +112,9 @@ class _RunHealth:
         self.error_text_accounts: set = set()
         self.no_prompt_accounts: set = set()
         self.first_failure = ""
+        # Stage results seeded from a checkpoint (resume) for accounts that had
+        # not degraded. They were real LLM output, paid for by the earlier run.
+        self.stages_resumed = 0
 
     def record_success(self, agent_name: str) -> None:
         with self._lock:
@@ -146,6 +149,25 @@ class _RunHealth:
         with self._lock:
             self.no_prompt_accounts.add(mapping_key)
 
+    def record_resumed(self, mapping_key: str, stages: int, degraded: List[str], placeholder: bool) -> None:
+        """An account seeded from a checkpoint, with how it ended up in the run
+        that wrote it. Before this, a resumed account's history was invisible
+        here: a fully resumed run reported zero successful calls (and the
+        insight summary called every bullet deterministic filler), and an
+        account that had fallen back in the earlier run counted as clean."""
+        with self._lock:
+            if placeholder:
+                self.error_text_accounts.add(mapping_key)
+            for cause in degraded or []:
+                if cause == "fallback_bullet":
+                    self.fallback_accounts.setdefault(mapping_key, "resumed: fallback bullet in the checkpointed run")
+                elif cause == "stage_passthrough_after_error":
+                    self.passthrough_accounts.add(mapping_key)
+                elif cause == "no_prompt":
+                    self.no_prompt_accounts.add(mapping_key)
+            if not placeholder and not degraded:
+                self.stages_resumed += int(stages)
+
     def stage_succeeded(self, agent_name: str) -> int:
         with self._lock:
             return self.stage_successes.get(agent_name, 0)
@@ -164,7 +186,11 @@ class _RunHealth:
                 "accounts_on_error_text": sorted(self.error_text_accounts),
                 "accounts_without_prompt": sorted(self.no_prompt_accounts),
                 "first_failure": self.first_failure,
-                "zero_successful_calls": self.calls_succeeded == 0,
+                "stages_resumed": self.stages_resumed,
+                # "Nothing in this deck came from a model": no call succeeded
+                # in THIS run and no clean stage was resumed from an earlier
+                # one. A resume that has nothing left to pay is not a dead run.
+                "zero_successful_calls": self.calls_succeeded == 0 and self.stages_resumed == 0,
                 # Deliberately NOT an exception: a degraded deck is sometimes
                 # exactly what the user asked to look at, so the decision stays
                 # with them. Nothing gates on this -- the export path gates on
@@ -176,7 +202,7 @@ class _RunHealth:
                 # insight summary saying "Do not send this deck". Two fields
                 # disagreeing about the same run is worse than either answer.
                 "safe_to_export": (
-                    self.calls_succeeded > 0
+                    (self.calls_succeeded > 0 or self.stages_resumed > 0)
                     and not self.fallback_accounts
                     and not self.passthrough_accounts
                     and not self.error_text_accounts
@@ -191,6 +217,7 @@ def _log_run_health(logger: PipelineRunLogger, health: Dict[str, Any], total_ite
         "Run health: %s LLM call(s) succeeded, %s attempt(s) failed, %s skipped by an "
         "open circuit breaker | of %s account(s): %s on a deterministic fallback bullet, "
         "%s on stage passthrough, %s on error placeholder text, %s with no prompt"
+        "%s"
         % (
             health["calls_succeeded"],
             health["calls_failed"],
@@ -200,6 +227,8 @@ def _log_run_health(logger: PipelineRunLogger, health: Dict[str, Any], total_ite
             len(health["accounts_on_passthrough"]),
             len(health["accounts_on_error_text"]),
             len(health["accounts_without_prompt"]),
+            (" | %s stage result(s) resumed from a checkpoint" % health["stages_resumed"])
+            if health.get("stages_resumed") else "",
         )
     )
     if health["zero_successful_calls"]:
@@ -390,6 +419,14 @@ class RunState:
         # has nothing to do with the pipeline.
         self.accounts: Dict[str, AccountState] = {
             key: AccountState(key) for key in mapping_keys if key in self.dfs
+        }
+        # Which data each account is being written from, hashed HERE: after
+        # settle_subtable_selection, before any render stashes attrs. Carried
+        # on every checkpoint line and evidence file so a resume can refuse a
+        # draft written from a different workbook (_seed_from_checkpoint).
+        from .evidence import frame_fingerprint
+        self.fingerprints: Dict[str, Optional[str]] = {
+            key: frame_fingerprint(self.dfs.get(key)) for key in self.accounts
         }
         self.deck: Dict[str, Any] = {}
         self.run_folder = run_folder
@@ -810,6 +847,7 @@ def _store_agent_result(
         logger.checkpoint_stage(
             mapping_key, agent_name, results.get(mapping_key) or {},
             state.as_dict() if state is not None else {},
+            fingerprint=(run_state.fingerprints.get(mapping_key) if run_state is not None else None),
         )
 
 
@@ -1655,6 +1693,7 @@ def _seed_from_checkpoint(
     results: Dict[str, Dict[str, str]],
     run_state: RunState,
     mapping_keys: List[str],
+    health: Optional[_RunHealth] = None,
 ) -> Optional[str]:
     """Replay a previous run's checkpoint.jsonl into results and RunState.
 
@@ -1683,6 +1722,23 @@ def _seed_from_checkpoint(
         key = str(line.get("mapping_key") or "")
         if key in wanted:
             latest[key] = line
+    # An account is resumed only when its data is provably the data the
+    # checkpoint was written from. The check used to be the account NAME
+    # alone: measured, an edited workbook resumed onto an old checkpoint had
+    # 26 of 26 accounts seeded with the old drafts and the old pools, and the
+    # log said nothing. A line with no fingerprint (written before they
+    # existed) cannot prove anything either, so it is re-run, not trusted.
+    changed = sorted(
+        key for key, line in latest.items()
+        if not line.get("fingerprint") or line.get("fingerprint") != run_state.fingerprints.get(key)
+    )
+    if changed:
+        logger.logger.warning(
+            "[Resume] %d account(s) re-run from zero, their data differs from the checkpoint's "
+            "or the checkpoint predates fingerprints: %s", len(changed), changed,
+        )
+        for key in changed:
+            latest.pop(key, None)
     seeded_stages = 0
     for key, line in latest.items():
         result = line.get("result") or {}
@@ -1701,6 +1757,11 @@ def _seed_from_checkpoint(
             state.repairs = list(state_dict.get("repairs") or [])
             state.contract = dict(state_dict.get("contract") or {})
             seeded_stages += len(state.stages_done)
+            if health is not None:
+                health.record_resumed(
+                    key, len(state.stages_done - {FEEDBACK_LOOP_STAGE}), state.degraded,
+                    any(t.get("cause") == "error_placeholder_text" for t in state.transitions),
+                )
     try:
         from .evidence import list_evidence
         for key, ev in list_evidence(folder).items():
@@ -1713,6 +1774,32 @@ def _seed_from_checkpoint(
         len(latest), seeded_stages, folder,
     )
     return folder
+
+
+#: The pseudo-stage the feedback loop files in stages_done once it has finished
+#: an account, retries or not. Checkpointed like a stage, so a resume skips it.
+FEEDBACK_LOOP_STAGE = "feedback_loop"
+
+
+def _feedback_loop_done(run_state: RunState, key: str) -> bool:
+    state = run_state.account(key)
+    return state is not None and FEEDBACK_LOOP_STAGE in state.stages_done
+
+
+def _checkpoint_feedback_loop(
+    key: str, results: Dict[str, Dict[str, str]], run_state: RunState, logger: PipelineRunLogger,
+) -> None:
+    """Main thread, after the account's feedback loop returned: its outcome is
+    a stage like any other. The worker that ran the loop has finished with this
+    account's state, so this is the one-writer moment."""
+    state = run_state.account(key)
+    if state is None:
+        return
+    state.mark_stage(FEEDBACK_LOOP_STAGE)
+    logger.checkpoint_stage(
+        key, FEEDBACK_LOOP_STAGE, results.get(key) or {}, state.as_dict(),
+        fingerprint=run_state.fingerprints.get(key),
+    )
 
 
 def run_ai_pipeline_with_progress(
@@ -1772,7 +1859,7 @@ def run_ai_pipeline_with_progress(
 
     resumed_from = None
     if resume_from:
-        resumed_from = _seed_from_checkpoint(resume_from, logger, results, run_state, mapping_keys)
+        resumed_from = _seed_from_checkpoint(resume_from, logger, results, run_state, mapping_keys, health=health)
 
     logger.logger.info(
         "Starting FDD pipeline with %s items | model=%s | language=%s | multithreading=%s",
@@ -1857,6 +1944,15 @@ def run_ai_pipeline_with_progress(
             feedback_config["unsupported_threshold"],
         )
         eligible_keys = [k for k in mapping_keys if k in results and k in dfs]
+        # A resumed account whose feedback loop already finished in the run it
+        # was seeded from keeps that outcome. Its retries were never
+        # checkpointed before, so resuming a FINISHED run paid them again
+        # (15 calls on a replayed 26-account run) and could keep a different
+        # attempt than the arbiter had.
+        _done = [k for k in eligible_keys if _feedback_loop_done(run_state, k)]
+        if _done:
+            logger.logger.info("[FeedbackLoop] %d account(s) already finished in the resumed run, skipped", len(_done))
+            eligible_keys = [k for k in eligible_keys if k not in _done]
         if use_multithreading and len(eligible_keys) > 1:
             fb_workers = _resolve_max_workers(ai_helper, max_workers)
             with ThreadPoolExecutor(max_workers=fb_workers) as executor:
@@ -1884,6 +1980,7 @@ def run_ai_pipeline_with_progress(
                     except Exception as exc:
                         logger.logger.warning("[FeedbackLoop] %s: failed: %s", key, exc)
                         continue
+                    _checkpoint_feedback_loop(key, results, run_state, logger)
                     if retries > 0:
                         logger.logger.info("[FeedbackLoop] %s: completed with %s retry(ies)", key, retries)
         else:
@@ -1901,6 +1998,7 @@ def run_ai_pipeline_with_progress(
                     health=health,
                     run_state=run_state,
                 )
+                _checkpoint_feedback_loop(key, results, run_state, logger)
                 if retries > 0:
                     logger.logger.info("[FeedbackLoop] %s: completed with %s retry(ies)", key, retries)
 
@@ -2142,6 +2240,7 @@ def _write_run_evidence(logger: PipelineRunLogger, run_state: RunState) -> Dict[
     try:
         from .evidence import write_evidence
         for key, ev in sorted(run_state.evidence.items()):
+            ev.fingerprint = run_state.fingerprints.get(key) or ev.fingerprint
             try:
                 written[key] = os.path.relpath(write_evidence(folder, ev), folder)
             except Exception as exc:

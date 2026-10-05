@@ -239,7 +239,8 @@ class PipelineRunLogger:
         }
 
     def checkpoint_stage(self, mapping_key: str, agent_name: str,
-                         account_result: Dict[str, Any], state_dict: Dict[str, Any]) -> None:
+                         account_result: Dict[str, Any], state_dict: Dict[str, Any],
+                         fingerprint: Optional[str] = None) -> None:
         """Append one line to ``checkpoint.jsonl``: the account's result dict and
         state AS THEY STAND after this stage was filed.
 
@@ -257,6 +258,9 @@ class PipelineRunLogger:
                 "agent_name": agent_name,
                 "result": account_result,
                 "state": state_dict,
+                # evidence.frame_fingerprint of the account's data; a resume
+                # re-runs any account whose current data does not match it.
+                "fingerprint": fingerprint,
             })
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record, ensure_ascii=False) + "\n")
