@@ -58,6 +58,7 @@ class RunMemory:
         self._audit: Optional[Dict[str, Dict[str, Any]]] = None
         self._evidence: Optional[Dict[str, AccountEvidence]] = None
         self._data: Optional[Dict[str, Any]] = None
+        self._digest: Optional[Dict[str, Any]] = None
 
     # -- loading -------------------------------------------------------------
 
@@ -101,6 +102,17 @@ class RunMemory:
                 with open(path, encoding="utf-8") as fh:
                     self._data = yaml.safe_load(fh) or {}
         return self._data
+
+    @property
+    def digest(self) -> Dict[str, Any]:
+        """digest.json: every tab of the workbook, mapped or not (workbook/digest.py)."""
+        if self._digest is None:
+            self._digest = {}
+            path = os.path.join(self.run_folder, "digest.json")
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as fh:
+                    self._digest = json.load(fh) or {}
+        return self._digest
 
     def accounts(self) -> List[str]:
         return [k for k, v in self.results.items()
@@ -285,6 +297,33 @@ class RunMemory:
                 "codes": sorted({o["code"] for o in obs}),
                 "provenance": ["evidence/*.json", "results.yml:__run__.facts"]}
 
+    def tab(self, sheet: str) -> Dict[str, Any]:
+        """One workbook tab -- mapped or not -- as the digest recorded it."""
+        from ..workbook.digest import sheet_view
+
+        sheets = list((self.digest.get("sheets") or {}))
+        if not sheets:
+            return {"error": "no digest.json in this run (it predates the workbook digest, or none was passed)"}
+        want = str(sheet or "").strip()
+        low = want.lower().replace(" ", "")
+        hits = [s for s in sheets if s == want] or [s for s in sheets if s.lower().replace(" ", "") == low] \
+            or [s for s in sheets if low and low in s.lower().replace(" ", "")]
+        if len(hits) != 1:
+            return {"error": "no single tab matches %r; tabs: %s" % (sheet, sheets)}
+        view = sheet_view(self.digest, hits[0])
+        view["provenance"] = ["digest.json:sheets.%s" % hits[0]]
+        return view
+
+    def coverage(self) -> Dict[str, Any]:
+        """Every tab: how much of it reached the model, and which tabs nothing reads."""
+        from ..workbook.digest import coverage_rows
+
+        if not self.digest.get("sheets"):
+            return {"error": "no digest.json in this run (it predates the workbook digest, or none was passed)"}
+        return {"workbook": self.digest.get("workbook"), "reach_marked": self.digest.get("reach_marked"),
+                "totals": self.digest.get("coverage"), "tabs": coverage_rows(self.digest),
+                "provenance": ["digest.json"]}
+
     def tokens(self) -> Dict[str, Any]:
         per_stage: Dict[str, Dict[str, int]] = {}
         for acct in (self.data.get("processing_results") or {}).values():
@@ -333,6 +372,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "series": {"args": ["key"], "help": "the account's total by period"},
     "links": {"args": ["key"], "help": "cross-account relationships touching the account, passed and failed"},
     "tokens": {"args": [], "help": "token use per stage"},
+    "tab": {"args": ["sheet"], "help": "one workbook tab, mapped or not: its blocks, row labels, remarks, "
+            "largest figures, and which of them reached the model. Figures on a tab no account reads "
+            "are in no evidence pool, so an answer quoting them is marked ungrounded"},
+    "coverage": {"args": [], "help": "every tab: how many of its non-zero figures and text cells reached "
+                 "the model, and which tabs no account reads, with the reason"},
     "insights": {"args": ["code"], "help": "analyst observations over the whole databook -- implied "
                  "borrowing cost, receivable days, concentration, related-party and government "
                  "counterparties, CIP transfers, depreciation, untied equity. Pass code=null for all"},

@@ -507,6 +507,15 @@ def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=No
         resolution=resolution,
         workbook_frames=workbook_frames,
     )
+    # Every non-empty cell of every sheet, mapped or not (digest.py). Same seam
+    # and the same reason as the profile above. Reach is marked later, once
+    # the frames the model reads exist (flow.py, and again in the pipeline
+    # after the subtable settlement).
+    try:
+        from .digest import DIGEST_KEY, build_workbook_digest
+        resolution[DIGEST_KEY] = build_workbook_digest(databook_path, profiles, resolution, workbook_frames)
+    except Exception as exc:  # a record of the workbook, never a gate on reading it
+        logger.warning("Workbook digest skipped for %s: %s", os.path.basename(databook_path), exc)
 
     overall_result_type = 'multiple' if any(scope == 'multiple' for scope in entity_scopes) else 'single'
     report_language = _detect_report_language_from_profiles(profiles)

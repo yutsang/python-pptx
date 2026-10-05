@@ -1091,6 +1091,7 @@ def batch_run_ai_for_entity(
     ai_results = run_ai_pipeline_with_progress(
         mapping_keys=matched_mapping_keys,
         dfs=dfs,
+        workbook_digest=(resolution or {}).get("workbook_digest"),
         model_type=model_type,
         model_name=model_name,
         language=effective_language,

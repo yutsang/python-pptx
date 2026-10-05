@@ -451,6 +451,7 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                     results = run_ai_pipeline_with_progress(
                         mapping_keys=matched_mapping_keys,
                         dfs=selected_pipeline_dfs,
+                        workbook_digest=(session_state.get("resolution") or {}).get("workbook_digest"),
                         model_type=session_state.get("model_type", "local"),
                         model_name=session_state.get("model_name"),
                         language=session_state.language,

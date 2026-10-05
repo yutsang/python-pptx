@@ -369,6 +369,21 @@ def check_tab_read_summary(databook_path: str, entity_name: str = "",
             continue
         date_cols = [c for c in df.columns if not str(c).endswith("_formatted") and not str(c).startswith("__")]
         print(f"  {key}: {len(df)} rows, columns={date_cols[:8]}{'...' if len(date_cols) > 8 else ''}")
+
+    # Every non-empty cell of every tab, mapped or not, and how much of each
+    # reaches the model. Reach is read off the frames' own provenance (source
+    # rows x analysis-stage columns, adjacent detail rows) plus the figures in
+    # the attrs the prompt renders; a tab no account reads says why.
+    _digest = resolution.get("workbook_digest") if isinstance(resolution, dict) else None
+    if _digest:
+        try:
+            from fdd_utils.workbook.digest import format_coverage, mark_reached
+            mark_reached(_digest, dfs)
+            _hr("1c. TAB COVERAGE — every non-empty cell, and how much of each tab reaches the model")
+            for _line in format_coverage(_digest):
+                print("  " + _line)
+        except Exception as _exc:
+            print(f"\n  (tab coverage skipped: {type(_exc).__name__}: {_exc})")
     return dfs
 
 
@@ -2216,6 +2231,7 @@ def run_ai_checks(
             mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, model_name=model_name,
             language=language, use_multithreading=True, max_workers=effective_workers,
             progress_callback=_tqdm_progress, resume_from=resume_from,
+            workbook_digest=(resolution or {}).get("workbook_digest"),
         )
     finally:
         stop_refresh.set()

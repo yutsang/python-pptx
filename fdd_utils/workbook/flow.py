@@ -5,6 +5,7 @@ from .mapping import get_effective_mappings, load_mappings
 from .statements import extract_balance_sheet_and_income_statement, synthesize_balance_sheet_and_income_statement
 from .databook import build_dataframe_variants_from_normalized_results, extract_normalized_data_from_excel
 from .reconcile import reconcile_financial_statements
+from .digest import DIGEST_KEY, mark_reached
 import contextlib
 import io
 import logging
@@ -64,6 +65,15 @@ def process_workbook_data(
     workbook_list = dataframe_variants.get("detail_analysis", {}).get("workbook_list", [])
     if not workbook_list:
         workbook_list = dataframe_variants.get("detail_default", {}).get("workbook_list", [])
+
+    # Which cells of which tabs these frames carry to the model (digest.py).
+    # A record, never a gate.
+    _digest = (resolution or {}).get(DIGEST_KEY)
+    if _digest:
+        try:
+            mark_reached(_digest, dfs)
+        except Exception as exc:
+            logger.warning("Workbook digest: reach not marked: %s", exc)
 
     debug_buffer = io.StringIO() if debug else None
     debug_ctx = contextlib.redirect_stdout(debug_buffer) if debug_buffer else contextlib.nullcontext()

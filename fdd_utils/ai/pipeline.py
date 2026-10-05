@@ -388,7 +388,10 @@ class RunState:
                       account. The one fact slot written DURING the loop --
                       compiled at the account's first grounding, filed on the
                       main thread, reused by every later stage and retry
-        profile       reserved for the workbook digest (plan P1); None today
+        profile       the workbook digest (workbook/digest.py) when the caller
+                      passes one: every non-empty cell of every tab, mapped or
+                      not, and whether it reached the model. Written to the
+                      run folder as digest.json
         links         reserved for the cross-tab graph (plan P2); [] today.
                       The verified edges live in facts["links"]
 
@@ -1821,8 +1824,15 @@ def run_ai_pipeline_with_progress(
     user_comments: Optional[Dict[str, str]] = None,
     model_name: Optional[str] = None,
     resume_from: Optional[str] = None,
+    workbook_digest: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, str]]:
     """Run the 4-agent FDD pipeline with optional progress callbacks.
+
+    `workbook_digest`: resolution["workbook_digest"] from process_workbook_data.
+    Held as RunState.profile, its reach re-marked against the settled frames,
+    and written to the run folder, so a later question about a tab -- including
+    one no account reads -- is answered from the run, not by re-opening the
+    workbook. A record only: nothing here changes a prompt.
 
     `resume_from`: a previous run id (or run folder) whose checkpoint.jsonl
     seeds every stage that already completed, so only the stages the earlier
@@ -1862,6 +1872,16 @@ def run_ai_pipeline_with_progress(
     except Exception as exc:  # a fact table is an enrichment, never a gate
         logger.logger.warning("[CrossAccountFacts] skipped: %s", exc)
         run_state.facts = {}
+    if workbook_digest:
+        run_state.profile = workbook_digest
+        try:
+            from ..workbook.digest import mark_reached
+            # Again, now that settle_subtable_selection has stripped the detail
+            # tables this deck will not draw: what is recorded is what THIS
+            # run's prompts were built from.
+            mark_reached(workbook_digest, dfs)
+        except Exception as exc:  # a record, never a gate
+            logger.logger.warning("[Digest] reach not re-marked: %s", exc)
     health = _RunHealth()
 
     resumed_from = None
@@ -2050,6 +2070,7 @@ def run_ai_pipeline_with_progress(
     results[RUN_STATE_KEY] = {
         "run_folder": logger.run_folder,
         "resumed_from": resumed_from,
+        "digest_file": _write_run_digest(logger, run_state),
         "audit_log": _write_run_audit_log(logger, run_state, results),
         "evidence_files": evidence_files,
         "state": run_state.as_dict(),
@@ -2257,6 +2278,26 @@ def _write_run_evidence(logger: PipelineRunLogger, run_state: RunState) -> Dict[
     if written:
         logger.logger.info("[Evidence] %s account(s) written under %s/evidence/", len(written), folder)
     return written
+
+
+DIGEST_FILE = "digest.json"
+
+
+def _write_run_digest(logger: PipelineRunLogger, run_state: RunState) -> Optional[str]:
+    """RunState.profile, the workbook digest, as <run>/digest.json. Never worth
+    losing a run over; None when the caller passed no digest."""
+    folder = getattr(logger, "run_folder", None)
+    if not folder or not run_state.profile:
+        return None
+    try:
+        import json
+
+        with open(os.path.join(folder, DIGEST_FILE), "w", encoding="utf-8") as fh:
+            json.dump(coerce_plain(run_state.profile), fh, ensure_ascii=False)
+        return DIGEST_FILE
+    except Exception as exc:  # pragma: no cover
+        logger.logger.warning("[Digest] not written: %s", exc)
+        return None
 
 
 def _write_run_audit_log(
