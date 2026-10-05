@@ -10,6 +10,19 @@ as the analysis table printed above them).
 
 --before strips attrs["prompt_analysis_df"] from every account to reproduce the
 pre-M0 behaviour, so the same run prints a comparable BEFORE matrix.
+
+Prompt parity (the instrument every prompt-changing commit is gated on):
+
+    python ad-hoc/databook-probes/probe_prompt_sections.py <databook.xlsx> --hash-all before.json [--feed ui|cli]
+    python ad-hoc/databook-probes/probe_prompt_sections.py --diff before.json after.json
+
+--hash-all renders every account's Generator prompt through the production
+render_agent_prompt, with what a run gives it -- the deck's subtable settlement
+applied, peer context and cross-account facts built from the whole workbook,
+this machine's data_format and thresholds -- and writes one sha256 per account.
+--feed picks whose frames: `ui` is what the Streamlit app hands the pipeline,
+`cli` is what inspect_databook.py --run-ai hands it. Hashes are only
+comparable on one machine: config.yml is per-machine and changes the prompt.
 """
 
 import os
@@ -269,7 +282,112 @@ def main(path, entity="", before=False, dump=""):
     print(f"ASSERT no attrs cycle: {'FAIL ' + str(bad) if bad else 'PASS'}")
 
 
+def _feed_frames(path, feed, entity, sheet):
+    """(dfs, language, reconciliation, resolution) as the named entry point
+    builds them. `ui` is process_workbook_data's dfs (fdd_app.py / batch);
+    `cli` is the frames inspect_databook.py's --run-ai path hands
+    run_ai_checks."""
+    import pandas as pd
+    import inspect_databook
+    from fdd_utils.workbook import extract_data_from_excel
+
+    if sheet is None:
+        found = inspect_databook._resolve_financials_sheets(pd.ExcelFile(path))
+        sheet = found[0] if found else None
+    state = process_workbook_data(temp_path=path, entity_name=entity, selected_sheet=sheet, debug=False)
+    language = state.get("language") or "Eng"
+    if feed == "ui":
+        dfs = state.get("dfs") or {}
+    else:
+        # inspect_databook.py:316 -- section 1's extraction, the dict it
+        # passes to run_ai_checks and to the PPTX export.
+        dfs, _wl, _rt, _lang, _res = extract_data_from_excel(
+            databook_path=path, entity_name=entity, mode="All", return_resolution=True,
+        )
+    return dfs, language, state.get("reconciliation"), state.get("resolution"), sheet
+
+
+def hash_all(path, out, feed="ui", entity="", sheet=None):
+    import hashlib
+    import json
+    from fdd_utils.ai.config import FDDConfig, normalize_language_code
+    from fdd_utils.ai.evidence import describe_shown
+    from fdd_utils.ai.pipeline import RunState, build_run_facts, render_agent_prompt, settle_subtable_selection
+    from fdd_utils.ai.prompts import get_prompt_engine
+    from fdd_utils.ui.views import derive_reconciliation_matched_keys
+
+    dfs, language, reconciliation, resolution, sheet = _feed_frames(path, feed, entity, sheet)
+    language = normalize_language_code(language)
+    keys = derive_reconciliation_matched_keys(reconciliation, dfs.keys(), resolution, dfs=dfs)
+    if not (reconciliation and any(r is not None and not r.empty for r in reconciliation)):
+        keys = list(dfs.keys())  # the UI's no-reconciliation fallback (ai_panel.py)
+    settle_subtable_selection(keys, dfs)
+    pe = get_prompt_engine()
+    run_state = RunState(dfs, keys)
+    run_state.facts = build_run_facts(dfs, pe)
+    cfg = FDDConfig(language=language)
+    data_format = cfg.get_default_data_format()
+    thresholds = (cfg.config or {}).get("analysis")
+    prompts = {}
+    for key in keys:
+        system_p, user_p = render_agent_prompt(
+            "subagent_1", key, dfs[key], prompt_manager=pe, language=language,
+            data_format=data_format, analysis_thresholds=thresholds,
+            dfs=dfs, run_state=run_state,
+        )
+        shown = describe_shown(key, dfs[key], system_p, user_p)
+        prompts[key] = {
+            "user_sha256": hashlib.sha256((user_p or "").encode("utf-8")).hexdigest(),
+            "system_sha256": hashlib.sha256((system_p or "").encode("utf-8")).hexdigest(),
+            "user_chars": len(user_p or ""),
+            "sections": shown.get("sections") or [],
+        }
+    doc = {"feed": feed, "workbook": os.path.basename(path), "sheet": sheet, "language": language,
+           "data_format": data_format, "accounts": len(prompts), "prompts": prompts}
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, ensure_ascii=False, indent=1)
+    sections = {}
+    for rec in prompts.values():
+        for s in rec["sections"]:
+            sections[s] = sections.get(s, 0) + 1
+    print(f"feed={feed} language={language} data_format={data_format} accounts={len(prompts)} -> {out}")
+    print(f"sections (accounts carrying each): {dict(sorted(sections.items()))}")
+
+
+def diff_hashes(a_path, b_path):
+    import json
+    with open(a_path, encoding="utf-8") as fh:
+        a = json.load(fh)
+    with open(b_path, encoding="utf-8") as fh:
+        b = json.load(fh)
+    pa, pb = a["prompts"], b["prompts"]
+    both = [k for k in pa if k in pb]
+    changed = [k for k in both if pa[k]["user_sha256"] != pb[k]["user_sha256"]]
+    sys_changed = [k for k in both if pa[k]["system_sha256"] != pb[k]["system_sha256"]]
+    print(f"A: feed={a['feed']} {a['accounts']} account(s) | B: feed={b['feed']} {b['accounts']} account(s)")
+    print(f"user prompt identical {len(both) - len(changed)}/{len(both)} | changed {len(changed)} | "
+          f"system prompt changed {len(sys_changed)} | only in A {len([k for k in pa if k not in pb])} | "
+          f"only in B {len([k for k in pb if k not in pa])}")
+    for k in changed:
+        gained = sorted(set(pb[k]["sections"]) - set(pa[k]["sections"]))
+        lost = sorted(set(pa[k]["sections"]) - set(pb[k]["sections"]))
+        print(f"   {k}: {pa[k]['user_chars']} -> {pb[k]['user_chars']} chars"
+              f"{'  +' + ','.join(gained) if gained else ''}{'  -' + ','.join(lost) if lost else ''}")
+    return 1 if changed or sys_changed else 0
+
+
 if __name__ == "__main__":
+    if "--diff" in sys.argv:
+        _i = sys.argv.index("--diff")
+        sys.exit(diff_hashes(sys.argv[_i + 1], sys.argv[_i + 2]))
+    if "--hash-all" in sys.argv:
+        _i = sys.argv.index("--hash-all")
+        _feed = sys.argv[sys.argv.index("--feed") + 1] if "--feed" in sys.argv else "ui"
+        if _feed not in ("ui", "cli"):
+            sys.exit("--feed must be ui or cli")
+        _sheet = sys.argv[sys.argv.index("--sheet") + 1] if "--sheet" in sys.argv else None
+        hash_all(sys.argv[1], sys.argv[_i + 1], feed=_feed, sheet=_sheet)
+        sys.exit(0)
     args = [a for a in sys.argv[1:] if a != "--before"]
     _dump = ""
     if "--dump" in sys.argv:

@@ -953,6 +953,54 @@ def _agent_prompt_kwargs(
     return {}
 
 
+def render_agent_prompt(
+    agent_name: str,
+    mapping_key: str,
+    df: Optional[pd.DataFrame],
+    *,
+    prompt_manager: PromptEngine,
+    language: str,
+    data_format: str,
+    analysis_thresholds: Optional[Dict[str, Any]] = None,
+    dfs: Optional[Dict[str, pd.DataFrame]] = None,
+    run_state: Optional["RunState"] = None,
+    previous_output: str = "",
+    user_comment: str = "",
+    agent_config: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, str]:
+    """The (system, user) prompt one stage sends for one account.
+
+    The one place a stage prompt is assembled. probe_prompt_sections.py
+    --hash-all calls this too, so a prompt hashed offline is the prompt a run
+    sends and not a near copy of it -- a copy that drops one argument (the
+    peer context, the cross-account facts) still renders, and hashes a prompt
+    no run ever sent.
+    """
+    return prompt_manager.render_prompt(
+        agent_name=agent_name,
+        language=language,
+        mapping_key=mapping_key,
+        df=df,
+        data_format=data_format,
+        user_comment=user_comment,
+        peer_context=_build_peer_context(dfs),
+        cross_account_facts=(run_state.facts if run_state is not None else None),
+        analysis_thresholds=analysis_thresholds,
+        **_agent_prompt_kwargs(agent_name, mapping_key, prompt_manager, previous_output, agent_config=agent_config),
+    )
+
+
+def build_run_facts(dfs: Dict[str, pd.DataFrame], prompt_manager: PromptEngine) -> Dict[str, Any]:
+    """The cross-account fact table a run's prompts read (RunState.facts).
+    Shared with the offline prompt probe for the same reason as
+    render_agent_prompt."""
+    from .facts import build_cross_account_facts
+
+    return build_cross_account_facts(
+        dfs, type_lookup=lambda k: prompt_manager.get_mapping_component(k, component="type"),
+    )
+
+
 _REVENUE_KEY_NEEDLES = ("operating income", "revenue", "营业收入")
 _NOT_REVENUE_KEY_NEEDLES = ("non-operating", "营业外", "cost", "成本")
 
@@ -1077,17 +1125,17 @@ def process_single_agent_item(
         logger.log_agent_start(agent_name, mapping_key)
         agent_cfg = ai_helper.get_agent_settings(agent_name)
 
-        system_prompt, user_prompt = prompt_manager.render_prompt(
-            agent_name=agent_name,
+        system_prompt, user_prompt = render_agent_prompt(
+            agent_name, mapping_key, df,
+            prompt_manager=prompt_manager,
             language=ai_helper.language,
-            mapping_key=mapping_key,
-            df=df,
             data_format=ai_helper.data_format,
-            user_comment=user_comment,
-            peer_context=_build_peer_context(dfs),
-            cross_account_facts=(run_state.facts if run_state is not None else None),
             analysis_thresholds=(getattr(ai_helper, "full_config", None) or {}).get("analysis"),
-            **_agent_prompt_kwargs(agent_name, mapping_key, prompt_manager, previous_output, agent_config=agent_cfg),
+            dfs=dfs,
+            run_state=run_state,
+            previous_output=previous_output,
+            user_comment=user_comment,
+            agent_config=agent_cfg,
         )
 
         if logger.debug_mode:
@@ -1716,11 +1764,7 @@ def run_ai_pipeline_with_progress(
     # hypothesis that failed its test goes to the internal insight summary and
     # nowhere near the deck.
     try:
-        from .facts import build_cross_account_facts
-
-        run_state.facts = build_cross_account_facts(
-            dfs, type_lookup=lambda k: prompt_manager.get_mapping_component(k, component="type"),
-        )
+        run_state.facts = build_run_facts(dfs, prompt_manager)
     except Exception as exc:  # a fact table is an enrichment, never a gate
         logger.logger.warning("[CrossAccountFacts] skipped: %s", exc)
         run_state.facts = {}
