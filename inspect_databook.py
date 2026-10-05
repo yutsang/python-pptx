@@ -1964,6 +1964,53 @@ def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str
     return warnings
 
 
+def ai_input_frames(
+    path: str, entity_name: str, selected_sheet: Optional[str],
+    financials_from: Optional[str] = None,
+    fallback_dfs: Optional[Dict[str, pd.DataFrame]] = None,
+) -> Tuple[Dict[str, pd.DataFrame], str, Optional[Dict[str, Any]]]:
+    """(dfs, language, resolution) that --run-ai hands the pipeline AND the export.
+
+    process_workbook_data's dfs: the detail_analysis variant, every Indicative
+    adjusted period on the main frame -- the dict the Streamlit app hands
+    run_ai_pipeline_with_progress and then exports from. This path used to
+    pass section 1's extract_data_from_excel frames instead, which carry ONE
+    value column. Measured on four workbooks with the production renderer
+    (probe_prompt_sections.py --hash-all --feed): 0 of 96 Generator prompts
+    matched the app's, _build_peer_context returned None, and the
+    material-movement guidance reached 0 accounts in every book against 8-10
+    on the app's frames. Every CLI deck had been written from the thinner
+    prompt, and every CLI run measured a pipeline the app does not run.
+
+    The export takes the same dict because the pipeline's subtable settlement
+    edits these frames' attrs; exporting from section 1's dict would draw the
+    tables the prompts were told about from frames that never heard of it.
+    """
+    try:
+        from fdd_utils.workbook import process_workbook_data
+        # --financials-from applies here too. Left off, this call went
+        # looking for "<entity>Financials" inside the ENTITY workbook,
+        # which has no such sheet -- one bare "Error extracting financial
+        # data: Worksheet named ... not found" on stderr between sections
+        # 4b and 5, from the one call in this file that was not told where
+        # the roll-up lives. Every other caller already passes it.
+        state = process_workbook_data(temp_path=path, entity_name=entity_name,
+                                       selected_sheet=selected_sheet, debug=False,
+                                       financials_from=financials_from,
+                                       financials_sheet=selected_sheet if financials_from else None)
+    except Exception as exc:
+        print(f"\n⚠️  process_workbook_data failed ({type(exc).__name__}: {exc}). The AI run "
+              f"falls back to section 1's single-period frames, so its prompts will NOT match "
+              f"what the Streamlit app would send for this workbook.")
+        return fallback_dfs or {}, "Eng", None
+    dfs = state.get("dfs") or {}
+    if not dfs:
+        print("\n⚠️  process_workbook_data returned no frames; the AI run falls back to "
+              "section 1's single-period frames (prompts will not match the app's).")
+        dfs = fallback_dfs or {}
+    return dfs, state.get("language", "Eng"), state.get("resolution")
+
+
 def run_ai_checks(
     databook_path: str, sheet_name: Optional[str], dfs: Dict[str, pd.DataFrame],
     entity_name: str, model_type: str, model_name: Optional[str], language: str,
@@ -3034,29 +3081,16 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         # run_ai_checks's sheet_name (which it never actually uses -- see
         # run_ai_checks's signature) both tolerate None just fine.
         selected_sheet_for_ai = sheet_names[0] if sheet_names else None
-        language = "Eng"
         # Section 5d's insight summary reads resolution scores and
-        # unresolved_sheets. `state` already carries both and was previously
-        # read for `language` alone.
-        resolution_for_insight: Optional[Dict[str, Any]] = None
-        try:
-            from fdd_utils.workbook import process_workbook_data
-            # --financials-from applies here too. Left off, this call went
-            # looking for "<entity>Financials" inside the ENTITY workbook,
-            # which has no such sheet -- one bare "Error extracting financial
-            # data: Worksheet named ... not found" on stderr between sections
-            # 4b and 5, from the one call in this file that was not told where
-            # the roll-up lives. Every other caller already passes it.
-            state = process_workbook_data(temp_path=path, entity_name=entity_name,
-                                           selected_sheet=selected_sheet_for_ai, debug=False,
-                                           financials_from=financials_from,
-                                           financials_sheet=selected_sheet_for_ai if financials_from else None)
-            language = state.get("language", "Eng")
-            resolution_for_insight = state.get("resolution")
-        except Exception:
-            pass
+        # unresolved_sheets; the same call also yields the language and the
+        # frames the pipeline reads -- see ai_input_frames for why those are
+        # not section 1's `dfs`.
+        ai_dfs, language, resolution_for_insight = ai_input_frames(
+            path, entity_name, selected_sheet_for_ai,
+            financials_from=financials_from, fallback_dfs=dfs,
+        )
         ai_summary = run_ai_checks(
-            path, selected_sheet_for_ai, dfs, entity_name, model_type, model_name, language,
+            path, selected_sheet_for_ai, ai_dfs, entity_name, model_type, model_name, language,
             combined_bs_recon, combined_is_recon, limit=limit, workers=workers,
             accounts=accounts, resolution=resolution_for_insight, resume_from=resume_from,
         )
@@ -3067,7 +3101,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             Path(out_path).parent.mkdir(parents=True, exist_ok=True)
             try:
                 pptx_summary = export_and_inspect_pptx(
-                    path, selected_sheet_for_ai, dfs, ai_summary["results"], language,
+                    path, selected_sheet_for_ai, ai_dfs, ai_summary["results"], language,
                     model_type, out_path, model_name=model_name,
                     financials_from=financials_from,
                 )

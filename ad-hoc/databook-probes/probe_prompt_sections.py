@@ -289,7 +289,6 @@ def _feed_frames(path, feed, entity, sheet):
     run_ai_checks."""
     import pandas as pd
     import inspect_databook
-    from fdd_utils.workbook import extract_data_from_excel
 
     if sheet is None:
         found = inspect_databook._resolve_financials_sheets(pd.ExcelFile(path))
@@ -299,11 +298,10 @@ def _feed_frames(path, feed, entity, sheet):
     if feed == "ui":
         dfs = state.get("dfs") or {}
     else:
-        # inspect_databook.py:316 -- section 1's extraction, the dict it
-        # passes to run_ai_checks and to the PPTX export.
-        dfs, _wl, _rt, _lang, _res = extract_data_from_excel(
-            databook_path=path, entity_name=entity, mode="All", return_resolution=True,
-        )
+        # The CLI's own helper, so this feed stays what --run-ai really hands
+        # run_ai_checks and the export. Before ai_input_frames existed it was
+        # section 1's extract_data_from_excel dict (one value column).
+        dfs, language, _res = inspect_databook.ai_input_frames(path, entity, sheet)
     return dfs, language, state.get("reconciliation"), state.get("resolution"), sheet
 
 
