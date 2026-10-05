@@ -370,27 +370,34 @@ class AccountState:
 class RunState:
     """Every derived fact for the duration of ONE run, plus one slot per account.
 
-    NOT cross-run memory — nothing here survives the process, and nothing from a
-    previous run influences this one. It also unlocks NO resumability: `results`
-    and `run_data` are both written once, in PipelineRunLogger.finalize, so a run
-    that dies at the eighteenth account still restarts from zero. An in-memory
-    RunState dies with the process exactly as `results` does. It makes a resume
-    predicate expressible, nothing more.
+    NOT cross-run memory: nothing from a previous run influences this one,
+    except what a resume deliberately seeds from that run's checkpoint, and only
+    for accounts whose frame_fingerprint still matches (_seed_from_checkpoint).
+    The state itself dies with the process; what survives it is the run folder
+    (checkpoint.jsonl after every filed stage, evidence/, audit.jsonl).
 
-    The fact half is built ONCE, before the stage loop, and is read-only during
-    it. Most of it is reserved for later milestones and is empty today; the names
-    are fixed now so the shape does not move under them:
+    The fact half is built ONCE, before the stage loop:
 
-        profile    the workbook semantic profile (N1)
-        siblings   {key -> [df]}, replacing the two duplicated build sites (M2)
-        evidence   {key -> EvidenceIndex} (M2)
-        facts      {(key, ISO period) -> total} (N2)
-        links      verified cross-account edges, each with its numeric test (N2)
+        dfs           the frames every stage reads, subtable selection settled
+        fingerprints  {key -> frame_fingerprint}, taken before any render
+        peer          the revenue context every prompt render reads
+        facts         build_run_facts: series, labels, periods, statement
+                      types, and every cross-account edge with its numeric test
+                      (failed edges kept, never rendered)
+        evidence      {key -> AccountEvidence}: the one grounding pool per
+                      account. The one fact slot written DURING the loop --
+                      compiled at the account's first grounding, filed on the
+                      main thread, reused by every later stage and retry
+        profile       reserved for the workbook digest (plan P1); None today
+        links         reserved for the cross-tab graph (plan P2); [] today.
+                      The verified edges live in facts["links"]
 
-    `peer` is built here rather than per call site because _build_peer_context is
-    silently None on the retry and reprompt paths today — but the call sites are
-    NOT switched over in this milestone: doing so changes prompts, and this
-    milestone's gate is verdict-identical output.
+    The process half is `accounts`, one AccountState per account.
+
+    Two slots planned in 2026-09 were removed on 2026-10-05 because nothing ever
+    wrote or read them: `siblings` (the sibling frames are still built at their
+    three call sites, see _sibling_dfs_for) and `deck` (no deck-level memory was
+    built).
     """
 
     def __init__(
@@ -402,7 +409,6 @@ class RunState:
         # ---- fact half ----
         self.dfs = dfs or {}
         self.profile: Optional[Dict[str, Any]] = None
-        self.siblings: Dict[str, Any] = {}
         self.evidence: Dict[str, Any] = {}
         self.facts: Dict[Any, Any] = {}
         try:
@@ -428,7 +434,6 @@ class RunState:
         self.fingerprints: Dict[str, Optional[str]] = {
             key: frame_fingerprint(self.dfs.get(key)) for key in self.accounts
         }
-        self.deck: Dict[str, Any] = {}
         self.run_folder = run_folder
 
     def account(self, mapping_key: str) -> Optional[AccountState]:
@@ -1021,7 +1026,9 @@ def render_agent_prompt(
         df=df,
         data_format=data_format,
         user_comment=user_comment,
-        peer_context=_build_peer_context(dfs),
+        # RunState builds it once, from the same dfs; a caller with no
+        # RunState (load_prompts_and_format, a probe) still gets it built here.
+        peer_context=(run_state.peer if run_state is not None else _build_peer_context(dfs)),
         cross_account_facts=(run_state.facts if run_state is not None else None),
         analysis_thresholds=analysis_thresholds,
         **_agent_prompt_kwargs(agent_name, mapping_key, prompt_manager, previous_output, agent_config=agent_config),
@@ -2591,7 +2598,9 @@ def _sibling_dfs_for(
     Same construction as process_single_agent_item's own (:1137-1143). Repeated
     rather than shared because re-verifying a patch against a DIFFERENT sibling
     set is a different grounding pool, and that manufactures defects that were
-    never in the text; M1 step 6 folds all three sites into RunState.siblings.
+    never in the text. M1 step 6 planned to fold all three sites into a
+    RunState.siblings slot; that was never done, and the empty slot was removed
+    on 2026-10-05. The sites stay in step by construction, not by sharing.
     """
     if not dfs or not statement_type:
         return None

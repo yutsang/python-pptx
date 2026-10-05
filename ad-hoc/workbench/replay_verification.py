@@ -71,10 +71,10 @@ def sibling_dfs_for_account(mapping_key: str, dfs: Dict[str, Any], prompt_manage
 
     Reproduces pipeline.py:696-706 (the subagent_2/subagent_4 verify call) and
     its duplicate at :1336-1341 (_ensure_clause_reviews_on_final). Both build the
-    same set the same way; the plan (M1 step 6) folds them into one function that
-    later becomes RunState.siblings. It lives here rather than in pipeline.py
-    because this tool is not allowed to edit pipeline.py yet — when that lands,
-    delete this and import the shared one.
+    same set the same way; the plan (M1 step 6) was to fold them into one
+    function behind a RunState.siblings slot. That never landed and the slot was
+    removed (2026-10-05), so this copy stays; pipeline._sibling_dfs_for is the
+    production equivalent to diff it against.
 
     This must stay byte-identical in behaviour to production: a different sibling
     set is a different grounding pool, so a replay built on a looser or tighter
