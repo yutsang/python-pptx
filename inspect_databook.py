@@ -790,6 +790,41 @@ def _print_row_survival(tab_name: str, dfs: Dict[str, pd.DataFrame],
         print("\n  ✅ Every row on the sheet reached the AI.")
 
 
+def dump_unreached_cells(digest: Optional[Dict[str, Any]], dfs: Dict[str, pd.DataFrame],
+                         tab_name: str, limit: int = 60) -> None:
+    """Every non-zero number on the sheet that no prompt carries, with its labels.
+
+    ROW SURVIVAL above lists the rows extraction recognised. A figure on a row
+    it did not recognise is on neither side of that table: one real tab read
+    "zero in every period" on all four of its rows while the sheet held four
+    non-zero cells and the Financials line for the account was not nil.
+    """
+    frame = dfs.get(tab_name)
+    sheet = (getattr(frame, "attrs", {}) or {}).get("source_sheet_name") or tab_name
+    entry = ((digest or {}).get("sheets") or {}).get(sheet)
+    _hr(f"  NON-ZERO CELLS ON '{sheet}' THAT REACH NO PROMPT (Excel row / column, 1-based)")
+    if entry is None:
+        print("  (no digest for this sheet)")
+        return
+    cells = entry["cells"]
+    missed = [i for i, v in enumerate(cells["v"]) if v != 0 and not cells["reach"][i]]
+    total = sum(1 for v in cells["v"] if v != 0)
+    print(f"  {len(missed)} of {total} non-zero number(s) reach no prompt."
+          + (f" Showing the first {limit}." if len(missed) > limit else ""))
+    row_labels, col_labels = entry.get("row_labels", {}), entry.get("col_labels", {})
+    for i in missed[:limit]:
+        r, c = cells["r"][i], cells["c"][i]
+        print(f"    row {r + 1:>4} col {c + 1:>3}  {cells['v'][i]:>18,.2f}  "
+              f"row label={row_labels.get(str(r))!r}  column label={col_labels.get(str(c))!r}")
+    rows = sorted({cells["r"][i] for i in missed})
+    if rows:
+        print(f"  Sheet rows holding them (1-based): {[r + 1 for r in rows][:40]}")
+        print("  Every text cell on those rows:")
+        for t in entry.get("texts", []):
+            if t[0] in rows:
+                print(f"    row {t[0] + 1:>4} col {t[1] + 1:>3}  {t[2]!r}")
+
+
 def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
              entity_name: str = "") -> None:
     _hr(f"DUMP TAB: {tab_name!r} (raw Excel value vs final extracted value)")
@@ -3008,6 +3043,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
 
     if dump_tab_name:
         dump_tab(path, dfs, dump_tab_name, entity_name=entity_name)
+        dump_unreached_cells(extraction_resolution.get("workbook_digest"), dfs, dump_tab_name)
         summary["status"] = "dump-tab only"
         return summary
 
