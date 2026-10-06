@@ -34,6 +34,7 @@ import pandas as pd
 __all__ = [
     "build_cross_account_facts",
     "cross_account_links_for",
+    "financials_tieout",
     "resolve_statement_type",
 ]
 
@@ -755,6 +756,34 @@ def build_financials_by_key(
             if values:
                 out.setdefault(str(dfs_key), {}).update(values)
     return out
+
+
+def financials_tieout(
+    bs_is_results: Optional[Dict[str, Any]],
+    dfs: Optional[Dict[str, pd.DataFrame]],
+    mappings: Optional[dict] = None,
+) -> List[Dict[str, Any]]:
+    """One ``tab_to_financials`` edge per account, tested on every date column.
+
+    The statement a row sits in decides the comparison (IS on absolute value),
+    so each statement is attributed separately rather than asking a mapping
+    for the account's type. A real deck is why this is callable on its own:
+    its summary said 投资收益 was nil in every period while the statement table
+    beside it printed 1,332 and 602, and its 长期应付款 bullet said the account
+    first carried a balance in 2025 against 6,145 and 8,269 in that table. Both
+    tabs agreed with Financials on the latest column, which is the only one
+    reconciliation reads.
+    """
+    if not bs_is_results or not dfs:
+        return []
+    series = build_cross_account_facts(dfs).get("series") or {}
+    edges: List[Dict[str, Any]] = []
+    for statement, kind in (("balance_sheet", "BS"), ("income_statement", "IS")):
+        frame = bs_is_results.get(statement)
+        rows = build_financials_by_key({statement: frame}, dfs, mappings)
+        for key in rows:
+            edges.extend(_financials_edges(key, series.get(key) or {}, rows, kind))
+    return edges
 
 
 def cross_account_links_for(

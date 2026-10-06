@@ -1779,7 +1779,38 @@ def check_reconciliation(
                       f"Tab({r.get('Tab_Account', '?')})={tab_val if isinstance(tab_val, str) else f'{tab_val:,.0f}'}  "
                       f"-- both read 0, matches exactly")
 
+    check_every_period_tieout(bs_is_results, dfs, mappings)
     return bs_recon, is_recon
+
+
+def check_every_period_tieout(bs_is_results: Dict[str, Any], dfs: Dict[str, pd.DataFrame],
+                              mappings: Optional[dict] = None) -> None:
+    """Section 4 above compares the latest column only. This compares all of them.
+
+    A tab that agrees with Financials today and not two years ago reconciles
+    clean, and then the commentary (written from the tab) contradicts the
+    statement table (drawn from Financials) on the same slide.
+    """
+    from fdd_utils.ai.facts import financials_tieout
+
+    _hr("4a. EVERY-PERIOD TIE-OUT — tab total vs Financials on every date column, not just the latest")
+    edges = financials_tieout(bs_is_results, dfs, mappings)
+    if not edges:
+        print("  (no account had a period present on both sides)")
+        return
+    broken = [e for e in edges if e.get("evidence", {}).get("differing_periods")]
+    print(f"  {len(edges)} account(s) compared, {len(edges) - len(broken)} agree on every period, "
+          f"{len(broken)} differ on at least one.")
+    for edge in broken:
+        evidence = edge["evidence"]
+        print(f"\n  ⚠️  {edge['source']}: agrees on {len(evidence['agreeing_periods'])} period(s), differs on:")
+        for period, pair in sorted(evidence["differing_periods"].items()):
+            print(f"      {period}: Tab={pair['tab']:,.0f}  Financials={pair['financials']:,.0f}")
+    if broken:
+        print("\n  The commentary is written from the tab and the statement table is drawn from "
+              "Financials, so each line above is a place the two can disagree in the deck.")
+    else:
+        print("  ✅ Every tab agrees with Financials on every period it carries.")
 
 
 # ---------------------------------------------------------------------------
