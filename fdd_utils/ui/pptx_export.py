@@ -454,6 +454,7 @@ def build_insight_summary(
     resolution: Optional[Dict[str, Any]] = None,
     evidence: Any = None,
     links: Any = None,
+    period_tieout: Any = None,
     language: str = "Eng",
     max_movements: int = 8,
     use_llm: bool = False,
@@ -709,6 +710,32 @@ def build_insight_summary(
                     )
         except Exception as exc:
             logger.debug("Insight summary: reconciliation scan failed for %s: %s", stmt, exc)
+
+    # -- 6b. The same comparison on every period, not just the latest ----
+    # Section 6 reads reconcile.py's verdict, which is the latest column only.
+    # One real deck reconciled clean and still printed, beside each other, a
+    # summary calling 投资收益 nil in every period against 1,332 and 602 in the
+    # statement table, and an 应收账款 bullet growing 463% against a table that
+    # showed thirty-fold: the tab and Financials disagreed in EARLIER periods.
+    # The commentary is written from the tab and the tables from Financials,
+    # so each of these is a contradiction a reader can see. `period_tieout` is
+    # facts.financials_tieout's edge list; absent when the caller has no
+    # Financials frames in hand.
+    for edge in (period_tieout or []):
+        differing = ((edge or {}).get("evidence") or {}).get("differing_periods") or {}
+        if not differing:
+            continue
+        account = str(edge.get("source") or "")
+        shown = "; ".join(
+            f"{period}: tab {pair.get('tab', 0):,.0f} vs Financials {pair.get('financials', 0):,.0f}"
+            for period, pair in sorted(differing.items())[:4])
+        add(f"{account}: the tab and the Financials sheet disagree in {len(differing)} of the "
+            f"periods both carry ({shown}). Commentary is "
+            f"written from the tab, the statement table from Financials",
+            "facts.financials_tieout", [f"tieout:{account}:{p}" for p in sorted(differing)], "high")
+        questions.append(
+            f"{account} — the tab and Financials differ for {', '.join(sorted(differing))}; "
+            f"which is the figure to report, and is the tab complete for those periods?")
 
     # -- 7. Mapping confidence -----------------------------------------
     resolved = ((resolution or {}).get("resolved") or {}) if isinstance(resolution, dict) else {}

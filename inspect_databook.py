@@ -1680,6 +1680,7 @@ def check_statement_table_units(bs_is_results: Dict[str, Any]) -> None:
 def check_reconciliation(
     databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "",
     financials_from: Optional[str] = None, show_tab_list: bool = True,
+    tieout_out: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     # financials_from: some portfolios keep each sub-entity's OWN databook
     # free of any Financials-pattern sheet entirely -- the real summary for
@@ -1814,12 +1815,14 @@ def check_reconciliation(
                       f"Tab({r.get('Tab_Account', '?')})={tab_val if isinstance(tab_val, str) else f'{tab_val:,.0f}'}  "
                       f"-- both read 0, matches exactly")
 
-    check_every_period_tieout(bs_is_results, dfs, mappings)
+    edges = check_every_period_tieout(bs_is_results, dfs, mappings)
+    if tieout_out is not None:
+        tieout_out.extend(edges)
     return bs_recon, is_recon
 
 
 def check_every_period_tieout(bs_is_results: Dict[str, Any], dfs: Dict[str, pd.DataFrame],
-                              mappings: Optional[dict] = None) -> None:
+                              mappings: Optional[dict] = None) -> List[Dict[str, Any]]:
     """Section 4 above compares the latest column only. This compares all of them.
 
     A tab that agrees with Financials today and not two years ago reconciles
@@ -1832,7 +1835,7 @@ def check_every_period_tieout(bs_is_results: Dict[str, Any], dfs: Dict[str, pd.D
     edges = financials_tieout(bs_is_results, dfs, mappings)
     if not edges:
         print("  (no account had a period present on both sides)")
-        return
+        return edges
     broken = [e for e in edges if e.get("evidence", {}).get("differing_periods")]
     print(f"  {len(edges)} account(s) compared, {len(edges) - len(broken)} agree on every period, "
           f"{len(broken)} differ on at least one.")
@@ -1846,6 +1849,7 @@ def check_every_period_tieout(bs_is_results: Dict[str, Any], dfs: Dict[str, pd.D
               "Financials, so each line above is a place the two can disagree in the deck.")
     else:
         print("  ✅ Every tab agrees with Financials on every period it carries.")
+    return edges
 
 
 # ---------------------------------------------------------------------------
@@ -2100,6 +2104,7 @@ def run_ai_checks(
     accounts: Optional[List[str]] = None,
     resolution: Optional[Dict[str, Any]] = None,
     resume_from: Optional[str] = None,
+    period_tieout: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     _hr("5-7. AI-DEPENDENT CHECKS (running full pipeline once — this costs real tokens/time)")
     from fdd_utils.ai import run_ai_pipeline_with_progress, SUBAGENT_SEQUENCE
@@ -2444,6 +2449,7 @@ def run_ai_checks(
             reconciliation=(bs_recon, is_recon),
             resolution=resolution,
             language=language,
+            period_tieout=period_tieout,
         )
     except Exception as _exc:
         _insight = {}
@@ -3094,12 +3100,13 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
 
     bs_recon_parts: List[pd.DataFrame] = []
     is_recon_parts: List[pd.DataFrame] = []
+    period_tieout: List[Dict[str, Any]] = []
     for i, sheet_name in enumerate(sheet_names):
         # all_tab_names (dfs.keys()) is the same for every Financials sheet in
         # this file -- only show the full tab-name list once, on the first one.
         bs_recon, is_recon = check_reconciliation(
             path, sheet_name, dfs, entity_name=entity_name, financials_from=financials_from,
-            show_tab_list=(i == 0),
+            show_tab_list=(i == 0), tieout_out=period_tieout,
         )
         if bs_recon is not None and not bs_recon.empty:
             bs_recon_parts.append(bs_recon)
@@ -3143,6 +3150,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                 mappings=get_effective_mappings(load_mappings(), extraction_resolution or None),
                 reconciliation=(combined_bs_recon, combined_is_recon),
                 resolution=extraction_resolution or None,
+                period_tieout=period_tieout,
             )
             print(_pre["summary"])
             for _issue in _pre["visible_issues"]:
@@ -3176,6 +3184,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             path, selected_sheet_for_ai, ai_dfs, entity_name, model_type, model_name, language,
             combined_bs_recon, combined_is_recon, limit=limit, workers=workers,
             accounts=accounts, resolution=resolution_for_insight, resume_from=resume_from,
+            period_tieout=period_tieout,
         )
         summary["ai"] = ai_summary
 
