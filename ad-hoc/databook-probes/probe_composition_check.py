@@ -70,6 +70,13 @@ CASES = [
      "营业成本余额合计968.3万元，其中折旧成本为827.6万元，物管费用为73.9万元。",
      False,
      "KNOWN BLIND SPOT: a bare 其中 breakdown carries no 主要包括 to anchor on"),
+
+    ("其他应收款",
+     "截至2024年12月31日，其他应收款余额为3,782.9万元，主要包括关联方-美元项下的3,649.7万元，"
+     "系目标公司向关联方某境外公司提供的500万美元借款本金（按汇率折合人民币3,649.7万元），"
+     "期限1年，利率6%。",
+     False,
+     "one component, restated in brackets as its own currency conversion -- not two"),
 ]
 
 

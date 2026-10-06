@@ -1517,6 +1517,7 @@ _ENUM_ITEM = re.compile(r"[1-9]）\s*[^；;]*?(-?[\d,]+(?:\.\d+)?)\s*(万元|亿
 # parent-plus-children duplication that was not there.
 _ENUM_RUNON = re.compile(r"(?:主要(?:包括|包含|为|系)|包括|包含)([^。]*)")
 _RUNON_AMT = re.compile(r"(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+_BRACKETED = re.compile(r"[（(][^（）()]*[）)]")
 # "其余X万元为…" is the closing component _composition_guidance explicitly asks
 # for ("收尾必须写成'其余X万元为…'"). Not counting it made the checker
 # contradict the instruction: a bullet that complied was flagged for the very
@@ -1594,7 +1595,17 @@ def _composition_findings(mapping_key: str, text: str) -> List[Tuple[str, str]]:
             _series = _PERIOD_SERIES.search(span)
             if _series:
                 span = span[:_series.start()]
-            items = _RUNON_AMT.findall(span)
+            # A bracket that repeats a figure already listed outside it is that
+            # same component said again, not a second one: 「主要包括关联方-美元
+            # 项下的3,649.7万元，系…500万美元借款本金（按汇率折合人民币3,649.7
+            # 万元）」 is one loan. Counted twice it came to 7,299.4 against a
+            # 3,782.9万元 total -- ratio 1.93, just outside the "exactly double"
+            # guard below -- and shipped as "93% unaccounted for", the run's only
+            # high-severity clause flag. A bracketed figure that repeats nothing
+            # is kept: it may be a component in its own right.
+            outside = _RUNON_AMT.findall(_BRACKETED.sub(" ", span))
+            inside = [a for b in _BRACKETED.findall(span) for a in _RUNON_AMT.findall(b)]
+            items = outside + [a for a in inside if a not in outside]
     # The closing "其余X万元为…" is a component like any other. Added here
     # rather than inside the two patterns above because it can sit in either
     # form -- after a numbered list, or trailing a run-on one -- and because a
