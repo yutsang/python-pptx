@@ -1115,10 +1115,13 @@ def batch_run_ai_for_entity(
 
     result: Dict[str, Any] = {"entity_name": entity_name, "status": "ok"}
 
+    from ..ai.facts import financials_tieout
+    graph_links = financials_tieout(state.get("bs_is_results"), dfs, mappings)
     ai_results = run_ai_pipeline_with_progress(
         mapping_keys=matched_mapping_keys,
         dfs=dfs,
         workbook_digest=(resolution or {}).get("workbook_digest"),
+        graph_links=graph_links,
         model_type=model_type,
         model_name=model_name,
         language=effective_language,

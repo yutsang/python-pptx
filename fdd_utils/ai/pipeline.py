@@ -392,8 +392,9 @@ class RunState:
                       passes one: every non-empty cell of every tab, mapped or
                       not, and whether it reached the model. Written to the
                       run folder as digest.json
-        links         reserved for the cross-tab graph (plan P2); [] today.
-                      The verified edges live in facts["links"]
+        links         the run's typed, tested cross-tab graph. This is the same
+                      list persisted in facts["links"], including failed edges;
+                      prompt rendering independently allow-lists edge kinds.
 
     The process half is `accounts`, one AccountState per account.
 
@@ -451,8 +452,10 @@ class RunState:
         ))
 
     def as_dict(self) -> Dict[str, Any]:
+        from .facts import graph_summary
         return coerce_plain({
             "run_folder": self.run_folder,
+            "graph": graph_summary(self.links),
             "phase_tally": self.phase_tally(),
             "accounts_not_terminal": sorted(
                 key for key, state in self.accounts.items()
@@ -1047,6 +1050,23 @@ def build_run_facts(dfs: Dict[str, pd.DataFrame], prompt_manager: PromptEngine) 
     return build_cross_account_facts(
         dfs, type_lookup=lambda k: prompt_manager.get_mapping_component(k, component="type"),
     )
+
+
+def _set_run_graph(
+    run_state: RunState,
+    facts: Optional[Dict[str, Any]],
+    extra_links: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    """One assignment seam for facts and RunState.links.
+
+    Financials tie-outs are compiled where Financials frames exist, while the
+    account graph is compiled here. Keeping the merge behind this seam prevents
+    the two persisted views from drifting apart.
+    """
+    from .facts import merge_graph_links
+
+    run_state.facts = merge_graph_links(facts, extra_links)
+    run_state.links = list(run_state.facts.get("links") or [])
 
 
 _REVENUE_KEY_NEEDLES = ("operating income", "revenue", "营业收入")
@@ -1825,14 +1845,20 @@ def run_ai_pipeline_with_progress(
     model_name: Optional[str] = None,
     resume_from: Optional[str] = None,
     workbook_digest: Optional[Dict[str, Any]] = None,
+    graph_links: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Dict[str, str]]:
-    """Run the 4-agent FDD pipeline with optional progress callbacks.
+    """Run the active FDD subagent pipeline with optional progress callbacks.
 
     `workbook_digest`: resolution["workbook_digest"] from process_workbook_data.
     Held as RunState.profile, its reach re-marked against the settled frames,
     and written to the run folder, so a later question about a tab -- including
     one no account reads -- is answered from the run, not by re-opening the
     workbook. A record only: nothing here changes a prompt.
+
+    `graph_links`: typed, numerically-tested edges compiled at a workbook seam
+    this function cannot see (currently the all-period Financials tie-out).
+    They are merged into RunState's graph, not rendered merely because they
+    exist; the prompt's explicit edge-kind allow-list remains the final gate.
 
     `resume_from`: a previous run id (or run folder) whose checkpoint.jsonl
     seeds every stage that already completed, so only the stages the earlier
@@ -1868,10 +1894,10 @@ def run_ai_pipeline_with_progress(
     # hypothesis that failed its test goes to the internal insight summary and
     # nowhere near the deck.
     try:
-        run_state.facts = build_run_facts(dfs, prompt_manager)
+        _set_run_graph(run_state, build_run_facts(dfs, prompt_manager), graph_links)
     except Exception as exc:  # a fact table is an enrichment, never a gate
         logger.logger.warning("[CrossAccountFacts] skipped: %s", exc)
-        run_state.facts = {}
+        _set_run_graph(run_state, {}, graph_links)
     if workbook_digest:
         run_state.profile = workbook_digest
         try:
@@ -3036,10 +3062,10 @@ def run_generator_reprompt(
     results: Dict[str, Dict[str, str]] = {}
     run_state = RunState(dfs, mapping_keys, run_folder=logger.run_folder)
     try:
-        run_state.facts = build_run_facts(dfs, prompt_manager)
+        _set_run_graph(run_state, build_run_facts(dfs, prompt_manager))
     except Exception as exc:  # an enrichment, never a gate -- same as the full run
         logger.logger.warning("[CrossAccountFacts] skipped: %s", exc)
-        run_state.facts = {}
+        _set_run_graph(run_state, {})
 
     logger.logger.info(
         "Starting reprompt + validator flow with %s items | model=%s | language=%s",

@@ -39,6 +39,7 @@ from fdd_utils.ai.facts import (  # noqa: E402
     build_cross_account_facts,
     build_financials_by_key,
     cross_account_links_for,
+    graph_summary,
 )
 from fdd_utils.ai.prompts import PromptEngine  # noqa: E402
 from fdd_utils.workbook import (  # noqa: E402
@@ -60,7 +61,9 @@ def _edge_line(edge: dict) -> str:
     else:
         agreed = ev.get("tied_periods") or ev.get("agreeing_periods") or []
         extra = f"  agree={agreed} differ={ev.get('differing_periods')}"
-    return f"    [{mark}] {edge['source']} -> {edge['target']}\n           test: {edge['test']}\n         {extra}"
+    return (f"    [{mark}] {edge['source']} -> {edge['target']}"
+            f"  id={edge.get('edge_id')} tier={edge.get('tier')}\n"
+            f"           test: {edge['test']}\n         {extra}")
 
 
 def main() -> int:
@@ -104,6 +107,9 @@ def main() -> int:
                if len(facts["full_periods"][n]) < len(facts["periods"][n])]
     print(f"    accounts whose tail period is a stub (kept in the table, "
           f"excluded from ratios): {len(stubbed)}")
+    graph = graph_summary(facts)
+    print(f"    typed graph: total={graph['total']} passed={graph['passed']} "
+          f"failed={graph['failed']} malformed={graph['malformed']}")
 
     print("\n--- 1. every candidate relationship ---")
     by_kind: dict = {}
@@ -172,7 +178,7 @@ def main() -> int:
           f"{'  <-- RULE VIOLATED' if leaks else '  (rule holds)'}")
     for leak in leaks[:5]:
         print(f"        {leak}")
-    return 1 if (leaks or len(bad_after) > len(bad_before)) else 0
+    return 1 if (leaks or len(bad_after) > len(bad_before) or graph["malformed"]) else 0
 
 
 if __name__ == "__main__":

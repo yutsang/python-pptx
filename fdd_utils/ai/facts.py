@@ -25,6 +25,8 @@ Nothing here calls an LLM, reads the network, or writes a file.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from statistics import median
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -35,6 +37,8 @@ __all__ = [
     "build_cross_account_facts",
     "cross_account_links_for",
     "financials_tieout",
+    "graph_summary",
+    "merge_graph_links",
     "resolve_statement_type",
 ]
 
@@ -329,15 +333,120 @@ _RATIO_CANDIDATES: Tuple[Tuple[str, str, str, str, float, float], ...] = (
 )
 
 
-def _edge(source, target, kind, periods, test, passed, evidence) -> Dict[str, Any]:
+def _endpoint_ref(value: Any) -> Dict[str, str]:
+    """A typed endpoint while the legacy string stays available to callers."""
+    raw = str(value or "")
+    if raw.startswith("Financials::"):
+        account = raw.split("::", 1)[1]
+        return {"kind": "financials_row", "account": account, "node": account}
+    if "::" in raw:
+        account, node = raw.split("::", 1)
+        return {
+            "kind": "account_block" if node == "breakdown" else "account_row",
+            "account": account,
+            "node": node,
+        }
+    return {"kind": "account", "account": raw, "node": raw}
+
+
+def _edge_id(source: Any, target: Any, kind: Any, periods: Sequence[Any]) -> str:
+    """Stable inside and across runs; no workbook or client name is persisted."""
+    material = "\x1f".join((
+        str(kind or ""),
+        str(source or ""),
+        str(target or ""),
+        ",".join(sorted(str(p) for p in (periods or []))),
+    ))
+    return "edge_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def _edge(source, target, kind, periods, test, passed, evidence, tier="derived") -> Dict[str, Any]:
+    periods = list(periods)
     return {
+        "edge_id": _edge_id(source, target, kind, periods),
         "source": source,
         "target": target,
+        "source_ref": _endpoint_ref(source),
+        "target_ref": _endpoint_ref(target),
         "kind": kind,
-        "periods": list(periods),
+        "tier": str(tier or "derived"),
+        "periods": periods,
         "test": test,
         "passed": bool(passed),
         "evidence": evidence,
+    }
+
+
+def _typed_edge(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Upgrade an edge supplied by another extraction seam to this schema."""
+    edge = _edge(
+        raw.get("source"),
+        raw.get("target"),
+        raw.get("kind"),
+        raw.get("periods") or [],
+        raw.get("test"),
+        raw.get("passed"),
+        raw.get("evidence") or {},
+        tier=raw.get("tier") or "derived",
+    )
+    # Keep non-schema diagnostics a caller deliberately attached.
+    known = set(edge) | {"edge_id"}
+    edge.update({k: v for k, v in raw.items() if k not in known})
+    return edge
+
+
+def merge_graph_links(
+    facts: Optional[Dict[str, Any]],
+    extra_links: Optional[Sequence[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Return one deduplicated typed graph without changing either input.
+
+    Financials frames and account frames are currently assembled at different
+    workbook seams. This is the single join point: callers hand over tested
+    edges, and RunState receives one graph. No edge is made quotable merely by
+    being merged; prompt rendering still admits only its explicit allow-list.
+    """
+    out = dict(facts or {})
+    merged: Dict[str, Dict[str, Any]] = {}
+    for raw in list(out.get("links") or []) + list(extra_links or []):
+        if not isinstance(raw, dict):
+            continue
+        edge = _typed_edge(raw)
+        edge_id = edge["edge_id"]
+        if edge_id in merged and merged[edge_id] != edge:
+            # Several Financials sheets can carry the same account/periods.
+            # Until the workbook seam gives those rows an explicit sheet id,
+            # do not silently let the later tested result erase the earlier.
+            payload = json.dumps(edge, ensure_ascii=False, sort_keys=True, default=str)
+            edge_id += "_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
+            edge["edge_id"] = edge_id
+        merged[edge_id] = edge
+    out["links"] = list(merged.values())
+    return out
+
+
+def graph_summary(facts_or_links: Any) -> Dict[str, Any]:
+    """Small persisted health view; the full graph remains in facts['links']."""
+    links = (
+        facts_or_links.get("links") or []
+        if isinstance(facts_or_links, dict)
+        else facts_or_links or []
+    )
+    by_kind: Dict[str, Dict[str, int]] = {}
+    malformed = 0
+    for edge in links:
+        if not isinstance(edge, dict) or not edge.get("edge_id") or not edge.get("kind"):
+            malformed += 1
+            continue
+        counts = by_kind.setdefault(str(edge["kind"]), {"total": 0, "passed": 0, "failed": 0})
+        counts["total"] += 1
+        counts["passed" if edge.get("passed") else "failed"] += 1
+    return {
+        "total": sum(v["total"] for v in by_kind.values()),
+        "passed": sum(v["passed"] for v in by_kind.values()),
+        "failed": sum(v["failed"] for v in by_kind.values()),
+        "malformed": malformed,
+        "by_kind": by_kind,
     }
 
 

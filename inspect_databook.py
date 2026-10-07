@@ -2303,6 +2303,7 @@ def run_ai_checks(
             language=language, use_multithreading=True, max_workers=effective_workers,
             progress_callback=_tqdm_progress, resume_from=resume_from,
             workbook_digest=(resolution or {}).get("workbook_digest"),
+            graph_links=period_tieout,
         )
     finally:
         stop_refresh.set()
