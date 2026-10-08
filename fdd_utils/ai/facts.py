@@ -39,6 +39,7 @@ __all__ = [
     "build_cross_account_facts",
     "build_digest_graph_links",
     "cross_account_links_for",
+    "digest_tieout_diagnostics",
     "financials_tieout",
     "graph_summary",
     "merge_graph_links",
@@ -476,6 +477,30 @@ def _sheet_names_account(sheet_name: str, sheet: Dict[str, Any], account: str, l
     return False
 
 
+def _digest_total_rows(
+    sheet: Dict[str, Any],
+) -> Tuple[Dict[int, str], float, List[Tuple[int, int, str, Dict[str, float]]]]:
+    """Usable labelled total rows with raw figures scaled to base units."""
+    period_by_col = _digest_periods_by_column(sheet)
+    multiplier = _digest_multiplier(sheet)
+    cells = sheet.get("cells") or {}
+    rows: Dict[Tuple[int, int], Dict[str, float]] = {}
+    for row, col, raw, block in zip(
+        cells.get("r") or [], cells.get("c") or [],
+        cells.get("v") or [], cells.get("block") or [],
+    ):
+        period = period_by_col.get(int(col))
+        if period is None:
+            continue
+        rows.setdefault((int(block), int(row)), {})[period] = float(raw) * multiplier
+    totals = []
+    for (block, row), values in sorted(rows.items()):
+        label = str((sheet.get("row_labels") or {}).get(str(row)) or "").strip()
+        if _TOTAL_LABEL_RE.match(label) and any(abs(v) > 1e-9 for v in values.values()):
+            totals.append((block, row, label, values))
+    return period_by_col, multiplier, totals
+
+
 def build_digest_graph_links(
     workbook_digest: Optional[Dict[str, Any]],
     facts: Optional[Dict[str, Any]],
@@ -498,25 +523,10 @@ def build_digest_graph_links(
     for sheet_name, sheet in sheets.items():
         if not isinstance(sheet, dict) or sheet.get("status") != "unmapped":
             continue
-        period_by_col = _digest_periods_by_column(sheet)
+        period_by_col, multiplier, total_rows = _digest_total_rows(sheet)
         if not period_by_col:
             continue
-        multiplier = _digest_multiplier(sheet)
-        cells = sheet.get("cells") or {}
-        rows: Dict[Tuple[int, int], Dict[str, float]] = {}
-        for row, col, raw, block in zip(
-            cells.get("r") or [], cells.get("c") or [],
-            cells.get("v") or [], cells.get("block") or [],
-        ):
-            period = period_by_col.get(int(col))
-            if period is None:
-                continue
-            rows.setdefault((int(block), int(row)), {})[period] = float(raw) * multiplier
-
-        for (block, row), values in sorted(rows.items()):
-            row_label = str((sheet.get("row_labels") or {}).get(str(row)) or "").strip()
-            if not _TOTAL_LABEL_RE.match(row_label) or not any(abs(v) > 1e-9 for v in values.values()):
-                continue
+        for block, row, row_label, values in total_rows:
             matched: List[Tuple[str, List[str], bool, Dict[str, float]]] = []
             for account, account_values in series.items():
                 shared = sorted(
@@ -571,6 +581,100 @@ def build_digest_graph_links(
                     },
                 ))
     return edges
+
+
+def digest_tieout_diagnostics(
+    workbook_digest: Optional[Dict[str, Any]],
+    facts: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Why each unmapped sheet did not produce a supporting-schedule edge.
+
+    Diagnostic only: it proposes no edge and is never persisted or rendered.
+    """
+    from ..financial_common import normalize_financial_date_label
+
+    series = (facts or {}).get("series") or {}
+    labels = (facts or {}).get("labels") or {}
+    linked_sheets = {
+        str((edge.get("evidence") or {}).get("sheet"))
+        for edge in build_digest_graph_links(workbook_digest, facts)
+        if edge.get("passed")
+    }
+    rows: List[Dict[str, Any]] = []
+    for sheet_name, sheet in ((workbook_digest or {}).get("sheets") or {}).items():
+        if not isinstance(sheet, dict) or sheet.get("status") != "unmapped":
+            continue
+        period_by_col, multiplier, total_rows = _digest_total_rows(sheet)
+        labelled_totals = sorted({
+            str(label).strip()
+            for label in (sheet.get("row_labels") or {}).values()
+            if _TOTAL_LABEL_RE.match(str(label).strip())
+        })
+        date_rows = []
+        for row, label in (sheet.get("row_labels") or {}).items():
+            normalised = normalize_financial_date_label(label)
+            if _ISO_RE.match(str(normalised or "").strip()):
+                date_rows.append(str(normalised))
+        named_accounts = [
+            str(account) for account in series
+            if _sheet_names_account(
+                str(sheet_name), sheet, str(account), str(labels.get(account) or ""))
+        ]
+
+        best = None
+        for block, row, row_label, values in total_rows:
+            for account, account_values in series.items():
+                shared = sorted(
+                    period for period in values
+                    if isinstance(account_values.get(period), (int, float))
+                    and abs(float(account_values[period])) > 1e-9
+                )
+                if not shared:
+                    continue
+                differences = [
+                    abs(float(values[p]) - float(account_values[p]))
+                    / max(1.0, abs(float(values[p])), abs(float(account_values[p])))
+                    for p in shared
+                ]
+                candidate = {
+                    "account": str(account),
+                    "block": block,
+                    "row": row,
+                    "label": row_label,
+                    "periods": shared,
+                    "max_difference_pct": round(max(differences) * 100.0, 1),
+                }
+                rank = (candidate["max_difference_pct"], -len(shared), str(account))
+                if best is None or rank < best[0]:
+                    best = (rank, candidate)
+
+        if str(sheet_name) in linked_sheets:
+            reason = "tieout_found"
+        elif not period_by_col:
+            reason = "no_period_columns"
+        elif not labelled_totals:
+            reason = "no_labelled_total_row"
+        elif not total_rows:
+            reason = "total_row_has_no_period_values"
+        else:
+            reason = "total_did_not_tie"
+        cells = sheet.get("cells") or {}
+        numeric_nonzero = sum(1 for value in (cells.get("v") or []) if abs(float(value)) > 1e-9)
+        rows.append({
+            "sheet": str(sheet_name),
+            "title": str(sheet.get("title") or ""),
+            "reason": reason,
+            "blocks": len(sheet.get("blocks") or []),
+            "numeric_nonzero": numeric_nonzero,
+            "period_columns": sorted(set(period_by_col.values())),
+            "date_rows": sorted(set(date_rows)),
+            "total_labels": labelled_totals,
+            "unit_markers": list(sheet.get("unit_markers") or []),
+            "multiplier": multiplier,
+            "named_accounts": named_accounts,
+            "best_near_match": best[1] if best else None,
+        })
+    return rows
 
 
 def _edge_id(source: Any, target: Any, kind: Any, periods: Sequence[Any]) -> str:

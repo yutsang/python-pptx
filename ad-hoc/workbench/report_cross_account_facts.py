@@ -40,6 +40,7 @@ from fdd_utils.ai.facts import (  # noqa: E402
     build_digest_graph_links,
     build_financials_by_key,
     cross_account_links_for,
+    digest_tieout_diagnostics,
     graph_summary,
     merge_graph_links,
 )
@@ -96,6 +97,38 @@ def _decoy_facts(facts: dict) -> dict:
     return decoy
 
 
+def _print_unmapped_diagnostics(digest: dict, facts: dict) -> None:
+    rows = digest_tieout_diagnostics(digest, facts)
+    reasons = {}
+    for row in rows:
+        reasons[row["reason"]] = reasons.get(row["reason"], 0) + 1
+    print(f"=== unmapped supporting-tab tie-out diagnostics: {len(rows)} sheets ===")
+    print(f"    reasons={dict(sorted(reasons.items()))}")
+    print("    period_columns = dates found across columns; date_rows = dates found down rows")
+    rows.sort(key=lambda row: (
+        not bool(row["named_accounts"]),
+        not bool(row["total_labels"]),
+        not bool(row["period_columns"] or row["date_rows"]),
+        -row["numeric_nonzero"],
+        row["sheet"],
+    ))
+    for row in rows:
+        best = row.get("best_near_match")
+        best_text = (
+            f"{best['account']} max_diff={best['max_difference_pct']:.1f}% "
+            f"periods={len(best['periods'])}"
+            if best else "-"
+        )
+        print(
+            f"    sheet={row['sheet']!r}  reason={row['reason']}  "
+            f"nz={row['numeric_nonzero']} blocks={row['blocks']}\n"
+            f"        periods={row['period_columns']} date_rows={row['date_rows']} "
+            f"totals={row['total_labels']} units={row['unit_markers']} "
+            f"multiplier={row['multiplier']:g}\n"
+            f"        named_accounts={row['named_accounts']} best={best_text}"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -105,6 +138,8 @@ def main() -> int:
     parser.add_argument("--language", default=None, choices=["Chi", "Eng"],
                         help="override the detected report language when rendering prompts")
     parser.add_argument("--quiet", action="store_true", help="suppress prompt-engine warnings")
+    parser.add_argument("--unmapped-only", action="store_true",
+                        help="print why unmapped tabs did not produce tie-outs, then stop")
     args = parser.parse_args()
 
     if args.quiet:
@@ -114,6 +149,13 @@ def main() -> int:
         databook_path=args.databook, entity_name="", mode="All", return_resolution=True)
     language = args.language or language
     engine = PromptEngine()
+    digest = (_res or {}).get("workbook_digest")
+
+    if args.unmapped_only:
+        diagnostic_facts = build_cross_account_facts(
+            dfs, type_lookup=lambda key: engine.get_mapping_component(key, component="type"))
+        _print_unmapped_diagnostics(digest, diagnostic_facts)
+        return 0
 
     financials = {}
     try:
@@ -126,7 +168,6 @@ def main() -> int:
     base_facts = build_cross_account_facts(
         dfs, financials=financials,
         type_lookup=lambda key: engine.get_mapping_component(key, component="type"))
-    digest = (_res or {}).get("workbook_digest")
     digest_links = build_digest_graph_links(digest, base_facts)
     facts = merge_graph_links(base_facts, digest_links)
 
