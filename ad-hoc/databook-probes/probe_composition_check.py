@@ -37,6 +37,12 @@ CASES = [
      False,
      "the 1,128.3 parent restates the total before breaking it down"),
 
+    ("预付款项",
+     "截至2026年3月31日，该科目无余额；2025年12月31日余额为16.6万元，主要为非工程款16.6万元，"
+     "其中某保险公司16.6万元。",
+     False,
+     "其中 marks the second 16.6 as a drill-down of the first, not a sibling"),
+
     ("应付账款",
      "截至2026年06月30日，应付账款余额为9.5万元，主要包括：1）应付合同保留金-工程类38.2万元；"
      "2）预提管理费用14.2万元；3）物管类3.5万元。其他小额应付款项（如法律服务费、维修费等）"

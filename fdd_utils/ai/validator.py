@@ -1635,6 +1635,14 @@ def _composition_findings(mapping_key: str, text: str) -> List[Tuple[str, str]]:
     # shape; testing it arithmetically avoids having to decide what 其中 means
     # in a sentence, which it does not always mean.
     values = [float(v.replace(",", "")) * _SCALE.get(u, 1.0) for v, u in items]
+    # With exactly one parent and one child, both can legitimately equal the
+    # account total: 「主要为非工程款16.6万元，其中某保险公司16.6万元」.
+    # The child is a drill-down, not a second component. The generic
+    # drop-one-and-retest guard below deliberately requires >2 values, so this
+    # smallest valid hierarchy needs its own unambiguous case.
+    if (len(values) == 2 and "其中" in scan
+            and all(abs(value - total) / total <= 0.01 for value in values)):
+        return []
     # A line that restates the total is a parent, not a component. 「货币资金余额
     # 为1,128.3万元，主要为银行存款-人民币户余额1,128.3万元，其中…」 lists the
     # whole account again before breaking it down, and counting it put the items
