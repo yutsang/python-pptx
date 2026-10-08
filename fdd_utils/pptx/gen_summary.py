@@ -574,6 +574,79 @@ Draft summary:
             return None
 
 
+    @classmethod
+    def generate_section_fallback(cls, commentary: str, *, is_chinese: bool) -> str:
+        """Deterministic section summary used when an AI call is unavailable."""
+        try:
+            generator = cls.__new__(cls)
+            generator.pptx_settings = _load_pptx_settings()
+            generator.model_type = None
+            generator.model_name = None
+            generator.language = "chinese" if is_chinese else "english"
+            return generator._generate_page_summary(commentary, is_chinese)
+        except Exception as exc:
+            logger.warning("generate_section_fallback failed: %s", exc)
+            return ""
+
+
+    @staticmethod
+    def ground_section_summary(
+        summary: str,
+        account_evidence: List[Any],
+        *,
+        is_chinese: bool,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Remove summary sentences containing a figure no account pool supports.
+
+        A section summary is checked against the union of the accounts it
+        summarises. Dropping the whole sentence is intentionally conservative:
+        deleting only the unmatched token can leave a materially different or
+        grammatically broken claim. Sentences with no money amount pass through;
+        soft causal judgement remains the summary model's responsibility.
+        """
+        from fdd_utils.ai.validator import SourceIndex, ground_amounts
+
+        facts: List[Dict[str, Any]] = []
+        for evidence in account_evidence or []:
+            if isinstance(evidence, dict):
+                facts.extend(evidence.get("facts") or [])
+            else:
+                facts.extend(getattr(evidence, "facts", None) or [])
+        source = SourceIndex(facts)
+
+        body = str(summary or "").strip()
+        sentences = _split_text_sentences(body, is_chinese) if body else []
+        kept: List[str] = []
+        dropped: List[Dict[str, Any]] = []
+        checked_amounts = 0
+        for sentence in sentences:
+            verdict = ground_amounts(sentence, source)
+            if verdict is None:
+                kept.append(sentence)
+                continue
+            checked_amounts += len(verdict.get("amounts") or [])
+            if verdict.get("supported"):
+                kept.append(sentence)
+            else:
+                dropped.append({
+                    "sentence": sentence,
+                    "code": verdict.get("code"),
+                    "reason": verdict.get("reason"),
+                    "amounts": verdict.get("amounts") or [],
+                })
+
+        separator = "" if is_chinese else " "
+        grounded = separator.join(kept).strip()
+        report = {
+            "pool_facts": len(source.facts),
+            "sentences": len(sentences),
+            "checked_amounts": checked_amounts,
+            "kept_sentences": len(kept),
+            "dropped_sentences": dropped,
+        }
+        return grounded, report
+
+
     def _generate_ai_summary(self, commentary: str, summary_source: str, is_chinese: bool) -> Optional[str]:
         """Generate and validate AI summary from page commentary."""
         try:

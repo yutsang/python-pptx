@@ -295,6 +295,7 @@ def build_section_summaries(
     model_type: Optional[str] = None,
     model_name: Optional[str] = None,
     label: str = "",
+    grounding_out: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     """One LLM-written executive summary per statement, keyed "BS"/"IS".
 
@@ -316,6 +317,7 @@ def build_section_summaries(
     section_summaries: Dict[str, str] = {}
     try:
         blobs: Dict[str, List[str]] = {"BS": [], "IS": []}
+        section_accounts: Dict[str, List[str]] = {"BS": [], "IS": []}
         for account_key, ai_result in (ai_results or {}).items():
             mapping_key = find_mapping_key(account_key, mappings)
             if not mapping_key or mapping_key not in mappings:
@@ -340,24 +342,82 @@ def build_section_summaries(
             blobs[atype].append(
                 PowerPointGenerator.strip_table_detail_for_summary(text, is_chinese_db)
             )
+            section_accounts[atype].append(str(account_key))
+
+        evidence_by_account: Dict[str, Any] = {}
+        run_record = (ai_results or {}).get("__run__") if isinstance(ai_results, dict) else None
+        run_folder = (run_record or {}).get("run_folder") if isinstance(run_record, dict) else None
+        if run_folder:
+            try:
+                from ..ai.evidence import list_evidence
+                evidence_by_account = list_evidence(str(run_folder))
+            except Exception as exc:
+                logger.warning("Could not load account evidence for executive-summary grounding: %s", exc)
         for stmt, blob in blobs.items():
             if not blob:
                 continue
+            joined = "\n\n".join(blob)
+            breaker_open = False
             try:
                 from ..ai import _PIPELINE_BREAKER
                 if any(_PIPELINE_BREAKER.is_open(stage) for stage in ("subagent_1", "subagent_2")):
-                    continue
+                    breaker_open = True
             except Exception:
                 pass
-            summary = PowerPointGenerator.generate_section_summary(
-                "\n\n".join(blob),
-                is_chinese=is_chinese_db,
-                language=("chinese" if is_chinese_db else "english"),
-                model_type=model_type,
-                model_name=model_name,
-            )
+            if breaker_open:
+                logger.warning(
+                    "%s executive summary: pipeline circuit breaker is open; "
+                    "using the deterministic summary before grounding",
+                    stmt,
+                )
+                summary = PowerPointGenerator.generate_section_fallback(
+                    joined, is_chinese=is_chinese_db)
+            else:
+                summary = PowerPointGenerator.generate_section_summary(
+                    joined,
+                    is_chinese=is_chinese_db,
+                    language=("chinese" if is_chinese_db else "english"),
+                    model_type=model_type,
+                    model_name=model_name,
+                )
+            if not summary:
+                summary = PowerPointGenerator.generate_section_fallback(
+                    joined, is_chinese=is_chinese_db)
             if summary:
-                section_summaries[stmt] = summary
+                evidence = []
+                for key in section_accounts[stmt]:
+                    canonical = find_mapping_key(key, mappings)
+                    record = evidence_by_account.get(key) or evidence_by_account.get(str(canonical or ""))
+                    if record is not None:
+                        evidence.append(record)
+                grounded, report = PowerPointGenerator.ground_section_summary(
+                    summary, evidence, is_chinese=is_chinese_db)
+                report["accounts"] = list(section_accounts[stmt])
+                report["evidence_accounts"] = len(evidence)
+                report["deterministic_fallback"] = breaker_open
+                if grounding_out is not None:
+                    grounding_out[stmt] = report
+                dropped = report.get("dropped_sentences") or []
+                if dropped:
+                    logger.warning(
+                        "%s executive summary: removed %s sentence(s) containing "
+                        "ungrounded figures before PPTX export",
+                        stmt, len(dropped),
+                    )
+                if grounded:
+                    section_summaries[stmt] = grounded
+                else:
+                    logger.warning(
+                        "%s executive summary: every sentence contained an unsupported "
+                        "figure; replacing it with an explicit non-numeric grounding notice",
+                        stmt,
+                    )
+                    section_summaries[stmt] = (
+                        "本节执行摘要中的量化表述未通过来源核对，请以下方科目评论为准。"
+                        if is_chinese_db else
+                        "Quantitative statements in this executive summary did not pass "
+                        "source grounding; refer to the account commentary below."
+                    )
     except Exception as exc:
         logger.warning(
             "Section summary generation failed for %s (PPTX summary band will fall "
@@ -1166,6 +1226,7 @@ def batch_run_ai_for_entity(
     # coSummaryShape genuinely blank on every entity's first BS/IS slide.
     # Confirmed via a real batch export's --dump-text output: a literal
     # empty coSummaryShape text frame on both statements.
+    summary_grounding: Dict[str, Any] = {}
     section_summaries = build_section_summaries(
         ai_results=ai_results,
         mappings=mappings,
@@ -1173,7 +1234,9 @@ def batch_run_ai_for_entity(
         model_type=model_type,
         model_name=model_name,
         label=str(entity_name),
+        grounding_out=summary_grounding,
     )
+    result["summary_grounding"] = summary_grounding
 
     structured_payloads = build_pptx_structured_payloads(
         ai_results=ai_results,

@@ -483,37 +483,7 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                     # Generate the BS / IS executive summaries here, alongside
                     # the account commentary, so PPTX export becomes pure XML.
                     try:
-                        from ..pptx import PowerPointGenerator
                         mappings = effective_mappings_from_session(session_state)
-                        bs_blob: list[str] = []
-                        is_blob: list[str] = []
-                        for account_key, result in results.items():
-                            mapping_key = find_mapping_key(account_key, mappings)
-                            if not mapping_key or mapping_key not in mappings:
-                                continue
-                            atype = mappings[mapping_key].get("type")
-                            text = extract_result_text_content(
-                                (result or {}).get("final")
-                                or (result or {}).get("subagent_4")
-                                or (result or {}).get("subagent_2")
-                                or (result or {}).get("subagent_1")
-                                or ""
-                            )
-                            if not text.strip():
-                                continue
-                            # A page/section summary needs each account's
-                            # lead-in theme only, never a table account's
-                            # per-component "-"/"➢" detail bullets after
-                            # "明细如下：" -- see strip_table_detail_for_
-                            # summary's own docstring for the real
-                            # corrupted-coSummaryShape bug this prevents.
-                            text = PowerPointGenerator.strip_table_detail_for_summary(
-                                text, session_state.language == "Chn",
-                            )
-                            if atype == "BS":
-                                bs_blob.append(text)
-                            elif atype == "IS":
-                                is_blob.append(text)
                         is_chinese_db = (session_state.language == "Chn")
                         section_summaries: dict[str, str] = {}
                         # Skip section summary generation in demo mode — demo
@@ -527,32 +497,21 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                             if _demo_is_sum:
                                 section_summaries["IS"] = _demo_is_sum
                         else:
-                            for stmt, blob in (("BS", bs_blob), ("IS", is_blob)):
-                                if not blob:
-                                    continue
-                                # If the per-account pipeline already saw the
-                                # circuit breaker trip for this language/agent,
-                                # the API is clearly stressed — skip the
-                                # section summary too rather than burning more
-                                # retry time on a doomed call.
-                                try:
-                                    from ..ai import _PIPELINE_BREAKER
-                                    if any(_PIPELINE_BREAKER.is_open(stage) for stage in ("subagent_1", "subagent_2")):
-                                        logger.info("Circuit breaker open from per-account pipeline — skipping %s section summary.", stmt)
-                                        continue
-                                except Exception:
-                                    pass
-                                joined = "\n\n".join(blob)
-                                status_placeholder.info(f"✅ AI content generated ({len(results)} accounts). Generating {stmt} executive summary…")
-                                summary = PowerPointGenerator.generate_section_summary(
-                                    joined,
-                                    is_chinese=is_chinese_db,
-                                    language=("chinese" if session_state.language == "Chn" else "english"),
-                                    model_type=session_state.get("model_type", "local"),
-                                    model_name=session_state.get("model_name"),
-                                )
-                                if summary:
-                                    section_summaries[stmt] = summary
+                            from .pptx_export import build_section_summaries
+                            status_placeholder.info(
+                                f"✅ AI content generated ({len(results)} accounts). "
+                                "Generating grounded executive summaries…")
+                            summary_grounding: dict[str, Any] = {}
+                            section_summaries = build_section_summaries(
+                                ai_results=results,
+                                mappings=mappings,
+                                is_chinese_db=is_chinese_db,
+                                model_type=session_state.get("model_type", "local"),
+                                model_name=session_state.get("model_name"),
+                                label="interactive UI",
+                                grounding_out=summary_grounding,
+                            )
+                            session_state.summary_grounding = summary_grounding
                         session_state.section_summaries = section_summaries
                     except Exception as exc:
                         logger.warning("Section summary generation failed (PPTX will fall back to in-export AI): %s", exc)

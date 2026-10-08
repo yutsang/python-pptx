@@ -2677,6 +2677,7 @@ def export_and_inspect_pptx(
     # never carried a real AI summary.
     from fdd_utils.ui import build_section_summaries
     _summary_started_at = time.perf_counter()
+    _summary_grounding = {}
     section_summaries = build_section_summaries(
         ai_results=ai_results,
         mappings=mappings,
@@ -2684,9 +2685,18 @@ def export_and_inspect_pptx(
         model_type=model_type,
         model_name=model_name,
         label=Path(databook_path).stem,
+        grounding_out=_summary_grounding,
     )
     print(f"\nExecutive summaries generated: {sorted(section_summaries) or 'NONE (band will use the spliced fallback)'}"
           f"  [{time.perf_counter() - _summary_started_at:.1f}s]")
+    for _stmt, _grounding in sorted(_summary_grounding.items()):
+        _dropped = len(_grounding.get("dropped_sentences") or [])
+        print(
+            f"  {_stmt} summary grounding: "
+            f"{_grounding.get('checked_amounts', 0)} amount(s) checked against "
+            f"{_grounding.get('pool_facts', 0)} facts; "
+            f"{_dropped} unsupported sentence(s) removed"
+        )
 
     # Every fdd_utils.pptx.* module sets its OWN logger to WARNING at import,
     # and a child's level wins over the parent's -- so raising only the parent
